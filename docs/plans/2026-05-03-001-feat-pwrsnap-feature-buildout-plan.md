@@ -22,7 +22,7 @@ deepened_at: 2026-05-03
 3. **AbortController + per-window state machines as Phase 1 primitives.** Float-over is `IDLE → SHOWING → COPYING → DISMISSED` (show-while-copying queues, never destroys). Tray is `OPEN → MAYBE_DISMISSING → DISMISSED` with 120ms debounce + cursor-bounds + DevTools guards. Every async IPC call propagates an AbortSignal. Retrofitting these in Phase 4 when Codex fans out four parallel requests per capture would be a brutal week. (frontend-races)
 4. **Self-host fonts; pre-warm region-selector + float-over windows.** `index.html` currently fetches Geist from Google Fonts CDN at runtime — switch to `@fontsource/geist`. Region-selector is a singleton hidden window pre-warmed at boot (cold create is 150–400ms; the ⌘⇧P → paint budget is 120ms). Float-over is also a singleton — hide and reload `?capture=<id>`, never destroy + recreate. (performance)
 5. **Custom `protocol.handle()` schemes for image display, no IPC bytes.** `pwrsnap-capture://<id>` for source PNGs and `pwrsnap-cache://<id>/<width>w.png` for renders. Sandbox-clean, streams natively, decodes off-thread. The Phase 7 HTTP server caching pipeline lands in Phase 1 as a custom protocol — it's the same code path. No multi-MB PNG ever crosses the structured-clone boundary. (IPC research, performance)
-6. **Local sensitive-data pre-pass *gates* clipboard; Codex blur is additive.** Auto-blur as written (Codex round-trip 4–8s, user can ⌘1 in 200ms) is theatre — by the time the network blur lands the secret is in Slack. Phase 1 ships a synchronous regex/Luhn pre-pass (OpenAI/Anthropic/AWS/GitHub keys, JWTs, PANs) that runs *before* the float-over and that the clipboard handler awaits. Codex blur layers on top. Auto-applied blurs are excluded from the standard undo stack — require ⌘⇧Z. (security)
+6. ~~**Local sensitive-data pre-pass *gates* clipboard.**~~ **REVERSED.** Per the founder, *all* sensitive-data review goes through Codex App Server (Phase 4) — not a local regex/Luhn pre-pass. The Phase 1 MVP ships **without** clipboard-blocking sensitive-data scanning; the founder accepts the leak risk on a single-user dev machine until Phase 4 lands. Phase 4 introduces Codex-driven sensitive-data review as a DynamicToolCall pipeline, applied synchronously before the float-over becomes interactive (Codex thread is ephemeral and subprocess is pre-warmed, so latency lands ~1–2s vs. the 4–8s the security review feared). The "every AI feature goes through Codex" schtick takes precedence over the local-scan safety-floor. See item #10. (founder override of security review)
 7. **Schema gets every UNIQUE/index/cascade it was missing.** `captures.sha256 UNIQUE`, `capture_tags(capture_id, tag_id) UNIQUE`, `tag_destinations(tag_id, destination_id) UNIQUE`, `tags(label, kind) UNIQUE`, `render_cache(capture_id, render_inputs_hash, format) UNIQUE`, `uploads(capture_id, destination_id) UNIQUE` (idempotent retries), partial index for the timeline-by-app-and-date hot path. `PRAGMA foreign_keys = ON` and explicit `ON DELETE CASCADE`/`RESTRICT`. AI-suggestion lifecycle gains `rejected_at` + `superseded_by` + `ai_run_id` so analytics has a denominator. Soft-delete moves files to `<root>/.trash/` atomically; GC just `rm -rf` after 14d. (data-integrity)
 8. **TypeScript discipline before any feature lands.** `exactOptionalPropertyTypes: true` in `tsconfig.base.json`, single `packages/shared/src/protocol.ts` typed channel registry as the lockstep source of truth (mapped types over preload + main + RPC), Zod for `Overlay` discriminated union with runtime validation at every IPC boundary (Codex injects overlays — never trust LLM structured output without a runtime validator), `useSyncExternalStore` for the live-query hook (StrictMode-safe), Result-pattern for cross-process errors (`invoke` strips `instanceof`). (TS review)
 9. **`screencapture(1)` CLI stays for stills; `@nonstrict/recordkit` for Phase 5 video.** Don't switch the still path to ScreenCaptureKit — for one-shot region the CLI is faster cold (~70ms) than SCKit's framework-load (~120ms). For video, RecordKit is actively maintained and Electron-first; don't hand-roll a Swift helper unless you outgrow it. (capture research)
@@ -276,12 +276,10 @@ apps/desktop/src/
 │   │   ├── source-store.ts       ← THE only writer of <root>/captures/...
 │   │   ├── captures-repo.ts
 │   │   └── ...
-│   ├── sensitive-data/
-│   │   └── local-scan.ts         ← regex/Luhn pre-pass — gates clipboard
 │   ├── command-bus.ts            ← single registry; ipcMain + http + future MCP all dispatch through it
 │   ├── http-server.ts            ← Phase 1 already (custom protocol + Phase 7 RPC namespace)
 │   ├── protocols.ts              ← pwrsnap-capture://, pwrsnap-cache://
-│   ├── clipboard.ts              ← awaits sensitive-data/local-scan before writeImage
+│   ├── clipboard.ts              ← writes PNG via nativeImage.createFromBuffer (Phase 4 adds Codex sensitive-data gate)
 │   ├── upload/
 │   │   ├── queue.ts              ← retry, backoff, idempotency via captures.sha256
 │   │   ├── drive.ts
@@ -490,9 +488,8 @@ This is one ~80 LOC function in `main/render/arrow.ts`, reused by the on-screen 
 5. **Confirm (mouse up or Enter).** Renderer dispatches `command-bus → 'capture:region'({rect, displayId})`.
 6. **Hide the selector window for one frame** before invoking screencapture so the overlay isn't captured. SCKit can `excludingWindows:` exclude it; the CLI path does the hide/show dance.
 7. **Main shells out.** `child_process.execFile('/usr/sbin/screencapture', ['-x', '-R', `${x},${y},${w},${h}`, '-t', 'png', tempPath])`. Never `exec` with shell:true; never interpolate user-controllable strings into a shell string. ~70–120ms cold, ~40–70ms warm. CLI stays even after Phase 5's SCKit lands — it's faster cold than SCKit (~120–200ms cold for SCKit framework load).
-8. **Local sensitive-data pre-pass** (synchronous, gates clipboard from this moment on). Shell `screencapture` was synchronous; before the float-over appears, run `sensitive-data/local-scan.ts`: macOS Vision OCR (free, ~50ms) → regex/Luhn for OpenAI/Anthropic/AWS/GitHub keys, JWTs, PANs, SSN, emails. Each hit becomes an `overlays` row with `kind='blur', source='local-scan', applied_at=NOW(), z_index=999`. The clipboard handler awaits this pass before writing.
-9. **Persist via `source-store.ts`** — the only writer of `<root>/captures/...`. It exposes `put(tempPath) → {srcPath, sha256}`. Move (same-volume rename) to `<root>/captures/<yyyy>/<mm>/<uuid>.png`. INSERT into `captures` with `device_pixel_ratio` from `screen.getPrimaryDisplay().scaleFactor`, `source_app_bundle_id` (Phase 3 has the helper; MVP defaults to "unknown"). `sha256` is UNIQUE — if dedup hits, return the existing capture instead of inserting.
-10. **Show float-over.** Singleton window — hidden, not destroyed; reload `?capture=<id>`. Float-over reads the source via `<img src="pwrsnap-capture://<id>">` (custom protocol), never via IPC bytes.
+8. **Persist via `source-store.ts`** — the only writer of `<root>/captures/...`. It exposes `put(tempPath) → {srcPath, sha256}`. Move (same-volume rename) to `<root>/captures/<yyyy>/<mm>/<uuid>.png`. INSERT into `captures` with `device_pixel_ratio` from `screen.getPrimaryDisplay().scaleFactor`, `source_app_bundle_id` (Phase 3 has the helper; MVP defaults to "unknown"). `sha256` is UNIQUE — if dedup hits, return the existing capture instead of inserting.
+9. **Show float-over.** Singleton window — hidden, not destroyed; reload `?capture=<id>`. Float-over reads the source via `<img src="pwrsnap-capture://<id>">` (custom protocol), never via IPC bytes.
 
 **Cancellation.** ⌘⇧P during step 5+ aborts via the float-over's AbortController and queues the new capture instead of destroying.
 
@@ -611,7 +608,8 @@ Per Decision 4, this is *not* an "extract a giant shared package" phase. It's th
   - [x] Root `package.json` script `codex:generate-protocol` that delegates to the package.
   - [ ] First real generation run (founder executes `pnpm codex:generate-protocol`; commit the output).
 - [ ] **Lift `json-rpc.ts` + `stdio-transport.ts` from PwrAgnt** into `apps/desktop/src/main/codex-app-server/` — replace `getMainLogger("pwragnt:…")` imports with PwrSnap's logger. ~360 LOC total.
-- [ ] **Lift `codex-discovery.ts` + `application-discovery.ts`** from `~/github/PwrAgnt/apps/desktop/src/main/settings/` into `apps/desktop/src/main/settings/`. Rename `CODEX_COMMAND_ENV` to a PwrSnap-scoped name. ~765 LOC total. Discovery surface gets the version-list + newest-first picker the user wants in Settings → AI.
+- [ ] **Lift `codex-discovery.ts`** from `~/github/PwrAgnt/apps/desktop/src/main/settings/` into `apps/desktop/src/main/settings/`. Rename `CODEX_COMMAND_ENV` to `PWRSNAP_CODEX_COMMAND_ENV` and inline the `DesktopCodex*` types (PwrSnap doesn't share `@pwragnt/shared`). ~272 LOC.
+- [ ] ~~**Lift `application-discovery.ts`**~~ — **deferred to Phase 3.** That file detects the user's editors/terminals (VS Code, Ghostty) for PwrAgnt's "open thread in editor" feature. PwrSnap's source-app detection (Phase 3) needs `NSWorkspace.frontmostApplication`, not editor discovery, so the file gets lifted then if it earns its keep, not now.
 - [ ] **Channel naming convention.** Drop `pwrsnap:` prefix; use bare `<domain>:<verb>`. Document in [AGENTS.md](../../AGENTS.md).
 - [ ] **`packages/shared/` workspace package.** Smaller scope than originally framed: just the typed `Commands` map (`protocol.ts`), `Overlay` Zod schemas, `Result<T, E>` type, and the IPC channel string constants. PwrSnap-specific only — no cross-repo ambition. Phase 1 imports `@pwrsnap/shared` for these types.
 
@@ -648,10 +646,7 @@ Tasks:
   - [ ] `capture/screencapture.ts` — `child_process.execFile`, never `exec`.
   - [ ] Validate `rect` and `displayId` against `screen.getAllDisplays()`; reject anything not finite or out of bounds.
   - [ ] Wire `command-bus` → `capture:region` and `capture:interactive` (split per agent-native review).
-- [ ] **Sensitive-data local pre-pass.**
-  - [ ] `sensitive-data/local-scan.ts` — Vision OCR + regex/Luhn for OpenAI/Anthropic/AWS/GitHub keys, JWTs, PANs, SSN, emails. Emits `overlays` rows synchronously before the float-over renders.
-  - [ ] Clipboard handler awaits the local scan before `clipboard.writeImage` — non-negotiable safety floor.
-  - [ ] Auto-applied blurs are excluded from the standard undo stack — require `⌘⇧Z` to remove.
+- [ ] ~~**Sensitive-data local pre-pass.**~~ **Cut from Phase 1 per founder override.** All sensitive-data review now lives in Phase 4 via Codex App Server (DynamicToolCall pipeline). Phase 1's clipboard handler writes immediately with no scanning — single-user dev-machine risk profile is acceptable until Phase 4. See Enhancement Summary item #6 (REVERSED).
 - [ ] **Float-over.**
   - [ ] Convert to a singleton in `main/float-over.ts` (hide+reload, never destroy+recreate). State machine `IDLE | SHOWING | COPYING | DISMISSED`. Show-while-copying queues the new capture; abort the prior in-flight copy.
   - [ ] Refactor `FloatOver.tsx` to read `?capture=<id>` and display via `<img src="pwrsnap-capture://<id>">`.
@@ -682,7 +677,7 @@ Acceptance:
 - [ ] Region drag stays at ≥60fps over Splashtop / Parsec (validated by the dev test rig).
 - [ ] After confirm, float-over appears within 500ms p95 with real preview from `pwrsnap-capture://`, real dims, real "just now" timestamp.
 - [ ] ⌘1/⌘2/⌘3 inside the float-over copy a PNG to the system clipboard at the expected resolution; founder can paste into Slack and the image is there.
-- [ ] If the captured screen contains a visible OpenAI key (`sk-…`) or AWS key (`AKIA…`), the clipboard write is *blocked* until the local scan applies a blur overlay; the blur is visible in the float-over preview before any copy attempt.
+- [ ] ~~If the captured screen contains a visible OpenAI key…~~ **Cut.** Sensitive-data scanning lives in Phase 4 via Codex App Server. Phase 1 ships without clipboard-gating.
 - [ ] Library window shows the real capture in the existing grid sorted by `captured_at DESC`.
 - [ ] Force-quitting the app between capture and persist leaves no half-state: no DB row without a file, no file without a row, no orphan tmp.
 - [ ] Zero outbound network calls during cold boot or capture (verified by spy).
@@ -716,7 +711,7 @@ Acceptance:
 - [ ] ESC resolves substate first then mode (mid-drag → cancel drag, no drag → return to Inspect, Inspect → return to Browse).
 - [ ] An arrow drawn on a 2880×1800 retina capture has stroke ≥ 8px and head ≥ 28px; an arrow drawn on a 480×360 thumb stays proportional.
 - [ ] Rejecting / undoing every overlay restores the source pixel-for-pixel (sha256 match).
-- [ ] Copying after edits paints the annotated image into the clipboard; copying before edits paints the source + auto-applied local-scan blurs only. No flash, no partial render.
+- [ ] Copying after edits paints the annotated image into the clipboard; copying before edits paints the source. No flash, no partial render.
 - [ ] Drag a thumb from the Library into Slack — the medium PNG arrives.
 - [ ] Force-quit during a smart-arrow drag → reopen → the partial overlay is offered as a resume-draft, never committed silently.
 
@@ -756,7 +751,7 @@ Acceptance:
 
 #### Phase 4: Codex AI assist (Weeks 8–10)
 
-**Goal:** Wire AI suggestions through Codex App Server. AI suggestions enrich captures already protected by Phase 1's local sensitive-data scan; Codex blur is *additive* to the local pre-pass, not the safety floor. Every AI feature in PwrSnap dispatches through Codex — that's the schtick.
+**Goal:** Wire all AI suggestions through Codex App Server, including sensitive-data review. Phase 1 shipped without any clipboard-gating; Phase 4 introduces it as a Codex DynamicToolCall pipeline. Every AI feature in PwrSnap dispatches through Codex — that's the schtick, end-to-end.
 
 Tasks:
 - [ ] **AI client = Codex App Server stdio JSON-RPC.** `apps/desktop/src/main/ai/codex-client.ts` is a fresh ~500–800 LOC PwrSnap-specific client (NOT a lift of PwrAgnt's 4279 LOC `client.ts`) built on top of the lifted `json-rpc.ts` + `stdio-transport.ts` from Phase 0.5. Two operating modes:
@@ -777,7 +772,7 @@ Tasks:
 - [ ] **Cost / UX guardrails.**
   - Per-pipeline concurrency: annotate=2, describe=3, tag=4, filename=4 (caps enforced at the PwrSnap orchestrator; Codex's own queue handles its provider-side rate limits).
   - 250ms debounce after capture before fan-out.
-  - Soft-fail on Codex-binary-not-found / `initialize` timeout — surface a banner with "Reconnect Codex" + "Disable AI" buttons. Phase 1's local sensitive-data scan still runs; only the Codex-driven enrichment is missing.
+  - Soft-fail on Codex-binary-not-found / `initialize` timeout — surface a banner with "Reconnect Codex" + "Disable AI" buttons. Without Codex, the app keeps capturing + copying; sensitive-data review and other AI enrichment are simply absent.
   - Cancel inflight runs for a capture if the user deletes it within 5s.
 - [ ] **`ai_runs.request` retention.** Image bytes (the 1024px JPEG sent in the turn) get redacted from the row after a configurable TTL (default 30d). Keep prompt + response + Codex protocol version. Run as part of the daily GC sweep.
 - [ ] **Float-over UI.** The "Codex thinks: …" line and dashed-outline AI tag chips become real subscriptions over `events:overlays:changed`. Accept sets `applied_at`; tweak opens the overlay in Edit-mode handles; regenerate deletes by `ai_run_id` and enqueues a fresh run.
@@ -788,7 +783,7 @@ Tasks:
 Acceptance:
 - [ ] First launch: no Codex calls until the user has both (a) selected a Codex binary in Settings → AI and (b) accepted the consent modal. Integration test asserts zero stdio writes to the Codex subprocess before both gates pass.
 - [ ] Settings → AI lists every detected Codex binary with version, defaults to newest, persists user override.
-- [ ] After consent: captures containing visible OpenAI/Anthropic/GitHub/AWS keys land with local-scan blurs *already applied* before the float-over appears (Phase 1 behavior, restated). Codex annotate layers additional rationale-captioned blurs on top.
+- [ ] After consent: captures containing visible OpenAI/Anthropic/GitHub/AWS keys come back from Codex's sensitive-data DynamicToolCall pipeline with auto-applied blur overlays *before the float-over becomes interactive* (clipboard ops await this Codex call). Codex sensitive-data review is the safety floor; there is no local pre-pass.
 - [ ] Codex annotate suggestions appear in the float-over within p50 6s, p95 12s on `flex` tier (Codex routing adds ~1–2s vs direct provider call but the marquee feature consistency is worth it). User-explicit re-run uses `default` tier with p50 ~3s.
 - [ ] AI off in Settings → AI blocks every Codex subprocess invocation. Integration test asserts no `child_process.spawn` of the Codex binary fires after the toggle.
 - [ ] Every AI call logged in `ai_runs` with `status`, `model` (the model Codex routed to, captured from the response), `codex_protocol_version`, `latency_ms`, `error?`. Image redacted from `request` after 30d.
@@ -936,7 +931,7 @@ Considered because SnagIt does it that way. Rejected because it's exactly the fo
 
 ### Interaction Graph
 
-⌘⇧P fires the global shortcut handler in [main/index.ts](apps/desktop/src/main/index.ts), which dispatches `command-bus → 'capture:interactive'`. The handler `show()`s the pre-warmed region-selector window (singleton, no creation cost) at `#stage=region`. The renderer paints CSS-only dim quadrants + live rect, listens for pointermove/up. On confirm, dispatches `command-bus → 'capture:region'({rect, displayId})`, which: hides selector for one frame, shells out to `screencapture`, runs `sensitive-data/local-scan.ts` (Vision OCR + regex/Luhn) to insert auto-applied blur overlays *before* anything is shown, persists via `source-store.ts` (the only writer of `<root>/captures/...`), hashes via SHA-256 (UNIQUE check on insert; dedup hit returns existing capture), and emits `events:captures:changed` on the bus. The float-over (singleton hidden window) reloads with `?capture=<id>` and renders the preview via `<img src="pwrsnap-capture://<id>">` — no IPC bytes. After `app.whenReady()` AND first-run consent, Codex pipelines fan out *with AbortController + per-pipeline concurrency caps + 250ms debounce*, inserting `ai_runs` rows and `overlays` rows (`applied_at=NULL` for suggestions, `applied_at=NOW()` for auto-blurs that layer on top of local-scan blurs), each re-broadcasting on the bus.
+⌘⇧P fires the global shortcut handler in [main/index.ts](apps/desktop/src/main/index.ts), which dispatches `command-bus → 'capture:interactive'`. The handler `show()`s the pre-warmed region-selector window (singleton, no creation cost) at `#stage=region`. The renderer paints CSS-only dim quadrants + live rect, listens for pointermove/up. On confirm, dispatches `command-bus → 'capture:region'({rect, displayId})`, which: hides selector for one frame, shells out to `screencapture`, persists via `source-store.ts` (the only writer of `<root>/captures/...`), hashes via SHA-256 (UNIQUE check on insert; dedup hit returns existing capture), and emits `events:captures:changed` on the bus. The float-over (singleton hidden window) reloads with `?capture=<id>` and renders the preview via `<img src="pwrsnap-capture://<id>">` — no IPC bytes. After `app.whenReady()` AND first-run consent (Phase 4+), Codex pipelines fan out *with AbortController + per-pipeline concurrency caps + 250ms debounce* through Codex App Server, inserting `ai_runs` rows and `overlays` rows (`applied_at=NULL` for non-blocking suggestions; `applied_at=NOW()` for sensitive-data blurs which gate clipboard ops). Each re-broadcasts on the bus.
 
 ### Error & Failure Propagation
 
@@ -968,7 +963,7 @@ The agent-native parity invariant is enforced by `pnpm test:parity`: every UI co
 ### Integration Test Scenarios
 
 1. **Capture-to-clipboard cold-start.** With no prior captures, ⌘⇧P → drag → confirm → ⌘1. Assert: clipboard contains a PNG at width=800px, `captures` has one row, `render_cache` has one row keyed by the canonical `render_inputs_hash`.
-2. **Sensitive-data safety floor (no AI required).** Capture a desktop showing a visible OpenAI key. Assert: before the float-over is interactive, an `overlays` row with `kind='blur', source='local-scan', applied_at=NOW()` exists; ⌘1 *blocks* on the local scan, then writes a clipboard PNG with the key blurred. AI is OFF for this test.
+2. **Codex-gated sensitive-data review** (Phase 4). Capture a desktop showing a visible OpenAI key with Codex enabled + consent granted. Assert: float-over does not become interactive until Codex's sensitive-data DynamicToolCall returns; resulting `overlays` row has `kind='blur', source='codex', applied_at=NOW()`; ⌘1 writes a clipboard PNG with the key blurred. With Codex disabled or consent revoked, Phase 1 behavior applies — clipboard writes immediately, no scanning.
 3. **Edit while Codex is mid-run.** Capture, draw a manual arrow, while annotate is still in flight. Assert: Codex's response inserts new overlays *only* keyed by `ai_run_id`; the user's manual arrow's `source='user'` is unmodified; visible UI never reorders the user's overlay.
 4. **Capture deletion mid-fan-out.** Capture, immediately delete (within 5s). Assert: AbortController fires; `ai_runs` rows close with `status='cancelled', error='cancelled'`; no overlays rows insert against the deleted capture.
 5. **Quit-during-upload + idempotency.** Bind a destination, capture, force-quit during `in_flight`. Reboot. Assert: upload resets to `pending`, retry succeeds, S3 has exactly one object at `<sha256>.<ext>`.
@@ -1027,7 +1022,7 @@ The agent-native parity invariant is enforced by `pnpm test:parity`: every UI co
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| **Auto-blur leaks a credential** because Codex misses it or hasn't returned in time | High | **Critical** | Local sensitive-data pre-pass (Vision OCR + regex/Luhn) runs synchronously before float-over; clipboard ops await it. Codex blur is additive. Validated by integration test #2. |
+| **Sensitive data leaks via clipboard before Codex returns** (Phase 4) | High | **Critical** | Codex sensitive-data DynamicToolCall pipeline is gating: float-over does not become interactive and clipboard ops do not fire until the call returns. Codex subprocess pre-warmed and pool'd to keep latency ~1–2s. **Phase 1 intentionally ships without any gating** — single-user dev-machine risk profile per founder override. |
 | **Local HTTP server attacked via DNS rebinding** | Med | High | HMAC-signed URLs scoped to `(capture_id, width, exp)`; `Host:` header validation; `Cache-Control: private, no-store`; bind 127.0.0.1 only. Validated by integration test #12. |
 | **Compose renderer regression** (the original plan disabled `contextIsolation` for Remotion) | High if not caught | **Critical** | Phase 6 corrects the boundary: Player runs in a sandboxed renderer; renderMedia in a Node child process. `BrowserWindow` lifecycle test asserts no window has `contextIsolation: false`. |
 | **Auto-update absent** = users stuck-vulnerable to future Electron/sharp/sqlite CVEs | High over time | High | Phase 3 wires `electron-updater` lifted from PwrAgnt. Signed `latest.yml`, staged rollout, verified-signature-only auto-install. |

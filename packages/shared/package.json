@@ -1,0 +1,22 @@
+{
+  "name": "@pwrsnap/shared",
+  "version": "0.0.1-alpha.0",
+  "private": true,
+  "description": "Cross-process types shared between main, preload, and renderer in @pwrsnap/desktop. Typed Commands registry, Overlay Zod schemas, Result-pattern, IPC channel constants.",
+  "author": "PwrDrvr LLC",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts",
+    "./overlay": "./src/overlay-schemas.ts",
+    "./result": "./src/result.ts",
+    "./ipc": "./src/ipc.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  }
+}

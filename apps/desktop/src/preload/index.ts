@@ -15,7 +15,14 @@
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC_CMD } from "@pwrsnap/shared";
+// Import from the `/ipc` subpath, NOT the package barrel — the barrel
+// re-exports the Zod overlay schemas, whose `z.object(...)` calls have
+// construction side-effects Vite can't tree-shake. Pulling the barrel
+// would force a `require("zod")` at preload load time, and Electron's
+// sandbox: true (which we always run with) doesn't allow arbitrary
+// requires from a preload, so the file would fail silently and
+// pwrsnapApi never reach the renderer.
+import { IPC_CMD } from "@pwrsnap/shared/ipc";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one

@@ -1,11 +1,19 @@
 import { useMemo, useState } from "react";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
-import { APP_INFO, CAPTURES, groupByDay } from "./captures";
+import { FixtureBackedRecords } from "./adapter";
+import { APP_INFO, groupByDay } from "./captures";
+import { dispatch } from "../../lib/pwrsnap";
+import { useLibrary } from "../../lib/useLibrary";
+// Thumb (synthetic per-app gradient) is the fallback for the empty
+// state and for records lacking a renderable source. Real captures
+// render via <img src="pwrsnap-cache://"> directly in the cell — see
+// Library.tsx renderCell below. Phase 2's mode-router refactor will
+// rewrite the thumb pipeline to use the canvas-backed preview.
 import { Thumb } from "./Thumb";
 
 export function Library({
-  initialSelected = 5,
+  initialSelected = 1,
   sizzleMode = false,
   sizzlePicks = []
 }: {
@@ -19,9 +27,18 @@ export function Library({
   const [picks] = useState<number[]>(sizzlePicks);
   const sizzle = sizzleMode || picks.length > 0;
 
-  const visible = activeApp === "all" ? CAPTURES : CAPTURES.filter((c) => c.app === activeApp);
-  const grouped = useMemo(() => groupByDay(visible), [activeApp, visible]);
-  const current = CAPTURES.find((c) => c.id === selected) ?? CAPTURES[0]!;
+  const { records, loading, error } = useLibrary();
+  const fixtureBacking = useMemo(() => new FixtureBackedRecords(records), [records]);
+  const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
+
+  const visible =
+    activeApp === "all" ? fixtureCaptures : fixtureCaptures.filter((c) => c.app === activeApp);
+  const grouped = useMemo(() => groupByDay(visible), [visible]);
+  const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
+
+  // Look up the real CaptureRecord for the currently-selected fixture
+  // — used by the thumb URL + the Detail rail.
+  const selectedRecord = current ? fixtureBacking.recordFor(current.id) : null;
 
   return (
     <div className="psl">
@@ -33,7 +50,9 @@ export function Library({
             </span>
             <PwrSnapWordmark />
           </div>
-          <span className="psl__count">{CAPTURES.length} captures</span>
+          <span className="psl__count">
+            {loading ? "loading…" : `${records.length} captures`}
+          </span>
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
@@ -98,7 +117,7 @@ export function Library({
             </svg>
           </span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{CAPTURES.length}</span>
+          <span className="psl__nav-count">{records.length}</span>
         </button>
         <button className="psl__nav">
           <span className="psl__nav-icon">
@@ -132,7 +151,9 @@ export function Library({
               <AppIcon app={app as never} size={11} />
             </span>
             <span className="psl__nav-label">{info.name}</span>
-            <span className="psl__nav-count">{CAPTURES.filter((c) => c.app === app).length}</span>
+            <span className="psl__nav-count">
+              {fixtureCaptures.filter((c) => c.app === app).length}
+            </span>
           </button>
         ))}
 
@@ -282,6 +303,16 @@ export function Library({
           <button className="psl__right-tab">OCR</button>
         </div>
         <div className="psl__right-body">
+          {error !== null && (
+            <div style={{ padding: 12, color: "var(--danger-text)", font: "500 12px var(--font-sans)" }}>
+              Failed to load library: {error}
+            </div>
+          )}
+          {!loading && current === undefined ? (
+            <div style={{ padding: 24, color: "var(--text-muted)", font: "500 13px var(--font-sans)" }}>
+              No captures yet — press <b style={{ color: "var(--text-primary)" }}>⌘⇧P</b> to take your first snap.
+            </div>
+          ) : current === undefined ? null : (<>
           <div className="psl__preview">
             <div
               style={{
@@ -291,7 +322,15 @@ export function Library({
                 background: "var(--bg-input)"
               }}
             >
-              <Thumb c={current} />
+              {selectedRecord !== null ? (
+                <img
+                  src={`pwrsnap-cache://${selectedRecord.id}/1440w.webp`}
+                  alt=""
+                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                />
+              ) : (
+                <Thumb c={current} />
+              )}
               <svg
                 style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
                 viewBox="0 0 100 62"
@@ -416,7 +455,14 @@ export function Library({
           </div>
 
           <div className="psl__big-cta">
-            <button className="is-primary">
+            <button
+              className="is-primary"
+              onClick={() => {
+                if (selectedRecord !== null) {
+                  void dispatch("clipboard:copy", { captureId: selectedRecord.id, preset: "med" });
+                }
+              }}
+            >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                 <rect x="9" y="9" width="11" height="11" rx="1.5" />
                 <path d="M5 15V5h10" />
@@ -441,6 +487,7 @@ export function Library({
               Editor
             </button>
           </div>
+          </>)}
         </div>
       </aside>
 

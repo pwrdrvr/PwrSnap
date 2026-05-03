@@ -1,9 +1,10 @@
-import { app, BrowserWindow, globalShortcut, Menu, shell } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, Menu, shell } from "electron";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
 import { showFloatOverForCapture } from "./float-over";
 import { registerCaptureHandlers } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
+import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
@@ -29,6 +30,17 @@ function installApplicationMenu(): void {
     { role: "editMenu" },
     { role: "viewMenu" },
     { role: "windowMenu" },
+    {
+      label: "Library",
+      submenu: [
+        {
+          label: "Export Library…",
+          click: () => {
+            void runExportLibrary();
+          }
+        }
+      ]
+    },
     {
       role: "help",
       submenu: [
@@ -61,6 +73,36 @@ function registerCaptureShortcut(): void {
   if (!ok) {
     log.warn("failed to register global shortcut", { shortcut: CAPTURE_SHORTCUT });
   }
+}
+
+async function runExportLibrary(): Promise<void> {
+  const log = getMainLogger("pwrsnap:export");
+  const result = await dialog.showOpenDialog({
+    title: "Choose a destination for the PwrSnap export",
+    properties: ["openDirectory", "createDirectory"]
+  });
+  if (result.canceled || result.filePaths.length === 0) return;
+  const destDir = result.filePaths[0]!;
+  const dispatched = await bus.dispatch("library:export", { destDir }, { principal: "ipc" });
+  if (!dispatched.ok) {
+    log.warn("export library failed", { code: dispatched.error.code, message: dispatched.error.message });
+    void dialog.showMessageBox({
+      type: "error",
+      message: "Export failed",
+      detail: dispatched.error.message
+    });
+    return;
+  }
+  log.info("export library succeeded", { destDir: dispatched.value.destDir });
+  void dialog.showMessageBox({
+    type: "info",
+    message: "Library exported",
+    detail: `Snapshot at ${dispatched.value.destDir}`,
+    buttons: ["Reveal in Finder", "OK"],
+    defaultId: 0
+  }).then((response) => {
+    if (response.response === 0) shell.showItemInFolder(dispatched.value.manifestPath);
+  });
 }
 
 async function runInteractiveCapture(): Promise<void> {
@@ -133,6 +175,9 @@ export function bootstrapApp(): void {
     registerClipboardHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
+    // export-handler.ts re-registers `library:export` over the
+    // not-implemented stub from library-handlers.ts. Order matters.
+    registerExportHandler();
     registerIpcDispatcher();
     installTray();
     preWarmRegionSelector();

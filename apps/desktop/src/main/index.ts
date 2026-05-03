@@ -1,6 +1,9 @@
 import { app, BrowserWindow, globalShortcut, Menu, shell } from "electron";
 import { showFloatOver } from "./float-over";
-import { disposeIpcHandlers, registerIpcHandlers } from "./ipc";
+import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
+import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
+import { initializeMainLogger } from "./log";
+import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
 import { createMainWindow } from "./window";
 
@@ -54,7 +57,27 @@ function registerCaptureShortcut(): void {
   }
 }
 
+/**
+ * Phase 1 stub resolver. Phase 1.3 (db + source-store) replaces
+ * `captureSourcePath` with a real lookup. Phase 1.6 (render pipeline)
+ * fills in `cacheFile`. Until then, every protocol resolution returns
+ * 404 — the renderer can still mount, fonts/markup load fine.
+ */
+const protocolResolverStub: ProtocolResolver = {
+  async captureSourcePath() {
+    return null;
+  },
+  async cacheFile() {
+    return null;
+  }
+};
+
 export function bootstrapApp(): void {
+  initializeMainLogger();
+
+  // Privileged schemes MUST be registered before app is ready.
+  registerSchemesAsPrivileged();
+
   app.setName(APP_NAME);
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
@@ -65,7 +88,9 @@ export function bootstrapApp(): void {
 
   app.whenReady().then(() => {
     installApplicationMenu();
-    registerIpcHandlers();
+    installProtocolHandlers(protocolResolverStub);
+    registerFloatOverHandlers();
+    registerIpcDispatcher();
     installTray();
     registerCaptureShortcut();
     createMainWindow();
@@ -85,7 +110,7 @@ export function bootstrapApp(): void {
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
     disposeTray();
-    disposeIpcHandlers();
+    disposeIpcDispatcher();
   });
 }
 

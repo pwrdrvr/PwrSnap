@@ -1,6 +1,7 @@
 import { Library } from "./features/library/Library";
 import { FloatOver } from "./features/float-over/FloatOver";
 import { TrayMenu } from "./features/tray/TrayMenu";
+import { dispatch } from "./lib/pwrsnap";
 import sampleSrc from "./assets/sample-1.png";
 
 type Stage = "library" | "float-over" | "tray";
@@ -26,7 +27,9 @@ export function App() {
         src={sampleSrc}
         srcW={2880}
         srcH={1800}
-        onDismiss={() => window.pwrsnapApi?.dismissFloatOver()}
+        onDismiss={() => {
+          void dispatch("float-over:dismiss", {});
+        }}
       />
     );
   }

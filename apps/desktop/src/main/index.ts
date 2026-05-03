@@ -1,8 +1,12 @@
 import { app, BrowserWindow, globalShortcut, Menu, shell } from "electron";
 import { showFloatOver } from "./float-over";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
+import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
-import { initializeMainLogger } from "./log";
+import { getMainLogger, initializeMainLogger } from "./log";
+import { closeDatabase, openDatabase } from "./persistence/db";
+import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
+import { sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
 import { createMainWindow } from "./window";
@@ -58,19 +62,37 @@ function registerCaptureShortcut(): void {
 }
 
 /**
- * Phase 1 stub resolver. Phase 1.3 (db + source-store) replaces
- * `captureSourcePath` with a real lookup. Phase 1.6 (render pipeline)
- * fills in `cacheFile`. Until then, every protocol resolution returns
- * 404 — the renderer can still mount, fonts/markup load fine.
+ * Protocol resolver — Phase 1.3 implements `captureSourcePath` against
+ * the captures-repo. `cacheFile` stays a stub until Phase 1.6 lands the
+ * render coordinator.
  */
-const protocolResolverStub: ProtocolResolver = {
-  async captureSourcePath() {
-    return null;
+const protocolResolver: ProtocolResolver = {
+  async captureSourcePath(captureId) {
+    const record = getCaptureById(captureId);
+    if (record === null || record.deleted_at !== null) {
+      return null;
+    }
+    return record.src_path;
   },
   async cacheFile() {
     return null;
   }
 };
+
+const log = getMainLogger("pwrsnap:bootstrap");
+
+async function runBootGc(): Promise<void> {
+  // Tmp file orphans first — cheap, no DB.
+  await sweepStaleTempFiles();
+  // Trash sweep — hard-delete captures whose deleted_at exceeded
+  // retention; cascading delete also drops their render_cache rows.
+  const expired = listExpiredTrash(14);
+  if (expired.length > 0) {
+    log.info("gc: hard-deleting expired captures", { count: expired.length });
+    await sweepTrash(expired);
+    gcHardDeleteCaptures(expired);
+  }
+}
 
 export function bootstrapApp(): void {
   initializeMainLogger();
@@ -86,14 +108,19 @@ export function bootstrapApp(): void {
     copyright: APP_COPYRIGHT
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    // Open the DB before anything else — cold first-INSERT cost
+    // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
+    await openDatabase();
     installApplicationMenu();
-    installProtocolHandlers(protocolResolverStub);
+    installProtocolHandlers(protocolResolver);
     registerFloatOverHandlers();
+    registerLibraryHandlers();
     registerIpcDispatcher();
     installTray();
     registerCaptureShortcut();
     createMainWindow();
+    void runBootGc();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -111,6 +138,7 @@ export function bootstrapApp(): void {
     globalShortcut.unregisterAll();
     disposeTray();
     disposeIpcDispatcher();
+    closeDatabase();
   });
 }
 

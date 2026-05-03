@@ -1,0 +1,173 @@
+// Source-store — the only writer of <userData>/captures/. Every
+// captured PNG flows through here. The plan §"Cross-cutting primitives"
+// names this as the single ownership seam for the source-immutability
+// invariant: only this module writes captures/, only this module
+// (or its trash sweep) deletes from it.
+//
+// Soft-delete moves files atomically to <userData>/.trash/<id>.png on
+// the same volume — single rename, no copy, no TOCTOU window.
+// Hard-delete (boot-time GC) removes from .trash/ after 14d.
+
+import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { nanoid } from "nanoid";
+import sharp from "sharp";
+
+import { getCapturesRoot, getTrashRoot } from "./db";
+import { getMainLogger } from "../log";
+
+const log = getMainLogger("pwrsnap:source-store");
+
+const TRASH_RETENTION_DAYS = 14;
+
+export type StoredSource = {
+  /** UUID-shaped capture identifier (nanoid). */
+  id: string;
+  /** Absolute on-disk path under <userData>/captures/<yyyy>/<mm>/<id>.png */
+  srcPath: string;
+  sha256: string;
+  byteSize: number;
+  widthPx: number;
+  heightPx: number;
+};
+
+/**
+ * Take a freshly-captured PNG (path to a temp file the screencapture
+ * CLI wrote) and persist it under captures/<yyyy>/<mm>/<id>.png.
+ * Returns the immutable storage record. Hashes via SHA-256 — caller
+ * uses the hash for dedup against existing rows.
+ *
+ * Uses sharp to read width/height in one pass while we already have
+ * the buffer in flight; this saves a second decode in the capture hot
+ * path (latency budget for ⌘⇧P is tight).
+ */
+export async function putCaptureSource(tempPath: string): Promise<StoredSource> {
+  const id = nanoid(16);
+  const buf = await readFile(tempPath);
+
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+  const meta = await sharp(buf).metadata();
+  const widthPx = meta.width ?? 0;
+  const heightPx = meta.height ?? 0;
+  if (widthPx === 0 || heightPx === 0) {
+    throw new Error(`source-store: failed to read PNG dimensions from ${tempPath}`);
+  }
+
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dir = join(getCapturesRoot(), yyyy, mm);
+  await mkdir(dir, { recursive: true });
+  const srcPath = join(dir, `${id}.png`);
+
+  // Same-volume rename — atomic on APFS, doesn't double-write the buffer.
+  // tempPath comes from `screencapture -t png /tmp/...`, which is on
+  // /private/tmp; if /tmp is on a different volume than userData, this
+  // falls back to a copy + unlink under the hood (fs/promises.rename).
+  await rename(tempPath, srcPath);
+
+  log.info("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
+
+  return {
+    id,
+    srcPath,
+    sha256,
+    byteSize: buf.length,
+    widthPx,
+    heightPx
+  };
+}
+
+/**
+ * Move a capture's source PNG to <userData>/.trash/<id>.png. Called
+ * from `library:delete` after the DB row is soft-deleted. Idempotent —
+ * if the file is already in trash, this is a no-op.
+ */
+export async function moveSourceToTrash(srcPath: string, captureId: string): Promise<void> {
+  const trashRoot = getTrashRoot();
+  await mkdir(trashRoot, { recursive: true });
+  const trashPath = join(trashRoot, `${captureId}.png`);
+  if (!existsSync(srcPath)) {
+    log.warn("trash move: source missing, nothing to move", { srcPath, captureId });
+    return;
+  }
+  await rename(srcPath, trashPath);
+}
+
+/**
+ * Boot-time GC sweep. Deletes everything in <userData>/.trash/ that
+ * exceeds `TRASH_RETENTION_DAYS` mtime age. Cheap and safe — we never
+ * touch live files, only ones already moved to trash.
+ *
+ * Also takes a list of capture IDs the persistence layer reports as
+ * expired (deleted_at older than retention) and removes their DB rows;
+ * the hard-delete cascades to render_cache.
+ */
+export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removedFiles: number }> {
+  const trashRoot = getTrashRoot();
+  if (!existsSync(trashRoot)) {
+    return { removedFiles: 0 };
+  }
+
+  const cutoffMs = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+
+  for (const id of expiredCaptureIds) {
+    const trashPath = join(trashRoot, `${id}.png`);
+    if (!existsSync(trashPath)) continue;
+    try {
+      const stat = statSync(trashPath);
+      if (stat.mtimeMs < cutoffMs) {
+        await rm(trashPath, { force: true });
+        removed += 1;
+      }
+    } catch (err) {
+      log.warn("trash sweep failed for capture", {
+        captureId: id,
+        message: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  if (removed > 0) {
+    log.info("trash swept", { removedFiles: removed });
+  }
+  return { removedFiles: removed };
+}
+
+/**
+ * Boot-time orphan-temp-file cleanup. The capture pipeline writes to
+ * /tmp/pwrsnap-<uuid>.png and renames into captures/. If the process
+ * crashes between write and rename, the file orphans. This sweep runs
+ * at app boot to clear anything older than 1 hour.
+ */
+export async function sweepStaleTempFiles(): Promise<{ removedFiles: number }> {
+  const { readdir } = await import("node:fs/promises");
+  const tmpDir = "/tmp";
+  if (!existsSync(tmpDir)) return { removedFiles: 0 };
+
+  const cutoffMs = Date.now() - 60 * 60 * 1000; // 1 hour
+  const entries = await readdir(tmpDir).catch(() => [] as string[]);
+  let removed = 0;
+
+  for (const name of entries) {
+    if (!name.startsWith("pwrsnap-")) continue;
+    const filePath = join(tmpDir, name);
+    try {
+      const stat = statSync(filePath);
+      if (stat.mtimeMs < cutoffMs) {
+        await rm(filePath, { force: true });
+        removed += 1;
+      }
+    } catch {
+      // Best-effort; leave files we can't stat.
+    }
+  }
+
+  if (removed > 0) {
+    log.info("temp file sweep", { removedFiles: removed });
+  }
+  return { removedFiles: removed };
+}

@@ -1,6 +1,33 @@
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
+import type { Plugin } from "vite";
+
+/**
+ * Copy SQL migrations alongside the compiled main bundle. better-sqlite3
+ * reads them via fs.readFileSync(__dirname/migrations/...) at runtime,
+ * which resolves to `out/main/migrations/...` in production and to
+ * `apps/desktop/src/main/persistence/migrations/...` during dev (where
+ * electron-vite runs from source). Phase 1.3.
+ */
+function copyMigrationsPlugin(): Plugin {
+  return {
+    name: "pwrsnap-copy-migrations",
+    writeBundle(options) {
+      const out = options.dir;
+      if (out === undefined) return;
+      const src = resolve(__dirname, "src/main/persistence/migrations");
+      if (!existsSync(src)) return;
+      const dest = resolve(out, "migrations");
+      mkdirSync(dest, { recursive: true });
+      for (const file of readdirSync(src)) {
+        if (!file.endsWith(".sql")) continue;
+        copyFileSync(resolve(src, file), resolve(dest, file));
+      }
+    }
+  };
+}
 
 export default defineConfig(({ command }) => {
   const isBuild = command === "build";
@@ -11,7 +38,7 @@ export default defineConfig(({ command }) => {
   return {
     main: {
       define: productionDefine,
-      plugins: [externalizeDepsPlugin()],
+      plugins: [externalizeDepsPlugin(), copyMigrationsPlugin()],
       build: {
         minify: "esbuild",
         sourcemap: false

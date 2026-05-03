@@ -13,6 +13,7 @@
     "build": "electron-vite build",
     "dev": "electron-vite dev",
     "preview": "electron-vite preview",
+    "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

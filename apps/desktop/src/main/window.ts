@@ -70,12 +70,18 @@ export function createMainWindow(): BrowserWindow {
 }
 
 export function createTrayWindow(): BrowserWindow {
+  // Phase 1.7 refinement: drop transparent:true, switch vibrancy from
+  // 'under-window' to 'popover' (the macOS-native NSPopover material
+  // that Raycast / Linear use). Native popover material renders
+  // correctly across multi-monitor setups and avoids the Intel-iGPU
+  // black-background regression that plagued transparent+vibrancy
+  // combos. backgroundColor stays fully transparent so the popover
+  // material shows through.
   const window = new BrowserWindow({
     width: 380,
     height: 580,
     show: false,
     frame: false,
-    transparent: true,
     resizable: false,
     movable: false,
     minimizable: false,
@@ -84,7 +90,8 @@ export function createTrayWindow(): BrowserWindow {
     skipTaskbar: true,
     alwaysOnTop: true,
     hasShadow: true,
-    vibrancy: "under-window",
+    backgroundColor: "#00000000",
+    vibrancy: "popover",
     visualEffectState: "active",
     webPreferences: baseWebPreferences
   });
@@ -93,21 +100,17 @@ export function createTrayWindow(): BrowserWindow {
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("tray"));
 
-  window.on("blur", () => {
-    if (!window.webContents.isDevToolsFocused()) {
-      window.hide();
-    }
-  });
-
+  // Note: blur-dismiss is wired in tray.ts (with the 120ms debounce +
+  // DevTools / cursor-bounds guards). createTrayWindow stays a pure
+  // factory.
   return window;
 }
 
 export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle): void {
   const winBounds = window.getBounds();
-  const display = screen.getDisplayNearestPoint({
-    x: trayBounds.x + Math.floor(trayBounds.width / 2),
-    y: trayBounds.y
-  });
+  // getDisplayMatching is more accurate than getDisplayNearestPoint for
+  // tray icons on right-side displays whose origin x is large.
+  const display = screen.getDisplayMatching(trayBounds);
   const margin = 4;
   const x = Math.round(trayBounds.x + trayBounds.width / 2 - winBounds.width / 2);
   const y = Math.round(trayBounds.y + trayBounds.height + margin);

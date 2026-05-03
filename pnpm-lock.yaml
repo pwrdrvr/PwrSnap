@@ -46,6 +46,8 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@25.6.0)(jiti@2.6.1)
 
+  packages/codex-app-server-protocol: {}
+
 packages:
 
   7zip-bin@5.2.0:

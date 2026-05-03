@@ -26,7 +26,8 @@ deepened_at: 2026-05-03
 7. **Schema gets every UNIQUE/index/cascade it was missing.** `captures.sha256 UNIQUE`, `capture_tags(capture_id, tag_id) UNIQUE`, `tag_destinations(tag_id, destination_id) UNIQUE`, `tags(label, kind) UNIQUE`, `render_cache(capture_id, render_inputs_hash, format) UNIQUE`, `uploads(capture_id, destination_id) UNIQUE` (idempotent retries), partial index for the timeline-by-app-and-date hot path. `PRAGMA foreign_keys = ON` and explicit `ON DELETE CASCADE`/`RESTRICT`. AI-suggestion lifecycle gains `rejected_at` + `superseded_by` + `ai_run_id` so analytics has a denominator. Soft-delete moves files to `<root>/.trash/` atomically; GC just `rm -rf` after 14d. (data-integrity)
 8. **TypeScript discipline before any feature lands.** `exactOptionalPropertyTypes: true` in `tsconfig.base.json`, single `packages/shared/src/protocol.ts` typed channel registry as the lockstep source of truth (mapped types over preload + main + RPC), Zod for `Overlay` discriminated union with runtime validation at every IPC boundary (Codex injects overlays — never trust LLM structured output without a runtime validator), `useSyncExternalStore` for the live-query hook (StrictMode-safe), Result-pattern for cross-process errors (`invoke` strips `instanceof`). (TS review)
 9. **`screencapture(1)` CLI stays for stills; `@nonstrict/recordkit` for Phase 5 video.** Don't switch the still path to ScreenCaptureKit — for one-shot region the CLI is faster cold (~70ms) than SCKit's framework-load (~120ms). For video, RecordKit is actively maintained and Electron-first; don't hand-roll a Swift helper unless you outgrow it. (capture research)
-10. **Direct OpenAI Responses API for Phase 4 — *not* App Server.** Reviewed PwrAgnt's `codex-app-server/` (stdio JSON-RPC for multi-turn agent threads). PwrSnap's fan-out is stateless and one-shot; the App Server is overkill. Use `service_tier: "flex"` (~50% cheaper, async semantics fit "low-priority background"), `gpt-5.4-nano` for cheap pipelines + `gpt-5.5` for vision-grounded annotation, perceptual-hash cache to reuse annotations on near-dup re-captures. AI default-off until first-run consent modal records explicit opt-in. (Codex research, security)
+10. **All AI in PwrSnap goes through Codex App Server.** *(Strategic correction — replaces an earlier deepening note that said "use direct OpenAI Responses API for Phase 4." That framing was technically clean but wrong on brand: "Codex brings the smarts" is the schtick across PwrDrvr products.)* PwrSnap connects to the user's locally-installed Codex CLI / Codex Desktop instance over stdio JSON-RPC for every AI feature — annotate / describe / tag / filename / sensitive-data review (Phase 4), voice describe (Phase 5+), sizzle-reel composition (Phase 6). The Codex protocol v2 already carries `ContentItem` + `ImageDetail` (image input), `DynamicToolCall*` + `DynamicToolSpec` (structured output via tool calls), `Skill*` / `Hook*` / `McpServer*` (extensibility), `ThreadRealtime*` (voice), `ServiceTier` (flex / default), and multi-provider routing — so one-shot fan-out becomes "ephemeral thread → turn with image content → DynamicToolCall response → close thread", and we automatically inherit Codex's MCP integration, skills, hooks, and provider abstraction.
+   PwrSnap is an App Server **client** only, never an implementation. Discovery + version-listing (Settings → AI shows every detected Codex binary, picks newest by default) lifts patterns from PwrAgnt's `apps/desktop/src/main/settings/codex-discovery.ts`. The `json-rpc.ts` (260 LOC) and `stdio-transport.ts` (96 LOC) modules from PwrAgnt are clean enough to lift directly; PwrAgnt's 4279-LOC `client.ts` is tightly coupled to thread-lifecycle / workspace / review concepts and is *not* lifted — PwrSnap's `apps/desktop/src/main/ai/codex-client.ts` is fresh, ~500–800 LOC, focused only on ephemeral thread + DynamicToolCall fan-out + long-lived threads for the user-facing AI surface.
 11. **Auto-update is missing entirely — add it in Phase 3.** Mirror PwrAgnt's `electron-updater` pattern. Without it, the Electron/sharp/better-sqlite3 vulnerability that lands next year leaves every user permanently exposed. (security)
 12. **Native artifact bundle layout — design the signing table now, append-rows later.** `better-sqlite3.node`, `sharp` `@img/sharp-darwin-arm64` + `@img/sharp-libvips-darwin-arm64`, the Phase 5 RecordKit/AVFoundation helper, and the eventual `chromium-headless-shell` for Remotion all need explicit `asarUnpack`, hardened-runtime entitlements, and notarization rows. Plan the Bundle Layout & Signing section in Phase 1 (only sqlite + sharp present) so Phase 3/5/6 just append. (architecture)
 
@@ -136,15 +137,26 @@ http.post('/rpc/:cmd', requireBearer, (req) => bus.dispatch(req.params.cmd, req.
 
 This also fixes the headless-capture gap from the agent-native review: split `capture:interactive` (opens selector, returns the resulting record) from `capture:region({rect, displayId})` (deterministic, no UI). Agents call the deterministic path; humans implicitly call interactive via ⌘⇧P.
 
-### Decision 4 — Shared workspace package; lift PwrAgnt's solved problems
+### Decision 4 — Match PwrAgnt's patterns; share only what's actually generic
 
-**Choice:** before Phase 1 ships, extract `packages/shared/` containing what PwrAgnt has already solved. Both apps depend on it.
+**Earlier framing was sloppy and oversold.** The actual situation in PwrAgnt's repo:
 
-What lifts: IPC channel constants, `runtime-identity`, `app-metadata`, `renderer-error` reporting + boundary, settings service + secret store (`FileBackedSafeStorageSecretStore` already handles `safeStorage.isEncryptionAvailable()` + basic-text fallback), `auto-updater` wiring, and the `codex-app-server/` stdio client.
+- **`@pwragnt/shared`** is two unrelated things in one package: (a) **generated Codex App Server protocol types** (~600 files in v1+v2, output of `codex app-server generate-ts`, fully clean — no PwrAgnt domain bleed); (b) **PwrAgnt domain contracts** (~2200 LOC in `src/contracts/` covering threads, messaging adapters, navigation, settings — all PwrAgnt-specific). These can't be lifted as a unit.
+- **`apps/desktop/src/main/codex-app-server/`** has 4279 LOC of `client.ts` deeply coupled to PwrAgnt's thread / workspace / review concepts (imports `thread-directory-enricher`, `thread-title-generation-service`, etc.) — **not lift-able as-is.** But `json-rpc.ts` (260 LOC) and `stdio-transport.ts` (96 LOC) are generic.
+- **Settings + secrets + auto-updater** live in `apps/desktop/src/main/settings/` + `main/auto-updater.ts` in PwrAgnt — **never extracted to a shared package.** Lifting them today would require refactoring PwrAgnt first.
 
-What this prevents: Phase 3 from re-implementing settings + secrets from scratch (a week saved); Phase 4 from re-implementing the Codex client; the renderer-error reporting gap the plan never named; auto-update missing entirely (security review caught it).
+**Choice:** PwrSnap creates exactly *one* shared workspace package up front, plus matches PwrAgnt's *patterns* for everything else without trying to share runtime code yet.
 
-Channel naming convention follows PwrAgnt: bare `<domain>:<verb>` (`capture:region`, `library:list`, `overlays:upsert`, `settings:read`). The `pwrsnap:` prefix from the original plan is dropped.
+| Concern | PwrSnap approach |
+|---|---|
+| Codex App Server protocol types | New `packages/codex-app-server-protocol/` workspace package. Generated by `pnpm codex:generate-protocol` from the user's locally-installed Codex CLI. Generated files are committed. PwrSnap consumes via `import type { ... } from "@pwrsnap/codex-app-server-protocol/v2"`. |
+| Codex App Server client (json-rpc + stdio) | Lift `json-rpc.ts` (260 LOC) and `stdio-transport.ts` (96 LOC) into `apps/desktop/src/main/codex-app-server/`. Both are generic; only PwrAgnt-ism is the logger import (replace). |
+| Codex App Server client (high-level) | **Fresh, not lifted.** `apps/desktop/src/main/ai/codex-client.ts` is a ~500–800 LOC PwrSnap-specific client focused on ephemeral DynamicToolCall threads + long-lived user-facing threads. Skips PwrAgnt's `client.ts` thread-lifecycle / workspace / review machinery. |
+| Codex CLI discovery + version listing | Lift `apps/desktop/src/main/settings/codex-discovery.ts` (271 LOC) and `application-discovery.ts` (494 LOC) almost verbatim — only PwrAgnt-specific dep is `CODEX_COMMAND_ENV` (one constant; trivially renamed). |
+| Settings service + secret store + auto-updater + renderer-error + runtime-identity + app-metadata | **Match PwrAgnt's patterns by writing fresh.** Each is ~200–500 LOC of well-shaped code; copying patterns is faster than refactoring PwrAgnt to extract a shared package and avoids inheriting PwrAgnt's thread/workspace types by accident. Re-evaluate later if both apps grow analogous types worth sharing. |
+| IPC channel naming convention | Bare `<domain>:<verb>` (`capture:region`, `library:list`, `overlays:upsert`, `settings:read`). Matches PwrAgnt. The `pwrsnap:` prefix from the original plan is dropped. |
+
+Cross-repo dependency policy: PwrSnap does **not** depend on `@pwragnt/shared` or any other PwrAgnt package. The two repos remain independent. The genuinely-shared concept (the Codex App Server protocol) is regenerated independently in each repo from the same `codex` CLI — drift is bounded by the CLI itself.
 
 ## Cross-cutting primitives (build in Phase 1, used by every later phase)
 
@@ -587,16 +599,23 @@ const pwrsnapApi = {
 
 ### Implementation Phases
 
-#### Phase 0.5: Extract shared package (Days 1–3, before any feature work)
+#### Phase 0.5: Codex protocol package + lift the lift-able PwrAgnt bits (Days 1–3, before any feature work)
 
-Lift from PwrAgnt into `packages/shared/`:
-- IPC channel constants + the typed `Commands` map in `protocol.ts`
-- `runtime-identity`, `app-metadata`, `renderer-error` (boundary + reporting)
-- Settings service + `FileBackedSafeStorageSecretStore`
-- `auto-updater` wiring (electron-updater)
-- `codex-app-server/` stdio client (used in Phase 4 if we ever need a multi-turn surface; not the primary AI path)
+Per Decision 4, this is *not* an "extract a giant shared package" phase. It's three small jobs:
 
-Result: Phase 1–4 stop re-implementing solved problems. Channel naming convention follows PwrAgnt: bare `<domain>:<verb>`.
+- [ ] **`packages/codex-app-server-protocol/` workspace package.**
+  - [x] `package.json` declaring `@pwrsnap/codex-app-server-protocol` with `exports` for `.` (v1 surface) and `./v2` (v2 surface), and a `generate` script that runs `codex app-server generate-ts --out ./src`.
+  - [x] `tsconfig.json` extending the base.
+  - [x] `README.md` with regeneration instructions.
+  - [x] Stub `src/index.ts` so the workspace typechecks before the founder runs `pnpm codex:generate-protocol`.
+  - [x] Root `package.json` script `codex:generate-protocol` that delegates to the package.
+  - [ ] First real generation run (founder executes `pnpm codex:generate-protocol`; commit the output).
+- [ ] **Lift `json-rpc.ts` + `stdio-transport.ts` from PwrAgnt** into `apps/desktop/src/main/codex-app-server/` — replace `getMainLogger("pwragnt:…")` imports with PwrSnap's logger. ~360 LOC total.
+- [ ] **Lift `codex-discovery.ts` + `application-discovery.ts`** from `~/github/PwrAgnt/apps/desktop/src/main/settings/` into `apps/desktop/src/main/settings/`. Rename `CODEX_COMMAND_ENV` to a PwrSnap-scoped name. ~765 LOC total. Discovery surface gets the version-list + newest-first picker the user wants in Settings → AI.
+- [ ] **Channel naming convention.** Drop `pwrsnap:` prefix; use bare `<domain>:<verb>`. Document in [AGENTS.md](../../AGENTS.md).
+- [ ] **`packages/shared/` workspace package.** Smaller scope than originally framed: just the typed `Commands` map (`protocol.ts`), `Overlay` Zod schemas, `Result<T, E>` type, and the IPC channel string constants. PwrSnap-specific only — no cross-repo ambition. Phase 1 imports `@pwrsnap/shared` for these types.
+
+Result: when Phase 1 starts, the workspace already has (a) protocol types ready to consume, (b) a lift-able JSON-RPC client foundation, (c) Codex CLI discovery code that powers Settings → AI, (d) a typed protocol module for the command bus. Settings service + secret store + auto-updater + renderer-error + runtime-identity get written fresh in their respective phases (1 / 3 / 3 / 1 / 3) per Decision 4 — copying patterns from PwrAgnt, not lifting code.
 
 #### Phase 1: MVP capture-to-clipboard (Weeks 1–2)
 
@@ -737,42 +756,46 @@ Acceptance:
 
 #### Phase 4: Codex AI assist (Weeks 8–10)
 
-**Goal:** AI suggestions enrich captures already protected by Phase 1's local sensitive-data scan. Codex blur is *additive* to the local pre-pass, not the safety floor.
+**Goal:** Wire AI suggestions through Codex App Server. AI suggestions enrich captures already protected by Phase 1's local sensitive-data scan; Codex blur is *additive* to the local pre-pass, not the safety floor. Every AI feature in PwrSnap dispatches through Codex — that's the schtick.
 
 Tasks:
-- [ ] **AI client = direct OpenAI Responses API.** `apps/desktop/src/main/ai/responses-client.ts` — thin client over `openai` npm. The Codex App Server stdio path from `packages/shared/codex-app-server/` (lifted from PwrAgnt) is *available* as an `AnnotationProvider` interface alternate, but not the primary path. PwrAgnt's App Server is multi-turn agent threads; PwrSnap's fan-out is stateless one-shot. Use App Server only if/when an interactive "ask Codex about this screenshot" surface lands.
-- [ ] **First-run consent modal.** AI is *off by default* until the user reads + accepts the data-sharing copy. Settings → AI → "Enable AI assist" toggle with explicit acknowledgement that screenshots leave the device. Persisted in `settings`. Until accepted, every AI command-bus dispatch hard-fails with `consent_required`. Validated by integration test "no consent → zero outbound network sockets."
-- [ ] **Suggest pipeline.** On capture insert (and only after consent), fan out in main with **per-pipeline concurrency caps** + **250ms post-capture debounce** so back-to-back snaps coalesce:
-  - **Annotate** (`gpt-5.5`, vision-grounded, `detail: high`, image at 1024px long-edge JPEG q80, ~765 tokens) — structured output: arrows, highlights, blurs (with rationale), crop suggestions. Coords normalized 0..1; client multiplies by capture WxH.
-  - **Describe** (`gpt-5.4-nano`, `detail: low`, ~85 tokens) — one-line caption.
-  - **Tag** (`gpt-5.4-nano`) — pick from existing or propose new.
-  - **Filename** (`gpt-5.4-nano`) — kebab-case slug from contents.
-  All use `service_tier: "flex"` (~50% cheaper, async-fits-low-priority) with `default` only for foreground re-runs the user explicitly triggers.
-- [ ] **Structured outputs with strict mode.** Responses API `text.format: { type: "json_schema", strict: true }`. Schema fields constrained: `x/y/w/h: number minimum:0 maximum:1`, required `coord_space: "normalized_01"` const, `confidence: 0..1`, top-level `{ annotations: Annotation[] }` (strict mode requires arrays in an object). System prompt: *"All coordinates are fractions of image width/height. (0,0) is top-left. Do not reference pixels."* Validate the response with the same Zod schema we feed the model — never trust LLM output without a runtime validator.
-- [ ] **Perceptual-hash cache.** `ai/phash-cache.ts` — pHash 64-bit per capture; Hamming distance ≤ 4 = cache hit; persist `(phash, model, prompt_version) → response`. Re-captures of the same screen reuse annotations. This is the biggest cost win — typical screenshot streams have 30–60% near-dup rate.
-- [ ] **Prompt caching alignment.** Keep the system prompt + JSON schema **byte-identical** across calls (>1024 tokens) for OpenAI's automatic 50–90% input discount.
-- [ ] **AbortController per `capture_id`.** Capture deletion or float-over dismissal aborts; Codex client passes `signal` through to `fetch`. On abort, write the `ai_runs` row with `status='cancelled'`, `error='cancelled'`, `latency_ms` set — never partial. Wrap the `ai_runs`+`overlays` insert in a transaction that re-checks `captures.deleted_at IS NULL`.
-- [ ] **AI insert ordering rule.** Inserts are append-only with `source='codex'` and `ai_run_id`. "Regenerate" deletes by `ai_run_id`, never by `(capture_id, source)`. User-edited AI overlays get `source='user'` and are never touched by AI sweeps. `rejected_at` gets set on explicit reject; `superseded_by` gets set on regenerate (so analytics keeps a denominator).
-- [ ] **Cost guardrails.**
-  - Per-pipeline concurrency: annotate=2, describe=3, tag=4, filename=4.
+- [ ] **AI client = Codex App Server stdio JSON-RPC.** `apps/desktop/src/main/ai/codex-client.ts` is a fresh ~500–800 LOC PwrSnap-specific client (NOT a lift of PwrAgnt's 4279 LOC `client.ts`) built on top of the lifted `json-rpc.ts` + `stdio-transport.ts` from Phase 0.5. Two operating modes:
+  - **Ephemeral mode** (background pipelines): spawn the Codex binary the user picked in Settings → AI, send `initialize`, start an ephemeral thread, send a single turn with image content + a DynamicToolCall request whose schema matches our annotation contract, await the tool-call response notification, close the thread, kill the subprocess. Pool subprocesses with a TTL of ~10s of idle so back-to-back captures reuse a warm Codex.
+  - **Long-lived mode** (Phase 4+ "ask Codex about this snap" surface): keep a thread open across multiple turns; route user messages + image content through `turn/start`, stream `Notification` events back to the renderer.
+- [ ] **Codex discovery + Settings → AI.** Lifted `codex-discovery.ts` from Phase 0.5 surfaces every detected Codex binary (Codex Desktop bundled, system `codex` on PATH, custom path); the user picks "newest" (default) or pins a path. Persist the choice in settings. PwrSnap re-detects on settings open — Codex updates between launches don't strand the user on an old binary.
+- [ ] **First-run consent modal.** AI is *off by default* until the user reads + accepts the data-sharing copy. Copy is Codex-aware: explains that screenshots are sent to whichever provider Codex is configured to route to (OpenAI / xAI / Anthropic / etc., per Codex's own provider settings), via the user's local Codex install, never directly from PwrSnap. Persisted in `settings`. Until accepted, every AI command-bus dispatch hard-fails with `consent_required`. Validated by integration test "no consent → zero stdio writes to the Codex subprocess."
+- [ ] **Suggest pipeline — DynamicToolCall fan-out.** On capture insert (after consent + sensitive-data pre-pass), fan out in main with **per-pipeline concurrency caps** + **250ms post-capture debounce**. Each pipeline registers a different `DynamicToolSpec` (one per pipeline) and the system prompt instructs Codex to call exactly that tool with structured output:
+  - **Annotate** — image as `ContentItem` with `ImageDetail::High` at 1024px long-edge; tool schema: `{ annotations: Array<{ kind: 'arrow' | 'highlight' | 'blur', x, y, w, h, label?, confidence, reason? }> }` with `x/y/w/h ∈ [0,1]`. System prompt: *"All coordinates are fractions of image width/height. (0,0) is top-left. Do not reference pixels."*
+  - **Describe** — image at `ImageDetail::Low`; tool schema: `{ caption: string }`.
+  - **Tag** — tool schema: `{ tags: Array<{ label: string, confidence: number }> }`.
+  - **Filename** — tool schema: `{ filename: string }` (kebab-case constraint in description).
+  Codex routes each tool call to its configured model per pipeline; PwrSnap's job is to *suggest* a model class via Codex's `Model` parameter when we have a preference (e.g., a vision-capable model for annotate). Codex's `service_tier` defaults to `flex` for our fan-out (~cheaper, async); user-explicit re-runs override to `default`.
+- [ ] **Validate every Codex response with Zod.** The DynamicToolCall response is structured-but-untyped at the wire level; our Zod schemas in `packages/shared/overlay-schemas.ts` validate at the IPC boundary. Never trust LLM-routed output without a runtime validator. A schema mismatch fails the run with `error='schema_mismatch'`, never inserts overlays.
+- [ ] **Perceptual-hash cache.** `ai/phash-cache.ts` — pHash 64-bit per capture; Hamming distance ≤ 4 = cache hit; persist `(phash, codex_binary_path, codex_protocol_version, pipeline, prompt_version) → response`. Re-captures of the same screen reuse annotations without round-tripping to Codex.
+- [ ] **AbortController per `capture_id`.** Capture deletion or float-over dismissal aborts via Codex's `turn/interrupt` request *and* (if needed) closes the stdio transport. On abort, write the `ai_runs` row with `status='cancelled'`, `error='cancelled'`, `latency_ms` set. Wrap the `ai_runs`+`overlays` insert in a transaction that re-checks `captures.deleted_at IS NULL`.
+- [ ] **AI insert ordering rule.** Inserts are append-only with `source='codex'` and `ai_run_id`. "Regenerate" deletes by `ai_run_id`, never by `(capture_id, source)`. User-edited AI overlays get `source='user'` and are never touched by AI sweeps. `rejected_at` set on explicit reject; `superseded_by` set on regenerate.
+- [ ] **Cost / UX guardrails.**
+  - Per-pipeline concurrency: annotate=2, describe=3, tag=4, filename=4 (caps enforced at the PwrSnap orchestrator; Codex's own queue handles its provider-side rate limits).
   - 250ms debounce after capture before fan-out.
-  - Hard daily $ cap from Settings → AI; on threshold, surface a banner and disable network pipelines until tomorrow.
-  - Auto-downgrade to `gpt-5.4-nano` under sustained load.
+  - Soft-fail on Codex-binary-not-found / `initialize` timeout — surface a banner with "Reconnect Codex" + "Disable AI" buttons. Phase 1's local sensitive-data scan still runs; only the Codex-driven enrichment is missing.
   - Cancel inflight runs for a capture if the user deletes it within 5s.
-- [ ] **`ai_runs.request` retention.** `request.image` (the 1024px JPEG sent to OpenAI) gets redacted from the row after a configurable TTL (default 30d). Keep the prompt + response. Run as part of the daily GC sweep.
-- [ ] **Float-over UI.** The "Codex thinks: …" line and dashed-outline AI tag chips become real subscriptions over `events:overlays:changed`. Accept sets `applied_at`; tweak opens the overlay in Edit-mode handles (mode transition); regenerate deletes by `ai_run_id` and enqueues a fresh run.
+- [ ] **`ai_runs.request` retention.** Image bytes (the 1024px JPEG sent in the turn) get redacted from the row after a configurable TTL (default 30d). Keep prompt + response + Codex protocol version. Run as part of the daily GC sweep.
+- [ ] **Float-over UI.** The "Codex thinks: …" line and dashed-outline AI tag chips become real subscriptions over `events:overlays:changed`. Accept sets `applied_at`; tweak opens the overlay in Edit-mode handles; regenerate deletes by `ai_run_id` and enqueues a fresh run.
 - [ ] **Edit-mode AI panel.** Stream of `overlays WHERE capture_id=? AND source='codex' AND applied_at IS NULL AND rejected_at IS NULL AND superseded_by IS NULL`.
-- [ ] **Optional voice describe.** Defer voice-record feature unless asked — simplicity reviewer correctly flagged it as a side-quest. The annotation pipeline already does describe; voice can layer in when there's demand.
+- [ ] **"Ask Codex about this snap" surface.** Long-lived-thread mode enabled here: from the Edit-mode right rail or the float-over, the user can chat with Codex about the active capture. Each turn streams notifications; capture stays in scope as a `ContentItem` reference. This is where multi-turn earns its keep — and the most visible "Codex brings the smarts" surface.
+- [ ] **Voice describe — defer to Phase 5+.** Codex protocol v2 has `ThreadRealtime*` for real-time audio; voice describe rides those primitives once Phase 5's audio capture stack lands.
 
 Acceptance:
-- [ ] First launch: no AI calls until the consent modal is accepted. Network spy asserts zero sockets opened to OpenAI before consent.
-- [ ] After consent: captures containing visible OpenAI/Anthropic/GitHub/AWS keys land with the local-scan blurs *already applied* before the float-over appears (Phase 1 behavior, restated). Codex blur layers on top with rationale captions ("detected ssn pattern in row 3"). The local-scan blur is the safety floor; Codex is decoration.
-- [ ] Codex annotate suggestions appear in the float-over within p50 4s, p95 8s on `flex` tier; user-explicit re-run uses `default` tier with p50 ~1.8s.
-- [ ] AI off in Settings blocks every outbound network call (network spy assertion).
-- [ ] Every AI call logged in `ai_runs` with `status`, `model`, `latency_ms`, `error?`. Image redacted from `request` after 30d.
-- [ ] Regenerate suggestions twice → no orphaned/double-counted rows. Acceptance-rate metric (Settings → AI → Stats) has a coherent denominator (`applied + rejected + superseded`).
-- [ ] Capture deletion mid-fan-out aborts in-flight requests; `ai_runs` rows close with `status='cancelled'`; no overlays insert against a deleted capture.
-- [ ] Re-capture of the same dashboard 5s later hits the pHash cache (network spy: zero new OpenAI sockets).
+- [ ] First launch: no Codex calls until the user has both (a) selected a Codex binary in Settings → AI and (b) accepted the consent modal. Integration test asserts zero stdio writes to the Codex subprocess before both gates pass.
+- [ ] Settings → AI lists every detected Codex binary with version, defaults to newest, persists user override.
+- [ ] After consent: captures containing visible OpenAI/Anthropic/GitHub/AWS keys land with local-scan blurs *already applied* before the float-over appears (Phase 1 behavior, restated). Codex annotate layers additional rationale-captioned blurs on top.
+- [ ] Codex annotate suggestions appear in the float-over within p50 6s, p95 12s on `flex` tier (Codex routing adds ~1–2s vs direct provider call but the marquee feature consistency is worth it). User-explicit re-run uses `default` tier with p50 ~3s.
+- [ ] AI off in Settings → AI blocks every Codex subprocess invocation. Integration test asserts no `child_process.spawn` of the Codex binary fires after the toggle.
+- [ ] Every AI call logged in `ai_runs` with `status`, `model` (the model Codex routed to, captured from the response), `codex_protocol_version`, `latency_ms`, `error?`. Image redacted from `request` after 30d.
+- [ ] Regenerate suggestions twice → no orphaned/double-counted rows. Acceptance-rate metric has a coherent denominator (`applied + rejected + superseded`).
+- [ ] Capture deletion mid-fan-out fires `turn/interrupt` to Codex; `ai_runs` rows close with `status='cancelled'`; no overlays insert against a deleted capture.
+- [ ] Re-capture of the same dashboard 5s later hits the pHash cache (no Codex subprocess invoked).
+- [ ] "Ask Codex about this snap" round-trip: user types a question → renderer dispatches `command-bus → 'codex:ask'({captureId, message})` → Codex streams notifications back over the events bus → renderer renders incrementally. ESC interrupts via `turn/interrupt`.
 
 #### Phase 5: Video capture + presenter cam (Weeks 11–14)
 
@@ -1091,11 +1114,13 @@ Solo founder + Claude. ~4 months of part-time engineering to reach Phase 6. MVP 
 - [Electron MessagePorts tutorial](https://www.electronjs.org/docs/latest/tutorial/message-ports) — for Phase 4 streaming + Phase 6 render progress.
 - [Migrating VS Code to Process Sandboxing](https://code.visualstudio.com/blogs/2022/11/28/vscode-sandbox) — pattern for keeping renderers sandboxed while still serving app-local files.
 
-**Codex / OpenAI Responses API:**
-- [Responses API docs](https://developers.openai.com/api/docs/guides/images-vision).
-- [Flex processing](https://developers.openai.com/api/docs/guides/flex-processing) — `service_tier: "flex"` for ~50% cost reduction on background pipelines.
-- [GPT-5.5 model card](https://developers.openai.com/api/docs/models/gpt-5.5), [GPT-5.4 model card](https://developers.openai.com/api/docs/models/gpt-5.4).
-- [OpenAI 2026 pricing analysis](https://nicolalazzari.ai/articles/openai-api-pricing-explained-2026).
+**Codex App Server (the AI brain — replaces the earlier "direct OpenAI" framing):**
+- [Codex CLI](https://github.com/openai/codex) — provides the `app-server generate-ts` subcommand that emits TypeScript types for the protocol.
+- Protocol surface used by PwrSnap (v2): `ContentItem` + `ImageDetail` (image input), `DynamicToolCall*` + `DynamicToolSpec` (structured-output tool calls — primary mechanism for Phase 4 fan-out), `ThreadStartParams` + `TurnStartParams` (ephemeral + long-lived threads), `ThreadRealtime*` (voice — Phase 5+), `Skill*` / `Hook*` / `McpServer*` (extensibility), `ServiceTier` (`flex` / `default`), `Model` parameter (per-call routing hint).
+- The protocol package in this repo: [`packages/codex-app-server-protocol/`](../../packages/codex-app-server-protocol/) — generated by `pnpm codex:generate-protocol`.
+- Lift-able runtime code from PwrAgnt (`json-rpc.ts`, `stdio-transport.ts`, `codex-discovery.ts`, `application-discovery.ts`) lives at:
+  - `~/github/PwrAgnt/apps/desktop/src/main/codex-app-server/{json-rpc,stdio-transport}.ts`
+  - `~/github/PwrAgnt/apps/desktop/src/main/settings/{codex-discovery,application-discovery}.ts`
 
 **Credential storage:**
 - [Electron `safeStorage` docs](https://www.electronjs.org/docs/latest/api/safe-storage).

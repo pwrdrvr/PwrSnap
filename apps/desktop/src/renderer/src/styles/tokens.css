@@ -1,9 +1,12 @@
 /* ============================================================
    PwrDrvr Design System — Colors & Type
    Warm dark, copper accent, geometric mono-leaning.
-   ============================================================ */
 
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&display=swap");
+   Fonts are loaded by ./fonts.css via @fontsource (self-hosted).
+   Original handoff bundle pulled them from Google Fonts CDN at runtime,
+   which broke offline use and added 200–600ms to cold starts — replaced
+   in Phase 1.1.
+   ============================================================ */
 
 :root {
   color-scheme: dark;

@@ -16,13 +16,21 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@fontsource/geist-mono": "^5.2.5",
+    "@fontsource/geist-sans": "^5.2.5",
     "@pwrsnap/codex-app-server-protocol": "workspace:*",
     "@pwrsnap/shared": "workspace:*",
+    "better-sqlite3": "^12.6.0",
     "electron-log": "^5.4.3",
+    "nanoid": "^5.0.9",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "safe-stable-stringify": "^2.5.0",
+    "sharp": "^0.34.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",

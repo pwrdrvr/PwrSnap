@@ -54,12 +54,12 @@ export type JsonRpcObserverEvent = {
   direction: "inbound" | "outbound";
   raw: string;
   envelope: JsonRpcEnvelope;
-  diagnostics?: JsonRpcObserverDiagnostics;
+  diagnostics?: JsonRpcObserverDiagnostics | undefined;
 };
 
 export type JsonRpcObserverDiagnostics = {
-  callerReason?: string;
-  ownerId?: string;
+  callerReason?: string | undefined;
+  ownerId?: string | undefined;
 };
 
 export interface JsonRpcObserver {

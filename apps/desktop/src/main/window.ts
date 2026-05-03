@@ -15,10 +15,16 @@ function rendererTarget(stage?: "tray" | "float-over"): RendererTarget {
     const url = process.env.ELECTRON_RENDERER_URL + (hash ? `#${hash}` : "");
     return { kind: "url", url };
   }
+  if (hash !== undefined) {
+    return {
+      kind: "file",
+      path: join(__dirname, "../renderer/index.html"),
+      hash
+    };
+  }
   return {
     kind: "file",
-    path: join(__dirname, "../renderer/index.html"),
-    hash
+    path: join(__dirname, "../renderer/index.html")
   };
 }
 

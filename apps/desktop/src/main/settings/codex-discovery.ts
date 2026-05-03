@@ -36,22 +36,22 @@ export type DesktopCodexDiscoveryCandidate = {
   source: DesktopCodexCandidateSource;
   executable: boolean;
   selected: boolean;
-  version?: string;
-  versionFailureReason?: string;
-  failureReason?: string;
+  version?: string | undefined;
+  versionFailureReason?: string | undefined;
+  failureReason?: string | undefined;
 };
 
 export type DesktopCodexDiscoverySnapshot = {
-  selectedCommand?: string;
-  selectedSource?: DesktopCodexCandidateSource;
+  selectedCommand?: string | undefined;
+  selectedSource?: DesktopCodexCandidateSource | undefined;
   candidates: DesktopCodexDiscoveryCandidate[];
-  error?: string;
+  error?: string | undefined;
 };
 
 export type ResolvedCodexCommandCandidate = {
   command: string;
   source: DesktopCodexCandidateSource;
-  version?: string;
+  version?: string | undefined;
 };
 
 export async function pathIsExecutable(candidate: string): Promise<boolean> {
@@ -84,7 +84,11 @@ async function resolvePathCommand(
 async function readCodexVersion(
   command: string,
   env: NodeJS.ProcessEnv
-): Promise<{ ran: boolean; version?: string; failureReason?: string }> {
+): Promise<{
+  ran: boolean;
+  version?: string | undefined;
+  failureReason?: string | undefined;
+}> {
   try {
     const result = await execFile(command, ["--version"], {
       env,
@@ -206,8 +210,8 @@ async function buildDiscoveryCandidate(
 }
 
 export async function discoverCodexCommands(params?: {
-  configuredCommand?: string;
-  env?: NodeJS.ProcessEnv;
+  configuredCommand?: string | undefined;
+  env?: NodeJS.ProcessEnv | undefined;
 }): Promise<DesktopCodexDiscoverySnapshot> {
   const env = params?.env ?? process.env;
   const envOverride = env[PWRSNAP_CODEX_COMMAND_ENV]?.trim();

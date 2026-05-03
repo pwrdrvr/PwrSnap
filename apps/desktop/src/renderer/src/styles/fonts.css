@@ -1,0 +1,20 @@
+/* Self-hosted Geist + Geist Mono via @fontsource. The package's per-weight
+   CSS files declare @font-face for that weight only — pulling them
+   directly avoids the swap-time flash that the index.css "all weights"
+   bundle causes. We pull only the weights we use:
+     • sans: 400, 500, 600, 700, 800 (matches design system tokens.css)
+     • mono: 400, 500, 600 (mono is used at 9–11px for chips/code only)
+
+   Vite resolves these imports through node_modules and inlines the
+   .woff2 binaries into the asset graph, so the production build emits
+   them as hashed assets next to index.css. No runtime network calls. */
+
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/geist-sans/800.css";
+
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "@fontsource/geist-mono/600.css";

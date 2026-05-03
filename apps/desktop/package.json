@@ -12,6 +12,7 @@
   "scripts": {
     "build": "electron-vite build",
     "dev": "electron-vite dev",
+    "postinstall": "electron-builder install-app-deps",
     "preview": "electron-vite preview",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -1,16 +1,17 @@
 import { Library } from "./features/library/Library";
 import { FloatOver } from "./features/float-over/FloatOver";
+import { RegionSelector } from "./features/region/RegionSelector";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { dispatch } from "./lib/pwrsnap";
 import sampleSrc from "./assets/sample-1.png";
 
-type Stage = "library" | "float-over" | "tray";
+type Stage = "library" | "float-over" | "tray" | "region";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
   const v = params.get("stage");
-  if (v === "tray" || v === "float-over") return v;
+  if (v === "tray" || v === "float-over" || v === "region") return v;
   return "library";
 }
 
@@ -32,6 +33,9 @@ export function App() {
         }}
       />
     );
+  }
+  if (STAGE === "region") {
+    return <RegionSelector />;
   }
   return (
     <div className="app-shell">

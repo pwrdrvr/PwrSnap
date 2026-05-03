@@ -2,6 +2,7 @@
 @import "./tokens.css";
 @import "./library.css";
 @import "./float-over.css";
+@import "./region.css";
 
 * {
   box-sizing: border-box;

@@ -17,6 +17,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CMD } from "@pwrsnap/shared";
 
+// Internal (non-command-bus) channel for the region selector to commit
+// its result back to main. Kept narrow: the preload exposes one
+// purpose-built method (`submitRegion`), not a generic `send`.
+const REGION_SELECTOR_RESULT_CHANNEL = "region-selector:result";
+
 const pwrsnapApi = {
   platform: process.platform,
   versions: {
@@ -43,6 +48,18 @@ const pwrsnapApi = {
     return () => {
       ipcRenderer.off(channel, wrapped);
     };
+  },
+  /**
+   * Region-selector renderer → main signal. Called on commit (with rect
+   * + displayId) or on cancel (with `ok: false`). Main re-validates
+   * everything; this channel is just a transport.
+   */
+  submitRegion(payload: {
+    ok: boolean;
+    rect?: { x: number; y: number; w: number; h: number };
+    displayId?: number;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   }
 };
 

@@ -17,6 +17,11 @@ declare global {
         req: Req<C>
       ): Promise<Result<Res<C>, PwrSnapError>>;
       on(channel: string, handler: (payload: unknown) => void): () => void;
+      submitRegion(payload: {
+        ok: boolean;
+        rect?: { x: number; y: number; w: number; h: number };
+        displayId?: number;
+      }): void;
     };
   }
 }

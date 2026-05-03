@@ -1,5 +1,8 @@
 import { app, BrowserWindow, globalShortcut, Menu, shell } from "electron";
+import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
+import { bus } from "./command-bus";
 import { showFloatOver } from "./float-over";
+import { registerCaptureHandlers } from "./handlers/capture-handlers";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
@@ -47,18 +50,32 @@ function installApplicationMenu(): void {
 }
 
 function registerCaptureShortcut(): void {
-  // A new ⌘⇧P always replaces any prior in-flight toast (showFloatOver
-  // handles the swap). The shortcut is global, so this fires even when
-  // the main window is hidden or another app is frontmost.
+  // ⌘⇧P → interactive capture. The dispatch routes through the command
+  // bus so a future MCP / HTTP transport reuses the same path.
+  const log = getMainLogger("pwrsnap:shortcut");
   const ok = globalShortcut.register(CAPTURE_SHORTCUT, () => {
-    showFloatOver();
+    void runInteractiveCapture();
   });
   if (!ok) {
-    // Another app already owns ⌘⇧P. We log and move on — the tray menu's
-    // capture rows still work, and the user can rebind once we ship prefs.
-    // eslint-disable-next-line no-console
-    console.warn(`[pwrsnap] failed to register global shortcut ${CAPTURE_SHORTCUT}`);
+    log.warn("failed to register global shortcut", { shortcut: CAPTURE_SHORTCUT });
   }
+}
+
+async function runInteractiveCapture(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const result = await bus.dispatch("capture:interactive", {}, { principal: "ipc" });
+  if (!result.ok) {
+    if (result.error.code === "cancelled") {
+      // User pressed Esc on the selector — no-op.
+      return;
+    }
+    log.warn("capture:interactive failed", { code: result.error.code, message: result.error.message });
+    return;
+  }
+  // Phase 1.5 swaps showFloatOver(captureId) once the float-over reads
+  // ?capture=<id>. For now, open the placeholder toast so the global
+  // shortcut still surfaces visible feedback after the capture lands.
+  showFloatOver();
 }
 
 /**
@@ -114,10 +131,12 @@ export function bootstrapApp(): void {
     await openDatabase();
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
+    registerCaptureHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerIpcDispatcher();
     installTray();
+    preWarmRegionSelector();
     registerCaptureShortcut();
     createMainWindow();
     void runBootGc();
@@ -136,6 +155,7 @@ export function bootstrapApp(): void {
 
   app.on("will-quit", () => {
     globalShortcut.unregisterAll();
+    disposeRegionSelector();
     disposeTray();
     disposeIpcDispatcher();
     closeDatabase();

@@ -1,0 +1,61 @@
+/* Region-selector renderer styles. Pure CSS positioning + transparency.
+   No backdrop-filter — single biggest cause of jank over Splashtop. */
+
+body[data-stage="region"] {
+  background: transparent;
+  cursor: crosshair;
+  user-select: none;
+}
+
+body[data-stage="region"] .region-root {
+  position: fixed;
+  inset: 0;
+}
+
+.region-dim {
+  position: fixed;
+  background: rgba(8, 7, 6, 0.62);
+}
+.region-dim--full {
+  inset: 0;
+}
+
+.region-rect {
+  position: fixed;
+  border: 1.5px solid var(--accent);
+  background: rgba(232, 116, 58, 0.05);
+  pointer-events: none;
+}
+
+.region-dims-chip {
+  position: fixed;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(20, 17, 14, 0.92);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-mono);
+  pointer-events: none;
+}
+
+.region-hint {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(20, 17, 14, 0.92);
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-sans);
+  pointer-events: none;
+}
+.region-hint-sep {
+  color: var(--text-muted);
+}

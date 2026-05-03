@@ -2,13 +2,37 @@
 
 TypeScript types for the [Codex App Server](https://github.com/openai/codex) JSON-RPC protocol, generated from the locally-installed Codex CLI.
 
-The contents of `src/` are **generator output** — do not hand-edit. To refresh:
+The contents of `src/` are **generator output** — do not hand-edit. Every file in `src/` and `src/v2/` carries a `// GENERATED CODE! DO NOT MODIFY BY HAND!` header.
+
+To refresh:
 
 ```bash
-pnpm --filter @pwrsnap/codex-app-server-protocol generate
+pnpm codex:generate-protocol
+# (equivalent: pnpm --filter @pwrsnap/codex-app-server-protocol generate)
 ```
 
-This runs `codex app-server generate-ts --out ./src` against whichever `codex` binary is on `PATH`. The generated files are committed so PwrSnap builds cleanly without a Codex install. Regenerate whenever the user's installed Codex CLI ships a newer protocol version (typically alongside a Codex desktop release).
+This runs `codex app-server generate-ts --out ./src` against the Codex
+binary the script picks up. By default it uses **Codex Desktop's bundled
+binary**:
+
+```
+/Applications/Codex.app/Contents/Resources/codex
+```
+
+To override (for a system-installed Codex CLI, a custom build, or CI):
+
+```bash
+PWRSNAP_CODEX_BIN=/path/to/codex pnpm codex:generate-protocol
+```
+
+The generated files are committed so PwrSnap builds cleanly without a Codex
+install at hand. Regenerate whenever:
+
+- Codex Desktop autoupdates (the bundled `codex` binary version bumps).
+- A new Codex protocol surface lands that PwrSnap wants to consume.
+- The `// GENERATED CODE!` header version drifts from what `codex --version` reports.
+
+Current generated source: **`codex-cli 0.128.0-alpha.1`** (509 generated `.ts` files; v1 surface in `src/`, v2 surface in `src/v2/`).
 
 ## Why a separate package
 

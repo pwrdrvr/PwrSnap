@@ -57,9 +57,15 @@ pnpm codex:generate-protocol
 
 (equivalent: `pnpm --filter @pwrsnap/codex-app-server-protocol generate`)
 
-This runs `codex app-server generate-ts --out ./src` against whichever `codex`
-binary is on `PATH`. Commit the diff. Regenerate whenever the user's installed
-Codex CLI ships a newer protocol version.
+By default this runs against **Codex Desktop's bundled binary** at
+`/Applications/Codex.app/Contents/Resources/codex`. Override via
+`PWRSNAP_CODEX_BIN=/path/to/codex pnpm codex:generate-protocol` to point at
+a system-installed CLI, a custom build, or a CI install. The generated files
+under `packages/codex-app-server-protocol/src/` are committed so the rest of
+the workspace builds without a Codex install at hand.
+
+Regenerate whenever Codex Desktop autoupdates or a new protocol surface lands
+that PwrSnap wants to consume.
 
 ### Connecting at runtime
 

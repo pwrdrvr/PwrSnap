@@ -1,8 +1,9 @@
 import { app, BrowserWindow, globalShortcut, Menu, shell } from "electron";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
-import { showFloatOver } from "./float-over";
+import { showFloatOverForCapture } from "./float-over";
 import { registerCaptureHandlers } from "./handlers/capture-handlers";
+import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
@@ -10,6 +11,7 @@ import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
 import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
 import { sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
+import { resolveCacheFile } from "./render/coordinator";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
 import { createMainWindow } from "./window";
@@ -72,16 +74,12 @@ async function runInteractiveCapture(): Promise<void> {
     log.warn("capture:interactive failed", { code: result.error.code, message: result.error.message });
     return;
   }
-  // Phase 1.5 swaps showFloatOver(captureId) once the float-over reads
-  // ?capture=<id>. For now, open the placeholder toast so the global
-  // shortcut still surfaces visible feedback after the capture lands.
-  showFloatOver();
+  showFloatOverForCapture(result.value.id);
 }
 
 /**
- * Protocol resolver — Phase 1.3 implements `captureSourcePath` against
- * the captures-repo. `cacheFile` stays a stub until Phase 1.6 lands the
- * render coordinator.
+ * Protocol resolver. captureSourcePath wired in Phase 1.3, cacheFile
+ * wired in Phase 1.6 to the render coordinator.
  */
 const protocolResolver: ProtocolResolver = {
   async captureSourcePath(captureId) {
@@ -91,8 +89,8 @@ const protocolResolver: ProtocolResolver = {
     }
     return record.src_path;
   },
-  async cacheFile() {
-    return null;
+  async cacheFile(req) {
+    return resolveCacheFile(req);
   }
 };
 
@@ -132,6 +130,7 @@ export function bootstrapApp(): void {
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
     registerCaptureHandlers();
+    registerClipboardHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerIpcDispatcher();

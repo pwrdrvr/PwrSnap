@@ -1,5 +1,6 @@
 import { Library } from "./features/library/Library";
 import { FloatOver } from "./features/float-over/FloatOver";
+import { FloatOverForCapture } from "./features/float-over/FloatOverForCapture";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { dispatch } from "./lib/pwrsnap";
@@ -15,7 +16,14 @@ function readStage(): Stage {
   return "library";
 }
 
+function readCaptureId(): string | null {
+  const hash = window.location.hash.replace(/^#/, "");
+  const params = new URLSearchParams(hash);
+  return params.get("capture");
+}
+
 const STAGE = readStage();
+const CAPTURE_ID = readCaptureId();
 document.body.dataset.stage = STAGE;
 
 export function App() {
@@ -23,6 +31,11 @@ export function App() {
     return <TrayMenu activeMode="region" />;
   }
   if (STAGE === "float-over") {
+    if (CAPTURE_ID !== null) {
+      return <FloatOverForCapture captureId={CAPTURE_ID} />;
+    }
+    // Fallback for the legacy "open with no capture" path. Once Phase
+    // 1.5 fully lands, this branch is unreachable.
     return (
       <FloatOver
         src={sampleSrc}

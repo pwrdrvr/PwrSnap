@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — Float-Over Toast</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="stylesheet" href="src/floatover.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/design-canvas.jsx"></script>
+<script type="text/babel" src="src/tweaks-panel.jsx"></script>
+<script type="text/babel" src="src/FloatOver.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { TweaksPanel, useTweaks, TweakSection, TweakRadio, TweakSlider, TweakToggle, TweakText } = window;
+const { FloatOver, FoDesktopFrame, FoIcon, FoMark } = window.FO;
+
+const SAMPLE = "assets/sample-1.png";
+
+// ============================================================
+// Live demo artboard — clickable, with reset
+// ============================================================
+function LiveDemo({ variant }) {
+  const [showing, setShowing] = useState(true);
+  const [key, setKey] = useState(0);
+
+  const restart = () => {
+    setShowing(false);
+    setTimeout(() => { setKey((k) => k + 1); setShowing(true); }, 50);
+  };
+
+  return (
+    <FoDesktopFrame label={`PwrSnap · live · ${variant}`}>
+      {!showing && (
+        <button
+          onClick={restart}
+          style={{
+            position: "absolute", bottom: 24, right: 24,
+            display: "inline-flex", alignItems: "center", gap: 8,
+            padding: "10px 14px",
+            background: "var(--accent)",
+            color: "var(--button-text-on-accent)",
+            border: 0, borderRadius: 8,
+            fontSize: 12, fontWeight: 700, fontFamily: "var(--font-sans)",
+            cursor: "pointer",
+            boxShadow: "0 8px 24px rgba(232,116,58,0.4)",
+          }}
+        >
+          <FoIcon name="camera" size={14} />
+          Take a snap
+        </button>
+      )}
+      {showing && (
+        <FloatOver
+          key={key}
+          variant={variant}
+          src={SAMPLE}
+          srcW={2880}
+          srcH={1800}
+          onDismiss={() => setShowing(false)}
+        />
+      )}
+    </FoDesktopFrame>
+  );
+}
+
+// ============================================================
+// Static showcase artboard — toast pinned, no countdown, particular state
+// ============================================================
+function ShowcaseFrame({ variant, label, state = {} }) {
+  return (
+    <FoDesktopFrame label={`PwrSnap · ${label}`}>
+      <FloatOver
+        variant={variant}
+        src={SAMPLE}
+        srcW={2880}
+        srcH={1800}
+        startCountdown={false}
+        pinned={true}
+        {...state}
+      />
+    </FoDesktopFrame>
+  );
+}
+
+// ============================================================
+// Annotated detail artboard — float-over only on dark + callouts
+// ============================================================
+function DetailArtboard({ variant, state = {} }) {
+  // Render the FloatOver in a SIZED wrapper at the right side of the artboard.
+  // The toast is `position:absolute; bottom:24; right:24` inside that wrapper, so
+  // its visual box becomes: right:24..(24+360)=384, top:24..604 (within wrapper).
+  // We pin the wrapper to the artboard's right side and lay callouts to its LEFT.
+  //
+  // Artboard is 920×680. Wrapper: right:0, width: 408 (24 padding + 360 toast + 24).
+  // Toast left edge ≈ artboard right - 384.
+  // Callouts: position from artboard LEFT, x ~ 70..420 (well left of toast).
+  return (
+    <div
+      data-screen-label={`PwrSnap · detail · ${variant}`}
+      style={{
+        position: "relative",
+        width: "100%", height: "100%",
+        background: "radial-gradient(circle at 70% 50%, #14110d 0%, #050403 100%)",
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+      {/* sized wrapper — toast pins inside this */}
+      <div style={{
+        position: "absolute",
+        top: 0, right: 0,
+        width: 408, height: 680,
+      }}>
+        <FloatOver
+          variant={variant}
+          src={SAMPLE}
+          srcW={2880}
+          srcH={1800}
+          startCountdown={false}
+          pinned={true}
+          {...state}
+        />
+      </div>
+
+      {/* Pointer lines — thin amber strokes from each label to the toast edge.
+          We use absolutely-positioned divs as 1px lines. */}
+      {variant === "standard" && (
+        <>
+          {/* Labels live on the LEFT half of the artboard, pointing right.
+              Toast left edge sits at: artboard width(920) - 408 + 24 = 536px.
+              So labels max-x ~ 470, and lines run from label-right to x=536. */}
+
+          {/* 1) Progress bar — points at very top of toast */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 380, top: 38, padding: "4px 8px" }}>
+            auto-dismiss bar
+          </div>
+          <div style={{ position: "absolute", left: 470, top: 50, width: 66, height: 1, background: "var(--accent)" }} />
+
+          {/* 2) Hover-preview actions on the screenshot */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 360, top: 175, padding: "4px 8px" }}>
+            hover preview to act
+          </div>
+          <div style={{ position: "absolute", left: 480, top: 187, width: 56, height: 1, background: "var(--accent)" }} />
+
+          {/* 3) Three copy buttons */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 340, top: 295, padding: "4px 8px" }}>
+            ⌘1 / ⌘2 / ⌘3 — copy at preset res
+          </div>
+          <div style={{ position: "absolute", left: 540, top: 307, width: 0, height: 1, background: "var(--accent)" }} />
+          <div style={{ position: "absolute", left: 472, top: 307, width: 64, height: 1, background: "var(--accent)" }} />
+
+          {/* 4) Description + tags */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 380, top: 410, padding: "4px 8px" }}>
+            tag now or pay later
+          </div>
+          <div style={{ position: "absolute", left: 478, top: 422, width: 58, height: 1, background: "var(--accent)" }} />
+
+          {/* 5) Codex AI strip */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 380, top: 510, padding: "4px 8px" }}>
+            codex assist · ‘Use'
+          </div>
+          <div style={{ position: "absolute", left: 470, top: 522, width: 66, height: 1, background: "var(--accent)" }} />
+
+          {/* 6) Footer */}
+          <div className="fo-callout"
+               style={{ position: "absolute", left: 380, top: 600, padding: "4px 8px" }}>
+            saved path / destinations
+          </div>
+          <div style={{ position: "absolute", left: 478, top: 612, width: 58, height: 1, background: "var(--accent)" }} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Spec sheet artboard — design rationale
+// ============================================================
+function SpecSheet() {
+  return (
+    <div
+      data-screen-label="PwrSnap · spec"
+      style={{
+        width: "100%", height: "100%",
+        padding: "32px 40px",
+        background: "var(--bg-panel)",
+        borderRadius: 12,
+        border: "1px solid var(--border-subtle)",
+        overflow: "auto",
+        color: "var(--text-primary)",
+        fontFamily: "var(--font-sans)",
+      }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 6 }}>
+        SPEC · CAPTURE FLOAT-OVER
+      </div>
+      <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.02em", marginBottom: 4, color: "var(--text-primary)" }}>
+        Snap → context → gone.
+      </div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 28, lineHeight: 1.5, maxWidth: 640 }}>
+        A floating toast that pops up after every capture, gives you the three actions you actually want
+        (copy at the right resolution, annotate with context, dismiss), and gets out of your way.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 28 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Behavior</div>
+          <ul style={{ margin: 0, padding: "0 0 0 18px", color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+            <li>Slides up from bottom-right, ~360px wide, with a thin amber progress bar across the top.</li>
+            <li>Auto-dismisses at 4 / 6 / 8s depending on variant. Pauses on hover. Pauses on first edit. Pin to keep open.</li>
+            <li>Drag the preview straight into Slack / Notion / Mail — uses the medium PNG by default.</li>
+            <li>Stacks. Each new snap pushes prior toasts to a small chip column above the active one.</li>
+          </ul>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>The three buttons</div>
+          <ul style={{ margin: 0, padding: "0 0 0 18px", color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+            <li><b style={{ color: "var(--text-primary)" }}>Low</b> — 800px wide. Slack, GitHub comments. ~180KB.</li>
+            <li><b style={{ color: "var(--text-primary)" }}>Med</b> — 1440px wide. Docs, threads. ~600KB.</li>
+            <li><b style={{ color: "var(--text-primary)" }}>High</b> — full 2× retina, primary action. ~2.4MB.</li>
+            <li>Each shows live <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent-bright)", fontSize: 12 }}>w × h</span> + estimated bytes. Sized off the actual snap, not a fixed table.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Annotation</div>
+          <ul style={{ margin: 0, padding: "0 0 0 18px", color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+            <li>One-line description (autogrows). Codex pre-fills a guess from a low-res copy of the snap.</li>
+            <li>Tag chips with backspace-to-delete. Two AI-suggested tags, dashed outline, click to accept.</li>
+            <li>Editing anything pauses auto-dismiss until you click out or Cmd+Enter.</li>
+          </ul>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Storage destinations</div>
+          <ul style={{ margin: 0, padding: "0 0 0 18px", color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.7 }}>
+            <li>Toggle Drive / Dropbox / S3 right from the toast. State persists across sessions per-tag.</li>
+            <li>Default save path shown in the footer when no destinations are configured.</li>
+            <li>Future: <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent-bright)", fontSize: 12 }}>foo-name/500w.png</span> on-demand resize file system.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 32, padding: 14, background: "var(--bg-input)", border: "1px solid var(--border-subtle)", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+        keys · ⌘1 copy low · ⌘2 copy med · ⌘3 copy high · ⌘E open editor · ⌘L reveal in library · ⌘. dismiss · pin to keep
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// App
+// ============================================================
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "preferred_variant": "standard",
+  "auto_dismiss_seconds": 6,
+  "show_ai_assist": true,
+  "show_storage_targets": true,
+  "default_position": "bottom-right",
+  "use_kbd_shortcuts": true
+}/*EDITMODE-END*/;
+
+function App() {
+  const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
+
+  useEffect(() => {
+    const i = setInterval(() => { if (window.lucide) window.lucide.createIcons(); }, 250);
+    return () => clearInterval(i);
+  }, []);
+
+  return (
+    <>
+      <DesignCanvas title="PwrSnap · Capture Float-Over" subtitle="Toast that pops after every snap. Three resolutions, optional context, auto-dismiss.">
+
+        <DCSection id="hero" title="Spec">
+          <DCArtboard id="spec" label="Design rationale" width={1100} height={620}>
+            <SpecSheet />
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="live" title="Live · click ‘Take a snap' to replay">
+          <DCArtboard id="live-standard" label="Standard — recommended" width={920} height={600}>
+            <LiveDemo variant="standard" />
+          </DCArtboard>
+          <DCArtboard id="live-compact" label="Compact" width={920} height={600}>
+            <LiveDemo variant="compact" />
+          </DCArtboard>
+          <DCArtboard id="live-full" label="Full — w/ storage" width={920} height={600}>
+            <LiveDemo variant="full" />
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="states" title="States">
+          <DCArtboard id="state-fresh" label="Fresh — countdown running" width={920} height={600}>
+            <ShowcaseFrame variant="standard" label="fresh" />
+          </DCArtboard>
+          <DCArtboard id="state-thinking" label="Codex is reading the snap" width={920} height={600}>
+            <ShowcaseFrame variant="standard" label="thinking" state={{ thinking: true, aiDescription: "" }} />
+          </DCArtboard>
+          <DCArtboard id="state-annotated" label="User annotated" width={920} height={600}>
+            <ShowcaseFrame
+              variant="standard"
+              label="annotated"
+              state={{
+                initialDescription: "Telegram resume menu not clearing the prior thread",
+                initialTags: ["pwragnt", "bug"],
+              }}
+            />
+          </DCArtboard>
+          <DCArtboard id="state-copied" label="High-res copied" width={920} height={600}>
+            <ShowcaseFrame
+              variant="standard"
+              label="copied"
+              state={{ initiallyCopied: "high" }}
+            />
+          </DCArtboard>
+        </DCSection>
+
+        <DCSection id="detail" title="Detail · annotated">
+          <DCArtboard id="detail-standard" label="Anatomy of the standard variant" width={920} height={680}>
+            <DetailArtboard variant="standard" />
+          </DCArtboard>
+        </DCSection>
+
+      </DesignCanvas>
+
+      <TweaksPanel title="PwrSnap · Tweaks">
+        <TweakSection title="Variant">
+          <TweakRadio
+            label="Default float-over"
+            value={tweaks.preferred_variant}
+            onChange={(v) => setTweak("preferred_variant", v)}
+            options={[
+              { value: "compact",  label: "Compact" },
+              { value: "standard", label: "Standard" },
+              { value: "full",     label: "Full" },
+            ]}
+          />
+        </TweakSection>
+        <TweakSection title="Behavior">
+          <TweakSlider
+            label="Auto-dismiss after"
+            min={2} max={20} step={1} unit="s"
+            value={tweaks.auto_dismiss_seconds}
+            onChange={(v) => setTweak("auto_dismiss_seconds", v)}
+          />
+          <TweakToggle
+            label="Codex AI assist"
+            value={tweaks.show_ai_assist}
+            onChange={(v) => setTweak("show_ai_assist", v)}
+          />
+          <TweakToggle
+            label="Storage destination chips"
+            value={tweaks.show_storage_targets}
+            onChange={(v) => setTweak("show_storage_targets", v)}
+          />
+          <TweakToggle
+            label="Show ⌘ shortcut hints"
+            value={tweaks.use_kbd_shortcuts}
+            onChange={(v) => setTweak("use_kbd_shortcuts", v)}
+          />
+          <TweakRadio
+            label="Spawn position"
+            value={tweaks.default_position}
+            onChange={(v) => setTweak("default_position", v)}
+            options={[
+              { value: "bottom-right", label: "BR" },
+              { value: "bottom-left",  label: "BL" },
+              { value: "top-right",    label: "TR" },
+              { value: "near-mouse",   label: "Mouse" },
+            ]}
+          />
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

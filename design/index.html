@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — Design</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<style>
+  body { margin: 0; min-height: 100vh; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); display: flex; align-items: center; justify-content: center; padding: 48px 24px; }
+  .wrap { width: 100%; max-width: 720px; }
+  .eyebrow { font: 600 11px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  h1 { font: 800 48px/1.05 var(--font-display); letter-spacing: -0.02em; margin: 0 0 8px; }
+  h1 .a { color: var(--accent); }
+  .sub { color: var(--text-secondary); font: 400 15px/1.5 var(--font-sans); margin: 0 0 32px; max-width: 540px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  a.card { display: block; padding: 20px; background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 12px; text-decoration: none; color: var(--text-primary); transition: all 140ms var(--ease-out); }
+  a.card:hover { border-color: var(--accent-border); background: var(--bg-panel-hover); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+  a.card .label { font: 600 10px/1 var(--font-mono); color: var(--text-muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+  a.card h2 { font: 700 18px/1.2 var(--font-display); margin: 0 0 6px; letter-spacing: -0.01em; }
+  a.card p { font: 400 12px/1.4 var(--font-sans); color: var(--text-secondary); margin: 0; }
+  .meta { margin-top: 32px; padding: 14px 16px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; font: 500 11px/1.5 var(--font-mono); color: var(--text-muted); }
+  .meta b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">PwrDrvr · Design Handoff</div>
+  <h1>Pwr<span class="a">Snap</span></h1>
+  <p class="sub">Mac-first agentic screen capture tool. Two design surfaces ready for build-out.</p>
+  <div class="grid">
+    <a class="card" href="PwrSnap%20Library.html">
+      <div class="label">① Library + Tray + App tags</div>
+      <h2>Library</h2>
+      <p>Three-pane browser — source-app sidebar · scrubbable timeline reel · detail editor with Codex caption.</p>
+    </a>
+    <a class="card" href="PwrSnap%20Float-Over.html">
+      <div class="label">② Capture float-over</div>
+      <h2>Float-Over toast</h2>
+      <p>Post-capture toast with three copy resolutions, annotation, Codex assist, and storage destinations.</p>
+    </a>
+  </div>
+  <div class="meta">
+    <b>tokens</b> ds/colors_and_type.css · <b>components</b> src/*.jsx · <b>styles</b> src/*.css · <b>assets</b> assets/sample-1.png
+  </div>
+</div>
+</body>
+</html>

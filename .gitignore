@@ -1,0 +1,57 @@
+# ---- Dependencies ----
+node_modules/
+.pnpm-store/
+
+# ---- Build output ----
+out/
+dist/
+dist-electron/
+.vite/
+*.tsbuildinfo
+
+# ---- Electron-builder output ----
+# Signed/notarized DMG + ZIP land here
+apps/desktop/dist/
+# pnpm deploy stage (a future release.mjs will materialize a flat node_modules tree here)
+apps/desktop/release-stage/
+
+# ---- Test / coverage artifacts ----
+coverage/
+playwright-report/
+test-results/
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+.envrc.release
+*.p12
+*.pem
+AuthKey_*.p8
+
+# ---- Editor / OS ----
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*.swo
+
+# ---- Working state ----
+.local/
+.worktrees/
+.design-canvas.state.json

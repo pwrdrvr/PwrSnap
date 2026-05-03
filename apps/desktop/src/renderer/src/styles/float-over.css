@@ -1,0 +1,572 @@
+/* PwrSnap Float-Over — capture confirmation toast */
+
+/* ---- Faux mac desktop wallpaper for context ---- */
+.fo-desktop {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 700px at 18% 12%, rgba(232,116,58,0.08) 0%, transparent 55%),
+    radial-gradient(900px 600px at 88% 92%, rgba(31,124,255,0.06) 0%, transparent 55%),
+    linear-gradient(140deg, #0a0908 0%, #14110d 50%, #050403 100%);
+  font-family: var(--font-sans);
+}
+.fo-desktop::before {
+  content: "";
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.012) 1px, transparent 1px);
+  background-size: 36px 36px;
+  pointer-events: none;
+}
+.fo-menubar {
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 26px;
+  background: rgba(8, 7, 6, 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--text-secondary);
+  z-index: 5;
+}
+.fo-menubar__l { display: flex; gap: 16px; align-items: center; }
+.fo-menubar__r { display: flex; gap: 14px; align-items: center; color: var(--text-muted); font-size: 11px; }
+.fo-menubar__active { color: var(--text-primary); font-weight: 600; }
+.fo-menubar__pwr {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--accent-bright);
+}
+.fo-menubar__pwr-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 2px rgba(109,186,126,0.18);
+}
+
+/* fake window underneath toast, for spatial context */
+.fo-window {
+  position: absolute;
+  border-radius: 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+.fo-window img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.82; }
+
+/* dock-ish bottom hint */
+.fo-dock {
+  position: absolute;
+  bottom: 14px; left: 50%; transform: translateX(-50%);
+  height: 56px; width: 360px;
+  background: rgba(20, 17, 14, 0.55);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* ============================================================
+   FLOAT-OVER TOAST
+   ============================================================ */
+.fo {
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+  width: 360px;
+  background: rgba(20, 17, 14, 0.94);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  box-shadow:
+    0 24px 64px rgba(0,0,0,0.55),
+    0 0 0 1px rgba(0,0,0,0.4),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  z-index: 50;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.fo--variant-compact { width: 320px; }
+.fo--variant-standard { width: 360px; }
+.fo--variant-full { width: 380px; }
+
+/* ----- countdown progress strip ----- */
+.fo__progress {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: transparent;
+  z-index: 2;
+}
+.fo__progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
+  box-shadow: 0 0 8px var(--accent-shadow);
+  transform-origin: left center;
+  transition: transform 100ms linear, opacity 200ms ease;
+}
+.fo.is-paused .fo__progress-fill { opacity: 0.25; }
+
+/* ----- header row ----- */
+.fo__hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px 8px;
+}
+.fo__hdr-mark {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+}
+.fo__hdr-meta { flex: 1; min-width: 0; }
+.fo__hdr-title {
+  font: 600 12px/1.2 var(--font-sans);
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+.fo__hdr-sub {
+  font: 500 10px/1.2 var(--font-mono);
+  color: var(--text-muted);
+  margin-top: 2px;
+  letter-spacing: 0.01em;
+}
+.fo__hdr-actions { display: flex; gap: 2px; }
+.fo__icon-btn {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 120ms var(--ease-out);
+}
+.fo__icon-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+.fo__icon-btn.is-pinned { color: var(--accent-bright); background: var(--accent-soft); border-color: var(--accent-border); }
+
+/* ----- preview ----- */
+.fo__preview {
+  position: relative;
+  margin: 0 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #050403;
+  border: 1px solid rgba(255,255,255,0.06);
+  aspect-ratio: 16 / 10;
+}
+.fo__preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fo__preview-dim {
+  position: absolute; top: 6px; left: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px;
+  background: rgba(8,7,6,0.78);
+  backdrop-filter: blur(8px);
+  border-radius: 4px;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+.fo__preview-dim b { color: var(--text-primary); font-weight: 700; }
+.fo__preview-size {
+  position: absolute; top: 6px; right: 6px;
+  padding: 3px 6px;
+  background: rgba(8,7,6,0.78);
+  backdrop-filter: blur(8px);
+  border-radius: 4px;
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+.fo__preview-actions {
+  position: absolute; bottom: 6px; left: 6px; right: 6px;
+  display: flex; gap: 6px; justify-content: space-between;
+  opacity: 0; transition: opacity 140ms var(--ease-out);
+}
+.fo__preview:hover .fo__preview-actions { opacity: 1; }
+.fo__preview-actions-l, .fo__preview-actions-r { display: flex; gap: 4px; }
+.fo__hover-btn {
+  height: 24px; padding: 0 8px;
+  display: inline-flex; align-items: center; gap: 5px;
+  background: rgba(8,7,6,0.86);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.fo__hover-btn:hover { background: rgba(40,35,28,0.92); border-color: var(--accent-border); color: var(--accent-bright); }
+
+/* ----- copy resolution buttons ----- */
+.fo__copy {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 10px 12px 4px;
+}
+.fo__copy-btn {
+  position: relative;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  /* reserve room for the post-click ring so layout doesn't twitch */
+  outline: 2px solid transparent;
+  outline-offset: -1px;
+  padding: 8px 9px 7px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: all 120ms var(--ease-out);
+  font-family: var(--font-sans);
+}
+.fo__copy-btn:hover {
+  background: rgba(232,116,58,0.08);
+  border-color: var(--accent-border);
+  transform: translateY(-1px);
+}
+.fo__copy-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.fo__copy-btn.is-primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  transform: translateY(-1px);
+}
+/* "action happened" — temporary amber ring + soft glow.
+   No fill change, no font change, no size change → zero layout shift. */
+.fo__copy-btn.is-copied {
+  outline-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent-border),
+    0 0 16px var(--accent-shadow);
+  animation: fo-copied-pulse 900ms var(--ease-out) 1;
+}
+.fo__copy-btn.is-copied.is-primary {
+  /* primary already has accent fill; ring goes brighter so it still reads */
+  outline-color: var(--accent-bright);
+  box-shadow:
+    0 0 0 1px var(--accent-bright),
+    0 0 18px var(--accent-shadow);
+}
+@keyframes fo-copied-pulse {
+  0%   { outline-offset: -1px; }
+  40%  { outline-offset: 3px; }
+  100% { outline-offset: -1px; }
+}
+/* Keep meta row from reflowing — give "copied" the same width as the bytes value. */
+.fo__copy-btn.is-copied .fo__copy-bytes { color: var(--accent-bright); opacity: 1; }
+.fo__copy-btn-row1 {
+  display: flex; align-items: center; gap: 6px;
+}
+.fo__copy-label {
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  flex: 1;
+}
+.fo__copy-kbd {
+  font: 600 9px/1 var(--font-mono);
+  padding: 2px 4px;
+  background: rgba(0,0,0,0.32);
+  border-radius: 3px;
+  color: inherit;
+  opacity: 0.7;
+}
+.fo__copy-btn.is-primary .fo__copy-kbd { background: rgba(0,0,0,0.18); }
+.fo__copy-meta {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 6px;
+}
+.fo__copy-dim {
+  font: 600 11px/1 var(--font-mono);
+}
+.fo__copy-bytes {
+  font: 500 10px/1 var(--font-mono);
+  opacity: 0.7;
+}
+
+/* ----- annotation row ----- */
+.fo__annotate {
+  padding: 4px 12px 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.fo__desc {
+  width: 100%;
+  resize: none;
+  background: var(--bg-input);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font: 400 12px/1.4 var(--font-sans);
+  outline: none;
+  transition: border-color 120ms var(--ease-out);
+  min-height: 44px;
+}
+.fo__desc::placeholder { color: var(--text-subtle); }
+.fo__desc:focus { border-color: var(--accent-border); background: rgba(232,116,58,0.04); }
+
+.fo__tags {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+}
+.fo__tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px; padding: 0 7px 0 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+  font: 600 10px/1 var(--font-mono);
+}
+.fo__tag-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.25);
+  cursor: pointer;
+  font-size: 10px; line-height: 1;
+  color: inherit;
+  border: 0;
+  padding: 0;
+}
+.fo__tag-x:hover { background: rgba(0,0,0,0.5); }
+.fo__tag.is-suggest {
+  background: transparent;
+  border-style: dashed;
+  border-color: rgba(232,116,58,0.32);
+  color: var(--accent);
+  cursor: pointer;
+}
+.fo__tag.is-suggest:hover {
+  background: var(--accent-soft);
+  border-style: solid;
+}
+.fo__tag-input {
+  flex: 1; min-width: 60px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font: 500 11px/1 var(--font-mono);
+  padding: 0 4px;
+}
+.fo__tag-input::placeholder { color: var(--text-subtle); }
+
+/* ----- AI suggestion strip ----- */
+.fo__ai {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 12px 8px;
+  padding: 7px 9px;
+  background: rgba(232,116,58,0.05);
+  border: 1px solid rgba(232,116,58,0.16);
+  border-radius: 7px;
+  font: 500 11px/1.3 var(--font-sans);
+  color: var(--text-secondary);
+}
+.fo__ai-mark {
+  width: 16px; height: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.fo__ai-text { flex: 1; }
+.fo__ai-text b { color: var(--text-primary); font-weight: 600; }
+.fo__ai-text .fo__ai-thinking::after {
+  content: ""; display: inline-block;
+  width: 0; animation: fo-dots 1.4s steps(4, end) infinite;
+}
+@keyframes fo-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.fo__ai-accept {
+  height: 22px; padding: 0 8px;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  border: 0;
+  border-radius: 5px;
+  font: 700 10px/1 var(--font-sans);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.fo__ai-accept:hover { background: var(--accent-strong); }
+
+/* ----- footer / destinations ----- */
+.fo__foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  background: rgba(0,0,0,0.18);
+}
+.fo__dest {
+  display: flex; align-items: center; gap: 4px;
+}
+.fo__dest-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 8px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  transition: all 120ms var(--ease-out);
+}
+.fo__dest-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+.fo__dest-btn.is-on { color: var(--accent-bright); border-color: var(--accent-border); background: var(--accent-soft); }
+.fo__dest-btn svg { width: 11px; height: 11px; }
+.fo__dest-saved {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--success-text);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+
+.fo__foot-actions { display: flex; align-items: center; gap: 4px; }
+.fo__foot-btn {
+  height: 24px; padding: 0 8px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.fo__foot-btn:hover { border-color: var(--accent-border); color: var(--accent-bright); }
+.fo__foot-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.fo__foot-btn.is-primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+/* ============================================================
+   ENTRY / EXIT animations
+   ============================================================ */
+@keyframes fo-in {
+  0%   { opacity: 0; transform: translateY(20px) scale(0.96); filter: blur(4px); }
+  60%  { filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes fo-out {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(8px) scale(0.97); }
+}
+.fo.is-entering { animation: fo-in 320ms var(--ease-out) both; }
+.fo.is-exiting  { animation: fo-out 220ms var(--ease-out) both; pointer-events: none; }
+
+/* a thin amber scanner line, the "thinking" tell */
+.fo__scanner {
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 100%;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+.fo__scanner::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent) 50%, transparent);
+  box-shadow: 0 0 12px var(--accent);
+  animation: fo-scan 1.8s var(--ease-in-out) infinite;
+  opacity: 0.5;
+}
+@keyframes fo-scan {
+  0%   { top: -2px; opacity: 0; }
+  10%  { opacity: 0.5; }
+  90%  { opacity: 0.5; }
+  100% { top: 100%; opacity: 0; }
+}
+.fo:not(.is-thinking) .fo__scanner { display: none; }
+
+/* ============================================================
+   STACKED SNAPS — multiple captures in flight
+   ============================================================ */
+.fo-stack {
+  position: absolute;
+  bottom: 70px;
+  right: 24px;
+  display: flex; flex-direction: column-reverse;
+  gap: 8px;
+  z-index: 49;
+}
+.fo-stack__chip {
+  width: 60px; height: 40px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.08);
+  overflow: hidden;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  position: relative;
+  cursor: pointer;
+  transition: transform 140ms var(--ease-out);
+}
+.fo-stack__chip:hover { transform: scale(1.08) translateX(-4px); border-color: var(--accent-border); }
+.fo-stack__chip img { width: 100%; height: 100%; object-fit: cover; }
+.fo-stack__chip-badge {
+  position: absolute; top: 2px; right: 2px;
+  font: 700 9px/1 var(--font-mono);
+  background: rgba(0,0,0,0.7);
+  color: var(--text-primary);
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+/* ============================================================
+   DESIGN-CANVAS ARTBOARD — desktop frame to display variants
+   ============================================================ */
+.fo-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0a0908;
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+}
+
+/* annotated callouts on artboards */
+.fo-callout {
+  position: absolute;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  font: 700 10px/1 var(--font-mono);
+  padding: 4px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(232,116,58,0.4);
+}
+.fo-callout::after {
+  content: "";
+  position: absolute;
+  width: 6px; height: 6px;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+.fo-callout.is-bottom-arrow::after {
+  bottom: -3px; left: 12px;
+}
+.fo-callout.is-top-arrow::after {
+  top: -3px; left: 12px;
+}
+.fo-callout.is-left-arrow::after {
+  left: -3px; top: 9px;
+}

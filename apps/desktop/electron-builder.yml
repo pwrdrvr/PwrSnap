@@ -1,0 +1,54 @@
+appId: com.pwrdrvr.pwrsnap
+productName: PwrSnap
+copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
+
+electronVersion: 41.2.1
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+compression: normal
+
+files:
+  - "out/**/*"
+  - "package.json"
+  - "!**/*.map"
+  - "!**/*.ts"
+  - "!**/*.test.*"
+  - "!**/__tests__/**"
+
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  loadBrowserProcessSpecificV8Snapshot: false
+  grantFileProtocolExtraPrivileges: true
+
+mac:
+  category: public.app-category.graphics-design
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: false
+  helperBundleId: com.pwrdrvr.pwrsnap.helper
+  helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
+  helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU
+  helperPluginBundleId: com.pwrdrvr.pwrsnap.helper.Plugin
+  extendInfo:
+    NSHumanReadableCopyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
+    LSMinimumSystemVersion: "12.0"
+    LSApplicationCategoryType: public.app-category.graphics-design
+    NSScreenCaptureUsageDescription: "PwrSnap captures your screen for screenshots and screen recording."
+    NSMicrophoneUsageDescription: "PwrSnap uses the microphone for voice annotation and presenter audio."
+    NSCameraUsageDescription: "PwrSnap uses the camera for presenter video recording."
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+
+dmg:
+  writeUpdateInfo: false

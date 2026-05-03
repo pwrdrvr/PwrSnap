@@ -1,0 +1,68 @@
+@import "./tokens.css";
+@import "./library.css";
+@import "./float-over.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* Tray + float-over windows are frameless transparent panels — let the
+   component's own backdrop paint, not the body. */
+body[data-stage="tray"],
+body[data-stage="float-over"] {
+  background: transparent;
+}
+
+/* Tray window: the popover paints itself. Reset .ps-tray's absolute
+   positioning so it fills the BrowserWindow it's hosted in. */
+body[data-stage="tray"] .ps-tray {
+  position: relative;
+  top: 0;
+  right: 0;
+  width: 100%;
+  border-radius: 12px;
+}
+
+/* Float-over window: the toast is the whole window. Same idea — drop
+   the absolute bottom/right anchoring, fill the window instead. */
+body[data-stage="float-over"] .fo {
+  position: relative;
+  bottom: 0;
+  right: 0;
+  width: 100%;
+}
+
+.app-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Brand wordmark — kept as a single inline span so flex gaps on the
+   parent never split "Pwr" and "Snap" into two flex items. */
+.pwrsnap-wordmark {
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.pwrsnap-wordmark__a {
+  color: var(--accent);
+}

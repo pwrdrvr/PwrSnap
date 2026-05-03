@@ -1,0 +1,20 @@
+{
+  "name": "pwrsnap",
+  "version": "0.0.1-alpha.0",
+  "private": true,
+  "description": "Mac-first agentic screen capture tool",
+  "author": "PwrDrvr LLC",
+  "license": "UNLICENSED",
+  "copyright": "Copyright © 2026 PwrDrvr LLC. All rights reserved.",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm --filter @pwrsnap/desktop build",
+    "dev": "pnpm --filter @pwrsnap/desktop dev",
+    "design": "npx --yes serve design -l 4321",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.2"
+  }
+}

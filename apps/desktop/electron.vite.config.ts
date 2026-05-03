@@ -38,7 +38,16 @@ export default defineConfig(({ command }) => {
   return {
     main: {
       define: productionDefine,
-      plugins: [externalizeDepsPlugin(), copyMigrationsPlugin()],
+      plugins: [
+        // Workspace packages get bundled, not externalized — Node's
+        // ESM resolver can't follow extensionless `./protocol`-style
+        // imports inside source-form workspace packages, and we don't
+        // want to ship our shared TS source separately. Mirrors PwrAgnt.
+        externalizeDepsPlugin({
+          exclude: ["@pwrsnap/shared", "@pwrsnap/codex-app-server-protocol"]
+        }),
+        copyMigrationsPlugin()
+      ],
       build: {
         minify: "esbuild",
         sourcemap: false
@@ -46,7 +55,11 @@ export default defineConfig(({ command }) => {
     },
     preload: {
       define: productionDefine,
-      plugins: [externalizeDepsPlugin()],
+      plugins: [
+        externalizeDepsPlugin({
+          exclude: ["@pwrsnap/shared", "@pwrsnap/codex-app-server-protocol"]
+        })
+      ],
       build: {
         minify: "esbuild",
         sourcemap: false,

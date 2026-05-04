@@ -170,6 +170,24 @@ async function runBootGc(): Promise<void> {
 export function bootstrapApp(): void {
   initializeMainLogger();
 
+  // Enable ScreenCaptureKit for window/screen capture on macOS.
+  // Without this flag, Chromium / Electron may use the legacy
+  // CGWindowList-based capturer for desktopCapturer.getSources —
+  // which produces ON-SCREEN-RENDERING thumbnails (occlusion
+  // included). With SCKit enabled, captures go through
+  // WindowServer's backing-buffer pipeline, so the captured PNG
+  // contains the window's actual rendered content even when
+  // covered by other windows.
+  //
+  // Must be set BEFORE app.whenReady — Chromium reads command-line
+  // flags during early init.
+  if (process.platform === "darwin") {
+    app.commandLine.appendSwitch(
+      "enable-features",
+      "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
+    );
+  }
+
   // Single-instance lock. Without this, electron-vite hot-reloads
   // and crashed-but-orphaned dev runs accumulate parallel app
   // instances — both tray icons, both global shortcuts, both

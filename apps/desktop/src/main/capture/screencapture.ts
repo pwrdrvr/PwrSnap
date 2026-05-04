@@ -123,7 +123,9 @@ export async function captureWindow(
 
   // Primary: desktopCapturer in the main process. Inherits
   // Electron's Screen Recording TCC grant — no separate helper
-  // TCC entry needed.
+  // TCC entry needed. With the ScreenCaptureKitMac feature flag
+  // (enabled in bootstrap), the captures go through SCKit's
+  // backing-buffer pipeline and ignore occlusion.
   try {
     // Generous thumbnail size — we want native-pixel resolution
     // for retina windows. desktopCapturer downscales if necessary
@@ -137,17 +139,28 @@ export async function captureWindow(
       const match = /^window:(\d+):/.exec(s.id);
       return match !== null && Number(match[1]) === windowId;
     });
+    log.info("desktopCapturer attempt", {
+      windowId,
+      sourceCount: sources.length,
+      matchedSourceId: source?.id ?? null,
+      thumbnailSize: source?.thumbnail.getSize() ?? null,
+      thumbnailEmpty: source?.thumbnail.isEmpty() ?? null,
+      sourceIds: sources.slice(0, 10).map((s) => ({ id: s.id, name: s.name }))
+    });
     if (source !== undefined) {
       const png = source.thumbnail.toPNG();
       if (png.length > 0) {
         await writeFile(tempPath, png);
+        log.info("desktopCapturer wrote PNG", {
+          windowId,
+          tempPath,
+          byteSize: png.length
+        });
         return { ok: true, tempPath, displayId: 0 };
       }
     }
     log.warn("desktopCapturer didn't surface the requested window — falling back", {
-      windowId,
-      sourceCount: sources.length,
-      sourceIds: sources.map((s) => s.id).slice(0, 10)
+      windowId
     });
   } catch (cause) {
     log.warn("desktopCapturer threw — falling back", {

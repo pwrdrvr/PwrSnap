@@ -565,12 +565,27 @@ export function RegionSelector() {
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
+    // Globally-forwarded keystrokes (main → renderer over IPC).
+    // macOS sometimes withholds keyboard events from a freshly-shown
+    // window until the user clicks to "engage" it. main arms a
+    // globalShortcut on Esc + ↵ for the duration of the selector
+    // and forwards them here, so cancel / commit work on first
+    // keypress regardless of whether the renderer has caught
+    // keyboard focus yet.
+    const unsubKey = window.pwrsnapApi?.onSelectorKey((payload) => {
+      if (payload.key === "Escape") {
+        cancel();
+      } else if (payload.key === "Enter") {
+        commit();
+      }
+    });
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
+      unsubKey?.();
     };
     // commit/cancel close over refs only; safe to leave deps empty.
     // eslint-disable-next-line react-hooks/exhaustive-deps

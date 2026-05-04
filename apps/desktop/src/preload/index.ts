@@ -37,6 +37,11 @@ const REGION_SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
 // terminal log whether the renderer's CSS coord space matches the
 // display.bounds we're translating against.
 const REGION_SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
+// Main → renderer: forwarded keystrokes from globalShortcut while
+// the selector is visible. Belt-and-braces for macOS keyboard-focus
+// quirks where the renderer's keydown listener doesn't fire until
+// the user has clicked the window once.
+const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -141,6 +146,19 @@ const pwrsnapApi = {
    */
   requestTrayResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(TRAY_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Subscribe to forwarded-key events from main. globalShortcut on
+   * the main side reaches here when macOS withholds keystrokes from
+   * the selector window's renderer (typical right after show, before
+   * the user has clicked). Renderer treats these as if the user
+   * pressed the key directly.
+   */
+  onSelectorKey(handler: (payload: { key: string }) => void): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(payload as { key: string });
+    ipcRenderer.on(REGION_SELECTOR_KEY_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_KEY_CHANNEL, wrapped);
   },
   /**
    * Diagnostic — region selector renderer → main. Ships the

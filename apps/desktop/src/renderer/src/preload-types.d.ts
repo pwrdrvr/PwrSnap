@@ -47,6 +47,7 @@ declare global {
           displayBounds: { width: number; height: number };
         }) => void
       ): () => void;
+      onSelectorKey(handler: (payload: { key: string }) => void): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;

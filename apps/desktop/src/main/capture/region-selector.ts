@@ -15,7 +15,7 @@
 // captured), CSS-only — pure positioning + a 1.5px accent border. NO
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
-import { BrowserWindow, ipcMain, screen, type Display } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
@@ -55,6 +55,11 @@ export type SelectorResult =
 const SELECTOR_RESULT_CHANNEL = "region-selector:result";
 const SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
 const SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
+// Main → renderer: forwarded keystrokes from globalShortcut. The
+// renderer's window keydown listener handles them as if the user
+// had pressed the key directly — covers the case where macOS
+// withholds keyboard events from a newly-shown window.
+const SELECTOR_KEY_CHANNEL = "region-selector:key";
 
 /**
  * Create the pre-warmed windows — one per display. Idempotent. Call
@@ -303,13 +308,57 @@ export async function pickRegion(): Promise<SelectorResult> {
     }
   });
 
+  // Arm Esc + Enter via globalShortcut for the duration of the
+  // selector. macOS sometimes withholds keyboard events from a
+  // newly-shown window until the user clicks to "engage" it — the
+  // renderer's keydown listener exists but the event never reaches
+  // it. globalShortcut bypasses focus entirely; for the brief
+  // duration the selector is up the user has nothing else they'd
+  // want Esc / ↵ doing anyway, since the screen-saver-level overlay
+  // covers everything.
+  installSelectorGlobalShortcuts(win);
+
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
     win.show();
     enterMenuBarOverlayMode(win);
     win.focus();
+    // webContents.focus() in addition to BrowserWindow.focus() —
+    // belt and braces. focus() makes the NSWindow key, but
+    // webContents focus is what governs whether keystrokes route
+    // to the renderer's document.
+    win.webContents.focus();
   });
+  uninstallSelectorGlobalShortcuts();
   return result;
+}
+
+let shortcutsInstalled = false;
+
+function installSelectorGlobalShortcuts(win: BrowserWindow): void {
+  if (shortcutsInstalled) return;
+  // Forward to the renderer via the same IPC the renderer's own
+  // keydown handlers use, so the cancel/commit code path stays
+  // single-sourced. The renderer handler reads the freshest rect
+  // and snap state and emits submitRegion accordingly.
+  globalShortcut.register("Escape", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Escape" });
+    }
+  });
+  globalShortcut.register("Return", () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_KEY_CHANNEL, { key: "Enter" });
+    }
+  });
+  shortcutsInstalled = true;
+}
+
+function uninstallSelectorGlobalShortcuts(): void {
+  if (!shortcutsInstalled) return;
+  globalShortcut.unregister("Escape");
+  globalShortcut.unregister("Return");
+  shortcutsInstalled = false;
 }
 
 /**
@@ -323,6 +372,10 @@ export function getLastWindowListSnapshot(): readonly WindowInfo[] {
 }
 
 function hideAllSelectors(): void {
+  // Release the globalShortcut binding before we lower the window;
+  // leaving Esc / ↵ globally bound after the selector is gone would
+  // hijack those keys for the rest of the app session.
+  uninstallSelectorGlobalShortcuts();
   for (const win of selectorWindows.values()) {
     if (win.isDestroyed()) continue;
     // Order: leave overlay → blur → hide.
@@ -525,3 +578,4 @@ export function disposeRegionSelector(): void {
 
 export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
 export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;
+export const REGION_SELECTOR_KEY_CHANNEL = SELECTOR_KEY_CHANNEL;

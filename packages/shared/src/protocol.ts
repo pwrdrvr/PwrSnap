@@ -81,6 +81,9 @@ export type Commands = {
   "library:export": { req: { destDir: string }; res: { destDir: string; manifestPath: string } };
   /** Bring the main library window forward — used by the tray's "Open Library" row. */
   "library:focus": { req: Record<string, never>; res: void };
+  /** Open the Phase 2 editor window for a capture. Each call opens a
+   *  fresh window — edits are per-capture, not singleton. */
+  "editor:open": { req: { captureId: string }; res: void };
 
   // ---- overlays (Phase 2+) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };

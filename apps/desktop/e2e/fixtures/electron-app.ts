@@ -95,7 +95,13 @@ export async function launchPwrSnap(
   Object.assign(env, {
     HOME: homeRoot,
     NODE_ENV: "production",
-    PWRSNAP_E2E: "1"
+    PWRSNAP_E2E: "1",
+    // Belt-and-braces isolation: HOME alone doesn't reliably rebase
+    // app.getPath('userData') under Playwright (the bundle name is
+    // "Electron" not "PwrSnap" so the cached path lands at the host
+    // user's real ~/Library/.../Electron). Forcing userData puts
+    // every SQLite write under our tmpdir.
+    PWRSNAP_USER_DATA: homeRoot
   });
   // electron-vite injects ELECTRON_RENDERER_URL during dev; the
   // packaged main entry must NOT see it or it will try to load from a

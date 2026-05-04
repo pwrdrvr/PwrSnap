@@ -7,6 +7,7 @@ import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
+import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
@@ -196,6 +197,19 @@ export function bootstrapApp(): void {
   registerSchemesAsPrivileged();
 
   app.setName(APP_NAME);
+
+  // E2E isolation: each Playwright launch sets PWRSNAP_USER_DATA to
+  // an isolated tmpdir so SQLite, captures dir, cache dir, and trash
+  // all live in a throwaway location — no contamination between
+  // specs and no risk of the suite writing into the developer's real
+  // PwrSnap install. We can't rely on HOME alone because Electron
+  // caches the userData path early using the binary's bundle name
+  // ("Electron" under Playwright), which mangles the layout.
+  const customUserData = process.env.PWRSNAP_USER_DATA;
+  if (customUserData !== undefined && customUserData.length > 0) {
+    app.setPath("userData", customUserData);
+  }
+
   app.setAboutPanelOptions({
     applicationName: APP_NAME,
     applicationVersion: app.getVersion(),
@@ -213,6 +227,7 @@ export function bootstrapApp(): void {
     registerClipboardHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
+    registerOverlaysHandlers();
     // export-handler.ts re-registers `library:export` over the
     // not-implemented stub from library-handlers.ts. Order matters.
     registerExportHandler();
@@ -232,9 +247,24 @@ export function bootstrapApp(): void {
       // helper covers every command without per-command plumbing.
       // Lazy-required so production bundles don't even import this
       // shim's `bus` reference unless the flag is on.
+      const { insertOrFindCapture } = await import("./persistence/captures-repo");
+      const { getDb } = await import("./persistence/db");
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
-          bus.dispatch(name as never, req as never, { principal: "ipc" })
+          bus.dispatch(name as never, req as never, { principal: "ipc" }),
+        // Test-only helpers for seeding rows + reading internal state
+        // that isn't bus-exposed. Every helper goes through the same
+        // bridge surface so specs don't reach into module internals
+        // via dynamic imports — those tend to drift across path /
+        // bundler changes.
+        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0]) =>
+          insertOrFindCapture(input),
+        getOverlaysVersion: (captureId: string) => {
+          const row = getDb()
+            .prepare("SELECT overlays_version FROM captures WHERE id = ?")
+            .get(captureId) as { overlays_version: number } | undefined;
+          return row?.overlays_version ?? null;
+        }
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =
         testBridge;

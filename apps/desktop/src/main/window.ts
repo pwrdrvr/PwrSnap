@@ -11,8 +11,11 @@ export function getPreloadPath(): string {
   return join(__dirname, "../preload/index.cjs");
 }
 
-function rendererTarget(stage?: "tray" | "float-over"): RendererTarget {
-  const hash = stage ? `stage=${stage}` : undefined;
+function rendererTarget(stage?: "tray" | "float-over" | "edit", extraHash?: string): RendererTarget {
+  const baseHash = stage ? `stage=${stage}` : undefined;
+  const hash = baseHash !== undefined && extraHash !== undefined
+    ? `${baseHash}&${extraHash}`
+    : baseHash ?? extraHash;
   if (process.env.ELECTRON_RENDERER_URL) {
     const url = process.env.ELECTRON_RENDERER_URL + (hash ? `#${hash}` : "");
     return { kind: "url", url };
@@ -177,6 +180,44 @@ export function createFloatOverWindow(): BrowserWindow {
     const y = wa.y + wa.height - height - margin;
     window.setPosition(x, y, false);
     window.showInactive();
+  });
+
+  return window;
+}
+
+/**
+ * Phase 2 Edit window — opens a dedicated, full-screen-ish window
+ * sized for annotating a specific capture. Carries the captureId in
+ * the URL hash so the renderer can fetch + render it; subsequent
+ * edits route through `overlays:upsert`.
+ *
+ * Each call creates a fresh window: edit windows are per-capture,
+ * not singletons. Closing one hides nothing else; the user can have
+ * multiple captures open in parallel editor windows if they want.
+ */
+export function createEditWindow(captureId: string): BrowserWindow {
+  const window = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 720,
+    minHeight: 540,
+    show: false,
+    title: "PwrSnap Editor",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 20, y: 18 },
+    backgroundColor: "#0a0908",
+    webPreferences: baseWebPreferences
+  });
+
+  loadRenderer(window, rendererTarget("edit", `captureId=${encodeURIComponent(captureId)}`));
+
+  window.once("ready-to-show", () => {
+    log.info("edit window ready-to-show", { id: window.id, captureId });
+    window.show();
+    window.focus();
+    if (isDevelopment) {
+      window.webContents.openDevTools({ mode: "detach" });
+    }
   });
 
   return window;

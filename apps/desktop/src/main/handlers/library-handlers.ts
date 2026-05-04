@@ -11,6 +11,7 @@ import {
   softDeleteCapture
 } from "../persistence/captures-repo";
 import { moveSourceToTrash } from "../persistence/source-store";
+import { createEditWindow } from "../window";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -68,6 +69,27 @@ export function registerLibraryHandlers(): void {
     if (main.isMinimized()) main.restore();
     if (!main.isVisible()) main.show();
     main.focus();
+    return ok(undefined);
+  });
+
+  bus.register("editor:open", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+    if (record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "deleted",
+        message: `capture is in trash: ${req.captureId}`
+      });
+    }
+    createEditWindow(req.captureId);
+    log.info("editor opened", { captureId: req.captureId });
     return ok(undefined);
   });
 }

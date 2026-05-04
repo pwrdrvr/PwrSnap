@@ -113,6 +113,7 @@ export function FloatOver({
   srcW = 2880,
   srcH = 1800,
   onDismiss,
+  onEdit,
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
@@ -127,6 +128,7 @@ export function FloatOver({
   srcW?: number;
   srcH?: number;
   onDismiss?: () => void;
+  onEdit?: () => void;
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
@@ -256,7 +258,12 @@ export function FloatOver({
             </button>
           </div>
           <div className="fo__preview-actions-r">
-            <button className="fo__hover-btn" title="Open in editor">
+            <button
+              className="fo__hover-btn"
+              title="Open in editor"
+              onClick={() => onEdit?.()}
+              disabled={onEdit === undefined}
+            >
               <FoIcon name="pen-line" size={11} /> Edit
             </button>
             <button className="fo__hover-btn" title="Reveal in library">

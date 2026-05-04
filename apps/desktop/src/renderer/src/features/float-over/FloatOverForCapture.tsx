@@ -83,6 +83,11 @@ export function FloatOverForCapture({ captureId }: { captureId: string }) {
       onDismiss={() => {
         void dispatch("float-over:dismiss", {});
       }}
+      onEdit={() => {
+        // Phase 2 starter: open the editor in a new window. The
+        // float-over stays put — closing it is independent.
+        void dispatch("editor:open", { captureId });
+      }}
     />
   );
 }

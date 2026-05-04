@@ -55,7 +55,24 @@ struct WindowInfo: Encodable {
     let bounds: WindowBounds
     let layer: Int
     let alpha: Double
+    /// True when this window is the frontmost on-screen of its app
+    /// (best-effort — first hit per pid in z-order). The selector
+    /// uses this to skip an app's auxiliary panels that sit at
+    /// layer 0 alongside the user-visible main window.
+    let isFrontmostInApp: Bool
 }
+
+/// Bundle ids whose windows must NEVER appear as snap targets — they
+/// are system chrome (status bar items, accessibility prompts) or
+/// helpers that the user can't sensibly capture.
+let bundleBlocklist: Set<String> = [
+    "com.apple.controlcenter",
+    "com.apple.accessibility.universalAccessAuthWarn",
+    "com.apple.WindowManager",
+    "com.apple.dock",
+    "com.apple.notificationcenterui",
+    "com.apple.systemuiserver"
+]
 
 func collectWindows() -> [WindowInfo] {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
@@ -74,6 +91,7 @@ func collectWindows() -> [WindowInfo] {
 
     var out: [WindowInfo] = []
     out.reserveCapacity(raw.count)
+    var seenFrontmostByPid: Set<pid_t> = []
     for win in raw {
         guard
             let layer = win[kCGWindowLayer as String] as? Int,
@@ -98,6 +116,18 @@ func collectWindows() -> [WindowInfo] {
         let title = win[kCGWindowName as String] as? String
         let bundleId = bundleByPid[ownerPid]
 
+        // Drop blocklisted system bundles (control center pieces,
+        // accessibility prompts, etc.) — they have layer 0 windows
+        // but should never be capture targets.
+        if let bid = bundleId, bundleBlocklist.contains(bid) { continue }
+
+        // First entry per pid (in z-order) is the user-visible main
+        // window of that app. Subsequent entries are panels /
+        // toolbars / popovers that share the pid — usually not what
+        // a user means by "snap to that app's window."
+        let isFrontmost = !seenFrontmostByPid.contains(ownerPid)
+        seenFrontmostByPid.insert(ownerPid)
+
         out.append(
             WindowInfo(
                 windowId: windowId,
@@ -112,7 +142,8 @@ func collectWindows() -> [WindowInfo] {
                     height: Int(cgRect.height)
                 ),
                 layer: layer,
-                alpha: alpha
+                alpha: alpha,
+                isFrontmostInApp: isFrontmost
             )
         )
     }

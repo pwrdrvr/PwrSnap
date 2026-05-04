@@ -333,6 +333,23 @@ export function RegionSelector() {
           ) {
             return; // unchanged — skip re-render
           }
+          // Diagnostic — every snap-target change. Pair this with the
+          // main-side `snap candidates` log to verify what the helper
+          // reported vs what the renderer ended up showing.
+          // eslint-disable-next-line no-console
+          console.debug("[snap]", {
+            cursor: { x: event.clientX, y: event.clientY },
+            viewport: viewport(),
+            target:
+              next.kind === "window"
+                ? {
+                    kind: "window",
+                    windowId: next.entry.windowId,
+                    app: next.entry.appName,
+                    rect: next.entry.rect
+                  }
+                : { kind: "display", rect: displaySnapRect() }
+          });
           setSnapTarget(next);
           setRect(rectForSnap(next));
           return;

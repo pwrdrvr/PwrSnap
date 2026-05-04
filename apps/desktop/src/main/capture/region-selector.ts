@@ -19,7 +19,7 @@ import { BrowserWindow, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
-import { listWindows, type WindowInfo } from "./window-list";
+import { filterSnapCandidates, listWindows, selfPidSet, type WindowInfo } from "./window-list";
 
 const log = getMainLogger("pwrsnap:region-selector");
 
@@ -154,24 +154,56 @@ export async function pickRegion(): Promise<SelectorResult> {
   // translation here so the renderer just compares against
   // event.clientX/Y.
   const displayBounds = targetDisplay.bounds;
-  void listWindows().then((snapshot) => {
-    lastSnapshot = snapshot;
-    const localized = snapshot
-      // Drop our own selector + library windows from the snap list —
-      // hovering over them shouldn't trigger a snap to PwrSnap itself.
-      .filter((w) => w.bundleId !== "com.pwrdrvr.pwrsnap" && w.bundleId !== "com.github.Electron")
-      .map((w) => ({
-        windowId: w.windowId,
-        bundleId: w.bundleId,
-        appName: w.appName,
-        title: w.title,
-        rect: {
-          x: w.bounds.x - displayBounds.x,
-          y: w.bounds.y - displayBounds.y,
-          w: w.bounds.width,
-          h: w.bounds.height
-        }
-      }));
+  // Capture the set of pids that belong to PwrSnap itself BEFORE the
+  // selector window steals frontmost — they're the windows we need
+  // to exclude as snap targets. The previous bundle-id filter
+  // ("com.github.Electron") had collateral damage in dev: it caught
+  // every other Electron app the user happened to have running too
+  // (Postman, Slack, Linear, etc.). pid filtering is the right axis.
+  const ourPids = selfPidSet();
+
+  void listWindows().then((rawSnapshot) => {
+    lastSnapshot = rawSnapshot;
+    const candidates = filterSnapCandidates(rawSnapshot, ourPids);
+    // Drop windows that don't overlap the active display — they
+    // belong to another monitor and have no business snapping in
+    // this selector window's local coord space.
+    const onThisDisplay = candidates.filter((w) => {
+      const wx2 = w.bounds.x + w.bounds.width;
+      const wy2 = w.bounds.y + w.bounds.height;
+      const dx2 = displayBounds.x + displayBounds.width;
+      const dy2 = displayBounds.y + displayBounds.height;
+      return (
+        wx2 > displayBounds.x &&
+        w.bounds.x < dx2 &&
+        wy2 > displayBounds.y &&
+        w.bounds.y < dy2
+      );
+    });
+    const localized = onThisDisplay.map((w) => ({
+      windowId: w.windowId,
+      bundleId: w.bundleId,
+      appName: w.appName,
+      title: w.title,
+      rect: {
+        x: w.bounds.x - displayBounds.x,
+        y: w.bounds.y - displayBounds.y,
+        w: w.bounds.width,
+        h: w.bounds.height
+      }
+    }));
+    log.info("snap candidates", {
+      raw: rawSnapshot.length,
+      afterSelfPidFilter: candidates.length,
+      onThisDisplay: onThisDisplay.length,
+      ourPids: Array.from(ourPids),
+      candidates: localized.map((c) => ({
+        id: c.windowId,
+        app: c.appName,
+        bundle: c.bundleId,
+        rect: c.rect
+      }))
+    });
     if (!win.isDestroyed()) {
       win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, { windows: localized });
     }

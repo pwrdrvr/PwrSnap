@@ -40,6 +40,11 @@ export type WindowInfo = {
   bounds: WindowBounds;
   layer: number;
   alpha: number;
+  /** True when this entry is the frontmost-in-z-order window owned by
+   *  its pid. Helper-side flag — the first hit per pid in the front-
+   *  to-back walk. Used to demote auxiliary panels (toolbars,
+   *  popovers) that share the pid of the user-visible main window. */
+  isFrontmostInApp: boolean;
 };
 
 let cachedHelperPath: string | null = null;
@@ -128,4 +133,54 @@ export function findWindowAt(
     }
   }
   return null;
+}
+
+/**
+ * Filter the helper's output before shipping it to the renderer.
+ * Drops windows that aren't valid snap targets:
+ *   - Our own process (PwrSnap's main + renderers); CGWindowOwnerPID
+ *     matches `process.pid` for the main and the various helper
+ *     renderer processes belonging to our app group.
+ *   - Auxiliary windows in apps that have a clear main window — when
+ *     a pid contributes multiple z-order siblings, only the
+ *     frontmost is kept. Toolbars / popovers / hidden inspector
+ *     panels stop polluting the snap candidates this way.
+ */
+export function filterSnapCandidates(
+  windows: readonly WindowInfo[],
+  selfPids: ReadonlySet<number>
+): WindowInfo[] {
+  return windows.filter((w) => !selfPids.has(w.pid) && w.isFrontmostInApp);
+}
+
+/**
+ * Process IDs belonging to PwrSnap itself (main process + every
+ * renderer process spawned by Electron). The helper's CGWindow scan
+ * sees these as ordinary on-screen windows; we filter them out so
+ * the user can't accidentally snap to our own UI.
+ */
+export function selfPidSet(): Set<number> {
+  const pids = new Set<number>([process.pid]);
+  // Sniff Electron renderer pids — webContents has an `getOSProcessId`
+  // method on each. Adding them lets us filter out our own
+  // BrowserWindows even when they're owned by helper renderer pids
+  // (Electron 41 spawns a separate process per BrowserWindow under
+  // sandboxed mode).
+  try {
+    // Lazy require to keep this module importable from non-Electron
+    // contexts (unit tests, the eventual MCP transport).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const electron = require("electron") as typeof import("electron");
+    for (const win of electron.BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        pids.add(win.webContents.getOSProcessId());
+      } catch {
+        /* webContents may have been torn down */
+      }
+    }
+  } catch {
+    /* not running under Electron — fine */
+  }
+  return pids;
 }

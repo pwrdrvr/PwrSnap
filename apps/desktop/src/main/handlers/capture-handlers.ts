@@ -22,7 +22,7 @@ import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { pickRegion, getLastWindowListSnapshot } from "../capture/region-selector";
-import { captureRegion } from "../capture/screencapture";
+import { captureRegion, captureWindow } from "../capture/screencapture";
 import { findWindowAt, type WindowInfo } from "../capture/window-list";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { putCaptureSource } from "../persistence/source-store";
@@ -63,7 +63,27 @@ export function registerCaptureHandlers(): void {
         message: `region selector: ${selection.reason}`
       });
     }
-    const captureResult = await captureRegion(selection.rect, selection.displayId);
+
+    // Two capture paths:
+    //   • Window snap (snappedWindowId set; user committed straight
+    //     from the snap target without dragging or resizing) →
+    //     `screencapture -l <id>`. Asks WindowServer for the
+    //     window's full backing buffer — clean rounded corners, no
+    //     occlusion artifacts, no drop shadow.
+    //   • Anything else (rect drag, display snap, snap+resize) →
+    //     `screencapture -R <rect>` like before.
+    const snapshot = getLastWindowListSnapshot();
+    let captureResult;
+    let sourceApp;
+    if (selection.snappedWindowId !== undefined) {
+      captureResult = await captureWindow(selection.snappedWindowId);
+      // Source-app is deterministic from the snapped windowId.
+      sourceApp = findById(snapshot, selection.snappedWindowId);
+    } else {
+      captureResult = await captureRegion(selection.rect, selection.displayId);
+      // Hit-test the rect center against the snapshot.
+      sourceApp = resolveSourceApp(selection.rect, snapshot);
+    }
     if (!captureResult.ok) {
       return err({
         kind: "capture",
@@ -71,14 +91,6 @@ export function registerCaptureHandlers(): void {
         message: captureResult.message
       });
     }
-    // Source-app: prefer the snapped windowId when the user committed
-    // via ⇧-snap (deterministic), else hit-test the rect center
-    // against the snapshot taken at pickRegion show.
-    const snapshot = getLastWindowListSnapshot();
-    const sourceApp =
-      selection.snappedWindowId !== undefined
-        ? findById(snapshot, selection.snappedWindowId) ?? resolveSourceApp(selection.rect, snapshot)
-        : resolveSourceApp(selection.rect, snapshot);
     return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 

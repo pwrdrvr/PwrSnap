@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import {
   boundingBox,
   computeVisibility,
+  largestFragment,
   pickWindowAt,
   pointInRect,
   rectsIntersect,
@@ -88,6 +89,38 @@ describe("subtractAll", () => {
   });
 });
 
+describe("largestFragment", () => {
+  // Picks the biggest rect by area. Used to tighten the snap rect
+  // for L-shape / multi-fragment visible regions: instead of the
+  // over-approximating bounding box we draw a single rect over the
+  // biggest meaningful piece.
+  test("empty returns null", () => {
+    expect(largestFragment([])).toBeNull();
+  });
+  test("single rect returns itself", () => {
+    expect(largestFragment([R(10, 20, 30, 40)])).toEqual(R(10, 20, 30, 40));
+  });
+  test("biggest rect by area wins", () => {
+    const small = R(0, 0, 10, 10);
+    const big = R(50, 50, 100, 100);
+    const medium = R(200, 0, 30, 30);
+    expect(largestFragment([small, big, medium])).toEqual(big);
+  });
+  test("ties resolve to first-seen", () => {
+    const a = R(0, 0, 50, 50);
+    const b = R(100, 0, 50, 50); // same area
+    expect(largestFragment([a, b])).toEqual(a);
+    expect(largestFragment([b, a])).toEqual(b);
+  });
+  test("L-shape fragments resolve to the bigger arm", () => {
+    // Bottom strip (5000) vs right strip (2500) — the L from the
+    // computeVisibility test above. Tightens the snap rect.
+    const bottomStrip = R(0, 50, 100, 50);
+    const rightStrip = R(50, 0, 50, 50);
+    expect(largestFragment([bottomStrip, rightStrip])).toEqual(bottomStrip);
+  });
+});
+
 describe("boundingBox", () => {
   test("empty returns null", () => {
     expect(boundingBox([])).toBeNull();
@@ -126,34 +159,37 @@ describe("computeVisibility", () => {
     expect(v[1]!.visibleArea).toBe(0);
   });
 
-  test("L-shaped visible region: bbox over-approximates the polygon", () => {
+  test("L-shaped visible region: visibleBounds is largest fragment, not bounding box", () => {
     // back = (0,0,100,100), front = (0,0,50,50) at top-left.
     // back's visible fragments per subtractRect:
-    //   - top strip: front.y (=0) > back.y (=0)? No. Skip.
-    //   - bottom strip: front.y+front.h (=50) < back.y+back.h (=100)? Yes.
-    //     => (0, 50, 100, 50)
-    //   - middle band: midTop=max(0,0)=0, midBottom=min(100,50)=50, h=50.
-    //     left strip: front.x (=0) > back.x (=0)? No. Skip.
-    //     right strip: front.x+front.w (=50) < back.x+back.w (=100)? Yes.
-    //       => (50, 0, 50, 50)
-    // Bounding box of {(0,50,100,50), (50,0,50,50)}: minX=0, minY=0, maxX=100, maxY=100.
+    //   - bottom strip: (0, 50, 100, 50)  area 5000
+    //   - right strip in upper band: (50, 0, 50, 50)  area 2500
+    // Largest = bottom strip. The OLD behavior used the bounding
+    // box (0,0,100,100), which over-approximated by including the
+    // occluded top-left corner. NEW behavior tightens to the actual
+    // largest visible piece — what the user expects to capture.
     const front = W(1, 0, 0, 50, 50);
     const back = W(2, 0, 0, 100, 100);
     const v = computeVisibility([front, back]);
-    expect(v[1]!.visibleBounds).toEqual(R(0, 0, 100, 100));
+    expect(v[1]!.visibleBounds).toEqual(R(0, 50, 100, 50));
     expect(v[1]!.visibleArea).toBe(100 * 100 - 50 * 50);
   });
 
-  test("center-cut middle-window has tight bounding box matching the L bbox", () => {
-    // A small front window in the middle of a larger back window
-    // produces a 4-rect frame for the back. Bounding box of the
-    // frame == back's full bounds (as expected — the frame surrounds
-    // the cutout entirely).
+  test("center cutout: visibleBounds is the biggest single fragment, not the frame's bbox", () => {
+    // Small front in the middle of a larger back → 4-rect frame:
+    //   top strip    (0, 0, 100, 40)   area 4000
+    //   bottom strip (0, 60, 100, 40)  area 4000
+    //   left middle  (0, 40, 40, 20)   area 800
+    //   right middle (60, 40, 40, 20)  area 800
+    // Top + bottom tie at 4000; subtractRect emits top first so it
+    // wins the largest-fragment selection. Either choice is fine
+    // visually — the contract is "tight, fully-visible rect" and
+    // both qualify.
     const front = W(1, 40, 40, 20, 20);
     const back = W(2, 0, 0, 100, 100);
     const v = computeVisibility([front, back]);
     expect(v[1]!.visibleArea).toBe(100 * 100 - 20 * 20);
-    expect(v[1]!.visibleBounds).toEqual(R(0, 0, 100, 100));
+    expect(v[1]!.visibleBounds).toEqual(R(0, 0, 100, 40));
   });
 });
 

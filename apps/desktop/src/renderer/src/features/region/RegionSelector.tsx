@@ -115,6 +115,10 @@ export function RegionSelector() {
   // this scale bridges them. Default 1 until the first snapshot
   // arrives with displayBounds.
   const cssToLogicalRef = useRef(1);
+  // Last-known cursor position. Updated on every mousemove so
+  // keyboard handlers (Tab cycle in particular) know where to
+  // hit-test from.
+  const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
@@ -285,6 +289,13 @@ export function RegionSelector() {
       return isPointInsideRect(rectRef.current, clientX, clientY);
     }
 
+    function lastCursor(): { x: number; y: number } {
+      // Approximate cursor — onMouseMove keeps `lastMouseRef.current`
+      // current; falls back to viewport center if we have nothing yet.
+      const v = viewport();
+      return lastMouseRef.current ?? { x: v.width / 2, y: v.height / 2 };
+    }
+
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -294,6 +305,43 @@ export function RegionSelector() {
       if (event.key === "Enter") {
         event.preventDefault();
         commit();
+        return;
+      }
+      if (event.key === "Tab" && interactionRef.current.kind === "snap") {
+        // Tab cycles through windows whose raw bounds also contain
+        // the cursor — useful for capturing a window mostly hidden
+        // under another. Walks forward in z-order on Tab, backward
+        // on Shift+Tab. Skips windows we own (library, float-over,
+        // etc.) since they're never snap targets.
+        event.preventDefault();
+        const cur = lastCursor();
+        const all = windowsRef.current;
+        const candidates = all.filter(
+          (w) =>
+            !w.ownedByUs &&
+            cur.x >= w.rawRect.x &&
+            cur.x <= w.rawRect.x + w.rawRect.w &&
+            cur.y >= w.rawRect.y &&
+            cur.y <= w.rawRect.y + w.rawRect.h
+        );
+        if (candidates.length === 0) return;
+        const currentTarget = snapTargetRef.current;
+        const currentIdx =
+          currentTarget.kind === "window"
+            ? candidates.findIndex((w) => w.windowId === currentTarget.entry.windowId)
+            : -1;
+        const dir = event.shiftKey ? -1 : 1;
+        // Wrap around with proper modulo for negative direction.
+        const nextIdx =
+          (currentIdx + dir + candidates.length) % candidates.length;
+        const next: SnapTarget = { kind: "window", entry: candidates[nextIdx]! };
+        setSnapTarget(next);
+        setRect({
+          x: next.entry.rect.x,
+          y: next.entry.rect.y,
+          w: next.entry.rect.w,
+          h: next.entry.rect.h
+        });
         return;
       }
       if (event.key === " " && !spaceRef.current) {
@@ -381,6 +429,7 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
+      lastMouseRef.current = { x: event.clientX, y: event.clientY };
       const i = interactionRef.current;
       switch (i.kind) {
         case "snap": {
@@ -550,6 +599,10 @@ export function RegionSelector() {
           <span className="region-hint-sep">·</span>
           <span>
             <kbd>drag</kbd>region
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>tab</kbd>next window
           </span>
           <span className="region-hint-sep">·</span>
           <span>

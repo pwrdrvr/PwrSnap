@@ -39,9 +39,17 @@ export type Visibility<T> = {
   source: T;
   /** Window bounds passed in, mirrored for convenience. */
   rawBounds: Rect;
-  /** Bounding rect of the visible region (bounds minus occluders). */
+  /**
+   * Snap-rect we paint as the highlight: the **largest contiguous
+   * visible rectangular fragment** within the window's visible
+   * region. For windows whose visible region is a single rect this
+   * just equals that rect; for L-shaped or split visible regions it
+   * picks the biggest meaningful piece — better UX than the
+   * bounding box (which would wrap occluded areas the user can't
+   * actually see).
+   */
   visibleBounds: Rect;
-  /** Sum of pixels in the visible region. Zero = fully occluded. */
+  /** Sum of pixels in the entire visible region. Zero = fully occluded. */
   visibleArea: number;
   /** Z-order index in the original list (0 = frontmost). */
   zIndex: number;
@@ -63,7 +71,13 @@ export function computeVisibility<T extends WithBounds>(
     const occluders = windows.slice(0, i).map((f) => boundsToRect(f.bounds));
     const fragments = subtractAll([rawBounds], occluders);
     const visibleArea = fragments.reduce((acc, r) => acc + r.w * r.h, 0);
-    const visibleBounds = boundingBox(fragments) ?? rawBounds;
+    // Pick the largest single fragment as the snap rect — NOT the
+    // bounding box of all fragments. The bounding box of an L-shape
+    // wraps the occluded inside corner, painting a snap rect that
+    // includes pixels the user can't actually see at this window.
+    // Largest-fragment is a tight, fully-visible rectangle that
+    // matches what the user expects to capture.
+    const visibleBounds = largestFragment(fragments) ?? rawBounds;
     out.push({ source: w, rawBounds, visibleBounds, visibleArea, zIndex: i });
   }
   return out;
@@ -166,4 +180,24 @@ export function boundingBox(rects: readonly Rect[]): Rect | null {
     if (r.y + r.h > maxY) maxY = r.y + r.h;
   }
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * The biggest rectangle in the list (by area). Used as the snap
+ * highlight for windows whose visible region splits into multiple
+ * fragments: instead of the over-approximating bounding box we
+ * draw a tight rect over the largest piece. Returns null on empty.
+ */
+export function largestFragment(rects: readonly Rect[]): Rect | null {
+  if (rects.length === 0) return null;
+  let best: Rect | null = null;
+  let bestArea = -1;
+  for (const r of rects) {
+    const area = r.w * r.h;
+    if (area > bestArea) {
+      best = r;
+      bestArea = area;
+    }
+  }
+  return best;
 }

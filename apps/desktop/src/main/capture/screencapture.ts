@@ -74,6 +74,66 @@ function validateRect(rect: Rect, displayId: number): { valid: boolean; message:
 }
 
 /**
+ * Capture a specific on-screen window by its CGWindowID via
+ * `screencapture -l <id>`. Returns a temp file path on success.
+ *
+ * Why this is preferred over rect capture for snap-to-window:
+ *   • Captures the full window content even if parts are occluded
+ *     by other windows. screencapture asks the WindowServer for the
+ *     window's backing buffer directly — the rect path can only
+ *     grab whatever pixels are visible at the moment.
+ *   • Rounded corners come out clean (the alpha channel respects
+ *     the window's mask), not as squared-off pixels around the
+ *     visible region's bounding box.
+ *   • No drop-shadow noise (we pass `-o` to suppress it). The user
+ *     gets the window's content area only, framed exactly to the
+ *     window's bounds.
+ *
+ * Caller path: when the user commits straight from a window snap
+ * (no drag, no handle-resize), pickRegion sets `snappedWindowId`
+ * on the result and capture-handlers routes here. If the user has
+ * adjusted the rect at all the windowId no longer matches the
+ * intended geometry, so capture-handlers falls back to
+ * `captureRegion` instead.
+ */
+export async function captureWindow(
+  windowId: number
+): Promise<CaptureRegionResult> {
+  if (!Number.isInteger(windowId) || windowId <= 0) {
+    return {
+      ok: false,
+      reason: "validation",
+      message: `invalid windowId: ${windowId}`
+    };
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
+  const tempPath = join(dir, `${Date.now()}.png`);
+  // -x silences the shutter; -l <id> picks the window; -o drops the
+  // drop shadow (cleaner output, matches Cleanshot / Shottr default
+  // behavior); -t png is explicit.
+  const args = ["-x", "-l", String(windowId), "-o", "-t", "png", tempPath];
+
+  try {
+    await execFileAsync("/usr/sbin/screencapture", args, { timeout: 5_000 });
+    return { ok: true, tempPath, displayId: 0 };
+  } catch (err) {
+    const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
+    const stderr = (err as { stderr?: Buffer | string }).stderr;
+    const stderrStr = typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    const reason = classifyCaptureError(
+      typeof exitCode === "number" ? exitCode : 1,
+      stderrStr
+    );
+    return {
+      ok: false,
+      reason,
+      message: stderrStr || (err instanceof Error ? err.message : String(err))
+    };
+  }
+}
+
+/**
  * Capture a region. Returns a temp file path on success; caller is
  * responsible for moving / deleting the file.
  */

@@ -242,6 +242,67 @@ test("a PwrSnap-owned window covering another window blocks the snap (no fall-th
   }
 });
 
+test("Tab cycles to the next window underneath the cursor", async () => {
+  // Two overlapping windows — Slack (frontmost) and 1Password
+  // (behind, mostly occluded). Cursor is in the overlap. Without
+  // Tab the user can only snap to Slack. Tab cycles to 1Password,
+  // Tab again wraps back to Slack. Shift+Tab goes the other way.
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetSelector(app);
+    await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
+
+    const slack = {
+      windowId: 1,
+      pid: 100,
+      bundleId: "com.tinyspeck.slackmacgap",
+      appName: "Slack",
+      title: null as string | null,
+      ownedByUs: false,
+      zIndex: 0,
+      rect: { x: 100, y: 100, w: 600, h: 400 },
+      rawRect: { x: 100, y: 100, w: 600, h: 400 }
+    };
+    const onepass = {
+      windowId: 2,
+      pid: 200,
+      bundleId: "com.1password.1password",
+      appName: "1Password",
+      title: null as string | null,
+      ownedByUs: false,
+      zIndex: 1,
+      // Visible region = right strip (Slack covers the left).
+      rect: { x: 700, y: 100, w: 200, h: 400 },
+      // Raw bounds — full window — overlaps Slack.
+      rawRect: { x: 50, y: 100, w: 850, h: 400 }
+    };
+    await hydrateWindowList(app, [slack, onepass]);
+    await selector.waitForFunction(
+      () => document.body.dataset.windowListCount === "2"
+    );
+
+    // Park cursor in the OVERLAP zone (inside both rawRects).
+    // Slack covers x:100-700; 1Password covers x:50-900. (300, 250)
+    // is inside both. z-order picks Slack first.
+    await selector.mouse.move(300, 250);
+    await expect(selector.locator(".region-dims-chip")).toContainText("Slack");
+
+    // Tab → cycle to next: 1Password.
+    await selector.keyboard.press("Tab");
+    await expect(selector.locator(".region-dims-chip")).toContainText("1Password");
+
+    // Tab again → wrap back to Slack.
+    await selector.keyboard.press("Tab");
+    await expect(selector.locator(".region-dims-chip")).toContainText("Slack");
+
+    // Shift+Tab → reverse direction (1Password again).
+    await selector.keyboard.press("Shift+Tab");
+    await expect(selector.locator(".region-dims-chip")).toContainText("1Password");
+  } finally {
+    await app.close();
+  }
+});
+
 test("when our window only partially occludes another, the visible portion still snaps", async () => {
   // Library covers the upper half of 1Password. 1Password's lower
   // half is visible. The renderer should:

@@ -48,7 +48,7 @@ mac:
   helperPluginBundleId: com.pwrdrvr.pwrsnap.helper.Plugin
   extendInfo:
     NSHumanReadableCopyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
-    LSMinimumSystemVersion: "12.0"
+    LSMinimumSystemVersion: "14.0"
     LSApplicationCategoryType: public.app-category.graphics-design
     NSScreenCaptureUsageDescription: "PwrSnap captures your screen for screenshots and screen recording."
     NSMicrophoneUsageDescription: "PwrSnap uses the microphone for voice annotation and presenter audio."

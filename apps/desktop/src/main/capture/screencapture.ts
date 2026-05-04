@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { screen } from "electron";
 import { classifyCaptureError } from "./permissions";
+import { captureWindowImage } from "./window-list";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,27 +75,30 @@ function validateRect(rect: Rect, displayId: number): { valid: boolean; message:
 }
 
 /**
- * Capture a specific on-screen window by its CGWindowID via
- * `screencapture -l <id>`. Returns a temp file path on success.
+ * Capture a specific on-screen window by its CGWindowID, getting
+ * the window's ACTUAL content even when occluded by other windows.
  *
- * Why this is preferred over rect capture for snap-to-window:
- *   • Captures the full window content even if parts are occluded
- *     by other windows. screencapture asks the WindowServer for the
- *     window's backing buffer directly — the rect path can only
- *     grab whatever pixels are visible at the moment.
- *   • Rounded corners come out clean (the alpha channel respects
- *     the window's mask), not as squared-off pixels around the
- *     visible region's bounding box.
- *   • No drop-shadow noise (we pass `-o` to suppress it). The user
- *     gets the window's content area only, framed exactly to the
- *     window's bounds.
+ * Primary path: shells to our Swift helper which uses
+ * SCScreenshotManager + SCContentFilter(desktopIndependentWindow:).
+ * Why not `screencapture -l <id>`: empirically tested on macOS 14/15,
+ * `-l` captures the SCREEN RECT around the window, including
+ * anything visually on top of it. SCContentFilter goes through
+ * WindowServer for the window's actual backing buffer, so the
+ * captured PNG contains exactly the content the owning app
+ * rendered — overlapping apps disappear from the image.
  *
- * Caller path: when the user commits straight from a window snap
- * (no drag, no handle-resize), pickRegion sets `snappedWindowId`
- * on the result and capture-handlers routes here. If the user has
- * adjusted the rect at all the windowId no longer matches the
- * intended geometry, so capture-handlers falls back to
- * `captureRegion` instead.
+ * Fallback path: `screencapture -l <id>`. SCKit needs Screen
+ * Recording TCC granted to the HELPER binary specifically (not
+ * just to the parent Electron). First run on a fresh dev build
+ * usually fails until the user grants perms in System Settings.
+ * We fall back to legacy capture so ⇧+click always produces an
+ * image — it just won't have the occlusion magic until the user
+ * grants the perm. Logged at warn level so dev mode notices.
+ *
+ * Caller path: when the user holds ⇧ at commit time on a window
+ * snap target, pickRegion sets both `snappedWindowId` and
+ * `fullWindow: true`; capture-handlers routes here. The default
+ * (no ⇧) goes through `captureRegion`.
  */
 export async function captureWindow(
   windowId: number
@@ -109,13 +113,20 @@ export async function captureWindow(
 
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
   const tempPath = join(dir, `${Date.now()}.png`);
-  // -x silences the shutter; -l <id> picks the window; -o drops the
-  // drop shadow (cleaner output, matches Cleanshot / Shottr default
-  // behavior); -t png is explicit.
-  const args = ["-x", "-l", String(windowId), "-o", "-t", "png", tempPath];
+  const sckitResult = await captureWindowImage(windowId, tempPath);
+  if (sckitResult.ok) {
+    return { ok: true, tempPath, displayId: 0 };
+  }
 
+  // SCKit fallback to `screencapture -l`. Won't ignore occlusion
+  // (the user'll see overlapping windows in the image) but at
+  // least ⇧+click produces SOMETHING while the user goes to
+  // System Settings → Screen Recording to grant the helper.
+  const fallbackArgs = ["-x", "-l", String(windowId), "-o", "-t", "png", tempPath];
   try {
-    await execFileAsync("/usr/sbin/screencapture", args, { timeout: 5_000 });
+    await execFileAsync("/usr/sbin/screencapture", fallbackArgs, {
+      timeout: 5_000
+    });
     return { ok: true, tempPath, displayId: 0 };
   } catch (err) {
     const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
@@ -128,7 +139,10 @@ export async function captureWindow(
     return {
       ok: false,
       reason,
-      message: stderrStr || (err instanceof Error ? err.message : String(err))
+      message:
+        stderrStr ||
+        (err instanceof Error ? err.message : String(err)) ||
+        sckitResult.message
     };
   }
 }

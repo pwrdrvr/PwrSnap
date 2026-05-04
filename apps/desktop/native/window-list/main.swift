@@ -38,6 +38,9 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import ImageIO
+import ScreenCaptureKit
+import UniformTypeIdentifiers
 
 struct WindowBounds: Encodable {
     let x: Int
@@ -175,6 +178,116 @@ if args.count >= 3 && args[1] == "--activate-pid" {
         runningApp.activate()
     }
     exit(0)
+}
+
+// `--capture-window <windowId> <output.png>` — write the actual
+// content of the named CGWindow to the given path as a PNG.
+//
+// Why this instead of `screencapture -l <windowId>`:
+//   - `screencapture -l` captures the SCREEN RECT occupied by the
+//     window, including anything visually on top of it. Empirically
+//     tested: if another app's window covers part of the snap
+//     target, those occluding pixels land in the output. The flag
+//     does NOT ask WindowServer for the window's actual backing
+//     buffer — it just constrains the captured area to the window's
+//     bounds.
+//   - ScreenCaptureKit's SCContentFilter(desktopIndependentWindow:)
+//     + SCScreenshotManager.captureImage asks WindowServer directly
+//     for THAT window's pixels regardless of occlusion. The window
+//     stays where it is in z-order (we don't raise it visually),
+//     and the output contains exactly the content the owning app
+//     rendered into its backing store.
+//
+// SCKit was introduced in macOS 12.3 but SCScreenshotManager
+// (the async one-shot API we want here) needs 14.0+. Apple
+// obsoleted CGWindowListCreateImage in macOS 15.0 — it doesn't
+// even compile against modern SDKs. So macOS 14+ minimum.
+//
+// Returns exit codes: 0 on success, 2 on bad args, 3-5 on capture
+// errors. The TS wrapper interprets non-zero as "fall back to rect
+// capture" so older macOS still gets a usable image.
+if args.count >= 4 && args[1] == "--capture-window" {
+    guard let widNumeric = UInt32(args[2]) else {
+        FileHandle.standardError.write("invalid windowId\n".data(using: .utf8) ?? Data())
+        exit(2)
+    }
+    let outputPath = args[3]
+
+    if #available(macOS 14.0, *) {
+        // SCScreenshotManager is async; bridge to sync via a semaphore
+        // so the CLI exit code reflects the result.
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedImage: CGImage?
+        var captureError: String?
+
+        Task {
+            do {
+                let content = try await SCShareableContent.current
+                guard let scWindow = content.windows.first(where: {
+                    $0.windowID == widNumeric
+                }) else {
+                    captureError = "window \(widNumeric) not found in SCShareableContent"
+                    semaphore.signal()
+                    return
+                }
+
+                let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+                let config = SCStreamConfiguration()
+                // Match the window's intrinsic logical size. SCKit
+                // defaults to native (Retina) which would double
+                // our image dims relative to what the user expects
+                // ("a 1024×800 window should land as a 1024×800
+                // PNG, not 2048×1600").
+                config.width = max(1, Int(scWindow.frame.width))
+                config.height = max(1, Int(scWindow.frame.height))
+                config.showsCursor = false
+
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: filter,
+                    configuration: config
+                )
+                capturedImage = image
+            } catch {
+                captureError = error.localizedDescription
+            }
+            semaphore.signal()
+        }
+
+        // Wait up to 10s — SCKit usually returns in <100ms but can
+        // be slower under load or if the WindowServer is busy.
+        if semaphore.wait(timeout: .now() + .seconds(10)) == .timedOut {
+            FileHandle.standardError.write("SCKit capture timed out\n".data(using: .utf8) ?? Data())
+            exit(3)
+        }
+        guard let cgImage = capturedImage else {
+            FileHandle.standardError.write(
+                "SCKit capture failed: \(captureError ?? "nil image")\n".data(using: .utf8) ?? Data()
+            )
+            exit(3)
+        }
+
+        let url = URL(fileURLWithPath: outputPath)
+        let pngType = UTType.png.identifier as CFString
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, pngType, 1, nil) else {
+            FileHandle.standardError.write(
+                "CGImageDestinationCreateWithURL failed\n".data(using: .utf8) ?? Data()
+            )
+            exit(4)
+        }
+        CGImageDestinationAddImage(dest, cgImage, nil)
+        if !CGImageDestinationFinalize(dest) {
+            FileHandle.standardError.write(
+                "CGImageDestinationFinalize failed\n".data(using: .utf8) ?? Data()
+            )
+            exit(5)
+        }
+        exit(0)
+    }
+
+    FileHandle.standardError.write(
+        "--capture-window requires macOS 14+\n".data(using: .utf8) ?? Data()
+    )
+    exit(99)
 }
 
 let encoder = JSONEncoder()

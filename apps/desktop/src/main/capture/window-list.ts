@@ -80,6 +80,52 @@ function resolveHelperPath(): string | null {
 let warned = false;
 
 /**
+ * Capture the named window's actual content to a PNG. Goes through
+ * the Swift helper which uses `SCScreenshotManager.captureImage`
+ * with an `SCContentFilter(desktopIndependentWindow:)` — that asks
+ * WindowServer for the window's backing buffer regardless of
+ * occlusion. Different from `screencapture -l <id>`, which captures
+ * the SCREEN RECT around the window (including overlapping
+ * windows in front).
+ *
+ * Returns the destination path on success or null on failure (the
+ * helper exits non-zero — the caller is expected to fall back to
+ * a rect capture). Requires macOS 14+ at runtime.
+ */
+export async function captureWindowImage(
+  windowId: number,
+  outputPath: string
+): Promise<{ ok: true; path: string } | { ok: false; message: string }> {
+  const helper = resolveHelperPath();
+  if (helper === null) {
+    return { ok: false, message: "native helper not available" };
+  }
+  if (!Number.isInteger(windowId) || windowId <= 0) {
+    return { ok: false, message: `invalid windowId: ${windowId}` };
+  }
+  try {
+    await execFileAsync(
+      helper,
+      ["--capture-window", String(windowId), outputPath],
+      { timeout: 12_000, maxBuffer: 1024 }
+    );
+    return { ok: true, path: outputPath };
+  } catch (cause) {
+    const stderr = (cause as { stderr?: Buffer | string }).stderr;
+    const stderrStr =
+      typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    log.warn("captureWindowImage helper failed", {
+      windowId,
+      message: stderrStr || (cause instanceof Error ? cause.message : String(cause))
+    });
+    return {
+      ok: false,
+      message: stderrStr || (cause instanceof Error ? cause.message : String(cause))
+    };
+  }
+}
+
+/**
  * Activate (bring to front) the running application identified by
  * `pid`. Used by the region selector to restore the previously-
  * frontmost app after a cancel or commit, without resorting to

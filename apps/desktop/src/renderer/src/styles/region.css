@@ -2,7 +2,13 @@
    No backdrop-filter — single biggest cause of jank over Splashtop. */
 
 body[data-stage="region"] {
-  background: transparent;
+  /* Almost-but-not-quite transparent. Pure rgba(0,0,0,0) makes macOS
+     click-through every transparent pixel — we'd lose mouse events
+     on the entire window because the OS forwards them to whatever's
+     underneath (dock tooltips, app windows, etc.). 1/255 alpha is
+     visually identical to fully transparent but flips macOS's hit-
+     test from "pass through" to "this window owns the click". */
+  background: rgba(0, 0, 0, 0.004);
   cursor: crosshair;
   user-select: none;
 }
@@ -10,6 +16,9 @@ body[data-stage="region"] {
 body[data-stage="region"] .region-root {
   position: fixed;
   inset: 0;
+  /* Same trick — make sure the root has a non-zero alpha background
+     so React updates can't accidentally introduce a transparent gap. */
+  background: rgba(0, 0, 0, 0.004);
 }
 
 .region-dim {

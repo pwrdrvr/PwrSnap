@@ -50,7 +50,14 @@ export function preWarmRegionSelector(): void {
     } else {
       resolver({ ok: false, reason: "cancelled" });
     }
-    selectorWindow?.hide();
+    // Blur first, then hide. On macOS a screen-saver-level always-
+    // on-top window that just calls `hide()` can leave the OS still
+    // routing keyboard input to it — the user ends up unable to
+    // click anywhere until the focus is forcibly relinquished.
+    if (selectorWindow !== null && !selectorWindow.isDestroyed()) {
+      selectorWindow.blur();
+      selectorWindow.hide();
+    }
   });
 
   // Re-create on display config change so the window always matches the

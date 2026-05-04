@@ -1,7 +1,9 @@
 import { BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
+import { getMainLogger } from "./log";
 
 const isDevelopment = process.env.NODE_ENV !== "production";
+const log = getMainLogger("pwrsnap:window");
 
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -60,10 +62,23 @@ export function createMainWindow(): BrowserWindow {
   loadRenderer(window, rendererTarget());
 
   window.once("ready-to-show", () => {
+    log.info("main window ready-to-show", { id: window.id });
     window.show();
     if (isDevelopment) {
       window.webContents.openDevTools({ mode: "detach" });
     }
+  });
+
+  // Lifecycle diagnostics — these helped track down the
+  // "library closes after ~10s" bug, which turned out to be
+  // a duplicate-instance issue, not a true window-close.
+  window.on("close", () => log.info("main window close event", { id: window.id }));
+  window.on("closed", () => log.info("main window closed", { id: window.id }));
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("main window renderer crashed", { id: window.id, reason: details.reason });
+  });
+  window.webContents.on("unresponsive", () => {
+    log.warn("main window renderer unresponsive", { id: window.id });
   });
 
   return window;

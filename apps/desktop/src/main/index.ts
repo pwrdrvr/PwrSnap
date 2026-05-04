@@ -154,6 +154,31 @@ async function runBootGc(): Promise<void> {
 export function bootstrapApp(): void {
   initializeMainLogger();
 
+  // Single-instance lock. Without this, electron-vite hot-reloads
+  // and crashed-but-orphaned dev runs accumulate parallel app
+  // instances — both tray icons, both global shortcuts, both
+  // alwaysOnTop region-selector windows fighting for clicks. The
+  // first instance acquires the lock; subsequent processes find an
+  // existing app, focus its main window, and exit immediately.
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+    return;
+  }
+  app.on("second-instance", () => {
+    // Another `pnpm dev` (or another launch of the .app) tried to
+    // start. Bring our existing main window forward.
+    const windows = BrowserWindow.getAllWindows();
+    const main = windows.find((w) => !w.isDestroyed() && w.title === APP_NAME);
+    if (main !== undefined) {
+      if (main.isMinimized()) main.restore();
+      main.show();
+      main.focus();
+    } else if (windows.length === 0) {
+      createMainWindow();
+    }
+  });
+
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();
 

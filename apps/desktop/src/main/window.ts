@@ -92,7 +92,11 @@ export function createTrayWindow(): BrowserWindow {
   // combos. backgroundColor stays fully transparent so the popover
   // material shows through.
   const window = new BrowserWindow({
-    width: 380,
+    // Width must match TRAY_WIDTH in tray.ts. The renderer's
+    // ResizeObserver only updates HEIGHT — width stays at whatever
+    // the BrowserWindow was constructed with, so a stale value here
+    // silently clips the right column of the mode grid.
+    width: 440,
     // Start a touch shorter than the worst-case content height; the
     // renderer's ResizeObserver will setContentSize the moment its
     // first layout finishes (see wireTrayResizeChannel in tray.ts).

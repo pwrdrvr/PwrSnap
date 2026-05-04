@@ -47,6 +47,27 @@ const baseWebPreferences = {
   nodeIntegration: false
 } as const;
 
+/**
+ * Find the main library window (the only PwrSnap window whose URL
+ * has no `stage=` fragment). Tray, float-over, region selector, edit
+ * windows all carry distinct stage hashes; the library is the
+ * residue. Returns null if no library is currently created/alive.
+ *
+ * Used by the capture flow to hide the library during the selector
+ * lifecycle — Cocoa's next-key-window cascade would otherwise raise
+ * (and un-minimize) the library when the tray popover closes.
+ */
+export function findMainLibraryWindow(): BrowserWindow | null {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    const url = win.webContents.getURL();
+    if (url.length > 0 && !/[#&?]stage=/.test(url)) {
+      return win;
+    }
+  }
+  return null;
+}
+
 export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1440,

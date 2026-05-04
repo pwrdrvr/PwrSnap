@@ -123,9 +123,20 @@
    TRAY MENU  —  big keyboard-driven popover
    ============================================================ */
 .ps-tray {
-  position: absolute;
-  top: 36px; right: 18px;
-  width: 440px;
+  /* Fill the BrowserWindow that hosts us. The original design had
+     `top: 36px; right: 18px;` because the popover was an overlay
+     on a fake-desktop mockup with a menu bar — but our actual tray
+     window is positioned natively below the tray icon (see
+     positionTrayWindow in main/window.ts), so the popover should
+     fill its own window completely. The earlier offsets pushed the
+     content off-center within its window, clipping the right
+     column at the body's right edge.
+
+     overflow: hidden keeps the rounded corners crisp; the
+     BrowserWindow itself is transparent so the corners read
+     correctly against whatever's behind. */
+  position: relative;
+  width: 100%;
   background: rgba(20, 17, 14, 0.96);
   backdrop-filter: blur(28px) saturate(1.2);
   -webkit-backdrop-filter: blur(28px) saturate(1.2);

@@ -72,10 +72,15 @@ export function preWarmRegionSelector(): void {
   }
 
   if (!displayListenersAttached) {
-    // Re-create on display config change so each window's bounds
-    // continue to match its display.
+    // Resize-in-place when a display's metrics change rather than
+    // destroying + recreating the selector. The destroy-and-recreate
+    // approach was racy: macOS fires `display-metrics-changed` whenever
+    // a window enters simple-fullscreen (the menu bar showing/hiding
+    // counts as a metric change), and rebuilding the selector mid-show
+    // killed the very window we were trying to put on screen. setBounds
+    // is cheap, idempotent, and doesn't disturb the show/hide state.
     screen.on("display-metrics-changed", (_event, display) => {
-      rebuildSelectorForDisplay(display.id);
+      resizeSelectorToDisplay(display);
     });
     screen.on("display-added", () => preWarmRegionSelector());
     screen.on("display-removed", () => preWarmRegionSelector());
@@ -120,6 +125,7 @@ export async function pickRegion(): Promise<SelectorResult> {
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
     win.show();
+    enterMenuBarOverlayMode(win);
     win.focus();
   });
   return result;
@@ -128,12 +134,49 @@ export async function pickRegion(): Promise<SelectorResult> {
 function hideAllSelectors(): void {
   for (const win of selectorWindows.values()) {
     if (win.isDestroyed()) continue;
-    // Blur first, then hide. On macOS a screen-saver-level always-
-    // on-top window that just calls `hide()` can leave the OS still
-    // routing keyboard input to it — the user ends up unable to
-    // click anywhere until the focus is forcibly relinquished.
+    // Order: leave overlay → blur → hide.
+    // On macOS a screen-saver-level always-on-top window that just
+    // calls `hide()` can leave the OS still routing keyboard input
+    // to it — the user ends up unable to click anywhere until the
+    // focus is forcibly relinquished. setSimpleFullScreen(false)
+    // also has to come before hide() or the next show() inherits
+    // a partial-overlay state.
+    leaveMenuBarOverlayMode(win);
     win.blur();
     win.hide();
+  }
+}
+
+/**
+ * Cover the entire display, including the macOS menu bar.
+ *
+ * The bug: even at `screen-saver` always-on-top level, a frameless
+ * Electron window will not draw over the macOS menu bar. The dock
+ * sits below the user-facing app windows in the z-order, so our
+ * screen-saver-level overlay covers it; the menu bar is special-cased
+ * by Cocoa and lives at NSMainMenuWindowLevel (24) but with an
+ * additional system-level prohibition against ordinary app windows
+ * drawing over it.
+ *
+ * The fix: macOS has a "simple fullscreen" mode (introduced in
+ * 10.7-era APIs as the legacy fallback to native space-animation
+ * fullscreen). It puts the window into a borderless, menu-bar-
+ * covering overlay without animating into a separate Mission Control
+ * space — exactly what every screen-capture tool (Cleanshot, Shottr,
+ * SnagIt) does. Toggle it on at show, off at hide so the pre-warmed
+ * window can return to its normal-bounds state for next time.
+ */
+function enterMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform !== "darwin") return;
+  if (!win.isSimpleFullScreen()) {
+    win.setSimpleFullScreen(true);
+  }
+}
+
+function leaveMenuBarOverlayMode(win: BrowserWindow): void {
+  if (process.platform !== "darwin") return;
+  if (win.isSimpleFullScreen()) {
+    win.setSimpleFullScreen(false);
   }
 }
 
@@ -193,6 +236,35 @@ function rebuildSelectorForDisplay(displayId: number): void {
   if (display === undefined) return;
   const win = createSelectorWindow(display);
   selectorWindows.set(displayId, win);
+}
+
+/**
+ * Update the selector window's bounds in place to match a display's
+ * current bounds. Preferred over rebuild when the display still exists
+ * — preserves the loaded renderer + the show/hide state, and dodges
+ * the destroy-during-show race that hits us when simple-fullscreen
+ * fires `display-metrics-changed` mid-overlay.
+ */
+function resizeSelectorToDisplay(display: Display): void {
+  const win = selectorWindows.get(display.id);
+  if (win === undefined || win.isDestroyed()) {
+    // Display exists but we don't have a selector for it — fall back
+    // to creating one. Cheaper than rebuild because there's no
+    // window to destroy.
+    rebuildSelectorForDisplay(display.id);
+    return;
+  }
+  const { bounds } = display;
+  const current = win.getBounds();
+  if (
+    current.x === bounds.x &&
+    current.y === bounds.y &&
+    current.width === bounds.width &&
+    current.height === bounds.height
+  ) {
+    return; // already matches — nothing to do
+  }
+  win.setBounds(bounds);
 }
 
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash: string };

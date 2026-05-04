@@ -30,13 +30,11 @@ import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
+import { parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
 
 const log = getMainLogger("pwrsnap:protocols");
 
-export const SCHEMES = {
-  capture: "pwrsnap-capture",
-  cache: "pwrsnap-cache"
-} as const;
+export { SCHEMES };
 
 /**
  * Must be called BEFORE `app.whenReady()`. Registers the schemes as
@@ -122,7 +120,7 @@ async function fileResponse(filePath: string): Promise<Response> {
  */
 export function installProtocolHandlers(resolver: ProtocolResolver): void {
   protocol.handle(SCHEMES.capture, async (request) => {
-    const captureId = parseCaptureId(request.url, SCHEMES.capture);
+    const captureId = parseCaptureId(request.url);
     if (captureId === null) {
       log.warn("capture: invalid url", { url: request.url });
       return new Response("invalid capture id", { status: 400 });
@@ -168,40 +166,6 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
   log.info("protocol handlers installed", {
     schemes: Object.values(SCHEMES).join(",")
   });
-}
-
-/**
- * Parse `pwrsnap-capture://r/<id>` → `<id>`. The "r" host is literal
- * (see note at top of file — Chromium lowercases hosts but preserves
- * path case). Tolerates trailing slashes.
- */
-function parseCaptureId(url: string, scheme: string): string | null {
-  const prefix = `${scheme}://r/`;
-  if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length).replace(/\/+$/, "");
-  if (rest.length === 0) return null;
-  // Allow letters, digits, underscore, dash — matches nanoid alphabet.
-  if (!/^[a-zA-Z0-9_-]+$/.test(rest)) return null;
-  return rest;
-}
-
-/**
- * Parse `pwrsnap-cache://r/<id>/<width>w.<format>` → structured.
- * Width is clamped to [1, 8192] (DoS guard).
- */
-function parseCacheUrl(
-  url: string
-): { captureId: string; width: number; format: "png" | "webp" } | null {
-  const prefix = `${SCHEMES.cache}://r/`;
-  if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length);
-  const match = rest.match(/^([a-zA-Z0-9_-]+)\/(\d+)w\.(png|webp)\/?$/);
-  if (match === null) return null;
-  const [, captureId, widthStr, format] = match;
-  if (captureId === undefined || widthStr === undefined || format === undefined) return null;
-  const width = Number.parseInt(widthStr, 10);
-  if (!Number.isFinite(width) || width < 1 || width > 8192) return null;
-  return { captureId, width, format: format as "png" | "webp" };
 }
 
 // `app` is imported for type augmentation only when this module is

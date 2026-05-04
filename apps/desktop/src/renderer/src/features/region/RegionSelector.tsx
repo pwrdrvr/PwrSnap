@@ -19,17 +19,21 @@
 // to screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  ALL_HANDLES,
+  applyResize,
+  clampRectToViewport,
+  isPointInsideRect,
+  rectFromTwoPoints,
+  type HandleId,
+  type Point,
+  type Rect
+} from "./region-math";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const MIN_DRAG_PX = 4;
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
-
-type Rect = { x: number; y: number; w: number; h: number };
-type Point = { x: number; y: number };
-
-type HandleId = "tl" | "tr" | "bl" | "br" | "tm" | "bm" | "lm" | "rm";
-const ALL_HANDLES: HandleId[] = ["tl", "tr", "bl", "br", "tm", "bm", "lm", "rm"];
 
 type Interaction =
   | { kind: "idle" }
@@ -43,42 +47,8 @@ function parseHashParam(name: string): string | null {
   return params.get(name);
 }
 
-function rectFromTwoPoints(a: Point, b: Point): Rect {
-  return {
-    x: Math.min(a.x, b.x),
-    y: Math.min(a.y, b.y),
-    w: Math.abs(b.x - a.x),
-    h: Math.abs(b.y - a.y)
-  };
-}
-
-function applyResize(start: Rect, handle: HandleId, dx: number, dy: number): Rect {
-  // Accumulate edges, then normalize so a flipped drag (e.g. dragging
-  // the top-left handle past the bottom-right) stays a positive rect.
-  let left = start.x;
-  let top = start.y;
-  let right = start.x + start.w;
-  let bottom = start.y + start.h;
-  if (handle === "tl" || handle === "lm" || handle === "bl") left += dx;
-  if (handle === "tr" || handle === "rm" || handle === "br") right += dx;
-  if (handle === "tl" || handle === "tm" || handle === "tr") top += dy;
-  if (handle === "bl" || handle === "bm" || handle === "br") bottom += dy;
-  return {
-    x: Math.min(left, right),
-    y: Math.min(top, bottom),
-    w: Math.abs(right - left),
-    h: Math.abs(bottom - top)
-  };
-}
-
-function clampRectToViewport(rect: Rect): Rect {
-  const W = window.innerWidth;
-  const H = window.innerHeight;
-  const x = Math.max(0, Math.min(W - 1, rect.x));
-  const y = Math.max(0, Math.min(H - 1, rect.y));
-  const w = Math.max(1, Math.min(W - x, rect.w));
-  const h = Math.max(1, Math.min(H - y, rect.h));
-  return { x, y, w, h };
+function viewport(): { width: number; height: number } {
+  return { width: window.innerWidth, height: window.innerHeight };
 }
 
 export function RegionSelector() {
@@ -141,9 +111,7 @@ export function RegionSelector() {
     function isInsideCurrentRect(clientX: number, clientY: number): boolean {
       const r = rectRef.current;
       if (r === null) return false;
-      return (
-        clientX >= r.x && clientX <= r.x + r.w && clientY >= r.y && clientY <= r.y + r.h
-      );
+      return isPointInsideRect(r, clientX, clientY);
     }
 
     function onKeyDown(event: KeyboardEvent): void {
@@ -178,7 +146,7 @@ export function RegionSelector() {
       else if (event.key === "ArrowDown") dy = step;
       else return;
       event.preventDefault();
-      setRect(clampRectToViewport({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }));
+      setRect(clampRectToViewport({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }, viewport()));
     }
 
     function onKeyUp(event: KeyboardEvent): void {
@@ -249,12 +217,15 @@ export function RegionSelector() {
           const dx = event.clientX - i.startMouse.x;
           const dy = event.clientY - i.startMouse.y;
           setRect(
-            clampRectToViewport({
-              x: i.startRect.x + dx,
-              y: i.startRect.y + dy,
-              w: i.startRect.w,
-              h: i.startRect.h
-            })
+            clampRectToViewport(
+              {
+                x: i.startRect.x + dx,
+                y: i.startRect.y + dy,
+                w: i.startRect.w,
+                h: i.startRect.h
+              },
+              viewport()
+            )
           );
           return;
         }

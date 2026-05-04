@@ -12,10 +12,16 @@
     "dev": "pnpm --filter @pwrsnap/desktop dev",
     "design": "npx --yes serve design -l 4321",
     "codex:generate-protocol": "pnpm --filter @pwrsnap/codex-app-server-protocol generate",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm typecheck",
+    "test": "vitest run --config vitest.workspace.ts",
+    "test:watch": "vitest --config vitest.workspace.ts",
+    "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
-    "typescript": "^6.0.2"
+    "jsdom": "^29.0.2",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }

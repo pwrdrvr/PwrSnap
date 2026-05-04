@@ -42,12 +42,26 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 // Keep this in sync with the renderer's RegionSelector type.
 export type WindowSnapEntry = {
   windowId: number;
+  pid: number;
   bundleId: string | null;
   appName: string | null;
   title: string | null;
-  /** Window-local rect (the selector covers a full display, so this
-   *  matches event.clientX/Y space). */
+  /** True for windows owned by PwrSnap itself (library, float-over,
+   *  selector windows). The renderer keeps these in the hit-test
+   *  list as occluders but never snaps to them. */
+  ownedByUs: boolean;
+  /** Z-order index in the original CGWindow scan; 0 = frontmost.
+   *  The hit-test walks ascending z to find the topmost window
+   *  whose RAW bounds contain the cursor. */
+  zIndex: number;
+  /** Visible-region bounding box, window-local. This is the rect we
+   *  paint as the snap highlight — reflects the part of the window
+   *  the user can actually see. */
   rect: { x: number; y: number; w: number; h: number };
+  /** Raw window bounds, window-local. The hit-test uses these
+   *  (along with z-order) so it stays consistent with what the OS
+   *  considers "topmost at this point." */
+  rawRect: { x: number; y: number; w: number; h: number };
 };
 
 const pwrsnapApi = {

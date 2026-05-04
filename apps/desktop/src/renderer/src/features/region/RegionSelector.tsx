@@ -148,16 +148,21 @@ export function RegionSelector() {
   }, []);
 
   function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
-    // Front-most-first scan — main translates to window-local coords
-    // before sending so we just compare client coords.
+    // Walk the z-order ascending (frontmost first). Hit-test uses
+    // the RAW bounds so the result matches what the OS considers
+    // topmost-at-point. If the topmost is one of our own windows
+    // (the library, float-over, etc.), return null — the cursor is
+    // visually on a non-snappable surface; fall back to display
+    // snap rather than picking a window underneath that the user
+    // can't actually see.
     for (const w of windowsRef.current) {
       if (
-        clientX >= w.rect.x &&
-        clientX <= w.rect.x + w.rect.w &&
-        clientY >= w.rect.y &&
-        clientY <= w.rect.y + w.rect.h
+        clientX >= w.rawRect.x &&
+        clientX <= w.rawRect.x + w.rawRect.w &&
+        clientY >= w.rawRect.y &&
+        clientY <= w.rawRect.y + w.rawRect.h
       ) {
-        return w;
+        return w.ownedByUs ? null : w;
       }
     }
     return null;

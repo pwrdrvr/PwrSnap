@@ -9,10 +9,20 @@ import type { CommandName, Req, Res, PwrSnapError, Result } from "@pwrsnap/share
 
 export type WindowSnapEntry = {
   windowId: number;
+  pid: number;
   bundleId: string | null;
   appName: string | null;
   title: string | null;
+  /** True for PwrSnap-owned windows. Renderer treats them as
+   *  occluders for hit-testing but never snaps to them. */
+  ownedByUs: boolean;
+  /** Z-order; 0 = frontmost. Walked ascending in the renderer's
+   *  hit-test (first raw-bounds match = topmost-at-cursor). */
+  zIndex: number;
+  /** Visible-region bounding box (snap highlight rect). */
   rect: { x: number; y: number; w: number; h: number };
+  /** Raw bounds — used for hit-testing in z-order. */
+  rawRect: { x: number; y: number; w: number; h: number };
 };
 
 declare global {

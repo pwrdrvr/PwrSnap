@@ -26,10 +26,14 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 
 const SYNTHETIC_WINDOW = {
   windowId: 4242,
+  pid: 99999,
   bundleId: "com.test.targetapp",
   appName: "Target App",
   title: "Test window",
-  rect: { x: 200, y: 150, w: 400, h: 300 }
+  ownedByUs: false,
+  zIndex: 0,
+  rect: { x: 200, y: 150, w: 400, h: 300 },
+  rawRect: { x: 200, y: 150, w: 400, h: 300 }
 };
 
 test("hovering a window locks the rect to its bounds (no modifier)", async () => {
@@ -169,6 +173,133 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
       w: SYNTHETIC_WINDOW.rect.w,
       h: SYNTHETIC_WINDOW.rect.h
     });
+  } finally {
+    await app.close();
+  }
+});
+
+test("a PwrSnap-owned window covering another window blocks the snap (no fall-through)", async () => {
+  // The bug we shipped 415194b for and re-fixed in this commit:
+  //   - PwrSnap's library window sits on top in the z-order.
+  //   - 1Password sits underneath, occluded.
+  //   - The user moves the cursor over the library.
+  //   - Pre-fix: library was filtered out before hit-testing → the
+  //     algorithm walked past it and reported 1Password underneath
+  //     (the "Not 1password" screenshot).
+  //   - Fix: keep our windows in the candidate list, mark them
+  //     ownedByUs:true. The hit-test sees them as topmost-at-cursor
+  //     and returns null → snap target stays "display".
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetSelector(app);
+    await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
+
+    const ours = {
+      windowId: 1,
+      pid: 1111,
+      bundleId: "com.pwrdrvr.pwrsnap",
+      appName: "PwrSnap",
+      title: null as string | null,
+      ownedByUs: true,
+      zIndex: 0,
+      rect: { x: 100, y: 100, w: 600, h: 400 },
+      rawRect: { x: 100, y: 100, w: 600, h: 400 }
+    };
+    const otherApp = {
+      windowId: 2,
+      pid: 2222,
+      bundleId: "com.1password.1password",
+      appName: "1Password",
+      title: null as string | null,
+      ownedByUs: false,
+      zIndex: 1,
+      rect: { x: 100, y: 100, w: 600, h: 400 },
+      rawRect: { x: 100, y: 100, w: 600, h: 400 }
+    };
+    await hydrateWindowList(app, [ours, otherApp]);
+    await selector.waitForFunction(
+      () => document.body.dataset.windowListCount === "2"
+    );
+
+    // Hover over the overlapping region. Both windows' bounds
+    // contain (300, 200), but ours is z-order frontmost. Snap
+    // should be display, not 1Password.
+    await selector.mouse.move(300, 200);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "display"
+    );
+
+    // Move outside our window but still inside 1Password's bounds.
+    // ...wait, in this scenario both rects are identical, so the
+    // outside is also outside the other app. Move to a clean
+    // region and back — display in both spots.
+    await selector.mouse.move(50, 50);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "display"
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("when our window only partially occludes another, the visible portion still snaps", async () => {
+  // Library covers the upper half of 1Password. 1Password's lower
+  // half is visible. The renderer should:
+  //   - cursor in upper overlap zone → display (ours blocks)
+  //   - cursor in lower visible-1Password zone → 1Password
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetSelector(app);
+    await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
+
+    // We pre-compute ourselves what the renderer would see after
+    // visibility math: 1Password's visible bounds are just the
+    // lower half (since the library covers the top half).
+    const ours = {
+      windowId: 1,
+      pid: 1111,
+      bundleId: "com.pwrdrvr.pwrsnap",
+      appName: "PwrSnap",
+      title: null as string | null,
+      ownedByUs: true,
+      zIndex: 0,
+      rect: { x: 0, y: 0, w: 800, h: 200 }, // upper half
+      rawRect: { x: 0, y: 0, w: 800, h: 200 }
+    };
+    const onePass = {
+      windowId: 2,
+      pid: 2222,
+      bundleId: "com.1password.1password",
+      appName: "1Password",
+      title: null as string | null,
+      ownedByUs: false,
+      zIndex: 1,
+      // The rendered rect — only the visible lower half:
+      rect: { x: 0, y: 200, w: 800, h: 200 },
+      // Raw bounds — full window for hit-testing in z-order:
+      rawRect: { x: 0, y: 0, w: 800, h: 400 }
+    };
+    await hydrateWindowList(app, [ours, onePass]);
+    await selector.waitForFunction(
+      () => document.body.dataset.windowListCount === "2"
+    );
+
+    // Cursor in upper overlap (covered by ours): display snap.
+    await selector.mouse.move(400, 100);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "display"
+    );
+
+    // Cursor in lower half (1Password visible): 1Password snap with
+    // the visible-only rect (NOT the full 800×400 raw bounds).
+    await selector.mouse.move(400, 300);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "window"
+    );
+    const style = await selector.locator(".region-rect").getAttribute("style");
+    expect(style).toContain("top: 200px");
+    expect(style).toContain("height: 200px");
+    await expect(selector.locator(".region-dims-chip")).toContainText("1Password");
   } finally {
     await app.close();
   }

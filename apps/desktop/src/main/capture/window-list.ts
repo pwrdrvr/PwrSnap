@@ -136,24 +136,6 @@ export function findWindowAt(
 }
 
 /**
- * Filter the helper's output before shipping it to the renderer.
- * Drops windows that aren't valid snap targets:
- *   - Our own process (PwrSnap's main + renderers); CGWindowOwnerPID
- *     matches `process.pid` for the main and the various helper
- *     renderer processes belonging to our app group.
- *   - Auxiliary windows in apps that have a clear main window — when
- *     a pid contributes multiple z-order siblings, only the
- *     frontmost is kept. Toolbars / popovers / hidden inspector
- *     panels stop polluting the snap candidates this way.
- */
-export function filterSnapCandidates(
-  windows: readonly WindowInfo[],
-  selfPids: ReadonlySet<number>
-): WindowInfo[] {
-  return windows.filter((w) => !selfPids.has(w.pid) && w.isFrontmostInApp);
-}
-
-/**
  * Process IDs belonging to PwrSnap itself (main process + every
  * renderer process spawned by Electron). The helper's CGWindow scan
  * sees these as ordinary on-screen windows; we filter them out so

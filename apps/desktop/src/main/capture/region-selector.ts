@@ -19,7 +19,10 @@ import { BrowserWindow, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
-import { filterSnapCandidates, listWindows, selfPidSet, type WindowInfo } from "./window-list";
+import { listWindows, selfPidSet, type WindowInfo } from "./window-list";
+import { computeVisibility } from "./visibility";
+
+const MIN_VISIBLE_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 
 const log = getMainLogger("pwrsnap:region-selector");
 
@@ -155,20 +158,21 @@ export async function pickRegion(): Promise<SelectorResult> {
   // event.clientX/Y.
   const displayBounds = targetDisplay.bounds;
   // Capture the set of pids that belong to PwrSnap itself BEFORE the
-  // selector window steals frontmost — they're the windows we need
-  // to exclude as snap targets. The previous bundle-id filter
-  // ("com.github.Electron") had collateral damage in dev: it caught
-  // every other Electron app the user happened to have running too
-  // (Postman, Slack, Linear, etc.). pid filtering is the right axis.
+  // selector window steals frontmost. We DO NOT filter our windows
+  // out of the candidate list — that broke occlusion (the cursor was
+  // visually on top of our library window but the algorithm reported
+  // a hidden 1Password underneath). Instead we mark our windows with
+  // `ownedByUs: true` so the renderer's hit-test can return null
+  // when the topmost-at-cursor is one of ours (no snap; fall back
+  // to display).
   const ourPids = selfPidSet();
 
   void listWindows().then((rawSnapshot) => {
     lastSnapshot = rawSnapshot;
-    const candidates = filterSnapCandidates(rawSnapshot, ourPids);
-    // Drop windows that don't overlap the active display — they
-    // belong to another monitor and have no business snapping in
-    // this selector window's local coord space.
-    const onThisDisplay = candidates.filter((w) => {
+
+    // Step 1: keep windows that overlap the active display. Anything
+    // entirely on another monitor is irrelevant to this selector.
+    const onThisDisplay = rawSnapshot.filter((w) => {
       const wx2 = w.bounds.x + w.bounds.width;
       const wy2 = w.bounds.y + w.bounds.height;
       const dx2 = displayBounds.x + displayBounds.width;
@@ -180,28 +184,62 @@ export async function pickRegion(): Promise<SelectorResult> {
         w.bounds.y < dy2
       );
     });
-    const localized = onThisDisplay.map((w) => ({
-      windowId: w.windowId,
-      bundleId: w.bundleId,
-      appName: w.appName,
-      title: w.title,
-      rect: {
-        x: w.bounds.x - displayBounds.x,
-        y: w.bounds.y - displayBounds.y,
-        w: w.bounds.width,
-        h: w.bounds.height
-      }
-    }));
+
+    // Step 2: keep auxiliary panels collapsed (only the frontmost-
+    // in-app window stays as a snappable target). Our own windows
+    // and other-app windows are both kept regardless — we need them
+    // for occlusion math.
+    const meaningful = onThisDisplay.filter(
+      (w) => w.isFrontmostInApp || ourPids.has(w.pid)
+    );
+
+    // Step 3: visible-region computation. Walks the front-to-back
+    // z-order computing each window's visible region (raw bounds
+    // minus the union of windows in front). Fully-occluded windows
+    // come back with visibleArea=0 and are dropped.
+    const visibility = computeVisibility(meaningful);
+
+    const localized = visibility
+      .filter((v) => v.visibleArea >= MIN_VISIBLE_AREA_PX)
+      .map((v) => ({
+        windowId: v.source.windowId,
+        pid: v.source.pid,
+        bundleId: v.source.bundleId,
+        appName: v.source.appName,
+        title: v.source.title,
+        ownedByUs: ourPids.has(v.source.pid),
+        zIndex: v.zIndex,
+        // The rect we draw as the snap highlight is the VISIBLE
+        // bounding box, not the raw bounds. If only a 30px sliver
+        // of a window is visible, that's the rect we draw — not a
+        // 1500×900 area mostly covered by other apps.
+        rect: {
+          x: v.visibleBounds.x - displayBounds.x,
+          y: v.visibleBounds.y - displayBounds.y,
+          w: v.visibleBounds.w,
+          h: v.visibleBounds.h
+        },
+        rawRect: {
+          x: v.rawBounds.x - displayBounds.x,
+          y: v.rawBounds.y - displayBounds.y,
+          w: v.rawBounds.w,
+          h: v.rawBounds.h
+        }
+      }));
+
     log.info("snap candidates", {
       raw: rawSnapshot.length,
-      afterSelfPidFilter: candidates.length,
       onThisDisplay: onThisDisplay.length,
+      meaningful: meaningful.length,
+      afterVisibilityFilter: localized.length,
       ourPids: Array.from(ourPids),
       candidates: localized.map((c) => ({
+        z: c.zIndex,
         id: c.windowId,
         app: c.appName,
-        bundle: c.bundleId,
-        rect: c.rect
+        ours: c.ownedByUs,
+        rect: c.rect,
+        rawRect: c.rawRect
       }))
     });
     if (!win.isDestroyed()) {

@@ -1,8 +1,9 @@
 ---
 title: Capture-flow window choreography — toast reliability, tray hide, no library jump
 type: fix
-status: active
+status: completed
 date: 2026-05-04
+completed_at: 2026-05-04
 ---
 
 # Capture-flow window choreography
@@ -367,11 +368,11 @@ No schema change. Pure window-management refactor.
 **Goal:** Tray popover never appears in capture snapshots, regardless of the rest of this plan landing.
 
 Tasks:
-- [ ] Add `hideTrayPopoverIfVisible()` export in `main/tray.ts` — synchronous `hide()` + clear pending blur debounce.
-- [ ] Call from `region-selector.ts:pickRegion()` immediately before `captureAndRegister(displayId)`.
-- [ ] Add `await new Promise(r => setTimeout(r, 50))` after the hide for compositor flush.
-- [ ] Same call sites in any future `capture:fullScreen` / `capture:window` interactive paths (currently stubbed but threading the call now is cheap).
-- [ ] E2E test (Playwright): trigger capture from tray Auto button, assert the saved capture PNG does not contain the tray popover. Pixel-compare a known patch in the captured PNG that should be desktop-only against a fixture; allow ±5% tolerance for compositor variance.
+- [x] Add `hideTrayPopoverIfVisible()` export in `main/tray.ts` — synchronous `hide()` + clear pending blur debounce.
+- [x] Call from `region-selector.ts:pickRegion()` immediately before `captureAndRegister(displayId)`.
+- [x] Add `await new Promise(r => setTimeout(r, 50))` after the hide for compositor flush.
+- [x] Same call sites in any future `capture:fullScreen` / `capture:window` interactive paths (currently stubbed but threading the call now is cheap). _Both stubs return `not_implemented`; threading deferred until they're implemented so we don't bloat call sites that don't fire today._
+- [ ] E2E test (Playwright): trigger capture from tray Auto button, assert the saved capture PNG does not contain the tray popover. _**Deferred** — Playwright can't synthesize a click against an `NSStatusItem`-backed icon, and our tray popover is a child `BrowserWindow` whose visibility CAN be polled but whose `click()` event still requires real cursor positioning over the menubar icon. Track as a follow-up; manual smoke covers it for now._
 
 Verification: Manual. Take a capture from the tray Auto button. The captured PNG must not show any PwrSnap chrome. Repeat from Region and Window buttons.
 
@@ -382,18 +383,19 @@ Effort: 0.5 day.
 **Goal:** Eliminate the `loadURL` reload pattern. The float-over is alive once and lit/unlit via IPC. Stale exit-animation timers can no longer fire across captures.
 
 Tasks:
-- [ ] **Add `events:float-over:state` event channel** to `packages/shared/src/ipc.ts`. Payload type added to `packages/shared/src/protocol.ts` (or a new `events.ts` if we want event payloads separate from request/response Commands).
-- [ ] **Refactor `main/float-over.ts`:**
-  - [ ] Replace `showFloatOverForCapture(captureId)` with `setFloatOverState(event)`. Internal state machine drives `showInactive() / hide()` based on transitions.
-  - [ ] Drop `reloadForCapture()` entirely. Float-over loads once at first IDLE.
-  - [ ] First `setFloatOverState({ kind: "show-idle" })` call lazily creates the singleton (preserves boot-time invariant — no float-over window unless capture flow runs).
-  - [ ] `setFloatOverState({ kind: "cancel" })` calls `singleton.hide()` synchronously, NO exit animation, NO IPC to renderer's exit-fader.
-  - [ ] `setFloatOverState({ kind: "show-loaded" })` posts IPC; renderer transitions LOADED + starts countdown.
-- [ ] **Refactor renderer:**
-  - [ ] Rename `FloatOverForCapture.tsx` → `FloatOverHost.tsx`. Owns the state reducer; renders `<FloatOver/>` only on LOADED.
-  - [ ] Subscribe to `events:float-over:state` via `pwrsnapApi.on(...)`.
-  - [ ] Drop the `?capture=…` hash parser — captureId now comes via IPC.
-  - [ ] **Track and clear the 220ms exit-animation timer** in `FloatOver.tsx`:
+- [x] **Add `events:float-over:state` event channel** to `packages/shared/src/ipc.ts`. Payload type `FloatOverEvent` added to the same file (event-only, not a Command — kept colocated with the channel constant rather than splitting into a new events.ts).
+- [x] **Refactor `main/float-over.ts`:**
+  - [x] Replace `showFloatOverForCapture(captureId)` with `setFloatOverState(event)`. Internal state machine drives `showInactive() / hide()` based on transitions.
+  - [x] Drop `reloadForCapture()` entirely. Float-over loads once at first IDLE.
+  - [x] First `setFloatOverState({ kind: "show-idle" })` call lazily creates the singleton (preserves boot-time invariant — no float-over window unless capture flow runs).
+  - [x] `setFloatOverState({ kind: "cancel" })` calls `singleton.hide()` synchronously, NO exit animation, NO IPC to renderer's exit-fader.
+  - [x] `setFloatOverState({ kind: "show-loaded" })` posts IPC; renderer transitions LOADED + starts countdown.
+  - [x] Buffers the last event + re-emits on `did-finish-load` so a fast first capture doesn't miss the IPC.
+- [x] **Refactor renderer:**
+  - [x] Rename `FloatOverForCapture.tsx` → `FloatOverHost.tsx`. Owns the state reducer; renders `<FloatOver/>` only on LOADED.
+  - [x] Subscribe to `events:float-over:state` via `pwrsnapApi.on(...)`.
+  - [x] Drop the `?capture=…` hash parser — captureId now comes via IPC.
+  - [x] **Track and clear the 220ms exit-animation timer** in `FloatOver.tsx`:
     ```ts
     const exitTimerRef = useRef<number | null>(null);
     const dismissNow = () => {
@@ -406,10 +408,10 @@ Tasks:
       }
     }, []);
     ```
-  - [ ] `FloatOver` unmount on state transition to HIDDEN/IDLE; exit timer is cleaned up.
-- [ ] **Update `App.tsx` stage router** to mount `<FloatOverHost/>` for `#stage=float-over` (the URL-hash router stays — only the inner data-fetch mechanism changes).
-- [ ] **Wire ⌘1/⌘2/⌘3** off the renderer's persistent keydown listener. Listener stays mounted across state transitions; no remount-induced gaps.
-- [ ] **Acceptance:** rapid double-capture (⌘⇧P → commit → ⌘⇧P → commit within 1s) shows the toast for the SECOND capture for the full ≥5s, not for 220ms. No stale-timer flash.
+  - [x] `FloatOver` unmount on state transition to HIDDEN/IDLE; exit timer is cleaned up.
+- [x] **Update `App.tsx` stage router** to mount `<FloatOverHost/>` for `#stage=float-over` (the URL-hash router stays — only the inner data-fetch mechanism changes).
+- [x] **Wire ⌘1/⌘2/⌘3** off the renderer's persistent keydown listener. Listener stays mounted across state transitions; no remount-induced gaps.
+- [x] **Acceptance:** rapid double-capture asserted by `e2e/float-over-visibility.spec.ts:183` — second toast stays visible past T+4s. No stale-timer flash.
 
 Effort: 1.5 days.
 
@@ -418,18 +420,18 @@ Effort: 1.5 days.
 **Goal:** Float-over reliably shown after every commit. No focus jump. No library re-raise. Builds on Phase 2's persistent renderer.
 
 Tasks:
-- [ ] **Refactor `region-selector.ts`:**
-  - [ ] Add `hideSelector()` export — what `hideAllSelectors` does today, but called explicitly by the consumer rather than from inside the result handler.
-  - [ ] Result handler resolves the promise and STOPS — does not call `hideAllSelectors` itself. Comment marks the contract change clearly.
-  - [ ] `pickRegion` calls `setFloatOverState({ kind: "show-idle" })` BEFORE `win.show()` for the selector. The float-over is at `floating` level; the selector at `screen-saver` covers it. User never sees the empty toast.
-- [ ] **Refactor `capture-handlers.ts:capture:interactive`:**
-  - [ ] On result, branch:
+- [x] **Refactor `region-selector.ts`:**
+  - [x] Add `hideSelector()` export — what `hideAllSelectors` does today, but called explicitly by the consumer rather than from inside the result handler.
+  - [x] Result handler resolves the promise and STOPS — does not call `hideAllSelectors` itself. Comment marks the contract change clearly.
+  - [x] `pickRegion` calls `setFloatOverState({ kind: "show-idle" })` BEFORE `win.show()` for the selector. The float-over is at `floating` level; the selector at `screen-saver` covers it. User never sees the empty toast.
+- [x] **Refactor `capture-handlers.ts:capture:interactive`:**
+  - [x] On result, branch:
     - **OK:** `await persistAndBroadcast`, `setFloatOverState({ kind: "show-loaded", captureId })`, then `hideSelector()` in finally. Order-of-operations: load BEFORE hide so the reveal is instant.
     - **CANCEL:** `setFloatOverState({ kind: "cancel" })`, sleep 50ms, then `hideSelector()`. User sees nothing flicker.
-  - [ ] Move `activateApp(previousAppPid)` from `hideAllSelectors` to here — runs AFTER `hideSelector` returns AND AFTER the float-over is established on screen. Thread `previousAppPid` through `SelectorResult`.
-- [ ] **Headless `capture:region` path** (agents, no selector): no change — the selector flow doesn't apply. The float-over still shows post-capture via `setFloatOverState({ kind: "show-loaded" })` directly. No "pre-show" because there's no selector to hide behind.
-- [ ] **Change float-over level from `pop-up-menu` → `floating`** in `main/window.ts:createFloatOverWindow`. Matches industry-standard NSWindowLevel 3 for persistent toasts.
-- [ ] **Acceptance:** the full capture flow (tray Auto → drag → commit) ends with the float-over visible AND the previously-frontmost app still frontmost. The library window's z-position is identical before and after the capture. Verified by inspection of `tools.frontmostApplication()` (NSWorkspace) before and after, and a screenshot showing the toast.
+  - [x] Move `activateApp(previousAppPid)` from `hideAllSelectors` to here — runs AFTER `hideSelector` returns AND AFTER the float-over is established on screen. Thread `previousAppPid` through `SelectorResult` (added to both OK and CANCEL branches of the result type).
+- [x] **Headless `capture:region` path** (agents, no selector): no change — the selector flow doesn't apply. The float-over still shows post-capture via `setFloatOverState({ kind: "show-loaded" })` directly. No "pre-show" because there's no selector to hide behind.
+- [x] **Change float-over level from `pop-up-menu` → `floating`** in `main/window.ts:createFloatOverWindow`. Matches industry-standard NSWindowLevel 3 for persistent toasts.
+- [ ] **Acceptance:** the full capture flow (tray Auto → drag → commit) ends with the float-over visible AND the previously-frontmost app still frontmost. _**Manual verification pending** — the `library z-order invariant` E2E spec was deferred (Phase 4) because it requires synthesizing input against a screen-saver-level selector window, which Playwright can't do. Manual smoke required to confirm; the architectural changes are validated by `float-over-visibility.spec.ts`._
 
 Effort: 1 day.
 
@@ -438,37 +440,13 @@ Effort: 1 day.
 **Goal:** Future regressions of Bug 2 are caught before they ship. The current e2e suite is data-only; add visual.
 
 Tasks:
-- [ ] **Add `e2e/specs/float-over-visibility.spec.ts`** (new spec file). Pattern:
-  ```ts
-  test("float-over toast visible after capture", async ({ electronApp, page }) => {
-    await electronApp.evaluate(({ globalThis }) =>
-      globalThis.__PWRSNAP_TEST__.dispatch("capture:region", {
-        rect: { x: 100, y: 100, w: 200, h: 200 },
-        displayId: 1
-      })
-    );
-    // Wait 100ms (within budget)
-    await page.waitForTimeout(100);
-
-    // Take a screenshot of the float-over window's content frame
-    const floatOverWin = await electronApp.firstWindow({
-      // Match by stage hash — but we need a way to grab it. Use win.url().
-      // Alternative: assert visibility via main-side: getAllWindows.find(w => stage hash) → isVisible.
-    });
-    expect(await floatOverWin.isVisible()).toBe(true);
-
-    // Wait 4s, assert STILL visible (countdown is 5s default).
-    await page.waitForTimeout(4000);
-    expect(await floatOverWin.isVisible()).toBe(true);
-
-    // Wait 2s more (total 6.1s) — countdown done, exiting animation fired, hidden.
-    await page.waitForTimeout(2000);
-    expect(await floatOverWin.isVisible()).toBe(false);
-  });
-  ```
-- [ ] **Add a "rapid double-capture" spec** that asserts the second toast lives ≥ 4s after firing both captures within 500ms — directly catches Bug 2 root-cause #1.
-- [ ] **Add a "library z-order" assertion** — read NSWorkspace frontmost-app via the test bridge before and after a capture; assert it's unchanged.
-- [ ] **Add a "tray-in-snapshot" spec** that captures from the tray Auto button and asserts the captured PNG's bottom-right corner doesn't have a popover-shaped patch. Pixel-compare or image-diff against a desktop-only fixture.
+- [x] **Add `e2e/float-over-visibility.spec.ts`** — three specs, all green on macOS:
+  - `show-loaded reaches visible within 200ms and stays past 4s` — happy path. Float-over flips visible within the 800ms poll window and is still visible at T+4s (2s before the 6s auto-dismiss).
+  - `rapid show-loaded → show-loaded keeps the second toast visible past 4s` — directly catches the stale-setTimeout bug. With the persistent renderer + ref-tracked exit timer, the second toast sticks.
+  - `cancel hides the float-over synchronously` — pre-show / cancel path. setFloatOverState({cancel}) flips isVisible:false in the same tick.
+- [x] Test bridge extension: `__PWRSNAP_TEST__.setFloatOverState(event)` — drives the state machine directly so specs can test the lifecycle without synthesizing input against a screen-saver-level selector window.
+- [ ] **"Library z-order" assertion** — _**Deferred.** Reading NSWorkspace.frontmostApplication via the test bridge is straightforward, but the meaningful integration test requires a real selector flow (commit-from-real-cursor-position) which Playwright can't synthesize against a screen-saver-level window. Manual smoke covers it for now._
+- [ ] **"Tray-in-snapshot" spec** — _**Deferred** for the same reason as Phase 1's tray-in-snapshot E2E: Playwright can't click the menubar `NSStatusItem`. The Phase 1 tray-hide path is unit-testable (the helper is exported) but the integration test needs a real user click on the tray icon. Manual smoke required._
 
 Effort: 0.5 day.
 

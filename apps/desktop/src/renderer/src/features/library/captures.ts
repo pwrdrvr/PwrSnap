@@ -91,6 +91,11 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
 });
 
 export const APP_INFO: Record<string, { name: string; count: number }> = {
+  // `any` is the fallback the adapter assigns when a real capture's
+  // source_app_bundle_id is null (Phase 1 always; Phase 3 fills the
+  // bundle id via NSWorkspace). Without this entry, every Phase 1
+  // capture crashes the Library when APP_INFO[c.app]!.name evaluates.
+  any: { name: "Unknown app", count: 0 },
   telegram: { name: "Telegram", count: 3 },
   excel: { name: "Excel", count: 3 },
   vscode: { name: "VS Code", count: 3 },

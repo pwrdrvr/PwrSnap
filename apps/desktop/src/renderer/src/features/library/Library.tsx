@@ -280,7 +280,7 @@ export function Library({
                     <div className="psl__cell-meta">
                       <div className="psl__cell-name">{c.n}</div>
                       <div className="psl__cell-tags">
-                        <AppTag app={c.app} name={APP_INFO[c.app]!.name} size="sm" />
+                        <AppTag app={c.app} name={APP_INFO[c.app]?.name ?? "Unknown app"} size="sm" />
                         {c.tags.slice(0, 1).map((t) => (
                           <span key={t} className="ps-tag is-sm">
                             {t}
@@ -424,7 +424,7 @@ export function Library({
               </span>
             </div>
             <div className="psl__detail-tags">
-              <AppTag app={current.app} name={APP_INFO[current.app]!.name} />
+              <AppTag app={current.app} name={APP_INFO[current.app]?.name ?? "Unknown app"} />
               {current.tags.map((t) => (
                 <span key={t} className="ps-tag">
                   {t}
@@ -443,7 +443,8 @@ export function Library({
               <small>haiku-4.5 · 1.4s</small>
             </div>
             <div className="psl__ai-card-text">
-              <b>{APP_INFO[current.app]!.name}</b> capture showing <b>{current.tags.join(", ")}</b>.
+              <b>{APP_INFO[current.app]?.name ?? "Unknown app"}</b> capture showing{" "}
+              <b>{current.tags.join(", ")}</b>.
               Highlighted region likely the <b>error toast at column G37</b>. Suggest tagging{" "}
               <b>finance</b>, <b>Q4</b>.
             </div>

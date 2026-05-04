@@ -348,6 +348,18 @@ test("click + drag past threshold overrides snap with a free-form region", async
   }
 });
 
+type SnapEntry = {
+  windowId: number;
+  pid: number;
+  bundleId: string;
+  appName: string;
+  title: string | null;
+  ownedByUs: boolean;
+  zIndex: number;
+  rect: { x: number; y: number; w: number; h: number };
+  rawRect: { x: number; y: number; w: number; h: number };
+};
+
 /**
  * Send a window-list snapshot to the live region-selector renderer
  * via the same IPC channel main uses on real ⌘⇧P. Pair with a
@@ -357,7 +369,7 @@ test("click + drag past threshold overrides snap with a free-form region", async
  */
 async function hydrateWindowList(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  windows: typeof SYNTHETIC_WINDOW[]
+  windows: readonly SnapEntry[]
 ): Promise<void> {
   await app.electronApp.evaluate(
     ({ BrowserWindow }, payload) => {
@@ -367,7 +379,7 @@ async function hydrateWindowList(
       if (w === undefined) throw new Error("no selector window");
       w.webContents.send("region-selector:window-list", payload);
     },
-    { windows }
+    { windows: [...windows] }
   );
 }
 

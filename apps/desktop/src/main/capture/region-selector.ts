@@ -233,6 +233,26 @@ export async function pickRegion(): Promise<SelectorResult> {
       meaningful: meaningful.length,
       afterVisibilityFilter: localized.length,
       ourPids: Array.from(ourPids),
+      // Display the cursor was on when pickRegion fired. Pair this
+      // with the renderer's [viewport] log to see if the renderer's
+      // CSS coord space matches display.bounds 1:1.
+      display: {
+        id: targetDisplay.id,
+        bounds: targetDisplay.bounds,
+        workArea: targetDisplay.workArea,
+        scaleFactor: targetDisplay.scaleFactor
+      },
+      // The selector window's actual on-screen bounds + content size
+      // post-simple-fullscreen. If contentBounds != display.bounds
+      // we have a coord-space mismatch — the renderer's CSS pixels
+      // are NOT 1:1 with display logical points, which would explain
+      // a doubled-size rect.
+      selectorWindow: {
+        bounds: win.getBounds(),
+        contentBounds: win.getContentBounds(),
+        contentSize: win.getContentSize(),
+        isSimpleFullScreen: win.isSimpleFullScreen()
+      },
       candidates: localized.map((c) => ({
         z: c.zIndex,
         id: c.windowId,
@@ -306,6 +326,16 @@ function enterMenuBarOverlayMode(win: BrowserWindow): void {
   if (!win.isSimpleFullScreen()) {
     win.setSimpleFullScreen(true);
   }
+  // Defensive re-anchor: setSimpleFullScreen(true) on Cocoa
+  // sometimes leaves the window's content area at a size that
+  // doesn't match the display's logical bounds — the renderer's
+  // CSS coord space ends up scaled relative to display.bounds and
+  // every rect we paint comes out 2× too large (or otherwise
+  // mis-scaled). Force the content rect to display.bounds so the
+  // renderer's pixel space is 1:1 with display logical points.
+  // No-op when bounds already match.
+  const display = screen.getDisplayMatching(win.getBounds());
+  win.setContentBounds(display.bounds);
 }
 
 function leaveMenuBarOverlayMode(win: BrowserWindow): void {

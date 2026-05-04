@@ -1,5 +1,6 @@
-/* Region-selector renderer styles. Pure CSS positioning + transparency.
-   No backdrop-filter — single biggest cause of jank over Splashtop. */
+/* Region-selector renderer styles — Phase 1.10.
+   Handle + cursor map lifted from the design's ps-capture-region;
+   see PwrDrvr Design System / ui_kits/pwrsnap/styles.css. */
 
 body[data-stage="region"] {
   /* Almost-but-not-quite transparent. Pure rgba(0,0,0,0) makes macOS
@@ -13,11 +14,14 @@ body[data-stage="region"] {
   user-select: none;
 }
 
+body[data-stage="region"][data-interaction="moving"],
+body[data-stage="region"][data-space-held="true"] {
+  cursor: grabbing;
+}
+
 body[data-stage="region"] .region-root {
   position: fixed;
   inset: 0;
-  /* Same trick — make sure the root has a non-zero alpha background
-     so React updates can't accidentally introduce a transparent gap. */
   background: rgba(0, 0, 0, 0.004);
 }
 
@@ -34,6 +38,45 @@ body[data-stage="region"] .region-root {
   border: 1.5px solid var(--accent);
   background: rgba(232, 116, 58, 0.05);
   pointer-events: none;
+}
+
+.region-rect--adjustable {
+  /* In the adjusting state, anywhere inside the rect (away from
+     handles) is a "move" target — but the rect div itself is
+     pointer-events: none so the handles below it stay clickable.
+     The interior cursor is set on body[data-stage="region"] when
+     the global mousemove decides we'd be over an empty rect area. */
+}
+
+/* 8 resize handles on the live rect. Lifted from the design — exact
+   same coordinates and cursor mapping. Sized for visibility against
+   the bg dim. */
+.region-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border: 1.5px solid var(--text-primary);
+  border-radius: 1px;
+  pointer-events: auto;
+  z-index: 2;
+}
+.region-handle.tl { top: -5px; left: -5px; cursor: nwse-resize; }
+.region-handle.tr { top: -5px; right: -5px; cursor: nesw-resize; }
+.region-handle.bl { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.region-handle.br { bottom: -5px; right: -5px; cursor: nwse-resize; }
+.region-handle.tm { top: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+.region-handle.bm { bottom: -5px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+.region-handle.lm { top: 50%; left: -5px; transform: translateY(-50%); cursor: ew-resize; }
+.region-handle.rm { top: 50%; right: -5px; transform: translateY(-50%); cursor: ew-resize; }
+
+/* Interior surface of the adjustable rect — captures the cursor for
+   drag-to-move while the rect's border + handles remain on top. */
+.region-rect-interior {
+  position: absolute;
+  inset: 0;
+  cursor: move;
+  pointer-events: auto;
 }
 
 .region-dims-chip {
@@ -64,6 +107,17 @@ body[data-stage="region"] .region-root {
   color: var(--text-secondary);
   font: 500 11px/1 var(--font-sans);
   pointer-events: none;
+  white-space: nowrap;
+}
+.region-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-mono);
+  margin-right: 4px;
 }
 .region-hint-sep {
   color: var(--text-muted);

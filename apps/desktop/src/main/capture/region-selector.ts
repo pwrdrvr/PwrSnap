@@ -1,18 +1,18 @@
-// Pre-warmed singleton region-selector window. Cold BrowserWindow
+// Pre-warmed per-display region-selector windows. Cold BrowserWindow
 // creation is 150–400ms; the ⌘⇧P → first-paint budget is 120ms. So
-// we create the window once at boot (`show: false`), reload it on
-// display-config change, and `show()` on shortcut. After capture,
-// `hide()` rather than destroy.
+// we create one window per display at boot (`show: false`), rebuild
+// on display-config change, and `show()` only the window for the
+// display containing the cursor when the shortcut fires. After
+// capture, `hide()` rather than destroy.
 //
-// One window per display gives a per-display selector that already
-// fits the display's coordinate space — no virtual-coord remap needed
-// when the user drags. For Phase 1 we ship a single primary-display
-// selector to keep complexity down; multi-display support is a
-// trivial generalization in Phase 1.5+.
+// Per-display windows give selectors that already fit each display's
+// coordinate space — no virtual-coord remap needed when the user drags.
+// The renderer reports rect coordinates in window-local pixels along
+// with the displayId; main converts to global virtual coords on commit.
 //
-// The window itself is frameless, transparent, alwaysOnTop at level
-// 'screen-saver', hasShadow:false (window shadow would be captured),
-// CSS-only — pure positioning + a 1.5px accent border. NO
+// The windows themselves are frameless, transparent, alwaysOnTop at
+// level 'screen-saver', hasShadow:false (window shadow would be
+// captured), CSS-only — pure positioning + a 1.5px accent border. NO
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
 import { BrowserWindow, ipcMain, screen, type Display } from "electron";
@@ -22,8 +22,10 @@ import { getPreloadPath } from "../window";
 
 const log = getMainLogger("pwrsnap:region-selector");
 
-let selectorWindow: BrowserWindow | null = null;
+const selectorWindows = new Map<number, BrowserWindow>();
 let pendingResolver: ((result: SelectorResult) => void) | null = null;
+let resultListenerAttached = false;
+let displayListenersAttached = false;
 
 export type SelectorResult =
   | { ok: true; rect: { x: number; y: number; w: number; h: number }; displayId: number }
@@ -32,54 +34,79 @@ export type SelectorResult =
 const SELECTOR_RESULT_CHANNEL = "region-selector:result";
 
 /**
- * Create the pre-warmed window. Idempotent. Call once at boot.
+ * Create the pre-warmed windows — one per display. Idempotent. Call
+ * once at boot; safe to call again to refresh after display changes.
  */
 export function preWarmRegionSelector(): void {
-  if (selectorWindow !== null && !selectorWindow.isDestroyed()) return;
-
-  const display = screen.getPrimaryDisplay();
-  selectorWindow = createSelectorWindow(display);
-
-  // Wire the result channel once. Renderer posts back on commit / cancel.
-  ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
-    if (pendingResolver === null) return;
-    const resolver = pendingResolver;
-    pendingResolver = null;
-    if (isSelectorPayload(payload) && payload.ok) {
-      resolver({ ok: true, rect: payload.rect, displayId: payload.displayId });
-    } else {
-      resolver({ ok: false, reason: "cancelled" });
+  // Build one window per display we don't already have.
+  const displays = screen.getAllDisplays();
+  const liveIds = new Set<number>();
+  for (const display of displays) {
+    liveIds.add(display.id);
+    const existing = selectorWindows.get(display.id);
+    if (existing !== undefined && !existing.isDestroyed()) continue;
+    const win = createSelectorWindow(display);
+    selectorWindows.set(display.id, win);
+  }
+  // Tear down windows for displays that have been removed.
+  for (const [id, win] of selectorWindows) {
+    if (!liveIds.has(id)) {
+      if (!win.isDestroyed()) win.destroy();
+      selectorWindows.delete(id);
     }
-    // Blur first, then hide. On macOS a screen-saver-level always-
-    // on-top window that just calls `hide()` can leave the OS still
-    // routing keyboard input to it — the user ends up unable to
-    // click anywhere until the focus is forcibly relinquished.
-    if (selectorWindow !== null && !selectorWindow.isDestroyed()) {
-      selectorWindow.blur();
-      selectorWindow.hide();
-    }
-  });
+  }
 
-  // Re-create on display config change so the window always matches the
-  // active display's bounds.
-  screen.on("display-metrics-changed", () => {
-    rebuildSelector();
-  });
-  screen.on("display-added", () => rebuildSelector());
-  screen.on("display-removed", () => rebuildSelector());
+  if (!resultListenerAttached) {
+    ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
+      if (pendingResolver === null) return;
+      const resolver = pendingResolver;
+      pendingResolver = null;
+      if (isSelectorPayload(payload) && payload.ok) {
+        resolver({ ok: true, rect: payload.rect, displayId: payload.displayId });
+      } else {
+        resolver({ ok: false, reason: "cancelled" });
+      }
+      hideAllSelectors();
+    });
+    resultListenerAttached = true;
+  }
+
+  if (!displayListenersAttached) {
+    // Re-create on display config change so each window's bounds
+    // continue to match its display.
+    screen.on("display-metrics-changed", (_event, display) => {
+      rebuildSelectorForDisplay(display.id);
+    });
+    screen.on("display-added", () => preWarmRegionSelector());
+    screen.on("display-removed", () => preWarmRegionSelector());
+    displayListenersAttached = true;
+  }
 }
 
 /**
- * Show the selector and resolve when the user commits or cancels.
- * If a prior selector invocation is still pending, the prior promise
- * resolves with `cancelled` and the new request takes over.
+ * Show the selector on the display under the cursor and resolve when
+ * the user commits or cancels. If a prior selector invocation is still
+ * pending, the prior promise resolves with `cancelled` and the new
+ * request takes over.
  */
 export async function pickRegion(): Promise<SelectorResult> {
-  if (selectorWindow === null || selectorWindow.isDestroyed()) {
+  if (selectorWindows.size === 0) {
     preWarmRegionSelector();
   }
-  const win = selectorWindow;
-  if (win === null) {
+  if (selectorWindows.size === 0) {
+    return { ok: false, reason: "destroyed" };
+  }
+
+  // Route to whichever display the cursor is on right now.
+  const cursor = screen.getCursorScreenPoint();
+  const targetDisplay = screen.getDisplayNearestPoint(cursor);
+  let targetWindow = selectorWindows.get(targetDisplay.id);
+  if (targetWindow === undefined || targetWindow.isDestroyed()) {
+    // Stale entry — rebuild lazily and try again.
+    rebuildSelectorForDisplay(targetDisplay.id);
+    targetWindow = selectorWindows.get(targetDisplay.id);
+  }
+  if (targetWindow === undefined) {
     return { ok: false, reason: "destroyed" };
   }
 
@@ -89,12 +116,25 @@ export async function pickRegion(): Promise<SelectorResult> {
     previous({ ok: false, reason: "cancelled" });
   }
 
+  const win = targetWindow;
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
     win.show();
     win.focus();
   });
   return result;
+}
+
+function hideAllSelectors(): void {
+  for (const win of selectorWindows.values()) {
+    if (win.isDestroyed()) continue;
+    // Blur first, then hide. On macOS a screen-saver-level always-
+    // on-top window that just calls `hide()` can leave the OS still
+    // routing keyboard input to it — the user ends up unable to
+    // click anywhere until the focus is forcibly relinquished.
+    win.blur();
+    win.hide();
+  }
 }
 
 function createSelectorWindow(display: Display): BrowserWindow {
@@ -143,12 +183,16 @@ function createSelectorWindow(display: Display): BrowserWindow {
   return window;
 }
 
-function rebuildSelector(): void {
-  if (selectorWindow !== null && !selectorWindow.isDestroyed()) {
-    selectorWindow.destroy();
+function rebuildSelectorForDisplay(displayId: number): void {
+  const existing = selectorWindows.get(displayId);
+  if (existing !== undefined && !existing.isDestroyed()) {
+    existing.destroy();
   }
-  selectorWindow = null;
-  preWarmRegionSelector();
+  selectorWindows.delete(displayId);
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) return;
+  const win = createSelectorWindow(display);
+  selectorWindows.set(displayId, win);
 }
 
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash: string };
@@ -188,11 +232,14 @@ function isSelectorPayload(value: unknown): value is {
 }
 
 export function disposeRegionSelector(): void {
-  if (selectorWindow !== null && !selectorWindow.isDestroyed()) {
-    selectorWindow.destroy();
+  for (const win of selectorWindows.values()) {
+    if (!win.isDestroyed()) win.destroy();
   }
-  selectorWindow = null;
-  ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
+  selectorWindows.clear();
+  if (resultListenerAttached) {
+    ipcMain.removeAllListeners(SELECTOR_RESULT_CHANNEL);
+    resultListenerAttached = false;
+  }
 }
 
 export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;

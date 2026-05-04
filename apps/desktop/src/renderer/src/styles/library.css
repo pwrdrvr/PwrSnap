@@ -125,7 +125,7 @@
 .ps-tray {
   position: absolute;
   top: 36px; right: 18px;
-  width: 380px;
+  width: 440px;
   background: rgba(20, 17, 14, 0.96);
   backdrop-filter: blur(28px) saturate(1.2);
   -webkit-backdrop-filter: blur(28px) saturate(1.2);

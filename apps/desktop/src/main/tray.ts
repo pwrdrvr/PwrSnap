@@ -26,9 +26,12 @@ const TRAY_RESIZE_CHANNEL = "tray:resize";
 /** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen. */
 const TRAY_HEIGHT_MIN = 200;
 const TRAY_HEIGHT_MAX = 720;
-/** Window width is fixed by the design (see TrayMenu.css `.ps-tray { width: 100% }`
-    inside a 380px window). We don't accept renderer-driven width changes. */
-const TRAY_WIDTH = 380;
+/** Window width is fixed by the design — must match `.ps-tray { width }`
+    in library.css. Bumped from 380 → 440 because the 2-column mode
+    grid (Region/Window, Full/All, Scrolling/Timed) was clipping the
+    right column at 380, especially with multi-key shortcuts like
+    ⌘⇧F that need 56px just for the kbds. */
+const TRAY_WIDTH = 440;
 
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;

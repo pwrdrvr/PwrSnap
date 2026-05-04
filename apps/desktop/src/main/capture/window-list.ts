@@ -80,6 +80,35 @@ function resolveHelperPath(): string | null {
 let warned = false;
 
 /**
+ * Activate (bring to front) the running application identified by
+ * `pid`. Used by the region selector to restore the previously-
+ * frontmost app after a cancel or commit, without resorting to
+ * `app.hide()` (which has the side effect of unhiding ALL our
+ * windows on the next show — popping the library on top of the
+ * user's actual workspace).
+ *
+ * Best-effort. If the pid is no longer running or activation is
+ * refused by the OS, the helper exits 0 quietly. The caller path
+ * has nothing useful to do with the failure either way.
+ */
+export async function activateApp(pid: number): Promise<void> {
+  const helper = resolveHelperPath();
+  if (helper === null) return;
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    await execFileAsync(helper, ["--activate-pid", String(pid)], {
+      timeout: 1_500,
+      maxBuffer: 1024
+    });
+  } catch (cause) {
+    log.warn("activateApp helper failed", {
+      pid,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+/**
  * Enumerate the live on-screen windows. Returns an empty array when
  * the helper isn't available (Linux/Windows, or a dev environment
  * where build-native.mjs hasn't run). Logs once at warn level so

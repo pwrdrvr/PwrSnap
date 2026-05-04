@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
+  activateApp,
   boundsApproxEqual,
   listWindows,
   selfPidSet,
@@ -41,6 +42,13 @@ let displayListenersAttached = false;
 // window in the renderer hit-tests against this same snapshot; the
 // capture handler reuses it after commit to backfill source_app_*.
 let lastSnapshot: WindowInfo[] = [];
+
+// Process id of the app that was frontmost at pickRegion time —
+// captured BEFORE we steal focus to show the selector. After the
+// selector hides on cancel or commit, we re-activate this pid so
+// the user lands back where they were instead of looking at our
+// library window.
+let previousAppPid: number | null = null;
 
 export type SelectorResult =
   | {
@@ -200,6 +208,15 @@ export async function pickRegion(): Promise<SelectorResult> {
 
   void listWindows().then((rawSnapshot) => {
     lastSnapshot = rawSnapshot;
+
+    // Snapshot the previously-frontmost app's pid. The helper
+    // returns windows in z-order, so the first non-ours window
+    // belongs to whatever app was frontmost when the user pressed
+    // ⌘⇧P (we hadn't activated yet at the moment listWindows
+    // ran). Stored at module scope; restored after the selector
+    // hides via NSRunningApplication.activate.
+    const topNonOurs = rawSnapshot.find((w) => !ourPids.has(w.pid));
+    previousAppPid = topNonOurs?.pid ?? null;
 
     // Step 1: keep windows that overlap the active display. Anything
     // entirely on another monitor is irrelevant to this selector.
@@ -400,6 +417,18 @@ function hideAllSelectors(): void {
     leaveMenuBarOverlayMode(win);
     win.blur();
     win.hide();
+  }
+  // Restore the previously-frontmost app. Without this, Cocoa picks
+  // the next-key window in OUR app (the library) as the new key
+  // window — popping it on top of whatever the user was actually
+  // looking at. activateApp goes via NSRunningApplication.activate,
+  // which puts the original app back to front WITHOUT hiding our
+  // own windows (so subsequent ⌘⇧P presses don't suffer the
+  // app.hide-then-unhide-everything regression).
+  if (previousAppPid !== null) {
+    const pid = previousAppPid;
+    previousAppPid = null;
+    void activateApp(pid);
   }
 }
 

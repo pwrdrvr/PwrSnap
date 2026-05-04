@@ -150,6 +150,33 @@ func collectWindows() -> [WindowInfo] {
     return out
 }
 
+// Subcommand dispatch. Default (no args) → emit the window list.
+// `--activate-pid <pid>` → bring the named running app to the
+// foreground via NSRunningApplication.activate. Used by the region
+// selector to restore the previously-frontmost app after the user
+// cancels or commits, without doing app.hide() (which has the side
+// effect of unhiding all our windows on the next show()).
+//
+// Activation is best-effort: if the pid is no longer running or
+// activate() returns false, we exit 0 quietly. The caller's UX is
+// "the user wanted their last app back" — failing loud doesn't help.
+
+let args = CommandLine.arguments
+
+if args.count >= 3 && args[1] == "--activate-pid" {
+    if let pid = pid_t(args[2]),
+       let runningApp = NSRunningApplication(processIdentifier: pid) {
+        // The options-based variant is deprecated since macOS 14; the
+        // modern activate() handles the "ignore other apps" case
+        // automatically when the calling process is itself active or
+        // a recent action implied user intent. For our use case
+        // (caller just dismissed our selector — the user's intent
+        // is unmistakable) the no-options variant works.
+        runningApp.activate()
+    }
+    exit(0)
+}
+
 let encoder = JSONEncoder()
 encoder.outputFormatting = []
 let data = try encoder.encode(collectWindows())

@@ -2,7 +2,6 @@ import { BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "./log";
 
-const isDevelopment = process.env.NODE_ENV !== "production";
 const log = getMainLogger("pwrsnap:window");
 
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
@@ -67,9 +66,6 @@ export function createMainWindow(): BrowserWindow {
   window.once("ready-to-show", () => {
     log.info("main window ready-to-show", { id: window.id });
     window.show();
-    if (isDevelopment) {
-      window.webContents.openDevTools({ mode: "detach" });
-    }
   });
 
   // Lifecycle diagnostics — these helped track down the
@@ -225,9 +221,6 @@ export function createEditWindow(captureId: string): BrowserWindow {
     log.info("edit window ready-to-show", { id: window.id, captureId });
     window.show();
     window.focus();
-    if (isDevelopment) {
-      window.webContents.openDevTools({ mode: "detach" });
-    }
   });
 
   return window;

@@ -64,3 +64,23 @@ export function subscribe(
   if (!window.pwrsnapApi) return () => undefined;
   return window.pwrsnapApi.on(channel, handler);
 }
+
+/**
+ * URL builders for the custom protocol schemes. The literal "r" host
+ * is required because Chromium lowercases the URL authority for any
+ * standard scheme (RFC 3986 §3.2.2) — putting the capture id in the
+ * host would mangle nanoid's mixed-case alphabet. Path components
+ * preserve case. See apps/desktop/src/main/protocols.ts for the
+ * matching parser.
+ */
+export function captureSrcUrl(captureId: string): string {
+  return `pwrsnap-capture://r/${captureId}`;
+}
+
+export function cacheUrl(
+  captureId: string,
+  width: number,
+  format: "png" | "webp" = "webp"
+): string {
+  return `pwrsnap-cache://r/${captureId}/${width}w.${format}`;
+}

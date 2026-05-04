@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
-import { dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 
 type LoadState =
   | { kind: "loading" }
@@ -74,7 +74,7 @@ export function FloatOverForCapture({ captureId }: { captureId: string }) {
   // Use the cache protocol at the medium preset for the preview —
   // matches the float-over's intended display size and pre-warms the
   // cache for the user's most-likely first ⌘ shortcut.
-  const previewSrc = `pwrsnap-cache://${record.id}/1440w.webp`;
+  const previewSrc = cacheUrl(record.id, 1440);
   return (
     <FloatOver
       src={previewSrc}

@@ -5,7 +5,7 @@ import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { FixtureBackedRecords } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
-import { dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -31,7 +31,7 @@ function CellThumb({
   if (record !== null) {
     return (
       <img
-        src={`pwrsnap-cache://${record.id}/${width}w.webp`}
+        src={cacheUrl(record.id, width)}
         alt=""
         style={{
           width: "100%",
@@ -357,7 +357,7 @@ export function Library({
             >
               {selectedRecord !== null ? (
                 <img
-                  src={`pwrsnap-cache://${selectedRecord.id}/1440w.webp`}
+                  src={cacheUrl(selectedRecord.id, 1440)}
                   alt=""
                   style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
                 />

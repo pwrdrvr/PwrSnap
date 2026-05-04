@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { Kbd } from "../shared/Primitives";
-import { dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 
 type ModeKind = "region" | "window" | "full" | "all" | "scroll" | "timed";
@@ -268,7 +268,7 @@ export function TrayMenu({ activeMode = "region" }: { activeMode?: ModeKind }) {
           >
             <div className="ps-tray__activity-thumb">
               <img
-                src={`pwrsnap-cache://${lastSnap.id}/72w.webp`}
+                src={cacheUrl(lastSnap.id, 72)}
                 alt="Last snap"
               />
             </div>

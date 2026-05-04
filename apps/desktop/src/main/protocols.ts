@@ -3,15 +3,22 @@
 //
 // Two URL schemes:
 //
-//   pwrsnap-capture://<capture-id>
+//   pwrsnap-capture://r/<capture-id>
 //     Resolves to the source PNG at captures.src_path. Used for
 //     full-fidelity inspect / edit display.
 //
-//   pwrsnap-cache://<capture-id>/<width>w.<format>
+//   pwrsnap-cache://r/<capture-id>/<width>w.<format>
 //     Resolves through the render pipeline at the requested width. Hit
 //     the disk cache when present, compose-on-demand on miss. Used for
 //     library thumbnails, float-over preview, drag-out icons.
-//     (Render coordinator + cache lands in Phase 1.6.)
+//
+// Note the literal "r" host segment. Chromium normalizes the URL
+// authority (host) component to lowercase per RFC 3986 §3.2.2 for any
+// scheme registered as `standard: true` — and `nanoid()` capture ids
+// use mixed-case `A-Za-z0-9_-`. Putting the id in the host would
+// lowercase it during parsing and the DB lookup would 404 every time.
+// The literal "r" satisfies the standard-scheme "must have a host"
+// requirement and the case-sensitive id sits in the path component.
 //
 // Both schemes are registered as `standard + secure + supportFetchAPI`
 // so they behave like https:// to Chromium — survive `sandbox: true`,
@@ -164,27 +171,28 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
 }
 
 /**
- * Parse `pwrsnap-capture://<id>` → `<id>`. Tolerates trailing slashes.
+ * Parse `pwrsnap-capture://r/<id>` → `<id>`. The "r" host is literal
+ * (see note at top of file — Chromium lowercases hosts but preserves
+ * path case). Tolerates trailing slashes.
  */
 function parseCaptureId(url: string, scheme: string): string | null {
-  const prefix = `${scheme}://`;
+  const prefix = `${scheme}://r/`;
   if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length).replace(/^\/+/, "").replace(/\/+$/, "");
+  const rest = url.slice(prefix.length).replace(/\/+$/, "");
   if (rest.length === 0) return null;
-  // Allow letters, digits, dashes — UUID-friendly but doesn't strictly enforce
-  // UUID shape (the renderer might use slugs in the future).
+  // Allow letters, digits, underscore, dash — matches nanoid alphabet.
   if (!/^[a-zA-Z0-9_-]+$/.test(rest)) return null;
   return rest;
 }
 
 /**
- * Parse `pwrsnap-cache://<id>/<width>w.<format>` → structured.
+ * Parse `pwrsnap-cache://r/<id>/<width>w.<format>` → structured.
  * Width is clamped to [1, 8192] (DoS guard).
  */
 function parseCacheUrl(
   url: string
 ): { captureId: string; width: number; format: "png" | "webp" } | null {
-  const prefix = `${SCHEMES.cache}://`;
+  const prefix = `${SCHEMES.cache}://r/`;
   if (!url.startsWith(prefix)) return null;
   const rest = url.slice(prefix.length);
   const match = rest.match(/^([a-zA-Z0-9_-]+)\/(\d+)w\.(png|webp)\/?$/);

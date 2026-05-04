@@ -152,6 +152,14 @@ export function FloatOver({
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
+  // Exit-animation timeout handle. Stored in a ref so we can clear it
+  // on unmount — without this, an in-flight `setTimeout(..., 220)` from
+  // the previous capture's exit animation would survive a renderer
+  // re-mount and call `onDismiss` ~220ms after the NEW toast appears,
+  // hiding it. That was the "toast flashes for a microsecond" bug.
+  // (With the persistent renderer + state machine added in this same
+  // phase, re-mount is rare — but defensive cleanup is cheap.)
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isPaused =
     pinned ||
@@ -174,7 +182,7 @@ export function FloatOver({
       setProgress(p);
       if (p <= 0) {
         setExiting(true);
-        setTimeout(() => onDismiss?.(), 220);
+        exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -186,6 +194,18 @@ export function FloatOver({
     };
   }, [isPaused, startCountdown, cfg.autoMs, onDismiss]);
 
+  // Clear any pending exit-animation timer on unmount. Prevents a
+  // setTimeout from a previous mount firing onDismiss after the NEW
+  // toast has appeared (the "microsecond flash" bug).
+  useEffect(() => {
+    return () => {
+      if (exitTimerRef.current !== null) {
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const handleCopy = (presetId: string) => {
     setCopiedId(presetId);
     setTimeout(() => setCopiedId((c) => (c === presetId ? null : c)), 1200);
@@ -193,7 +213,7 @@ export function FloatOver({
 
   const dismissNow = () => {
     setExiting(true);
-    setTimeout(() => onDismiss?.(), 220);
+    exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };
 
   return (

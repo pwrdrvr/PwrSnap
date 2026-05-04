@@ -15,7 +15,39 @@ export const EVENT_CHANNELS = {
   aiRunUpdated: "events:ai-run:updated",
   renderProgress: "events:render:progress",
   recordingState: "events:recording:state",
-  settingsChanged: "events:settings:changed"
+  settingsChanged: "events:settings:changed",
+  /**
+   * Drives the float-over renderer's state machine. Lets main own the
+   * lifecycle (pre-show under selector, populate-after-commit, sync
+   * cancel-without-flicker) without `loadURL` reloads — the renderer
+   * stays mounted across captures so stale exit-animation timers
+   * can't fire from a previous mount.
+   *
+   * Payload type: `FloatOverEvent` (see protocol.ts).
+   */
+  floatOverState: "events:float-over:state"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
+
+/**
+ * Float-over state-machine event. Main → renderer broadcast.
+ *   - `show-idle`   — pre-show with no capture data; renderer paints an
+ *     empty placeholder. Used when the selector opens — the float-over
+ *     window is established at the floating window level UNDER the
+ *     selector (which is at screen-saver level), so the user never
+ *     sees it before the selector hides.
+ *   - `show-loaded` — capture committed; populate the toast with the
+ *     captureId. Renderer fetches the record and starts the
+ *     auto-dismiss countdown.
+ *   - `cancel`      — selector cancelled; hide the toast SYNCHRONOUSLY
+ *     with no exit animation. Used so the user never sees the
+ *     pre-shown placeholder when they Esc out of the selector.
+ *   - `dismiss`     — user explicitly dismissed (X button, Esc on the
+ *     toast itself, auto-dismiss countdown). Plays the exit animation.
+ */
+export type FloatOverEvent =
+  | { kind: "show-idle" }
+  | { kind: "show-loaded"; captureId: string }
+  | { kind: "cancel" }
+  | { kind: "dismiss" };

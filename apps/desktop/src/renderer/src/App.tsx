@@ -1,11 +1,8 @@
 import { Editor } from "./features/editor/Editor";
 import { Library } from "./features/library/Library";
-import { FloatOver } from "./features/float-over/FloatOver";
-import { FloatOverForCapture } from "./features/float-over/FloatOverForCapture";
+import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { TrayMenu, TrayResizeForwarder } from "./features/tray/TrayMenu";
-import { dispatch } from "./lib/pwrsnap";
-import sampleSrc from "./assets/sample-1.png";
 
 type Stage = "library" | "float-over" | "tray" | "region" | "edit";
 
@@ -20,9 +17,10 @@ function readStage(): Stage {
 function readCaptureId(): string | null {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
-  // Edit windows pass `captureId=<id>`; float-over historically uses
-  // `capture=<id>`. Accept both.
-  return params.get("capture") ?? params.get("captureId");
+  // Edit windows pass `captureId=<id>`. Float-over no longer uses the
+  // hash for captureId — main drives it via `events:float-over:state`
+  // IPC so the renderer stays mounted across captures.
+  return params.get("captureId");
 }
 
 const STAGE = readStage();
@@ -57,21 +55,7 @@ export function App() {
     );
   }
   if (STAGE === "float-over") {
-    if (CAPTURE_ID !== null) {
-      return <FloatOverForCapture captureId={CAPTURE_ID} />;
-    }
-    // Fallback for the legacy "open with no capture" path. Once Phase
-    // 1.5 fully lands, this branch is unreachable.
-    return (
-      <FloatOver
-        src={sampleSrc}
-        srcW={2880}
-        srcH={1800}
-        onDismiss={() => {
-          void dispatch("float-over:dismiss", {});
-        }}
-      />
-    );
+    return <FloatOverHost />;
   }
   if (STAGE === "region") {
     return <RegionSelector />;

@@ -1,41 +1,73 @@
-// Float-over toast — singleton, hidden-not-destroyed lifecycle. Each
-// new capture reloads the renderer with `?capture=<id>` and shows.
-// State machine: IDLE → SHOWING → COPYING → DISMISSED → IDLE.
-// Show-while-COPYING queues the next capture; we never destroy the
-// window mid-render.
+// Float-over toast — singleton renderer with IPC-driven state machine.
 //
-// For Phase 1 the state machine is implicit (just hide/show + a
-// single in-flight capture id). Phase 2+ formalizes when the editor
-// surface lands and races become more interesting.
+// Phase 1.5 lifecycle (per docs/plans/2026-05-04-001):
+//
+//   HIDDEN → IDLE (pre-show under selector)
+//          ↘ LOADED (post-commit, populated)
+//   IDLE   → LOADED (commit) | HIDDEN (cancel)
+//   LOADED → HIDDEN (dismiss / auto-dismiss / cancel-during-loaded)
+//
+// Why a state machine instead of `loadURL` per capture: every reload
+// re-mounts React, re-establishes IPC subscriptions, AND leaves any
+// in-flight `setTimeout`s on the page event loop. The 220ms exit-
+// animation timer in FloatOver.tsx was firing AFTER the new capture's
+// renderer mounted — explaining the "almost never see it" symptom.
+// Persistent renderer + IPC events kills the race.
+//
+// Why pre-show under the selector: the selector is at screen-saver
+// level (1000); the float-over is at floating level (3). The selector
+// covers the float-over visually. When the user commits, hideSelector
+// reveals the already-painted toast — no post-hoc show race with
+// previous-app activation.
 
 import { BrowserWindow, screen } from "electron";
+import { EVENT_CHANNELS, type FloatOverEvent } from "@pwrsnap/shared";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:float-over");
 
+type FloatOverState =
+  | { kind: "hidden" }
+  | { kind: "idle" }
+  | { kind: "loaded"; captureId: string };
+
 let singleton: BrowserWindow | null = null;
-let currentCaptureId: string | null = null;
+let state: FloatOverState = { kind: "hidden" };
+/** Last event we sent to the renderer. Re-emitted on `did-finish-load`
+ *  so the first capture-of-session doesn't miss the IPC if the renderer
+ *  hadn't subscribed yet at send time. */
+let lastEvent: FloatOverEvent | null = null;
+/** True once the renderer has finished loading at least once. Until
+ *  then, IPC events are buffered in `lastEvent` and re-sent on dom-ready. */
+let rendererReady = false;
 
 function getOrCreate(): BrowserWindow {
   if (singleton !== null && !singleton.isDestroyed()) return singleton;
-  singleton = createFloatOverWindow();
-  singleton.on("closed", () => {
-    singleton = null;
-    currentCaptureId = null;
+  const window = createFloatOverWindow();
+  singleton = window;
+  rendererReady = false;
+  window.webContents.once("did-finish-load", () => {
+    rendererReady = true;
+    if (lastEvent !== null && !window.isDestroyed()) {
+      window.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
+    }
   });
-  return singleton;
+  window.on("closed", () => {
+    if (singleton === window) {
+      singleton = null;
+      state = { kind: "hidden" };
+      lastEvent = null;
+      rendererReady = false;
+    }
+  });
+  return window;
 }
 
 /**
  * Anchor the float-over in the bottom-right of the display the cursor
- * is currently on. We re-compute this on every show because (a) the
- * user may have moved the dock, plugged/unplugged a display, changed
- * scaled mode, or dragged the window between captures; (b) the
- * `ready-to-show` listener inside createFloatOverWindow only fires on
- * the FIRST load — subsequent `loadURL` calls don't re-fire it, so
- * relying on it for positioning means the second+ capture inherits a
- * stale position.
+ * is currently on. Recomputed on every show-idle so the toast lands on
+ * the right display even after a cursor move between captures.
  */
 function anchorBottomRight(window: BrowserWindow): void {
   const cursor = screen.getCursorScreenPoint();
@@ -49,84 +81,99 @@ function anchorBottomRight(window: BrowserWindow): void {
 }
 
 /**
- * Show the float-over for a specific capture. The window reloads its
- * URL with `?capture=<id>` so the renderer reads `STAGE` + `?capture`
- * and fetches the real preview. If a different capture is currently
- * displayed and the user hasn't dismissed yet, the new capture
- * replaces it. Same captureId (sha256 dedup hit) is also re-shown —
- * the previous "already showing for this id, return" early-out hid
- * legitimate re-shows when the user repeated a capture.
- *
- * Phase 1.4-1.5: ⌘⇧P → capture:interactive → showFloatOverForCapture.
+ * The single entry point for the rest of the main process to drive the
+ * float-over. All visibility transitions go through here so the IPC
+ * event and the BrowserWindow state stay in lockstep.
  */
-export function showFloatOverForCapture(captureId: string): BrowserWindow {
-  const window = getOrCreate();
-  const isSameCapture = currentCaptureId === captureId;
-  currentCaptureId = captureId;
-  // Reload only when the capture actually changed. Same-capture
-  // (sha256 dedup) re-shows skip the reload but still re-anchor and
-  // re-raise.
-  if (!isSameCapture) {
-    reloadForCapture(window, captureId);
+export function setFloatOverState(event: FloatOverEvent): void {
+  switch (event.kind) {
+    case "show-idle": {
+      const window = getOrCreate();
+      state = { kind: "idle" };
+      anchorBottomRight(window);
+      // showInactive() — never steal focus. Selector (screen-saver
+      // level) covers this window visually; user doesn't see the
+      // empty placeholder.
+      if (!window.isVisible()) {
+        window.showInactive();
+      }
+      // moveTop within the floating level — beats other floating
+      // windows that may have come up since our last show.
+      window.moveTop();
+      break;
+    }
+    case "show-loaded": {
+      const window = getOrCreate();
+      state = { kind: "loaded", captureId: event.captureId };
+      // Re-anchor in case the user dragged-display between idle and
+      // commit. (Cursor moved → bottom-right of the new display.)
+      anchorBottomRight(window);
+      if (!window.isVisible()) {
+        window.showInactive();
+      }
+      window.moveTop();
+      break;
+    }
+    case "cancel": {
+      // Synchronous hide, no exit animation. The user pressed Esc
+      // out of the selector; the float-over was pre-shown UNDER the
+      // selector and they should never have seen it. Hide first,
+      // selector hides 50ms later, no flash.
+      state = { kind: "hidden" };
+      if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
+        singleton.hide();
+      }
+      break;
+    }
+    case "dismiss": {
+      // User explicitly dismissed via the X / Esc on the toast / auto-
+      // dismiss timer. The renderer played its exit animation and is
+      // telling us to hide. No animation here — the renderer faded.
+      state = { kind: "hidden" };
+      if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
+        singleton.hide();
+      }
+      break;
+    }
   }
-  // Always re-anchor before showing — handles workArea shifts (dock
-  // toggle, display added/removed) and stale ready-to-show position.
-  anchorBottomRight(window);
-  // showInactive() instead of show() — we don't want to steal focus
-  // from whatever app the user was in. capture-handlers activates the
-  // user's previous app on commit; the float-over appears over the
-  // top of that app's windows without grabbing focus. moveTop() then
-  // raises the window inside its alwaysOnTop level (pop-up-menu) so
-  // we don't get stuck behind another window of ours.
-  window.showInactive();
-  window.moveTop();
-  log.info("float-over shown", {
-    captureId,
-    isVisible: window.isVisible(),
-    bounds: window.getBounds(),
-    sameCapture: isSameCapture
+
+  // Stash + send the event AFTER the window state transitions so the
+  // renderer never receives a state event before its window is ready.
+  lastEvent = event;
+  if (singleton !== null && !singleton.isDestroyed() && rendererReady) {
+    singleton.webContents.send(EVENT_CHANNELS.floatOverState, event);
+  }
+
+  log.info("float-over state", {
+    kind: event.kind,
+    visible: singleton?.isVisible() ?? false
   });
-  return window;
+}
+
+/** Snapshot of the current state. Used by tests + the cancel path. */
+export function getFloatOverState(): FloatOverState {
+  return state;
 }
 
 /**
- * Backwards-compat shim for callers that don't yet pass a captureId.
- * Phase 1.5 in-progress callsites use this; once Phase 1.4's
- * capture:interactive everywhere passes an id, this can be removed.
+ * Renderer-initiated dismiss — the user clicked X, hit Esc on the toast,
+ * or the auto-dismiss countdown finished. Routed via the
+ * `float-over:dismiss` command-bus handler (float-over-handlers.ts).
+ *
+ * Kept as a separate export rather than folding into setFloatOverState
+ * so the bus handler reads naturally — it's the simple "hide it" verb.
  */
-export function showFloatOver(captureId?: string): BrowserWindow {
-  if (captureId !== undefined) return showFloatOverForCapture(captureId);
-  const window = getOrCreate();
-  if (!window.isVisible()) window.show();
-  return window;
-}
-
 export function dismissFloatOver(): void {
-  if (singleton === null || singleton.isDestroyed()) return;
-  singleton.hide();
-  currentCaptureId = null;
+  setFloatOverState({ kind: "dismiss" });
 }
 
-function reloadForCapture(window: BrowserWindow, captureId: string): void {
-  // The window was loaded with #stage=float-over at creation time. To
-  // re-target it for a new capture, append &capture=<id> to the hash
-  // and reload. webContents.loadURL with the new fragment is the
-  // simplest path; since we own the renderer, the App.tsx stage router
-  // re-runs from scratch.
-  if (process.env.ELECTRON_RENDERER_URL !== undefined) {
-    void window.loadURL(
-      `${process.env.ELECTRON_RENDERER_URL}#stage=float-over&capture=${captureId}`
-    );
-    return;
-  }
-  // file:// path: setHash via a fresh loadFile call.
-  // The renderer entry resolves under window.ts; rebuild the path here
-  // to match. (out/renderer/index.html in production.)
-  // We can't import circularly from window.ts, so rely on the URL we
-  // already have — webContents.send a custom event the renderer listens
-  // to, but that requires extra wiring. For Phase 1 we keep it simple:
-  // construct the file path from the current URL.
-  const currentUrl = window.webContents.getURL();
-  const base = currentUrl.split("#")[0];
-  void window.loadURL(`${base}#stage=float-over&capture=${captureId}`);
+/**
+ * Backwards-compat shim used by the headless `capture:region` path
+ * before the lifecycle reorder lands. Callers passing a captureId go
+ * straight to LOADED. Without an id, this is the historical "show
+ * something" path used by an older test fixture; routes to IDLE so
+ * the renderer mounts but doesn't try to fetch nothing.
+ */
+export function showFloatOverForCapture(captureId: string): void {
+  setFloatOverState({ kind: "show-loaded", captureId });
 }

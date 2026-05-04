@@ -17,6 +17,8 @@
     "release": "node ./scripts/release.mjs",
     "postinstall": "electron-builder install-app-deps",
     "preview": "electron-vite preview",
+    "pretest:e2e": "pnpm build",
+    "test:e2e": "playwright test -c playwright.config.ts",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
@@ -38,6 +40,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@playwright/test": "^1.50.0",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^41.2.1",
     "electron-builder": "^26.8.1",

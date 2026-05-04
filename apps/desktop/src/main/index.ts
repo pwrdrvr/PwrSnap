@@ -23,6 +23,19 @@ const APP_WEBSITE = "https://pwrdrvr.com";
 const CAPTURE_SHORTCUT = "CommandOrControl+Shift+P";
 const isMac = process.platform === "darwin";
 
+/**
+ * E2E mode. When `PWRSNAP_E2E=1`, the bootstrap skips:
+ *   - The global ⌘⇧P shortcut (Playwright drives capture through the
+ *     command bus directly via `electronApp.evaluate(...)`; a real
+ *     global shortcut would race with the host machine's keymap).
+ *   - The tray icon (no Linux tray support in CI; on macOS the tray
+ *     would steal focus from the test browser window).
+ * Everything else — DB, command bus, IPC dispatcher, region selector
+ * pre-warm, main window — runs unchanged so the assertions exercise
+ * the same code paths a real user hits.
+ */
+const isE2E = process.env.PWRSNAP_E2E === "1";
+
 function installApplicationMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: "appMenu" as const }] : []),
@@ -204,10 +217,29 @@ export function bootstrapApp(): void {
     // not-implemented stub from library-handlers.ts. Order matters.
     registerExportHandler();
     registerIpcDispatcher();
-    installTray();
+    if (!isE2E) {
+      installTray();
+    }
     preWarmRegionSelector();
-    registerCaptureShortcut();
+    if (!isE2E) {
+      registerCaptureShortcut();
+    }
     createMainWindow();
+    if (isE2E) {
+      // E2E test bridge. Playwright's `electronApp.evaluate(fn, arg)`
+      // runs `fn` in the main process; specs reach into the bus via
+      // `globalThis.__PWRSNAP_TEST__.dispatch(name, req)` so a single
+      // helper covers every command without per-command plumbing.
+      // Lazy-required so production bundles don't even import this
+      // shim's `bus` reference unless the flag is on.
+      const testBridge = {
+        dispatch: <Name extends string>(name: Name, req: unknown) =>
+          bus.dispatch(name as never, req as never, { principal: "ipc" })
+      };
+      (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =
+        testBridge;
+      log.info("e2e bridge installed");
+    }
     void runBootGc();
 
     app.on("activate", () => {

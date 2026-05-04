@@ -124,7 +124,15 @@ async function runInteractiveCapture(): Promise<void> {
   const result = await bus.dispatch("capture:interactive", {}, { principal: "ipc" });
   if (!result.ok) {
     if (result.error.code === "cancelled") {
-      // User pressed Esc on the selector — no-op.
+      // User pressed Esc on the selector — restore the previous
+      // app to the front. Without this, hiding the selector lets
+      // Cocoa pick the next-key window in our app as frontmost,
+      // which is the library — popping it on top of whatever the
+      // user was actually looking at before ⌘⇧P. `app.hide()` is
+      // the macOS Cmd+H equivalent: hides every PwrSnap window
+      // AND restores focus to the previously-frontmost app, so
+      // the user lands back exactly where they were.
+      if (process.platform === "darwin") app.hide();
       return;
     }
     log.warn("capture:interactive failed", { code: result.error.code, message: result.error.message });

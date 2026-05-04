@@ -29,6 +29,24 @@ const STAGE = readStage();
 const CAPTURE_ID = readCaptureId();
 document.body.dataset.stage = STAGE;
 
+// Distinct document.title per stage. Every PwrSnap window loads
+// the same `index.html` whose `<title>` tag would otherwise stamp
+// EVERY window as "PwrSnap" — including the ones that show up in
+// the dock right-click menu's window list. Tray, float-over, and
+// the region selector are hidden via `skipTaskbar: true` so their
+// titles don't matter, but the library + edit windows are
+// user-facing and need to read sensibly when the user is hunting
+// for one in the dock list. setting document.title overrides the
+// HTML one and propagates through Electron's BrowserWindow.title.
+const TITLE_BY_STAGE: Record<Stage, string> = {
+  library: "PwrSnap",
+  tray: "PwrSnap Tray",
+  "float-over": "PwrSnap Toast",
+  region: "PwrSnap Capture",
+  edit: "PwrSnap Editor"
+};
+document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
+
 export function App() {
   if (STAGE === "tray") {
     return (

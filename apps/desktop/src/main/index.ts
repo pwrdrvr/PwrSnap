@@ -201,9 +201,17 @@ export function bootstrapApp(): void {
   }
   app.on("second-instance", () => {
     // Another `pnpm dev` (or another launch of the .app) tried to
-    // start. Bring our existing main window forward.
+    // start. Bring our existing main window forward. Match by URL
+    // hash absence (no `stage=` fragment) — the title check used
+    // to work but every PwrSnap window now sets distinct
+    // document.title per stage, so the original title equality
+    // check would also match the tray/edit/etc.
     const windows = BrowserWindow.getAllWindows();
-    const main = windows.find((w) => !w.isDestroyed() && w.title === APP_NAME);
+    const main = windows.find((w) => {
+      if (w.isDestroyed()) return false;
+      const url = w.webContents.getURL();
+      return url.length > 0 && !/[#&?]stage=/.test(url);
+    });
     if (main !== undefined) {
       if (main.isMinimized()) main.restore();
       main.show();

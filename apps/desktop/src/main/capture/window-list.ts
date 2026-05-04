@@ -137,32 +137,54 @@ export function findWindowAt(
 
 /**
  * Process IDs belonging to PwrSnap itself (main process + every
- * renderer process spawned by Electron). The helper's CGWindow scan
- * sees these as ordinary on-screen windows; we filter them out so
- * the user can't accidentally snap to our own UI.
+ * renderer process spawned by Electron).
+ *
+ * NOTE: pid-based exclusion is too coarse on macOS — CGWindow's
+ * `kCGWindowOwnerPID` is the app's main process pid for ALL its
+ * NSWindows, including DevTools and any helper / inspector / modal.
+ * Filtering everything with our pid means the user can't snap to
+ * DevTools (which they'd legitimately want to capture for bug
+ * reports). Use `selfWindowBoundsList()` instead — it yields the
+ * bounds of just our user-facing BrowserWindows so we can match by
+ * bounds, leaving DevTools and other auxiliary windows snappable.
  */
 export function selfPidSet(): Set<number> {
-  const pids = new Set<number>([process.pid]);
-  // Sniff Electron renderer pids — webContents has an `getOSProcessId`
-  // method on each. Adding them lets us filter out our own
-  // BrowserWindows even when they're owned by helper renderer pids
-  // (Electron 41 spawns a separate process per BrowserWindow under
-  // sandboxed mode).
+  return new Set<number>([process.pid]);
+}
+
+/**
+ * Bounds of every user-facing BrowserWindow PwrSnap owns. Used as
+ * the canonical "these specific windows are ours" filter — anything
+ * with the same pid but DIFFERENT bounds is something we don't
+ * directly control (DevTools, system modals attached to our app)
+ * and is fair game as a snap target.
+ *
+ * We compare bounds with a small tolerance (±2 px) because
+ * CGWindowList sometimes returns sub-pixel rounded values and
+ * `BrowserWindow.getBounds()` returns CSS-rounded ones.
+ */
+export function selfWindowBoundsList(): { x: number; y: number; width: number; height: number }[] {
   try {
-    // Lazy require to keep this module importable from non-Electron
-    // contexts (unit tests, the eventual MCP transport).
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const electron = require("electron") as typeof import("electron");
-    for (const win of electron.BrowserWindow.getAllWindows()) {
-      if (win.isDestroyed()) continue;
-      try {
-        pids.add(win.webContents.getOSProcessId());
-      } catch {
-        /* webContents may have been torn down */
-      }
-    }
+    return electron.BrowserWindow.getAllWindows()
+      .filter((w) => !w.isDestroyed() && w.isVisible())
+      .map((w) => w.getBounds());
   } catch {
-    /* not running under Electron — fine */
+    return [];
   }
-  return pids;
+}
+
+/** True when bounds `a` matches `b` within ±tol pixels on every edge. */
+export function boundsApproxEqual(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+  tol = 2
+): boolean {
+  return (
+    Math.abs(a.x - b.x) <= tol &&
+    Math.abs(a.y - b.y) <= tol &&
+    Math.abs(a.width - b.width) <= tol &&
+    Math.abs(a.height - b.height) <= tol
+  );
 }

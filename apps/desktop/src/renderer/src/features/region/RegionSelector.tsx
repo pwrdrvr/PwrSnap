@@ -140,26 +140,24 @@ export function RegionSelector() {
     const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
       windowsRef.current = payload.windows;
       document.body.dataset.windowListCount = String(payload.windows.length);
-      // Diagnostic — when a snapshot arrives, dump everything we
-      // need to debug "the rect renders at the wrong size":
-      // the renderer's view of the viewport, the device-pixel
-      // ratio, and the first candidate's rect. Pair with the
-      // main-side `snap candidates` log to find the discrepancy.
-      // eslint-disable-next-line no-console
-      console.debug("[viewport]", {
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        outerWidth: window.outerWidth,
-        outerHeight: window.outerHeight,
-        devicePixelRatio: window.devicePixelRatio,
-        screenWidth: window.screen.width,
-        screenHeight: window.screen.height,
-        documentClientWidth: document.documentElement.clientWidth,
-        documentClientHeight: document.documentElement.clientHeight,
-        sample: payload.windows[0] ?? null
-      });
     });
     document.body.dataset.windowListReady = "1";
+    // Diagnostic — push the renderer's view of the world back to
+    // main so the user sees it in the regular terminal log next to
+    // the `snap candidates` line, no DevTools console needed.
+    // Reports innerWidth/Height (the CSS coord space the rect is
+    // rendered in), devicePixelRatio (Retina factor), and screen
+    // dims so we can compare against display.bounds + content size
+    // on the main side.
+    window.pwrsnapApi?.reportSelectorDiagnostics({
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      devicePixelRatio: window.devicePixelRatio,
+      screenWidth: window.screen.width,
+      screenHeight: window.screen.height
+    });
     return () => {
       unsubscribe?.();
     };

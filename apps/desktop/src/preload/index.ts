@@ -32,6 +32,11 @@ const REGION_SELECTOR_RESULT_CHANNEL = "region-selector:result";
 // after pickRegion shows it, so ⇧-hover snap-to-window hit-tests run
 // locally with no IPC round-trip per mouse move.
 const REGION_SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
+// Diagnostic — renderer ships its view of the world (innerWidth,
+// devicePixelRatio, etc.) back to main so we can see in the regular
+// terminal log whether the renderer's CSS coord space matches the
+// display.bounds we're translating against.
+const REGION_SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -126,6 +131,24 @@ const pwrsnapApi = {
    */
   requestTrayResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(TRAY_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Diagnostic — region selector renderer → main. Ships the
+   * renderer's window dimensions + devicePixelRatio so main can log
+   * them next to the selector window's getContentBounds. Lets us
+   * confirm whether the renderer's CSS coord space matches what
+   * main thinks the content bounds are.
+   */
+  reportSelectorDiagnostics(payload: {
+    innerWidth: number;
+    innerHeight: number;
+    outerWidth: number;
+    outerHeight: number;
+    devicePixelRatio: number;
+    screenWidth: number;
+    screenHeight: number;
+  }): void {
+    ipcRenderer.send(REGION_SELECTOR_DIAGNOSTICS_CHANNEL, payload);
   }
 };
 

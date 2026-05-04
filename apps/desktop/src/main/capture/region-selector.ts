@@ -19,7 +19,13 @@ import { BrowserWindow, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
-import { listWindows, selfPidSet, type WindowInfo } from "./window-list";
+import {
+  boundsApproxEqual,
+  listWindows,
+  selfPidSet,
+  selfWindowBoundsList,
+  type WindowInfo
+} from "./window-list";
 import { computeVisibility } from "./visibility";
 
 const MIN_VISIBLE_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
@@ -48,6 +54,7 @@ export type SelectorResult =
 
 const SELECTOR_RESULT_CHANNEL = "region-selector:result";
 const SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
+const SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
 
 /**
  * Create the pre-warmed windows — one per display. Idempotent. Call
@@ -73,6 +80,12 @@ export function preWarmRegionSelector(): void {
   }
 
   if (!resultListenerAttached) {
+    // Diagnostic listener: renderer pushes its viewport dims here on
+    // mount. Logged in main so we can correlate with display.bounds
+    // + selectorWindow.contentBounds without needing DevTools open.
+    ipcMain.on(SELECTOR_DIAGNOSTICS_CHANNEL, (_event, payload: unknown) => {
+      log.info("renderer viewport", payload);
+    });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
       if (pendingResolver === null) return;
       const resolver = pendingResolver;
@@ -157,15 +170,16 @@ export async function pickRegion(): Promise<SelectorResult> {
   // translation here so the renderer just compares against
   // event.clientX/Y.
   const displayBounds = targetDisplay.bounds;
-  // Capture the set of pids that belong to PwrSnap itself BEFORE the
-  // selector window steals frontmost. We DO NOT filter our windows
-  // out of the candidate list — that broke occlusion (the cursor was
-  // visually on top of our library window but the algorithm reported
-  // a hidden 1Password underneath). Instead we mark our windows with
-  // `ownedByUs: true` so the renderer's hit-test can return null
-  // when the topmost-at-cursor is one of ours (no snap; fall back
-  // to display).
+  // Identify our own windows so the renderer can treat them as
+  // occluders (hover-over-library returns no snap, not the hidden
+  // 1Password underneath). Two-axis match:
+  //   - process pid (CGWindow's owner pid is the main app pid)
+  //   - bounds matching one of our visible BrowserWindows
+  // The bounds match is what makes DevTools and other auxiliary
+  // windows snappable — they share our pid but have different
+  // bounds, so the user can capture them.
   const ourPids = selfPidSet();
+  const ourBounds = selfWindowBoundsList();
 
   void listWindows().then((rawSnapshot) => {
     lastSnapshot = rawSnapshot;
@@ -185,10 +199,11 @@ export async function pickRegion(): Promise<SelectorResult> {
       );
     });
 
-    // Step 2: keep auxiliary panels collapsed (only the frontmost-
-    // in-app window stays as a snappable target). Our own windows
-    // and other-app windows are both kept regardless — we need them
-    // for occlusion math.
+    // Step 2: per-app frontmost collapse. Auxiliary panels of
+    // OTHER apps drop out (a Slack inspector panel isn't a snap
+    // target when the main Slack window is what the user wants).
+    // Windows owned by us are kept regardless — they're potential
+    // occluders for the hit-test even when not "frontmost-in-app".
     const meaningful = onThisDisplay.filter(
       (w) => w.isFrontmostInApp || ourPids.has(w.pid)
     );
@@ -207,7 +222,13 @@ export async function pickRegion(): Promise<SelectorResult> {
         bundleId: v.source.bundleId,
         appName: v.source.appName,
         title: v.source.title,
-        ownedByUs: ourPids.has(v.source.pid),
+        // ownedByUs requires BOTH same-pid AND bounds matching one
+        // of our user-facing BrowserWindows. DevTools shares our
+        // pid but its bounds are unique (e.g. detached at 113,386,
+        // 800x600) so it lands as snappable.
+        ownedByUs:
+          ourPids.has(v.source.pid) &&
+          ourBounds.some((b) => boundsApproxEqual(b, v.source.bounds)),
         zIndex: v.zIndex,
         // The rect we draw as the snap highlight is the VISIBLE
         // bounding box, not the raw bounds. If only a 30px sliver

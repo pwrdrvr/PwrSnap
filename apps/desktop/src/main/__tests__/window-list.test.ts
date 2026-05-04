@@ -4,7 +4,11 @@
 // routine `findWindowAt` is pure and lives here.
 
 import { describe, expect, test } from "vitest";
-import { findWindowAt, type WindowInfo } from "../capture/window-list";
+import {
+  boundsApproxEqual,
+  findWindowAt,
+  type WindowInfo
+} from "../capture/window-list";
 
 function w(
   windowId: number,
@@ -63,6 +67,43 @@ describe("findWindowAt", () => {
   test("handles a snapshot with a null bundleId (system processes)", () => {
     const sysWin = w(99, null, { x: 0, y: 0, width: 100, height: 100 });
     expect(findWindowAt([sysWin], 50, 50)?.bundleId).toBeNull();
+  });
+});
+
+describe("boundsApproxEqual", () => {
+  // Used to identify which CGWindow entries belong to OUR user-
+  // facing BrowserWindows vs auxiliary same-pid windows like
+  // DevTools. Bounds within ±2 px counts as a match (CGWindowList
+  // sometimes returns sub-pixel rounded values; BrowserWindow
+  // returns CSS-rounded ones).
+  const a = { x: 100, y: 200, width: 1440, height: 956 };
+
+  test("equal bounds match", () => {
+    expect(boundsApproxEqual(a, { x: 100, y: 200, width: 1440, height: 956 })).toBe(true);
+  });
+
+  test("≤2 px difference per edge still matches", () => {
+    expect(boundsApproxEqual(a, { x: 102, y: 198, width: 1442, height: 954 })).toBe(true);
+  });
+
+  test(">2 px difference does NOT match", () => {
+    expect(boundsApproxEqual(a, { x: 105, y: 200, width: 1440, height: 956 })).toBe(false);
+    expect(boundsApproxEqual(a, { x: 100, y: 200, width: 1450, height: 956 })).toBe(false);
+  });
+
+  test("DevTools-vs-library distinction (the bug we're fixing)", () => {
+    // Library default size — the user's library window.
+    const library = { x: 240, y: 30, width: 1440, height: 956 };
+    // DevTools detached default — same pid, very different bounds.
+    const devtools = { x: 113, y: 386, width: 800, height: 600 };
+    expect(boundsApproxEqual(library, devtools)).toBe(false);
+    // Library identifies itself.
+    expect(boundsApproxEqual(library, { x: 240, y: 30, width: 1440, height: 956 })).toBe(true);
+  });
+
+  test("custom tolerance", () => {
+    expect(boundsApproxEqual(a, { x: 105, y: 200, width: 1440, height: 956 }, 5)).toBe(true);
+    expect(boundsApproxEqual(a, { x: 106, y: 200, width: 1440, height: 956 }, 5)).toBe(false);
   });
 });
 

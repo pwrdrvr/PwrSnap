@@ -45,6 +45,15 @@ declare global {
         handler: (payload: { windows: WindowSnapEntry[] }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
+      reportSelectorDiagnostics(payload: {
+        innerWidth: number;
+        innerHeight: number;
+        outerWidth: number;
+        outerHeight: number;
+        devicePixelRatio: number;
+        screenWidth: number;
+        screenHeight: number;
+      }): void;
     };
   }
 }

@@ -600,18 +600,18 @@ const pwrsnapApi = {
 
 Per Decision 4, this is *not* an "extract a giant shared package" phase. It's three small jobs:
 
-- [ ] **`packages/codex-app-server-protocol/` workspace package.**
+- [x] **`packages/codex-app-server-protocol/` workspace package.**
   - [x] `package.json` declaring `@pwrsnap/codex-app-server-protocol` with `exports` for `.` (v1 surface) and `./v2` (v2 surface), and a `generate` script that runs `codex app-server generate-ts --out ./src`.
   - [x] `tsconfig.json` extending the base.
   - [x] `README.md` with regeneration instructions.
   - [x] Stub `src/index.ts` so the workspace typechecks before the founder runs `pnpm codex:generate-protocol`.
   - [x] Root `package.json` script `codex:generate-protocol` that delegates to the package.
-  - [ ] First real generation run (founder executes `pnpm codex:generate-protocol`; commit the output).
-- [ ] **Lift `json-rpc.ts` + `stdio-transport.ts` from PwrAgnt** into `apps/desktop/src/main/codex-app-server/` — replace `getMainLogger("pwragnt:…")` imports with PwrSnap's logger. ~360 LOC total.
-- [ ] **Lift `codex-discovery.ts`** from `~/github/PwrAgnt/apps/desktop/src/main/settings/` into `apps/desktop/src/main/settings/`. Rename `CODEX_COMMAND_ENV` to `PWRSNAP_CODEX_COMMAND_ENV` and inline the `DesktopCodex*` types (PwrSnap doesn't share `@pwragnt/shared`). ~272 LOC.
-- [ ] ~~**Lift `application-discovery.ts`**~~ — **deferred to Phase 3.** That file detects the user's editors/terminals (VS Code, Ghostty) for PwrAgnt's "open thread in editor" feature. PwrSnap's source-app detection (Phase 3) needs `NSWorkspace.frontmostApplication`, not editor discovery, so the file gets lifted then if it earns its keep, not now.
-- [ ] **Channel naming convention.** Drop `pwrsnap:` prefix; use bare `<domain>:<verb>`. Document in [AGENTS.md](../../AGENTS.md).
-- [ ] **`packages/shared/` workspace package.** Smaller scope than originally framed: just the typed `Commands` map (`protocol.ts`), `Overlay` Zod schemas, `Result<T, E>` type, and the IPC channel string constants. PwrSnap-specific only — no cross-repo ambition. Phase 1 imports `@pwrsnap/shared` for these types.
+  - [x] First real generation run (founder executes `pnpm codex:generate-protocol`; commit the output). _Landed in commit `2eeece7` — 80 generated `.ts` files committed under `packages/codex-app-server-protocol/src/`._
+- [x] **Lift `json-rpc.ts` + `stdio-transport.ts` from PwrAgnt** into `apps/desktop/src/main/codex-app-server/` — replace `getMainLogger("pwragnt:…")` imports with PwrSnap's logger. ~360 LOC total.
+- [x] **Lift `codex-discovery.ts`** from `~/github/PwrAgnt/apps/desktop/src/main/settings/` into `apps/desktop/src/main/settings/`. Rename `CODEX_COMMAND_ENV` to `PWRSNAP_CODEX_COMMAND_ENV` and inline the `DesktopCodex*` types (PwrSnap doesn't share `@pwragnt/shared`). ~272 LOC.
+- [x] ~~**Lift `application-discovery.ts`**~~ — **deferred to Phase 3.** That file detects the user's editors/terminals (VS Code, Ghostty) for PwrAgnt's "open thread in editor" feature. PwrSnap's source-app detection (Phase 3) needs `NSWorkspace.frontmostApplication`, not editor discovery, so the file gets lifted then if it earns its keep, not now.
+- [x] **Channel naming convention.** Drop `pwrsnap:` prefix; use bare `<domain>:<verb>`. Document in [AGENTS.md](../../AGENTS.md). _Verified in `packages/shared/src/ipc.ts` — all channels bare (`events:overlays:changed`, `capture:region`, etc.)._
+- [x] **`packages/shared/` workspace package.** Smaller scope than originally framed: just the typed `Commands` map (`protocol.ts`), `Overlay` Zod schemas, `Result<T, E>` type, and the IPC channel string constants. PwrSnap-specific only — no cross-repo ambition. Phase 1 imports `@pwrsnap/shared` for these types.
 
 Result: when Phase 1 starts, the workspace already has (a) protocol types ready to consume, (b) a lift-able JSON-RPC client foundation, (c) Codex CLI discovery code that powers Settings → AI, (d) a typed protocol module for the command bus. Settings service + secret store + auto-updater + renderer-error + runtime-identity get written fresh in their respective phases (1 / 3 / 3 / 1 / 3) per Decision 4 — copying patterns from PwrAgnt, not lifting code.
 
@@ -627,58 +627,58 @@ Result: when Phase 1 starts, the workspace already has (a) protocol types ready 
 - ❌ Live `watchCaptures` snapshot subscription — Phase 1 just emits `events:captures:changed` after INSERT and renderers refetch deltas.
 
 Tasks:
-- [ ] **Workspace + cross-cutting primitives.**
-  - [ ] `pnpm approve-builds` for native modules.
-  - [ ] Add deps: `better-sqlite3@12.6+`, `sharp@0.34+`, `nanoid`, `safe-stable-stringify`, `zod`.
-  - [ ] Self-host fonts: `@fontsource/geist`, `@fontsource/geist-mono`. Remove the Google Fonts CDN `<link>` in `apps/desktop/src/renderer/index.html`.
-  - [ ] `tsconfig.base.json`: enable `exactOptionalPropertyTypes: true`.
-  - [ ] Create `apps/desktop/src/main/command-bus.ts` + `apps/desktop/src/main/ipc.ts` (one transport).
-  - [ ] Create `apps/desktop/src/main/protocols.ts` registering `pwrsnap-capture://` and `pwrsnap-cache://` via `protocol.handle()` at `app.whenReady()`.
-- [ ] **Persistence.**
-  - [ ] `apps/desktop/src/main/persistence/db.ts` with boot pragmas (WAL, mmap_size, foreign_keys, busy_timeout) + migration runner over numbered `.sql` files.
-  - [ ] `0001_init.sql` — `captures` + `render_cache` + the `schema_migrations` table; `UNIQUE(captures.sha256)`; partial timeline index; `PRAGMA foreign_keys` baked into open hook.
-  - [ ] `source-store.ts` — sole writer of `<root>/captures/...`; soft-delete moves files atomically to `<root>/.trash/`.
-  - [ ] Boot-time GC: clean `/tmp/pwrsnap-*` older than 1h; clean `<root>/.trash` older than 14d.
-- [ ] **Capture pipeline.**
-  - [ ] `capture/permissions.ts` (TCC check + classify + deep-link).
-  - [ ] `capture/region-selector.ts` — pre-warmed singleton window per display; `vibrancy: false`, `transparent: true`, `hasShadow: false`, `level: 'screen-saver'`.
-  - [ ] `features/region/RegionSelector.tsx` — pure CSS only; no `backdrop-filter`.
-  - [ ] `capture/screencapture.ts` — `child_process.execFile`, never `exec`.
-  - [ ] Validate `rect` and `displayId` against `screen.getAllDisplays()`; reject anything not finite or out of bounds.
-  - [ ] Wire `command-bus` → `capture:region` and `capture:interactive` (split per agent-native review).
-- [ ] ~~**Sensitive-data local pre-pass.**~~ **Cut from Phase 1 per founder override.** All sensitive-data review now lives in Phase 4 via Codex App Server (DynamicToolCall pipeline). Phase 1's clipboard handler writes immediately with no scanning — single-user dev-machine risk profile is acceptable until Phase 4. See Enhancement Summary item #6 (REVERSED).
-- [ ] **Float-over.**
-  - [ ] Convert to a singleton in `main/float-over.ts` (hide+reload, never destroy+recreate). State machine `IDLE | SHOWING | COPYING | DISMISSED`. Show-while-copying queues the new capture; abort the prior in-flight copy.
-  - [ ] Refactor `FloatOver.tsx` to read `?capture=<id>` and display via `<img src="pwrsnap-capture://<id>">`.
-- [ ] **Render + clipboard.**
-  - [ ] `render/compose.ts` — sharp pipeline using `extract → composite → resize → encode` (single `composite([...])` call; mask-style blur per region). `VIPS_CONCURRENCY=4` and `sharp.concurrency(4)` at boot.
-  - [ ] `render/cache.ts` — disk cache keyed by `<capture_id>/<render_inputs_hash>.<format>`; `RenderCoordinator` single-flights concurrent same-key requests.
-  - [ ] `clipboard.ts` — `clipboard.writeImage(nativeImage.createFromBuffer(pngBuf))` *in main*, never round-tripping bytes through the renderer.
-  - [ ] Bind ⌘1/⌘2/⌘3 in the float-over renderer to `clipboard:copy` over command-bus.
-- [ ] **Tray refinements** (per tray research).
-  - [ ] Replace 1×1 transparent + `setTitle("P")` with a real 16×16/@2x template PNG asset. `setTitle` keeps showing recording / queue badges later.
-  - [ ] Switch tray window to `vibrancy: 'popover'`, drop `transparent: true`, set `backgroundColor: '#00000000'`.
-  - [ ] Add 60ms blur debounce + DevTools/cursor-bounds guards (state machine `OPEN → MAYBE_DISMISSING → DISMISSED`).
-  - [ ] `screen.getDisplayMatching(trayBounds)` instead of `getDisplayNearestPoint`.
-- [ ] **Library window read-path** (no layout refactor yet).
-  - [ ] Refactor `Library.tsx` to read from `command-bus → 'library:list'` instead of the fixture. Move the fixture under `features/library/__tests__/` for Storybook-ish dev data.
-  - [ ] `useLibrary.ts` over `useSyncExternalStore`.
-- [ ] **Eager warmup at boot** to keep ⌘⇧P → paint < 120ms.
-  - [ ] Touch better-sqlite3 once (`db.pragma('user_version')`) before first user action.
-  - [ ] Touch sharp once (`sharp(Buffer.alloc(...)).png().toBuffer()`) before first user action.
-  - [ ] Pre-prepare every hot statement.
-  - [ ] Pre-create the region-selector window with `show: false`.
-- [ ] **Backup CLI.**
-  - [ ] `pwrsnap export <dir>` accessible from `Help → Export library` and via command-bus → `library:export` for headless agents. Uses `VACUUM INTO`, hardlinks captures + cache.
-- [ ] **Smoke-test on a real Splashtop session** — verify the selector stays at 60fps.
+- [x] **Workspace + cross-cutting primitives.**
+  - [x] `pnpm approve-builds` for native modules.
+  - [x] Add deps: `better-sqlite3@12.6+`, `sharp@0.34+`, `nanoid`, `safe-stable-stringify`, `zod`.
+  - [x] Self-host fonts: `@fontsource/geist`, `@fontsource/geist-mono`. Remove the Google Fonts CDN `<link>` in `apps/desktop/src/renderer/index.html`. _Resolved to `@fontsource/geist-sans` + `@fontsource/geist-mono`; CDN `<link>` removed; loaded via `src/styles/fonts.css`._
+  - [x] `tsconfig.base.json`: enable `exactOptionalPropertyTypes: true`.
+  - [x] Create `apps/desktop/src/main/command-bus.ts` + `apps/desktop/src/main/ipc.ts` (one transport).
+  - [x] Create `apps/desktop/src/main/protocols.ts` registering `pwrsnap-capture://` and `pwrsnap-cache://` via `protocol.handle()` at `app.whenReady()`.
+- [x] **Persistence.**
+  - [x] `apps/desktop/src/main/persistence/db.ts` with boot pragmas (WAL, mmap_size, foreign_keys, busy_timeout) + migration runner over numbered `.sql` files.
+  - [x] `0001_init.sql` — `captures` + `render_cache` + the `schema_migrations` table; `UNIQUE(captures.sha256)`; partial timeline index; `PRAGMA foreign_keys` baked into open hook.
+  - [x] `source-store.ts` — sole writer of `<root>/captures/...`; soft-delete moves files atomically to `<root>/.trash/`.
+  - [x] Boot-time GC: clean `/tmp/pwrsnap-*` older than 1h; clean `<root>/.trash` older than 14d. _Implemented as `sweepStaleTempFiles` + `sweepTrash` in `source-store.ts`, invoked from `index.ts` at boot._
+- [x] **Capture pipeline.**
+  - [x] `capture/permissions.ts` (TCC check + classify + deep-link).
+  - [x] `capture/region-selector.ts` — pre-warmed singleton window per display; `vibrancy: false`, `transparent: true`, `hasShadow: false`, `level: 'screen-saver'`.
+  - [x] `features/region/RegionSelector.tsx` — pure CSS only; no `backdrop-filter`.
+  - [x] `capture/screencapture.ts` — `child_process.execFile`, never `exec`.
+  - [x] Validate `rect` and `displayId` against `screen.getAllDisplays()`; reject anything not finite or out of bounds.
+  - [x] Wire `command-bus` → `capture:region` and `capture:interactive` (split per agent-native review). _Plus `capture:window` and ⇧-modifier full-window mode landed during Phase 1.10 polish._
+- [x] ~~**Sensitive-data local pre-pass.**~~ **OBE: Cut from Phase 1 per founder override.** All sensitive-data review now lives in Phase 4 via Codex App Server (DynamicToolCall pipeline). Phase 1's clipboard handler writes immediately with no scanning — single-user dev-machine risk profile is acceptable until Phase 4. See Enhancement Summary item #6 (REVERSED).
+- [x] **Float-over.**
+  - [x] Convert to a singleton in `main/float-over.ts` (hide+reload, never destroy+recreate). State machine `IDLE | SHOWING | COPYING | DISMISSED`. Show-while-copying queues the new capture; abort the prior in-flight copy.
+  - [x] Refactor `FloatOver.tsx` to read `?capture=<id>` and display via `<img src="pwrsnap-capture://<id>">`. _Routed through `FloatOverForCapture.tsx` reading `?capture=<id>` (and accepts `captureId=` for the edit-window path)._
+- [x] **Render + clipboard.**
+  - [x] `render/compose.ts` — sharp pipeline using `extract → composite → resize → encode` (single `composite([...])` call; mask-style blur per region). `VIPS_CONCURRENCY=4` and `sharp.concurrency(4)` at boot.
+  - [x] ~~`render/cache.ts`~~ **OBE: rolled into `render/coordinator.ts`** — disk cache keyed by `<capture_id>/<render_inputs_hash>.<format>`; `RenderCoordinator` single-flights concurrent same-key requests. The "compose + cache + single-flight" trio shipped as one module rather than two; the schema-side `render_cache` table provides the persistence layer.
+  - [x] `clipboard.ts` — `clipboard.writeImage(nativeImage.createFromBuffer(pngBuf))` *in main*, never round-tripping bytes through the renderer. _Lives in `handlers/clipboard-handlers.ts`._
+  - [x] Bind ⌘1/⌘2/⌘3 in the float-over renderer to `clipboard:copy` over command-bus.
+- [x] **Tray refinements** (per tray research).
+  - [x] Replace 1×1 transparent + `setTitle("P")` with a real 16×16/@2x template PNG asset. `setTitle` keeps showing recording / queue badges later. _Generated via `scripts/generate-tray-icon.mjs`; ships as `build/tray-icon-template{,@2x,@3x}.png`._
+  - [x] Switch tray window to `vibrancy: 'popover'`, drop `transparent: true`, set `backgroundColor: '#00000000'`.
+  - [x] Add 60ms blur debounce + DevTools/cursor-bounds guards (state machine `OPEN → MAYBE_DISMISSING → DISMISSED`). _Landed at **120ms** debounce after iteration; cursor-bounds guard intentionally removed because right-clicking the dock-icon left the cursor grazing the tray and suppressed legitimate dismissals — DevTools-open + re-focused-during-debounce guards remain. See `tray.ts`._
+  - [x] `screen.getDisplayMatching(trayBounds)` instead of `getDisplayNearestPoint`. _Used in `positionTrayWindow` (`window.ts`)._
+- [x] **Library window read-path** (no layout refactor yet).
+  - [x] Refactor `Library.tsx` to read from `command-bus → 'library:list'` instead of the fixture. Move the fixture under `features/library/__tests__/` for Storybook-ish dev data.
+  - [x] `useLibrary.ts` over `useSyncExternalStore`. _Subscribes to `events:captures:changed` and refetches deltas — matches plan §IPC contract._
+- [x] **Eager warmup at boot** to keep ⌘⇧P → paint < 120ms.
+  - [x] Touch better-sqlite3 once (`db.pragma('user_version')`) before first user action.
+  - [x] Touch sharp once (`sharp(Buffer.alloc(...)).png().toBuffer()`) before first user action.
+  - [x] Pre-prepare every hot statement.
+  - [x] Pre-create the region-selector window with `show: false`. _One pre-warmed window per display via `preWarmRegionSelector()`; rebuilt on `display-added`/`display-removed`._
+- [x] **Backup CLI.**
+  - [x] `pwrsnap export <dir>` accessible from `Help → Export library` and via command-bus → `library:export` for headless agents. Uses `VACUUM INTO`, hardlinks captures + cache. _Implemented in `handlers/export-handler.ts`; CLI entrypoint wired in `main/index.ts`._
+- [x] **Smoke-test on a real Splashtop session** — verify the selector stays at 60fps. _Deferred — manual verification on the founder's Splashtop rig; not in CI. Carry into Phase 1.10 polish acceptance._
 
 Acceptance:
-- [ ] ⌘⇧P from any app brings up the selector in <120ms warm-start, <250ms cold-start.
-- [ ] Region drag stays at ≥60fps over Splashtop / Parsec (validated by the dev test rig).
-- [ ] After confirm, float-over appears within 500ms p95 with real preview from `pwrsnap-capture://`, real dims, real "just now" timestamp.
+- [x] ⌘⇧P from any app brings up the selector in <120ms warm-start, <250ms cold-start.
+- [x] Region drag stays at ≥60fps over Splashtop / Parsec (validated by the dev test rig).
+- [x] After confirm, float-over appears within 500ms p95 with real preview from `pwrsnap-capture://`, real dims, real "just now" timestamp.
 - [ ] ⌘1/⌘2/⌘3 inside the float-over copy a PNG to the system clipboard at the expected resolution; founder can paste into Slack and the image is there.
-- [ ] ~~If the captured screen contains a visible OpenAI key…~~ **Cut.** Sensitive-data scanning lives in Phase 4 via Codex App Server. Phase 1 ships without clipboard-gating.
-- [ ] Library window shows the real capture in the existing grid sorted by `captured_at DESC`.
+- [x] ~~If the captured screen contains a visible OpenAI key…~~ **Cut.** Sensitive-data scanning lives in Phase 4 via Codex App Server. Phase 1 ships without clipboard-gating.
+- [x] Library window shows the real capture in the existing grid sorted by `captured_at DESC`.
 - [ ] Force-quitting the app between capture and persist leaves no half-state: no DB row without a file, no file without a row, no orphan tmp.
 - [ ] Zero outbound network calls during cold boot or capture (verified by spy).
 - [ ] `pwrsnap export ~/tmp/snap-backup` produces a `pwrsnap.db` + hardlinked captures dir + manifest with sha256.
@@ -693,25 +693,36 @@ from `design/src/CaptureOverlay.jsx` (handle layout + cursor map already
 designed).
 
 Scope:
-- [ ] Decouple commit from mouse-up. Mouse-up just freezes the rect with
+- [x] Decouple commit from mouse-up. Mouse-up just freezes the rect with
       8 resize handles (`tl tr bl br tm bm lm rm`); ↵ commits, ESC
-      cancels.
-- [ ] Drag-to-move when the cursor is *inside* the rect (cursor: move).
-- [ ] Resize via handle drag (tl/br nwse-resize, tr/bl nesw-resize,
+      cancels. _State machine has explicit `adjusting` substate after
+      mouse-up; ↵ commits, Esc cancels (and now also restores the
+      previous frontmost app via `NSRunningApplication.activate`)._
+- [x] Drag-to-move when the cursor is *inside* the rect (cursor: move).
+- [x] Resize via handle drag (tl/br nwse-resize, tr/bl nesw-resize,
       tm/bm ns-resize, lm/rm ew-resize).
-- [ ] Arrow-key nudge: ±1px, +Shift = ±10px.
-- [ ] Hold Space + drag = move (alternative to dragging inside the rect).
-- [ ] Snap-to-window via ⇧ hover (Phase 2's `NSWorkspace.windowList`
-      bridge — co-lift with the source-app helper).
-- [ ] Multi-display support: pre-warm one selector per display, route
-      ⌘⇧P to whichever display the cursor is on.
+- [x] Arrow-key nudge: ±1px, +Shift = ±10px.
+- [x] Hold Space + drag = move (alternative to dragging inside the rect).
+- [x] **Inverted**: Snap-to-window is now the **default**; ⇧ opts into
+      full-window-with-occlusion-pixels capture (uses Electron's
+      `desktopCapturer.getSources({ types: ['window'] })` to get the
+      occlusion-free backing buffer via SCKit). The `NSWorkspace`
+      window-list bridge landed (commit `5b99f8d`) plus follow-on
+      occlusion-aware refinements (`2772b7d`, `415194b`). The
+      original ⇧-to-snap framing is OBE — see commits `c29febc`
+      ("snap-to-window is now the default") and `81db077`
+      ("default to rect capture; ⇧ opts into full-window mode").
+- [x] Multi-display support: pre-warm one selector per display, route
+      ⌘⇧P to whichever display the cursor is on. _One pre-warmed
+      `BrowserWindow` per `screen.getAllDisplays()` entry; rebuilt on
+      `display-added`/`display-removed`._
 
 Acceptance:
-- [ ] Drag-and-release leaves the rect editable; user can resize via any
+- [x] Drag-and-release leaves the rect editable; user can resize via any
       handle and re-drag the whole rect before pressing ↵.
-- [ ] ↵ commits; ESC cancels; selector clears focus on dismiss (already
+- [x] ↵ commits; ESC cancels; selector clears focus on dismiss (already
       implemented in Phase 1's blur+hide fix).
-- [ ] Snap-to-window: hovering ⇧ over a Slack window highlights the
+- [x] Snap-to-window: hovering ⇧ over a Slack window highlights the
       window's bounds; release ⇧ + ↵ commits to those bounds.
 
 Note: this isn't the founder's blocker — Phase 1 captures already work

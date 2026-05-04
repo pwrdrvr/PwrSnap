@@ -1,6 +1,7 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
+import { BrowserWindow } from "electron";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
@@ -49,6 +50,25 @@ export function registerLibraryHandlers(): void {
       code: "not_implemented",
       message: "library:export lands in Phase 1.9"
     });
+  });
+
+  bus.register("library:focus", async () => {
+    // Find the main library BrowserWindow by title (the tray window
+    // and float-over both have empty titles). Restore + show + focus.
+    const main = BrowserWindow.getAllWindows().find(
+      (w) => !w.isDestroyed() && w.getTitle() === "PwrSnap"
+    );
+    if (main === undefined) {
+      return err({
+        kind: "validation",
+        code: "no_main_window",
+        message: "main window not found"
+      });
+    }
+    if (main.isMinimized()) main.restore();
+    if (!main.isVisible()) main.show();
+    main.focus();
+    return ok(undefined);
   });
 }
 

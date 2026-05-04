@@ -29,6 +29,11 @@ import { IPC_CMD } from "@pwrsnap/shared/ipc";
 // purpose-built method (`submitRegion`), not a generic `send`.
 const REGION_SELECTOR_RESULT_CHANNEL = "region-selector:result";
 
+// Tray content auto-sizes to fit. The renderer measures itself with a
+// ResizeObserver and asks main to setContentSize so the popover never
+// has dead space at the bottom or clips a row.
+const TRAY_RESIZE_CHANNEL = "tray:resize";
+
 const pwrsnapApi = {
   platform: process.platform,
   versions: {
@@ -67,6 +72,14 @@ const pwrsnapApi = {
     displayId?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
+  },
+  /**
+   * Tray renderer → main: tell main to size the tray window's content
+   * to the measured DOM bounds. Called from a ResizeObserver in
+   * TrayMenu.tsx so the popover stays tight as content changes.
+   */
+  requestTrayResize(payload: { width: number; height: number }): void {
+    ipcRenderer.send(TRAY_RESIZE_CHANNEL, payload);
   }
 };
 

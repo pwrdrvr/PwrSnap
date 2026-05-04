@@ -79,6 +79,8 @@ export type Commands = {
   "library:delete": { req: { id: string }; res: void };
   /** Phase 1 backup CLI hook. */
   "library:export": { req: { destDir: string }; res: { destDir: string; manifestPath: string } };
+  /** Bring the main library window forward — used by the tray's "Open Library" row. */
+  "library:focus": { req: Record<string, never>; res: void };
 
   // ---- overlays (Phase 2+) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };

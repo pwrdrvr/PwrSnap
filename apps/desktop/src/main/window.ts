@@ -94,7 +94,10 @@ export function createTrayWindow(): BrowserWindow {
   // material shows through.
   const window = new BrowserWindow({
     width: 380,
-    height: 580,
+    // Start a touch shorter than the worst-case content height; the
+    // renderer's ResizeObserver will setContentSize the moment its
+    // first layout finishes (see wireTrayResizeChannel in tray.ts).
+    height: 440,
     show: false,
     frame: false,
     resizable: false,

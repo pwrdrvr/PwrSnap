@@ -209,6 +209,25 @@
 .ps-mode__hk { display: flex; gap: 2px; }
 .ps-mode__hk .ps-kbd { min-width: 16px; height: 16px; font-size: 9px; padding: 0 3px; }
 .ps-mode__sub { font: 500 10px/1.3 var(--font-sans); color: var(--text-muted); }
+.ps-mode.is-disabled,
+.ps-mode[disabled] {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.ps-mode.is-disabled:hover,
+.ps-mode[disabled]:hover {
+  background: transparent;
+  border-color: transparent;
+}
+.ps-tray__row.is-disabled,
+.ps-tray__row[disabled] {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.ps-tray__row.is-disabled:hover,
+.ps-tray__row[disabled]:hover {
+  background: transparent;
+}
 .ps-mode.is-primary .ps-mode__sub { color: var(--accent-bright); }
 
 .ps-tray__divider { height: 1px; background: var(--border-subtle); margin: 4px 14px; }

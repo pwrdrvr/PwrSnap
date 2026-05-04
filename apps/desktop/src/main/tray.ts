@@ -13,13 +13,21 @@
 //     is for the rich UI, the native menu is the fallback.
 
 import { join } from "node:path";
-import { app, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
+import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
 import { getMainLogger } from "./log";
 import { createTrayWindow, positionTrayWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:tray");
 
 const BLUR_DISMISS_DEBOUNCE_MS = 120;
+const TRAY_RESIZE_CHANNEL = "tray:resize";
+
+/** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen. */
+const TRAY_HEIGHT_MIN = 200;
+const TRAY_HEIGHT_MAX = 720;
+/** Window width is fixed by the design (see TrayMenu.css `.ps-tray { width: 100% }`
+    inside a 380px window). We don't accept renderer-driven width changes. */
+const TRAY_WIDTH = 380;
 
 let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
@@ -44,6 +52,34 @@ function ensureTrayWindow(): BrowserWindow {
     if (trayWindow === window) trayWindow = null;
   });
   return window;
+}
+
+/**
+ * Listen for tray-renderer resize requests and `setContentSize` so the
+ * popover hugs its content. Each call also re-positions to keep the
+ * top-right corner anchored under the tray icon (otherwise growing
+ * down would push the popover off-screen on a tall display).
+ */
+function wireTrayResizeChannel(): void {
+  ipcMain.on(TRAY_RESIZE_CHANNEL, (_event, payload: unknown) => {
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      typeof (payload as { height: unknown }).height !== "number"
+    ) {
+      return;
+    }
+    const height = Math.round((payload as { height: number }).height);
+    if (!Number.isFinite(height)) return;
+    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, height));
+    if (trayWindow === null || trayWindow.isDestroyed()) return;
+    const current = trayWindow.getContentSize();
+    if (current[1] === clamped) return;
+    trayWindow.setContentSize(TRAY_WIDTH, clamped, false);
+    if (tray !== null && trayWindow.isVisible()) {
+      positionTrayWindow(trayWindow, tray.getBounds());
+    }
+  });
 }
 
 /**
@@ -85,6 +121,8 @@ function wireBlurDismiss(window: BrowserWindow): void {
 
 export function installTray(): Tray {
   if (tray !== null) return tray;
+
+  wireTrayResizeChannel();
 
   const iconPath = resolveTrayIconPath();
   const icon = nativeImage.createFromPath(iconPath);
@@ -138,6 +176,7 @@ export function disposeTray(): void {
     clearTimeout(pendingDismiss);
     pendingDismiss = null;
   }
+  ipcMain.removeAllListeners(TRAY_RESIZE_CHANNEL);
   if (trayWindow !== null && !trayWindow.isDestroyed()) {
     trayWindow.destroy();
     trayWindow = null;

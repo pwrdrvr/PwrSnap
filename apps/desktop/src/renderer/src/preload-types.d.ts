@@ -22,6 +22,7 @@ declare global {
         rect?: { x: number; y: number; w: number; h: number };
         displayId?: number;
       }): void;
+      requestTrayResize(payload: { width: number; height: number }): void;
     };
   }
 }

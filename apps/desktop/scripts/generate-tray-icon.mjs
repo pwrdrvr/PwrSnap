@@ -22,14 +22,20 @@ const buildDir = resolve(repoRoot, "build");
 mkdirSync(buildDir, { recursive: true });
 
 // Layered-rect mark from design/preview/product-marks.html (PwrSnap
-// card). currentColor is replaced with full opacity black so the
-// template PNG carries pure alpha — macOS handles tinting.
+// card), scaled up to fill the menubar tile. The original design-system
+// SVG used ~58% of the 128px viewBox; that read tiny next to other
+// menubar icons (Codex, etc.). Bumped rects to span ~88% with a
+// proportionally thicker stroke so the mark stays bold-and-balanced.
+//
+// currentColor is replaced with full-opacity black so the template
+// PNG carries pure alpha — macOS handles dark / light / accent
+// menubar tinting automatically.
 const SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <g fill="none" stroke="black" stroke-width="9" stroke-linejoin="round">
-    <rect x="42" y="22" width="58" height="46" rx="6" stroke-opacity="0.3" />
-    <rect x="34" y="36" width="58" height="46" rx="6" stroke-opacity="0.55" />
-    <rect x="26" y="50" width="58" height="46" rx="6" />
+  <g fill="none" stroke="black" stroke-width="13" stroke-linejoin="round">
+    <rect x="36" y="6" width="78" height="62" rx="8" stroke-opacity="0.3" />
+    <rect x="22" y="26" width="78" height="62" rx="8" stroke-opacity="0.55" />
+    <rect x="8" y="46" width="78" height="62" rx="8" />
   </g>
 </svg>
 `.trim();

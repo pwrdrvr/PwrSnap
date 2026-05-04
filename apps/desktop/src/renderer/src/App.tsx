@@ -2,7 +2,7 @@ import { Library } from "./features/library/Library";
 import { FloatOver } from "./features/float-over/FloatOver";
 import { FloatOverForCapture } from "./features/float-over/FloatOverForCapture";
 import { RegionSelector } from "./features/region/RegionSelector";
-import { TrayMenu } from "./features/tray/TrayMenu";
+import { TrayMenu, TrayResizeForwarder } from "./features/tray/TrayMenu";
 import { dispatch } from "./lib/pwrsnap";
 import sampleSrc from "./assets/sample-1.png";
 
@@ -28,7 +28,12 @@ document.body.dataset.stage = STAGE;
 
 export function App() {
   if (STAGE === "tray") {
-    return <TrayMenu activeMode="region" />;
+    return (
+      <>
+        <TrayResizeForwarder />
+        <TrayMenu activeMode="region" />
+      </>
+    );
   }
   if (STAGE === "float-over") {
     if (CAPTURE_ID !== null) {

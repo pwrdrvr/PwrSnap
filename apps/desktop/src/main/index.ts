@@ -297,6 +297,7 @@ export function bootstrapApp(): void {
       // shim's `bus` reference unless the flag is on.
       const { insertOrFindCapture } = await import("./persistence/captures-repo");
       const { getDb } = await import("./persistence/db");
+      const { setFloatOverState } = await import("./float-over");
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),
@@ -307,6 +308,12 @@ export function bootstrapApp(): void {
         // bundler changes.
         seedCapture: (input: Parameters<typeof insertOrFindCapture>[0]) =>
           insertOrFindCapture(input),
+        // Drive the float-over state machine directly. Used by
+        // float-over-visibility.spec.ts to assert the toast actually
+        // reaches isVisible:true and stays there past the auto-dismiss
+        // window — the main bug class the prior e2e suite missed.
+        setFloatOverState: (event: Parameters<typeof setFloatOverState>[0]) =>
+          setFloatOverState(event),
         getOverlaysVersion: (captureId: string) => {
           const row = getDb()
             .prepare("SELECT overlays_version FROM captures WHERE id = ?")

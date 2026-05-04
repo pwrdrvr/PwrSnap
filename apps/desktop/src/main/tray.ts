@@ -84,9 +84,16 @@ function wireTrayResizeChannel(): void {
 }
 
 /**
- * Dismiss-on-blur with the false-positive guards from the deepening
- * review. The 120ms debounce gives us one frame of "intent" — quick
- * focus hops (DevTools, drag handle) don't trigger dismissal.
+ * Dismiss-on-blur with two false-positive guards:
+ *   - DevTools opened on the tray (developer is debugging)
+ *   - Re-focused during the debounce (false-positive blur from a
+ *     macOS focus hop)
+ *
+ * The cursor-inside-bounds check that used to live here was
+ * dropping legitimate dismissals — right-clicking the dock icon
+ * fires blur but the cursor often grazes the tray window during
+ * the debounce, which the old check interpreted as "user is still
+ * here." For a transient popover we want to err on dismissing.
  */
 function wireBlurDismiss(window: BrowserWindow): void {
   window.on("blur", () => {
@@ -98,17 +105,6 @@ function wireBlurDismiss(window: BrowserWindow): void {
       if (trayWindow.webContents.isDevToolsOpened()) return;
       // If the window regained focus during the debounce window, abort.
       if (trayWindow.isFocused()) return;
-      // Cursor outside tray window bounds is a stronger "user clicked
-      // away" signal than just a blur. Inside-bounds blur usually
-      // means a child popover or DevTools.
-      const cursor = screen.getCursorScreenPoint();
-      const bounds = trayWindow.getBounds();
-      const insideBounds =
-        cursor.x >= bounds.x &&
-        cursor.x <= bounds.x + bounds.width &&
-        cursor.y >= bounds.y &&
-        cursor.y <= bounds.y + bounds.height;
-      if (insideBounds) return;
       trayWindow.hide();
     }, BLUR_DISMISS_DEBOUNCE_MS);
   });
@@ -138,6 +134,12 @@ export function installTray(): Tray {
 
   tray.on("click", () => toggleTrayWindow());
   tray.on("right-click", () => {
+    // Always dismiss the popover before the context menu appears —
+    // having both visible at once is confusing UX (and was the
+    // dock-icon-right-click reproduction the user reported).
+    if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
+      trayWindow.hide();
+    }
     const menu = Menu.buildFromTemplate([
       {
         label: "Capture region…",

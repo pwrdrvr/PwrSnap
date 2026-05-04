@@ -79,5 +79,26 @@ for (const target of targets) {
     console.error(`[build-native] ${target.name} compilation failed`);
     process.exit(result.status ?? 1);
   }
-  console.log(`[build-native] ${target.name} → ${target.output}`);
+
+  // Ad-hoc sign the binary so macOS TCC (Screen Recording, etc.)
+  // can attach permissions to a stable identity. Without this the
+  // binary is unsigned and System Settings → Screen Recording
+  // refuses to add it. Production builds are signed by the
+  // electron-builder bundle signing pass; ad-hoc signing here is
+  // dev-only convenience.
+  //
+  // `codesign -s - --force` ad-hoc signs (the `-` identity is
+  // ad-hoc). --force overwrites any existing signature so a
+  // re-build always reflects the current binary content.
+  const signResult = spawnSync(
+    "codesign",
+    ["-s", "-", "--force", target.output],
+    { stdio: "inherit" }
+  );
+  if (signResult.status !== 0) {
+    console.error(`[build-native] ${target.name} ad-hoc signing failed`);
+    process.exit(signResult.status ?? 1);
+  }
+
+  console.log(`[build-native] ${target.name} → ${target.output} (ad-hoc signed)`);
 }

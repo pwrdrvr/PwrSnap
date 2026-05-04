@@ -54,15 +54,18 @@ export function registerLibraryHandlers(): void {
   });
 
   bus.register("library:focus", async () => {
-    // Find the main library BrowserWindow by title (tray + float-
-    // over have empty titles). If it doesn't exist — the user
-    // closed it via X — create a fresh one. The app's lifecycle
-    // model is: tray keeps running after the library closes; the
-    // tray "Open Library" item is what brings it back, and that
-    // routes through this handler.
-    let main = BrowserWindow.getAllWindows().find(
-      (w) => !w.isDestroyed() && w.getTitle() === "PwrSnap"
-    );
+    // Find the main library BrowserWindow. We can't match by title
+    // because every PwrSnap window loads the same renderer entry
+    // (index.html, <title>PwrSnap</title>) — tray + float-over +
+    // selector + edit all share the title. Match by URL hash
+    // instead: the library window is the only one without a
+    // `stage=` fragment in its URL. Same pattern used by the
+    // region selector launcher and the E2E fixture.
+    let main = BrowserWindow.getAllWindows().find((w) => {
+      if (w.isDestroyed()) return false;
+      const url = w.webContents.getURL();
+      return url.includes("/renderer/index.html") && !/[#&]stage=/.test(url);
+    });
     if (main === undefined) {
       log.info("library:focus: recreating main window");
       main = createMainWindow();

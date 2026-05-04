@@ -238,6 +238,17 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    // Defensive: explicitly show the dock icon. Nothing in our
+    // code calls app.dock.hide(), but Cocoa can leave the icon
+    // unclaimed in some scenarios — particularly after we activate
+    // the user's previous app via NSRunningApplication on the
+    // selector cancel/commit path. Calling show() is idempotent;
+    // if the icon is already visible this is a no-op. Returns a
+    // Promise on macOS — we don't need to await it.
+    if (process.platform === "darwin") {
+      void app.dock?.show();
+    }
+
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();

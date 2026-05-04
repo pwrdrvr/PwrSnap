@@ -12,13 +12,15 @@
 // can never inject shell metacharacters.
 
 import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { screen } from "electron";
+import { desktopCapturer, screen } from "electron";
+import { getMainLogger } from "../log";
 import { classifyCaptureError } from "./permissions";
-import { captureWindowImage } from "./window-list";
+
+const log = getMainLogger("pwrsnap:screencapture");
 
 const execFileAsync = promisify(execFile);
 
@@ -78,22 +80,27 @@ function validateRect(rect: Rect, displayId: number): { valid: boolean; message:
  * Capture a specific on-screen window by its CGWindowID, getting
  * the window's ACTUAL content even when occluded by other windows.
  *
- * Primary path: shells to our Swift helper which uses
- * SCScreenshotManager + SCContentFilter(desktopIndependentWindow:).
- * Why not `screencapture -l <id>`: empirically tested on macOS 14/15,
- * `-l` captures the SCREEN RECT around the window, including
- * anything visually on top of it. SCContentFilter goes through
- * WindowServer for the window's actual backing buffer, so the
- * captured PNG contains exactly the content the owning app
- * rendered — overlapping apps disappear from the image.
+ * Implementation: Electron's `desktopCapturer.getSources({ types:
+ * ["window"] })`. Under the hood this goes through the same SCKit /
+ * WindowServer path as a standalone Swift helper would — but
+ * runs in the Electron MAIN process. Crucial difference: the TCC
+ * Screen Recording grant attaches to the calling binary, and
+ * Electron (a real GUI app) is recognized by macOS where a CLI
+ * Swift helper is not. So this works in dev without ad-hoc
+ * signing acrobatics + the user only has to grant Screen Recording
+ * to the Electron / .app once (already done if regular captures
+ * have ever worked).
  *
- * Fallback path: `screencapture -l <id>`. SCKit needs Screen
- * Recording TCC granted to the HELPER binary specifically (not
- * just to the parent Electron). First run on a fresh dev build
- * usually fails until the user grants perms in System Settings.
- * We fall back to legacy capture so ⇧+click always produces an
- * image — it just won't have the occlusion magic until the user
- * grants the perm. Logged at warn level so dev mode notices.
+ * Source id format from desktopCapturer is `window:<cgWindowID>:N`
+ * — we match by the numeric prefix to find our snap target. The
+ * thumbnail returned is at the requested size (we ask for a
+ * generously-sized one so we don't accidentally downscale a
+ * Retina window).
+ *
+ * Fallback: if desktopCapturer doesn't surface the window
+ * (uncommon — usually means the window has gone away between
+ * pickRegion and capture), fall back to `screencapture -l <id>`.
+ * Won't ignore occlusion but at least produces SOMETHING.
  *
  * Caller path: when the user holds ⇧ at commit time on a window
  * snap target, pickRegion sets both `snappedWindowId` and
@@ -113,15 +120,46 @@ export async function captureWindow(
 
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-"));
   const tempPath = join(dir, `${Date.now()}.png`);
-  const sckitResult = await captureWindowImage(windowId, tempPath);
-  if (sckitResult.ok) {
-    return { ok: true, tempPath, displayId: 0 };
+
+  // Primary: desktopCapturer in the main process. Inherits
+  // Electron's Screen Recording TCC grant — no separate helper
+  // TCC entry needed.
+  try {
+    // Generous thumbnail size — we want native-pixel resolution
+    // for retina windows. desktopCapturer downscales if necessary
+    // but won't upscale.
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 4096, height: 4096 }
+    });
+    const source = sources.find((s) => {
+      // Format: `window:<cgWindowID>:<N>`
+      const match = /^window:(\d+):/.exec(s.id);
+      return match !== null && Number(match[1]) === windowId;
+    });
+    if (source !== undefined) {
+      const png = source.thumbnail.toPNG();
+      if (png.length > 0) {
+        await writeFile(tempPath, png);
+        return { ok: true, tempPath, displayId: 0 };
+      }
+    }
+    log.warn("desktopCapturer didn't surface the requested window — falling back", {
+      windowId,
+      sourceCount: sources.length,
+      sourceIds: sources.map((s) => s.id).slice(0, 10)
+    });
+  } catch (cause) {
+    log.warn("desktopCapturer threw — falling back", {
+      windowId,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
   }
 
-  // SCKit fallback to `screencapture -l`. Won't ignore occlusion
-  // (the user'll see overlapping windows in the image) but at
-  // least ⇧+click produces SOMETHING while the user goes to
-  // System Settings → Screen Recording to grant the helper.
+  // Fallback: `screencapture -l <id>`. Captures the screen rect
+  // around the window — overlaps included. Functionally similar
+  // to a default rect capture, but at least the user gets the
+  // window's bounds reflected in the output.
   const fallbackArgs = ["-x", "-l", String(windowId), "-o", "-t", "png", tempPath];
   try {
     await execFileAsync("/usr/sbin/screencapture", fallbackArgs, {
@@ -139,10 +177,7 @@ export async function captureWindow(
     return {
       ok: false,
       reason,
-      message:
-        stderrStr ||
-        (err instanceof Error ? err.message : String(err)) ||
-        sckitResult.message
+      message: stderrStr || (err instanceof Error ? err.message : String(err))
     };
   }
 }

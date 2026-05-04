@@ -40,6 +40,18 @@ body[data-stage="region"] .region-root {
   pointer-events: none;
 }
 
+/* Snap-to-window mode visualisation: thicker accent border + a
+   slightly stronger fill so the user gets unambiguous feedback that
+   the rect is locked to a real window's bounds. */
+body[data-stage="region"][data-snap="true"] .region-rect {
+  border-width: 2px;
+  background: rgba(232, 116, 58, 0.1);
+  box-shadow: 0 0 0 1px rgba(232, 116, 58, 0.4) inset;
+}
+body[data-stage="region"][data-snap="true"] {
+  cursor: pointer;
+}
+
 .region-rect--adjustable {
   /* In the adjusting state, anywhere inside the rect (away from
      handles) is a "move" target — but the rect div itself is

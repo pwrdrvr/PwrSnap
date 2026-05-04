@@ -28,11 +28,27 @@ import { IPC_CMD } from "@pwrsnap/shared/ipc";
 // its result back to main. Kept narrow: the preload exposes one
 // purpose-built method (`submitRegion`), not a generic `send`.
 const REGION_SELECTOR_RESULT_CHANNEL = "region-selector:result";
+// Main pushes the on-screen window list to the selector renderer right
+// after pickRegion shows it, so ⇧-hover snap-to-window hit-tests run
+// locally with no IPC round-trip per mouse move.
+const REGION_SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
 // has dead space at the bottom or clips a row.
 const TRAY_RESIZE_CHANNEL = "tray:resize";
+
+// Single window entry shipped to the renderer for snap-to-window.
+// Keep this in sync with the renderer's RegionSelector type.
+export type WindowSnapEntry = {
+  windowId: number;
+  bundleId: string | null;
+  appName: string | null;
+  title: string | null;
+  /** Window-local rect (the selector covers a full display, so this
+   *  matches event.clientX/Y space). */
+  rect: { x: number; y: number; w: number; h: number };
+};
 
 const pwrsnapApi = {
   platform: process.platform,
@@ -70,8 +86,24 @@ const pwrsnapApi = {
     ok: boolean;
     rect?: { x: number; y: number; w: number; h: number };
     displayId?: number;
+    /** When committing via snap-to-window (⇧ hover), the CGWindowID
+     *  of the snapped window so main can verify + tag the capture. */
+    snappedWindowId?: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
+  },
+  /**
+   * Subscribe to the snap-to-window window-list snapshot main pushes
+   * after the selector is shown. The renderer uses this for local
+   * hit-testing on ⇧ hover.
+   */
+  onWindowListSnapshot(
+    handler: (payload: { windows: WindowSnapEntry[] }) => void
+  ): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(payload as { windows: WindowSnapEntry[] });
+    ipcRenderer.on(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);
   },
   /**
    * Tray renderer → main: tell main to size the tray window's content

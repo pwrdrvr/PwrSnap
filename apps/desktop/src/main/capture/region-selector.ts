@@ -19,6 +19,7 @@ import { BrowserWindow, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
+import { listWindows, type WindowInfo } from "./window-list";
 
 const log = getMainLogger("pwrsnap:region-selector");
 
@@ -27,11 +28,23 @@ let pendingResolver: ((result: SelectorResult) => void) | null = null;
 let resultListenerAttached = false;
 let displayListenersAttached = false;
 
+// Window list snapshot taken at the moment pickRegion fires. Snap-to-
+// window in the renderer hit-tests against this same snapshot; the
+// capture handler reuses it after commit to backfill source_app_*.
+let lastSnapshot: WindowInfo[] = [];
+
 export type SelectorResult =
-  | { ok: true; rect: { x: number; y: number; w: number; h: number }; displayId: number }
+  | {
+      ok: true;
+      rect: { x: number; y: number; w: number; h: number };
+      displayId: number;
+      /** Set when the user committed via snap-to-window (⇧ hover). */
+      snappedWindowId?: number;
+    }
   | { ok: false; reason: "cancelled" | "destroyed" };
 
 const SELECTOR_RESULT_CHANNEL = "region-selector:result";
+const SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
 
 /**
  * Create the pre-warmed windows — one per display. Idempotent. Call
@@ -62,7 +75,15 @@ export function preWarmRegionSelector(): void {
       const resolver = pendingResolver;
       pendingResolver = null;
       if (isSelectorPayload(payload) && payload.ok) {
-        resolver({ ok: true, rect: payload.rect, displayId: payload.displayId });
+        const result: SelectorResult = {
+          ok: true,
+          rect: payload.rect,
+          displayId: payload.displayId
+        };
+        if (typeof payload.snappedWindowId === "number") {
+          result.snappedWindowId = payload.snappedWindowId;
+        }
+        resolver(result);
       } else {
         resolver({ ok: false, reason: "cancelled" });
       }
@@ -122,6 +143,40 @@ export async function pickRegion(): Promise<SelectorResult> {
   }
 
   const win = targetWindow;
+
+  // Fetch the on-screen window list in the background — by the time
+  // the user reaches for ⇧, the renderer has the list cached and
+  // hit-tests locally with no IPC round-trip.
+  //
+  // Window list is in GLOBAL virtual coords; the renderer needs them
+  // re-expressed in window-local coords (the selector window covers
+  // the display, so subtract the display's bounds.x/y). We do that
+  // translation here so the renderer just compares against
+  // event.clientX/Y.
+  const displayBounds = targetDisplay.bounds;
+  void listWindows().then((snapshot) => {
+    lastSnapshot = snapshot;
+    const localized = snapshot
+      // Drop our own selector + library windows from the snap list —
+      // hovering over them shouldn't trigger a snap to PwrSnap itself.
+      .filter((w) => w.bundleId !== "com.pwrdrvr.pwrsnap" && w.bundleId !== "com.github.Electron")
+      .map((w) => ({
+        windowId: w.windowId,
+        bundleId: w.bundleId,
+        appName: w.appName,
+        title: w.title,
+        rect: {
+          x: w.bounds.x - displayBounds.x,
+          y: w.bounds.y - displayBounds.y,
+          w: w.bounds.width,
+          h: w.bounds.height
+        }
+      }));
+    if (!win.isDestroyed()) {
+      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, { windows: localized });
+    }
+  });
+
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
     win.show();
@@ -129,6 +184,16 @@ export async function pickRegion(): Promise<SelectorResult> {
     win.focus();
   });
   return result;
+}
+
+/**
+ * The window-list snapshot taken at the most recent pickRegion call.
+ * Capture handlers query this to backfill source-app metadata on
+ * commit (no need to re-shell to the helper — the snapshot from the
+ * moment of capture is exactly the right point-in-time).
+ */
+export function getLastWindowListSnapshot(): readonly WindowInfo[] {
+  return lastSnapshot;
 }
 
 function hideAllSelectors(): void {
@@ -288,19 +353,27 @@ function isSelectorPayload(value: unknown): value is {
   ok: true;
   rect: { x: number; y: number; w: number; h: number };
   displayId: number;
+  snappedWindowId?: number;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (v.ok !== true) return false;
   const rect = v.rect as Record<string, unknown> | undefined;
   if (rect === undefined) return false;
-  return (
-    typeof rect.x === "number" &&
-    typeof rect.y === "number" &&
-    typeof rect.w === "number" &&
-    typeof rect.h === "number" &&
-    typeof v.displayId === "number"
-  );
+  if (
+    typeof rect.x !== "number" ||
+    typeof rect.y !== "number" ||
+    typeof rect.w !== "number" ||
+    typeof rect.h !== "number" ||
+    typeof v.displayId !== "number"
+  ) {
+    return false;
+  }
+  // snappedWindowId is optional but must be a number if present.
+  if (v.snappedWindowId !== undefined && typeof v.snappedWindowId !== "number") {
+    return false;
+  }
+  return true;
 }
 
 export function disposeRegionSelector(): void {
@@ -315,3 +388,4 @@ export function disposeRegionSelector(): void {
 }
 
 export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
+export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;

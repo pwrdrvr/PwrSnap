@@ -19,6 +19,7 @@
 // to screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { WindowSnapEntry } from "../../preload-types";
 import {
   ALL_HANDLES,
   applyResize,
@@ -58,23 +59,90 @@ export function RegionSelector() {
   const [rect, setRect] = useState<Rect | null>(null);
   const [interaction, setInteraction] = useState<Interaction>({ kind: "idle" });
   const [spaceHeld, setSpaceHeld] = useState(false);
+  // Snap-to-window state. When ⇧ is held with no active drag, the
+  // selector locks to whichever window's bounds the cursor is over.
+  // Releasing ⇧ goes back to free-draw mode. Committing while snapped
+  // ships the snapped windowId back to main so source_app_* tagging
+  // can use the exact window the user picked rather than guessing
+  // by rect-center hit-test.
+  const [shiftHeld, setShiftHeld] = useState(false);
+  const [snapTarget, setSnapTarget] = useState<WindowSnapEntry | null>(null);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
   const rectRef = useRef<Rect | null>(null);
   const interactionRef = useRef<Interaction>({ kind: "idle" });
   const spaceRef = useRef(false);
+  const shiftRef = useRef(false);
+  const snapTargetRef = useRef<WindowSnapEntry | null>(null);
+  const windowsRef = useRef<readonly WindowSnapEntry[]>([]);
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
+  shiftRef.current = shiftHeld;
+  snapTargetRef.current = snapTarget;
 
   // Surface state to CSS for cursor switching.
   useLayoutEffect(() => {
     document.body.dataset.interaction = interaction.kind;
     document.body.dataset.spaceHeld = spaceHeld ? "true" : "false";
-  }, [interaction.kind, spaceHeld]);
+    document.body.dataset.snap = snapTarget !== null ? "true" : "false";
+  }, [interaction.kind, spaceHeld, snapTarget]);
+
+  // Subscribe to the window list main pushes after the selector
+  // shows. Empty initial list — if the helper is unavailable, snap
+  // simply does nothing and the selector falls back to free-draw.
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
+      windowsRef.current = payload.windows;
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
+    // Window list is in window-local coords (main translated from
+    // global before shipping). Front-most first — the helper returns
+    // them in z-order so a linear scan finds the topmost owner.
+    for (const w of windowsRef.current) {
+      if (
+        clientX >= w.rect.x &&
+        clientX <= w.rect.x + w.rect.w &&
+        clientY >= w.rect.y &&
+        clientY <= w.rect.y + w.rect.h
+      ) {
+        return w;
+      }
+    }
+    return null;
+  }
 
   function commit(): void {
+    // Snap commit: ⇧ snap target locked in. The rect was already set
+    // to the target window's bounds when the cursor entered it, so
+    // we use the snap target's bounds (authoritative) and tag the
+    // payload with windowId so main can verify and backfill
+    // `source_app_*` deterministically.
+    const snap = snapTargetRef.current;
+    if (snap !== null) {
+      window.pwrsnapApi?.submitRegion({
+        ok: true,
+        rect: {
+          x: Math.round(snap.rect.x),
+          y: Math.round(snap.rect.y),
+          w: Math.round(snap.rect.w),
+          h: Math.round(snap.rect.h)
+        },
+        displayId,
+        snappedWindowId: snap.windowId
+      });
+      setRect(null);
+      setSnapTarget(null);
+      setInteraction({ kind: "idle" });
+      return;
+    }
+
     const r = rectRef.current;
     if (r === null || r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
       cancel();
@@ -132,6 +200,15 @@ export function RegionSelector() {
         setSpaceHeld(true);
         return;
       }
+      // ⇧ enters snap-to-window mode while held — but only when no
+      // user drag is in flight (Shift+drag is reserved for arrow-
+      // key nudge × 10 + future "constrain proportions" gesture).
+      if (event.key === "Shift" && !shiftRef.current) {
+        if (interactionRef.current.kind === "idle" || interactionRef.current.kind === "drawing") {
+          setShiftHeld(true);
+        }
+        return;
+      }
       // Arrow-key nudge — only when adjusting (rect persisted, no
       // active drag).
       const r = rectRef.current;
@@ -153,11 +230,21 @@ export function RegionSelector() {
       if (event.key === " ") {
         setSpaceHeld(false);
       }
+      if (event.key === "Shift") {
+        setShiftHeld(false);
+        setSnapTarget(null);
+      }
     }
 
     function onMouseDown(event: MouseEvent): void {
       if (event.button !== 0) return;
       event.preventDefault();
+      // Snap-click — ⇧ held with a snap target locked in. Click
+      // commits the snapped window's bounds immediately (no drag).
+      if (shiftRef.current && snapTargetRef.current !== null) {
+        commit();
+        return;
+      }
       const handle = getHandleFromTarget(event.target);
       const r = rectRef.current;
 
@@ -197,6 +284,25 @@ export function RegionSelector() {
 
     function onMouseMove(event: MouseEvent): void {
       const i = interactionRef.current;
+      // Snap-to-window: when ⇧ is held with no active drag, the
+      // cursor's window owner is the snap target. The visualization
+      // rect == the window's bounds.
+      if (shiftRef.current && (i.kind === "idle" || i.kind === "drawing")) {
+        const w = findWindowAt(event.clientX, event.clientY);
+        if (w !== null) {
+          if (snapTargetRef.current?.windowId !== w.windowId) {
+            setSnapTarget(w);
+            setRect({ x: w.rect.x, y: w.rect.y, w: w.rect.w, h: w.rect.h });
+          }
+        } else if (snapTargetRef.current !== null) {
+          setSnapTarget(null);
+          // Don't clear the user's in-progress rect if they were
+          // mid-draw before tapping ⇧; only clear if the rect IS the
+          // snap rect.
+          if (i.kind !== "drawing") setRect(null);
+        }
+        if (i.kind !== "drawing") return; // snap mode swallows the move
+      }
       switch (i.kind) {
         case "drawing": {
           const next = rectFromTwoPoints(
@@ -334,17 +440,41 @@ export function RegionSelector() {
               className="region-dims-chip"
               style={{ left: dimsChipPosition.left, top: dimsChipPosition.top }}
             >
-              {Math.round(rect.w)} × {Math.round(rect.h)}
+              {snapTarget !== null ? (
+                <>
+                  {snapTarget.appName ?? "Window"} · {Math.round(rect.w)} × {Math.round(rect.h)}
+                </>
+              ) : (
+                <>
+                  {Math.round(rect.w)} × {Math.round(rect.h)}
+                </>
+              )}
             </div>
           )}
         </>
       )}
 
       <div className="region-hint">
-        {rect === null ? (
-          <span>
-            <kbd>drag</kbd>to select
-          </span>
+        {snapTarget !== null ? (
+          <>
+            <span>
+              <kbd>click</kbd>capture {snapTarget.appName ?? "window"}
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>release ⇧</kbd>free draw
+            </span>
+          </>
+        ) : rect === null ? (
+          <>
+            <span>
+              <kbd>drag</kbd>to select
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>⇧</kbd>snap to window
+            </span>
+          </>
         ) : isAdjustable ? (
           <>
             <span>

@@ -19,10 +19,11 @@
 
 import { BrowserWindow } from "electron";
 import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CaptureRecord, PwrSnapError, Result } from "@pwrsnap/shared";
+import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { pickRegion } from "../capture/region-selector";
+import { pickRegion, getLastWindowListSnapshot } from "../capture/region-selector";
 import { captureRegion } from "../capture/screencapture";
+import { findWindowAt, type WindowInfo } from "../capture/window-list";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -46,7 +47,11 @@ export function registerCaptureHandlers(): void {
         message: captureResult.message
       });
     }
-    return persistAndBroadcast(captureResult.tempPath);
+    // Headless capture: best-effort source-app lookup against the
+    // most recent window-list snapshot. Agents calling this directly
+    // may not have a snapshot yet; that's fine — fields stay null.
+    const sourceApp = resolveSourceApp(req.rect, getLastWindowListSnapshot());
+    return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
   bus.register("capture:interactive", async () => {
@@ -66,7 +71,15 @@ export function registerCaptureHandlers(): void {
         message: captureResult.message
       });
     }
-    return persistAndBroadcast(captureResult.tempPath);
+    // Source-app: prefer the snapped windowId when the user committed
+    // via ⇧-snap (deterministic), else hit-test the rect center
+    // against the snapshot taken at pickRegion show.
+    const snapshot = getLastWindowListSnapshot();
+    const sourceApp =
+      selection.snappedWindowId !== undefined
+        ? findById(snapshot, selection.snappedWindowId) ?? resolveSourceApp(selection.rect, snapshot)
+        : resolveSourceApp(selection.rect, snapshot);
+    return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
   bus.register("capture:fullScreen", async () => {
@@ -109,16 +122,38 @@ export function registerCaptureHandlers(): void {
   });
 }
 
+/**
+ * Find which window owned the captured rect. We hit-test the rect's
+ * center rather than its origin — the origin is often on a window
+ * border or even outside the window when the user dragged-from-edge.
+ * The snapshot is in window-local coords (relative to the selector
+ * window for the active display); that matches how `req.rect` is
+ * sourced from the renderer.
+ */
+function resolveSourceApp(rect: Rect, windows: readonly WindowInfo[]): WindowInfo | null {
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  return findWindowAt(windows, cx, cy);
+}
+
+function findById(
+  windows: readonly WindowInfo[],
+  windowId: number
+): WindowInfo | null {
+  return windows.find((w) => w.windowId === windowId) ?? null;
+}
+
 async function persistAndBroadcast(
-  tempPath: string
+  tempPath: string,
+  sourceApp: WindowInfo | null
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   const stored = await putCaptureSource(tempPath);
   const { record, isNew } = insertOrFindCapture({
     id: stored.id,
     kind: "image",
     captured_at: new Date().toISOString(),
-    source_app_bundle_id: null, // Phase 3 fills this
-    source_app_name: null,
+    source_app_bundle_id: sourceApp?.bundleId ?? null,
+    source_app_name: sourceApp?.appName ?? null,
     src_path: stored.srcPath,
     width_px: stored.widthPx,
     height_px: stored.heightPx,
@@ -126,7 +161,12 @@ async function persistAndBroadcast(
     byte_size: stored.byteSize,
     sha256: stored.sha256
   });
-  log.info("capture persisted", { captureId: record.id, isNew });
+  log.info("capture persisted", {
+    captureId: record.id,
+    isNew,
+    sourceAppBundleId: record.source_app_bundle_id,
+    sourceAppName: record.source_app_name
+  });
   broadcastCapturesChanged([record.id]);
   return ok(record);
 }

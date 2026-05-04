@@ -7,6 +7,14 @@
 
 import type { CommandName, Req, Res, PwrSnapError, Result } from "@pwrsnap/shared";
 
+export type WindowSnapEntry = {
+  windowId: number;
+  bundleId: string | null;
+  appName: string | null;
+  title: string | null;
+  rect: { x: number; y: number; w: number; h: number };
+};
+
 declare global {
   interface Window {
     pwrsnapApi?: {
@@ -21,7 +29,11 @@ declare global {
         ok: boolean;
         rect?: { x: number; y: number; w: number; h: number };
         displayId?: number;
+        snappedWindowId?: number;
       }): void;
+      onWindowListSnapshot(
+        handler: (payload: { windows: WindowSnapEntry[] }) => void
+      ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
     };
   }

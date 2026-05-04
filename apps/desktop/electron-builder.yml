@@ -17,6 +17,15 @@ files:
   - "!**/*.test.*"
   - "!**/__tests__/**"
 
+# Native helpers (Swift CLIs that wrap macOS-only system APIs).
+# Compiled by `apps/desktop/scripts/build-native.mjs` into
+# `apps/desktop/build/native/`; ship them under Contents/Resources/
+# with PwrSnap-prefixed names so `process.resourcesPath` lookups in
+# main are unambiguous.
+extraResources:
+  - from: "build/native/window-list"
+    to: "PwrSnapWindowList"
+
 electronFuses:
   runAsNode: false
   enableCookieEncryption: true

@@ -179,10 +179,17 @@
 .ps-tray__hotkey-row { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
 
 .ps-tray__modes {
-  padding: 8px 6px;
+  padding: 8px 8px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
+  /* minmax(0, 1fr) instead of bare 1fr — bare 1fr defaults to
+     `minmax(auto, 1fr)`, where `auto` is the column's intrinsic
+     min-content. If a tile's min-content (e.g. "All Screens" + a
+     ⌘⇧A shortcut) is wider than the 1fr share, the column refuses
+     to shrink and the whole grid overflows the popover to the
+     right. minmax(0, 1fr) lets columns drop below their min-content
+     so the grid stays inside its container. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
 }
 .ps-mode {
   display: flex; flex-direction: column; gap: 6px;
@@ -202,7 +209,13 @@
   background: var(--accent-soft);
   border-color: var(--accent-border);
 }
-.ps-mode__row1 { display: flex; align-items: center; gap: 8px; }
+.ps-mode__row1 {
+  display: flex; align-items: center; gap: 8px;
+  /* Allow flex children to shrink below their intrinsic min-content.
+     Without this, .ps-mode__name (which has flex: 1) won't shrink
+     past its content width even when its column is narrower. */
+  min-width: 0;
+}
 .ps-mode__icon {
   width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -216,7 +229,12 @@
   color: var(--button-text-on-accent);
   border-color: var(--accent);
 }
-.ps-mode__name { font: 700 11px/1 var(--font-sans); letter-spacing: 0.005em; flex: 1; }
+.ps-mode__name {
+  font: 700 11px/1 var(--font-sans);
+  letter-spacing: 0.005em;
+  flex: 1;
+  min-width: 0; /* same fix; allow shrink below intrinsic min-content */
+}
 .ps-mode__hk { display: flex; gap: 2px; }
 .ps-mode__hk .ps-kbd { min-width: 16px; height: 16px; font-size: 9px; padding: 0 3px; }
 .ps-mode__sub { font: 500 10px/1.3 var(--font-sans); color: var(--text-muted); }

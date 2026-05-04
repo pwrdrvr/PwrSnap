@@ -683,6 +683,42 @@ Acceptance:
 - [ ] Zero outbound network calls during cold boot or capture (verified by spy).
 - [ ] `pwrsnap export ~/tmp/snap-backup` produces a `pwrsnap.db` + hardlinked captures dir + manifest with sha256.
 
+#### Phase 1.10: Region selector polish (deferred, ~1 day)
+
+**Goal:** Bring the live region selector up to the design's CaptureOverlay
+spec. Phase 1's first cut commits on mouse-up without giving the user
+any chance to fine-tune; the design has 8 resize handles, drag-to-move,
+keyboard nudge, snap-to-window, and an explicit ↵ commit. Lifts cleanly
+from `design/src/CaptureOverlay.jsx` (handle layout + cursor map already
+designed).
+
+Scope:
+- [ ] Decouple commit from mouse-up. Mouse-up just freezes the rect with
+      8 resize handles (`tl tr bl br tm bm lm rm`); ↵ commits, ESC
+      cancels.
+- [ ] Drag-to-move when the cursor is *inside* the rect (cursor: move).
+- [ ] Resize via handle drag (tl/br nwse-resize, tr/bl nesw-resize,
+      tm/bm ns-resize, lm/rm ew-resize).
+- [ ] Arrow-key nudge: ±1px, +Shift = ±10px.
+- [ ] Hold Space + drag = move (alternative to dragging inside the rect).
+- [ ] Snap-to-window via ⇧ hover (Phase 2's `NSWorkspace.windowList`
+      bridge — co-lift with the source-app helper).
+- [ ] Multi-display support: pre-warm one selector per display, route
+      ⌘⇧P to whichever display the cursor is on.
+
+Acceptance:
+- [ ] Drag-and-release leaves the rect editable; user can resize via any
+      handle and re-drag the whole rect before pressing ↵.
+- [ ] ↵ commits; ESC cancels; selector clears focus on dismiss (already
+      implemented in Phase 1's blur+hide fix).
+- [ ] Snap-to-window: hovering ⇧ over a Slack window highlights the
+      window's bounds; release ⇧ + ↵ commits to those bounds.
+
+Note: this isn't the founder's blocker — Phase 1 captures already work
+end-to-end. Lift this when annotation tools land in Phase 2 (the same
+floating toolbar pattern lives in both the selector and the inspect-mode
+canvas).
+
 #### Phase 2: Annotation engine (Weeks 3–5)
 
 **Goal:** Inspect + Edit modes. Smart arrows. Non-destructive overlays. Drag-out lands here too.

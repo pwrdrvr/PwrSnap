@@ -1,16 +1,49 @@
 import { useMemo, useState } from "react";
+import type { CaptureRecord } from "@pwrsnap/shared";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { FixtureBackedRecords } from "./adapter";
+import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
-// state and for records lacking a renderable source. Real captures
-// render via <img src="pwrsnap-cache://"> directly in the cell — see
-// Library.tsx renderCell below. Phase 2's mode-router refactor will
-// rewrite the thumb pipeline to use the canvas-backed preview.
+// state and for fixture rows in dev. Real captures render via
+// <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
+
+/**
+ * Picks the right thumb representation: real cache-rendered image
+ * when we have a record, synthetic per-app gradient otherwise. The
+ * cache URL goes through main's protocol handler → render pipeline,
+ * so the very first read of a freshly-captured snap composes its
+ * 240w.webp on demand and caches it.
+ */
+function CellThumb({
+  capture,
+  record,
+  width
+}: {
+  capture: Capture;
+  record: CaptureRecord | null;
+  width: number;
+}) {
+  if (record !== null) {
+    return (
+      <img
+        src={`pwrsnap-cache://${record.id}/${width}w.webp`}
+        alt=""
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          display: "block"
+        }}
+      />
+    );
+  }
+  return <Thumb c={capture} />;
+}
 
 export function Library({
   initialSelected = 1,
@@ -229,7 +262,7 @@ export function Library({
                       }
                       onClick={() => setSelected(c.id)}
                     >
-                      <Thumb c={c} />
+                      <CellThumb capture={c} record={fixtureBacking.recordFor(c.id)} width={140} />
                       <span className="psl__frame-num">{c.time}</span>
                       <span className="psl__frame-app">
                         <AppIcon app={c.app} size={8} />
@@ -264,7 +297,7 @@ export function Library({
                     onClick={() => setSelected(c.id)}
                   >
                     <div className="psl__cell-thumb">
-                      <Thumb c={c} />
+                      <CellThumb capture={c} record={fixtureBacking.recordFor(c.id)} width={400} />
                       <span className="psl__cell-time">{c.time}</span>
                       <span className="psl__cell-app">
                         <span className="psl__app-dot">

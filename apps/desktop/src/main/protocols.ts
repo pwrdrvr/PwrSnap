@@ -19,7 +19,9 @@
 // pattern VS Code adopted when it migrated off file:// URLs to
 // `vscode-file://`.
 
-import { app, net, protocol } from "electron";
+import { readFile, stat } from "node:fs/promises";
+import { extname } from "node:path";
+import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:protocols");
@@ -79,6 +81,35 @@ export type ProtocolResolver = {
   }): Promise<string | null>;
 };
 
+const MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg"
+};
+
+function mimeForPath(filePath: string): string {
+  return MIME_BY_EXT[extname(filePath).toLowerCase()] ?? "application/octet-stream";
+}
+
+async function fileResponse(filePath: string): Promise<Response> {
+  // net.fetch with file:// URLs is unreliable from inside a
+  // protocol.handle callback (Electron's network stack can refuse the
+  // scheme even when the schemes don't overlap). Read directly with
+  // fs.readFile and construct the Response by hand — no scheme gymnastics,
+  // and Content-Type / Content-Length come from the file itself.
+  const [body, stats] = await Promise.all([readFile(filePath), stat(filePath)]);
+  const arrayBuffer = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
+  return new Response(arrayBuffer, {
+    status: 200,
+    headers: {
+      "content-type": mimeForPath(filePath),
+      "content-length": String(stats.size),
+      "cache-control": "private, max-age=300"
+    }
+  });
+}
+
 /**
  * Wires both protocol handlers. Must be called inside `app.whenReady()`.
  */
@@ -86,25 +117,45 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
   protocol.handle(SCHEMES.capture, async (request) => {
     const captureId = parseCaptureId(request.url, SCHEMES.capture);
     if (captureId === null) {
+      log.warn("capture: invalid url", { url: request.url });
       return new Response("invalid capture id", { status: 400 });
     }
-    const filePath = await resolver.captureSourcePath(captureId);
-    if (filePath === null) {
-      return new Response("not found", { status: 404 });
+    try {
+      const filePath = await resolver.captureSourcePath(captureId);
+      if (filePath === null) {
+        log.warn("capture: not found", { captureId });
+        return new Response("not found", { status: 404 });
+      }
+      return await fileResponse(filePath);
+    } catch (cause) {
+      log.error("capture handler threw", {
+        captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return new Response("internal error", { status: 500 });
     }
-    return net.fetch(`file://${encodeURI(filePath)}`, { headers: { "cache-control": "private, max-age=300" } });
   });
 
   protocol.handle(SCHEMES.cache, async (request) => {
     const parsed = parseCacheUrl(request.url);
     if (parsed === null) {
+      log.warn("cache: invalid url", { url: request.url });
       return new Response("invalid cache url", { status: 400 });
     }
-    const filePath = await resolver.cacheFile(parsed);
-    if (filePath === null) {
-      return new Response("not found", { status: 404 });
+    try {
+      const filePath = await resolver.cacheFile(parsed);
+      if (filePath === null) {
+        log.warn("cache: not found", { ...parsed });
+        return new Response("not found", { status: 404 });
+      }
+      return await fileResponse(filePath);
+    } catch (cause) {
+      log.error("cache handler threw", {
+        ...parsed,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return new Response("internal error", { status: 500 });
     }
-    return net.fetch(`file://${encodeURI(filePath)}`, { headers: { "cache-control": "private, max-age=300" } });
   });
 
   log.info("protocol handlers installed", {

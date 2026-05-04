@@ -110,9 +110,14 @@ const pwrsnapApi = {
     ok: boolean;
     rect?: { x: number; y: number; w: number; h: number };
     displayId?: number;
-    /** When committing via snap-to-window (⇧ hover), the CGWindowID
-     *  of the snapped window so main can verify + tag the capture. */
+    /** Always set when the user committed straight from a window
+     *  snap (no drag, no resize). Used by main for source-app
+     *  metadata. */
     snappedWindowId?: number;
+    /** True when the user opted into full-window capture by holding
+     *  ⇧ at commit time. Routes main to `screencapture -l <id>`
+     *  instead of `-R <rect>`. */
+    fullWindow?: boolean;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },

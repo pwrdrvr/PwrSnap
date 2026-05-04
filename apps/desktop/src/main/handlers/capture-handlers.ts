@@ -65,24 +65,32 @@ export function registerCaptureHandlers(): void {
     }
 
     // Two capture paths:
-    //   • Window snap (snappedWindowId set; user committed straight
-    //     from the snap target without dragging or resizing) →
+    //   • Full-window mode (user held ⇧ at commit time) →
     //     `screencapture -l <id>`. Asks WindowServer for the
     //     window's full backing buffer — clean rounded corners, no
-    //     occlusion artifacts, no drop shadow.
-    //   • Anything else (rect drag, display snap, snap+resize) →
-    //     `screencapture -R <rect>` like before.
+    //     occlusion artifacts, no drop shadow. Captures content
+    //     even where other windows are in front.
+    //   • Default (no ⇧) → `screencapture -R <rect>`. Captures the
+    //     literal pixels in the rect — overlapping windows are
+    //     included, exactly as the user sees them on screen.
+    //
+    // snappedWindowId comes through in BOTH cases (when the user
+    // committed straight from a window snap), but it's only used to
+    // route to captureWindow when fullWindow=true. Otherwise it's
+    // just a deterministic source-app hint.
     const snapshot = getLastWindowListSnapshot();
     let captureResult;
     let sourceApp;
-    if (selection.snappedWindowId !== undefined) {
+    if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
       captureResult = await captureWindow(selection.snappedWindowId);
-      // Source-app is deterministic from the snapped windowId.
       sourceApp = findById(snapshot, selection.snappedWindowId);
     } else {
       captureResult = await captureRegion(selection.rect, selection.displayId);
-      // Hit-test the rect center against the snapshot.
-      sourceApp = resolveSourceApp(selection.rect, snapshot);
+      sourceApp =
+        selection.snappedWindowId !== undefined
+          ? findById(snapshot, selection.snappedWindowId) ??
+            resolveSourceApp(selection.rect, snapshot)
+          : resolveSourceApp(selection.rect, snapshot);
     }
     if (!captureResult.ok) {
       return err({

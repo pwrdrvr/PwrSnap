@@ -242,6 +242,100 @@ test("a PwrSnap-owned window covering another window blocks the snap (no fall-th
   }
 });
 
+test("⇧ over a window expands the snap rect to full bounds + flags fullWindow on commit", async () => {
+  // Default click captures the visible rect (overlapping content
+  // included). Holding ⇧ opts into "capture this whole window
+  // even if parts are hidden" — the rect grows from the visible-
+  // region bbox to the window's full rawRect, and submitRegion
+  // fires with `fullWindow: true` so main routes to
+  // `screencapture -l` instead of `-R`.
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetSelector(app);
+    await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
+
+    // Window with VISIBLE region smaller than RAW bounds (something
+    // in front of it covers the right half). Visible bbox is the
+    // left half.
+    const targetWindow = {
+      windowId: 7777,
+      pid: 9999,
+      bundleId: "com.test.fullwindow",
+      appName: "FullWindow App",
+      title: null as string | null,
+      ownedByUs: false,
+      zIndex: 1,
+      rect: { x: 100, y: 100, w: 200, h: 400 }, // visible left half
+      rawRect: { x: 100, y: 100, w: 400, h: 400 } // full window
+    };
+    // Capture submitRegion payloads so we can assert fullWindow.
+    await app.electronApp.evaluate(({ ipcMain }) => {
+      const captured: unknown[] = [];
+      (
+        globalThis as unknown as { __FULL_PAYLOADS__: unknown[] }
+      ).__FULL_PAYLOADS__ = captured;
+      const handler = (_event: unknown, payload: unknown) => {
+        captured.push(payload);
+      };
+      ipcMain.prependListener("region-selector:result", handler);
+      (
+        globalThis as unknown as { __FULL_LISTENER__: typeof handler }
+      ).__FULL_LISTENER__ = handler;
+    });
+
+    await hydrateWindowList(app, [targetWindow]);
+    await selector.waitForFunction(
+      () => document.body.dataset.windowListCount === "1"
+    );
+
+    // Hover to lock the snap target. Default rect = visible (200×400).
+    await selector.mouse.move(150, 200);
+    await expect(selector.locator(".region-dims-chip")).toContainText("FullWindow App");
+    let style = await selector.locator(".region-rect").getAttribute("style");
+    expect(style).toContain("width: 200px"); // visible only
+
+    // Hold ⇧: rect should grow to the full window bounds (400×400).
+    await selector.keyboard.down("Shift");
+    await expect.poll(async () =>
+      selector.locator("body").getAttribute("data-full-window")
+    ).toBe("true");
+    style = await selector.locator(".region-rect").getAttribute("style");
+    expect(style).toContain("width: 400px"); // full bounds
+    await expect(selector.locator(".region-hint")).toContainText(/full FullWindow App/);
+
+    // Commit while still holding ⇧.
+    await selector.keyboard.press("Enter");
+    await selector.keyboard.up("Shift");
+
+    const payloads = (await app.electronApp.evaluate(({ ipcMain }) => {
+      const list = (
+        globalThis as unknown as { __FULL_PAYLOADS__: unknown[] }
+      ).__FULL_PAYLOADS__;
+      const handler = (
+        globalThis as unknown as {
+          __FULL_LISTENER__: (event: unknown, payload: unknown) => void;
+        }
+      ).__FULL_LISTENER__;
+      ipcMain.removeListener("region-selector:result", handler);
+      return list;
+    })) as Array<{
+      ok: boolean;
+      snappedWindowId?: number;
+      fullWindow?: boolean;
+      rect: { x: number; y: number; w: number; h: number };
+    }>;
+    expect(payloads.length).toBeGreaterThanOrEqual(1);
+    const last = payloads[payloads.length - 1]!;
+    expect(last.ok).toBe(true);
+    expect(last.snappedWindowId).toBe(targetWindow.windowId);
+    expect(last.fullWindow).toBe(true);
+    // Rect should be the full bounds (rawRect), not the visible bbox.
+    expect(last.rect).toEqual({ x: 100, y: 100, w: 400, h: 400 });
+  } finally {
+    await app.close();
+  }
+});
+
 test("Tab cycles to the next window underneath the cursor", async () => {
   // Two overlapping windows — Slack (frontmost) and 1Password
   // (behind, mostly occluded). Cursor is in the overlap. Without

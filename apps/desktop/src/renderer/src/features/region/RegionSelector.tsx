@@ -99,6 +99,13 @@ export function RegionSelector() {
   const [snapTarget, setSnapTarget] = useState<SnapTarget>({ kind: "display" });
   const [interaction, setInteraction] = useState<Interaction>({ kind: "snap" });
   const [spaceHeld, setSpaceHeld] = useState(false);
+  // ⇧ in snap mode opts into full-window capture: the rect expands
+  // from the visible-region bounding box (`entry.rect`) to the
+  // window's full bounds (`entry.rawRect`), and the commit payload
+  // carries fullWindow:true so main routes to `screencapture -l`.
+  // Default (no ⇧) is rect capture — what's literally on screen
+  // including any overlapping content.
+  const [shiftHeld, setShiftHeld] = useState(false);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
@@ -119,6 +126,8 @@ export function RegionSelector() {
   // keyboard handlers (Tab cycle in particular) know where to
   // hit-test from.
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
+  const shiftRef = useRef(false);
+  shiftRef.current = shiftHeld;
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
@@ -132,7 +141,9 @@ export function RegionSelector() {
       interaction.kind === "snap" || interaction.kind === "pending"
         ? snapTarget.kind
         : "off";
-  }, [interaction.kind, spaceHeld, snapTarget]);
+    document.body.dataset.fullWindow =
+      shiftHeld && snapTarget.kind === "window" ? "true" : "false";
+  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld]);
 
   // Window-list snapshot from main. Empty until the helper resolves;
   // until then, snap defaults to display.
@@ -228,7 +239,12 @@ export function RegionSelector() {
 
   function rectForSnap(snap: SnapTarget): Rect {
     if (snap.kind === "window") {
-      return { x: snap.entry.rect.x, y: snap.entry.rect.y, w: snap.entry.rect.w, h: snap.entry.rect.h };
+      // ⇧ held over a window snap → use the FULL bounds (rawRect).
+      // Default → use the visible-region bbox (rect). The visual
+      // rect always matches what would actually be captured at
+      // commit time, so the user has no surprises.
+      const src = shiftRef.current ? snap.entry.rawRect : snap.entry.rect;
+      return { x: src.x, y: src.y, w: src.w, h: src.h };
     }
     return displaySnapRect();
   }
@@ -247,6 +263,7 @@ export function RegionSelector() {
     // logical=1920) it's ~1.315 and corrects the doubling we'd
     // otherwise see in the captured PNG.
     const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
+    const fromWindowSnap = interaction.kind === "snap" && snap.kind === "window";
     window.pwrsnapApi?.submitRegion({
       ok: true,
       rect: {
@@ -256,14 +273,21 @@ export function RegionSelector() {
         h: Math.round(r.h * inv)
       },
       displayId,
-      // Tag the payload with the snapped windowId only when we
-      // committed straight from a window snap (no drag, no resize).
-      // Once the user adjusts the rect in any way the windowId
-      // promise no longer holds — main falls back to rect-center
-      // hit-testing for source_app_*.
-      ...(interaction.kind === "snap" && snap.kind === "window"
-        ? { snappedWindowId: snap.entry.windowId }
-        : {})
+      // snappedWindowId tags the commit when the user clicked
+      // straight from a window snap. Used by main for source-app
+      // metadata even when fullWindow is false. Once the user
+      // adjusts the rect (drag / resize) the windowId promise no
+      // longer holds — the renderer leaves snap mode for adjusting,
+      // and we don't include it.
+      ...(fromWindowSnap ? { snappedWindowId: snap.entry.windowId } : {}),
+      // fullWindow opts into the `screencapture -l <id>` path —
+      // only valid when we have a windowId AND ⇧ is held at commit
+      // time. Read via ref since commit() runs from the useEffect
+      // keydown handler whose closure captured the initial state
+      // (always false). The default (no ⇧) goes through the rect
+      // path, which captures whatever's literally on screen
+      // including overlapping windows.
+      ...(fromWindowSnap && shiftRef.current ? { fullWindow: true } : {})
     });
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -297,6 +321,26 @@ export function RegionSelector() {
     }
 
     function onKeyDown(event: KeyboardEvent): void {
+      // Track ⇧ in snap mode: full-window capture opt-in. The rect
+      // expands from the visible-region bbox to the full window
+      // bounds + the chip text changes + commit sends fullWindow:true.
+      if (
+        event.key === "Shift" &&
+        !shiftRef.current &&
+        (interactionRef.current.kind === "snap" || interactionRef.current.kind === "pending")
+      ) {
+        const target = snapTargetRef.current;
+        if (target.kind === "window") {
+          setShiftHeld(true);
+          setRect({
+            x: target.entry.rawRect.x,
+            y: target.entry.rawRect.y,
+            w: target.entry.rawRect.w,
+            h: target.entry.rawRect.h
+          });
+          return;
+        }
+      }
       if (event.key === "Escape") {
         event.preventDefault();
         cancel();
@@ -336,12 +380,10 @@ export function RegionSelector() {
           (currentIdx + dir + candidates.length) % candidates.length;
         const next: SnapTarget = { kind: "window", entry: candidates[nextIdx]! };
         setSnapTarget(next);
-        setRect({
-          x: next.entry.rect.x,
-          y: next.entry.rect.y,
-          w: next.entry.rect.w,
-          h: next.entry.rect.h
-        });
+        // Honor full-window mode: rect = rawRect (full bounds) when
+        // ⇧ is held, else rect (visible region bbox).
+        const r = shiftRef.current ? next.entry.rawRect : next.entry.rect;
+        setRect({ x: r.x, y: r.y, w: r.w, h: r.h });
         return;
       }
       if (event.key === " " && !spaceRef.current) {
@@ -373,6 +415,23 @@ export function RegionSelector() {
     function onKeyUp(event: KeyboardEvent): void {
       if (event.key === " ") {
         setSpaceHeld(false);
+      }
+      if (event.key === "Shift" && shiftRef.current) {
+        setShiftHeld(false);
+        // Restore the visible-region rect when ⇧ is released — full-
+        // window mode is opt-in only while the modifier is held.
+        const target = snapTargetRef.current;
+        if (
+          target.kind === "window" &&
+          (interactionRef.current.kind === "snap" || interactionRef.current.kind === "pending")
+        ) {
+          setRect({
+            x: target.entry.rect.x,
+            y: target.entry.rect.y,
+            w: target.entry.rect.w,
+            h: target.entry.rect.h
+          });
+        }
       }
     }
 
@@ -606,11 +665,21 @@ export function RegionSelector() {
         snapTarget.kind === "window"
           ? snapTarget.entry.appName ?? "window"
           : "display";
+      const isFullWindow = shiftHeld && snapTarget.kind === "window";
       return (
         <>
           <span>
-            <kbd>click</kbd>capture {what}
+            <kbd>click</kbd>
+            {isFullWindow ? `capture full ${what}` : `capture ${what}`}
           </span>
+          {snapTarget.kind === "window" && !shiftHeld && (
+            <>
+              <span className="region-hint-sep">·</span>
+              <span>
+                <kbd>⇧</kbd>full window
+              </span>
+            </>
+          )}
           <span className="region-hint-sep">·</span>
           <span>
             <kbd>drag</kbd>region

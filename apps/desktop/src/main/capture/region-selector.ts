@@ -47,8 +47,17 @@ export type SelectorResult =
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
       displayId: number;
-      /** Set when the user committed via snap-to-window (⇧ hover). */
+      /** Set when the user committed straight from a window snap (no
+       *  drag, no resize). Used for source-app metadata even when
+       *  not in full-window mode. */
       snappedWindowId?: number;
+      /** True when the user held ⇧ at commit time to opt into the
+       *  full-window capture path (`screencapture -l`). Without this
+       *  flag main goes through the normal rect path
+       *  (`screencapture -R`), which captures whatever's visible at
+       *  those coords — overlapping windows included, just like the
+       *  user sees on screen. */
+      fullWindow?: boolean;
     }
   | { ok: false; reason: "cancelled" | "destroyed" };
 
@@ -103,6 +112,9 @@ export function preWarmRegionSelector(): void {
         };
         if (typeof payload.snappedWindowId === "number") {
           result.snappedWindowId = payload.snappedWindowId;
+        }
+        if (payload.fullWindow === true) {
+          result.fullWindow = true;
         }
         resolver(result);
       } else {
@@ -543,6 +555,7 @@ function isSelectorPayload(value: unknown): value is {
   rect: { x: number; y: number; w: number; h: number };
   displayId: number;
   snappedWindowId?: number;
+  fullWindow?: boolean;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -560,6 +573,9 @@ function isSelectorPayload(value: unknown): value is {
   }
   // snappedWindowId is optional but must be a number if present.
   if (v.snappedWindowId !== undefined && typeof v.snappedWindowId !== "number") {
+    return false;
+  }
+  if (v.fullWindow !== undefined && typeof v.fullWindow !== "boolean") {
     return false;
   }
   return true;

@@ -40,6 +40,7 @@ declare global {
         rect?: { x: number; y: number; w: number; h: number };
         displayId?: number;
         snappedWindowId?: number;
+        fullWindow?: boolean;
       }): void;
       onWindowListSnapshot(
         handler: (payload: {

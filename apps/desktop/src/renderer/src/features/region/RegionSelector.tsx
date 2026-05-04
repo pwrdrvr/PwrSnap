@@ -1,22 +1,39 @@
-// Region-selector renderer — Phase 1.10.
+// Region-selector renderer.
 //
-// State machine:
-//   idle     — no rect; mousedown anywhere starts drawing.
-//   drawing  — first drag from initial mousedown; mouseup → adjusting
-//              (or back to idle if the rect is degenerate < 4×4 px).
-//   adjusting — rect is frozen and editable. Mouseup transitioned us
-//              here. Sub-states:
-//                resizing — mousedown on a handle, drag updates that edge.
-//                moving   — mousedown on the rect interior, or with
-//                           Space held anywhere; drag translates rect.
-//   ESC      — cancel from any state.
-//   ↵        — commit current rect (must have non-zero size).
-//   Arrow    — nudge top-left; Shift = ×10. Only in adjusting.
+// State machine (post-feedback redesign):
 //
-// Coords reported to main are in *display-local* (= window-local;
-// the selector window covers the entire display). Main converts to
-// the global virtual coord space + display id before shelling out
-// to screencapture.
+//   snap (default, live):
+//     The cursor walks the screen; the rect locks to whichever
+//     window the cursor is over (snap target = window). When the
+//     cursor is over background, the rect locks to the entire
+//     display (snap target = display). The user does nothing — it
+//     just tracks. ↵ commits. esc cancels.
+//
+//   pending:
+//     The user pressed mousedown but hasn't moved past the drag
+//     threshold yet. The snap rect is held. We're undecided
+//     between "click to confirm snap" and "drag to free-draw".
+//
+//   drawing:
+//     The user moved past threshold while pending → free-form
+//     region drag. Overrides the snap rect.
+//
+//   adjusting:
+//     A rect has been committed (by click-on-snap, by drag-end, or
+//     by ↵ from snap). Handles are live, drag-to-move works, arrow
+//     keys nudge, ⇧+arrow nudges by 10px. ↵ submits to main; esc
+//     cancels. mousedown outside the rect drops back to snap mode.
+//
+//   moving / resizing:
+//     Sub-states of adjusting; mouse drives translation / edge drag.
+//
+// All three commit paths (snap-click, drag-end, ↵-from-snap) land in
+// adjusting before submission, so the user always gets a chance to
+// refine before it goes through.
+//
+// Coords reported to main are in window-local px (= display-local;
+// the selector window covers the whole display). Main converts to
+// global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { WindowSnapEntry } from "../../preload-types";
@@ -36,9 +53,23 @@ const MIN_DRAG_PX = 4;
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
 
+type SnapTarget =
+  | { kind: "window"; entry: WindowSnapEntry }
+  | { kind: "display" };
+
 type Interaction =
-  | { kind: "idle" }
-  | { kind: "drawing"; startX: number; startY: number; currentX: number; currentY: number }
+  | { kind: "snap" } // live-snap; rect tracks cursor
+  | {
+      kind: "pending";
+      startX: number;
+      startY: number;
+      // Snap target captured at mousedown — preserved if mouseup
+      // happens before the drag threshold (so the click commits
+      // exactly the snap that was visible when the user clicked).
+      snapAtPress: SnapTarget | null;
+    }
+  | { kind: "drawing"; startX: number; startY: number }
+  | { kind: "adjusting" } // rect committed; handles + nudge live
   | { kind: "moving"; startMouse: Point; startRect: Rect }
   | { kind: "resizing"; handle: HandleId; startMouse: Point; startRect: Rect };
 
@@ -52,59 +83,73 @@ function viewport(): { width: number; height: number } {
   return { width: window.innerWidth, height: window.innerHeight };
 }
 
+function displaySnapRect(): Rect {
+  const v = viewport();
+  return { x: 0, y: 0, w: v.width, h: v.height };
+}
+
 export function RegionSelector() {
   const displayIdParam = parseHashParam(HASH_PARAM_DISPLAY_ID);
   const displayId = displayIdParam !== null ? Number.parseInt(displayIdParam, 10) : 0;
 
-  const [rect, setRect] = useState<Rect | null>(null);
-  const [interaction, setInteraction] = useState<Interaction>({ kind: "idle" });
+  // Initialize with display-snap so the user sees a frame around the
+  // whole display the moment the selector opens, before main has
+  // even pushed the window list.
+  const [rect, setRect] = useState<Rect>(displaySnapRect);
+  const [snapTarget, setSnapTarget] = useState<SnapTarget>({ kind: "display" });
+  const [interaction, setInteraction] = useState<Interaction>({ kind: "snap" });
   const [spaceHeld, setSpaceHeld] = useState(false);
-  // Snap-to-window state. When ⇧ is held with no active drag, the
-  // selector locks to whichever window's bounds the cursor is over.
-  // Releasing ⇧ goes back to free-draw mode. Committing while snapped
-  // ships the snapped windowId back to main so source_app_* tagging
-  // can use the exact window the user picked rather than guessing
-  // by rect-center hit-test.
-  const [shiftHeld, setShiftHeld] = useState(false);
-  const [snapTarget, setSnapTarget] = useState<WindowSnapEntry | null>(null);
 
   // Refs mirror state so global event handlers (registered once on
   // mount) read the freshest values without closure-capture stale-data.
-  const rectRef = useRef<Rect | null>(null);
-  const interactionRef = useRef<Interaction>({ kind: "idle" });
+  const rectRef = useRef<Rect>(rect);
+  const interactionRef = useRef<Interaction>(interaction);
   const spaceRef = useRef(false);
-  const shiftRef = useRef(false);
-  const snapTargetRef = useRef<WindowSnapEntry | null>(null);
+  const snapTargetRef = useRef<SnapTarget>(snapTarget);
   const windowsRef = useRef<readonly WindowSnapEntry[]>([]);
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
-  shiftRef.current = shiftHeld;
   snapTargetRef.current = snapTarget;
 
-  // Surface state to CSS for cursor switching.
+  // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
     document.body.dataset.interaction = interaction.kind;
     document.body.dataset.spaceHeld = spaceHeld ? "true" : "false";
-    document.body.dataset.snap = snapTarget !== null ? "true" : "false";
+    document.body.dataset.snap =
+      interaction.kind === "snap" || interaction.kind === "pending"
+        ? snapTarget.kind
+        : "off";
   }, [interaction.kind, spaceHeld, snapTarget]);
 
-  // Subscribe to the window list main pushes after the selector
-  // shows. Empty initial list — if the helper is unavailable, snap
-  // simply does nothing and the selector falls back to free-draw.
-  useEffect(() => {
+  // Window-list snapshot from main. Empty until the helper resolves;
+  // until then, snap defaults to display.
+  //
+  // useLayoutEffect (not useEffect) so the subscription is attached
+  // BEFORE React yields to the browser. Otherwise the renderer can
+  // receive the body[data-snap] attribute (set in our other
+  // useLayoutEffect) before the IPC subscription is live, which
+  // races: tests that observe the attribute and immediately push a
+  // snapshot via webContents.send find no listener attached.
+  //
+  // We also stamp body[data-window-list-count] every time a snapshot
+  // arrives — gives tests a deterministic "snapshot has landed in
+  // the renderer" signal to wait on, rather than racing the IPC
+  // delivery against a synthetic mouse move.
+  useLayoutEffect(() => {
     const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
       windowsRef.current = payload.windows;
+      document.body.dataset.windowListCount = String(payload.windows.length);
     });
+    document.body.dataset.windowListReady = "1";
     return () => {
       unsubscribe?.();
     };
   }, []);
 
   function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
-    // Window list is in window-local coords (main translated from
-    // global before shipping). Front-most first — the helper returns
-    // them in z-order so a linear scan finds the topmost owner.
+    // Front-most-first scan — main translates to window-local coords
+    // before sending so we just compare client coords.
     for (const w of windowsRef.current) {
       if (
         clientX >= w.rect.x &&
@@ -118,36 +163,25 @@ export function RegionSelector() {
     return null;
   }
 
-  function commit(): void {
-    // Snap commit: ⇧ snap target locked in. The rect was already set
-    // to the target window's bounds when the cursor entered it, so
-    // we use the snap target's bounds (authoritative) and tag the
-    // payload with windowId so main can verify and backfill
-    // `source_app_*` deterministically.
-    const snap = snapTargetRef.current;
-    if (snap !== null) {
-      window.pwrsnapApi?.submitRegion({
-        ok: true,
-        rect: {
-          x: Math.round(snap.rect.x),
-          y: Math.round(snap.rect.y),
-          w: Math.round(snap.rect.w),
-          h: Math.round(snap.rect.h)
-        },
-        displayId,
-        snappedWindowId: snap.windowId
-      });
-      setRect(null);
-      setSnapTarget(null);
-      setInteraction({ kind: "idle" });
-      return;
-    }
+  function snapAt(clientX: number, clientY: number): SnapTarget {
+    const win = findWindowAt(clientX, clientY);
+    return win !== null ? { kind: "window", entry: win } : { kind: "display" };
+  }
 
+  function rectForSnap(snap: SnapTarget): Rect {
+    if (snap.kind === "window") {
+      return { x: snap.entry.rect.x, y: snap.entry.rect.y, w: snap.entry.rect.w, h: snap.entry.rect.h };
+    }
+    return displaySnapRect();
+  }
+
+  function commit(): void {
     const r = rectRef.current;
-    if (r === null || r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
+    if (r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
       cancel();
       return;
     }
+    const snap = snapTargetRef.current;
     window.pwrsnapApi?.submitRegion({
       ok: true,
       rect: {
@@ -156,16 +190,26 @@ export function RegionSelector() {
         w: Math.round(r.w),
         h: Math.round(r.h)
       },
-      displayId
+      displayId,
+      // Tag the payload with the snapped windowId only when we
+      // committed straight from a window snap (no drag, no resize).
+      // Once the user adjusts the rect in any way the windowId
+      // promise no longer holds — main falls back to rect-center
+      // hit-testing for source_app_*.
+      ...(interaction.kind === "snap" && snap.kind === "window"
+        ? { snappedWindowId: snap.entry.windowId }
+        : {})
     });
-    setRect(null);
-    setInteraction({ kind: "idle" });
+    setInteraction({ kind: "snap" });
+    setSnapTarget({ kind: "display" });
+    setRect(displaySnapRect());
   }
 
   function cancel(): void {
     window.pwrsnapApi?.submitRegion({ ok: false });
-    setRect(null);
-    setInteraction({ kind: "idle" });
+    setInteraction({ kind: "snap" });
+    setSnapTarget({ kind: "display" });
+    setRect(displaySnapRect());
   }
 
   useEffect(() => {
@@ -177,9 +221,7 @@ export function RegionSelector() {
     }
 
     function isInsideCurrentRect(clientX: number, clientY: number): boolean {
-      const r = rectRef.current;
-      if (r === null) return false;
-      return isPointInsideRect(r, clientX, clientY);
+      return isPointInsideRect(rectRef.current, clientX, clientY);
     }
 
     function onKeyDown(event: KeyboardEvent): void {
@@ -195,25 +237,18 @@ export function RegionSelector() {
       }
       if (event.key === " " && !spaceRef.current) {
         // Space-hold: convert any subsequent mousedown into a move
-        // anchored on the current rect, even when the cursor is outside.
-        event.preventDefault();
-        setSpaceHeld(true);
-        return;
-      }
-      // ⇧ enters snap-to-window mode while held — but only when no
-      // user drag is in flight (Shift+drag is reserved for arrow-
-      // key nudge × 10 + future "constrain proportions" gesture).
-      if (event.key === "Shift" && !shiftRef.current) {
-        if (interactionRef.current.kind === "idle" || interactionRef.current.kind === "drawing") {
-          setShiftHeld(true);
+        // anchored on the current rect, even when the cursor is
+        // outside. Only useful during adjusting; in snap mode there's
+        // nothing to move around.
+        if (interactionRef.current.kind === "adjusting") {
+          event.preventDefault();
+          setSpaceHeld(true);
         }
         return;
       }
-      // Arrow-key nudge — only when adjusting (rect persisted, no
-      // active drag).
+      // Arrow-key nudge — only when adjusting (no live drag).
+      if (interactionRef.current.kind !== "adjusting") return;
       const r = rectRef.current;
-      if (r === null) return;
-      if (interactionRef.current.kind !== "idle") return;
       const step = event.shiftKey ? NUDGE_PX_SHIFT : NUDGE_PX;
       let dx = 0;
       let dy = 0;
@@ -230,93 +265,106 @@ export function RegionSelector() {
       if (event.key === " ") {
         setSpaceHeld(false);
       }
-      if (event.key === "Shift") {
-        setShiftHeld(false);
-        setSnapTarget(null);
-      }
     }
 
     function onMouseDown(event: MouseEvent): void {
       if (event.button !== 0) return;
       event.preventDefault();
-      // Snap-click — ⇧ held with a snap target locked in. Click
-      // commits the snapped window's bounds immediately (no drag).
-      if (shiftRef.current && snapTargetRef.current !== null) {
-        commit();
-        return;
-      }
       const handle = getHandleFromTarget(event.target);
-      const r = rectRef.current;
+      const i = interactionRef.current;
 
-      if (handle !== null && r !== null) {
-        // Resize from this edge / corner.
+      // Adjusting → handle drag = resize.
+      if (handle !== null && i.kind === "adjusting") {
         setInteraction({
           kind: "resizing",
           handle,
           startMouse: { x: event.clientX, y: event.clientY },
-          startRect: r
+          startRect: rectRef.current
         });
         return;
       }
 
-      // Move-mode: cursor inside rect, or Space held.
-      if (r !== null && (spaceRef.current || isInsideCurrentRect(event.clientX, event.clientY))) {
+      // Adjusting → click inside (or Space held) = move.
+      if (
+        i.kind === "adjusting" &&
+        (spaceRef.current || isInsideCurrentRect(event.clientX, event.clientY))
+      ) {
         setInteraction({
           kind: "moving",
           startMouse: { x: event.clientX, y: event.clientY },
-          startRect: r
+          startRect: rectRef.current
         });
         return;
       }
 
-      // Otherwise: start drawing a fresh rect from this point. This
-      // discards any prior rect — clicking outside an adjustable rect
-      // is interpreted as "I want a different region."
-      setRect({ x: event.clientX, y: event.clientY, w: 0, h: 0 });
+      // Adjusting → click outside the rect: drop back to snap mode.
+      // The next mousemove will set up a fresh snap target.
+      if (i.kind === "adjusting") {
+        const next = snapAt(event.clientX, event.clientY);
+        setSnapTarget(next);
+        setRect(rectForSnap(next));
+        // Fall through into pending so that this same click can
+        // either commit the new snap or start a free draw.
+      }
+
+      // From snap (or just-dropped-from-adjusting): start pending.
+      // We don't transition to drawing yet — we wait to see if the
+      // mouseup happens before MIN_DRAG_PX of movement (= click
+      // confirms snap) or after (= free-draw).
       setInteraction({
-        kind: "drawing",
+        kind: "pending",
         startX: event.clientX,
         startY: event.clientY,
-        currentX: event.clientX,
-        currentY: event.clientY
+        snapAtPress: snapTargetRef.current
       });
     }
 
     function onMouseMove(event: MouseEvent): void {
       const i = interactionRef.current;
-      // Snap-to-window: when ⇧ is held with no active drag, the
-      // cursor's window owner is the snap target. The visualization
-      // rect == the window's bounds.
-      if (shiftRef.current && (i.kind === "idle" || i.kind === "drawing")) {
-        const w = findWindowAt(event.clientX, event.clientY);
-        if (w !== null) {
-          if (snapTargetRef.current?.windowId !== w.windowId) {
-            setSnapTarget(w);
-            setRect({ x: w.rect.x, y: w.rect.y, w: w.rect.w, h: w.rect.h });
-          }
-        } else if (snapTargetRef.current !== null) {
-          setSnapTarget(null);
-          // Don't clear the user's in-progress rect if they were
-          // mid-draw before tapping ⇧; only clear if the rect IS the
-          // snap rect.
-          if (i.kind !== "drawing") setRect(null);
-        }
-        if (i.kind !== "drawing") return; // snap mode swallows the move
-      }
       switch (i.kind) {
-        case "drawing": {
-          const next = rectFromTwoPoints(
-            { x: i.startX, y: i.startY },
-            { x: event.clientX, y: event.clientY }
+        case "snap": {
+          // Live snap: recompute target from cursor, repaint rect.
+          const next = snapAt(event.clientX, event.clientY);
+          if (
+            (next.kind === "window" &&
+              snapTargetRef.current.kind === "window" &&
+              snapTargetRef.current.entry.windowId === next.entry.windowId) ||
+            (next.kind === "display" && snapTargetRef.current.kind === "display")
+          ) {
+            return; // unchanged — skip re-render
+          }
+          setSnapTarget(next);
+          setRect(rectForSnap(next));
+          return;
+        }
+        case "pending": {
+          // Watch for the threshold cross. Up until then the snap
+          // rect stays visible — once we cross, switch to free-draw.
+          const dx = event.clientX - i.startX;
+          const dy = event.clientY - i.startY;
+          if (Math.hypot(dx, dy) < MIN_DRAG_PX) return;
+          // Cross — start drawing. Override the snap rect with a
+          // free-draw rect anchored at the original mousedown.
+          setRect(
+            rectFromTwoPoints(
+              { x: i.startX, y: i.startY },
+              { x: event.clientX, y: event.clientY }
+            )
           );
-          setRect(next);
           setInteraction({
             kind: "drawing",
             startX: i.startX,
-            startY: i.startY,
-            currentX: event.clientX,
-            currentY: event.clientY
+            startY: i.startY
           });
+          return;
+        }
+        case "drawing": {
+          setRect(
+            rectFromTwoPoints(
+              { x: i.startX, y: i.startY },
+              { x: event.clientX, y: event.clientY }
+            )
+          );
           return;
         }
         case "moving": {
@@ -341,27 +389,48 @@ export function RegionSelector() {
           setRect(applyResize(i.startRect, i.handle, dx, dy));
           return;
         }
-        case "idle":
+        case "adjusting":
           return;
       }
     }
 
     function onMouseUp(event: MouseEvent): void {
       const i = interactionRef.current;
-      if (i.kind === "idle") return;
+      if (i.kind === "snap" || i.kind === "adjusting") return;
       event.preventDefault();
-      if (i.kind === "drawing") {
-        const r = rectRef.current;
-        if (r === null || r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
-          // Click without drag (or accidental tap) — back to idle.
-          setRect(null);
-          setInteraction({ kind: "idle" });
+      switch (i.kind) {
+        case "pending": {
+          // Click without drag → commit the snap target into
+          // adjusting. The user can refine with handles + arrow
+          // keys + ↵, or hit ↵ immediately to send.
+          const snap = i.snapAtPress;
+          if (snap !== null) {
+            setSnapTarget(snap);
+            setRect(rectForSnap(snap));
+          }
+          setInteraction({ kind: "adjusting" });
           return;
         }
+        case "drawing": {
+          const r = rectRef.current;
+          if (r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
+            // Tiny drag — treat as a click. Snap commit.
+            setInteraction({ kind: "snap" });
+            const next = snapAt(event.clientX, event.clientY);
+            setSnapTarget(next);
+            setRect(rectForSnap(next));
+            return;
+          }
+          // Real free-draw rect — no longer a snap selection.
+          setSnapTarget({ kind: "display" }); // semantically "no window"
+          setInteraction({ kind: "adjusting" });
+          return;
+        }
+        case "moving":
+        case "resizing":
+          setInteraction({ kind: "adjusting" });
+          return;
       }
-      // Settle into adjusting (rect persists, await ↵ commit / ESC
-      // cancel / further edits).
-      setInteraction({ kind: "idle" });
     }
 
     window.addEventListener("keydown", onKeyDown);
@@ -380,120 +449,128 @@ export function RegionSelector() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isAdjustable = rect !== null && interaction.kind === "idle";
-  const dimsChipPosition: { left: number; top: number } | null = rect
-    ? {
-        left: rect.x,
-        top: rect.y > 30 ? rect.y - 30 : rect.y + rect.h + 6
-      }
-    : null;
+  const isAdjustable = interaction.kind === "adjusting";
+  const isSnap = interaction.kind === "snap" || interaction.kind === "pending";
+  const dimsChipPosition: { left: number; top: number } | null = {
+    left: rect.x,
+    top: rect.y > 30 ? rect.y - 30 : rect.y + rect.h + 6
+  };
+
+  // Hint copy varies by mode + snap target so the user always knows
+  // what action is bound to click / drag / arrows.
+  const hint = (() => {
+    if (interaction.kind === "snap" || interaction.kind === "pending") {
+      const what =
+        snapTarget.kind === "window"
+          ? snapTarget.entry.appName ?? "window"
+          : "display";
+      return (
+        <>
+          <span>
+            <kbd>click</kbd>capture {what}
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>drag</kbd>region
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>↵</kbd>commit
+          </span>
+        </>
+      );
+    }
+    if (isAdjustable) {
+      return (
+        <>
+          <span>
+            <kbd>↵</kbd>commit
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>arrows</kbd>nudge (<kbd>⇧</kbd>×10)
+          </span>
+          <span className="region-hint-sep">·</span>
+          <span>
+            <kbd>space</kbd>+drag move
+          </span>
+        </>
+      );
+    }
+    return (
+      <span>
+        <kbd>release</kbd>to adjust
+      </span>
+    );
+  })();
 
   return (
     <div className="region-root">
-      {rect === null ? (
-        <div className="region-dim region-dim--full" />
-      ) : (
-        <>
-          {/* Four-quadrant dim mask around the rect. */}
-          <div
-            className="region-dim"
-            style={{ left: 0, top: 0, right: 0, height: Math.max(0, rect.y) }}
-          />
-          <div
-            className="region-dim"
-            style={{ left: 0, top: rect.y, width: Math.max(0, rect.x), height: rect.h }}
-          />
-          <div
-            className="region-dim"
-            style={{
-              left: rect.x + rect.w,
-              top: rect.y,
-              right: 0,
-              height: rect.h
-            }}
-          />
-          <div
-            className="region-dim"
-            style={{ left: 0, top: rect.y + rect.h, right: 0, bottom: 0 }}
-          />
+      {/* Four-quadrant dim mask. Always rendered — the rect is always
+          present (snap rect at boot, drawn / committed rect later). */}
+      <div
+        className="region-dim"
+        style={{ left: 0, top: 0, right: 0, height: Math.max(0, rect.y) }}
+      />
+      <div
+        className="region-dim"
+        style={{ left: 0, top: rect.y, width: Math.max(0, rect.x), height: rect.h }}
+      />
+      <div
+        className="region-dim"
+        style={{
+          left: rect.x + rect.w,
+          top: rect.y,
+          right: 0,
+          height: rect.h
+        }}
+      />
+      <div
+        className="region-dim"
+        style={{ left: 0, top: rect.y + rect.h, right: 0, bottom: 0 }}
+      />
 
-          <div
-            className={"region-rect" + (isAdjustable ? " region-rect--adjustable" : "")}
-            style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
-          >
-            {/* Pointer-events-auto interior captures the move cursor
-                only in the adjustable phase; during initial drawing
-                the rect is non-interactive so mousemove keeps tracking
-                the global handler. */}
-            {isAdjustable && (
-              <>
-                <div className="region-rect-interior" data-interior="true" />
-                {ALL_HANDLES.map((h) => (
-                  <span key={h} className={`region-handle ${h}`} data-handle={h} />
-                ))}
-              </>
-            )}
-          </div>
+      <div
+        className={
+          "region-rect" +
+          (isAdjustable ? " region-rect--adjustable" : "") +
+          (isSnap ? ` region-rect--snap-${snapTarget.kind}` : "")
+        }
+        style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
+      >
+        {isAdjustable && (
+          <>
+            <div className="region-rect-interior" data-interior="true" />
+            {ALL_HANDLES.map((h) => (
+              <span key={h} className={`region-handle ${h}`} data-handle={h} />
+            ))}
+          </>
+        )}
+      </div>
 
-          {dimsChipPosition !== null && (
-            <div
-              className="region-dims-chip"
-              style={{ left: dimsChipPosition.left, top: dimsChipPosition.top }}
-            >
-              {snapTarget !== null ? (
-                <>
-                  {snapTarget.appName ?? "Window"} · {Math.round(rect.w)} × {Math.round(rect.h)}
-                </>
-              ) : (
-                <>
-                  {Math.round(rect.w)} × {Math.round(rect.h)}
-                </>
-              )}
-            </div>
+      {dimsChipPosition !== null && (
+        <div
+          className="region-dims-chip"
+          style={{ left: dimsChipPosition.left, top: dimsChipPosition.top }}
+        >
+          {isSnap && snapTarget.kind === "window" ? (
+            <>
+              {snapTarget.entry.appName ?? "Window"} · {Math.round(rect.w)} × {Math.round(rect.h)}
+            </>
+          ) : isSnap && snapTarget.kind === "display" ? (
+            <>
+              Display · {Math.round(rect.w)} × {Math.round(rect.h)}
+            </>
+          ) : (
+            <>
+              {Math.round(rect.w)} × {Math.round(rect.h)}
+            </>
           )}
-        </>
+        </div>
       )}
 
       <div className="region-hint">
-        {snapTarget !== null ? (
-          <>
-            <span>
-              <kbd>click</kbd>capture {snapTarget.appName ?? "window"}
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>release ⇧</kbd>free draw
-            </span>
-          </>
-        ) : rect === null ? (
-          <>
-            <span>
-              <kbd>drag</kbd>to select
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>⇧</kbd>snap to window
-            </span>
-          </>
-        ) : isAdjustable ? (
-          <>
-            <span>
-              <kbd>↵</kbd>commit
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>arrows</kbd>nudge (<kbd>⇧</kbd>×10)
-            </span>
-            <span className="region-hint-sep">·</span>
-            <span>
-              <kbd>space</kbd>+drag move
-            </span>
-          </>
-        ) : (
-          <span>
-            <kbd>release</kbd>to adjust
-          </span>
-        )}
+        {hint}
         <span className="region-hint-sep">·</span>
         <span>
           <kbd>esc</kbd>cancel

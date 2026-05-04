@@ -40,15 +40,29 @@ body[data-stage="region"] .region-root {
   pointer-events: none;
 }
 
-/* Snap-to-window mode visualisation: thicker accent border + a
-   slightly stronger fill so the user gets unambiguous feedback that
-   the rect is locked to a real window's bounds. */
-body[data-stage="region"][data-snap="true"] .region-rect {
+/* Snap-to-window: thicker accent border + slightly stronger fill so
+   it's clearly distinct from a free-drawn rect. The user can always
+   tell whether they're getting a smart selection or a hand-drawn one. */
+.region-rect--snap-window {
   border-width: 2px;
   background: rgba(232, 116, 58, 0.1);
   box-shadow: 0 0 0 1px rgba(232, 116, 58, 0.4) inset;
 }
-body[data-stage="region"][data-snap="true"] {
+
+/* Snap-to-display: dashed border so it reads as "the whole screen"
+   without competing visually with a window snap. The fill stays
+   minimal — almost nothing is dimmed because the rect IS the screen. */
+.region-rect--snap-display {
+  border-style: dashed;
+  border-width: 2px;
+  background: transparent;
+}
+
+/* In snap mode the cursor is a pointer — we're hovering selectable
+   targets. Once we're adjusting (handles visible), the pointer
+   reverts to crosshair via the body[data-stage="region"] default. */
+body[data-stage="region"][data-snap="window"],
+body[data-stage="region"][data-snap="display"] {
   cursor: pointer;
 }
 

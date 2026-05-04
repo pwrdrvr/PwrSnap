@@ -37,14 +37,22 @@ async function showAndGetRegionSelector(
   throw new Error("region-selector page did not appear in Playwright window list");
 }
 
-test("idle selector shows the 'drag to select' hint", async () => {
+test("idle selector starts in snap mode with display target by default", async () => {
   const app = await launchPwrSnap();
   try {
     const selector = await showAndGetRegionSelector(app);
-    // Hint copy comes from RegionSelector.tsx and is part of the
-    // contract with the user — when the rect is null the hint
-    // tells you what to do.
-    await expect(selector.locator(".region-hint")).toContainText(/drag.*to select/i);
+    // Snap mode is the default — no rect-null state any more. With
+    // no window list yet (or none under the cursor), the snap target
+    // is "display" and the rect covers the whole viewport.
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "display"
+    );
+    await expect(selector.locator(".region-rect")).toBeVisible();
+    await expect(selector.locator(".region-rect")).toHaveClass(/region-rect--snap-display/);
+    // Hint contract: snap mode tells the user what `click` does
+    // (commits the snap target) and what `drag` does (free region).
+    await expect(selector.locator(".region-hint")).toContainText(/capture/i);
+    await expect(selector.locator(".region-hint")).toContainText(/region/i);
     await expect(selector.locator(".region-hint")).toContainText(/esc.*cancel/i);
   } finally {
     await app.close();
@@ -88,26 +96,31 @@ test("dragging on the canvas creates a rect with 8 handles", async () => {
   }
 });
 
-test("Escape clears the rect back to idle", async () => {
+test("Escape from adjusting drops back to snap mode", async () => {
   const app = await launchPwrSnap();
   try {
     const selector = await showAndGetRegionSelector(app);
     const root = selector.locator(".region-root");
     const box = await root.boundingBox();
     if (box === null) throw new Error("region-root has no bounding box");
+
+    // Draw a rect (drag past threshold) so we land in adjusting.
     await selector.mouse.move(box.x + 100, box.y + 100);
     await selector.mouse.down();
     await selector.mouse.move(box.x + 300, box.y + 300, { steps: 5 });
     await selector.mouse.up();
 
-    await expect(selector.locator(".region-rect")).toBeVisible();
+    await expect(selector.locator(".region-rect.region-rect--adjustable")).toBeVisible();
 
-    // Esc cancels and (in the real app) closes the window. The
-    // dispatch goes through window.pwrsnapApi.submitRegion which
-    // we don't intercept here; we just verify the renderer cleared
-    // its state.
+    // Esc cancels — renderer fires submitRegion(ok:false) and resets
+    // back to snap mode. The rect persists (now full-display snap)
+    // so the next interaction has something to bind to. Handles go
+    // away because we're no longer adjusting.
     await selector.keyboard.press("Escape");
-    await expect(selector.locator(".region-rect")).toHaveCount(0);
+    await expect.poll(async () => selector.locator("body").getAttribute("data-interaction")).toBe(
+      "snap"
+    );
+    await expect(selector.locator(".region-handle")).toHaveCount(0);
   } finally {
     await app.close();
   }

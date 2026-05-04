@@ -1,7 +1,10 @@
 import { app, BrowserWindow, dialog, globalShortcut, Menu, shell } from "electron";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
-import { showFloatOverForCapture } from "./float-over";
+// (showFloatOverForCapture is no longer called from the bootstrap;
+// the capture-handlers `capture:interactive` now drives the entire
+// float-over lifecycle. Kept as an export from float-over.ts for the
+// agent-flow / headless path.)
 import { registerCaptureHandlers } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
@@ -124,22 +127,21 @@ async function runInteractiveCapture(): Promise<void> {
   // ⌘⇧P explicitly uses 'auto' mode — snap to a window if the cursor
   // is over one, drag for a free rect otherwise. Tray buttons send a
   // different mode for region-only / window-only flows.
+  //
+  // The handler owns the full lifecycle now (pre-show / populate /
+  // hide-selector / activate-prev-app). We just wait for it to
+  // finish and log non-cancellation errors.
   const result = await bus.dispatch(
     "capture:interactive",
     { mode: "auto" },
     { principal: "ipc" }
   );
-  if (!result.ok) {
-    if (result.error.code === "cancelled") {
-      // User pressed Esc — region-selector.ts already activated
-      // the previously-frontmost app via NSRunningApplication when
-      // the selector hid. No-op here.
-      return;
-    }
-    log.warn("capture:interactive failed", { code: result.error.code, message: result.error.message });
-    return;
+  if (!result.ok && result.error.code !== "cancelled") {
+    log.warn("capture:interactive failed", {
+      code: result.error.code,
+      message: result.error.message
+    });
   }
-  showFloatOverForCapture(result.value.id);
 }
 
 /**

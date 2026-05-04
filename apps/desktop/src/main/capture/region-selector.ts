@@ -29,6 +29,7 @@ import {
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
+import { setFloatOverState } from "../float-over";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 
@@ -72,6 +73,13 @@ export type SelectorResult =
        *  the consumer when this result is produced, so
        *  `hideAllSelectors` skips the cleanup on this code path. */
       screenSnapshotId: string;
+      /** Pid of the app that was frontmost when the selector opened.
+       *  The capture handler activates this app via NSRunningApplication
+       *  AFTER the float-over has been populated, so the toast wins
+       *  the z-order race against the previous app's frontmost
+       *  window. May be null if the listWindows snapshot hadn't
+       *  resolved by commit time. */
+      previousAppPid: number | null;
       /** Set when the user committed straight from a window snap (no
        *  drag, no resize). Used for source-app metadata even when
        *  not in full-window mode. */
@@ -83,7 +91,15 @@ export type SelectorResult =
        *  just like the user sees on screen. */
       fullWindow?: boolean;
     }
-  | { ok: false; reason: "cancelled" | "destroyed" };
+  | {
+      ok: false;
+      reason: "cancelled" | "destroyed";
+      /** Same semantics as the OK branch — the caller activates this
+       *  pid after Esc / cancel-cleanup so the user lands back where
+       *  they were. Null when the listWindows snapshot hadn't
+       *  resolved or for a destroyed-state result. */
+      previousAppPid?: number | null;
+    };
 
 const SELECTOR_RESULT_CHANNEL = "region-selector:result";
 const SELECTOR_WINDOW_LIST_CHANNEL = "region-selector:window-list";
@@ -134,6 +150,11 @@ export function preWarmRegionSelector(): void {
       log.info("renderer viewport", payload);
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
+      // IMPORTANT: this handler does NOT hide the selector windows.
+      // The caller (capture-handlers) hides via `hideSelector()` AFTER
+      // it has set the float-over to LOADED, so the selector hide
+      // reveals an already-painted toast — no post-hoc show race.
+      // See docs/plans/2026-05-04-001 §"Solution 3" for context.
       if (pendingResolver === null) return;
       const resolver = pendingResolver;
       pendingResolver = null;
@@ -153,7 +174,9 @@ export function preWarmRegionSelector(): void {
         // cancelled outcome — the capture handler can't do its
         // job without it.
         if (activeScreenSnapshot === null) {
-          resolver({ ok: false, reason: "cancelled" });
+          const prevPid = previousAppPid;
+          previousAppPid = null;
+          resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
         } else {
           // Ownership transfer: clear the module-scope reference so
           // hideAllSelectors skips the cleanup. The consumer (the
@@ -161,6 +184,13 @@ export function preWarmRegionSelector(): void {
           // finishes cropping.
           const snapshot = activeScreenSnapshot;
           activeScreenSnapshot = null;
+          // Snapshot previousAppPid into the result then null the
+          // module-scope reference so a follow-up cancel doesn't
+          // re-activate. The capture handler is responsible for
+          // calling activateApp AFTER the float-over has been
+          // populated (lifecycle reorder).
+          const prevPid = previousAppPid;
+          previousAppPid = null;
           const result: SelectorResult = {
             ok: true,
             rect: {
@@ -171,7 +201,8 @@ export function preWarmRegionSelector(): void {
             },
             displayId: payload.displayId,
             screenSnapshotPath: snapshot.filePath,
-            screenSnapshotId: snapshot.id
+            screenSnapshotId: snapshot.id,
+            previousAppPid: prevPid
           };
           if (typeof payload.snappedWindowId === "number") {
             result.snappedWindowId = payload.snappedWindowId;
@@ -182,9 +213,11 @@ export function preWarmRegionSelector(): void {
           resolver(result);
         }
       } else {
-        resolver({ ok: false, reason: "cancelled" });
+        const prevPid = previousAppPid;
+        previousAppPid = null;
+        resolver({ ok: false, reason: "cancelled", previousAppPid: prevPid });
       }
-      hideAllSelectors();
+      // (intentionally no hideAllSelectors here — caller owns it)
     });
     resultListenerAttached = true;
   }
@@ -443,6 +476,17 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
 
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
+    // Pre-show the float-over UNDER the selector. The float-over is
+    // at floating window level (3); the selector below is at
+    // screen-saver level (1000), so the selector covers the float-
+    // over visually until we hide it. This lets the post-commit
+    // reveal be instantaneous (the toast is already painted at the
+    // right position) and avoids the post-hoc show race that left
+    // the toast hidden behind the previously-frontmost app's window.
+    // See docs/plans/2026-05-04-001 §"Solution 3" for the full
+    // choreography.
+    setFloatOverState({ kind: "show-idle" });
+
     // Tell the renderer which mode + snapshot URL to use BEFORE we
     // make the window visible. The renderer applies both
     // synchronously on receipt (mode → body[data-mode]; snapshot →
@@ -510,6 +554,20 @@ export function getLastWindowListSnapshot(): readonly WindowInfo[] {
   return lastSnapshot;
 }
 
+/**
+ * Hide every pre-warmed selector window. Called by the capture handler
+ * AFTER it has populated the float-over to LOADED — the selector hide
+ * reveals an already-painted toast at the floating level (no flash, no
+ * post-hoc show race). Also called on cancel paths after the float-over
+ * has been hidden synchronously.
+ *
+ * Public sibling of the historical `hideAllSelectors`. The internal
+ * function name is preserved to keep diffs small.
+ */
+export function hideSelector(): void {
+  hideAllSelectors();
+}
+
 function hideAllSelectors(): void {
   // Release the globalShortcut binding before we lower the window;
   // leaving Esc / ↵ globally bound after the selector is gone would
@@ -537,18 +595,13 @@ function hideAllSelectors(): void {
     win.blur();
     win.hide();
   }
-  // Restore the previously-frontmost app. Without this, Cocoa picks
-  // the next-key window in OUR app (the library) as the new key
-  // window — popping it on top of whatever the user was actually
-  // looking at. activateApp goes via NSRunningApplication.activate,
-  // which puts the original app back to front WITHOUT hiding our
-  // own windows (so subsequent ⌘⇧P presses don't suffer the
-  // app.hide-then-unhide-everything regression).
-  if (previousAppPid !== null) {
-    const pid = previousAppPid;
-    previousAppPid = null;
-    void activateApp(pid);
-  }
+  // Note: previously-frontmost app activation moved OUT of here. The
+  // capture handler now calls `activateApp(previousAppPid)` AFTER it
+  // has populated the float-over to LOADED, so the toast is up on
+  // screen before we yield focus to the previous app. This is what
+  // wins the z-order race that used to leave the toast hidden behind
+  // the previous app's key window. See docs/plans/2026-05-04-001
+  // §"Solution 4".
 }
 
 /**

@@ -25,10 +25,15 @@ import sharp from "sharp";
 import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { pickRegion, getLastWindowListSnapshot } from "../capture/region-selector";
+import {
+  pickRegion,
+  getLastWindowListSnapshot,
+  hideSelector
+} from "../capture/region-selector";
 import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { findWindowAt, type WindowInfo } from "../capture/window-list";
+import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
+import { setFloatOverState } from "../float-over";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -62,7 +67,25 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:interactive", async (req) => {
     const mode = req.mode ?? "auto";
     const selection = await pickRegion({ mode });
+
+    // CANCEL path. The selector window is still up at this point —
+    // pickRegion no longer hides itself; the caller owns hideSelector.
+    // The float-over was pre-shown UNDER the selector during
+    // pickRegion; cancel-hide it FIRST, then drop the selector. The
+    // user never sees the empty toast because the selector covered
+    // it the whole time, and the selector hide reveals the desktop
+    // (not the float-over).
     if (!selection.ok) {
+      setFloatOverState({ kind: "cancel" });
+      // Compositor flush — the float-over hide must reach the
+      // window server before we lower the selector, otherwise
+      // there's a one-frame window where the toast is visible
+      // before the selector window's compositor pass is complete.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      hideSelector();
+      if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
+        await activateApp(selection.previousAppPid);
+      }
       return err({
         kind: "capture",
         code: selection.reason,
@@ -70,10 +93,10 @@ export function registerCaptureHandlers(): void {
       });
     }
 
-    // From here on we own the screen snapshot — we MUST release it
-    // before returning. wrap the rest in try/finally so an error
-    // doesn't leak the temp file.
-    const { screenSnapshotId, screenSnapshotPath } = selection;
+    // COMMIT path. From here on we own the screen snapshot — we MUST
+    // release it before returning. wrap the rest in try/finally so an
+    // error doesn't leak the temp file.
+    const { screenSnapshotId, screenSnapshotPath, previousAppPid } = selection;
     try {
       // Two capture paths:
       //   • Full-window mode (user held ⇧ at commit time, or `mode`
@@ -117,11 +140,24 @@ export function registerCaptureHandlers(): void {
           message: captureResult.message
         });
       }
-      return persistAndBroadcast(captureResult.tempPath, sourceApp);
+      const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
+      // ORDER MATTERS: populate the float-over BEFORE hiding the
+      // selector. The selector covers the float-over visually; once
+      // we hide it, the toast is already painted at floating level
+      // and instantly visible. No post-hoc show race.
+      if (persisted.ok) {
+        setFloatOverState({ kind: "show-loaded", captureId: persisted.value.id });
+      }
+      return persisted;
     } finally {
-      // Always release — ownership transferred to us at pickRegion
-      // resolve time, and hideAllSelectors won't clean it up.
+      // Selector goes away last. Then activate the previous app —
+      // toast is already established at floating level so it stays
+      // on top of the previously-frontmost app's windows.
+      hideSelector();
       void releaseSnapshot(screenSnapshotId);
+      if (previousAppPid !== null) {
+        await activateApp(previousAppPid);
+      }
     }
   });
 

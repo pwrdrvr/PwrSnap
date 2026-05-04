@@ -114,13 +114,23 @@ const pwrsnapApi = {
   /**
    * Subscribe to the snap-to-window window-list snapshot main pushes
    * after the selector is shown. The renderer uses this for local
-   * hit-testing on ⇧ hover.
+   * hit-testing on ⇧ hover. Payload includes display.bounds so the
+   * renderer can scale rect coords into its CSS pixel space — on
+   * macOS scaled-mode displays the two coord systems differ.
    */
   onWindowListSnapshot(
-    handler: (payload: { windows: WindowSnapEntry[] }) => void
+    handler: (payload: {
+      windows: WindowSnapEntry[];
+      displayBounds: { width: number; height: number };
+    }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
-      handler(payload as { windows: WindowSnapEntry[] });
+      handler(
+        payload as {
+          windows: WindowSnapEntry[];
+          displayBounds: { width: number; height: number };
+        }
+      );
     ipcRenderer.on(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);
   },

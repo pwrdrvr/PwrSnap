@@ -366,11 +366,27 @@ type SnapEntry = {
  * `waitForFunction(() => document.body.dataset.windowListCount === ...)`
  * in the caller — the IPC delivery is async and returning from this
  * helper does NOT mean the renderer has ingested the payload.
+ *
+ * displayBounds tells the renderer the display-logical pixel size
+ * for coord-space scaling. In tests we use the RENDERER's actual
+ * `window.innerWidth/Height` so the css-to-logical scale ends up
+ * 1:1 — synthetic rects in tests are CSS-pixel-native and should
+ * pass through without rescaling.
  */
 async function hydrateWindowList(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
   windows: readonly SnapEntry[]
 ): Promise<void> {
+  // Find the selector page from the test side, query its viewport,
+  // then hand a matching displayBounds to the renderer so scale=1.
+  const selector = app.electronApp
+    .windows()
+    .find((w) => w.url().includes("stage=region"));
+  if (selector === undefined) throw new Error("no selector page found");
+  const innerSize = await selector.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight
+  }));
   await app.electronApp.evaluate(
     ({ BrowserWindow }, payload) => {
       const w = BrowserWindow.getAllWindows().find(
@@ -379,7 +395,7 @@ async function hydrateWindowList(
       if (w === undefined) throw new Error("no selector window");
       w.webContents.send("region-selector:window-list", payload);
     },
-    { windows: [...windows] }
+    { windows: [...windows], displayBounds: innerSize }
   );
 }
 

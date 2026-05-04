@@ -107,6 +107,14 @@ export function RegionSelector() {
   const spaceRef = useRef(false);
   const snapTargetRef = useRef<SnapTarget>(snapTarget);
   const windowsRef = useRef<readonly WindowSnapEntry[]>([]);
+  // Coord-space scale: how many CSS pixels equal one display-logical
+  // pixel. On macOS "scaled" display modes (fractional
+  // devicePixelRatio, e.g. 2.629), `window.innerWidth` is NOT equal
+  // to `display.bounds.width` even though both are nominally "DIP".
+  // Main ships rects in display logical px; we render in CSS px;
+  // this scale bridges them. Default 1 until the first snapshot
+  // arrives with displayBounds.
+  const cssToLogicalRef = useRef(1);
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
@@ -138,7 +146,32 @@ export function RegionSelector() {
   // delivery against a synthetic mouse move.
   useLayoutEffect(() => {
     const unsubscribe = window.pwrsnapApi?.onWindowListSnapshot((payload) => {
-      windowsRef.current = payload.windows;
+      // Compute the renderer-vs-main coord-space scale. On scaled-
+      // mode Retina displays this is < 1 (e.g. 1460/1920 ≈ 0.76).
+      // On standard 2× Retina or non-Retina it's 1.
+      const scale =
+        payload.displayBounds.width > 0
+          ? window.innerWidth / payload.displayBounds.width
+          : 1;
+      cssToLogicalRef.current = scale;
+      // Rescale every rect from display-logical px → CSS px so the
+      // renderer can hit-test against event.clientX/Y (CSS px) and
+      // render via inline `style.width` (CSS px) directly.
+      windowsRef.current = payload.windows.map((w) => ({
+        ...w,
+        rect: {
+          x: w.rect.x * scale,
+          y: w.rect.y * scale,
+          w: w.rect.w * scale,
+          h: w.rect.h * scale
+        },
+        rawRect: {
+          x: w.rawRect.x * scale,
+          y: w.rawRect.y * scale,
+          w: w.rawRect.w * scale,
+          h: w.rawRect.h * scale
+        }
+      }));
       document.body.dataset.windowListCount = String(payload.windows.length);
     });
     document.body.dataset.windowListReady = "1";
@@ -203,13 +236,20 @@ export function RegionSelector() {
       return;
     }
     const snap = snapTargetRef.current;
+    // The renderer's rect is in CSS pixels. Main + screencapture
+    // expect display-logical pixels. Scale back via the inverse of
+    // the snapshot's css-to-logical factor. On standard displays
+    // this is 1.0 — no-op. On scaled-mode Retina (e.g. inner=1460
+    // logical=1920) it's ~1.315 and corrects the doubling we'd
+    // otherwise see in the captured PNG.
+    const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
     window.pwrsnapApi?.submitRegion({
       ok: true,
       rect: {
-        x: Math.round(r.x),
-        y: Math.round(r.y),
-        w: Math.round(r.w),
-        h: Math.round(r.h)
+        x: Math.round(r.x * inv),
+        y: Math.round(r.y * inv),
+        w: Math.round(r.w * inv),
+        h: Math.round(r.h * inv)
       },
       displayId,
       // Tag the payload with the snapped windowId only when we

@@ -284,7 +284,22 @@ export async function pickRegion(): Promise<SelectorResult> {
       }))
     });
     if (!win.isDestroyed()) {
-      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, { windows: localized });
+      // Ship display.bounds along with the rects so the renderer
+      // can scale from "display logical pixels" into its own CSS
+      // pixel coord space. On macOS scaled-mode displays
+      // (devicePixelRatio fractional, e.g. 2.629 instead of 2.0),
+      // window.innerWidth in the renderer is NOT equal to
+      // display.bounds.width — even though Electron's
+      // getContentSize on the main side reports them as equal.
+      // Without scaling, every rect we paint comes out
+      // 1920/1460 = 1.31× too large.
+      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, {
+        windows: localized,
+        displayBounds: {
+          width: displayBounds.width,
+          height: displayBounds.height
+        }
+      });
     }
   });
 

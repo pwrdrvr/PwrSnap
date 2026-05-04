@@ -42,7 +42,10 @@ declare global {
         snappedWindowId?: number;
       }): void;
       onWindowListSnapshot(
-        handler: (payload: { windows: WindowSnapEntry[] }) => void
+        handler: (payload: {
+          windows: WindowSnapEntry[];
+          displayBounds: { width: number; height: number };
+        }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       reportSelectorDiagnostics(payload: {

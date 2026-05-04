@@ -56,15 +56,20 @@ export function registerLibraryHandlers(): void {
   bus.register("library:focus", async () => {
     // Find the main library BrowserWindow. We can't match by title
     // because every PwrSnap window loads the same renderer entry
-    // (index.html, <title>PwrSnap</title>) — tray + float-over +
-    // selector + edit all share the title. Match by URL hash
-    // instead: the library window is the only one without a
-    // `stage=` fragment in its URL. Same pattern used by the
-    // region selector launcher and the E2E fixture.
+    // (<title>PwrSnap</title>) — tray + float-over + selector +
+    // edit all share the title. Match by URL hash instead: the
+    // library window is the only one without a `stage=` fragment
+    // in its URL.
+    //
+    // Don't check for a specific path substring like index.html —
+    // in dev the URL is `http://localhost:5173/...` (Vite dev
+    // server), in prod it's `file:///path/out/renderer/index.html`.
+    // Both paths are valid library URLs; the discriminator is just
+    // the absence of `stage=`.
     let main = BrowserWindow.getAllWindows().find((w) => {
       if (w.isDestroyed()) return false;
       const url = w.webContents.getURL();
-      return url.includes("/renderer/index.html") && !/[#&]stage=/.test(url);
+      return url.length > 0 && !/[#&?]stage=/.test(url);
     });
     if (main === undefined) {
       log.info("library:focus: recreating main window");

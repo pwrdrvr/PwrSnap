@@ -37,6 +37,31 @@ let tray: Tray | null = null;
 let trayWindow: BrowserWindow | null = null;
 let pendingDismiss: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Synchronously hide the tray popover, bypassing the 120ms blur-dismiss
+ * debounce. Called from the capture flow right before we shell out to
+ * `screencapture` so the popover doesn't show up in the captured frame.
+ *
+ * The tray popover is a `BrowserWindow` (not an `NSStatusItem` menu),
+ * so it does NOT auto-dismiss on click the way a real status-bar menu
+ * does — we have to dismiss it ourselves. Belt-and-suspenders against
+ * a future change to a real `NSStatusItem`-backed menu (which would
+ * dismiss synchronously, and then this becomes a defensible no-op).
+ *
+ * Idempotent and null-safe — calling on a destroyed or already-hidden
+ * window is a no-op. Cancels any pending blur-debounce timeout so we
+ * don't get a double-hide jitter when the queued timer fires later.
+ */
+export function hideTrayPopoverIfVisible(): void {
+  if (pendingDismiss !== null) {
+    clearTimeout(pendingDismiss);
+    pendingDismiss = null;
+  }
+  if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
+    trayWindow.hide();
+  }
+}
+
 function resolveTrayIconPath(): string {
   // The tray PNG ships under apps/desktop/build/. In dev,
   // app.getAppPath() resolves to apps/desktop. In production

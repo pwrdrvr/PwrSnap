@@ -28,6 +28,7 @@ import {
   type WindowInfo
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
+import { hideTrayPopoverIfVisible } from "../tray";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 
@@ -258,6 +259,14 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
     activeScreenSnapshot = null;
     void releaseSnapshot(stale.id);
   }
+  // Synchronously dismiss the tray popover BEFORE the snapshot so its
+  // pixels aren't included in the captured frame. The tray is a
+  // BrowserWindow (not an NSStatusItem-backed menu) so it won't dismiss
+  // itself when the user clicks an item — we have to hide it. Then
+  // wait one compositor frame (~50ms is the macshot-validated value)
+  // for the hide to flush before we shell out to screencapture.
+  hideTrayPopoverIfVisible();
+  await new Promise((resolve) => setTimeout(resolve, 50));
   try {
     activeScreenSnapshot = await captureAndRegister(targetDisplay.id);
   } catch (err) {

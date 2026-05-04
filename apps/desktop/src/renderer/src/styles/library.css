@@ -300,7 +300,9 @@
   overflow: hidden;
   flex-shrink: 0;
 }
-.ps-tray__activity-thumb img { width: 100%; height: 100%; object-fit: cover; }
+/* `contain` to match the library + float-over thumbnail policy —
+   preserve the capture's true aspect ratio everywhere. */
+.ps-tray__activity-thumb img { width: 100%; height: 100%; object-fit: contain; }
 .ps-tray__activity-text { flex: 1; min-width: 0; }
 .ps-tray__activity-text b { color: var(--text-primary); display: block; font-size: 12px; margin-bottom: 2px; }
 .ps-tray__activity-text small { font: 500 10px/1 var(--font-mono); color: var(--text-muted); }
@@ -486,7 +488,11 @@
   border-color: var(--success-border);
   box-shadow: 0 0 0 1px var(--success);
 }
-.psl__frame img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(0.85); }
+/* `contain`, not `cover`: preserve the capture's true aspect ratio.
+   Cropping a 7:1 region into a 16:10 reel frame hides most of the
+   capture's content; users want to see what they captured at the
+   real shape. The frame's background fills any letterbox. */
+.psl__frame img { width: 100%; height: 100%; object-fit: contain; display: block; filter: saturate(0.85); }
 .psl__frame-num {
   position: absolute; top: 2px; left: 2px;
   font: 700 8px/1 var(--font-mono);
@@ -561,7 +567,11 @@
   aspect-ratio: 16/10;
   position: relative;
 }
-.psl__cell-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* `contain` — show the entire capture at its real aspect ratio. The
+   cell's 16:10 box is just the layout slot; letterboxing keeps the
+   content honest (a tiny menu-bar region capture should look small,
+   not zoomed-and-cropped to fill the cell). */
+.psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .psl__cell-meta {
   padding: 7px 9px;
   display: flex; flex-direction: column; gap: 5px;

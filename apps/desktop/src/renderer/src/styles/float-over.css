@@ -166,7 +166,10 @@
   border: 1px solid rgba(255,255,255,0.06);
   aspect-ratio: 16 / 10;
 }
-.fo__preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* `contain` so the user recognizes their capture at its true aspect
+   ratio. The 16:10 frame is just a layout slot — a tiny region
+   capture should look tiny, not zoomed-to-fill. */
+.fo__preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .fo__preview-dim {
   position: absolute; top: 6px; left: 6px;
   display: inline-flex; align-items: center; gap: 6px;

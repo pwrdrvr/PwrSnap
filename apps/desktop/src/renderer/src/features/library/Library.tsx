@@ -36,7 +36,12 @@ function CellThumb({
         style={{
           width: "100%",
           height: "100%",
-          objectFit: "cover",
+          // `contain` preserves the capture's true aspect ratio.
+          // Cells use `aspect-ratio: 16/10` for a uniform grid layout;
+          // letterboxing inside the cell keeps the thumbnail honest
+          // for any source aspect (a tiny region capture stays small;
+          // a tall window capture stays tall).
+          objectFit: "contain",
           display: "block"
         }}
       />
@@ -359,7 +364,11 @@ export function Library({
                 <img
                   src={cacheUrl(selectedRecord.id, 1440)}
                   alt=""
-                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                  // `contain`, matching the grid cells. The preview
+                  // frame is a fixed 16:10 box; an off-aspect capture
+                  // letterboxes against the dark frame background
+                  // rather than getting cropped at the edges.
+                  style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
                 />
               ) : (
                 <Thumb c={current} />

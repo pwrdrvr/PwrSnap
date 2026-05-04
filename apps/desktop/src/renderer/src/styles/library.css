@@ -205,6 +205,14 @@
   color: var(--text-primary);
 }
 .ps-mode:hover { background: var(--bg-panel-hover); border-color: var(--border-subtle); }
+/* Suppress Chromium's default blue focus outline (off-brand) — but
+   only for mouse-driven focus. Keyboard-driven focus gets a soft
+   accent ring so a11y tab navigation still has a visible target. */
+.ps-mode:focus { outline: none; }
+.ps-mode:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .ps-mode.is-primary {
   background: var(--accent-soft);
   border-color: var(--accent-border);

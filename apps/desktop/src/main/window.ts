@@ -168,6 +168,16 @@ export function createFloatOverWindow(): BrowserWindow {
     webPreferences: baseWebPreferences
   });
 
+  // Bump to a window level that sits above ordinary app windows
+  // even when our app is not frontmost. After a capture commits,
+  // we activate the previous app via NSRunningApplication —
+  // putting our app in the background. The float-over needs to
+  // appear over the user's previous app's windows so they can see
+  // the toast. "floating" (the default for alwaysOnTop:true) is
+  // below "screen-saver"; we use "pop-up-menu" which is high
+  // enough to clear most ordinary windows but low enough to not
+  // fight with system UI like Mission Control.
+  window.setAlwaysOnTop(true, "pop-up-menu");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("float-over"));

@@ -14,6 +14,7 @@
 
 import { join } from "node:path";
 import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
+import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createTrayWindow, positionTrayWindow } from "./window";
 
@@ -138,10 +139,24 @@ export function installTray(): Tray {
   tray.on("click", () => toggleTrayWindow());
   tray.on("right-click", () => {
     const menu = Menu.buildFromTemplate([
-      { label: "Capture region…", accelerator: "CommandOrControl+Shift+P", role: "help" },
+      {
+        label: "Capture region…",
+        accelerator: "CommandOrControl+Shift+P",
+        click: () => {
+          void bus.dispatch("capture:interactive", {}, { principal: "ipc" });
+        }
+      },
       { type: "separator" },
-      { label: "Open Library", role: "help" },
-      { label: "Settings…", role: "help" },
+      {
+        label: "Open Library",
+        click: () => {
+          void bus.dispatch("library:focus", {}, { principal: "ipc" });
+        }
+      },
+      // Settings still pending — landed in Phase 3. Keep it
+      // disabled so the surface signals "coming soon" instead of
+      // looking broken.
+      { label: "Settings…", enabled: false },
       { type: "separator" },
       { role: "quit" }
     ]);

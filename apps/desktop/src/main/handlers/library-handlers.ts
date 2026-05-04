@@ -11,7 +11,7 @@ import {
   softDeleteCapture
 } from "../persistence/captures-repo";
 import { moveSourceToTrash } from "../persistence/source-store";
-import { createEditWindow } from "../window";
+import { createEditWindow, createMainWindow } from "../window";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -54,17 +54,18 @@ export function registerLibraryHandlers(): void {
   });
 
   bus.register("library:focus", async () => {
-    // Find the main library BrowserWindow by title (the tray window
-    // and float-over both have empty titles). Restore + show + focus.
-    const main = BrowserWindow.getAllWindows().find(
+    // Find the main library BrowserWindow by title (tray + float-
+    // over have empty titles). If it doesn't exist — the user
+    // closed it via X — create a fresh one. The app's lifecycle
+    // model is: tray keeps running after the library closes; the
+    // tray "Open Library" item is what brings it back, and that
+    // routes through this handler.
+    let main = BrowserWindow.getAllWindows().find(
       (w) => !w.isDestroyed() && w.getTitle() === "PwrSnap"
     );
     if (main === undefined) {
-      return err({
-        kind: "validation",
-        code: "no_main_window",
-        message: "main window not found"
-      });
+      log.info("library:focus: recreating main window");
+      main = createMainWindow();
     }
     if (main.isMinimized()) main.restore();
     if (!main.isVisible()) main.show();

@@ -47,7 +47,23 @@ export function showFloatOverForCapture(captureId: string): BrowserWindow {
   // query string. createFloatOverWindow defines the base URL; we just
   // need to nudge it to a new capture id.
   reloadForCapture(window, captureId);
-  if (!window.isVisible()) window.show();
+  // showInactive() instead of show() — we don't want to steal
+  // focus from whatever app the user was in. capture-handlers
+  // activates the user's previous app on commit; the float-over
+  // appears over the top of that app's windows without grabbing
+  // focus. moveTop() raises the window inside its z-level (the
+  // pop-up-menu level we set in createFloatOverWindow) so we
+  // don't get stuck behind another window of ours that's at the
+  // same level.
+  if (!window.isVisible()) {
+    window.showInactive();
+  }
+  window.moveTop();
+  log.info("float-over shown", {
+    captureId,
+    isVisible: window.isVisible(),
+    bounds: window.getBounds()
+  });
   return window;
 }
 

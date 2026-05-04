@@ -5,11 +5,12 @@ import { Kbd } from "../shared/Primitives";
 import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 
-type ModeKind = "region" | "window" | "full" | "all" | "scroll" | "timed";
+type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
 
-/** Phase 1 ships only `region`. The other modes show but route to a
- *  no-op + tooltip until Phase 2+. `available` flags drive a disabled
- *  visual treatment so the UI is honest about what works today. */
+/** Phase 1 ships `auto` / `region` / `window`. `full` is plumbed but
+ *  needs the multi-display picker (Phase 1.x). `all` and `timed` are
+ *  stubbed for now. `available: false` triggers a disabled visual
+ *  treatment so the UI is honest about what works today. */
 const MODES: Array<{
   id: ModeKind;
   name: string;
@@ -17,16 +18,37 @@ const MODES: Array<{
   hk: string[];
   available: boolean;
 }> = [
-  { id: "region", name: "Region", sub: "Drag selection", hk: ["⌘", "⇧", "P"], available: true },
-  { id: "window", name: "Window", sub: "Coming in Phase 2", hk: ["⌘", "⇧", "W"], available: false },
-  { id: "full", name: "Full Screen", sub: "Coming in Phase 2", hk: ["⌘", "⇧", "F"], available: false },
-  { id: "all", name: "All Screens", sub: "Coming in Phase 2", hk: ["⌘", "⇧", "A"], available: false },
-  { id: "scroll", name: "Scrolling", sub: "Coming later", hk: ["⌘", "⇧", "S"], available: false },
+  // Top row: the two most-used surfaces. Auto top-left because it's
+  // the ⌘⇧P default — every other mode is a specialization.
+  { id: "auto", name: "Auto", sub: "Snap or drag · ⌘⇧P", hk: ["⌘", "⇧", "P"], available: true },
+  { id: "region", name: "Region", sub: "Drag selection", hk: ["⌘", "⇧", "R"], available: true },
+  // Middle row: window picker + full-screen.
+  { id: "window", name: "Window", sub: "Click a window", hk: ["⌘", "⇧", "W"], available: true },
+  { id: "full", name: "Full Screen", sub: "Coming soon", hk: ["⌘", "⇧", "F"], available: false },
+  // Bottom row: long-tail.
+  { id: "all", name: "All Screens", sub: "Coming soon", hk: ["⌘", "⇧", "A"], available: false },
   { id: "timed", name: "Timed (5s)", sub: "Coming later", hk: ["⌘", "⇧", "T"], available: false }
 ];
 
 function ModeIcon({ kind }: { kind: ModeKind }) {
   switch (kind) {
+    case "auto":
+      // Sparkle/wand glyph — "let the tool figure out window vs region".
+      return (
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.5 5.5l2 2M16.5 16.5l2 2M5.5 18.5l2-2M16.5 7.5l2-2" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      );
     case "region":
       return (
         <svg
@@ -73,22 +95,6 @@ function ModeIcon({ kind }: { kind: ModeKind }) {
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
           <rect x="2" y="5" width="11" height="9" rx="1" />
           <rect x="11" y="9" width="11" height="9" rx="1" />
-        </svg>
-      );
-    case "scroll":
-      return (
-        <svg
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect x="6" y="3" width="12" height="18" rx="1.5" />
-          <path d="M9 8h6M9 12h6M9 16h6M3 9v6M21 9v6" />
         </svg>
       );
     case "timed":
@@ -153,7 +159,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function TrayMenu({ activeMode = "region" }: { activeMode?: ModeKind }) {
+export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { records } = useLibrary();
   const lastSnap: CaptureRecord | undefined = records[0];
 
@@ -185,8 +191,8 @@ export function TrayMenu({ activeMode = "region" }: { activeMode?: ModeKind }) {
   // Splitting keeps the JSX tree easy to read while letting the
   // forwarding logic sit close to the lifecycle effect.
 
-  const onCaptureRegion = (): void => {
-    void dispatch("capture:interactive", {});
+  const onCapture = (mode: "auto" | "region" | "window"): void => {
+    void dispatch("capture:interactive", { mode });
   };
   const onOpenLibrary = (): void => {
     void dispatch("library:focus", {});
@@ -237,7 +243,12 @@ export function TrayMenu({ activeMode = "region" }: { activeMode?: ModeKind }) {
             type="button"
             disabled={!m.available}
             title={m.available ? undefined : "Coming in a later phase"}
-            onClick={m.id === "region" ? onCaptureRegion : undefined}
+            onClick={(() => {
+              if (m.id === "auto") return () => onCapture("auto");
+              if (m.id === "region") return () => onCapture("region");
+              if (m.id === "window") return () => onCapture("window");
+              return undefined;
+            })()}
           >
             <div className="ps-mode__row1">
               <span className="ps-mode__icon">

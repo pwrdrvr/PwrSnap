@@ -49,6 +49,12 @@ declare global {
         }) => void
       ): () => void;
       onSelectorKey(handler: (payload: { key: string }) => void): () => void;
+      onSelectorMode(
+        handler: (payload: {
+          mode: "auto" | "region" | "window";
+          screenUrl?: string;
+        }) => void
+      ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;

@@ -61,8 +61,24 @@ export type Commands = {
   // ---- capture ----
   /** Headless region capture. Agents call this; humans go through `capture:interactive`. */
   "capture:region": { req: { rect: Rect; displayId: number }; res: CaptureRecord };
-  /** Opens the region-selector window, awaits user confirm, returns the capture record. */
-  "capture:interactive": { req: Record<string, never>; res: CaptureRecord };
+  /**
+   * Opens the region-selector window, awaits user confirm, returns the
+   * capture record.
+   *
+   * `mode` controls the selector's behavior:
+   *   - `auto` (default) — snap-to-window highlight is live; click a
+   *     window to capture it, drag to free-draw a rect, ⇧ at commit
+   *     opts into the occlusion-free full-window backing buffer.
+   *   - `region` — pure rect drag. Snap candidates are not rendered;
+   *     ⇧ has no effect; the user must drag a rect.
+   *   - `window` — pure window picker. Snap-to-window is live; the
+   *     drag-to-region path is suppressed; commit always uses the
+   *     full-window (occlusion-free) capture path.
+   */
+  "capture:interactive": {
+    req: { mode?: "auto" | "region" | "window" };
+    res: CaptureRecord;
+  };
   "capture:fullScreen": { req: { displayId: number }; res: CaptureRecord };
   "capture:window": { req: { windowId: number }; res: CaptureRecord };
   "capture:reveal": { req: { captureId: string }; res: void };

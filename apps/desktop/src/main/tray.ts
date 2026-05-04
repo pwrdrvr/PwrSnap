@@ -145,10 +145,10 @@ export function installTray(): Tray {
     }
     const menu = Menu.buildFromTemplate([
       {
-        label: "Capture region…",
+        label: "Capture (Auto)…",
         accelerator: "CommandOrControl+Shift+P",
         click: () => {
-          void bus.dispatch("capture:interactive", {}, { principal: "ipc" });
+          void bus.dispatch("capture:interactive", { mode: "auto" }, { principal: "ipc" });
         }
       },
       { type: "separator" },

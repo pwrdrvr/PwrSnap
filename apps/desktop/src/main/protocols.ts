@@ -30,6 +30,7 @@ import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
+import { getSnapshotPath } from "./capture/screen-snapshot";
 import { parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
 
 const log = getMainLogger("pwrsnap:protocols");
@@ -55,6 +56,17 @@ export function registerSchemesAsPrivileged(): void {
     },
     {
       scheme: SCHEMES.cache,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        bypassCSP: false,
+        corsEnabled: true,
+        stream: true
+      }
+    },
+    {
+      scheme: SCHEMES.screen,
       privileges: {
         standard: true,
         secure: true,
@@ -135,6 +147,31 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
     } catch (cause) {
       log.error("capture handler threw", {
         captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return new Response("internal error", { status: 500 });
+    }
+  });
+
+  protocol.handle(SCHEMES.screen, async (request) => {
+    // Path-segment id, same shape as `pwrsnap-capture://r/<id>`.
+    const id = parseCaptureId(request.url, SCHEMES.screen);
+    if (id === null) {
+      log.warn("screen: invalid url", { url: request.url });
+      return new Response("invalid screen snapshot id", { status: 400 });
+    }
+    try {
+      const filePath = getSnapshotPath(id);
+      if (filePath === null) {
+        // Snapshot already released — selector dismissed mid-fetch
+        // is a normal race. Quiet log + 404.
+        log.info("screen: not found", { id });
+        return new Response("not found", { status: 404 });
+      }
+      return await fileResponse(filePath);
+    } catch (cause) {
+      log.error("screen handler threw", {
+        id,
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return new Response("internal error", { status: 500 });

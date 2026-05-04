@@ -52,7 +52,7 @@ export function App() {
     return (
       <>
         <TrayResizeForwarder />
-        <TrayMenu activeMode="region" />
+        <TrayMenu activeMode="auto" />
       </>
     );
   }

@@ -121,7 +121,14 @@ async function runExportLibrary(): Promise<void> {
 
 async function runInteractiveCapture(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  const result = await bus.dispatch("capture:interactive", {}, { principal: "ipc" });
+  // ⌘⇧P explicitly uses 'auto' mode — snap to a window if the cursor
+  // is over one, drag for a free rect otherwise. Tray buttons send a
+  // different mode for region-only / window-only flows.
+  const result = await bus.dispatch(
+    "capture:interactive",
+    { mode: "auto" },
+    { principal: "ipc" }
+  );
   if (!result.ok) {
     if (result.error.code === "cancelled") {
       // User pressed Esc — region-selector.ts already activated

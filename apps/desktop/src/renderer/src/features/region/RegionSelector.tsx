@@ -57,6 +57,8 @@ type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
   | { kind: "display" };
 
+type SelectorMode = "auto" | "region" | "window";
+
 type Interaction =
   | { kind: "snap" } // live-snap; rect tracks cursor
   | {
@@ -99,6 +101,23 @@ export function RegionSelector() {
   const [snapTarget, setSnapTarget] = useState<SnapTarget>({ kind: "display" });
   const [interaction, setInteraction] = useState<Interaction>({ kind: "snap" });
   const [spaceHeld, setSpaceHeld] = useState(false);
+  // Selector mode. Set by main via `region-selector:mode` IPC right
+  // before show(). Defaults to 'auto' for backwards-compat with any
+  // call site that hasn't migrated yet (e.g. ⌘⇧P pre-mode-aware).
+  //   - 'auto'   — current behavior (snap + drag, ⇧ → full-window)
+  //   - 'region' — pure rect drag; snap candidates are suppressed; ⇧
+  //                does nothing
+  //   - 'window' — pure window picker; click commits the snapped
+  //                window with fullWindow=true; drag-to-region is
+  //                suppressed
+  const [mode, setMode] = useState<SelectorMode>("auto");
+  // SnagIt-style frozen-screen background. Main captures the screen
+  // before show() and ships a `pwrsnap-screen://r/<id>` URL via the
+  // mode signal. We render it as a full-window <img> behind the dim
+  // mask + rect overlay; the user is interacting with the snapshot,
+  // not the live screen. Apps starting / stopping during selection
+  // can no longer change what's under the cursor.
+  const [screenUrl, setScreenUrl] = useState<string | null>(null);
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -127,11 +146,13 @@ export function RegionSelector() {
   // hit-test from.
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
+  const modeRef = useRef<SelectorMode>("auto");
   shiftRef.current = shiftHeld;
   rectRef.current = rect;
   interactionRef.current = interaction;
   spaceRef.current = spaceHeld;
   snapTargetRef.current = snapTarget;
+  modeRef.current = mode;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -142,8 +163,36 @@ export function RegionSelector() {
         ? snapTarget.kind
         : "off";
     document.body.dataset.fullWindow =
-      shiftHeld && snapTarget.kind === "window" ? "true" : "false";
-  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld]);
+      (shiftHeld || mode === "window") && snapTarget.kind === "window"
+        ? "true"
+        : "false";
+    document.body.dataset.mode = mode;
+  }, [interaction.kind, spaceHeld, snapTarget, shiftHeld, mode]);
+
+  // Subscribe to per-show mode signal from main. The selector windows
+  // are pre-warmed once at boot so we can't pass mode in the URL hash;
+  // main sends it via IPC right before show(), and we apply
+  // synchronously so the first paint already reflects the right mode.
+  // useLayoutEffect (not useEffect) so the listener attaches before
+  // React yields to the browser — same reason as the window-list
+  // snapshot subscription above.
+  useLayoutEffect(() => {
+    const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
+      setMode(payload.mode);
+      setScreenUrl(payload.screenUrl ?? null);
+      // When switching INTO 'region' mode, drop any existing window
+      // snap target back to display — otherwise the user sees a stale
+      // window-snap rect from the previous session before they move
+      // the cursor.
+      if (payload.mode === "region") {
+        setSnapTarget({ kind: "display" });
+        setRect(displaySnapRect());
+      }
+    });
+    return () => {
+      unsub?.();
+    };
+  }, []);
 
   // Window-list snapshot from main. Empty until the helper resolves;
   // until then, snap defaults to display.
@@ -233,17 +282,24 @@ export function RegionSelector() {
   }
 
   function snapAt(clientX: number, clientY: number): SnapTarget {
+    // Region mode = pure rect drag. We never snap to a window —
+    // hovering does nothing. The user picks a rect by dragging.
+    if (modeRef.current === "region") {
+      return { kind: "display" };
+    }
     const win = findWindowAt(clientX, clientY);
     return win !== null ? { kind: "window", entry: win } : { kind: "display" };
   }
 
   function rectForSnap(snap: SnapTarget): Rect {
     if (snap.kind === "window") {
-      // ⇧ held over a window snap → use the FULL bounds (rawRect).
-      // Default → use the visible-region bbox (rect). The visual
-      // rect always matches what would actually be captured at
-      // commit time, so the user has no surprises.
-      const src = shiftRef.current ? snap.entry.rawRect : snap.entry.rect;
+      // window mode = always full-window (occlusion-free backing
+      // buffer); auto mode = ⇧-opt-in. Default → use the
+      // visible-region bbox (rect). The visual rect always matches
+      // what would actually be captured at commit time, so the user
+      // has no surprises.
+      const wantFull = shiftRef.current || modeRef.current === "window";
+      const src = wantFull ? snap.entry.rawRect : snap.entry.rect;
       return { x: src.x, y: src.y, w: src.w, h: src.h };
     }
     return displaySnapRect();
@@ -263,7 +319,13 @@ export function RegionSelector() {
     // logical=1920) it's ~1.315 and corrects the doubling we'd
     // otherwise see in the captured PNG.
     const inv = cssToLogicalRef.current > 0 ? 1 / cssToLogicalRef.current : 1;
-    const fromWindowSnap = interaction.kind === "snap" && snap.kind === "window";
+    // A "window snap commit" can happen from any interaction state
+    // when we have a window snap target — not just live `snap`. In
+    // window-mode the user clicks once, the pending → adjusting flow
+    // commits with snap=window even after the brief mouseup.
+    const fromWindowSnap = snap.kind === "window";
+    const wantFull =
+      fromWindowSnap && (shiftRef.current || modeRef.current === "window");
     window.pwrsnapApi?.submitRegion({
       ok: true,
       rect: {
@@ -281,13 +343,12 @@ export function RegionSelector() {
       // and we don't include it.
       ...(fromWindowSnap ? { snappedWindowId: snap.entry.windowId } : {}),
       // fullWindow opts into the `screencapture -l <id>` path —
-      // only valid when we have a windowId AND ⇧ is held at commit
-      // time. Read via ref since commit() runs from the useEffect
-      // keydown handler whose closure captured the initial state
-      // (always false). The default (no ⇧) goes through the rect
-      // path, which captures whatever's literally on screen
-      // including overlapping windows.
-      ...(fromWindowSnap && shiftRef.current ? { fullWindow: true } : {})
+      // valid when (a) we have a windowId AND ⇧ is held at commit,
+      // OR (b) the selector is in 'window' mode (always full-window
+      // by definition). The default (no ⇧, mode='auto'|'region')
+      // goes through the rect path, which captures whatever's
+      // literally on screen including overlapping windows.
+      ...(wantFull ? { fullWindow: true } : {})
     });
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -324,9 +385,12 @@ export function RegionSelector() {
       // Track ⇧ in snap mode: full-window capture opt-in. The rect
       // expands from the visible-region bbox to the full window
       // bounds + the chip text changes + commit sends fullWindow:true.
+      // Disabled in 'region' and 'window' modes — those modes have
+      // explicit semantics; ⇧ is meaningless there.
       if (
         event.key === "Shift" &&
         !shiftRef.current &&
+        modeRef.current === "auto" &&
         (interactionRef.current.kind === "snap" || interactionRef.current.kind === "pending")
       ) {
         const target = snapTargetRef.current;
@@ -529,6 +593,10 @@ export function RegionSelector() {
           const dx = event.clientX - i.startX;
           const dy = event.clientY - i.startY;
           if (Math.hypot(dx, dy) < MIN_DRAG_PX) return;
+          // Window mode never enters free-draw — the user is
+          // picking a window, not a rect. Stay in pending; mouseup
+          // will commit the window snap.
+          if (modeRef.current === "window") return;
           // Cross — start drawing. Override the snap rect with a
           // free-draw rect anchored at the original mousedown.
           setRect(
@@ -593,6 +661,18 @@ export function RegionSelector() {
           if (snap !== null) {
             setSnapTarget(snap);
             setRect(rectForSnap(snap));
+          }
+          // Window mode: clicking on a window IS the commit. Skip
+          // adjusting and submit immediately. We re-set rect
+          // synchronously off `snap` so commit() reads the
+          // window's bounds rather than whatever the previous
+          // adjustingrect was.
+          if (modeRef.current === "window" && snap !== null && snap.kind === "window") {
+            const r = rectForSnap(snap);
+            rectRef.current = r;
+            snapTargetRef.current = snap;
+            commit();
+            return;
           }
           setInteraction({ kind: "adjusting" });
           return;
@@ -661,6 +741,48 @@ export function RegionSelector() {
   // what action is bound to click / drag / arrows.
   const hint = (() => {
     if (interaction.kind === "snap" || interaction.kind === "pending") {
+      // Region mode: pure rect drag. No window snap, no ⇧.
+      if (mode === "region") {
+        return (
+          <>
+            <span>
+              <kbd>drag</kbd>region
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>↵</kbd>commit
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>esc</kbd>cancel
+            </span>
+          </>
+        );
+      }
+      // Window mode: click commits the highlighted window. No drag,
+      // no ⇧ (full-window is implied).
+      if (mode === "window") {
+        const what =
+          snapTarget.kind === "window"
+            ? snapTarget.entry.appName ?? "window"
+            : "—";
+        return (
+          <>
+            <span>
+              <kbd>click</kbd>capture {what}
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>tab</kbd>next window
+            </span>
+            <span className="region-hint-sep">·</span>
+            <span>
+              <kbd>esc</kbd>cancel
+            </span>
+          </>
+        );
+      }
+      // Auto mode (default ⌘⇧P).
       const what =
         snapTarget.kind === "window"
           ? snapTarget.entry.appName ?? "window"
@@ -721,6 +843,35 @@ export function RegionSelector() {
 
   return (
     <div className="region-root">
+      {/* Frozen-screen snapshot — full-window background.  The
+          renderer is interacting with this image, not the live
+          screen.  Drawn first so the dim mask + rect sit on top.
+          Sized to fill the window via inline styles to avoid waiting
+          on a CSS bundle hot-reload during dev. */}
+      {screenUrl !== null && (
+        <img
+          src={screenUrl}
+          alt=""
+          draggable={false}
+          style={{
+            position: "fixed",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "fill",
+            // Critical: don't intercept mouse events. The selector's
+            // window-level keydown / mousedown listeners need to see
+            // every event regardless of where in the window the
+            // cursor is.
+            pointerEvents: "none",
+            // Safety: place behind the dim quadrants + rect overlay.
+            // (region-dim sits above this in DOM order; z-index 0
+            // here pins it as the floor.)
+            zIndex: 0,
+            userSelect: "none"
+          }}
+        />
+      )}
       {/* Four-quadrant dim mask. Always rendered — the rect is always
           present (snap rect at boot, drawn / committed rect later). */}
       <div

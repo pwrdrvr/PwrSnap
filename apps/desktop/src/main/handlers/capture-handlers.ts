@@ -17,12 +17,17 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { BrowserWindow } from "electron";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BrowserWindow, screen } from "electron";
+import sharp from "sharp";
 import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { pickRegion, getLastWindowListSnapshot } from "../capture/region-selector";
 import { captureRegion, captureWindow } from "../capture/screencapture";
+import { releaseSnapshot } from "../capture/screen-snapshot";
 import { findWindowAt, type WindowInfo } from "../capture/window-list";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { putCaptureSource } from "../persistence/source-store";
@@ -54,8 +59,9 @@ export function registerCaptureHandlers(): void {
     return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
-  bus.register("capture:interactive", async () => {
-    const selection = await pickRegion();
+  bus.register("capture:interactive", async (req) => {
+    const mode = req.mode ?? "auto";
+    const selection = await pickRegion({ mode });
     if (!selection.ok) {
       return err({
         kind: "capture",
@@ -64,42 +70,59 @@ export function registerCaptureHandlers(): void {
       });
     }
 
-    // Two capture paths:
-    //   • Full-window mode (user held ⇧ at commit time) →
-    //     `screencapture -l <id>`. Asks WindowServer for the
-    //     window's full backing buffer — clean rounded corners, no
-    //     occlusion artifacts, no drop shadow. Captures content
-    //     even where other windows are in front.
-    //   • Default (no ⇧) → `screencapture -R <rect>`. Captures the
-    //     literal pixels in the rect — overlapping windows are
-    //     included, exactly as the user sees them on screen.
-    //
-    // snappedWindowId comes through in BOTH cases (when the user
-    // committed straight from a window snap), but it's only used to
-    // route to captureWindow when fullWindow=true. Otherwise it's
-    // just a deterministic source-app hint.
-    const snapshot = getLastWindowListSnapshot();
-    let captureResult;
-    let sourceApp;
-    if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
-      captureResult = await captureWindow(selection.snappedWindowId);
-      sourceApp = findById(snapshot, selection.snappedWindowId);
-    } else {
-      captureResult = await captureRegion(selection.rect, selection.displayId);
-      sourceApp =
-        selection.snappedWindowId !== undefined
-          ? findById(snapshot, selection.snappedWindowId) ??
-            resolveSourceApp(selection.rect, snapshot)
-          : resolveSourceApp(selection.rect, snapshot);
+    // From here on we own the screen snapshot — we MUST release it
+    // before returning. wrap the rest in try/finally so an error
+    // doesn't leak the temp file.
+    const { screenSnapshotId, screenSnapshotPath } = selection;
+    try {
+      // Two capture paths:
+      //   • Full-window mode (user held ⇧ at commit time, or `mode`
+      //     was 'window') → desktopCapturer / `screencapture -l
+      //     <id>`. Asks WindowServer for the window's full backing
+      //     buffer — clean rounded corners, no occlusion artifacts,
+      //     no drop shadow. Captures content even where other
+      //     windows are in front. NOTE: this re-shoots the live
+      //     screen rather than using the snapshot, because the
+      //     snapshot only contains visible pixels.
+      //   • Default (mode='auto' rect or 'region') → CROP the
+      //     screen snapshot. The snapshot was taken at show() in
+      //     PHYSICAL pixels; the rect is in logical px relative to
+      //     display.bounds. Multiply rect by scaleFactor and use
+      //     sharp.extract for the crop. Apps starting / popups /
+      //     redraws after the user committed don't bleed into the
+      //     capture — by definition, the snapshot is frozen-in-
+      //     time.
+      const snapshot = getLastWindowListSnapshot();
+      let captureResult;
+      let sourceApp;
+      if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
+        captureResult = await captureWindow(selection.snappedWindowId);
+        sourceApp = findById(snapshot, selection.snappedWindowId);
+      } else {
+        captureResult = await cropScreenSnapshot(
+          screenSnapshotPath,
+          selection.rect,
+          selection.displayId
+        );
+        sourceApp =
+          selection.snappedWindowId !== undefined
+            ? findById(snapshot, selection.snappedWindowId) ??
+              resolveSourceApp(selection.rect, snapshot)
+            : resolveSourceApp(selection.rect, snapshot);
+      }
+      if (!captureResult.ok) {
+        return err({
+          kind: "capture",
+          code: captureResult.reason,
+          message: captureResult.message
+        });
+      }
+      return persistAndBroadcast(captureResult.tempPath, sourceApp);
+    } finally {
+      // Always release — ownership transferred to us at pickRegion
+      // resolve time, and hideAllSelectors won't clean it up.
+      void releaseSnapshot(screenSnapshotId);
     }
-    if (!captureResult.ok) {
-      return err({
-        kind: "capture",
-        code: captureResult.reason,
-        message: captureResult.message
-      });
-    }
-    return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
   bus.register("capture:fullScreen", async () => {
@@ -140,6 +163,81 @@ export function registerCaptureHandlers(): void {
       message: "capture:prepareDrag lands with the render pipeline (Phase 1.6+)"
     });
   });
+}
+
+/**
+ * Crop the frozen-screen snapshot at `rect`. The snapshot is in
+ * PHYSICAL pixels (logical * display.scaleFactor); `rect` is in
+ * display logical pixels in global coords. We translate to snapshot-
+ * local coords (subtract display.bounds.x/y), scale into physical,
+ * clamp to the snapshot's actual dimensions (sharp's extract is
+ * intolerant of off-by-one bleed past the edge), then write out.
+ *
+ * Returns the same {ok, tempPath, displayId} | error envelope shape
+ * as captureRegion so the caller path stays identical.
+ */
+async function cropScreenSnapshot(
+  snapshotPath: string,
+  rect: Rect,
+  displayId: number
+): Promise<
+  | { ok: true; tempPath: string; displayId: number }
+  | { ok: false; reason: "validation" | "error"; message: string }
+> {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) {
+    return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+  }
+  if (rect.w <= 0 || rect.h <= 0) {
+    return { ok: false, reason: "validation", message: "rect.w and rect.h must be positive" };
+  }
+  const scale = display.scaleFactor;
+  // Translate global → snapshot-local logical px. The snapshot
+  // covers display.bounds, so subtract bounds.{x,y}.
+  const localX = rect.x - display.bounds.x;
+  const localY = rect.y - display.bounds.y;
+  // Logical → physical px. The snapshot file is at physical
+  // resolution (e.g. 3840×2160 for a 1920×1080@2x display).
+  const left = Math.max(0, Math.round(localX * scale));
+  const top = Math.max(0, Math.round(localY * scale));
+  const width = Math.max(1, Math.round(rect.w * scale));
+  const height = Math.max(1, Math.round(rect.h * scale));
+
+  try {
+    const dir = await mkdtemp(join(tmpdir(), "pwrsnap-crop-"));
+    const tempPath = join(dir, `${Date.now()}.png`);
+    const img = sharp(snapshotPath);
+    const meta = await img.metadata();
+    // Clamp the extract rect to the snapshot's actual physical
+    // dimensions. Even one pixel of overrun makes sharp throw.
+    const maxW = meta.width ?? Number.MAX_SAFE_INTEGER;
+    const maxH = meta.height ?? Number.MAX_SAFE_INTEGER;
+    const clampedLeft = Math.min(left, maxW - 1);
+    const clampedTop = Math.min(top, maxH - 1);
+    const clampedW = Math.min(width, maxW - clampedLeft);
+    const clampedH = Math.min(height, maxH - clampedTop);
+    await sharp(snapshotPath)
+      .extract({
+        left: clampedLeft,
+        top: clampedTop,
+        width: clampedW,
+        height: clampedH
+      })
+      .png()
+      .toFile(tempPath);
+    return { ok: true, tempPath, displayId };
+  } catch (cause) {
+    log.warn("snapshot crop failed", {
+      message: cause instanceof Error ? cause.message : String(cause),
+      rect,
+      displayId
+    });
+    return {
+      ok: false,
+      reason: "error",
+      message: cause instanceof Error ? cause.message : String(cause)
+    };
+  }
 }
 
 /**

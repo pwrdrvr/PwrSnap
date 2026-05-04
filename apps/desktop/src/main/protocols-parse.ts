@@ -9,7 +9,12 @@
 
 export const SCHEMES = {
   capture: "pwrsnap-capture",
-  cache: "pwrsnap-cache"
+  cache: "pwrsnap-cache",
+  /** Per-pickRegion full-display snapshot. Resolves to a temp PNG
+   *  taken at show() time; deleted when the selector dismisses. The
+   *  url shape is `pwrsnap-screen://r/<id>` (same path/host trick as
+   *  the capture scheme so nanoid case survives). */
+  screen: "pwrsnap-screen"
 } as const;
 
 export type CacheUrlParts = {

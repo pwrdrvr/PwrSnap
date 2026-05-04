@@ -27,9 +27,9 @@ import {
   selfWindowBoundsList,
   type WindowInfo
 } from "./window-list";
-import { computeVisibility } from "./visibility";
+import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 
-const MIN_VISIBLE_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
+const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 
 const log = getMainLogger("pwrsnap:region-selector");
 
@@ -43,6 +43,12 @@ let displayListenersAttached = false;
 // capture handler reuses it after commit to backfill source_app_*.
 let lastSnapshot: WindowInfo[] = [];
 
+// Active screen snapshot for the in-flight pickRegion. The selector
+// shows this PNG as a full-window background image; the user drags
+// against the snapshot, and commit crops the snapshot rather than
+// re-shooting the live screen. Released on hide.
+let activeScreenSnapshot: ScreenSnapshot | null = null;
+
 // Process id of the app that was frontmost at pickRegion time —
 // captured BEFORE we steal focus to show the selector. After the
 // selector hides on cancel or commit, we re-activate this pid so
@@ -55,16 +61,25 @@ export type SelectorResult =
       ok: true;
       rect: { x: number; y: number; w: number; h: number };
       displayId: number;
+      /** Path to the frozen-at-show screen snapshot. The capture
+       *  handler crops this file at `rect * scaleFactor` rather than
+       *  re-shooting the live screen. */
+      screenSnapshotPath: string;
+      /** Registry id matching the path. Capture-handlers MUST call
+       *  `releaseSnapshot(id)` from screen-snapshot.ts after
+       *  cropping — ownership transfers from the selector module to
+       *  the consumer when this result is produced, so
+       *  `hideAllSelectors` skips the cleanup on this code path. */
+      screenSnapshotId: string;
       /** Set when the user committed straight from a window snap (no
        *  drag, no resize). Used for source-app metadata even when
        *  not in full-window mode. */
       snappedWindowId?: number;
       /** True when the user held ⇧ at commit time to opt into the
        *  full-window capture path (`screencapture -l`). Without this
-       *  flag main goes through the normal rect path
-       *  (`screencapture -R`), which captures whatever's visible at
-       *  those coords — overlapping windows included, just like the
-       *  user sees on screen. */
+       *  flag main crops the screen snapshot at the rect, which
+       *  captures whatever's visible — overlapping windows included,
+       *  just like the user sees on screen. */
       fullWindow?: boolean;
     }
   | { ok: false; reason: "cancelled" | "destroyed" };
@@ -77,6 +92,15 @@ const SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
 // had pressed the key directly — covers the case where macOS
 // withholds keyboard events from a newly-shown window.
 const SELECTOR_KEY_CHANNEL = "region-selector:key";
+// Main → renderer: per-show mode signal. The selector windows are
+// pre-warmed at boot (one per display, all loaded with mode=auto in
+// the URL hash); we can't reload them on every show without
+// destroying the warm-up. Instead we send the desired mode just
+// before show() and the renderer flips its UI accordingly. Possible
+// values: 'auto' | 'region' | 'window'.
+const SELECTOR_MODE_CHANNEL = "region-selector:mode";
+
+export type SelectorMode = "auto" | "region" | "window";
 
 /**
  * Create the pre-warmed windows — one per display. Idempotent. Call
@@ -113,18 +137,49 @@ export function preWarmRegionSelector(): void {
       const resolver = pendingResolver;
       pendingResolver = null;
       if (isSelectorPayload(payload) && payload.ok) {
-        const result: SelectorResult = {
-          ok: true,
-          rect: payload.rect,
-          displayId: payload.displayId
-        };
-        if (typeof payload.snappedWindowId === "number") {
-          result.snappedWindowId = payload.snappedWindowId;
+        // Renderer ships rects in WINDOW-LOCAL display logical
+        // coords. The selector window covers display.bounds via
+        // simple-fullscreen, so window-local (0,0) maps to display
+        // global (display.bounds.x, display.bounds.y). Translate
+        // back here so capture-handlers + the snapshot crop see a
+        // single, consistent global-coord rect.
+        const display = screen.getAllDisplays().find((d) => d.id === payload.displayId);
+        const offsetX = display?.bounds.x ?? 0;
+        const offsetY = display?.bounds.y ?? 0;
+        // Snapshot path is REQUIRED for commit. If the snapshot
+        // somehow vanished between show and result (e.g. release
+        // raced ahead of the result event), fall back to a
+        // cancelled outcome — the capture handler can't do its
+        // job without it.
+        if (activeScreenSnapshot === null) {
+          resolver({ ok: false, reason: "cancelled" });
+        } else {
+          // Ownership transfer: clear the module-scope reference so
+          // hideAllSelectors skips the cleanup. The consumer (the
+          // capture handler) calls releaseSnapshot(id) after it
+          // finishes cropping.
+          const snapshot = activeScreenSnapshot;
+          activeScreenSnapshot = null;
+          const result: SelectorResult = {
+            ok: true,
+            rect: {
+              x: payload.rect.x + offsetX,
+              y: payload.rect.y + offsetY,
+              w: payload.rect.w,
+              h: payload.rect.h
+            },
+            displayId: payload.displayId,
+            screenSnapshotPath: snapshot.filePath,
+            screenSnapshotId: snapshot.id
+          };
+          if (typeof payload.snappedWindowId === "number") {
+            result.snappedWindowId = payload.snappedWindowId;
+          }
+          if (payload.fullWindow === true) {
+            result.fullWindow = true;
+          }
+          resolver(result);
         }
-        if (payload.fullWindow === true) {
-          result.fullWindow = true;
-        }
-        resolver(result);
       } else {
         resolver({ ok: false, reason: "cancelled" });
       }
@@ -155,8 +210,15 @@ export function preWarmRegionSelector(): void {
  * the user commits or cancels. If a prior selector invocation is still
  * pending, the prior promise resolves with `cancelled` and the new
  * request takes over.
+ *
+ * `mode` controls the selector UI:
+ *   - 'auto' (default): snap-to-window is live + drag-region works
+ *   - 'region': pure rect drag, snap candidates suppressed
+ *   - 'window': window-picker only, drag suppressed, ⇧-not-required
+ *     for full-window capture
  */
-export async function pickRegion(): Promise<SelectorResult> {
+export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<SelectorResult> {
+  const mode: SelectorMode = opts.mode ?? "auto";
   if (selectorWindows.size === 0) {
     preWarmRegionSelector();
   }
@@ -185,15 +247,34 @@ export async function pickRegion(): Promise<SelectorResult> {
 
   const win = targetWindow;
 
+  // Capture the screen NOW, before we show the selector. This is the
+  // SnagIt model: freeze the screen, paint the snapshot as a
+  // full-window background, drag against it. Apps starting /
+  // stopping / popping in during selection no longer bleed into the
+  // capture — the renderer is showing pixels that no longer exist.
+  // Released on hideAllSelectors (regardless of commit / cancel).
+  if (activeScreenSnapshot !== null) {
+    const stale = activeScreenSnapshot;
+    activeScreenSnapshot = null;
+    void releaseSnapshot(stale.id);
+  }
+  try {
+    activeScreenSnapshot = await captureAndRegister(targetDisplay.id);
+  } catch (err) {
+    log.warn("screen snapshot failed; selector aborted", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+    return { ok: false, reason: "destroyed" };
+  }
+
   // Fetch the on-screen window list in the background — by the time
   // the user reaches for ⇧, the renderer has the list cached and
   // hit-tests locally with no IPC round-trip.
   //
-  // Window list is in GLOBAL virtual coords; the renderer needs them
-  // re-expressed in window-local coords (the selector window covers
-  // the display, so subtract the display's bounds.x/y). We do that
-  // translation here so the renderer just compares against
-  // event.clientX/Y.
+  // The selector window covers the entire display via simple-
+  // fullscreen (we paint our own simulation of the menu bar + dock
+  // via the snapshot, so we can safely override Cocoa's "no window
+  // over the menu bar" rule). Coords are display-bounds-relative.
   const displayBounds = targetDisplay.bounds;
   // Identify our own windows so the renderer can treat them as
   // occluders (hover-over-library returns no snap, not the hidden
@@ -236,49 +317,54 @@ export async function pickRegion(): Promise<SelectorResult> {
     // Step 2: per-app frontmost collapse. Auxiliary panels of
     // OTHER apps drop out (a Slack inspector panel isn't a snap
     // target when the main Slack window is what the user wants).
-    // Windows owned by us are kept regardless — they're potential
-    // occluders for the hit-test even when not "frontmost-in-app".
+    // Windows owned by us are kept so the renderer can de-prioritize
+    // them in the hit-test (we don't snap to our own library).
     const meaningful = onThisDisplay.filter(
       (w) => w.isFrontmostInApp || ourPids.has(w.pid)
     );
 
-    // Step 3: visible-region computation. Walks the front-to-back
-    // z-order computing each window's visible region (raw bounds
-    // minus the union of windows in front). Fully-occluded windows
-    // come back with visibleArea=0 and are dropped.
-    const visibility = computeVisibility(meaningful);
-
-    const localized = visibility
-      .filter((v) => v.visibleArea >= MIN_VISIBLE_AREA_PX)
-      .map((v) => ({
-        windowId: v.source.windowId,
-        pid: v.source.pid,
-        bundleId: v.source.bundleId,
-        appName: v.source.appName,
-        title: v.source.title,
+    // No visibility / occlusion filter. Showing a window's outline
+    // even when it's mostly obscured matches what every other
+    // capture tool does — the user wants to capture the WINDOW,
+    // not the visible-fragment of the window. The screen snapshot
+    // already covers the visual; the snap highlight just tags the
+    // bounds. Rect math happens in display-bounds-relative window-
+    // local coords; the selector covers display.bounds via
+    // setSimpleFullScreen.
+    const localized = meaningful
+      .map((w, idx) => ({ w, idx }))
+      .filter(({ w }) => w.bounds.width * w.bounds.height >= MIN_AREA_PX)
+      .map(({ w, idx }) => ({
+        windowId: w.windowId,
+        pid: w.pid,
+        bundleId: w.bundleId,
+        appName: w.appName,
+        title: w.title,
         // ownedByUs requires BOTH same-pid AND bounds matching one
         // of our user-facing BrowserWindows. DevTools shares our
         // pid but its bounds are unique (e.g. detached at 113,386,
         // 800x600) so it lands as snappable.
         ownedByUs:
-          ourPids.has(v.source.pid) &&
-          ourBounds.some((b) => boundsApproxEqual(b, v.source.bounds)),
-        zIndex: v.zIndex,
-        // The rect we draw as the snap highlight is the VISIBLE
-        // bounding box, not the raw bounds. If only a 30px sliver
-        // of a window is visible, that's the rect we draw — not a
-        // 1500×900 area mostly covered by other apps.
+          ourPids.has(w.pid) &&
+          ourBounds.some((b) => boundsApproxEqual(b, w.bounds)),
+        // listWindows returns z-order ascending (index 0 = frontmost).
+        // After our `meaningful` filter, indices change but z-order
+        // is preserved, so the array index continues to work.
+        zIndex: idx,
+        // Rect = rawRect; we no longer split visible-bbox from raw
+        // bounds. Both fields stay so the renderer doesn't need a
+        // shape change, but they're identical now.
         rect: {
-          x: v.visibleBounds.x - displayBounds.x,
-          y: v.visibleBounds.y - displayBounds.y,
-          w: v.visibleBounds.w,
-          h: v.visibleBounds.h
+          x: w.bounds.x - displayBounds.x,
+          y: w.bounds.y - displayBounds.y,
+          w: w.bounds.width,
+          h: w.bounds.height
         },
         rawRect: {
-          x: v.rawBounds.x - displayBounds.x,
-          y: v.rawBounds.y - displayBounds.y,
-          w: v.rawBounds.w,
-          h: v.rawBounds.h
+          x: w.bounds.x - displayBounds.x,
+          y: w.bounds.y - displayBounds.y,
+          w: w.bounds.width,
+          h: w.bounds.height
         }
       }));
 
@@ -318,15 +404,14 @@ export async function pickRegion(): Promise<SelectorResult> {
       }))
     });
     if (!win.isDestroyed()) {
-      // Ship display.bounds along with the rects so the renderer
-      // can scale from "display logical pixels" into its own CSS
-      // pixel coord space. On macOS scaled-mode displays
-      // (devicePixelRatio fractional, e.g. 2.629 instead of 2.0),
-      // window.innerWidth in the renderer is NOT equal to
-      // display.bounds.width — even though Electron's
-      // getContentSize on the main side reports them as equal.
-      // Without scaling, every rect we paint comes out
-      // 1920/1460 = 1.31× too large.
+      // Ship display.bounds — the selector window covers the entire
+      // display via setSimpleFullScreen, so display-bounds is the
+      // logical-px rect the renderer's CSS coord space scales into.
+      // On macOS scaled-mode displays (fractional devicePixelRatio,
+      // e.g. 2.629), the renderer's window.innerWidth is NOT equal
+      // to displayBounds.width even though Electron's getContentSize
+      // agrees. The renderer computes scale = innerWidth /
+      // displayBounds.width.
       win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, {
         windows: localized,
         displayBounds: {
@@ -349,7 +434,23 @@ export async function pickRegion(): Promise<SelectorResult> {
 
   const result = await new Promise<SelectorResult>((resolve) => {
     pendingResolver = resolve;
+    // Tell the renderer which mode + snapshot URL to use BEFORE we
+    // make the window visible. The renderer applies both
+    // synchronously on receipt (mode → body[data-mode]; snapshot →
+    // <img> background), so by the first paint we're showing the
+    // frozen-in-time pixels and we're already in the right mode.
+    if (!win.isDestroyed() && activeScreenSnapshot !== null) {
+      const screenUrl = `pwrsnap-screen://r/${activeScreenSnapshot.id}`;
+      win.webContents.send(SELECTOR_MODE_CHANNEL, { mode, screenUrl });
+    }
     win.show();
+    // Re-enter simple-fullscreen. The renderer paints the menu bar
+    // / dock area itself via the screen snapshot, so covering the
+    // real menu bar is fine — the user sees a 1-frame-old version
+    // of it instead of the live one. This matches every native Mac
+    // capture tool (Cleanshot, Shottr, SnagIt) and protects the
+    // selection from screen changes mid-drag (apps starting,
+    // notifications popping, tests running etc.).
     enterMenuBarOverlayMode(win);
     win.focus();
     // webContents.focus() in addition to BrowserWindow.focus() —
@@ -405,6 +506,15 @@ function hideAllSelectors(): void {
   // leaving Esc / ↵ globally bound after the selector is gone would
   // hijack those keys for the rest of the app session.
   uninstallSelectorGlobalShortcuts();
+  // Release the screen snapshot UNLESS ownership has already
+  // transferred to a consumer (the OK code path clears
+  // `activeScreenSnapshot` before calling hideAllSelectors). On
+  // cancel / destroyed paths the snapshot is still ours; clean up.
+  if (activeScreenSnapshot !== null) {
+    const stale = activeScreenSnapshot;
+    activeScreenSnapshot = null;
+    void releaseSnapshot(stale.id);
+  }
   for (const win of selectorWindows.values()) {
     if (win.isDestroyed()) continue;
     // Order: leave overlay → blur → hide.
@@ -476,6 +586,11 @@ function leaveMenuBarOverlayMode(win: BrowserWindow): void {
 }
 
 function createSelectorWindow(display: Display): BrowserWindow {
+  // Anchor to display.bounds. The selector enters simple-fullscreen
+  // on show (covering the real menu bar) and paints its own copy of
+  // the menu bar via the screen snapshot — so the user sees what
+  // they expect AND we get a window-local coord space that matches
+  // display logical px 1:1.
   const { bounds } = display;
   const window = new BrowserWindow({
     x: bounds.x,
@@ -549,6 +664,7 @@ function resizeSelectorToDisplay(display: Display): void {
     rebuildSelectorForDisplay(display.id);
     return;
   }
+  // Mirror the createSelectorWindow choice: anchor to display.bounds.
   const { bounds } = display;
   const current = win.getBounds();
   if (
@@ -624,3 +740,4 @@ export function disposeRegionSelector(): void {
 export const REGION_SELECTOR_RESULT_CHANNEL = SELECTOR_RESULT_CHANNEL;
 export const REGION_SELECTOR_WINDOW_LIST_CHANNEL = SELECTOR_WINDOW_LIST_CHANNEL;
 export const REGION_SELECTOR_KEY_CHANNEL = SELECTOR_KEY_CHANNEL;
+export const REGION_SELECTOR_MODE_CHANNEL = SELECTOR_MODE_CHANNEL;

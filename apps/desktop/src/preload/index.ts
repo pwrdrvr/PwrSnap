@@ -42,6 +42,10 @@ const REGION_SELECTOR_DIAGNOSTICS_CHANNEL = "region-selector:diagnostics";
 // quirks where the renderer's keydown listener doesn't fire until
 // the user has clicked the window once.
 const REGION_SELECTOR_KEY_CHANNEL = "region-selector:key";
+// Main → renderer: per-show selector mode signal. Sent right before
+// `win.show()` so the selector renderer can configure UI for
+// 'auto' | 'region' | 'window' before the first paint.
+const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 
 // Tray content auto-sizes to fit. The renderer measures itself with a
 // ResizeObserver and asks main to setContentSize so the popover never
@@ -164,6 +168,36 @@ const pwrsnapApi = {
       handler(payload as { key: string });
     ipcRenderer.on(REGION_SELECTOR_KEY_CHANNEL, wrapped);
     return () => ipcRenderer.off(REGION_SELECTOR_KEY_CHANNEL, wrapped);
+  },
+  /**
+   * Subscribe to the per-show selector mode + snapshot signal. Main
+   * fires this right before `win.show()` so the renderer can:
+   *   1. Reconfigure between 'auto' (snap + drag), 'region' (drag-
+   *      only, no snap candidates), and 'window' (snap-only, no
+   *      drag).
+   *   2. Mount the frozen-screen snapshot via `<img src=screenUrl>`
+   *      as a full-window background. The renderer paints the
+   *      snapshot, the user drags against it, and on commit the
+   *      capture handler crops THAT snapshot (not the live screen).
+   *
+   * `screenUrl` is a `pwrsnap-screen://r/<id>` URL; it stays valid
+   * until the selector dismisses.
+   */
+  onSelectorMode(
+    handler: (payload: {
+      mode: "auto" | "region" | "window";
+      screenUrl?: string;
+    }) => void
+  ): () => void {
+    const wrapped = (_event: unknown, payload: unknown) =>
+      handler(
+        payload as {
+          mode: "auto" | "region" | "window";
+          screenUrl?: string;
+        }
+      );
+    ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);
+    return () => ipcRenderer.off(REGION_SELECTOR_MODE_CHANNEL, wrapped);
   },
   /**
    * Diagnostic — region selector renderer → main. Ships the

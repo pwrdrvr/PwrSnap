@@ -182,15 +182,11 @@ export function createFloatOverWindow(): BrowserWindow {
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("float-over"));
 
-  window.once("ready-to-show", () => {
-    const display = screen.getPrimaryDisplay();
-    const wa = display.workArea;
-    const margin = 24;
-    const x = wa.x + wa.width - width - margin;
-    const y = wa.y + wa.height - height - margin;
-    window.setPosition(x, y, false);
-    window.showInactive();
-  });
+  // Note: positioning + show are owned by `float-over.ts` so they
+  // re-run on every capture (workArea may have shifted between shows,
+  // and `ready-to-show` only fires on the FIRST load — subsequent
+  // `loadURL` calls don't re-fire it). The window is constructed
+  // hidden; `showFloatOverForCapture` anchors + shows it.
 
   return window;
 }

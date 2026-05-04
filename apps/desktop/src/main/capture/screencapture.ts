@@ -196,6 +196,58 @@ export async function captureWindow(
 }
 
 /**
+ * Capture an entire display to a temp PNG. The selector uses this on
+ * show() to grab a frozen-in-time backing snapshot — the renderer
+ * paints it as a full-window background, the user drags against the
+ * snapshot, and the commit crops the snapshot rather than re-shooting
+ * the live screen. This is the SnagIt-style "freeze the screen and
+ * draw on top" model: immune to apps starting/stopping or windows
+ * popping in/out during the selection.
+ *
+ * Bypasses validateRect — by definition we capture the whole display
+ * the cursor is on, no user-supplied coords are involved.
+ *
+ * Returns the path to a PNG sized in PHYSICAL pixels (logical * scale).
+ * Caller owns deletion via `releaseScreenSnapshot` once the selector
+ * dismisses.
+ */
+export async function captureScreen(displayId: number): Promise<CaptureRegionResult> {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) {
+    return { ok: false, reason: "validation", message: `unknown display id: ${displayId}` };
+  }
+  const { bounds } = display;
+
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-screen-"));
+  const tempPath = join(dir, `${Date.now()}.png`);
+  // -R covers exactly this display's logical bounds. The output PNG
+  // ends up at physical resolution (logical * device-pixel-ratio).
+  const args = [
+    "-x",
+    "-R",
+    `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`,
+    "-t",
+    "png",
+    tempPath
+  ];
+
+  try {
+    await execFileAsync("/usr/sbin/screencapture", args, { timeout: 5_000 });
+    return { ok: true, tempPath, displayId };
+  } catch (err) {
+    const exitCode = (err as NodeJS.ErrnoException & { code?: number | string }).code;
+    const stderr = (err as { stderr?: Buffer | string }).stderr;
+    const stderrStr = typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    const reason = classifyCaptureError(typeof exitCode === "number" ? exitCode : 1, stderrStr);
+    return {
+      ok: false,
+      reason,
+      message: stderrStr || (err instanceof Error ? err.message : String(err))
+    };
+  }
+}
+
+/**
  * Capture a region. Returns a temp file path on success; caller is
  * responsible for moving / deleting the file.
  */

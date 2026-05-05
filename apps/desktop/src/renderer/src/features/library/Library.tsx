@@ -66,19 +66,14 @@ export function Library({
   const [picks] = useState<number[]>(sizzlePicks);
   const sizzle = sizzleMode || picks.length > 0;
 
-  // Library mode router. The reel + sidebars stay constant across
-  // mode switches — only the center pane swaps content. Per plan
-  // §"Decision 2: Library layout", the reel is the time-anchor and
-  // never reorders, so the user's place in history is preserved
-  // through every inspect/edit transition.
-  type LibraryMode = "browse" | "inspect" | "edit";
-  const [libraryMode, setLibraryMode] = useState<LibraryMode>("browse");
-  /** The captureId being inspected/edited, if any. Tracked
-   *  separately from the fixture-driven `selected` because mode
-   *  navigation needs the REAL record id, and the fixture-driven
-   *  selection is keyed by the synthetic numeric id from
-   *  `captures.ts`. Null when in browse mode. */
-  const [inspectingId, setInspectingId] = useState<string | null>(null);
+  // The single piece of selection state. Null = nothing selected →
+  // grid is shown in the center. String = a real CaptureRecord id →
+  // <Editor> renders in the center, always-edit. There's no
+  // "inspect mode" vs "edit mode" — the editor IS the detail view,
+  // with Pointer (V) as the default tool so clicking the canvas
+  // doesn't draw. Plan §C of docs/plans/...-window-choreography
+  // discussion: "always-edit, no modes at all".
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
 
   const { records, loading, error } = useLibrary();
   const fixtureBacking = useMemo(() => new FixtureBackedRecords(records), [records]);
@@ -90,87 +85,62 @@ export function Library({
   const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
 
   // Look up the real CaptureRecord for the currently-selected fixture
-  // — used by the thumb URL + the Detail rail.
+  // — drives both the right-rail Detail panel and the editor.
   const selectedRecord = current ? fixtureBacking.recordFor(current.id) : null;
 
-  // Resolve the inspect/edit target — a real CaptureRecord we can
-  // hand to the editor / inspect canvas. Falls back to nothing when
-  // the inspecting id no longer maps to a live record (handles the
-  // stale-selection case from §"Phase 2 / Stale-selection fallback").
-  const inspectingRecord: CaptureRecord | null = useMemo(() => {
-    if (inspectingId === null) return null;
-    return records.find((r) => r.id === inspectingId) ?? null;
-  }, [records, inspectingId]);
+  // Resolve the editor's target by ID (separate from the fixture-
+  // driven `selectedRecord` because the fixture id is synthetic).
+  const editorRecord: CaptureRecord | null = useMemo(() => {
+    if (selectedRecordId === null) return null;
+    return records.find((r) => r.id === selectedRecordId) ?? null;
+  }, [records, selectedRecordId]);
 
-  // Stale-selection fallback: when the user is inspecting a record
-  // that disappears from the live list (e.g. a soft-delete races
-  // an open editor), fall back to the most recent record. Beats
-  // dumping the user back to browse and losing context.
+  // Stale-selection fallback: when the live list no longer contains
+  // the selected record (e.g. a soft-delete races an open editor),
+  // clear the selection back to "no selection" rather than dumping
+  // the user into a 404 state. The reel + grid still show the
+  // user's history; they pick something new.
   useEffect(() => {
-    if (libraryMode === "browse") return;
-    if (inspectingRecord !== null) return;
-    if (records.length === 0) {
-      setLibraryMode("browse");
-      setInspectingId(null);
-      return;
-    }
-    setInspectingId(records[0]!.id);
-  }, [libraryMode, inspectingRecord, records]);
+    if (selectedRecordId === null) return;
+    if (editorRecord !== null) return;
+    setSelectedRecordId(null);
+  }, [selectedRecordId, editorRecord]);
 
-  // Mode keyboard shortcuts:
-  //   • ESC   — step back (edit→inspect→browse)
-  //   • E     — inspect→edit
-  //   • Click in reel/grid — browse→inspect on the clicked record
-  // Editor.tsx has its own ESC handler for canceling drafts; that
-  // one runs first because it's attached to the editor canvas.
-  // Once the draft is cleared, our window-level handler fires on
-  // the next ESC and exits edit mode.
+  // ESC clears the selection (back to "browse the grid"). Editor.tsx
+  // has its own ESC handler for canceling a mid-drag draft; that
+  // one runs first because it's bound at the canvas level. Once
+  // the draft is cleared, our window-level handler fires on the
+  // next ESC and clears the selection.
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === "Escape") {
-        if (libraryMode === "edit") {
-          event.preventDefault();
-          setLibraryMode("inspect");
-        } else if (libraryMode === "inspect") {
-          event.preventDefault();
-          setLibraryMode("browse");
-          setInspectingId(null);
-        }
-        return;
-      }
-      if (event.key === "e" || event.key === "E") {
-        if (libraryMode === "inspect" && inspectingRecord !== null) {
-          event.preventDefault();
-          setLibraryMode("edit");
-        }
-        return;
+      if (selectedRecordId !== null) {
+        event.preventDefault();
+        setSelectedRecordId(null);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [libraryMode, inspectingRecord]);
+  }, [selectedRecordId]);
 
   /**
-   * Single-click handler for cells / reel frames. When the clicked
-   * fixture has a real record behind it, enter inspect mode on that
-   * record. Otherwise (fixture-only data, e.g. dev placeholders)
-   * fall back to the legacy `setSelected` so the right-rail
-   * preview still updates.
+   * Single-click handler for cells / reel frames. Sets BOTH the
+   * fixture-driven `selected` (drives reel/grid highlight) AND the
+   * real-record selection (drives the center-pane editor + right
+   * rail). Fixture-only cells (dev placeholders without a record)
+   * fall back to clearing the editor selection.
    */
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
     const record = fixtureBacking.recordFor(c.id);
-    if (record !== null) {
-      setInspectingId(record.id);
-      setLibraryMode("inspect");
-    }
+    setSelectedRecordId(record?.id ?? null);
   }
 
   return (
-    <div className="psl" data-mode={libraryMode}>
+    <div className="psl" data-mode={selectedRecordId === null ? "browse" : "edit"}>
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -371,7 +341,7 @@ export function Library({
           </div>
         </section>
 
-        {libraryMode === "browse" && (
+        {editorRecord === null && (
         <div className="psl__grid-wrap">
           {grouped.slice(0, 2).map((g) => (
             <div key={g.day}>
@@ -425,19 +395,9 @@ export function Library({
           ))}
         </div>
         )}
-        {libraryMode === "inspect" && inspectingRecord !== null && (
-          <InspectPane
-            record={inspectingRecord}
-            onEdit={() => setLibraryMode("edit")}
-            onClose={() => {
-              setLibraryMode("browse");
-              setInspectingId(null);
-            }}
-          />
-        )}
-        {libraryMode === "edit" && inspectingRecord !== null && (
+        {editorRecord !== null && (
           <div className="psl__edit-pane">
-            <Editor captureId={inspectingRecord.id} embedded />
+            <Editor captureId={editorRecord.id} embedded />
           </div>
         )}
       </main>
@@ -631,12 +591,13 @@ export function Library({
                 <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
               </svg>
             </button>
-            <button title="Open full editor">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
-              </svg>
-              Editor
-            </button>
+            {/* The "Editor" button used to open a separate editor
+                window — now the editor is always in-place at the
+                center pane when something's selected, so the
+                button is redundant. Reserve the slot for a
+                future "Pop out to standalone editor" affordance
+                if a user ever wants the chrome-less editor for
+                a focused session. */}
           </div>
           </>)}
         </div>
@@ -662,61 +623,3 @@ export function Library({
   );
 }
 
-/**
- * Inspect mode body — selected record zoomed into the main pane.
- * The reel stays pinned at the top of `<main>`; this component
- * fills the area below it. Single-click on a tile / reel frame
- * enters this mode; ESC returns to browse; E enters edit. The
- * meta strip below the image surfaces capture metadata so the
- * user has full context without losing their place in history.
- */
-function InspectPane({
-  record,
-  onEdit,
-  onClose
-}: {
-  record: CaptureRecord;
-  onEdit: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="psl__inspect">
-      <div className="psl__inspect-canvas">
-        <img
-          src={cacheUrl(record.id, 1440)}
-          alt={record.source_app_name ?? "Capture"}
-          // contain: preserve aspect ratio inside the canvas frame
-          // (the inspect-canvas has no fixed aspect-ratio, so the
-          // image fills whichever dimension is the natural fit).
-          style={{
-            display: "block",
-            maxWidth: "100%",
-            maxHeight: "100%",
-            objectFit: "contain"
-          }}
-        />
-      </div>
-      <div className="psl__inspect-meta">
-        <div className="psl__inspect-meta-l">
-          <b>{record.source_app_name ?? "Capture"}</b>
-          <span>
-            {record.width_px}×{record.height_px}
-          </span>
-          <span>{new Date(record.captured_at).toLocaleString()}</span>
-        </div>
-        <div className="psl__inspect-meta-r">
-          <button className="psl__chip-btn" onClick={onClose} type="button">
-            Close (Esc)
-          </button>
-          <button
-            className="psl__chip-btn psl__chip-btn--accent"
-            onClick={onEdit}
-            type="button"
-          >
-            Edit (E)
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

@@ -789,68 +789,13 @@
 /* Phase 2 Slice C — in-library Inspect / Edit modes              */
 /* ============================================================== */
 
-/* In inspect / edit modes the center pane IS the focused surface —
-   the right-rail Detail panel would just duplicate the preview AND
-   confuse the user with a second "Edit" button. Hide the rail and
-   reflow the grid template to give the center pane the width. */
-.psl[data-mode="inspect"],
-.psl[data-mode="edit"] {
-  grid-template-columns: 220px 1fr 0;
-}
-.psl[data-mode="inspect"] .psl__right,
-.psl[data-mode="edit"] .psl__right {
-  display: none;
-}
-
-/* Inspect pane — fills the main column below the reel. The reel
-   stays pinned (no z-order shenanigans needed; the grid section
-   above us is conditionally rendered, so when we're shown the
-   layout naturally collapses to reel + inspect-pane). */
-.psl__inspect {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 14px 18px;
-  gap: 10px;
-}
-.psl__inspect-canvas {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-input, #050403);
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.psl__inspect-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 4px;
-  font: 500 11px/1 var(--font-mono);
-  color: var(--text-secondary);
-}
-.psl__inspect-meta-l {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-.psl__inspect-meta-l b {
-  color: var(--text-primary);
-  font: 600 12px/1 var(--font-sans);
-}
-.psl__inspect-meta-r {
-  display: flex;
-  gap: 8px;
-}
-
 /* Edit pane — wraps the embedded <Editor>. The Editor component has
-   its own .editor-root absolute layout; we just give it a fitted
-   container under the reel. */
+   its own .editor-root grid layout; we just give it a fitted
+   container under the reel. The right rail STAYS VISIBLE — the
+   user still wants quick access to the Detail/History/OCR panel
+   while annotating (Codex captions, Apply tags, Copy as alt-text).
+   This is the "always-edit, no modes" pattern: selection-only
+   state, no modal exit needed. */
 .psl__edit-pane {
   flex: 1 1 auto;
   min-height: 0;

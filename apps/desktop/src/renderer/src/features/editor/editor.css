@@ -65,6 +65,14 @@
   overflow: hidden;
   box-shadow: 0 0 0 1px var(--border-default), 0 12px 40px rgba(0, 0, 0, 0.3);
 }
+/* Pointer tool: default arrow cursor — the user is "viewing", not
+   drawing. Other tools keep the crosshair. */
+.editor-canvas[data-tool="pointer"] {
+  cursor: default;
+}
+.editor-canvas[data-tool="text"] {
+  cursor: text;
+}
 .editor-image {
   display: block;
   width: 100%;

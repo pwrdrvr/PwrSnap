@@ -36,7 +36,7 @@ type LoadState =
   | { kind: "loaded"; record: CaptureRecord; overlays: OverlayRow[] }
   | { kind: "error"; message: string };
 
-type Tool = "arrow" | "rect" | "highlight" | "blur" | "text";
+type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text";
 
 type DraftArrow = {
   kind: "arrow";
@@ -70,6 +70,11 @@ type DraftText = {
 type Draft = DraftArrow | DraftRect | DraftText;
 
 const TOOLS: { id: Tool; label: string; key: string }[] = [
+  // Pointer is the default — no-op on drag. Lets the user click on
+  // the canvas to focus / inspect without accidentally drawing.
+  // Drawing tools require an explicit click on the toolbar (or a key
+  // shortcut: A R H B T).
+  { id: "pointer", label: "Pointer", key: "V" },
   { id: "arrow", label: "Arrow", key: "A" },
   { id: "rect", label: "Rect", key: "R" },
   { id: "highlight", label: "Highlight", key: "H" },
@@ -91,7 +96,7 @@ export function Editor({
   embedded?: boolean;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [tool, setTool] = useState<Tool>("arrow");
+  const [tool, setTool] = useState<Tool>("pointer");
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
@@ -147,6 +152,10 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
+    // Pointer tool is no-op on drag — lets the user click on the
+    // canvas without accidentally drawing. They have to explicitly
+    // select a drawing tool first.
+    if (tool === "pointer") return;
     // If we're mid-text and the user clicks elsewhere, commit/cancel
     // the text first (the input's blur handler will fire).
     if (draft?.kind === "text") return;

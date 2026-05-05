@@ -22,7 +22,7 @@
 // coordinator computes the same hash and looks up by it.
 
 import { existsSync } from "node:fs";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { OverlayRow } from "@pwrsnap/shared";
@@ -132,35 +132,51 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
     }
   }
 
-  // Diagnostic: dump layer dimensions before the composite call so
-  // any future composite-size-mismatch failure is debuggable from
-  // the terminal log alone (no need to re-instrument). Each entry
-  // shows the dimensions the layer claims via its `raw` info plus
-  // the base-image dims we read above.
+  // CRITICAL: sharp's pipeline applies operations in a specific
+  // ORDER, NOT in method-chain order. Per sharp docs, composite
+  // happens AFTER resize/extract/etc. So writing
+  //   sharp(src).composite(layers).resize(140)
+  // actually executes:
+  //   1. read source (3710×1892)
+  //   2. resize to 140 wide → ~71×36
+  //   3. composite 3710×1892 layers onto 71×36 → throws
+  //      "Image to composite must have same dimensions or smaller"
+  //
+  // The fix is to materialize the composite at SOURCE resolution
+  // first (one sharp pass), then resize the composited buffer in a
+  // second sharp pass. The two-pass cost is ~5-10ms — acceptable;
+  // the cache file is reused across all subsequent reads.
+  //
+  // The intermediate format is raw RGBA so we don't pay PNG/WEBP
+  // encode/decode round-trip cost between passes.
+  let bufForResize: Buffer;
+  let intermediateRaw: sharp.CreateRaw | null = null;
   if (compositeLayers.length > 0) {
-    log.info("composite layout", {
-      captureId: req.captureId,
-      base: { width: srcWidthPx, height: srcHeightPx },
-      layers: compositeLayers.map((l) => ({
-        top: l.top,
-        left: l.left,
-        rawWidth: l.raw?.width ?? null,
-        rawHeight: l.raw?.height ?? null,
-        bufferLen: typeof l.input === "object" && l.input !== null && "length" in l.input ? (l.input as Buffer).length : null
-      }))
-    });
+    bufForResize = await sharp(req.srcPath)
+      .composite(compositeLayers)
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    intermediateRaw = { width: srcWidthPx, height: srcHeightPx, channels: 4 };
+  } else {
+    // No overlays — skip the materialize step; sharp can resize
+    // straight from disk in one pass.
+    bufForResize = await readFile(req.srcPath);
   }
 
-  let pipeline = sharp(req.srcPath);
-  if (compositeLayers.length > 0) {
-    pipeline = pipeline.composite(compositeLayers);
-  }
-  pipeline = pipeline.resize({ width: req.width, withoutEnlargement: true });
+  const resizePipeline =
+    intermediateRaw !== null
+      ? sharp(bufForResize, { raw: intermediateRaw })
+      : sharp(bufForResize);
+  const sized = resizePipeline.resize({
+    width: req.width,
+    withoutEnlargement: true
+  });
 
   const buf =
     req.format === "png"
-      ? await pipeline.png({ compressionLevel: 6, effort: 4 }).toBuffer()
-      : await pipeline.webp({ lossless: true, effort: 4 }).toBuffer();
+      ? await sized.png({ compressionLevel: 6, effort: 4 }).toBuffer()
+      : await sized.webp({ lossless: true, effort: 4 }).toBuffer();
 
   // Atomic write — tmp + rename so concurrent readers never see a
   // half-written file. PID in the tmp name lets two render workers

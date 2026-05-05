@@ -92,15 +92,22 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
 
   await mkdir(cacheDir, { recursive: true });
 
-  // Build composite layers. Each entry is an SVG buffer at SOURCE
-  // pixel resolution; sharp paints them on top of the base image
-  // before the resize. Overlay kinds the bake doesn't yet support
-  // (rect/text/highlight/blur/step in this slice) drop out — they
-  // arrive in Slice B.
+  // Build composite layers. Each entry is either an SVG buffer at
+  // source pixel resolution OR (for blur overlays) a pre-blurred
+  // raster buffer extracted from the source. Sharp paints them on
+  // top of the base image before the resize.
+  //
+  // Blur overlays use mask-style blur per region — we extract the
+  // rect from the source, blur it, and composite back at the same
+  // top/left. This is ~30× cheaper than full-source blur + mask
+  // (per the plan §"Render bake") and produces the right behavior
+  // when multiple non-overlapping blur regions are stacked.
   const compositeLayers: sharp.OverlayOptions[] = [];
   for (const row of overlays) {
-    const layer = buildCompositeLayer(row, req.imageWidthPx, req.imageHeightPx);
-    if (layer !== null) compositeLayers.push(layer);
+    const layers = await buildCompositeLayers(row, req.srcPath, req.imageWidthPx, req.imageHeightPx);
+    for (const layer of layers) {
+      compositeLayers.push(layer);
+    }
   }
 
   let pipeline = sharp(req.srcPath);
@@ -142,28 +149,36 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
 }
 
 /**
- * Convert a single overlay row to a sharp composite layer. Returns
- * null when the overlay kind isn't yet supported by the bake. Slice
- * A ships arrow only; rect/text/highlight/blur land in Slice B.
+ * Convert a single overlay row into one or more sharp composite
+ * layers. Most overlay kinds produce exactly one SVG-buffer layer;
+ * `blur` produces one raster-buffer layer (the pre-blurred extract).
+ * Future kinds (step, crop) land in their own slices.
  */
-function buildCompositeLayer(
+async function buildCompositeLayers(
   row: OverlayRow,
+  srcPath: string,
   imageWidthPx: number,
   imageHeightPx: number
-): sharp.OverlayOptions | null {
+): Promise<sharp.OverlayOptions[]> {
   const data = row.data;
   switch (data.kind) {
     case "arrow":
-      return arrowLayer(data, imageWidthPx, imageHeightPx);
+      return [arrowLayer(data, imageWidthPx, imageHeightPx)];
     case "rect":
-    case "text":
+      return [rectLayer(data, imageWidthPx, imageHeightPx)];
     case "highlight":
-    case "blur":
+      return [highlightLayer(data, imageWidthPx, imageHeightPx)];
+    case "text":
+      return [textLayer(data, imageWidthPx, imageHeightPx)];
+    case "blur": {
+      const layer = await blurLayer(data, srcPath, imageWidthPx, imageHeightPx);
+      return layer === null ? [] : [layer];
+    }
     case "step":
     case "crop":
-      return null;
+      return [];
     default:
-      return null;
+      return [];
   }
 }
 
@@ -218,4 +233,138 @@ function pxOf(
   imageHeightPx: number
 ): { x: number; y: number } {
   return { x: pt.x * imageWidthPx, y: pt.y * imageHeightPx };
+}
+
+/* ----------------------------- Rect ----------------------------- */
+
+function rectLayer(
+  data: Extract<OverlayRow["data"], { kind: "rect" }>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): sharp.OverlayOptions {
+  const xPx = data.rect.x * imageWidthPx;
+  const yPx = data.rect.y * imageHeightPx;
+  const wPx = data.rect.w * imageWidthPx;
+  const hPx = data.rect.h * imageHeightPx;
+  // Stroke width derived from image short-side, matching arrow's
+  // visual weight on the same image (~6-9px on a 2× retina capture).
+  const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
+  const strokeWidthPx = clamp(shortSidePx / 220, 4, 14);
+  const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
+  const fillColor = data.color === "auto" ? "#e8743a" : data.color;
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <g stroke-linejoin="round">
+    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
+          fill="none" stroke="white" stroke-width="${strokeWidthPx + outlinePx * 2}" />
+    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
+          fill="none" stroke="${fillColor}" stroke-width="${strokeWidthPx}" />
+  </g>
+</svg>`;
+  return { input: Buffer.from(svg), top: 0, left: 0 };
+}
+
+/* --------------------------- Highlight -------------------------- */
+
+function highlightLayer(
+  data: Extract<OverlayRow["data"], { kind: "highlight" }>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): sharp.OverlayOptions {
+  const xPx = data.rect.x * imageWidthPx;
+  const yPx = data.rect.y * imageHeightPx;
+  const wPx = data.rect.w * imageWidthPx;
+  const hPx = data.rect.h * imageHeightPx;
+  // Marker-pen yellow, semi-transparent. Designed to sit *on top* of
+  // the underlying pixels without obscuring them.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="rgba(255, 220, 80, 0.32)" />
+</svg>`;
+  return { input: Buffer.from(svg), top: 0, left: 0 };
+}
+
+/* ----------------------------- Text ----------------------------- */
+
+function textLayer(
+  data: Extract<OverlayRow["data"], { kind: "text" }>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): sharp.OverlayOptions {
+  const xPx = data.point.x * imageWidthPx;
+  const yPx = data.point.y * imageHeightPx;
+  const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
+  // Two sizes per the schema: small ≈ 1.7%, large ≈ 3.3% of short-side.
+  const fontSizePx = data.size === "large" ? shortSidePx / 30 : shortSidePx / 60;
+  const accent = data.color === "auto" ? "#e8743a" : data.color;
+  // Black halo via paint-order. xml-escape the body so user input
+  // can't break out of the SVG.
+  const escaped = escapeXml(data.body);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <text x="${xPx}" y="${yPx}"
+        font-family="Helvetica, Arial, sans-serif"
+        font-size="${fontSizePx}"
+        font-weight="600"
+        fill="${accent}"
+        stroke="rgba(0,0,0,0.7)"
+        stroke-width="${fontSizePx * 0.08}"
+        paint-order="stroke"
+        dominant-baseline="hanging">${escaped}</text>
+</svg>`;
+  return { input: Buffer.from(svg), top: 0, left: 0 };
+}
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/* ----------------------------- Blur ----------------------------- */
+
+async function blurLayer(
+  data: Extract<OverlayRow["data"], { kind: "blur" }>,
+  srcPath: string,
+  imageWidthPx: number,
+  imageHeightPx: number
+): Promise<sharp.OverlayOptions | null> {
+  // Mask-style blur: extract the rect from the source, blur it,
+  // composite back at the same coords. Cheaper than blurring the
+  // full source + masking because the blur kernel's cost is
+  // O(width × height).
+  const left = Math.round(data.rect.x * imageWidthPx);
+  const top = Math.round(data.rect.y * imageHeightPx);
+  const width = Math.round(data.rect.w * imageWidthPx);
+  const height = Math.round(data.rect.h * imageHeightPx);
+  if (width <= 0 || height <= 0) return null;
+
+  // Clamp to the image bounds in case the rect crept past the edge
+  // (renderer should clamp too, but defense in depth).
+  const clamped = {
+    left: Math.max(0, Math.min(imageWidthPx - 1, left)),
+    top: Math.max(0, Math.min(imageHeightPx - 1, top)),
+    width: Math.max(1, Math.min(imageWidthPx - left, width)),
+    height: Math.max(1, Math.min(imageHeightPx - top, height))
+  };
+
+  // Sigma proportional to the rect's short side so the blur amount
+  // looks similar regardless of the rect's size — a small blur on
+  // a small region matches a large blur on a large region visually.
+  // Cap at 60 to keep the kernel cost bounded.
+  const rectShortSidePx = Math.min(clamped.width, clamped.height);
+  const sigma = Math.min(60, Math.max(8, rectShortSidePx / 8));
+
+  const buf = await sharp(srcPath).extract(clamped).blur(sigma).png().toBuffer();
+
+  return {
+    input: buf,
+    top: clamped.top,
+    left: clamped.left
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

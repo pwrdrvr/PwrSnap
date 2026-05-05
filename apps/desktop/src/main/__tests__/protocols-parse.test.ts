@@ -114,4 +114,39 @@ describe("parseCacheUrl", () => {
   test("tolerates a single trailing slash", () => {
     expect(parseCacheUrl("pwrsnap-cache://r/abc/640w.webp/")?.captureId).toBe("abc");
   });
+
+  test("strips ?v=<n> cache-buster query suffix", () => {
+    // Renderer appends ?v=<overlays_version> so Chromium re-fetches
+    // after edits. The query has no semantic meaning to the
+    // protocol; the parser must strip it before path-matching or
+    // every cache-busted request 404s.
+    expect(parseCacheUrl("pwrsnap-cache://r/abc/640w.webp?v=5")).toEqual({
+      captureId: "abc",
+      width: 640,
+      format: "webp"
+    });
+    expect(parseCacheUrl("pwrsnap-cache://r/abc/72w.png?v=0")).toEqual({
+      captureId: "abc",
+      width: 72,
+      format: "png"
+    });
+    // Empty query string should also work.
+    expect(parseCacheUrl("pwrsnap-cache://r/abc/640w.webp?")).toEqual({
+      captureId: "abc",
+      width: 640,
+      format: "webp"
+    });
+    // Hash fragments stripped too.
+    expect(parseCacheUrl("pwrsnap-cache://r/abc/640w.webp#anchor")).toEqual({
+      captureId: "abc",
+      width: 640,
+      format: "webp"
+    });
+    // Trailing slash + query.
+    expect(parseCacheUrl("pwrsnap-cache://r/abc/640w.webp/?v=99")).toEqual({
+      captureId: "abc",
+      width: 640,
+      format: "webp"
+    });
+  });
 });

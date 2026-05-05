@@ -92,6 +92,28 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
 
   await mkdir(cacheDir, { recursive: true });
 
+  // Read the source's ACTUAL pixel dimensions via sharp.metadata
+  // rather than trusting `req.imageWidthPx`/`imageHeightPx` from
+  // the DB. These should match (source-store.ts populates the DB
+  // from sharp.metadata at insert time), BUT a few things can
+  // make them drift:
+  //   • PNGs with `pHYs` density chunks can be re-read at scaled
+  //     dimensions on certain sharp/libvips versions.
+  //   • A migration that updated the row without re-probing the
+  //     file could go stale.
+  //   • A future re-encode would change the file without bumping
+  //     the row.
+  // Since the composite layers MUST match the base's dimensions
+  // (sharp throws "Image to composite must have same dimensions or
+  // smaller" otherwise), reading the truth from sharp at this
+  // exact moment is the only safe input.
+  const srcMeta = await sharp(req.srcPath).metadata();
+  const srcWidthPx = srcMeta.width;
+  const srcHeightPx = srcMeta.height;
+  if (srcWidthPx === undefined || srcHeightPx === undefined) {
+    throw new Error(`compose: sharp.metadata produced no dimensions for ${req.srcPath}`);
+  }
+
   // Build composite layers. Each entry is either an SVG buffer at
   // source pixel resolution OR (for blur overlays) a pre-blurred
   // raster buffer extracted from the source. Sharp paints them on
@@ -104,10 +126,29 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
   // when multiple non-overlapping blur regions are stacked.
   const compositeLayers: sharp.OverlayOptions[] = [];
   for (const row of overlays) {
-    const layers = await buildCompositeLayers(row, req.srcPath, req.imageWidthPx, req.imageHeightPx);
+    const layers = await buildCompositeLayers(row, req.srcPath, srcWidthPx, srcHeightPx);
     for (const layer of layers) {
       compositeLayers.push(layer);
     }
+  }
+
+  // Diagnostic: dump layer dimensions before the composite call so
+  // any future composite-size-mismatch failure is debuggable from
+  // the terminal log alone (no need to re-instrument). Each entry
+  // shows the dimensions the layer claims via its `raw` info plus
+  // the base-image dims we read above.
+  if (compositeLayers.length > 0) {
+    log.info("composite layout", {
+      captureId: req.captureId,
+      base: { width: srcWidthPx, height: srcHeightPx },
+      layers: compositeLayers.map((l) => ({
+        top: l.top,
+        left: l.left,
+        rawWidth: l.raw?.width ?? null,
+        rawHeight: l.raw?.height ?? null,
+        bufferLen: typeof l.input === "object" && l.input !== null && "length" in l.input ? (l.input as Buffer).length : null
+      }))
+    });
   }
 
   let pipeline = sharp(req.srcPath);
@@ -193,17 +234,37 @@ async function buildCompositeLayers(
 }
 
 /**
- * Render an SVG string to a transparent PNG buffer of exactly
- * `width × height` pixels. The `fit: 'fill'` resize forces the
- * output dimensions regardless of what resvg's natural rendering
- * would produce, sidestepping the DPI-multiplier composite mismatch.
+ * Render an SVG string to a RAW RGBA buffer of exactly
+ * `width × height` pixels, returned as a sharp composite layer with
+ * explicit dimensions.
+ *
+ * Why raw RGBA + explicit `raw: { width, height, channels: 4 }`:
+ * sharp's PNG re-encode path can introduce dimension ambiguity (the
+ * PNG metadata + resvg DPI multiplier interaction). Raw buffers
+ * carry no metadata — sharp uses ONLY the dimensions we tell it.
+ * That's the only way to guarantee the composite layer is byte-for-
+ * byte the exact size of the base image, eliminating the
+ * "Image to composite must have same dimensions or smaller" error
+ * once and for all.
+ *
+ * `density: 72` on the SVG read forces resvg to interpret the SVG's
+ * `width="N"` as N pixels (1 user unit = 1 pixel) — matches our
+ * SVG generation which uses pixel-space coords. Without this, resvg
+ * may apply a default 96 DPI multiplier and emit a 1.33× bigger
+ * raster.
  */
 async function rasterize(svg: string, width: number, height: number): Promise<sharp.OverlayOptions> {
-  const png = await sharp(Buffer.from(svg))
+  const raw = await sharp(Buffer.from(svg), { density: 72 })
     .resize(width, height, { fit: "fill" })
-    .png()
+    .ensureAlpha()
+    .raw()
     .toBuffer();
-  return { input: png, top: 0, left: 0 };
+  return {
+    input: raw,
+    raw: { width, height, channels: 4 },
+    top: 0,
+    left: 0
+  };
 }
 
 function arrowSvg(

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { Editor } from "../editor/Editor";
 import { AppIcon, AppTag } from "../shared/AppIcons";
@@ -75,19 +75,43 @@ export function Library({
   // discussion: "always-edit, no modes at all".
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
 
-  // Right-rail visibility state. Three modes:
-  //   • pinned  → rail takes its grid column (360px); editor is
-  //               squeezed to whatever's left.
-  //   • floating + open → rail overlays the right edge of the main
-  //               pane; editor gets full canvas width underneath.
-  //   • floating + closed → rail hidden; small chevron tab on the
-  //               right edge to open it.
-  // Default to pinned in browse mode (right rail is the natural
-  // home for capture metadata when no selection drives the center
-  // pane). When the user enters the editor, default to floating-
-  // closed so the canvas gets full width for annotation work.
-  const [rightRailPinned, setRightRailPinned] = useState(true);
-  const [rightRailOpen, setRightRailOpen] = useState(true);
+  // Right-rail visibility — PwrAgnt's ThreadContextPanel pattern,
+  // adapted for PwrSnap. Two pieces of state:
+  //   • pinned   → rail occupies its 360px grid column; canvas is
+  //                squeezed. Persistent.
+  //   • revealed → transient hover-reveal; only meaningful when not
+  //                pinned. The rail is collapsed to a 48px spine
+  //                on the right edge by default; mouseenter expands
+  //                it over the canvas. mouseleave (with a 200ms
+  //                debounce to absorb transform-induced flicker)
+  //                collapses it again.
+  // `open = pinned || revealed`. Default pinned=true so the rail
+  // is the natural home for capture metadata; user unpins via the
+  // header Pin button when they want max canvas room for editing.
+  const [pinned, setPinned] = useState(true);
+  const [revealed, setRevealed] = useState(false);
+  const open = pinned || revealed;
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Debounced reveal/hide prevents flicker from CSS transform
+  // transitions spawning spurious mouseenter→mouseleave sequences
+  // (the rail visibly moves under the cursor as it expands).
+  const revealRail = useCallback(() => {
+    if (hideTimerRef.current !== undefined) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = undefined;
+    }
+    setRevealed(true);
+  }, []);
+  const hideRail = useCallback(() => {
+    if (hideTimerRef.current !== undefined) {
+      clearTimeout(hideTimerRef.current);
+    }
+    hideTimerRef.current = setTimeout(() => {
+      setRevealed(false);
+      hideTimerRef.current = undefined;
+    }, 200);
+  }, []);
 
   const { records, loading, error } = useLibrary();
   const fixtureBacking = useMemo(() => new FixtureBackedRecords(records), [records]);
@@ -155,11 +179,8 @@ export function Library({
 
   return (
     <div
-      className="psl"
+      className={"psl" + (pinned ? " has-pinned-rail" : "")}
       data-mode={selectedRecordId === null ? "browse" : "edit"}
-      data-rail-mode={
-        rightRailPinned ? "pinned" : rightRailOpen ? "floating-open" : "floating-closed"
-      }
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -420,60 +441,87 @@ export function Library({
             <Editor captureId={editorRecord.id} embedded />
           </div>
         )}
-        {/* Show-rail tab: only rendered when the rail is floating-
-            closed. Sits on the right edge of the center pane; click
-            to re-open the rail (without pinning, so it floats over
-            the canvas rather than reclaiming a column). */}
-        {!rightRailPinned && !rightRailOpen && (
-          <button
-            type="button"
-            className="psl__rail-show-tab"
-            title="Show rail"
-            onClick={() => setRightRailOpen(true)}
-          >
-            <svg width="9" height="14" viewBox="0 0 9 14" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M6 1L1 7l5 6" />
-            </svg>
-          </button>
-        )}
       </main>
 
-      <aside className="psl__right">
+      <aside
+        className={
+          "psl__right" +
+          (pinned ? " is-pinned" : open ? " is-open" : " is-collapsed")
+        }
+        aria-label="Capture details"
+        onMouseEnter={() => {
+          if (!pinned) revealRail();
+        }}
+        onMouseLeave={() => {
+          if (!pinned) hideRail();
+        }}
+        onFocusCapture={() => {
+          if (!pinned) revealRail();
+        }}
+        onBlurCapture={(event) => {
+          if (!pinned && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            hideRail();
+          }
+        }}
+      >
+        {/* Spine — only visible when collapsed (pinned=false,
+            revealed=false). 48px wide vertical strip on the right
+            edge of the canvas. The hamburger button is purely a
+            mouse-target hint; the entire rail also reveals on
+            mouseenter, so users rarely click it. */}
+        <div className="psl__right-spine">
+          <button
+            type="button"
+            className={"psl__right-menu-button" + (open ? " is-active" : "")}
+            aria-label={pinned ? "Unpin context rail" : "Open context rail"}
+            onClick={() => {
+              if (pinned) {
+                setPinned(false);
+                if (hideTimerRef.current !== undefined) {
+                  clearTimeout(hideTimerRef.current);
+                  hideTimerRef.current = undefined;
+                }
+                setRevealed(false);
+                return;
+              }
+              revealRail();
+            }}
+          >
+            <span className="psl__right-menu-glyph" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </button>
+        </div>
+
+        <div className="psl__right-panel">
         <div className="psl__right-tabs">
           <button className="psl__right-tab is-active">Detail</button>
           <button className="psl__right-tab">History</button>
           <button className="psl__right-tab">OCR</button>
-          {/* Rail visibility controls — pin (toggles between
-              column-takes-space vs floats-over-canvas) and close
-              (only meaningful when not pinned; hides the rail
-              entirely so the canvas gets full width). */}
-          <div className="psl__rail-controls">
+          {/* State indicator + Pin/Unpin button — mirrors PwrAgnt's
+              ThreadContextPanel header. Pinned = rail takes its
+              column; Auto-hide = floats over the canvas, hover to
+              reveal. */}
+          <div className="psl__right-rail-actions">
+            <span className="psl__right-rail-state">
+              {pinned ? "Pinned" : "Auto-hide"}
+            </span>
             <button
               type="button"
-              className={rightRailPinned ? "is-pinned" : ""}
-              title={rightRailPinned ? "Unpin (let rail float)" : "Pin rail (take column)"}
+              className="psl__right-pin-button"
+              aria-label={pinned ? "Unpin rail (auto-hide)" : "Pin rail"}
               onClick={() => {
-                setRightRailPinned((p) => !p);
-                // When pinning, ensure it's open. When unpinning, leave open.
-                if (!rightRailPinned) setRightRailOpen(true);
+                setPinned((p) => !p);
+                // When toggling either direction, keep the rail
+                // visible so the user sees the result of their action
+                // without the panel flickering away.
+                setRevealed(true);
               }}
             >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                {/* Pushpin glyph */}
-                <path d="M12 2v8M8 10h8l-2 6h-4z M12 16v6" />
-              </svg>
+              {pinned ? "Unpin" : "Pin"}
             </button>
-            {!rightRailPinned && (
-              <button
-                type="button"
-                title="Hide rail"
-                onClick={() => setRightRailOpen(false)}
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </button>
-            )}
           </div>
         </div>
         <div className="psl__right-body">
@@ -668,6 +716,7 @@ export function Library({
                 a focused session. */}
           </div>
           </>)}
+        </div>
         </div>
       </aside>
 

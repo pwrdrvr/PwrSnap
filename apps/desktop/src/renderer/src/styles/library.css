@@ -312,10 +312,12 @@
    LIBRARY 3-PANE
    ============================================================ */
 .psl {
-  position: relative;            /* anchors floating .psl__right + show-tab */
+  position: relative;            /* anchors the floating .psl__right rail */
   width: 100%; height: 100%;
   display: grid;
-  grid-template-columns: 220px 1fr 360px;
+  /* Default: rail floats; canvas gets full width minus its 48px
+     spine (handled by .psl__main padding-right below). */
+  grid-template-columns: 220px 1fr 0;
   grid-template-rows: 52px 1fr 32px;
   background: var(--bg-app);
   border: 1px solid var(--border-default);
@@ -323,90 +325,21 @@
   overflow: hidden;
   font-family: var(--font-sans);
 }
-/* The center pane is the absolute-positioning anchor for the show-
-   rail tab so it sits within the editor area, not over the topbar. */
+/* Pinned rail takes its own column. PwrAgnt's pattern: pinned is
+   a structural change to the layout; auto-hide is purely visual
+   (the rail floats over the canvas). */
+.psl.has-pinned-rail {
+  grid-template-columns: 220px 1fr 360px;
+}
+/* Center pane anchors the floating rail. */
 .psl__main {
   position: relative;
 }
-/* Right-rail layout modes (Library state):
-     • pinned          → rail takes its 360px column (default).
-     • floating-open   → rail floats over the right edge of the
-                         center pane via position:absolute. Editor
-                         canvas underneath gets the full width.
-     • floating-closed → rail hidden; a small chevron tab on the
-                         right edge of the center pane re-opens it.
-   Switching column template + absolute positioning the aside is
-   cleaner than animating width — the editor canvas instantly gets
-   the freed space, and the rail can fade in/out independently. */
-.psl[data-rail-mode="floating-open"],
-.psl[data-rail-mode="floating-closed"] {
-  grid-template-columns: 220px 1fr 0;
-}
-.psl[data-rail-mode="floating-open"] .psl__right {
-  position: absolute;
-  top: 52px;            /* under the topbar */
-  right: 0;
-  bottom: 32px;         /* above the status bar */
-  width: 360px;
-  z-index: 20;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
-}
-.psl[data-rail-mode="floating-closed"] .psl__right {
-  display: none;
-}
-/* "Show rail" tab — only rendered when floating-closed. Sits on
-   the right edge of the center pane, half-tab-shape, click to
-   re-open the rail. */
-.psl__rail-show-tab {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  width: 22px;
-  height: 64px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border-default);
-  border-right: none;
-  border-radius: 6px 0 0 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  cursor: pointer;
-  z-index: 15;
-  padding: 0;
-}
-.psl__rail-show-tab:hover {
-  color: var(--accent);
-  border-color: var(--accent-border);
-}
-/* Pin / close buttons in the rail header. Compact icon-only buttons
-   that sit alongside the existing Detail / History / OCR tabs. */
-.psl__rail-controls {
-  display: inline-flex;
-  gap: 4px;
-  margin-left: auto;
-  padding-right: 8px;
-}
-.psl__rail-controls button {
-  width: 22px; height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0;
-}
-.psl__rail-controls button:hover {
-  color: var(--text-primary);
-  border-color: var(--border-default);
-}
-.psl__rail-controls button.is-pinned {
-  color: var(--accent);
-  border-color: var(--accent-border);
+/* When the rail floats (not pinned), reserve 48px of canvas space
+   on the right for the spine so canvas content doesn't slide
+   under it. */
+.psl:not(.has-pinned-rail) .psl__main {
+  padding-right: 48px;
 }
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
@@ -691,17 +624,162 @@
   color: var(--button-text-on-accent);
 }
 
-/* Right: Detail / editor */
+/* Right: Detail / editor.
+   Two structural modes (PwrAgnt's ThreadContextPanel pattern):
+     • is-pinned   → rail occupies its 360px grid column. Spine
+                     hidden, panel takes full width. Static layout.
+     • is-collapsed / is-open → rail floats absolutely over the
+                     center pane. Default 360px wide, translated
+                     out by translateX(calc(100% - 48px)) so only
+                     the 48px spine peeks in. is-open removes the
+                     transform, exposing the full panel. */
 .psl__right {
-  grid-column: 3; grid-row: 2;
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border-subtle);
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: row;
   overflow: hidden;
 }
+/* Pinned: take grid column 3, row 2. Hide the spine since the rail
+   is always visible. */
+.psl__right.is-pinned {
+  grid-column: 3; grid-row: 2;
+}
+.psl__right.is-pinned .psl__right-spine {
+  display: none;
+}
+/* Floating modes: position absolute, anchored to right edge of
+   the .psl container. Stacks above the canvas. The 48px spine
+   sticks out via the canvas padding-right reservation. */
+.psl__right.is-collapsed,
+.psl__right.is-open {
+  position: absolute;
+  top: 52px;            /* under the topbar */
+  right: 0;
+  bottom: 32px;         /* above the status bar */
+  width: 360px;
+  z-index: 30;
+  transform: translateX(calc(100% - 48px));
+  transition:
+    transform 160ms ease,
+    box-shadow 140ms ease;
+}
+.psl__right.is-open {
+  transform: translateX(0);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Spine — the 48px-wide vertical strip on the rail's left edge.
+   Holds the hamburger button. Always rendered when not pinned;
+   dimmed in is-open state since the panel itself is the affordance. */
+.psl__right-spine {
+  display: flex;
+  width: 48px;
+  flex: 0 0 48px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated, var(--bg-sidebar));
+}
+.psl__right.is-open .psl__right-spine {
+  display: none;
+}
+.psl__right-menu-button {
+  display: inline-flex;
+  width: 36px; height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease;
+}
+.psl__right-menu-button:hover,
+.psl__right-menu-button:focus-visible,
+.psl__right-menu-button.is-active {
+  border-color: var(--border-default);
+  background: var(--bg-panel-hover, var(--bg-row-active));
+  color: var(--text-primary);
+  outline: none;
+}
+.psl__right-menu-glyph {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.psl__right-menu-glyph span {
+  display: block;
+  width: 14px; height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* Panel — the actual content (tabs + body). When floating + collapsed,
+   it's still rendered but visually muted via opacity transition so the
+   reveal feels smooth. */
+.psl__right-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(8px);
+  transition:
+    opacity 140ms ease,
+    transform 160ms ease;
+}
+.psl__right.is-pinned .psl__right-panel,
+.psl__right.is-open .psl__right-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+/* State indicator + Pin/Unpin button in rail header (next to tabs). */
+.psl__right-rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-right: 4px;
+}
+.psl__right-rail-state {
+  color: var(--text-muted);
+  font: 500 10px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.psl__right-pin-button {
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__right-pin-button:hover,
+.psl__right-pin-button:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+  background: var(--bg-panel-hover, var(--bg-row-active));
+  outline: none;
+}
+
 .psl__right-tabs {
   display: flex; padding: 10px 12px 0;
   gap: 2px;
+  align-items: center;
 }
 .psl__right-tab {
   height: 28px; padding: 0 12px;

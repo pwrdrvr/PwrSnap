@@ -25,6 +25,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
+import { computeArrowGeometry } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
 import "./editor.css";
 
@@ -203,7 +204,12 @@ export function Editor({ captureId }: { captureId: string }) {
             draggable={false}
             className="editor-image"
           />
-          <OverlaySvg overlays={overlays} draft={draft} />
+          <OverlaySvg
+            overlays={overlays}
+            draft={draft}
+            imageWidthPx={record.width_px}
+            imageHeightPx={record.height_px}
+          />
         </div>
       </div>
 
@@ -261,16 +267,21 @@ function Toolbar({
 
 function OverlaySvg({
   overlays,
-  draft
+  draft,
+  imageWidthPx,
+  imageHeightPx
 }: {
   overlays: OverlayRow[];
   draft: DraftArrow | null;
+  imageWidthPx: number;
+  imageHeightPx: number;
 }) {
-  // Render in normalized coords against a 0..1 viewBox, so the SVG
+  // Render in normalized coords against a 0..1 viewBox so the SVG
   // scales with the canvas without recomputing pixel positions.
-  // Stroke widths use a scale-invariant trick: strokeWidth as a
-  // fraction of the viewBox (0.005 ≈ 0.5%) reads visually consistent
-  // across canvas sizes.
+  // The shared smart-arrow geometry expresses stroke as a fraction
+  // of the image short-side, which translates directly to viewBox
+  // units. So the live render in the editor looks visually
+  // identical to the bake step in main — same function, same input.
   const viewBox = "0 0 1 1";
   const arrows = useMemo(
     () =>
@@ -286,6 +297,8 @@ function OverlaySvg({
           fromYn={data.from.y}
           toXn={data.to.x}
           toYn={data.to.y}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
         />
       ))}
       {draft !== null && (
@@ -294,6 +307,8 @@ function OverlaySvg({
           fromYn={draft.fromYn}
           toXn={draft.toXn}
           toYn={draft.toYn}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
           isDraft
         />
       )}
@@ -306,40 +321,71 @@ function ArrowGlyph({
   fromYn,
   toXn,
   toYn,
+  imageWidthPx,
+  imageHeightPx,
   isDraft = false
 }: {
   fromXn: number;
   fromYn: number;
   toXn: number;
   toYn: number;
+  imageWidthPx: number;
+  imageHeightPx: number;
   isDraft?: boolean;
 }) {
-  // Compute a tiny triangle head at `to`, pointing along the line.
-  const dx = toXn - fromXn;
-  const dy = toYn - fromYn;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-  const headLen = 0.025;
-  const headW = 0.014;
-  // Two perpendiculars at the base of the head.
-  const baseX = toXn - ux * headLen;
-  const baseY = toYn - uy * headLen;
-  const px = -uy * headW;
-  const py = ux * headW;
-  const headPath = `M ${toXn} ${toYn} L ${baseX + px} ${baseY + py} L ${baseX - px} ${baseY - py} Z`;
-  const lineEndX = baseX;
-  const lineEndY = baseY;
+  // Smart-arrow geometry — same shared function the sharp bake uses.
+  // strokeFraction is in image-short-side units; the viewBox is
+  // 0..1 normalized coords, so we need to express stroke as a
+  // fraction of viewBox-X (or Y, doesn't matter for stroke). We
+  // pick `min(1/aspect, 1) * strokeFraction` so the visual stroke
+  // width matches what the bake produces post-resize.
+  const geom = computeArrowGeometry({
+    from: { x: fromXn, y: fromYn },
+    to: { x: toXn, y: toYn },
+    imageWidthPx,
+    imageHeightPx
+  });
+
+  const headPolygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
+  // strokeFraction is "stroke / shortSide". The viewBox is
+  // 0..1×0..1, so the visual stroke in viewBox units is
+  // strokeFraction × (shortSide / max(width, height)). We can
+  // approximate as just strokeFraction since for a square image
+  // shortSide == width == height and for non-square the SVG's
+  // preserveAspectRatio="none" makes the visual stroke slightly
+  // anisotropic — acceptable for the live preview.
+  const stroke = geom.strokeFraction;
+  const outline = Math.max(stroke * 0.25, 0.0015);
+
+  const accent = isDraft ? "var(--accent-strong, #ff8c4a)" : "var(--accent, #e8743a)";
   return (
-    <g
-      stroke={isDraft ? "var(--accent-strong, #ff8c4a)" : "var(--accent, #e8743a)"}
-      strokeWidth={0.007}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      fill={isDraft ? "var(--accent-strong, #ff8c4a)" : "var(--accent, #e8743a)"}
-    >
-      <line x1={fromXn} y1={fromYn} x2={lineEndX} y2={lineEndY} />
-      <path d={headPath} />
+    <g strokeLinecap="round" strokeLinejoin="round">
+      {/* white halo for legibility on busy images, matches bake */}
+      <line
+        x1={geom.from.x}
+        y1={geom.from.y}
+        x2={geom.baseCenter.x}
+        y2={geom.baseCenter.y}
+        stroke="white"
+        strokeWidth={stroke + outline * 2}
+        fill="none"
+      />
+      <polygon
+        points={headPolygon}
+        fill="white"
+        stroke="white"
+        strokeWidth={outline * 2}
+      />
+      <line
+        x1={geom.from.x}
+        y1={geom.from.y}
+        x2={geom.baseCenter.x}
+        y2={geom.baseCenter.y}
+        stroke={accent}
+        strokeWidth={stroke}
+        fill="none"
+      />
+      <polygon points={headPolygon} fill={accent} />
     </g>
   );
 }

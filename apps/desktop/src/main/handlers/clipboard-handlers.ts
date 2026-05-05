@@ -41,6 +41,8 @@ export function registerClipboardHandlers(): void {
       const result = await renderViaCoordinator({
         captureId: record.id,
         srcPath: record.src_path,
+        imageWidthPx: record.width_px,
+        imageHeightPx: record.height_px,
         width: targetWidth,
         format: "png"
       });

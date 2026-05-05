@@ -1,22 +1,47 @@
 // Single-flight coordinator. Two parallel renders of the same
-// (captureId, width, format) collapse into one promise — saves CPU
+// (captureId, hash, format) collapse into one promise — saves CPU
 // and prevents concurrent writes to the same cache file.
 //
-// Cancellation: callers don't propagate AbortSignal here in Phase 1;
-// renders complete and the result is reused even by a "cancelled"
-// caller. The savings come from coalescing, not skipping.
+// The cache key is the `render_inputs_hash` that compose() computes
+// internally. We compute the same hash here so the in-flight map
+// can coalesce BEFORE diving into compose. Both sides agree on the
+// canonical form.
+//
+// Cancellation: callers don't propagate AbortSignal here in Phase
+// 1/2; renders complete and the result is reused even by a
+// "cancelled" caller. The savings come from coalescing, not skipping.
 
 import { compose, type RenderRequest, type RenderResult } from "./compose";
 import { getCaptureById } from "../persistence/captures-repo";
+import { listLiveOverlays } from "../persistence/overlays-repo";
+import { computeRenderHash } from "./overlay-hash";
 
 const inFlight = new Map<string, Promise<RenderResult>>();
 
-function keyFor(req: RenderRequest): string {
-  return `${req.captureId}:${req.width}:${req.format}`;
+/**
+ * Build the in-flight key for a render request. We use the
+ * render_inputs_hash so two concurrent calls for the same
+ * (captureId, overlay set, width, format) coalesce — even if the
+ * caller passes width via different paths.
+ */
+function keyFor(req: RenderRequest, renderHash: string): string {
+  return `${req.captureId}:${renderHash}:${req.format}`;
 }
 
 export async function renderViaCoordinator(req: RenderRequest): Promise<RenderResult> {
-  const key = keyFor(req);
+  // Re-derive the hash here so we can coalesce BEFORE compose runs.
+  // compose() will compute the same hash and use it as the cache
+  // file key — the two computations are guaranteed equivalent
+  // because they both pull listLiveOverlays for the same
+  // captureId.
+  const overlays = listLiveOverlays(req.captureId);
+  const renderHash = computeRenderHash({
+    format: req.format,
+    width: req.width,
+    appliedOverlays: overlays
+  });
+
+  const key = keyFor(req, renderHash);
   const pending = inFlight.get(key);
   if (pending !== undefined) return pending;
 
@@ -50,6 +75,8 @@ export async function resolveCacheFile(req: {
   const result = await renderViaCoordinator({
     captureId: req.captureId,
     srcPath: record.src_path,
+    imageWidthPx: record.width_px,
+    imageHeightPx: record.height_px,
     width: req.width,
     format: req.format
   });

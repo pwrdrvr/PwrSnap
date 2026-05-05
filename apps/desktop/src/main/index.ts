@@ -5,6 +5,7 @@ import { bus } from "./command-bus";
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
 // agent-flow / headless path.)
+import { disposeFocusSink, installFocusSink } from "./focus-sink";
 import { registerCaptureHandlers } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
@@ -283,6 +284,11 @@ export function bootstrapApp(): void {
     if (!isE2E) {
       installTray();
     }
+    // Focus-sink: an invisible 1×1 floating-level panel that absorbs
+    // Cocoa's next-key-window cascade when the tray popover hides.
+    // Without it, Cocoa picks the Library as next-key and raises
+    // (un-minimizes) it. See focus-sink.ts for the full rationale.
+    installFocusSink();
     preWarmRegionSelector();
     if (!isE2E) {
       registerCaptureShortcut();
@@ -343,6 +349,7 @@ export function bootstrapApp(): void {
     globalShortcut.unregisterAll();
     disposeRegionSelector();
     disposeTray();
+    disposeFocusSink();
     disposeIpcDispatcher();
     closeDatabase();
   });

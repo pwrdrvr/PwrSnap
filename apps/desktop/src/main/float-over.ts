@@ -20,8 +20,9 @@
 // reveals the already-painted toast — no post-hoc show race with
 // previous-app activation.
 
-import { BrowserWindow, screen } from "electron";
+import { BrowserWindow, globalShortcut, screen } from "electron";
 import { EVENT_CHANNELS, type FloatOverEvent } from "@pwrsnap/shared";
+import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
 
@@ -81,6 +82,50 @@ function anchorBottomRight(window: BrowserWindow): void {
 }
 
 /**
+ * Register the ⌘1 / ⌘2 / ⌘3 globalShortcuts so the user can copy
+ * straight from the float-over without giving it keyboard focus.
+ *
+ * The float-over is a non-activating panel (`type: 'panel'` +
+ * `showInactive`) — it never becomes the focused window of an app,
+ * so plain `keydown` listeners in the renderer don't fire when the
+ * user presses ⌘1 with another app frontmost. globalShortcut
+ * bypasses focus entirely; while these are armed, ANY ⌘1 press
+ * anywhere on macOS triggers our handler.
+ *
+ * Tradeoff: we steal the ⌘1/⌘2/⌘3 hotkeys from the user's other
+ * apps for the lifetime of the LOADED state (≤ ~6s default
+ * countdown, longer if hovering / pinned). Acceptable: the toast
+ * is in-flight, and ⌘1 from the user's app is unlikely to be the
+ * next deliberate keystroke.
+ *
+ * On every state-machine transition out of LOADED we unregister so
+ * the user gets their hotkeys back.
+ */
+let copyShortcutsRegistered = false;
+function armCopyShortcuts(captureId: string): void {
+  if (copyShortcutsRegistered) {
+    disarmCopyShortcuts();
+  }
+  globalShortcut.register("CommandOrControl+1", () => {
+    void bus.dispatch("clipboard:copy", { captureId, preset: "low" }, { principal: "ipc" });
+  });
+  globalShortcut.register("CommandOrControl+2", () => {
+    void bus.dispatch("clipboard:copy", { captureId, preset: "med" }, { principal: "ipc" });
+  });
+  globalShortcut.register("CommandOrControl+3", () => {
+    void bus.dispatch("clipboard:copy", { captureId, preset: "high" }, { principal: "ipc" });
+  });
+  copyShortcutsRegistered = true;
+}
+function disarmCopyShortcuts(): void {
+  if (!copyShortcutsRegistered) return;
+  globalShortcut.unregister("CommandOrControl+1");
+  globalShortcut.unregister("CommandOrControl+2");
+  globalShortcut.unregister("CommandOrControl+3");
+  copyShortcutsRegistered = false;
+}
+
+/**
  * The single entry point for the rest of the main process to drive the
  * float-over. All visibility transitions go through here so the IPC
  * event and the BrowserWindow state stay in lockstep.
@@ -112,6 +157,7 @@ export function setFloatOverState(event: FloatOverEvent): void {
         window.showInactive();
       }
       window.moveTop();
+      armCopyShortcuts(event.captureId);
       break;
     }
     case "cancel": {
@@ -123,6 +169,7 @@ export function setFloatOverState(event: FloatOverEvent): void {
       if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
         singleton.hide();
       }
+      disarmCopyShortcuts();
       break;
     }
     case "dismiss": {
@@ -133,6 +180,7 @@ export function setFloatOverState(event: FloatOverEvent): void {
       if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
         singleton.hide();
       }
+      disarmCopyShortcuts();
       break;
     }
   }

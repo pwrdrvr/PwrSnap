@@ -156,6 +156,9 @@ export function FloatOverHost(): React.ReactElement {
   return (
     <FloatOver
       src={previewSrc}
+      onCopy={(preset) => {
+        void dispatch("clipboard:copy", { captureId: record.id, preset });
+      }}
       srcW={record.width_px}
       srcH={record.height_px}
       onDismiss={() => {

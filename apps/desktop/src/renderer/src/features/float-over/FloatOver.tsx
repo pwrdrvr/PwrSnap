@@ -114,6 +114,7 @@ export function FloatOver({
   srcH = 1800,
   onDismiss,
   onEdit,
+  onCopy,
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
@@ -129,6 +130,12 @@ export function FloatOver({
   srcH?: number;
   onDismiss?: () => void;
   onEdit?: () => void;
+  /** Fired when the user clicks Low / Med / High in the toast. The
+   *  parent dispatches `clipboard:copy` with the preset; this
+   *  component just animates the "copied" badge. Without this prop
+   *  wired (which was the original bug), the buttons looked
+   *  responsive but never actually copied anything. */
+  onCopy?: (preset: "low" | "med" | "high") => void;
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
@@ -207,6 +214,13 @@ export function FloatOver({
   }, []);
 
   const handleCopy = (presetId: string) => {
+    // Tell the parent to actually run the copy. The local state
+    // below is just for the "copied" badge animation — without the
+    // onCopy call this button used to be pure cosmetics. Now it
+    // dispatches `clipboard:copy` via FloatOverHost.
+    if (presetId === "low" || presetId === "med" || presetId === "high") {
+      onCopy?.(presetId);
+    }
     setCopiedId(presetId);
     setTimeout(() => setCopiedId((c) => (c === presetId ? null : c)), 1200);
   };

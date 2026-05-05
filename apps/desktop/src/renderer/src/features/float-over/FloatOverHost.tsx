@@ -17,7 +17,7 @@
 // persistent renderer there's no reload, and the timer cleanup added
 // to FloatOver in this same phase clears the timer on unmount.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CaptureRecord, FloatOverEvent } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
 import { cacheUrl, dispatch } from "../../lib/pwrsnap";
@@ -30,6 +30,37 @@ type HostState =
 
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
+
+  // ResizeObserver → main: shrink the BrowserWindow to fit the visible
+  // toast. The window is constructed at a generous 700px height (we
+  // can't know the toast height at create time), but rendering a
+  // 580-ish px toast inside it leaves ~120px of empty body below the
+  // toast — and that empty region was rendering as a grayish "tail"
+  // (the toast's `box-shadow: 0 24px 64px rgba(0,0,0,0.55)` bleeding
+  // into transparent body) AND extending the window's bottom edge
+  // into the macOS Dock area.
+  //
+  // Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize` plumbing.
+  // Body shadow extends `y_offset + blur ≈ 88px` past the toast's
+  // bottom edge; we pad with 96px so the soft shadow doesn't clip
+  // against the bottom of the new window bounds.
+  const SHADOW_PADDING_PX = 96;
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (el === null) return;
+    const post = (): void => {
+      const rect = el.getBoundingClientRect();
+      window.pwrsnapApi?.requestFloatOverResize?.({
+        width: Math.ceil(rect.width),
+        height: Math.ceil(rect.height + SHADOW_PADDING_PX)
+      });
+    };
+    post();
+    const ro = new ResizeObserver(post);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [state.kind]);
 
   // Subscribe to main → renderer state events. One listener for the
   // life of the renderer; main re-emits its last event on
@@ -108,19 +139,23 @@ export function FloatOverHost(): React.ReactElement {
     };
   }, [state]);
 
-  // IDLE: render an empty placeholder. The user never sees this — the
-  // selector covers the whole display while we're idle. Keeping the
-  // root <div> rendered (rather than `null`) means the BrowserWindow
-  // has a body to compose; some Electron versions get visually weird
-  // about a body-less window when shown.
+  // Single return path so contentRef wraps every state — the
+  // ResizeObserver above always has a stable target it can observe
+  // across state transitions. Inside the wrapper we branch on state.
+  let body: React.ReactNode;
   if (state.kind === "idle") {
-    return <div data-state="idle" style={{ width: "100%", height: "100%" }} />;
-  }
-  if (state.kind === "loading") {
+    // IDLE: minimal empty placeholder so the wrapper has a measurable
+    // height of ~0. The user never sees this — the selector covers the
+    // whole display while we're idle. Keeping a rendered div (rather
+    // than `null`) means the BrowserWindow always has a body to
+    // compose; some Electron versions get visually weird about a
+    // body-less window when shown.
+    body = <div data-state="idle" />;
+  } else if (state.kind === "loading") {
     // The user can briefly see this on the agent path (no selector to
     // hide behind). Keep it minimal; the LOADED transition replaces
     // it within ~10ms once library:byId resolves.
-    return (
+    body = (
       <div
         data-state="loading"
         style={{
@@ -132,9 +167,8 @@ export function FloatOverHost(): React.ReactElement {
         Loading capture…
       </div>
     );
-  }
-  if (state.kind === "error") {
-    return (
+  } else if (state.kind === "error") {
+    body = (
       <div
         data-state="error"
         style={{
@@ -146,32 +180,42 @@ export function FloatOverHost(): React.ReactElement {
         Couldn't load capture: {state.message}
       </div>
     );
+  } else {
+    const { record } = state;
+    // 1440px medium preset matches the float-over's intended display
+    // size and pre-warms the cache for the user's most-likely first
+    // ⌘ shortcut.
+    const previewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
+    body = (
+      <FloatOver
+        src={previewSrc}
+        onCopy={(preset) => {
+          void dispatch("clipboard:copy", { captureId: record.id, preset });
+        }}
+        srcW={record.width_px}
+        srcH={record.height_px}
+        onDismiss={() => {
+          // User dismissed via the X / countdown / Esc-on-toast. Tell
+          // main to hide; main flips state HIDDEN and the IPC echo
+          // resets us to IDLE.
+          void dispatch("float-over:dismiss", {});
+        }}
+        onEdit={() => {
+          // Open the editor in a new window. Toast stays put — closing
+          // it is independent of opening the editor.
+          void dispatch("editor:open", { captureId: record.id });
+        }}
+      />
+    );
   }
 
-  const { record } = state;
-  // 1440px medium preset matches the float-over's intended display
-  // size and pre-warms the cache for the user's most-likely first
-  // ⌘ shortcut.
-  const previewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
+  // The wrapper is `display: inline-block` so its bounding rect tracks
+  // the natural height of its content (rather than stretching to fill
+  // the body's 100% height, which would always report the full window
+  // height and defeat the resize-to-fit logic).
   return (
-    <FloatOver
-      src={previewSrc}
-      onCopy={(preset) => {
-        void dispatch("clipboard:copy", { captureId: record.id, preset });
-      }}
-      srcW={record.width_px}
-      srcH={record.height_px}
-      onDismiss={() => {
-        // User dismissed via the X / countdown / Esc-on-toast. Tell
-        // main to hide; main flips state HIDDEN and the IPC echo
-        // resets us to IDLE.
-        void dispatch("float-over:dismiss", {});
-      }}
-      onEdit={() => {
-        // Open the editor in a new window. Toast stays put — closing
-        // it is independent of opening the editor.
-        void dispatch("editor:open", { captureId: record.id });
-      }}
-    />
+    <div ref={contentRef} style={{ display: "inline-block", width: "100%" }}>
+      {body}
+    </div>
   );
 }

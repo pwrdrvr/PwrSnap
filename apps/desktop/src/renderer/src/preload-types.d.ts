@@ -56,6 +56,7 @@ declare global {
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
+      requestFloatOverResize(payload: { width: number; height: number }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;
         innerHeight: number;

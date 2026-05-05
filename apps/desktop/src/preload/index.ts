@@ -51,6 +51,14 @@ const REGION_SELECTOR_MODE_CHANNEL = "region-selector:mode";
 // ResizeObserver and asks main to setContentSize so the popover never
 // has dead space at the bottom or clips a row.
 const TRAY_RESIZE_CHANNEL = "tray:resize";
+// Float-over toast applies the same trick — the BrowserWindow is
+// constructed at a generous fixed height because we don't know the
+// content size in advance, but as soon as the renderer mounts it
+// measures `.fo` and asks main to shrink the window to fit. Stops
+// the empty body region below the toast from rendering as a grayish
+// "tail" (its box-shadow bleeding into transparent space) and from
+// extending the window's bottom edge into the Dock area.
+const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
 
 // Single window entry shipped to the renderer for snap-to-window.
 // Keep this in sync with the renderer's RegionSelector type.
@@ -155,6 +163,17 @@ const pwrsnapApi = {
    */
   requestTrayResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(TRAY_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Float-over renderer → main: tell main to size the toast window's
+   * content to the measured DOM bounds (toast height + box-shadow
+   * padding). Called from a ResizeObserver in FloatOverHost.tsx on
+   * every state transition (idle → loading → loaded → idle), so the
+   * window always tracks the visible toast and the Dock-overlap +
+   * shadow-tail artifacts both go away.
+   */
+  requestFloatOverResize(payload: { width: number; height: number }): void {
+    ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
   },
   /**
    * Subscribe to forwarded-key events from main. globalShortcut on

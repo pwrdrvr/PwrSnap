@@ -20,13 +20,24 @@
 // reveals the already-painted toast — no post-hoc show race with
 // previous-app activation.
 
-import { BrowserWindow, globalShortcut, screen } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain, screen } from "electron";
 import { EVENT_CHANNELS, type FloatOverEvent } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createFloatOverWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:float-over");
+
+const FLOAT_OVER_RESIZE_CHANNEL = "float-over:resize";
+/** Hard floor + ceiling so a renderer bug can't shrink the toast to
+ *  nothing or grow it taller than any reasonable display. */
+const FLOAT_OVER_HEIGHT_MIN = 160;
+const FLOAT_OVER_HEIGHT_MAX = 800;
+/** Window width is fixed by the design — must match `width` in
+ *  `createFloatOverWindow`. The toast's `.fo` element is forced to
+ *  `width: 100%` of the body via `body[data-stage="float-over"] .fo`,
+ *  so all variants render at exactly this width. */
+const FLOAT_OVER_WIDTH = 392;
 
 type FloatOverState =
   | { kind: "hidden" }
@@ -43,8 +54,45 @@ let lastEvent: FloatOverEvent | null = null;
  *  then, IPC events are buffered in `lastEvent` and re-sent on dom-ready. */
 let rendererReady = false;
 
+/**
+ * Listen for float-over-renderer resize requests and `setContentSize`
+ * so the toast window hugs its content. Called once on first window
+ * creation. Each resize re-anchors to bottom-right because shrinking
+ * height upward would otherwise leave the toast floating mid-screen
+ * (we anchor by top-left coordinate, so growing/shrinking from a
+ * fixed top-left moves the bottom edge).
+ *
+ * Mirrors `wireTrayResizeChannel` in tray.ts almost verbatim — same
+ * pattern, just keyed on a different channel + window singleton.
+ */
+let resizeChannelWired = false;
+function wireFloatOverResizeChannel(): void {
+  if (resizeChannelWired) return;
+  resizeChannelWired = true;
+  ipcMain.on(FLOAT_OVER_RESIZE_CHANNEL, (_event, payload: unknown) => {
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      typeof (payload as { height: unknown }).height !== "number"
+    ) {
+      return;
+    }
+    const height = Math.round((payload as { height: number }).height);
+    if (!Number.isFinite(height)) return;
+    const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN, Math.min(FLOAT_OVER_HEIGHT_MAX, height));
+    if (singleton === null || singleton.isDestroyed()) return;
+    const current = singleton.getContentSize();
+    if (current[1] === clamped) return;
+    singleton.setContentSize(FLOAT_OVER_WIDTH, clamped, false);
+    if (singleton.isVisible()) {
+      anchorBottomRight(singleton);
+    }
+  });
+}
+
 function getOrCreate(): BrowserWindow {
   if (singleton !== null && !singleton.isDestroyed()) return singleton;
+  wireFloatOverResizeChannel();
   const window = createFloatOverWindow();
   singleton = window;
   rendererReady = false;

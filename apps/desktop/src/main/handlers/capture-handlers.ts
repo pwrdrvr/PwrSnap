@@ -34,7 +34,6 @@ import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
 import { setFloatOverState } from "../float-over";
-import { findMainLibraryWindow } from "../window";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -68,28 +67,13 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:interactive", async (req) => {
     const mode = req.mode ?? "auto";
 
-    // Hide the library window for the duration of the capture flow.
-    // Why: when the tray popover is the focused window of PwrSnap and
-    // we hide it (in pickRegion's hideTrayPopoverIfVisible), Cocoa
-    // walks PwrSnap's window list to pick the next-key window —
-    // raising (and un-minimizing) the library even if the user had
-    // intentionally tucked it away. Hiding the library here removes
-    // it from the next-key cascade entirely.
-    //
-    // We capture both `wasVisible` (true for shown, false for
-    // minimized OR hidden) and `wasMinimized` (true for dock-tile)
-    // so the restore path can put the window back exactly where the
-    // user left it. The `wasVisible || wasMinimized` test covers
-    // both "user had a real window" and "user had a minimized
-    // window" — Cocoa's cascade affects both cases.
-    const library = findMainLibraryWindow();
-    const libraryWasVisible = library?.isVisible() ?? false;
-    const libraryWasMinimized = library?.isMinimized() ?? false;
-    const shouldRestoreLibrary =
-      library !== null && (libraryWasVisible || libraryWasMinimized);
-    if (shouldRestoreLibrary) {
-      library!.hide();
-    }
+    // Note (2026-05-04): the prior "hide the library, restore at end"
+    // dance is gone. The tray popover is now a non-activating
+    // NSPanel (`type: 'panel'` in createTrayWindow), so its show
+    // doesn't activate PwrSnap and its hide doesn't cascade focus
+    // to the Library. The Library can stay exactly where the user
+    // left it through the entire capture flow — visible, minimized,
+    // hidden, on another Space — and Cocoa won't touch it.
 
     const selection = await pickRegion({ mode });
 
@@ -111,7 +95,6 @@ export function registerCaptureHandlers(): void {
       if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
         await activateApp(selection.previousAppPid);
       }
-      restoreLibrary(library, libraryWasVisible, libraryWasMinimized, shouldRestoreLibrary);
       return err({
         kind: "capture",
         code: selection.reason,
@@ -184,7 +167,6 @@ export function registerCaptureHandlers(): void {
       if (previousAppPid !== null) {
         await activateApp(previousAppPid);
       }
-      restoreLibrary(library, libraryWasVisible, libraryWasMinimized, shouldRestoreLibrary);
     }
   });
 
@@ -226,38 +208,6 @@ export function registerCaptureHandlers(): void {
       message: "capture:prepareDrag lands with the render pipeline (Phase 1.6+)"
     });
   });
-}
-
-/**
- * Restore the library window to its pre-capture-flow state. Called in
- * the finally branches of `capture:interactive` to undo the defensive
- * `library.hide()` that ran at handler entry. Uses `showInactive` so
- * we don't grab focus from the just-activated previous app, and
- * re-minimizes if the user had it tucked away.
- */
-function restoreLibrary(
-  library: BrowserWindow | null,
-  wasVisible: boolean,
-  wasMinimized: boolean,
-  shouldRestore: boolean
-): void {
-  if (!shouldRestore || library === null || library.isDestroyed()) return;
-  // showInactive brings the window back without making it key. The
-  // float-over (floating level) stays above it; the previously-
-  // frontmost app stays frontmost at the OS level. Library lands
-  // back at the same z-position in PwrSnap's window list.
-  if (wasVisible) {
-    library.showInactive();
-  }
-  // If the user had it minimized, return to that state. Cocoa needs
-  // the window to be shown FIRST then minimized — calling minimize
-  // on a hidden window is a no-op on macOS.
-  if (wasMinimized) {
-    if (!library.isVisible()) {
-      library.showInactive();
-    }
-    library.minimize();
-  }
 }
 
 /**

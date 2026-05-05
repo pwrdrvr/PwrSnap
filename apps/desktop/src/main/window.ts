@@ -112,7 +112,23 @@ export function createTrayWindow(): BrowserWindow {
   // black-background regression that plagued transparent+vibrancy
   // combos. backgroundColor stays fully transparent so the popover
   // material shows through.
+  //
+  // 2026-05-04: `type: 'panel'` — Electron PR #34388 wires NSPanel +
+  // NSWindowStyleMaskNonactivatingPanel under this option. This is
+  // the macOS primitive every menubar capture tool (CleanShot X,
+  // Shottr, SnagIt) uses to keep its tray popover from activating
+  // the owning app on show. Without this, every show()/focus() on
+  // the tray window made PwrSnap the frontmost app, and when the
+  // user clicked an item and the tray hid, Cocoa cascaded focus to
+  // the next-key window of our app — the Library — popping it
+  // unexpectedly into view. The non-activating panel never makes
+  // the app frontmost, so there's no cascade target. PR #40307
+  // (Electron 28+) additionally suppressed the
+  // `activateIgnoringOtherApps` call on `focus()` for panel
+  // windows, so even calls inside our render path can't accidentally
+  // re-activate the app.
   const window = new BrowserWindow({
+    type: "panel",
     // Width must match TRAY_WIDTH in tray.ts. The renderer's
     // ResizeObserver only updates HEIGHT — width stays at whatever
     // the BrowserWindow was constructed with, so a stale value here
@@ -171,7 +187,14 @@ export function createFloatOverWindow(): BrowserWindow {
   const width = 392;
   const height = 700;
 
+  // `type: 'panel'` — same rationale as the tray. The float-over is
+  // a transient toast; we don't want any of its show()/focus()/
+  // moveTop() calls to activate PwrSnap and trigger a focus cascade
+  // back to the Library window. The non-activating panel guarantees
+  // the app stays in the background regardless of what we call on
+  // this window.
   const window = new BrowserWindow({
+    type: "panel",
     width,
     height,
     show: false,

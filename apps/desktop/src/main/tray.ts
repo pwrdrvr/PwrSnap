@@ -212,8 +212,16 @@ function toggleTrayWindow(): void {
   } catch {
     /* not all macOS versions accept all vibrancy values; non-fatal */
   }
-  window.show();
-  window.focus();
+  // showInactive() instead of show() + focus(). The tray window is a
+  // non-activating NSPanel (createTrayWindow sets `type: 'panel'`);
+  // calling show()+focus() would still try to activate the app on
+  // older Electrons, and even on 28+ the explicit focus() is a
+  // belt-and-braces invitation for activation paths to fire. The
+  // panel can still become key when the user clicks an item inside
+  // — that's panel-window semantics — but it doesn't claim
+  // app-frontmost status, so dismissing it doesn't cascade focus
+  // to the Library window.
+  window.showInactive();
 }
 
 export function disposeTray(): void {

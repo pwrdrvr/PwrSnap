@@ -304,6 +304,7 @@ export function bootstrapApp(): void {
       const { insertOrFindCapture } = await import("./persistence/captures-repo");
       const { getDb } = await import("./persistence/db");
       const { setFloatOverState } = await import("./float-over");
+      const { clipboard } = await import("electron");
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),
@@ -325,6 +326,22 @@ export function bootstrapApp(): void {
             .prepare("SELECT overlays_version FROM captures WHERE id = ?")
             .get(captureId) as { overlays_version: number } | undefined;
           return row?.overlays_version ?? null;
+        },
+        // Read the system clipboard's current image. Returns null
+        // when the clipboard doesn't currently hold an image. Used by
+        // clipboard-copy.spec.ts to verify each preset (low/med/high)
+        // produces an image of the expected width on the clipboard.
+        readClipboardImage: () => {
+          const img = clipboard.readImage();
+          if (img.isEmpty()) return null;
+          const size = img.getSize();
+          return { width: size.width, height: size.height, isEmpty: false };
+        },
+        // Clear clipboard before the spec runs so we know any image
+        // we read back came from THIS test's dispatch, not a stale
+        // earlier paste.
+        clearClipboard: () => {
+          clipboard.clear();
         }
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =

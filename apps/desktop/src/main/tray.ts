@@ -212,16 +212,31 @@ function toggleTrayWindow(): void {
   } catch {
     /* not all macOS versions accept all vibrancy values; non-fatal */
   }
-  // showInactive() instead of show() + focus(). The tray window is a
-  // non-activating NSPanel (createTrayWindow sets `type: 'panel'`);
-  // calling show()+focus() would still try to activate the app on
-  // older Electrons, and even on 28+ the explicit focus() is a
-  // belt-and-braces invitation for activation paths to fire. The
-  // panel can still become key when the user clicks an item inside
-  // — that's panel-window semantics — but it doesn't claim
-  // app-frontmost status, so dismissing it doesn't cascade focus
-  // to the Library window.
+  // Show, then promote to key window. The two-step matters:
+  //
+  //   1. `showInactive()` paints the panel without activating the
+  //      owning app (this is what `type: 'panel'` is for — a
+  //      non-activating NSPanel).
+  //   2. `focus()` makes the panel the macOS *key window*. On
+  //      Electron 28+ with PR #40307 this is non-activating for
+  //      panel windows — the panel becomes key, but the app does
+  //      NOT come to the foreground.
+  //
+  // Why bother making it key? Click-outside-to-dismiss. Cocoa fires
+  // `NSWindowDidResignKeyNotification` (which Electron surfaces as
+  // `blur`) only when the panel was previously key. Without step 2
+  // the popover never becomes key, so blur never fires, so the
+  // dismiss-on-blur handler in wireBlurDismiss can't see clicks
+  // outside the popover. Promoting to key on show reverses that —
+  // any click outside the popover (other apps, the desktop, another
+  // PwrSnap window) costs the panel its key status and fires blur.
+  //
+  // The Library-cascade concern from the original implementation
+  // (Cocoa picking the next-key window of our app when the panel
+  // hides) is handled by the floating-level focus-sink installed
+  // at startup — see focus-sink.ts.
   window.showInactive();
+  window.focus();
 }
 
 export function disposeTray(): void {

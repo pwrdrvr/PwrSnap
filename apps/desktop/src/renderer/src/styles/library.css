@@ -784,3 +784,68 @@
   color: var(--accent);
 }
 .psl__app-dot svg { width: 10px; height: 10px; }
+
+/* ============================================================== */
+/* Phase 2 Slice C — in-library Inspect / Edit modes              */
+/* ============================================================== */
+
+/* Inspect pane — fills the main column below the reel. The reel
+   stays pinned (no z-order shenanigans needed; the grid section
+   above us is conditionally rendered, so when we're shown the
+   layout naturally collapses to reel + inspect-pane). */
+.psl__inspect {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 18px;
+  gap: 10px;
+}
+.psl__inspect-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input, #050403);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.psl__inspect-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 4px;
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+.psl__inspect-meta-l {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.psl__inspect-meta-l b {
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+}
+.psl__inspect-meta-r {
+  display: flex;
+  gap: 8px;
+}
+
+/* Edit pane — wraps the embedded <Editor>. The Editor component has
+   its own .editor-root absolute layout; we just give it a fitted
+   container under the reel. */
+.psl__edit-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+.psl__edit-pane > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}

@@ -43,11 +43,21 @@ export function parseCaptureId(url: string, scheme: string = SCHEMES.capture): s
  * Parse `pwrsnap-cache://r/<id>/<width>w.<format>` → structured.
  * Width is clamped to [1, 8192] (DoS guard — refuse a 1024×Infinity
  * request that would exhaust the render coordinator's worker pool).
+ *
+ * Strips any `?...` query suffix before matching. The renderer
+ * appends `?v=<overlays_version>` as a cache-buster so Chromium
+ * re-fetches after edits (otherwise its in-memory HTTP cache
+ * serves the stale render under the same path); the suffix has
+ * no semantic meaning to us, only to the browser cache.
  */
 export function parseCacheUrl(url: string): CacheUrlParts | null {
   const prefix = `${SCHEMES.cache}://r/`;
   if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length);
+  // Strip any query suffix (?v=...) and fragment (#...) before
+  // matching the path portion. URL.parse would do this but it's
+  // overkill for our handful of legal shapes.
+  const noQuery = url.split(/[?#]/, 1)[0]!;
+  const rest = noQuery.slice(prefix.length);
   const match = rest.match(/^([a-zA-Z0-9_-]+)\/(\d+)w\.(png|webp)\/?$/);
   if (match === null) return null;
   const [, captureId, widthStr, format] = match;

@@ -279,7 +279,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           >
             <div className="ps-tray__activity-thumb">
               <img
-                src={cacheUrl(lastSnap.id, 72)}
+                src={cacheUrl(lastSnap.id, 72, "webp", lastSnap.overlays_version)}
                 alt="Last snap"
               />
             </div>

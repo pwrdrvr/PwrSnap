@@ -23,6 +23,15 @@ export type CaptureRecord = {
   sha256: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
+  /**
+   * Monotonic counter, bumped in the same transaction as every
+   * overlay write (see `insertOverlay` / `rejectOverlay` in
+   * persistence/overlays-repo.ts). Renderers append this to the
+   * `pwrsnap-cache://` URL as a cache-buster so Chromium re-fetches
+   * the rendered image after the user edits — without it the
+   * 5-minute browser HTTP cache serves the stale render.
+   */
+  overlays_version: number;
   deleted_at: string | null;
 };
 

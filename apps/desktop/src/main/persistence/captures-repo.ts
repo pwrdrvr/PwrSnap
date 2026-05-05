@@ -35,6 +35,7 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     sha256: row.sha256,
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
+    overlays_version: row.overlays_version,
     deleted_at: row.deleted_at
   };
 }

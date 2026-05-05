@@ -28,6 +28,15 @@ function broadcastOverlaysChanged(captureId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.overlaysChanged, { captureId });
+    // Captures-changed too — the captures row's `overlays_version`
+    // was bumped in the same transaction as the overlay write, and
+    // the Library's `useLibrary` hook subscribes to captures:changed
+    // (not overlays:changed). Without this re-broadcast, the
+    // library renders stale `overlays_version` → cacheUrl produces
+    // the same URL as before the edit → Chromium serves the
+    // pre-edit cached PNG. Sending both events keeps every
+    // subscriber honest.
+    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds: [captureId] });
   }
 }
 

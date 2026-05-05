@@ -152,7 +152,7 @@ export function FloatOverHost(): React.ReactElement {
   // 1440px medium preset matches the float-over's intended display
   // size and pre-warms the cache for the user's most-likely first
   // ⌘ shortcut.
-  const previewSrc = cacheUrl(record.id, 1440);
+  const previewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
   return (
     <FloatOver
       src={previewSrc}

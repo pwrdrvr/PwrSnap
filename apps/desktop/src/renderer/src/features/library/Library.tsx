@@ -32,7 +32,7 @@ function CellThumb({
   if (record !== null) {
     return (
       <img
-        src={cacheUrl(record.id, width)}
+        src={cacheUrl(record.id, width, "webp", record.overlays_version)}
         alt=""
         style={{
           width: "100%",
@@ -430,7 +430,7 @@ export function Library({
             >
               {selectedRecord !== null ? (
                 <img
-                  src={cacheUrl(selectedRecord.id, 1440)}
+                  src={cacheUrl(selectedRecord.id, 1440, "webp", selectedRecord.overlays_version)}
                   alt=""
                   // `contain`, matching the grid cells. The preview
                   // frame is a fixed 16:10 box; an off-aspect capture

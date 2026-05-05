@@ -153,6 +153,14 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
  * layers. Most overlay kinds produce exactly one SVG-buffer layer;
  * `blur` produces one raster-buffer layer (the pre-blurred extract).
  * Future kinds (step, crop) land in their own slices.
+ *
+ * IMPORTANT: SVG layers are pre-rasterized to exactly
+ * `imageWidthPx × imageHeightPx` pixels. Without this, sharp's resvg
+ * may render the SVG at a slightly different size due to its
+ * default DPI multiplier (72 vs 96, depending on platform/version)
+ * and `composite` rejects layers larger than the base image with
+ * "Image to composite must have same dimensions or smaller". The
+ * raster pre-step forces exact dimensions before composite.
  */
 async function buildCompositeLayers(
   row: OverlayRow,
@@ -163,13 +171,15 @@ async function buildCompositeLayers(
   const data = row.data;
   switch (data.kind) {
     case "arrow":
-      return [arrowLayer(data, imageWidthPx, imageHeightPx)];
+      return [await rasterize(arrowSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "rect":
-      return [rectLayer(data, imageWidthPx, imageHeightPx)];
+      return [await rasterize(rectSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "highlight":
-      return [highlightLayer(data, imageWidthPx, imageHeightPx)];
+      return [
+        await rasterize(highlightSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)
+      ];
     case "text":
-      return [textLayer(data, imageWidthPx, imageHeightPx)];
+      return [await rasterize(textSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "blur": {
       const layer = await blurLayer(data, srcPath, imageWidthPx, imageHeightPx);
       return layer === null ? [] : [layer];
@@ -182,11 +192,25 @@ async function buildCompositeLayers(
   }
 }
 
-function arrowLayer(
+/**
+ * Render an SVG string to a transparent PNG buffer of exactly
+ * `width × height` pixels. The `fit: 'fill'` resize forces the
+ * output dimensions regardless of what resvg's natural rendering
+ * would produce, sidestepping the DPI-multiplier composite mismatch.
+ */
+async function rasterize(svg: string, width: number, height: number): Promise<sharp.OverlayOptions> {
+  const png = await sharp(Buffer.from(svg))
+    .resize(width, height, { fit: "fill" })
+    .png()
+    .toBuffer();
+  return { input: png, top: 0, left: 0 };
+}
+
+function arrowSvg(
   data: Extract<OverlayRow["data"], { kind: "arrow" }>,
   imageWidthPx: number,
   imageHeightPx: number
-): sharp.OverlayOptions {
+): string {
   const geom = computeArrowGeometry({
     from: data.from,
     to: data.to,
@@ -208,7 +232,7 @@ function arrowLayer(
 
   const headPolygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linecap="round" stroke-linejoin="round">
     <line x1="${fromPx.x}" y1="${fromPx.y}" x2="${baseCenterPx.x}" y2="${baseCenterPx.y}"
           stroke="white" stroke-width="${geom.strokeWidthPx + outlineWidth * 2}" fill="none" />
@@ -219,12 +243,6 @@ function arrowLayer(
     <polygon points="${headPolygon}" fill="${fillColor}" />
   </g>
 </svg>`;
-
-  return {
-    input: Buffer.from(svg),
-    top: 0,
-    left: 0
-  };
 }
 
 function pxOf(
@@ -237,23 +255,21 @@ function pxOf(
 
 /* ----------------------------- Rect ----------------------------- */
 
-function rectLayer(
+function rectSvg(
   data: Extract<OverlayRow["data"], { kind: "rect" }>,
   imageWidthPx: number,
   imageHeightPx: number
-): sharp.OverlayOptions {
+): string {
   const xPx = data.rect.x * imageWidthPx;
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
-  // Stroke width derived from image short-side, matching arrow's
-  // visual weight on the same image (~6-9px on a 2× retina capture).
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
   const strokeWidthPx = clamp(shortSidePx / 220, 4, 14);
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? "#e8743a" : data.color;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
     <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
           fill="none" stroke="white" stroke-width="${strokeWidthPx + outlinePx * 2}" />
@@ -261,35 +277,31 @@ function rectLayer(
           fill="none" stroke="${fillColor}" stroke-width="${strokeWidthPx}" />
   </g>
 </svg>`;
-  return { input: Buffer.from(svg), top: 0, left: 0 };
 }
 
 /* --------------------------- Highlight -------------------------- */
 
-function highlightLayer(
+function highlightSvg(
   data: Extract<OverlayRow["data"], { kind: "highlight" }>,
   imageWidthPx: number,
   imageHeightPx: number
-): sharp.OverlayOptions {
+): string {
   const xPx = data.rect.x * imageWidthPx;
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
-  // Marker-pen yellow, semi-transparent. Designed to sit *on top* of
-  // the underlying pixels without obscuring them.
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="rgba(255, 220, 80, 0.32)" />
 </svg>`;
-  return { input: Buffer.from(svg), top: 0, left: 0 };
 }
 
 /* ----------------------------- Text ----------------------------- */
 
-function textLayer(
+function textSvg(
   data: Extract<OverlayRow["data"], { kind: "text" }>,
   imageWidthPx: number,
   imageHeightPx: number
-): sharp.OverlayOptions {
+): string {
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
@@ -299,7 +311,7 @@ function textLayer(
   // Black halo via paint-order. xml-escape the body so user input
   // can't break out of the SVG.
   const escaped = escapeXml(data.body);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
@@ -310,7 +322,6 @@ function textLayer(
         paint-order="stroke"
         dominant-baseline="hanging">${escaped}</text>
 </svg>`;
-  return { input: Buffer.from(svg), top: 0, left: 0 };
 }
 
 function escapeXml(s: string): string {

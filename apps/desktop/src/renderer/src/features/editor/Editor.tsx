@@ -79,7 +79,17 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
 
 const MIN_DRAG_LENGTH = 0.005; // 0.5% of canvas — below = treat as click
 
-export function Editor({ captureId }: { captureId: string }) {
+export function Editor({
+  captureId,
+  embedded = false
+}: {
+  captureId: string;
+  /** When true, render without the standalone-window titlebar and
+   *  with `height: 100%` (fitting the container) instead of `100vh`
+   *  (full viewport). The Library uses this in edit mode so the
+   *  editor lives inside the main column without overflowing. */
+  embedded?: boolean;
+}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [tool, setTool] = useState<Tool>("arrow");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -289,15 +299,17 @@ export function Editor({ captureId }: { captureId: string }) {
 
   const { record, overlays } = state;
   return (
-    <div className="editor-root">
-      <header className="editor-titlebar">
-        <span className="editor-title">
-          PwrSnap Editor · {record.source_app_name ?? "Capture"} ·{" "}
-          <span className="editor-title-meta">
-            {record.width_px}×{record.height_px}
+    <div className={"editor-root" + (embedded ? " is-embedded" : "")}>
+      {!embedded && (
+        <header className="editor-titlebar">
+          <span className="editor-title">
+            PwrSnap Editor · {record.source_app_name ?? "Capture"} ·{" "}
+            <span className="editor-title-meta">
+              {record.width_px}×{record.height_px}
+            </span>
           </span>
-        </span>
-      </header>
+        </header>
+      )}
 
       <div className="editor-canvas-wrap">
         <div

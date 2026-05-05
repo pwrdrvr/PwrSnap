@@ -789,6 +789,19 @@
 /* Phase 2 Slice C — in-library Inspect / Edit modes              */
 /* ============================================================== */
 
+/* In inspect / edit modes the center pane IS the focused surface —
+   the right-rail Detail panel would just duplicate the preview AND
+   confuse the user with a second "Edit" button. Hide the rail and
+   reflow the grid template to give the center pane the width. */
+.psl[data-mode="inspect"],
+.psl[data-mode="edit"] {
+  grid-template-columns: 220px 1fr 0;
+}
+.psl[data-mode="inspect"] .psl__right,
+.psl[data-mode="edit"] .psl__right {
+  display: none;
+}
+
 /* Inspect pane — fills the main column below the reel. The reel
    stays pinned (no z-order shenanigans needed; the grid section
    above us is conditionally rendered, so when we're shown the

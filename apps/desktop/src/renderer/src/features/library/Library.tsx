@@ -170,7 +170,7 @@ export function Library({
   }
 
   return (
-    <div className="psl">
+    <div className="psl" data-mode={libraryMode}>
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -437,7 +437,7 @@ export function Library({
         )}
         {libraryMode === "edit" && inspectingRecord !== null && (
           <div className="psl__edit-pane">
-            <Editor captureId={inspectingRecord.id} />
+            <Editor captureId={inspectingRecord.id} embedded />
           </div>
         )}
       </main>

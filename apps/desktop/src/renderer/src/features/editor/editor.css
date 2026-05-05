@@ -6,9 +6,27 @@
   display: grid;
   grid-template-rows: auto 1fr auto;
   height: 100vh;
+  min-height: 0;
   background: var(--bg-deep);
   color: var(--text-primary);
   font: 500 13px/1.4 var(--font-sans);
+}
+/* Embedded mode (used by Library's in-place edit pane). The
+   standalone-window flavor uses 100vh so it fills the chrome-less
+   editor window; embedded uses 100% so it respects the parent's
+   flex/grid track. Without this override the editor's bottom
+   toolbar lands below the visible viewport. The grid template
+   collapses to two rows (canvas + toolbar) since the titlebar is
+   hidden in embedded mode. min-height:0 on the canvas wrap is the
+   classic flex-child-can-shrink-below-content trick — without it
+   the canvas's intrinsic aspect-ratio + max-width:100% don't kick
+   in and the canvas overflows. */
+.editor-root.is-embedded {
+  height: 100%;
+  grid-template-rows: 1fr auto;
+}
+.editor-root.is-embedded .editor-canvas-wrap {
+  min-height: 0;
 }
 
 .editor-titlebar {

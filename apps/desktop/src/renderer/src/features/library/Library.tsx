@@ -75,6 +75,20 @@ export function Library({
   // discussion: "always-edit, no modes at all".
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
 
+  // Right-rail visibility state. Three modes:
+  //   • pinned  → rail takes its grid column (360px); editor is
+  //               squeezed to whatever's left.
+  //   • floating + open → rail overlays the right edge of the main
+  //               pane; editor gets full canvas width underneath.
+  //   • floating + closed → rail hidden; small chevron tab on the
+  //               right edge to open it.
+  // Default to pinned in browse mode (right rail is the natural
+  // home for capture metadata when no selection drives the center
+  // pane). When the user enters the editor, default to floating-
+  // closed so the canvas gets full width for annotation work.
+  const [rightRailPinned, setRightRailPinned] = useState(true);
+  const [rightRailOpen, setRightRailOpen] = useState(true);
+
   const { records, loading, error } = useLibrary();
   const fixtureBacking = useMemo(() => new FixtureBackedRecords(records), [records]);
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
@@ -140,7 +154,13 @@ export function Library({
   }
 
   return (
-    <div className="psl" data-mode={selectedRecordId === null ? "browse" : "edit"}>
+    <div
+      className="psl"
+      data-mode={selectedRecordId === null ? "browse" : "edit"}
+      data-rail-mode={
+        rightRailPinned ? "pinned" : rightRailOpen ? "floating-open" : "floating-closed"
+      }
+    >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -400,6 +420,22 @@ export function Library({
             <Editor captureId={editorRecord.id} embedded />
           </div>
         )}
+        {/* Show-rail tab: only rendered when the rail is floating-
+            closed. Sits on the right edge of the center pane; click
+            to re-open the rail (without pinning, so it floats over
+            the canvas rather than reclaiming a column). */}
+        {!rightRailPinned && !rightRailOpen && (
+          <button
+            type="button"
+            className="psl__rail-show-tab"
+            title="Show rail"
+            onClick={() => setRightRailOpen(true)}
+          >
+            <svg width="9" height="14" viewBox="0 0 9 14" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 1L1 7l5 6" />
+            </svg>
+          </button>
+        )}
       </main>
 
       <aside className="psl__right">
@@ -407,6 +443,38 @@ export function Library({
           <button className="psl__right-tab is-active">Detail</button>
           <button className="psl__right-tab">History</button>
           <button className="psl__right-tab">OCR</button>
+          {/* Rail visibility controls — pin (toggles between
+              column-takes-space vs floats-over-canvas) and close
+              (only meaningful when not pinned; hides the rail
+              entirely so the canvas gets full width). */}
+          <div className="psl__rail-controls">
+            <button
+              type="button"
+              className={rightRailPinned ? "is-pinned" : ""}
+              title={rightRailPinned ? "Unpin (let rail float)" : "Pin rail (take column)"}
+              onClick={() => {
+                setRightRailPinned((p) => !p);
+                // When pinning, ensure it's open. When unpinning, leave open.
+                if (!rightRailPinned) setRightRailOpen(true);
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                {/* Pushpin glyph */}
+                <path d="M12 2v8M8 10h8l-2 6h-4z M12 16v6" />
+              </svg>
+            </button>
+            {!rightRailPinned && (
+              <button
+                type="button"
+                title="Hide rail"
+                onClick={() => setRightRailOpen(false)}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
         <div className="psl__right-body">
           {error !== null && (

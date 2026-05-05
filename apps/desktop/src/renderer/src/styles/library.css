@@ -312,6 +312,7 @@
    LIBRARY 3-PANE
    ============================================================ */
 .psl {
+  position: relative;            /* anchors floating .psl__right + show-tab */
   width: 100%; height: 100%;
   display: grid;
   grid-template-columns: 220px 1fr 360px;
@@ -321,6 +322,91 @@
   border-radius: 12px;
   overflow: hidden;
   font-family: var(--font-sans);
+}
+/* The center pane is the absolute-positioning anchor for the show-
+   rail tab so it sits within the editor area, not over the topbar. */
+.psl__main {
+  position: relative;
+}
+/* Right-rail layout modes (Library state):
+     • pinned          → rail takes its 360px column (default).
+     • floating-open   → rail floats over the right edge of the
+                         center pane via position:absolute. Editor
+                         canvas underneath gets the full width.
+     • floating-closed → rail hidden; a small chevron tab on the
+                         right edge of the center pane re-opens it.
+   Switching column template + absolute positioning the aside is
+   cleaner than animating width — the editor canvas instantly gets
+   the freed space, and the rail can fade in/out independently. */
+.psl[data-rail-mode="floating-open"],
+.psl[data-rail-mode="floating-closed"] {
+  grid-template-columns: 220px 1fr 0;
+}
+.psl[data-rail-mode="floating-open"] .psl__right {
+  position: absolute;
+  top: 52px;            /* under the topbar */
+  right: 0;
+  bottom: 32px;         /* above the status bar */
+  width: 360px;
+  z-index: 20;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+}
+.psl[data-rail-mode="floating-closed"] .psl__right {
+  display: none;
+}
+/* "Show rail" tab — only rendered when floating-closed. Sits on
+   the right edge of the center pane, half-tab-shape, click to
+   re-open the rail. */
+.psl__rail-show-tab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 64px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border-default);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  z-index: 15;
+  padding: 0;
+}
+.psl__rail-show-tab:hover {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+/* Pin / close buttons in the rail header. Compact icon-only buttons
+   that sit alongside the existing Detail / History / OCR tabs. */
+.psl__rail-controls {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  padding-right: 8px;
+}
+.psl__rail-controls button {
+  width: 22px; height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.psl__rail-controls button:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+.psl__rail-controls button.is-pinned {
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;

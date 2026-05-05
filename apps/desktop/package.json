@@ -20,6 +20,9 @@
     "preview": "electron-vite preview",
     "pretest:e2e": "pnpm build",
     "test:e2e": "playwright test -c playwright.config.ts",
+    "generate:dmg-background": "swift ./scripts/generate-dmg-background.swift ./build/dmg-background.png",
+    "generate:app-icon": "swift ./scripts/generate-app-icon.swift ./build/icon.iconset && iconutil -c icns build/icon.iconset -o build/icon.icns",
+    "verify:asar-contents": "node ./scripts/verify-asar-contents.mjs",
     "tray-icon": "node ./scripts/generate-tray-icon.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

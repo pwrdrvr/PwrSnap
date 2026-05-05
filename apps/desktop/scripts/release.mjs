@@ -139,6 +139,12 @@ builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" :
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("npx", cleanedArgs, { cwd: stageDir });
 
+// 6. Verify no forbidden files leaked into the asar bundle.
+step("verify asar contents");
+runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs")], {
+  cwd: stageDir
+});
+
 step("done");
 const dist = join(stageDir, "dist");
 console.log(`  artifacts: ${dist}`);

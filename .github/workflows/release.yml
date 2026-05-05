@@ -29,19 +29,24 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
 
+      - name: Check release metadata
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: pnpm release:check
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test (unit)
         run: pnpm test
 
+      - name: Build native helpers
+        run: pnpm --filter @pwrsnap/desktop build:native
+
       - name: Build, sign, notarize, publish
         env:
-          # Code signing (Developer ID Application: PwrDrvr LLC).
-          # CSC_LINK is the .p12 base64-encoded; CSC_KEY_PASSWORD is its
-          # password. Both are NOT YET configured for PwrSnap — when they
-          # land, electron-builder picks them up automatically and the
-          # `notarize: false` flag in electron-builder.yml flips on.
+          # Code signing (Developer ID Application: PwrDrvr LLC, T44CNHC4UH).
+          # CSC_LINK is the .p12 base64-encoded; CSC_KEY_PASSWORD is its password.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 

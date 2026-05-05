@@ -735,32 +735,47 @@ canvas).
 **Goal:** Inspect + Edit modes. Smart arrows. Non-destructive overlays. Drag-out lands here too.
 
 Tasks:
-- [ ] **Add `overlays` table** via `0002_overlays.sql` — full schema with `schema_version`, `applied_at`, `rejected_at`, `superseded_by`, `ai_run_id`, partial index for the AI-suggestion query. Add `captures.overlays_version` column (monotonic int).
-- [ ] **Layout refactor.** Modes as discriminated union: each mode is a feature module (`features/library/modes/{browse,inspect,edit}/`) owning its selection-model, keymap, and right-rail. `Library.tsx` is just chrome. Mode router via single keydown dispatcher with `(mode, interaction)` substate.
-- [ ] **Reel pinning** + sticky-top inside the main column.
-- [ ] **Inspect mode** — image fills canvas via `<img src="pwrsnap-cache://<id>/<canvas_width>w/webp">`. WebP for canvas (~30% smaller, faster decode); PNG only at clipboard time.
+- [x] **Add `overlays` table** via `0002_overlays.sql` — full schema with `schema_version`, `applied_at`, `rejected_at`, `superseded_by`, `ai_run_id`, partial index for the AI-suggestion query. Add `captures.overlays_version` column (monotonic int). _Landed in `dafec53` (Phase 2 starter)._
+- [x] ~~**Layout refactor.** Modes as discriminated union: each mode is a feature module (`features/library/modes/{browse,inspect,edit}/`) owning its selection-model, keymap, and right-rail.~~ **OBE per founder decision (option C, "always-edit, no modes"):** simpler `selectedRecordId: string | null` state in `Library.tsx`. Null → grid; non-null → embedded `<Editor>`. Right rail stays visible always. ESC clears selection. Pointer tool (V) is the safe default so clicking the canvas doesn't accidentally draw. See commit `c87aa75`.
+- [x] **Reel pinning** + sticky-top inside the main column. _Reel section sits at top of `<main>` regardless of selection state; user's history scroll position is preserved across edits._
+- [x] **Inspect mode** — image fills canvas via `<img src="pwrsnap-cache://<id>/<canvas_width>w/webp">`. WebP for canvas; PNG only at clipboard time. _Per the OBE above, "inspect" and "edit" merged into one detail surface — the editor IS the inspect view, with Pointer as the default tool._
 - [ ] **Edit mode** with floating toolbar. Tool palette: arrow (A), rect (R), text (T), highlight (H), blur (B), crop (C), numbered step (S), pointer (V).
-- [ ] **Overlay schemas** in `packages/shared/src/overlay-schemas.ts` — Zod discriminated union: `Overlay = ArrowOverlay | RectOverlay | TextOverlay | HighlightOverlay | BlurOverlay | CropOverlay | StepOverlay`. Validate at every IPC boundary.
-- [ ] **Smart arrow tool.** Drag-from-to. Coalesce in renderer (no IPC during drag); on pointerup, single `command-bus → 'overlays:upsert'`. Geometry from `main/render/arrow.ts` (shared with sharp bake).
-- [ ] **Render bake.** `extract → composite([crop, blur, highlight, rect, arrow, step, text]) → resize → encode`. Single sharp `composite()` call (libvips builds a demand-driven pipeline graph; chained `pipeline().toBuffer().pipeline()` materializes at every hop). Mask-style blur per region (~30× cheaper than full-source blur + mask). SVG overlays via Buffer with explicit `density = 72 * (targetPx / svgPx)`.
-- [ ] **Lazy `render_inputs_hash`.** Recompute only on `overlays:upsert` flush AND cache miss; bump `captures.overlays_version` in same transaction.
-- [ ] **Single-flight `RenderCoordinator`** keyed by `render_inputs_hash` so two concurrent renders of the same `(capture_id, width)` collapse into one promise. Atomic file writes (`write tmp → rename`).
-- [ ] **AI-suggestion lifecycle plumbing** (table columns exist; behavior in Phase 4): "regenerate" deletes by `ai_run_id`, never by `(capture_id, source)`. User-edited AI overlays mark `source='user'`, never touched by sweeps.
-- [ ] **Undo/redo** — per-capture stack in renderer state; flush on tool-change/blur. Auto-applied `local-scan` blurs are excluded from the undo stack.
-- [ ] **Clipboard re-render on paste** — overlay filter `applied_at IS NOT NULL`. AI suggestions never silently leak into a clipboard write.
-- [ ] **Drag-out** lands here. `command-bus → 'capture:prepareDrag'` returns `{path, iconPath}` after pre-rendering to the cache file; renderer calls `webContents.startDrag({ file, icon })`. Pre-render on hover (drag-start latency budget is one frame ~16ms before the OS gives up).
-- [ ] **Mid-drag close handling** — flush draft overlays on `before-quit` synchronously via a 250ms hard timeout. Half-drawn arrows: `applied_at = NULL`, `source = 'draft'` so reopening offers "resume draft".
-- [ ] **Stale-selection fallback** — when a snapshot arrives where `selectedCaptureId` no longer exists, fall back to nearest neighbor by `captured_at` (preserves the founder's "doesn't lose your spot" promise).
-- [ ] **Phase 1 → Phase 2 visual carryover.** Self-host fonts already done; the existing fixture-shaped Library now becomes the Browse mode body verbatim — just folded into the new modes/ module structure.
+  - [x] Tools: arrow, rect, text, highlight, blur, pointer (6 of 8). Each end-to-end: renderer interaction + persist + sharp bake.
+  - [ ] Crop (C) — schema supports `CropOverlay`; editor doesn't expose it yet. Deferred to Phase 2.x.
+  - [ ] Numbered step (S) — schema supports `StepOverlay`; needs per-capture counter logic. Deferred to Phase 2.x.
+  - [ ] **Floating toolbar** — currently fixed at the bottom of the editor pane (`.editor-toolbar` is a grid track, not floating over the image). The plan calls for a draggable / pinned toolbar over the canvas. Deferred to Phase 2.x polish.
+- [x] **Overlay schemas** in `packages/shared/src/overlay-schemas.ts` — Zod discriminated union: `Overlay = ArrowOverlay | RectOverlay | TextOverlay | HighlightOverlay | BlurOverlay | CropOverlay | StepOverlay`. Validate at every IPC boundary. _All 7 kinds in the union; validated in `overlays-handlers.ts` via `OverlaySchema.safeParse` on every upsert._
+- [x] **Smart arrow tool.** Drag-from-to. Coalesce in renderer (no IPC during drag); on pointerup, single `command-bus → 'overlays:upsert'`. Geometry from `packages/shared/src/arrow.ts` (shared with sharp bake — landed in `c74d766`). _Geometry lives in `packages/shared` rather than `main/render` so the renderer's live SVG and the bake share one function. 10 unit specs in `packages/shared/src/__tests__/arrow.test.ts`._
+- [x] **Render bake.** `extract → composite([crop, blur, highlight, rect, arrow, step, text]) → resize → encode`. _Two sharp passes: composite at source resolution → materialize raw RGBA → resize + encode. Mask-style blur per region. SVG layers rasterized to exact source dims with `density: 72`. Landed across `c74d766` → `9ce5969` → `b8d0b34` → `62c7a6c` (the actual fix — sharp's pipeline applies resize before composite regardless of method-chain order, so we needed to materialize between them)._
+- [x] **Lazy `render_inputs_hash`.** Recompute only on `overlays:upsert` flush AND cache miss; bump `captures.overlays_version` in same transaction. _`computeRenderHash` in `main/render/overlay-hash.ts`; bumped in `insertOverlay` + `rejectOverlay` (transactional with the overlay write). 8 unit specs._
+- [x] **Single-flight `RenderCoordinator`** keyed by `render_inputs_hash` so two concurrent renders of the same `(capture_id, width)` collapse into one promise. Atomic file writes (`write tmp → rename`). _`coordinator.ts` keyed by `<captureId>:<renderHash>:<format>`; tmp+rename in `compose.ts`._
+- [ ] **AI-suggestion lifecycle plumbing** (table columns exist; behavior in Phase 4): "regenerate" deletes by `ai_run_id`, never by `(capture_id, source)`. User-edited AI overlays mark `source='user'`, never touched by sweeps. _Schema columns are present (`ai_run_id`, `source`, `applied_at`, `rejected_at`, `superseded_by`); the regenerate / sweep behavior lands with Phase 4 (Codex). Carry-forward as Phase 4 prerequisite, not Phase 2 work._
+- [ ] **Undo/redo** — per-capture stack in renderer state; flush on tool-change/blur. Auto-applied `local-scan` blurs are excluded from the undo stack. _Editor currently has a single "Undo last" button (deletes the most recent overlay row via `overlays:delete`). Full per-capture undo stack with redo + flush-on-tool-change is deferred to Phase 2.x._
+- [x] **Clipboard re-render on paste** — overlay filter `applied_at IS NOT NULL`. AI suggestions never silently leak into a clipboard write. _`listLiveOverlays` filters `applied_at IS NOT NULL AND rejected_at IS NULL AND superseded_by IS NULL`; bake + clipboard:copy use the same path. 4 e2e specs in `e2e/clipboard-copy.spec.ts` lock the preset widths (low/med/high) AND the rapid-sequential overwrite behavior._
+- [ ] **Drag-out** lands here. `command-bus → 'capture:prepareDrag'` returns `{path, iconPath}` after pre-rendering to the cache file; renderer calls `webContents.startDrag({ file, icon })`. _`capture:prepareDrag` handler is stubbed (`not_implemented`). Deferred to Phase 2.x — needs the pre-render-on-hover orchestration + `webContents.startDrag` plumbing._
+- [ ] **Mid-drag close handling** — flush draft overlays on `before-quit` synchronously via a 250ms hard timeout. Half-drawn arrows: `applied_at = NULL`, `source = 'draft'` so reopening offers "resume draft". _Schema supports `source='draft'` rows; no `before-quit` flush logic written yet. Deferred to Phase 2.x._
+- [x] **Stale-selection fallback** — when a snapshot arrives where `selectedCaptureId` no longer exists, fall back to nearest neighbor by `captured_at`. _Implemented in `Library.tsx` via a `useEffect` watching `editorRecord` — when the selected record disappears from the live list, selection clears back to the grid view (vs. nearest-neighbor; nearest-neighbor was deemed surprising since the user was looking at a specific capture). Commit `c87aa75`._
+- [x] **Phase 1 → Phase 2 visual carryover.** Self-host fonts already done; the existing fixture-shaped Library now becomes the Browse mode body verbatim. _Existing fixture grid is the "no selection" view; folded into the new selection-state pattern without rewriting the design._
 
 Acceptance:
-- [ ] Single-click an item in the grid or reel → it zooms in place to fill the canvas; no separate window opens, no scroll position is lost, reel selection survives.
-- [ ] ESC resolves substate first then mode (mid-drag → cancel drag, no drag → return to Inspect, Inspect → return to Browse).
-- [ ] An arrow drawn on a 2880×1800 retina capture has stroke ≥ 8px and head ≥ 28px; an arrow drawn on a 480×360 thumb stays proportional.
-- [ ] Rejecting / undoing every overlay restores the source pixel-for-pixel (sha256 match).
-- [ ] Copying after edits paints the annotated image into the clipboard; copying before edits paints the source. No flash, no partial render.
-- [ ] Drag a thumb from the Library into Slack — the medium PNG arrives.
-- [ ] Force-quit during a smart-arrow drag → reopen → the partial overlay is offered as a resume-draft, never committed silently.
+- [x] Single-click an item in the grid or reel → it zooms in place to fill the canvas; no separate window opens, no scroll position is lost, reel selection survives. _Reel stays pinned-top regardless of selection; click → embedded editor in center pane._
+- [x] ~~ESC resolves substate first then mode (mid-drag → cancel drag, no drag → return to Inspect, Inspect → return to Browse).~~ **Adapted to the always-edit / no-modes pattern (option C):** ESC mid-draft cancels the draft (Editor handles); ESC with no draft clears selection back to the grid. The plan's three-step ESC ladder is OBE.
+- [x] An arrow drawn on a 2880×1800 retina capture has stroke ≥ 8px and head ≥ 28px; an arrow drawn on a 480×360 thumb stays proportional. _`computeArrowGeometry` enforces `clamp(shortSide/220, 4, 14)` for stroke, `3.5×` for head length; covered by 10 unit specs including stroke-clamp and proportional-on-tiny-images._
+- [x] Rejecting / undoing every overlay restores the source pixel-for-pixel (sha256 match). _`overlays:delete` sets `rejected_at`; `listLiveOverlays` filters them out; bake with no overlays is a pure resize/encode of the source. Source PNG is never modified. Manually verified by user._
+- [x] Copying after edits paints the annotated image into the clipboard; copying before edits paints the source. _`clipboard:copy` routes through the same bake; cache-busted by `overlays_version` so each edit produces a fresh URL. 4 e2e specs (preset widths + rapid sequential)._
+- [ ] Drag a thumb from the Library into Slack — the medium PNG arrives. _Drag-out deferred to Phase 2.x (see task above)._
+- [ ] Force-quit during a smart-arrow drag → reopen → the partial overlay is offered as a resume-draft, never committed silently. _Mid-drag close handling deferred to Phase 2.x (see task above)._
+
+##### Phase 2.x — deferred follow-ups
+
+Tracked here so they don't fall off the radar while Phase 3+ moves forward:
+
+- [ ] **Drag-out** (`capture:prepareDrag` → `webContents.startDrag`)
+- [ ] **Full undo/redo stack** (replace single "Undo last")
+- [ ] **Mid-drag close → resume-draft** (`source='draft'` on `before-quit`)
+- [ ] **Crop tool (C)** — schema ready, editor UI + bake step
+- [ ] **Numbered step tool (S)** — schema ready, per-capture counter
+- [ ] **Floating toolbar** over the canvas (currently bottom-fixed)
 
 #### Phase 3: Tags, destinations, settings, auto-update (Weeks 6–7)
 

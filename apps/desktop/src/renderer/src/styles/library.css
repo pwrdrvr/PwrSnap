@@ -1180,16 +1180,28 @@
 }
 
 /* Stage canvas wrapper. The chromeless Editor renders inside; its
-   .editor-root.is-chromeless variant (editor.css) sizes to fit. */
+   .editor-root.is-chromeless variant (editor.css) sizes to fit.
+   `aspect-ratio` is set inline (Stage.tsx) from the capture's
+   true width/height so the canvas auto-fits within the parent's
+   content area — the LARGEST dimension binds to the available
+   space, the other dimension scales down proportionally. This
+   matches `object-fit: contain` semantics: the entire image is
+   always visible, no cropping. The previous version had a fixed
+   `width: 720px` with no height, which broke portrait images
+   (the canvas tried to be 720 wide regardless of aspect, and the
+   parent's max-height clipped what overflowed). */
 .psl__stage-img {
   position: relative;
-  max-width: calc(100% - 80px);
-  max-height: calc(100% - 80px);
+  /* Tightened from 80px to 32px — the old reservation wasted half
+     the available space on margin around the canvas. 32px gives
+     nav-button clearance + a little breathing room without
+     collapsing the canvas. */
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
   border-radius: 7px;
   border: 1px solid var(--border-default);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
   overflow: hidden;
-  width: 720px;
   display: flex;
   align-items: center;
   justify-content: center;

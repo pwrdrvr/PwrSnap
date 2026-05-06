@@ -229,7 +229,18 @@ function StageBody({
         </svg>
       </button>
 
-      <div className="psl__stage-img">
+      {/* `aspect-ratio` driven from the actual capture dimensions so
+          the canvas box object-fit:contains the image — biggest
+          dimension fits the available stage area, the other dimension
+          scales proportionally. The previous fixed `width: 720px`
+          on this box (with no height) made portrait captures
+          (e.g. 900×1438) blow past the parent's max-height and
+          show only the centered region. With aspect-ratio set,
+          the box shrinks to fit either bound automatically. */}
+      <div
+        className="psl__stage-img"
+        style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
+      >
         <Editor
           captureId={captureId}
           chrome="chromeless"

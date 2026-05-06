@@ -112,6 +112,193 @@ PwrSnap is an App Server *client* only — never an App Server *implementation*.
   `instanceof`. All command handlers return `Result<Res, PwrSnapError>` —
   `{ ok: false, error: { kind, code, message, cause? } }`.
 
+## BrowserWindow sizing — `setMinimumSize(0, 0)` after construction
+
+**Any BrowserWindow that auto-sizes to its content via `setContentSize`
+at runtime must call `setMinimumSize(0, 0)` once after construction.**
+This applies to the tray popover, the float-over toast, the E2E test
+fixtures, and any future popover / HUD that grows or shrinks past its
+initial frame.
+
+### What goes wrong without it
+
+When a BrowserWindow is constructed with explicit `width` and `height`,
+Electron records those values as the IMPLICIT MINIMUM CONTENT SIZE
+(this is internal — there's no `minimumSize` constructor option that
+makes it explicit). Subsequent `setContentSize` calls are then clamped
+at that minimum on macOS — the call returns without error, but the
+window's content area never grows or shrinks past the constructor
+frame. `getContentSize()` reads back the requested value, so the
+clamp is invisible from the main process side; only the rendered
+window reveals it.
+
+Symptom: the renderer's ResizeObserver fires the resize-to-fit IPC
+with the right measured height, main dutifully calls `setContentSize`,
+and the popover stays stuck at its constructor frame. Rows past the
+clamp are clipped off the bottom edge. Looks like a CSS / measurement
+bug, isn't.
+
+This is amplified for `type: 'panel'` (NSPanel) windows because
+`resizable: false` removes `NSResizableWindowMask` from the styleMask,
+which AppKit interprets as "no programmatic resize either." The
+implicit min-size is the headline issue, but combining `panel + non-
+resizable + non-movable + frame: false` is the configuration where
+the clamp matters most.
+
+References: [electron/electron#14065](https://github.com/electron/electron/issues/14065).
+
+### The fix
+
+Call `window.setMinimumSize(0, 0)` immediately after `new BrowserWindow(...)`
+to lift the constraint. After that, `setContentSize` is free to set
+whatever the renderer measured. No need to flip `resizable` or pad
+the constructor with min/max bounds — `setMinimumSize(0, 0)` is the
+one thing that makes setContentSize land.
+
+```ts
+const window = new BrowserWindow({
+  type: "panel",
+  width: 440,
+  height: 440,
+  resizable: false,          // OK to keep — user UX is unaffected
+  movable: false,
+  frame: false,
+  // ...
+});
+// ⚠️  REQUIRED if anything will setContentSize() this window later.
+window.setMinimumSize(0, 0);
+```
+
+### Where this matters today
+
+- `createTrayWindow` in `apps/desktop/src/main/window.ts` — sized by
+  the renderer's `pwrsnap:tray:resize` IPC; main listens in
+  `apps/desktop/src/main/tray.ts` (`wireTrayResizeChannel`).
+- `createFloatOverWindow` in `apps/desktop/src/main/window.ts` — sized
+  by the renderer's `float-over:resize` IPC; main listens in
+  `apps/desktop/src/main/float-over.ts` (`wireFloatOverResizeChannel`).
+- `apps/desktop/e2e/fixtures/electron-app.ts` — Playwright harness
+  needs to shrink the library window below its constructor frame for
+  size-sensitive specs. Same fix.
+
+### How we keep losing this
+
+We've solved this exact problem before — first in the E2E fixture
+(commit `943ff64`), then re-discovered it for the tray + float-over
+windows when their content grew past the constructor frame after the
+design refresh. The clamp is invisible from the main side
+(`getContentSize` reads back the requested value), the renderer's
+ResizeObserver isn't broken, and the CSS isn't broken — so the
+investigation tends to chase visible symptoms (CSS, observer timing,
+overflow rules) before landing on the actual platform behavior. If
+you find yourself debugging "popover is stuck at its initial size,"
+check for `setMinimumSize(0, 0)` first.
+
+## Tray popover sizing — fixed heights, NOT measure-and-fit
+
+**The tray popover uses a hardcoded `lastSnap`-conditional height.
+Do NOT replace it with a ResizeObserver-driven measure-and-fit
+implementation without reading the rest of this section.**
+
+Current implementation in `apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx`:
+
+```ts
+const TRAY_HEIGHT_WITH_LAST_SNAP = 620;
+const TRAY_HEIGHT_EMPTY = 250;
+useLayoutEffect(() => {
+  const targetHeight =
+    lastSnapId === undefined ? TRAY_HEIGHT_EMPTY : TRAY_HEIGHT_WITH_LAST_SNAP;
+  // dispatch pwrsnap:tray:resize with { width: 440, height: targetHeight }
+}, [lastSnapId]);
+```
+
+The two heights cover the two structural shapes the tray takes:
+
+- **`TRAY_HEIGHT_EMPTY = 250`** — header + Quick Capture button + 6-mode grid only.
+  Active when `useLibrary` returns no captures (fresh-install / DB just cleared).
+
+- **`TRAY_HEIGHT_WITH_LAST_SNAP = 620`** — empty-state content + last-snap section
+  (eyebrow + 120 px preview + Low/Med/High `.fo__copy-btn` row). Active whenever
+  `useLibrary` has at least one capture.
+
+### Why fixed heights instead of measure-and-fit
+
+The ResizeObserver-driven approach was tried four ways and hit four
+distinct bug surfaces, each masking the next:
+
+1. **Electron NSPanel `setContentSize` clamp.** The OS-level fix
+   (`setMinimumSize(0, 0)` after construction — see the previous
+   section) is required regardless of measurement strategy, but on
+   its own it's not sufficient.
+
+2. **Geist web-font swap measurement oscillation.** During Geist's
+   `font-display: swap` cycle, the ResizeObserver fires three times
+   in close succession with wildly different heights:
+   - Measurement 1: ~468 px (system fallback metrics)
+   - Measurement 2: ~637 px (transient mid-swap state where the
+     Quick Capture subtext briefly wraps to ~10 lines because font
+     metrics are unstable)
+   - Measurement 3: ~468 px (back to fallback metrics, even though
+     Geist is actually loaded by this point)
+
+   The naive "post the latest measurement" approach lands the popover
+   at 468 px → bottom 112 px clipped (preview tail + copy buttons +
+   bottom border).
+
+3. **Peak-height sticky-grow.** Adding a `peakHeightRef` so the
+   posted height never shrinks past the largest observed value
+   helped on first-show, but didn't survive `useLayoutEffect`
+   re-runs across `lastSnap` changes (when refetch returns a record
+   with the same id, peak resets but measurement 2 doesn't fire).
+
+4. **`document.fonts.ready` deferral.** Even waiting for fonts.ready,
+   the post-load measurement was inconsistent — sometimes the
+   bounding rect under-reported content extent. Theory: `.ps-tray`
+   has `overflow: hidden`, which under specific layout-engine
+   conditions causes `getBoundingClientRect()` to return the
+   border-box rather than the content-extent.
+
+The tray's content is *structurally fixed* — only two possible
+shapes — so hardcoding their heights eliminates the entire
+measurement-timing class of bugs. Cost is a small amount of empty
+space at the bottom when fonts are still loading or when the
+last-snap preview happens to render shorter than its 120 px slot.
+That tradeoff is fine for a popover.
+
+### Tuning the constants
+
+Use the **forced-height diagnostic** to measure what the popover
+actually needs. Temporarily override the resize handler in
+`apps/desktop/src/main/tray.ts` (`wireTrayResizeChannel`):
+
+```ts
+const clamped = 800;  // or whatever fixed height you want to test
+```
+
+Build, restart the dev session, open the tray. The window will lock
+to 800 px regardless of what the renderer posts. Visible content +
+empty space at the bottom = your true content height. Pick the new
+constant a bit *above* that (~30–40 px headroom for font-metric
+variability across Geist load states), commit, revert the override.
+
+### When to revisit
+
+- A new top-level section gets added to the tray (third structural
+  shape) — define a third height constant and add a third branch to
+  the conditional.
+- The design changes the size of an existing section (e.g. preview
+  grows from 120 → 160 px) — re-run the forced-height diagnostic
+  and bump `TRAY_HEIGHT_WITH_LAST_SNAP` accordingly.
+- The popover starts to look noticeably empty at the bottom across
+  all states — you can shrink the constant, but verify the worst-
+  case font load doesn't clip first.
+
+If you do want to bring back dynamic measurement (because content
+becomes genuinely variable — multiple capture types with very
+different preview aspect ratios, etc.), be aware you'll be fighting
+both Electron and the layout engine. Worth doing only with strong
+test coverage of the font-load timing across cold and warm starts.
+
 ## Pull Requests
 
 - Conventional Commit-style PR titles: `type(scope): short description`.

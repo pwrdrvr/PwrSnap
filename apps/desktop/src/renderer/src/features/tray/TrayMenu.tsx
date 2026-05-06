@@ -1,34 +1,65 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { CopyButton, type CopyPreset } from "../shared/CopyButton";
 import { Kbd } from "../shared/Primitives";
 import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 
-type ModeKind = "auto" | "region" | "window" | "full" | "all" | "timed";
+type ModeKind = "auto" | "region" | "window" | "full" | "all" | "scroll" | "timed";
 
-/** Phase 1 ships `auto` / `region` / `window`. `full` is plumbed but
- *  needs the multi-display picker (Phase 1.x). `all` and `timed` are
- *  stubbed for now. `available: false` triggers a disabled visual
- *  treatment so the UI is honest about what works today. */
+/** Phase 1 ships `auto` (the Quick Capture button — promoted out of
+ *  the grid), `region`, and `window`. The other four modes are stubbed
+ *  with `available: false` so the disabled treatment honestly signals
+ *  what works today. */
 const MODES: Array<{
-  id: ModeKind;
+  id: Exclude<ModeKind, "auto">;
   name: string;
-  sub: string;
   hk: string[];
   available: boolean;
 }> = [
-  // Top row: the two most-used surfaces. Auto top-left because it's
-  // the ⌘⇧P default — every other mode is a specialization.
-  { id: "auto", name: "Auto", sub: "Snap or drag · ⌘⇧P", hk: ["⌘", "⇧", "P"], available: true },
-  { id: "region", name: "Region", sub: "Drag selection", hk: ["⌘", "⇧", "R"], available: true },
-  // Middle row: window picker + full-screen.
-  { id: "window", name: "Window", sub: "Click a window", hk: ["⌘", "⇧", "W"], available: true },
-  { id: "full", name: "Full Screen", sub: "Coming soon", hk: ["⌘", "⇧", "F"], available: false },
-  // Bottom row: long-tail.
-  { id: "all", name: "All Screens", sub: "Coming soon", hk: ["⌘", "⇧", "A"], available: false },
-  { id: "timed", name: "Timed (5s)", sub: "Coming later", hk: ["⌘", "⇧", "T"], available: false }
+  // Two-column grid order — keeps the most-used in the top row, less-
+  // common modes below. Region top-left because once Quick Capture
+  // moves to the prominent button, Region is the highest-frequency
+  // explicit-mode choice.
+  { id: "region", name: "Region", hk: ["⌘", "⇧", "R"], available: true },
+  { id: "window", name: "Window", hk: ["⌘", "⇧", "W"], available: true },
+  { id: "full", name: "Full Screen", hk: ["⌘", "⇧", "F"], available: false },
+  { id: "all", name: "All Screens", hk: ["⌘", "⇧", "A"], available: false },
+  { id: "scroll", name: "Scrolling", hk: ["⌘", "⇧", "S"], available: false },
+  { id: "timed", name: "Timed (5s)", hk: ["⌘", "⇧", "T"], available: false }
 ];
+
+/** Three preset widths matching the float-over Low/Med/High buttons,
+ *  intentionally identical so muscle memory carries from the post-
+ *  capture toast straight into the tray. ⌘1 / ⌘2 / ⌘3 dispatch the
+ *  same `clipboard:copy` command-bus verb. */
+const COPY_PRESETS: Array<{ id: CopyPreset; label: string }> = [
+  { id: "low", label: "Low" },
+  { id: "med", label: "Med" },
+  { id: "high", label: "High" }
+];
+
+/** Estimated output dimensions and bytes for a given preset against a
+ *  source capture's actual width — surfaced on each copy button so the
+ *  user knows what they're about to paste. Mirrors the bake-time
+ *  preset widths in clipboard-handlers.ts (low=800, med=1440,
+ *  high=source). Bytes is a heuristic: ~0.30 bytes per pixel for a
+ *  typical PNG-encoded screen capture (UI screenshots compress well;
+ *  photographs would land higher). */
+function presetMetrics(
+  preset: "low" | "med" | "high",
+  srcW: number,
+  srcH: number,
+  srcBytes: number
+): { dim: string; bytes: string } {
+  const targetW = preset === "low" ? 800 : preset === "med" ? 1440 : srcW;
+  const scale = Math.min(1, targetW / Math.max(1, srcW));
+  const w = Math.round(srcW * scale);
+  const h = Math.round(srcH * scale);
+  const bytes = Math.round(srcBytes * scale * scale);
+  return { dim: `${w} × ${h}`, bytes: formatBytes(bytes) };
+}
 
 function ModeIcon({ kind }: { kind: ModeKind }) {
   switch (kind) {
@@ -97,6 +128,25 @@ function ModeIcon({ kind }: { kind: ModeKind }) {
           <rect x="11" y="9" width="11" height="9" rx="1" />
         </svg>
       );
+    case "scroll":
+      // Scrolling-page glyph: a window with horizontal text rules and
+      // small vertical "scroll track" hashes on either side, signaling
+      // a long page being captured beyond the viewport.
+      return (
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <rect x="6" y="3" width="12" height="18" rx="1.5" />
+          <path d="M9 8h6M9 12h6M9 16h6M3 9v6M21 9v6" />
+        </svg>
+      );
     case "timed":
       return (
         <svg
@@ -163,29 +213,44 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { records } = useLibrary();
   const lastSnap: CaptureRecord | undefined = records[0];
 
-  // Tell main to size the window to our actual content height. Keeps
-  // the popover snug — no dead space at the bottom — and re-fires if
-  // the content grows (e.g. a long source-app name in the activity
-  // card). Main listens on a dedicated ipcRenderer.send channel.
+  // Tell main to size the window. Two fixed sizes based on which
+  // render path is active:
+  //
+  //   • No last snap → empty-state height (just header + Quick
+  //     Capture + 6-mode grid).
+  //   • With last snap → populated height (above + last-snap header
+  //     + 120px preview + Low/Med/High copy buttons).
+  //
+  // Why fixed heights instead of measure-and-fit: the ResizeObserver
+  // approach was unreliable across at least three different bug
+  // surfaces — Electron NSPanel implicit minSize clamping, Geist
+  // web-font swap measurement oscillation (468 → 637 → 468 between
+  // fallback-font, mid-swap, and post-swap states), and font-load-
+  // dependent reflow that didn't trigger observer callbacks. The
+  // tray content is a known, structured layout with exactly two
+  // possible shapes; hardcoding their heights eliminates a whole
+  // class of timing-dependent bugs. Cost is a few px of empty
+  // space at the bottom when fonts haven't loaded yet — acceptable.
+  //
+  // Heights derived empirically from a forced-800px diagnostic
+  // run + the visible content extents in that screenshot:
+  // populated content was ~580 px, empty-state ~230 px. Add ~30 px
+  // margin so a slightly taller font metric (Geist post-load) still
+  // fits without clipping. Update these if the design changes the
+  // count or size of any major section.
+  const TRAY_HEIGHT_WITH_LAST_SNAP = 620;
+  const TRAY_HEIGHT_EMPTY = 250;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const lastSnapId = lastSnap?.id;
   useLayoutEffect(() => {
-    const el = containerRef.current;
-    if (el === null) return;
-    const post = (): void => {
-      const { width, height } = el.getBoundingClientRect();
-      // electron BrowserWindow.setContentSize takes integers; round
-      // up so we never crop a pixel of the bottom row.
-      window.dispatchEvent(
-        new CustomEvent("pwrsnap:tray:resize", {
-          detail: { width: Math.ceil(width), height: Math.ceil(height) }
-        })
-      );
-    };
-    post();
-    const ro = new ResizeObserver(post);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    const targetHeight =
+      lastSnapId === undefined ? TRAY_HEIGHT_EMPTY : TRAY_HEIGHT_WITH_LAST_SNAP;
+    window.dispatchEvent(
+      new CustomEvent("pwrsnap:tray:resize", {
+        detail: { width: 440, height: targetHeight }
+      })
+    );
+  }, [lastSnapId]);
   // The CustomEvent above is a renderer-internal hop — TrayMenuShell
   // (below) listens for it and forwards via window.pwrsnapApi.
   // Splitting keeps the JSX tree easy to read while letting the
@@ -194,12 +259,9 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const onCapture = (mode: "auto" | "region" | "window"): void => {
     void dispatch("capture:interactive", { mode });
   };
-  const onOpenLibrary = (): void => {
-    void dispatch("library:focus", {});
-  };
-  const onRevealLastSnap = (): void => {
+  const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
-    void dispatch("capture:reveal", { captureId: lastSnap.id });
+    void dispatch("clipboard:copy", { captureId: lastSnap.id, preset });
   };
 
   return (
@@ -217,53 +279,56 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
         </div>
       </div>
 
-      <div className="ps-tray__hotkey">
-        <div className="ps-tray__hotkey-l">
-          <span className="ps-tray__hotkey-eyebrow">Quick Capture</span>
-          <span style={{ font: "500 11px/1 var(--font-sans)", color: "var(--text-secondary)" }}>
-            Press a shortcut from anywhere
+      {/* Quick Capture — the prominent default action. Promoted out
+          of the 6-mode grid because it's the single highest-frequency
+          path: smart auto-mode that picks region / window / full
+          screen based on what the cursor is pointing at when the
+          user fires ⌘⇧P. The orange fill + outlined ring make it
+          unmistakably the default; explicit modes sit below as
+          opt-in specializations. */}
+      <button
+        className="ps-tray__quick"
+        type="button"
+        onClick={() => onCapture("auto")}
+      >
+        <span className="ps-tray__quick-l">
+          <span className="ps-tray__quick-eyebrow">Quick Capture</span>
+          <span className="ps-tray__quick-sub">
+            Smart auto-mode · picks region, window, or full screen
           </span>
-        </div>
-        <div className="ps-tray__hotkey-row">
-          <Kbd accent>⌘</Kbd>
-          <Kbd accent>⇧</Kbd>
-          <Kbd accent>P</Kbd>
-        </div>
-      </div>
+        </span>
+        <span className="ps-tray__quick-hk">
+          <Kbd>⌘</Kbd>
+          <Kbd>⇧</Kbd>
+          <Kbd>P</Kbd>
+        </span>
+      </button>
 
       <div className="ps-tray__modes">
         {MODES.map((m) => (
           <button
             key={m.id}
-            className={
-              "ps-mode" +
-              (m.id === activeMode ? " is-primary" : "") +
-              (m.available ? "" : " is-disabled")
-            }
+            className={"ps-mode" + (m.available ? "" : " is-disabled")}
             type="button"
             disabled={!m.available}
             title={m.available ? undefined : "Coming in a later phase"}
             onClick={(() => {
-              if (m.id === "auto") return () => onCapture("auto");
               if (m.id === "region") return () => onCapture("region");
               if (m.id === "window") return () => onCapture("window");
               return undefined;
             })()}
           >
-            <div className="ps-mode__row1">
-              <span className="ps-mode__icon">
-                <ModeIcon kind={m.id} />
-              </span>
-              <span className="ps-mode__name">{m.name}</span>
-              <span className="ps-mode__hk">
-                {m.hk.map((k, i) => (
-                  <span key={i} className="ps-kbd">
-                    {k}
-                  </span>
-                ))}
-              </span>
-            </div>
-            <div className="ps-mode__sub">{m.sub}</div>
+            <span className="ps-mode__icon">
+              <ModeIcon kind={m.id} />
+            </span>
+            <span className="ps-mode__name">{m.name}</span>
+            <span className="ps-mode__hk">
+              {m.hk.map((k, i) => (
+                <span key={i} className="ps-kbd">
+                  {k}
+                </span>
+              ))}
+            </span>
           </button>
         ))}
       </div>
@@ -271,65 +336,50 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       {lastSnap !== undefined && (
         <>
           <div className="ps-tray__divider" />
-          <button
-            className="ps-tray__activity"
-            type="button"
-            onClick={onRevealLastSnap}
-            title="Reveal in Finder"
-          >
-            <div className="ps-tray__activity-thumb">
+          {/* Last snap — bigger preview + Low/Med/High copy buttons,
+              identical visual treatment to the post-capture float-
+              over toast (uses the shared .fo__copy-btn styles). The
+              dimensions + bytes update per preset so the user knows
+              what they're about to paste; ⌘1/⌘2/⌘3 dispatch the
+              same clipboard:copy verb the toast does. */}
+          <div className="ps-tray__last">
+            <div className="ps-tray__last-hdr">
+              <span className="ps-tray__last-eyebrow">
+                Last snap · {relativeTime(lastSnap.captured_at)}
+              </span>
+              <span className="ps-tray__last-meta">
+                {lastSnap.width_px}×{lastSnap.height_px}
+              </span>
+            </div>
+            <div className="ps-tray__last-preview">
               <img
-                src={cacheUrl(lastSnap.id, 72, "webp", lastSnap.overlays_version)}
+                src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
                 alt="Last snap"
               />
             </div>
-            <div className="ps-tray__activity-text">
-              <b>Last snap · {relativeTime(lastSnap.captured_at)}</b>
-              <small>
-                {lastSnap.width_px}×{lastSnap.height_px} · {formatBytes(lastSnap.byte_size)} · region
-              </small>
+            <div className="ps-tray__last-copy">
+              {COPY_PRESETS.map((p) => {
+                const m = presetMetrics(
+                  p.id,
+                  lastSnap.width_px,
+                  lastSnap.height_px,
+                  lastSnap.byte_size
+                );
+                return (
+                  <CopyButton
+                    key={p.id}
+                    preset={p.id}
+                    label={p.label}
+                    dim={m.dim}
+                    bytes={m.bytes}
+                    onCopy={onCopyLastSnap}
+                  />
+                );
+              })}
             </div>
-            <div className="ps-tray__activity-meta">
-              <span className="ps-kbd is-accent">↗</span>
-            </div>
-          </button>
+          </div>
         </>
       )}
-
-      <button className="ps-tray__row" type="button" onClick={onOpenLibrary}>
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6">
-          <rect x="3" y="3" width="18" height="18" rx="2" />
-          <path d="M3 9h18M9 3v18" />
-        </svg>
-        <span className="ps-tray__row-label">Open Library</span>
-        <span className="ps-tray__row-kbd">
-          <Kbd>⌘</Kbd>
-          <Kbd>L</Kbd>
-        </span>
-      </button>
-      <button className="ps-tray__row is-disabled" type="button" disabled title="Coming in Phase 2">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19 12a7 7 0 1 0-7 7" />
-          <path d="m21 21-3-3" />
-        </svg>
-        <span className="ps-tray__row-label">Search captures…</span>
-        <span className="ps-tray__row-kbd">
-          <Kbd>⌘</Kbd>
-          <Kbd>K</Kbd>
-        </span>
-      </button>
-      <button className="ps-tray__row is-disabled" type="button" disabled title="Coming in Phase 3">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6">
-          <path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M5 19l3-3M16 8l3-3" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-        <span className="ps-tray__row-label">Preferences…</span>
-        <span className="ps-tray__row-kbd">
-          <Kbd>⌘</Kbd>
-          <Kbd>,</Kbd>
-        </span>
-      </button>
       <div style={{ height: 8 }} />
     </div>
   );

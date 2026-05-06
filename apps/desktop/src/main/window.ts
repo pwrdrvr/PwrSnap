@@ -153,6 +153,21 @@ export function createTrayWindow(): BrowserWindow {
     visualEffectState: "active",
     webPreferences: baseWebPreferences
   });
+  // ⚠️  IMPORTANT — load-bearing for the renderer's resize-to-fit IPC
+  // (see wireTrayResizeChannel in tray.ts). When a BrowserWindow is
+  // constructed with explicit width/height, Electron records those
+  // values as the IMPLICIT MINIMUM SIZE. Subsequent setContentSize
+  // calls on macOS NSPanels (`type: 'panel'`) silently clamp at that
+  // minimum — the call returns without error, but the content area
+  // never grows or shrinks past the constructor frame. Symptom: the
+  // popover is stuck at 440×440, with rows clipped off the bottom
+  // even though the renderer is reporting the correct height over
+  // IPC. The fix is to immediately lift the min size to 0×0 so the
+  // resize handler is free to set whatever the renderer measured.
+  // Same trick is used in apps/desktop/e2e/fixtures/electron-app.ts
+  // for the same reason (test fixture wants to shrink the window
+  // below its initial frame).
+  window.setMinimumSize(0, 0);
 
   window.setWindowButtonVisibility?.(false);
   window.setMenuBarVisibility(false);
@@ -211,6 +226,13 @@ export function createFloatOverWindow(): BrowserWindow {
     hasShadow: false,
     webPreferences: baseWebPreferences
   });
+  // ⚠️  Same gotcha as createTrayWindow — see that function's comment
+  // for the full story. Lifting the implicit minimum size to 0×0
+  // is what allows the renderer's `float-over:resize` IPC (handled
+  // in float-over.ts/wireFloatOverResizeChannel) to actually move
+  // the content area; without this, setContentSize is silently
+  // clamped to the constructor's `width`/`height` floor.
+  window.setMinimumSize(0, 0);
 
   // Floating level (NSWindowLevel 3) — the macOS-native level for
   // persistent toasts/HUDs (CleanShot X, Shottr, Loom, macshot all

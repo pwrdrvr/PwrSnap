@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { PwrSnapMark } from "../shared/BrandMark";
+import { CopyButton, type CopyPreset } from "../shared/CopyButton";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
   { id: "low", label: "Low", scale: 0.4, bytes: "182 KB" },
   { id: "med", label: "Med", scale: 0.7, bytes: "612 KB" },
   { id: "high", label: "High", scale: 1.0, bytes: "2.4 MB" }
-] as const;
-
-type ResPreset = (typeof RES_PRESETS)[number];
+] as const satisfies ReadonlyArray<{
+  id: CopyPreset;
+  label: string;
+  scale: number;
+  bytes: string;
+}>;
 
 const VARIANTS = {
   compact: { showAnnotate: false, showAi: false, showFooter: false, showStorage: false, autoMs: 4000 },
@@ -20,40 +24,6 @@ type VariantId = keyof typeof VARIANTS;
 
 function dimText(w: number, h: number) {
   return `${w.toLocaleString()} × ${h.toLocaleString()}`;
-}
-
-function FoCopyButton({
-  preset,
-  primary,
-  copied,
-  onClick,
-  srcW,
-  srcH
-}: {
-  preset: ResPreset;
-  primary?: boolean;
-  copied?: boolean;
-  onClick: () => void;
-  srcW: number;
-  srcH: number;
-}) {
-  const w = Math.round(preset.scale * srcW);
-  const h = Math.round(preset.scale * srcH);
-  const cls = ["fo__copy-btn", primary ? "is-primary" : "", copied ? "is-copied" : ""]
-    .join(" ")
-    .trim();
-  return (
-    <button className={cls} onClick={onClick}>
-      <div className="fo__copy-btn-row1">
-        <span className="fo__copy-label">{preset.label}</span>
-        <span className="fo__copy-kbd">⌘{preset.id === "low" ? 1 : preset.id === "med" ? 2 : 3}</span>
-      </div>
-      <div className="fo__copy-meta">
-        <span className="fo__copy-dim">{dimText(w, h)}</span>
-        <span className="fo__copy-bytes">{copied ? "copied" : preset.bytes}</span>
-      </div>
-    </button>
-  );
 }
 
 function FoTags({
@@ -121,7 +91,6 @@ export function FloatOver({
   aiSuggestions = ["pwragnt", "ui", "thread-list"],
   aiDescription = "PwrAgnt thread list with selected resume-menu thread",
   thinking = false,
-  initiallyCopied = null,
   pinned: pinnedProp = false
 }: {
   variant?: VariantId;
@@ -142,11 +111,13 @@ export function FloatOver({
   aiSuggestions?: string[];
   aiDescription?: string;
   thinking?: boolean;
-  initiallyCopied?: string | null;
   pinned?: boolean;
 }) {
   const cfg = VARIANTS[variant];
-  const [copiedId, setCopiedId] = useState<string | null>(initiallyCopied);
+  // Note: the prior `copiedId` / `initiallyCopied` state is gone — the
+  // shared CopyButton component now owns its own copied state and the
+  // visual is the orange "Copied" overlay (no `is-primary` highlight,
+  // no bytes-text swap). See features/shared/CopyButton.tsx.
   const [description, setDescription] = useState(initialDescription);
   const [tags, setTags] = useState<string[]>(initialTags);
   const [pinned, setPinned] = useState(pinnedProp);
@@ -212,18 +183,6 @@ export function FloatOver({
       }
     };
   }, []);
-
-  const handleCopy = (presetId: string) => {
-    // Tell the parent to actually run the copy. The local state
-    // below is just for the "copied" badge animation — without the
-    // onCopy call this button used to be pure cosmetics. Now it
-    // dispatches `clipboard:copy` via FloatOverHost.
-    if (presetId === "low" || presetId === "med" || presetId === "high") {
-      onCopy?.(presetId);
-    }
-    setCopiedId(presetId);
-    setTimeout(() => setCopiedId((c) => (c === presetId ? null : c)), 1200);
-  };
 
   const dismissNow = () => {
     setExiting(true);
@@ -308,17 +267,20 @@ export function FloatOver({
       </div>
 
       <div className="fo__copy">
-        {RES_PRESETS.map((p) => (
-          <FoCopyButton
-            key={p.id}
-            preset={p}
-            primary={p.id === "high"}
-            copied={copiedId === p.id}
-            onClick={() => handleCopy(p.id)}
-            srcW={srcW}
-            srcH={srcH}
-          />
-        ))}
+        {RES_PRESETS.map((p) => {
+          const w = Math.round(p.scale * srcW);
+          const h = Math.round(p.scale * srcH);
+          return (
+            <CopyButton
+              key={p.id}
+              preset={p.id}
+              label={p.label}
+              dim={dimText(w, h)}
+              bytes={p.bytes}
+              onCopy={(preset) => onCopy?.(preset)}
+            />
+          );
+        })}
       </div>
 
       {cfg.showAnnotate && (

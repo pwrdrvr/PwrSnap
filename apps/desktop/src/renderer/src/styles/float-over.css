@@ -220,9 +220,6 @@
 .fo__copy-btn {
   position: relative;
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  /* reserve room for the post-click ring so layout doesn't twitch */
-  outline: 2px solid transparent;
-  outline-offset: -1px;
   padding: 8px 9px 7px;
   background: rgba(255,255,255,0.025);
   border: 1px solid rgba(255,255,255,0.07);
@@ -230,47 +227,50 @@
   color: var(--text-primary);
   cursor: pointer;
   text-align: left;
-  transition: all 120ms var(--ease-out);
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
   font-family: var(--font-sans);
+  /* overflow:hidden clips the inset overlay to the button's rounded
+     corners so its orange fill matches the border-radius without
+     needing border-radius: inherit on the overlay element. */
+  overflow: hidden;
 }
 .fo__copy-btn:hover {
   background: rgba(232,116,58,0.08);
   border-color: var(--accent-border);
   transform: translateY(-1px);
 }
-.fo__copy-btn.is-primary {
+/* "Copied" overlay — covers the button content with an orange fill
+   for ~1.2s after a successful click. The CopyButton component
+   (features/shared/CopyButton.tsx) toggles `.is-copied` for the
+   duration. position:absolute + inset:0 keeps the overlay inside
+   the button bounds without affecting the layout of the row1 / meta
+   children underneath, so the surrounding 3-column grid never
+   reflows when the user clicks a button. opacity transition (not
+   display swap) so the overlay fades cleanly in and out without a
+   1-frame paint hop.
+
+   No is-primary variant — the High button no longer carries a
+   default-action accent color (the user pointed out that nothing
+   actually treats High as ⏎-default, so highlighting it was
+   misleading affordance). All three buttons get identical styling. */
+.fo__copy-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--accent);
-  border-color: var(--accent);
   color: var(--button-text-on-accent);
+  font: 700 14px/1 var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease-out);
 }
-.fo__copy-btn.is-primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  transform: translateY(-1px);
+.fo__copy-btn.is-copied .fo__copy-overlay {
+  opacity: 1;
 }
-/* "action happened" — temporary amber ring + soft glow.
-   No fill change, no font change, no size change → zero layout shift. */
-.fo__copy-btn.is-copied {
-  outline-color: var(--accent);
-  box-shadow:
-    0 0 0 1px var(--accent-border),
-    0 0 16px var(--accent-shadow);
-  animation: fo-copied-pulse 900ms var(--ease-out) 1;
-}
-.fo__copy-btn.is-copied.is-primary {
-  /* primary already has accent fill; ring goes brighter so it still reads */
-  outline-color: var(--accent-bright);
-  box-shadow:
-    0 0 0 1px var(--accent-bright),
-    0 0 18px var(--accent-shadow);
-}
-@keyframes fo-copied-pulse {
-  0%   { outline-offset: -1px; }
-  40%  { outline-offset: 3px; }
-  100% { outline-offset: -1px; }
-}
-/* Keep meta row from reflowing — give "copied" the same width as the bytes value. */
-.fo__copy-btn.is-copied .fo__copy-bytes { color: var(--accent-bright); opacity: 1; }
 .fo__copy-btn-row1 {
   display: flex; align-items: center; gap: 6px;
 }
@@ -288,7 +288,6 @@
   color: inherit;
   opacity: 0.7;
 }
-.fo__copy-btn.is-primary .fo__copy-kbd { background: rgba(0,0,0,0.18); }
 .fo__copy-meta {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 6px;

@@ -23,9 +23,16 @@ const log = getMainLogger("pwrsnap:tray");
 const BLUR_DISMISS_DEBOUNCE_MS = 120;
 const TRAY_RESIZE_CHANNEL = "tray:resize";
 
-/** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen. */
+/** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen.
+ *  Ceiling raised from 720 → 880 to fit the redesigned tray: header +
+ *  Quick Capture button + 6-mode grid + 120px last-snap preview +
+ *  Low/Med/High copy button row sums to ~480px on its own; with a
+ *  tall capture (16:10 preview at full width) and the longest font
+ *  fallback metrics it can land north of 720. The popover is anchored
+ *  top-down from the menubar tray icon, so growing taller doesn't
+ *  push off-screen — Electron clamps to workArea automatically. */
 const TRAY_HEIGHT_MIN = 200;
-const TRAY_HEIGHT_MAX = 720;
+const TRAY_HEIGHT_MAX = 880;
 /** Window width is fixed by the design — must match `.ps-tray { width }`
     in library.css. Bumped from 380 → 440 because the 2-column mode
     grid (Region/Window, Full/All, Scrolling/Timed) was clipping the
@@ -98,12 +105,18 @@ function wireTrayResizeChannel(): void {
     ) {
       return;
     }
-    const height = Math.round((payload as { height: number }).height);
-    if (!Number.isFinite(height)) return;
-    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, height));
+    const requested = Math.round((payload as { height: number }).height);
+    if (!Number.isFinite(requested)) return;
+    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requested));
     if (trayWindow === null || trayWindow.isDestroyed()) return;
-    const current = trayWindow.getContentSize();
-    if (current[1] === clamped) return;
+    if (trayWindow.getContentSize()[1] === clamped) return;
+    // Belt-and-braces: every resize call lifts the implicit minimum
+    // size first. The createTrayWindow call already does this once on
+    // first construction, but if anything later re-asserts a min size
+    // (an unrelated Electron API call, a future BrowserWindow.setBounds
+    // wrapper, etc.) the resize would silently clamp again. Cheap to
+    // re-call — Electron coalesces same-value setMinimumSize calls.
+    trayWindow.setMinimumSize(0, 0);
     trayWindow.setContentSize(TRAY_WIDTH, clamped, false);
     if (tray !== null && trayWindow.isVisible()) {
       positionTrayWindow(trayWindow, tray.getBounds());

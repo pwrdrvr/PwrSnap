@@ -2,7 +2,7 @@ import { Editor } from "./features/editor/Editor";
 import { Library } from "./features/library/Library";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
-import { TrayMenu, TrayResizeForwarder } from "./features/tray/TrayMenu";
+import { TrayMenu } from "./features/tray/TrayMenu";
 
 type Stage = "library" | "float-over" | "tray" | "region" | "edit";
 
@@ -47,12 +47,7 @@ document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
 export function App() {
   if (STAGE === "tray") {
-    return (
-      <>
-        <TrayResizeForwarder />
-        <TrayMenu activeMode="auto" />
-      </>
-    );
+    return <TrayMenu activeMode="auto" />;
   }
   if (STAGE === "float-over") {
     return <FloatOverHost />;

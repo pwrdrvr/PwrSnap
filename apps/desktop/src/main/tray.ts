@@ -108,8 +108,15 @@ function ensureTrayWindow(): BrowserWindow {
  * popover hugs its content. Each call also re-positions to keep the
  * top-right corner anchored under the tray icon (otherwise growing
  * down would push the popover off-screen on a tall display).
+ *
+ * Idempotent — safe to call from both the production `installTray`
+ * boot path and the E2E `showTrayPopoverForE2E` test helper without
+ * stacking duplicate ipcMain listeners.
  */
+let trayResizeChannelWired = false;
 function wireTrayResizeChannel(): void {
+  if (trayResizeChannelWired) return;
+  trayResizeChannelWired = true;
   ipcMain.on(TRAY_RESIZE_CHANNEL, (_event, payload: unknown) => {
     if (
       payload === null ||
@@ -281,6 +288,7 @@ export function disposeTray(): void {
     pendingDismiss = null;
   }
   ipcMain.removeAllListeners(TRAY_RESIZE_CHANNEL);
+  trayResizeChannelWired = false;
   if (trayWindow !== null && !trayWindow.isDestroyed()) {
     trayWindow.destroy();
     trayWindow = null;
@@ -289,4 +297,33 @@ export function disposeTray(): void {
     tray.destroy();
     tray = null;
   }
+}
+
+/**
+ * E2E-only: ensure the tray popover BrowserWindow exists, the resize
+ * channel is wired, and the window is visible. Skips the `Tray` icon
+ * creation that `installTray()` does — tests don't need a menubar
+ * NSStatusItem, and creating one in headless CI environments is
+ * unreliable.
+ *
+ * Positions the popover at a fixed top-left location on the primary
+ * display so spec assertions about bounds are stable across machines.
+ */
+export function showTrayPopoverForE2E(): void {
+  wireTrayResizeChannel();
+  const window = ensureTrayWindow();
+  // Stable test position: top-left of the primary display, indented
+  // a few pixels off the menubar. Production positioning happens via
+  // positionTrayWindow + the tray icon's bounds; tests don't have a
+  // tray icon, so we just pin the window somewhere predictable.
+  const primary = screen.getPrimaryDisplay();
+  const wa = primary.workArea;
+  window.setPosition(wa.x + 8, wa.y + 8, false);
+  window.showInactive();
+  window.focus();
+}
+
+/** E2E-only: hide the tray popover synchronously (no debounce). */
+export function hideTrayPopoverForE2E(): void {
+  hideTrayPopoverIfVisible();
 }

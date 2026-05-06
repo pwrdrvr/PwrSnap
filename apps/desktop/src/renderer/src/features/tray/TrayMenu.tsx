@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
@@ -232,11 +232,19 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       const target = Math.ceil(rect.height);
       if (!force && target === posted) return;
       posted = target;
-      window.dispatchEvent(
-        new CustomEvent("pwrsnap:tray:resize", {
-          detail: { width: 440, height: target }
-        })
-      );
+      // Direct IPC — same shape as FloatOverHost.tsx. The earlier
+      // version of this code dispatched a `pwrsnap:tray:resize`
+      // CustomEvent that a sibling `<TrayResizeForwarder/>` (with
+      // `useEffect`) listened for and forwarded over IPC. That had
+      // a race: `useLayoutEffect` here fires BEFORE `useEffect`
+      // anywhere, so the first post was dispatched before the
+      // forwarder's listener was attached and got dropped. In
+      // production, follow-up ResizeObserver fires usually rescued
+      // it; in the E2E harness (faster, more stable layout) the
+      // observer didn't re-fire and the popover got stuck at its
+      // 440×440 constructor frame. Calling the preload API directly
+      // removes the race entirely.
+      window.pwrsnapApi?.requestTrayResize?.({ width: 440, height: target });
     };
     post();
     const ro = new ResizeObserver(() => post());
@@ -255,10 +263,6 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       unsubRemeasure?.();
     };
   }, []);
-  // The CustomEvent above is a renderer-internal hop — TrayMenuShell
-  // (below) listens for it and forwards via window.pwrsnapApi.
-  // Splitting keeps the JSX tree easy to read while letting the
-  // forwarding logic sit close to the lifecycle effect.
 
   const onCapture = (mode: "auto" | "region" | "window"): void => {
     void dispatch("capture:interactive", { mode });
@@ -391,19 +395,3 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   );
 }
 
-/**
- * Catches the layout-effect resize event and forwards via the
- * window.pwrsnapApi side channel. Sits at the App.tsx root so it
- * survives any TrayMenu re-renders.
- */
-export function TrayResizeForwarder(): null {
-  useEffect(() => {
-    const handler = (event: Event): void => {
-      const ce = event as CustomEvent<{ width: number; height: number }>;
-      window.pwrsnapApi?.requestTrayResize?.(ce.detail);
-    };
-    window.addEventListener("pwrsnap:tray:resize", handler as EventListener);
-    return () => window.removeEventListener("pwrsnap:tray:resize", handler as EventListener);
-  }, []);
-  return null;
-}

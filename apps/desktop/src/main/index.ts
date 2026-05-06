@@ -304,6 +304,7 @@ export function bootstrapApp(): void {
       const { insertOrFindCapture } = await import("./persistence/captures-repo");
       const { getDb } = await import("./persistence/db");
       const { setFloatOverState } = await import("./float-over");
+      const { showTrayPopoverForE2E, hideTrayPopoverForE2E } = await import("./tray");
       const { clipboard } = await import("electron");
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
@@ -342,7 +343,14 @@ export function bootstrapApp(): void {
         // earlier paste.
         clearClipboard: () => {
           clipboard.clear();
-        }
+        },
+        // Tray-sizing test surface. `installTray()` is skipped in E2E
+        // mode (no NSStatusItem in tests), so these helpers stand in
+        // for the user clicking the tray icon. They drive the same
+        // BrowserWindow + resize-channel plumbing the production
+        // path uses; only the icon is bypassed.
+        showTrayPopover: () => showTrayPopoverForE2E(),
+        hideTrayPopover: () => hideTrayPopoverForE2E()
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =
         testBridge;

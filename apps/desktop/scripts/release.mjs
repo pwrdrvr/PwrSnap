@@ -140,8 +140,11 @@ const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("npx", cleanedArgs, { cwd: stageDir });
 
 // 6. Verify no forbidden files leaked into the asar bundle.
+//    Pass the .app path explicitly — the script's default resolves relative to
+//    cwd, which would compound to release-stage/release-stage/... otherwise.
 step("verify asar contents");
-runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs")], {
+const appPath = join(stageDir, "dist", "mac-arm64", "PwrSnap.app");
+runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), appPath], {
   cwd: stageDir
 });
 

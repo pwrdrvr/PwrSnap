@@ -374,10 +374,10 @@
 .psl__topbar .psl__view,
 .psl__topbar .psl__search-wrap { -webkit-app-region: no-drag; }
 .psl__topbar-l { display: flex; align-items: center; gap: 12px; }
-.psl__title { font: 700 15px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+.psl__title { font: 700 14px/1 var(--font-display); letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
 .psl__title-mark {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px;
+  width: 22px; height: 22px;
   border-radius: 6px;
   background: var(--bg-panel-elevated);
   border: 1px solid var(--accent-border);
@@ -786,7 +786,7 @@
   min-height: 0;
   overflow: hidden;
   background: var(--bg-sidebar);
-  border-left: 1px solid var(--border-default);
+  border-left: 1px solid var(--border-subtle);
 }
 
 .psl__right-tabs {
@@ -1194,6 +1194,23 @@
   font: 600 10px/1 var(--font-mono);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+/* Tool icon glyph — 15×15 with 1.8 stroke matches the design's
+   weight at this button size; smaller tightens up against the
+   label text. */
+.psl__et-btn svg {
+  width: 15px;
+  height: 15px;
+}
+/* Vertical divider between the Pointer (select/inspect) tool and
+   the Arrow/Rect/Highlight/Blur/Text (draw) tools. Subtle so it
+   reads as a separator, not a hard cut. */
+.psl__et-sep {
+  display: inline-block;
+  width: 1px;
+  height: 22px;
+  background: var(--border-subtle);
+  margin: 0 4px;
 }
 .psl__et-btn:hover {
   background: var(--bg-panel-hover);

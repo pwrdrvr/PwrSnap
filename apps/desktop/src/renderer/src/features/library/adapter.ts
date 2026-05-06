@@ -65,7 +65,7 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
  * `source_app_bundle_id` properly; for now everything falls back to
  * the generic "any" mark.
  */
-function mapBundleIdToAppId(bundleId: string | null): AppId {
+export function mapBundleIdToAppId(bundleId: string | null): AppId {
   if (bundleId === null) return "any";
   if (bundleId.includes("vscode") || bundleId.includes("code")) return "vscode";
   if (bundleId.includes("chrome")) return "chrome";

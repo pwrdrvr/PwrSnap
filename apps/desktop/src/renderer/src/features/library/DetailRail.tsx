@@ -10,7 +10,9 @@
 import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics } from "../shared/CopyButton";
+import { AppTag } from "../shared/AppIcons";
 import { dispatch } from "../../lib/pwrsnap";
+import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 
 const COPY_PRESETS = ["low", "med", "high"] as const;
@@ -33,6 +35,7 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
 
   const capturedAt = formatTimestamp(record.captured_at);
   const sourceName = record.source_app_name ?? "Unknown app";
+  const appId = mapBundleIdToAppId(record.source_app_bundle_id);
 
   return (
     <aside className="psl__right" aria-label="Capture details">
@@ -62,7 +65,7 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
             <span>{capturedAt}</span>
           </div>
           <div className="psl__detail-tags">
-            <span className="ps-tag">{sourceName}</span>
+            <AppTag app={appId} name={sourceName} />
             <span className="ps-tag is-suggest">+ codex</span>
           </div>
         </div>

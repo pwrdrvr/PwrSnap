@@ -41,8 +41,10 @@
 import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { Editor, type Tool } from "../editor/Editor";
+import { AppTag } from "../shared/AppIcons";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";
+import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryAction, LibraryView } from "./library-view";
 
 export type StageProps = {
@@ -130,11 +132,25 @@ function StageBody({
   const captureId = record.id;
   void view; // currently unused; kept in props for future variant logic
 
+  const sourceName = record.source_app_name ?? "Unknown app";
+  const appId = mapBundleIdToAppId(record.source_app_bundle_id);
+  const captured = new Date(record.captured_at);
+  const capturedDate = captured.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric"
+  });
+  const capturedTime = captured.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+
   return (
     <>
       <div className="psl__stage-meta">
-        <span className="ps-tag">{record.source_app_name ?? "Unknown app"}</span>
-        <b>{record.source_app_name ?? "Capture"}</b>
+        <AppTag app={appId} name={sourceName} size="sm" />
+        <span>
+          · {capturedDate} {capturedTime}
+        </span>
         <span>
           · {record.width_px}×{record.height_px}
         </span>

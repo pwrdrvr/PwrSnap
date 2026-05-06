@@ -24,7 +24,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type FormEvent
+  type FormEvent,
+  type ReactElement
 } from "react";
 import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
 import { computeArrowGeometry } from "@pwrsnap/shared";
@@ -73,17 +74,99 @@ type Draft = DraftArrow | DraftRect | DraftText;
  *  keyboard shortcuts. Exported so the Library-level <EditToolbar>
  *  (used in Focus + Reel modes) renders the same set without duplicating
  *  the metadata. */
-export const TOOLS: { id: Tool; label: string; key: string }[] = [
+/** Single source of truth for the annotation tool palette. The
+ *  `icon` SVG path data is rendered by the Library's floating
+ *  `<EditToolbar>` (Stage's bottom-center toolbar). The Editor's
+ *  internal `EditorToolbar` (full + embedded chrome) reads only
+ *  `id`/`label`/`key` and ignores the icon — keeping a single
+ *  source avoids drift between the two toolbars. */
+export const TOOLS: ReadonlyArray<{
+  id: Tool;
+  label: string;
+  key: string;
+  icon: ReactElement;
+}> = [
   // Pointer is the default — no-op on drag. Lets the user click on
   // the canvas to focus / inspect without accidentally drawing.
   // Drawing tools require an explicit click on the toolbar (or a key
   // shortcut: A R H B T).
-  { id: "pointer", label: "Pointer", key: "V" },
-  { id: "arrow", label: "Arrow", key: "A" },
-  { id: "rect", label: "Rect", key: "R" },
-  { id: "highlight", label: "Highlight", key: "H" },
-  { id: "blur", label: "Blur", key: "B" },
-  { id: "text", label: "Text", key: "T" }
+  {
+    id: "pointer",
+    label: "Pointer",
+    key: "V",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="m4 3 6 17 3-7 7-3z" />
+      </svg>
+    )
+  },
+  {
+    id: "arrow",
+    label: "Arrow",
+    key: "A",
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      >
+        <path d="M5 19 19 5M19 5h-7M19 5v7" />
+      </svg>
+    )
+  },
+  {
+    id: "rect",
+    label: "Rect",
+    key: "R",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="4" width="16" height="16" />
+      </svg>
+    )
+  },
+  {
+    id: "highlight",
+    label: "Highlight",
+    key: "H",
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      >
+        <path d="M9 14 4 19v2h2l5-5" />
+        <path d="M14 9 19 4l3 3-5 5" />
+        <path d="M9 14l5 5" />
+      </svg>
+    )
+  },
+  {
+    id: "blur",
+    label: "Blur",
+    key: "B",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="7" cy="12" r="2" />
+        <circle cx="13" cy="8" r="2" />
+        <circle cx="17" cy="14" r="2" />
+        <circle cx="11" cy="17" r="2" />
+      </svg>
+    )
+  },
+  {
+    id: "text",
+    label: "Text",
+    key: "T",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M5 6h14M12 6v14M9 20h6" />
+      </svg>
+    )
+  }
 ];
 
 const MIN_DRAG_LENGTH = 0.005; // 0.5% of canvas — below = treat as click

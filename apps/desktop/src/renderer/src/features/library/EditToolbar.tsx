@@ -15,7 +15,7 @@
 //   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
 //   Phase C.3.
 
-import type { ReactElement } from "react";
+import { Fragment, type ReactElement } from "react";
 import { TOOLS, type Tool } from "../editor/Editor";
 
 export type EditToolbarProps = {
@@ -39,17 +39,26 @@ export function EditToolbar({ tool, onChange }: EditToolbarProps): ReactElement 
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {TOOLS.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
-          onClick={() => onChange(t.id)}
-          title={`${t.label} (${t.key})`}
-        >
-          <span>{t.label}</span>
-          <span className="psl__et-btn-key">{t.key}</span>
-        </button>
+      {TOOLS.map((t, i) => (
+        <Fragment key={t.id}>
+          {/* Vertical separator after the first tool (Pointer) —
+              divides the "select / inspect" tool from the "draw"
+              tools. Mirrors the design's separator placement; the
+              design also has a separator before color swatches +
+              magic wand + undo, but those clusters aren't rendered
+              in this phase. */}
+          {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
+          <button
+            type="button"
+            className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
+            onClick={() => onChange(t.id)}
+            title={`${t.label} (${t.key})`}
+          >
+            {t.icon}
+            <span>{t.label}</span>
+            <span className="psl__et-btn-key">{t.key}</span>
+          </button>
+        </Fragment>
       ))}
       {/* Crop, color swatches, magic wand, and the in-toolbar Undo
           are deliberately NOT rendered in this phase per Scope

@@ -765,6 +765,22 @@
   transform: translateX(0);
 }
 
+/* DetailRail container. Renders in grid-column 3 of the parent
+   `.psl` grid in Focus + Reel modes (DetailRail returns null in
+   Grid mode so this rule is effectively only active there). The
+   visible separator between the Focus/Reel content area and the
+   rail comes from `border-left` here. */
+.psl__right {
+  grid-column: 3;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-default);
+}
+
 .psl__right-tabs {
   display: flex; padding: 10px 12px 0;
   gap: 2px;
@@ -1028,10 +1044,14 @@
   color: var(--text-primary);
   font: 600 12px/1 var(--font-sans);
 }
+/* Position counter ("5 / 32"). Sits top-center of the stage area so
+   it doesn't fight with the × close button (top-right) in Focus
+   mode or feel cramped against the right rail in Reel. */
 .psl__stage-pos {
   position: absolute;
   top: 16px;
-  right: 24px;
+  left: 50%;
+  transform: translateX(-50%);
   font: 600 11px/1 var(--font-mono);
   color: var(--text-muted);
   background: var(--bg-panel);

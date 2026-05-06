@@ -459,7 +459,10 @@
    band hides in grid mode, the grid pane hides in reel mode. The
    right rail and the inline editor pane retain their current
    behavior; Phase B/C will replace them. */
-.psl[data-mode="grid"] .psl__reel-wrap { display: none; }
+/* Grid pane visibility — `.psl__grid-wrap` lives in `.psl__main` and
+   is hidden in non-grid modes. The reel filmstrip used to live here
+   as `.psl__reel-wrap` but moved into <Stage>'s aboveStageSlot in
+   Phase C/D so it doesn't fight Stage for the same grid cell. */
 .psl[data-mode="reel"] .psl__grid-wrap { display: none; }
 
 .psl__main {

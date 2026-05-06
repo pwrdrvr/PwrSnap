@@ -505,48 +505,18 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       </aside>
 
       <main className="psl__main">
-        {/* Reel band — visible in reel mode only via .psl[data-mode="reel"]
-            CSS toggle. Filmstrip will get the always-open stage below it
-            in Phase D; for now it's still the same layout shape. The
-            "scrub ⌘[ / ⌘]" hint is removed per the plan's resolved
-            decision to drop the scrubhead. */}
-        <section className="psl__reel-wrap">
-          <div className="psl__reel-hdr">
-            <span className="psl__reel-title">
-              Timeline · {activeApp === "all" ? "all sources" : APP_INFO[activeApp]?.name}
-            </span>
-          </div>
-          <div className="psl__reel">
-            {grouped.map((g) => (
-              <div key={g.day} className="psl__reel-day">
-                <div className="psl__reel-day-label">
-                  {g.day} · {g.date}
-                </div>
-                <div className="psl__reel-day-frames">
-                  {g.items.map((c) => (
-                    <button
-                      key={c.id}
-                      className={"psl__frame" + (c.id === selected ? " is-selected" : "")}
-                      onClick={() => onSelectFrame(c)}
-                    >
-                      <CellThumb capture={c} record={fixtureBacking.recordFor(c.id)} width={140} />
-                      <span className="psl__frame-num">{c.time}</span>
-                      <span className="psl__frame-app">
-                        <AppIcon app={c.app} size={8} />
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
         {/* Grid pane — visible in grid mode only via .psl[data-mode="grid"]
             CSS toggle. All day groups render (the prior .slice(0, 2)
             band-aid is removed per Phase B.10; perf hygiene of B.9 —
             loading="lazy" + content-visibility:auto on cells — carries
-            us through ~1000 captures without virtualization). */}
+            us through ~1000 captures without virtualization).
+
+            Note: the filmstrip used to render here in a `.psl__reel-wrap`
+            section, but as of Phase C/D it's passed into <Stage> as the
+            `aboveStageSlot` prop in Reel mode — see the filmstripSlot
+            const below. The previous "filmstrip in main + Stage as
+            sibling" layout had both elements landing in grid-column 2 /
+            grid-row 2 which made Stage paint on top of the filmstrip. */}
         <div className="psl__grid-wrap" ref={gridScrollRef}>
           {grouped.map((g) => (
             <div key={g.day}>
@@ -607,10 +577,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       </main>
 
       {/* Stage — Focus mode opens it inside a native <dialog> with
-          showModal(); Reel mode renders it in-flow inside the main
-          pane via CSS. The discriminated union ensures selectedRecord
-          is non-null at this point because focus + reel both require
-          a non-null selectedRecordId in the type. */}
+          showModal(); Reel mode renders it in-flow with the filmstrip
+          on top via the `aboveStageSlot` prop. The discriminated
+          union ensures selectedRecord is non-null at this point
+          because focus + reel both require a non-null
+          selectedRecordId in the type. */}
       {(view.kind === "focus" || view.kind === "reel") && selectedRecord !== null && (
         <Stage
           view={view}
@@ -625,6 +596,51 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           nextRecordId={nextRecordId}
           tool={tool}
           onToolChange={setTool}
+          {...(view.kind === "reel"
+            ? {
+                aboveStageSlot: (
+                  <section className="psl__reel-wrap">
+                    <div className="psl__reel-hdr">
+                      <span className="psl__reel-title">
+                        Timeline ·{" "}
+                        {activeApp === "all" ? "all sources" : APP_INFO[activeApp]?.name}
+                      </span>
+                    </div>
+                    <div className="psl__reel">
+                      {grouped.map((g) => (
+                        <div key={g.day} className="psl__reel-day">
+                          <div className="psl__reel-day-label">
+                            {g.day} · {g.date}
+                          </div>
+                          <div className="psl__reel-day-frames">
+                            {g.items.map((c) => (
+                              <button
+                                key={c.id}
+                                className={
+                                  "psl__frame" +
+                                  (c.id === selected ? " is-selected" : "")
+                                }
+                                onClick={() => onSelectFrame(c)}
+                              >
+                                <CellThumb
+                                  capture={c}
+                                  record={fixtureBacking.recordFor(c.id)}
+                                  width={140}
+                                />
+                                <span className="psl__frame-num">{c.time}</span>
+                                <span className="psl__frame-app">
+                                  <AppIcon app={c.app} size={8} />
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )
+              }
+            : {})}
         />
       )}
 

@@ -9,12 +9,18 @@ function TrayKbd({ children, accent = false }) {
 }
 
 const MODES = [
-  { id: "region",  name: "Region",        sub: "Drag selection",         hk: ["⌘","⇧","P"], icon: "region",  primary: true },
+  { id: "region",  name: "Region",        sub: "Drag selection",         hk: ["⌘","⇧","R"], icon: "region" },
   { id: "window",  name: "Window",        sub: "Click target",            hk: ["⌘","⇧","W"], icon: "window" },
   { id: "full",    name: "Full Screen",   sub: "Active display",          hk: ["⌘","⇧","F"], icon: "full"   },
   { id: "all",     name: "All Screens",   sub: "Stitch displays",         hk: ["⌘","⇧","A"], icon: "all"    },
   { id: "scroll",  name: "Scrolling",     sub: "Capture full page",       hk: ["⌘","⇧","S"], icon: "scroll" },
   { id: "timed",   name: "Timed (5s)",    sub: "Auto trigger",            hk: ["⌘","⇧","T"], icon: "timed"  },
+];
+
+const COPY_PRESETS = [
+  { id: "low",  label: "Low",  dim: "736 × 472",   bytes: "164 KB", kbd: "1" },
+  { id: "med",  label: "Med",  dim: "1288 × 826",  bytes: "412 KB", kbd: "2" },
+  { id: "high", label: "High", dim: "1840 × 1180", bytes: "1.2 MB", kbd: "3" },
 ];
 
 function ModeIcon({ kind }) {
@@ -103,69 +109,63 @@ function TrayMenu({ activeMode = "region" }) {
         </div>
       </div>
 
-      <div className="ps-tray__hotkey">
-        <div className="ps-tray__hotkey-l">
-          <span className="ps-tray__hotkey-eyebrow">Quick Capture</span>
-          <span style={{ font: "500 11px/1 var(--font-sans)", color: "var(--text-secondary)" }}>
-            Press a shortcut from anywhere
-          </span>
-        </div>
-        <div className="ps-tray__hotkey-row">
-          <TrayKbd accent>⌘</TrayKbd>
-          <TrayKbd accent>⇧</TrayKbd>
-          <TrayKbd accent>P</TrayKbd>
-        </div>
-      </div>
+      <button className="ps-tray__quick" type="button">
+        <span className="ps-tray__quick-l">
+          <span className="ps-tray__quick-eyebrow">Quick Capture</span>
+          <span className="ps-tray__quick-sub">Smart auto-mode · picks region, window, or full screen</span>
+        </span>
+        <span className="ps-tray__quick-hk">
+          <TrayKbd>⌘</TrayKbd>
+          <TrayKbd>⇧</TrayKbd>
+          <TrayKbd>P</TrayKbd>
+        </span>
+      </button>
 
       <div className="ps-tray__modes">
         {MODES.map((m) => (
           <button
             key={m.id}
-            className={"ps-mode" + (m.id === activeMode ? " is-primary" : "")}
+            className={"ps-mode" + (m.id === activeMode ? " is-active" : "")}
             type="button"
           >
-            <div className="ps-mode__row1">
-              <span className="ps-mode__icon"><ModeIcon kind={m.icon} /></span>
-              <span className="ps-mode__name">{m.name}</span>
-              <span className="ps-mode__hk">
-                {m.hk.map((k, i) => <span key={i} className="ps-kbd">{k}</span>)}
-              </span>
-            </div>
-            <div className="ps-mode__sub">{m.sub}</div>
+            <span className="ps-mode__icon"><ModeIcon kind={m.icon} /></span>
+            <span className="ps-mode__name">{m.name}</span>
+            <span className="ps-mode__hk">
+              {m.hk.map((k, i) => <span key={i} className="ps-kbd">{k}</span>)}
+            </span>
           </button>
         ))}
       </div>
 
       <div className="ps-tray__divider" />
 
-      <div className="ps-tray__activity">
-        <div className="ps-tray__activity-thumb">
+      <div className="ps-tray__last">
+        <div className="ps-tray__last-hdr">
+          <span className="ps-tray__last-eyebrow">Last snap · 12s ago</span>
+          <span className="ps-tray__last-meta">1840×1180 · region</span>
+        </div>
+        <div className="ps-tray__last-preview">
           <img src="assets/sample-1.png" alt="Last snap" />
         </div>
-        <div className="ps-tray__activity-text">
-          <b>Last snap · 12s ago</b>
-          <small>1840×1180 · 412 KB · region</small>
-        </div>
-        <div className="ps-tray__activity-meta">
-          <span className="ps-kbd is-accent">⌘V</span>
+        <div className="ps-tray__last-copy">
+          {COPY_PRESETS.map((p, i) => (
+            <button
+              key={p.id}
+              className={"fo__copy-btn" + (i === 2 ? " is-primary" : "")}
+              type="button"
+            >
+              <div className="fo__copy-btn-row1">
+                <span className="fo__copy-label">{p.label}</span>
+                <span className="fo__copy-kbd">⌘{p.kbd}</span>
+              </div>
+              <div className="fo__copy-meta">
+                <span className="fo__copy-dim">{p.dim}</span>
+                <span className="fo__copy-bytes">{p.bytes}</span>
+              </div>
+            </button>
+          ))}
         </div>
       </div>
-
-      <button className="ps-tray__row" type="button">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
-        <span className="ps-tray__row-label">Open Library</span>
-        <span className="ps-tray__row-kbd"><TrayKbd>⌘</TrayKbd><TrayKbd>L</TrayKbd></span>
-      </button>
-      <button className="ps-tray__row" type="button">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 1 0-7 7"/><path d="m21 21-3-3"/></svg>
-        <span className="ps-tray__row-label">Search captures…</span>
-        <span className="ps-tray__row-kbd"><TrayKbd>⌘</TrayKbd><TrayKbd>K</TrayKbd></span>
-      </button>
-      <button className="ps-tray__row" type="button">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M5 19l3-3M16 8l3-3"/><circle cx="12" cy="12" r="3"/></svg>
-        <span className="ps-tray__row-label">Preferences…</span>
-        <span className="ps-tray__row-kbd"><TrayKbd>⌘</TrayKbd><TrayKbd>,</TrayKbd></span>
-      </button>
       <div style={{ height: 8 }} />
     </div>
   );

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>PwrSnap — Library, Tray & App Tags</title>
+<title>PwrSnap — Library</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="stylesheet" href="ds/colors_and_type.css" />
 <link rel="stylesheet" href="src/floatover.css" />
@@ -24,13 +24,11 @@
 
 <script type="text/babel" src="src/design-canvas.jsx"></script>
 <script type="text/babel" src="src/AppIcons.jsx"></script>
-<script type="text/babel" src="src/TrayMenu.jsx"></script>
 <script type="text/babel" src="src/Library.jsx"></script>
 
 <script type="text/babel">
-const { useState, useEffect } = React;
 const { DesignCanvas, DCSection, DCArtboard } = window;
-const { TrayMenu, TrayMenubar, Library, PsAppTag, PsAppIcon, APP_INFO } = window.PS;
+const { Library, PsAppTag, APP_INFO } = window.PS;
 
 // ============================================================
 // Notes panel
@@ -49,42 +47,6 @@ function NotesPanel({ children, title }) {
     }}>
       <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 6px", letterSpacing: "-0.01em" }}>{title}</h2>
       {children}
-    </div>
-  );
-}
-
-// ============================================================
-// Tray host frame — desktop with menubar + tray dropping from PwrSnap icon
-// ============================================================
-function TrayHost({ activeMode = "region" }) {
-  return (
-    <div style={{
-      position: "relative", width: "100%", height: "100%",
-      background: "linear-gradient(140deg, #0a0908 0%, #14110d 50%, #050403 100%)",
-      borderRadius: 12, overflow: "hidden",
-      border: "1px solid var(--border-default)",
-    }}>
-      <TrayMenubar />
-      {/* dotted line from menubar PwrSnap icon to tray */}
-      <svg style={{ position: "absolute", top: 26, right: 88, width: 60, height: 14, pointerEvents: "none" }}>
-        <line x1="0" y1="0" x2="0" y2="10" stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 2" opacity="0.5" />
-      </svg>
-      <TrayMenu activeMode={activeMode} />
-      {/* Faux desktop content under it */}
-      <div style={{
-        position: "absolute", left: 24, right: 24, top: 64, bottom: 24,
-        display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 24,
-        opacity: 0.32,
-      }}>
-        {Array.from({length: 16}).map((_, i) => (
-          <div key={i} style={{
-            aspectRatio: "1",
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.04)",
-            borderRadius: 8,
-          }} />
-        ))}
-      </div>
     </div>
   );
 }
@@ -173,44 +135,44 @@ function TagShowcase() {
   );
 }
 
-// ============================================================
-// Tray notes
-// ============================================================
-function TrayNotes() {
-  return (
-    <NotesPanel title="Tray menu">
-      <p style={{ font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 14px" }}>
-        Drops from the menubar PwrSnap icon. The app is keyboard-driven first — the tray exists for <b style={{color:"var(--text-primary)"}}>mode discovery</b> and <b style={{color:"var(--text-primary)"}}>library access</b>, not as the primary capture surface.
-      </p>
-      <ul style={{ font: "400 13px/1.6 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 14px" }}>
-        <li>Six capture modes — Region (primary), Window, Full Screen, All Screens, Scrolling, Timed.</li>
-        <li>Every row shows its hotkey. <b style={{color:"var(--text-primary)"}}>⌘⇧P</b> is the global "smart" trigger that fires the active mode.</li>
-        <li>Last-snap card lets you re-copy / reopen instantly — covers the "I already took it, where did it go" case.</li>
-        <li>Status pill (top-right) shows storage target and idle/recording state.</li>
-        <li>Library, Search, Preferences sit below as global app actions.</li>
-      </ul>
-      <p style={{ font: "400 12px/1.5 var(--font-mono)", color: "var(--text-muted)", margin: 0 }}>
-        Width: 380px. Anchors to the menubar icon. Closes on Esc, click-outside, or shortcut-fire.
-      </p>
-    </NotesPanel>
-  );
-}
-
 function LibraryNotes() {
   return (
-    <NotesPanel title="Library — three-pane">
-      <p style={{ font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 14px" }}>
-        Left rail filters by source app (with counts), middle pane is the <b style={{color:"var(--text-primary)"}}>scrubbable horizontal reel</b> on top + day-grouped grid below, right pane is the detail editor with inline toolbar + AI strip + handoff to full editor.
+    <NotesPanel title="Library — three states, one model">
+      <p style={{ font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 12px" }}>
+        Reworked from a mashed-together reel+grid into <b style={{color:"var(--text-primary)"}}>three discrete view-states</b> sharing the same selection + filter model. The Reel/Grid toggle now actually does something.
       </p>
-      <ul style={{ font: "400 13px/1.6 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 14px" }}>
-        <li><b style={{color:"var(--text-primary)"}}>The reel</b> is the novel bit — film-strip metaphor, day-grouped, with a scrubbable playhead. ⌘[ / ⌘] to step. Hover lifts a frame; click selects.</li>
-        <li><b style={{color:"var(--text-primary)"}}>Inline toolbar</b> floats over the preview: crop, arrow, box, text, blur, magic-wand (Codex annotate), undo. Quick edits without leaving.</li>
-        <li><b style={{color:"var(--text-primary)"}}>Codex caption card</b> auto-runs at capture. Editable, rerunnable, applies suggested tags.</li>
-        <li><b style={{color:"var(--text-primary)"}}>Sizzle reel mode</b> turns the strip into a drag-to-arrange sequence. Picked frames get a numbered badge + green border.</li>
-        <li>"Editor" CTA opens the dedicated stage for advanced edits.</li>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" }}>① Grid (default landing)</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
+        <li>Day-grouped cells fill the entire main area — no shrunken sidebar preview competing.</li>
+        <li>Click any cell → opens <b style={{color:"var(--text-primary)"}}>Focus overlay</b>; the cell briefly pulses on return.</li>
       </ul>
-      <p style={{ font: "400 12px/1.5 var(--font-mono)", color: "var(--text-muted)", margin: 0 }}>
-        Window is sized for Mac users — 1440×900 minimum. Three columns: 220 / flex / 360.
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "12px 0 6px" }}>② Focus overlay (single image · edit)</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
+        <li>Big stage at usable size — solving the "sidebar image too small to edit" gripe.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Floating × top-right</b> + Esc dismiss back to scroll position.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Edit toolbar floats bottom-center of canvas</b> — Select / Crop / Arrow / Rect / Highlight / Text / Blur with single-letter hotkeys + color swatches + magic wand + undo. Ports the affordances we had hidden in the sidebar onto a surface big enough to actually use.</li>
+        <li>← / → cycle through filtered set without leaving.</li>
+        <li>Detail rail shows metadata, Codex caption, and the <b style={{color:"var(--text-primary)"}}>L/M/H copy row</b> from FloatOver — no more blind clipboard copy.</li>
+      </ul>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "12px 0 6px" }}>③ Reel mode</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
+        <li>Filmstrip on top + always-open big stage below — you're always on one image, so no × needed.</li>
+        <li>Exit via the segmented control. Selection preserved across modes.</li>
+        <li>Same edit toolbar + L/M/H copy row — consistent muscle memory.</li>
+      </ul>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", margin: "14px 0 6px" }}>State transitions</div>
+      <pre style={{ font: "500 11px/1.5 var(--font-mono)", color: "var(--text-secondary)", background: "var(--bg-input)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)", margin: "0 0 12px", whiteSpace: "pre-wrap" }}>{`Grid ──click cell──▶ Focus overlay
+Grid ──[Reel toggle]──▶ Reel
+Focus ──[× / Esc]──▶ Grid (return to scroll)
+Focus ──[Reel toggle]──▶ Reel (selection kept)
+Reel ──[Grid toggle]──▶ Grid (selection kept)`}</pre>
+
+      <p style={{ font: "400 12px/1.45 var(--font-mono)", color: "var(--text-muted)", margin: 0 }}>
+        L/M/H mirrors FloatOver: ⌘1/⌘2/⌘3, scaled dimensions visible <i>before</i> copy, byte estimate, primary = High.
       </p>
     </NotesPanel>
   );
@@ -221,38 +183,35 @@ function LibraryNotes() {
 // ============================================================
 function App() {
   return (
-    <DesignCanvas projectName="PwrSnap" deliverable="Library · Tray · App tags">
+    <DesignCanvas projectName="PwrSnap" deliverable="Library">
 
-      <DCSection id="tray" title="① Tray menu">
-        <DCArtboard id="tray-host" label="Tray dropdown · from menubar" width={920} height={620}>
-          <TrayHost activeMode="region" />
+      <DCSection id="library-grid" title="① Library · Grid mode (default landing)">
+        <DCArtboard id="library-grid-default" label="Grid · all captures · nothing open" width={1440} height={900}>
+          <Library initialView="grid" initialSelected={5} initialOpen={false} />
         </DCArtboard>
-        <DCArtboard id="tray-notes" label="Notes" width={460} height={620}>
-          <TrayNotes />
+        <DCArtboard id="library-notes" label="Design notes" width={500} height={900}>
+          <LibraryNotes />
         </DCArtboard>
       </DCSection>
 
-      <DCSection id="apptag" title="② App-source tag · system provenance">
+      <DCSection id="library-focus" title="② Focus overlay · single-image edit (from Grid)">
+        <DCArtboard id="library-focus-open" label="Cell clicked · floating × · in-canvas edit toolbar · L/M/H copy" width={1440} height={900}>
+          <Library initialView="grid" initialSelected={5} initialOpen={true} />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="apptag" title="③ App-source tag · system provenance">
         <DCArtboard id="apptag-showcase" label="Anatomy · sizes · matrix" width={920} height={760}>
           <TagShowcase />
         </DCArtboard>
       </DCSection>
 
-      <DCSection id="library" title="③ Library · three-pane (source · reel · editor)">
-        <DCArtboard id="library-default" label="Default · all captures · reel view" width={1440} height={900}>
-          <Library initialSelected={5} />
+      <DCSection id="library-reel" title="④ Reel mode · always-open stage + filmstrip">
+        <DCArtboard id="library-reel-default" label="Reel · no × needed · same edit toolbar + L/M/H" width={1440} height={900}>
+          <Library initialView="reel" initialSelected={5} />
         </DCArtboard>
-      </DCSection>
-
-      <DCSection id="library-states" title="④ Library states">
-        <DCArtboard id="library-vscode" label="Filtered to VS Code" width={1440} height={900}>
-          <Library initialSelected={5} />
-        </DCArtboard>
-        <DCArtboard id="library-sizzle" label="Sizzle reel composer · 5 picks" width={1440} height={900}>
-          <Library initialSelected={9} sizzleMode={true} sizzlePicks={[5, 9, 11, 17, 19]} />
-        </DCArtboard>
-        <DCArtboard id="library-notes" label="Notes" width={520} height={900}>
-          <LibraryNotes />
+        <DCArtboard id="library-reel-vscode" label="Reel · filtered to VS Code" width={1440} height={900}>
+          <Library initialView="reel" initialSelected={5} initialApp="vscode" />
         </DCArtboard>
       </DCSection>
 

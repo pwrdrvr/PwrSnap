@@ -1,10 +1,13 @@
 /* eslint-disable */
-// PwrSnap Library — three-pane: source apps · reel · detail editor
+// PwrSnap Library — Grid (default) · Reel · Focus overlay
+// Three view-states share the same data + selection model.
 
-const { useState: useStateLib, useMemo: useMemoLib } = React;
+const { useState: useStateLib, useMemo: useMemoLib, useEffect: useEffectLib, useRef: useRefLib } = React;
 const { PsAppIcon, PsAppTag } = window.PS;
 
-// Generated capture data — varied across apps, days, names
+// ============================================================
+// Data
+// ============================================================
 const CAPTURES = (() => {
   const base = [
     { app: "telegram", n: "Pavel re: launch deck",       tags: ["chat","launch"]   },
@@ -14,7 +17,7 @@ const CAPTURES = (() => {
     { app: "vscode",   n: "auth flow — token refresh",   tags: ["bug","auth"]      },
     { app: "vscode",   n: "merge conflict (router.tsx)", tags: ["code"]            },
     { app: "chrome",   n: "Stripe dashboard MRR",        tags: ["metrics","mrr"]   },
-    { app: "chrome",   n: "competitor pricing — CleanShot", tags: ["research"]    },
+    { app: "chrome",   n: "competitor pricing",          tags: ["research"]        },
     { app: "figma",    n: "tray menu v3",                tags: ["design","spec"]   },
     { app: "figma",    n: "icon grid 24px",              tags: ["design"]          },
     { app: "slack",    n: "DM from Ben — bug repro",     tags: ["bug","p1"]        },
@@ -58,31 +61,18 @@ const CAPTURES = (() => {
       date: day.date,
       time: day.times[slot] || "9:00",
       size: 220 + Math.round(Math.sin(i*1.7) * 100 + 280),
-      w: [1840, 1280, 920, 2560][i % 4],
-      h: [1180, 800,  580, 1440][i % 4],
+      w: [2880, 1920, 1440, 2560][i % 4],
+      h: [1800, 1200,  900, 1600][i % 4],
     });
   });
   return out;
 })();
 
-const APP_INFO = {
-  telegram: { name: "Telegram",       count: 3 },
-  excel:    { name: "Excel",          count: 3 },
-  vscode:   { name: "VS Code",        count: 3 },
-  chrome:   { name: "Chrome",         count: 3 },
-  figma:    { name: "Figma",          count: 3 },
-  slack:    { name: "Slack",          count: 3 },
-  terminal: { name: "Terminal",       count: 3 },
-  notion:   { name: "Notion",         count: 2 },
-  linear:   { name: "Linear",         count: 3 },
-  github:   { name: "GitHub",         count: 2 },
-  zoom:     { name: "Zoom",           count: 1 },
-  safari:   { name: "Safari",         count: 1 },
-  preview:  { name: "Preview",        count: 1 },
-  finder:   { name: "Finder",         count: 1 },
-};
+const { APP_INFO } = window.PS;
 
-// Generate 80 thumbnail tints + content patterns for variety
+// ============================================================
+// Synthetic thumbnails
+// ============================================================
 function thumbStyle(c) {
   const palettes = {
     telegram: ["#0e2230", "#229ED9", "#65b6e2"],
@@ -102,13 +92,10 @@ function thumbStyle(c) {
   };
   const [bg, mid, hi] = palettes[c.app] || palettes.finder;
   const angle = (c.id * 47) % 360;
-  return {
-    background: `linear-gradient(${angle}deg, ${bg} 0%, ${mid} 60%, ${hi} 100%)`,
-  };
+  return { background: `linear-gradient(${angle}deg, ${bg} 0%, ${mid} 60%, ${hi} 100%)` };
 }
 
-// Synthetic "screenshot" canvas — UI chrome lines that suggest the app
-function ThumbContent({ c, scale = 1 }) {
+function ThumbContent({ c }) {
   const w = 100, h = 62;
   const palette = {
     telegram: { chrome: "#229ED9", lines: "rgba(255,255,255,0.6)" },
@@ -133,15 +120,12 @@ function ThumbContent({ c, scale = 1 }) {
       <circle cx="3" cy="3" r="1" fill="#ff5f57"/>
       <circle cx="6.5" cy="3" r="1" fill="#febc2e"/>
       <circle cx="10" cy="3" r="1" fill="#28c840"/>
-      {/* sidebar */}
       <rect x="0" y="6" width="22" height={h-6} fill={palette.chrome} opacity="0.5"/>
       {[0,1,2,3,4].map(i => <rect key={i} x="3" y={10+i*7} width="16" height="2.6" fill={palette.lines} opacity={0.18 + (c.id+i)%3*0.08}/>)}
-      {/* content lines */}
       {Array.from({length: 6}).map((_,i) => {
         const ww = 30 + ((c.id*7 + i*13) % 40);
         return <rect key={i} x="26" y={11+i*7} width={ww} height="2.4" fill={palette.lines} opacity={0.32 - i*0.025}/>;
       })}
-      {/* feature box */}
       <rect x="26" y="40" width="64" height="18" fill={palette.lines} opacity="0.08" stroke={palette.lines} strokeOpacity="0.3" strokeWidth="0.4"/>
       <rect x="29" y="44" width="22" height="2.4" fill={palette.lines} opacity="0.4"/>
       <rect x="29" y="49" width="40" height="1.8" fill={palette.lines} opacity="0.25"/>
@@ -150,15 +134,21 @@ function ThumbContent({ c, scale = 1 }) {
   );
 }
 
-function Thumb({ c }) {
+function Thumb({ c, withAnnotation = false }) {
   return (
     <div style={{ position: "absolute", inset: 0, ...thumbStyle(c) }}>
       <ThumbContent c={c} />
+      {withAnnotation && (
+        <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 100 62" preserveAspectRatio="none">
+          <rect x="48" y="34" width="22" height="9" fill="none" stroke="#e8743a" strokeWidth="0.6"/>
+          <path d="M48 34 L 30 22" stroke="#e8743a" strokeWidth="0.5"/>
+          <circle cx="30" cy="22" r="1.6" fill="#e8743a"/>
+        </svg>
+      )}
     </div>
   );
 }
 
-// Group captures by day for grid + reel
 function groupByDay(items) {
   const m = {};
   items.forEach((c) => {
@@ -168,19 +158,341 @@ function groupByDay(items) {
   return Object.values(m);
 }
 
-function Library({ initialSelected = 5, sizzleMode = false, sizzlePicks = [] }) {
+// ============================================================
+// Edit toolbar — the in-canvas one (was hiding in the sidebar)
+// ============================================================
+const EDIT_TOOLS = [
+  { id: "select",    name: "Select",    key: "V", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m4 3 6 17 3-7 7-3z"/></svg> },
+  { id: "crop",      name: "Crop",      key: "C", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 2v16h16M2 6h16v16"/></svg> },
+  { id: "arrow",     name: "Arrow",     key: "A", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M5 19 19 5M19 5h-7M19 5v7"/></svg> },
+  { id: "rect",      name: "Rect",      key: "R", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="4" width="16" height="16"/></svg> },
+  { id: "highlight", name: "Highlight", key: "H", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M9 14 4 19v2h2l5-5"/><path d="M14 9 19 4l3 3-5 5"/><path d="M9 14l5 5"/></svg> },
+  { id: "text",      name: "Text",      key: "T", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 6h14M12 6v14M9 20h6"/></svg> },
+  { id: "blur",      name: "Blur",      key: "B", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="7" cy="12" r="2"/><circle cx="13" cy="8" r="2"/><circle cx="17" cy="14" r="2"/><circle cx="11" cy="17" r="2"/></svg> },
+];
+
+const STROKE_COLORS = ["#e8743a", "#f4d35e", "#6dba7e", "#6b9ad8", "#e85a3a", "#f5efe3"];
+
+function EditToolbar({ tool, setTool, color, setColor }) {
+  return (
+    <div className="psl__edit-toolbar" onClick={(e) => e.stopPropagation()}>
+      {EDIT_TOOLS.map((t, i) => (
+        <React.Fragment key={t.id}>
+          {i === 1 && <span className="psl__et-sep" />}
+          <button
+            className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
+            onClick={() => setTool(t.id)}
+            title={t.name}
+          >
+            {t.icon}
+            <span>{t.name}</span>
+            <span className="psl__et-btn-key">{t.key}</span>
+          </button>
+        </React.Fragment>
+      ))}
+      <span className="psl__et-sep" />
+      <div className="psl__et-swatch">
+        {STROKE_COLORS.map((c) => (
+          <button
+            key={c}
+            style={{ background: c }}
+            className={color === c ? "is-active" : ""}
+            onClick={() => setColor(c)}
+            aria-label={`color ${c}`}
+          />
+        ))}
+      </div>
+      <span className="psl__et-sep" />
+      <button className="psl__et-btn" title="Magic — Codex auto-annotate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="m4 20 12-12M14 4h2v2M20 8h2v2M18 14h2v2"/></svg>
+      </button>
+      <button className="psl__et-btn" title="Undo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M3 12h12a4 4 0 1 1 0 8h-3"/><path d="m7 8-4 4 4 4"/></svg>
+      </button>
+    </div>
+  );
+}
+
+// ============================================================
+// L/M/H copy row — from FloatOver, slimmed for sidebar
+// ============================================================
+const COPY_PRESETS = [
+  { id: "low",  label: "Low",  scale: 0.4, kbd: "⌘1", bytes: "182 KB" },
+  { id: "med",  label: "Med",  scale: 0.7, kbd: "⌘2", bytes: "612 KB" },
+  { id: "high", label: "High", scale: 1.0, kbd: "⌘3", bytes: "2.4 MB" },
+];
+
+function CopyRow({ srcW, srcH }) {
+  const [copied, setCopied] = useStateLib(null);
+  return (
+    <div className="psl__copy-row">
+      {COPY_PRESETS.map((p) => {
+        const w = Math.round(srcW * p.scale);
+        const h = Math.round(srcH * p.scale);
+        const isPrimary = p.id === "high";
+        const isCopied = copied === p.id;
+        const cls = "psl__copy-btn" + (isPrimary ? " is-primary" : "") + (isCopied ? " is-copied" : "");
+        return (
+          <button
+            key={p.id}
+            className={cls}
+            onClick={() => {
+              setCopied(p.id);
+              setTimeout(() => setCopied((c) => c === p.id ? null : c), 1100);
+            }}
+          >
+            <div className="psl__copy-btn-row1">
+              <span className="psl__copy-label">{p.label}</span>
+              <span className="psl__copy-kbd">{p.kbd}</span>
+            </div>
+            <span className="psl__copy-dim">{w.toLocaleString()}×{h.toLocaleString()}</span>
+            <span className="psl__copy-bytes">{isCopied ? "copied ✓" : p.bytes}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// Right-pane body (used in focus mode + reel mode)
+// Shows metadata, AI caption, L/M/H copy, secondary actions
+// ============================================================
+function DetailRail({ current }) {
+  return (
+    <aside className="psl__focus-rail">
+      <div className="psl__right-tabs">
+        <button className="psl__right-tab is-active">Detail</button>
+        <button className="psl__right-tab">History</button>
+        <button className="psl__right-tab">OCR</button>
+      </div>
+      <div className="psl__right-body">
+        <div className="psl__detail-meta">
+          <input className="psl__detail-name" defaultValue={current.n} />
+          <div className="psl__detail-row">
+            <span><b>{current.w}×{current.h}</b></span>
+            <span>{current.size} KB</span>
+            <span>PNG</span>
+            <span>{current.day} · {current.time}</span>
+          </div>
+          <div className="psl__detail-tags">
+            <PsAppTag app={current.app} name={APP_INFO[current.app].name} />
+            {current.tags.map((t) => <span key={t} className="ps-tag">{t}</span>)}
+            <span className="ps-tag is-suggest">+ codex</span>
+          </div>
+        </div>
+
+        <div className="psl__ai-card">
+          <div className="psl__ai-card-hdr">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z"/></svg>
+            Codex caption
+            <small>haiku-4.5 · 1.4s</small>
+          </div>
+          <div className="psl__ai-card-text">
+            <b>{APP_INFO[current.app].name}</b> capture showing <b>{current.tags.join(", ")}</b>. Highlighted region likely the <b>error toast at column G37</b>. Suggest tagging <b>finance</b>, <b>Q4</b>.
+          </div>
+          <div className="psl__ai-card-actions">
+            <button className="psl__chip-btn">Regenerate</button>
+            <button className="psl__chip-btn">Apply tags</button>
+            <button className="psl__chip-btn">Copy as alt-text</button>
+          </div>
+        </div>
+
+        {/* L/M/H copy buttons — the FloatOver concept brought in here */}
+        <div>
+          <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 7, display: "flex", alignItems: "center", gap: 6 }}>
+            Copy to clipboard
+            <span style={{ flex: 1, height: 1, background: "var(--border-subtle)" }} />
+            <span style={{ font: "500 9px/1 var(--font-mono)", textTransform: "none", letterSpacing: 0 }}>scaled, not blind</span>
+          </div>
+          <CopyRow srcW={current.w} srcH={current.h} />
+        </div>
+
+        <div className="psl__action-row">
+          <button>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 4v12M6 10l6-6 6 6M4 20h16"/></svg>
+            Share
+          </button>
+          <button title="Open in full editor">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg>
+            Editor
+          </button>
+          <button className="is-danger" title="Move to Trash">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+// ============================================================
+// Focus overlay — lifted above the grid, single image + edit toolbar
+// ============================================================
+function FocusStage({ current, onClose, onPrev, onNext, posLabel }) {
+  const [tool, setTool] = useStateLib("rect");
+  const [color, setColor] = useStateLib("#e8743a");
+
+  return (
+    <div className="psl__focus" onClick={onClose}>
+      <div className="psl__focus-stage" onClick={(e) => e.stopPropagation()}>
+        <div className="psl__stage-meta">
+          <PsAppTag app={current.app} name={APP_INFO[current.app].name} size="sm" />
+          <b>{current.n}</b>
+          <span>· {current.day} {current.time}</span>
+          <span>· {current.w}×{current.h}</span>
+        </div>
+        <div className="psl__stage-pos">
+          <b>{posLabel.idx}</b> / {posLabel.total}
+        </div>
+
+        <button className="psl__focus-close" title="Back to grid (Esc)" onClick={onClose}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>
+        </button>
+        <div className="psl__focus-close-hint">
+          back to grid
+          <span className="ps-kbd">esc</span>
+        </div>
+
+        <button className="psl__stage-nav is-prev" onClick={onPrev} title="Previous (←)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m15 6-6 6 6 6"/></svg>
+        </button>
+        <button className="psl__stage-nav is-next" onClick={onNext} title="Next (→)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m9 6 6 6-6 6"/></svg>
+        </button>
+
+        <div className="psl__stage-img">
+          <Thumb c={current} withAnnotation />
+        </div>
+
+        <EditToolbar tool={tool} setTool={setTool} color={color} setColor={setColor} />
+      </div>
+      <DetailRail current={current} />
+    </div>
+  );
+}
+
+// ============================================================
+// Reel mode body — filmstrip + always-open stage
+// ============================================================
+function ReelBody({ visible, selected, setSelected, current, posLabel }) {
+  const [tool, setTool] = useStateLib("rect");
+  const [color, setColor] = useStateLib("#e8743a");
+  const grouped = groupByDay(visible);
+  const reelRef = useRefLib(null);
+
+  return (
+    <div className="psl__reel-mode">
+      <section className="psl__reel-wrap">
+        <div className="psl__reel-hdr">
+          <span className="psl__reel-title">Timeline · scrub or click to play</span>
+          <span className="psl__reel-mode">scrub <b>⌘[ / ⌘]</b></span>
+        </div>
+        <div className="psl__reel" ref={reelRef}>
+          <div className="psl__playhead" style={{ left: 318 }} />
+          {grouped.map((g) => (
+            <div key={g.day} className="psl__reel-day">
+              <div className="psl__reel-day-label">{g.day} · {g.date}</div>
+              <div className="psl__reel-day-frames">
+                {g.items.map((c) => (
+                  <button
+                    key={c.id}
+                    className={"psl__frame" + (c.id === selected ? " is-selected" : "")}
+                    onClick={() => setSelected(c.id)}
+                  >
+                    <Thumb c={c} />
+                    <span className="psl__frame-num">{c.time}</span>
+                    <span className="psl__frame-app"><PsAppIcon app={c.app} size={8} /></span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="psl__stage">
+        <div className="psl__stage-meta">
+          <PsAppTag app={current.app} name={APP_INFO[current.app].name} size="sm" />
+          <b>{current.n}</b>
+        </div>
+        <div className="psl__stage-pos"><b>{posLabel.idx}</b> / {posLabel.total}</div>
+
+        <button
+          className="psl__stage-nav is-prev"
+          onClick={() => {
+            const i = visible.findIndex(c => c.id === selected);
+            const prev = visible[(i - 1 + visible.length) % visible.length];
+            setSelected(prev.id);
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m15 6-6 6 6 6"/></svg>
+        </button>
+        <button
+          className="psl__stage-nav is-next"
+          onClick={() => {
+            const i = visible.findIndex(c => c.id === selected);
+            const next = visible[(i + 1) % visible.length];
+            setSelected(next.id);
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m9 6 6 6-6 6"/></svg>
+        </button>
+
+        <div className="psl__stage-img">
+          <Thumb c={current} withAnnotation />
+        </div>
+
+        <EditToolbar tool={tool} setTool={setTool} color={color} setColor={setColor} />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Main Library
+// ============================================================
+function Library({ initialView = "grid", initialSelected = 5, initialOpen = false, initialApp = "all" }) {
+  const [view, setView] = useStateLib(initialView);          // "grid" | "reel"
   const [selected, setSelected] = useStateLib(initialSelected);
-  const [activeApp, setActiveApp] = useStateLib("all");
-  const [view, setView] = useStateLib("reel"); // reel | grid
-  const [picks, setPicks] = useStateLib(sizzlePicks);
-  const sizzle = sizzleMode || picks.length > 0;
+  const [activeApp, setActiveApp] = useStateLib(initialApp);
+  const [focusOpen, setFocusOpen] = useStateLib(initialOpen);
 
   const visible = activeApp === "all" ? CAPTURES : CAPTURES.filter(c => c.app === activeApp);
   const grouped = useMemoLib(() => groupByDay(visible), [activeApp]);
-  const current = CAPTURES.find(c => c.id === selected) || CAPTURES[0];
+  const current = CAPTURES.find(c => c.id === selected) || visible[0] || CAPTURES[0];
+
+  const idx = Math.max(0, visible.findIndex(c => c.id === selected));
+  const posLabel = { idx: idx + 1, total: visible.length };
+
+  // keyboard: Esc closes focus; ←/→ navigate
+  useEffectLib(() => {
+    function onKey(e) {
+      if (e.key === "Escape" && focusOpen) { setFocusOpen(false); }
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && (focusOpen || view === "reel")) {
+        e.preventDefault();
+        const dir = e.key === "ArrowLeft" ? -1 : 1;
+        const next = visible[(idx + dir + visible.length) % visible.length];
+        if (next) setSelected(next.id);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [focusOpen, view, idx, visible.length]);
+
+  const openFocus = (id) => {
+    setSelected(id);
+    setFocusOpen(true);
+  };
+  const closeFocus = () => setFocusOpen(false);
+
+  const navInFocus = (dir) => {
+    const next = visible[(idx + dir + visible.length) % visible.length];
+    if (next) setSelected(next.id);
+  };
 
   return (
-    <div className="psl">
+    <div className="psl" style={{ position: "relative" }}>
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -193,13 +505,13 @@ function Library({ initialSelected = 5, sizzleMode = false, sizzlePicks = [] }) 
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
-            <button className={"psl__view-btn" + (view==="reel"?" is-active":"")} onClick={()=>setView("reel")}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="6" width="4" height="12"/><rect x="10" y="6" width="4" height="12"/><rect x="17" y="6" width="4" height="12"/></svg>
-              Reel
-            </button>
-            <button className={"psl__view-btn" + (view==="grid"?" is-active":"")} onClick={()=>setView("grid")}>
+            <button className={"psl__view-btn" + (view==="grid"?" is-active":"")} onClick={() => { setView("grid"); setFocusOpen(false); }}>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
               Grid
+            </button>
+            <button className={"psl__view-btn" + (view==="reel"?" is-active":"")} onClick={() => { setView("reel"); setFocusOpen(false); }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="6" width="4" height="12"/><rect x="10" y="6" width="4" height="12"/><rect x="17" y="6" width="4" height="12"/></svg>
+              Reel
             </button>
           </div>
         </div>
@@ -264,173 +576,62 @@ function Library({ initialSelected = 5, sizzleMode = false, sizzlePicks = [] }) 
         </button>
       </aside>
 
-      <main className="psl__main">
-        {sizzle && (
-          <div className="psl__sizzle-strip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 3v18l7-4 7 4V3z"/></svg>
-            <div className="psl__sizzle-strip-text">
-              <b>Sizzle Reel</b> — {picks.length || 5} captures · ~28s · Codex chose order
-              <small>drag frames to reorder · ⌥click to drop · export as MP4 / GIF / Markdown</small>
-            </div>
-            <button className="psl__chip-btn psl__chip-btn--accent">Export reel</button>
-          </div>
-        )}
-
-        <section className="psl__reel-wrap">
-          <div className="psl__reel-hdr">
-            <span className="psl__reel-title">Timeline · {activeApp === "all" ? "all sources" : APP_INFO[activeApp].name}</span>
-            <span className="psl__reel-mode">scrub <b>⌘[ / ⌘]</b></span>
-          </div>
-          <div className="psl__reel" id="psl-reel">
-            <div className="psl__playhead" style={{ left: 318 }} />
+      {/* Main area swaps based on view */}
+      {view === "grid" ? (
+        <main className="psl__main" style={{ gridColumn: "2 / -1" }}>
+          <div className="psl__grid-only">
             {grouped.map((g) => (
-              <div key={g.day} className="psl__reel-day">
-                <div className="psl__reel-day-label">{g.day} · {g.date}</div>
-                <div className="psl__reel-day-frames">
-                  {g.items.map((c, idx) => (
-                    <button
+              <div key={g.day}>
+                <div className="psl__day-hdr">
+                  <span className="psl__day-hdr-label">{g.day}</span>
+                  <span className="psl__day-hdr-meta">{g.date} · {g.items.length} captures</span>
+                  <span className="psl__day-hdr-line" />
+                </div>
+                <div className="psl__grid">
+                  {g.items.map((c) => (
+                    <div
                       key={c.id}
-                      className={
-                        "psl__frame"
-                        + (c.id === selected ? " is-selected" : "")
-                        + (picks.includes(c.id) ? " is-in-reel" : "")
-                      }
-                      onClick={() => setSelected(c.id)}
+                      className={"psl__cell" + (c.id === selected && focusOpen ? " is-was-open" : "")}
+                      onClick={() => openFocus(c.id)}
                     >
-                      <Thumb c={c} />
-                      <span className="psl__frame-num">{c.time}</span>
-                      <span className="psl__frame-app"><PsAppIcon app={c.app} size={8} /></span>
-                    </button>
+                      <div className="psl__cell-thumb">
+                        <Thumb c={c} />
+                        <span className="psl__cell-time">{c.time}</span>
+                        <span className="psl__cell-app"><span className="psl__app-dot"><PsAppIcon app={c.app} size={10} /></span></span>
+                      </div>
+                      <div className="psl__cell-meta">
+                        <div className="psl__cell-name">{c.n}</div>
+                        <div className="psl__cell-tags">
+                          <PsAppTag app={c.app} name={APP_INFO[c.app].name} size="sm" />
+                          {c.tags.slice(0,1).map((t) => <span key={t} className="ps-tag is-sm">{t}</span>)}
+                        </div>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
             ))}
           </div>
-        </section>
+        </main>
+      ) : (
+        <main className="psl__main" style={{ gridColumn: "2 / 3" }}>
+          <ReelBody visible={visible} selected={selected} setSelected={setSelected} current={current} posLabel={posLabel} />
+        </main>
+      )}
 
-        <div className="psl__grid-wrap">
-          {grouped.slice(0, 2).map((g) => (
-            <div key={g.day}>
-              <div className="psl__day-hdr">
-                <span className="psl__day-hdr-label">{g.day}</span>
-                <span className="psl__day-hdr-meta">{g.date} · {g.items.length} captures</span>
-                <span className="psl__day-hdr-line" />
-              </div>
-              <div className="psl__grid">
-                {g.items.map((c, idx) => (
-                  <div
-                    key={c.id}
-                    className={
-                      "psl__cell"
-                      + (c.id === selected ? " is-selected" : "")
-                      + (picks.includes(c.id) ? " is-in-reel" : "")
-                    }
-                    onClick={() => setSelected(c.id)}
-                  >
-                    <div className="psl__cell-thumb">
-                      <Thumb c={c} />
-                      <span className="psl__cell-time">{c.time}</span>
-                      <span className="psl__cell-app"><span className="psl__app-dot"><PsAppIcon app={c.app} size={10} /></span></span>
-                      {sizzle && (
-                        <span className="psl__cell-pick">
-                          {picks.indexOf(c.id) >= 0 ? picks.indexOf(c.id)+1 : ""}
-                        </span>
-                      )}
-                    </div>
-                    <div className="psl__cell-meta">
-                      <div className="psl__cell-name">{c.n}</div>
-                      <div className="psl__cell-tags">
-                        <PsAppTag app={c.app} name={APP_INFO[c.app].name} size="sm" />
-                        {c.tags.slice(0,1).map((t) => <span key={t} className="ps-tag is-sm">{t}</span>)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </main>
+      {/* In Reel mode the right rail is always visible */}
+      {view === "reel" && <DetailRail current={current} />}
 
-      <aside className="psl__right">
-        <div className="psl__right-tabs">
-          <button className="psl__right-tab is-active">Detail</button>
-          <button className="psl__right-tab">History</button>
-          <button className="psl__right-tab">OCR</button>
-        </div>
-        <div className="psl__right-body">
-          <div className="psl__preview">
-            <div style={{ position: "relative", aspectRatio: "16/10", overflow: "hidden", background: "var(--bg-input)" }}>
-              <Thumb c={current} />
-              {/* example annotation overlay */}
-              <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 100 62" preserveAspectRatio="none">
-                <rect x="48" y="34" width="22" height="9" fill="none" stroke="#e8743a" strokeWidth="0.6"/>
-                <path d="M48 34 L 30 22" stroke="#e8743a" strokeWidth="0.5"/>
-                <circle cx="30" cy="22" r="1.6" fill="#e8743a"/>
-              </svg>
-            </div>
-            <div className="psl__preview-toolbar">
-              <button className="psl__pt-btn is-active" title="Crop"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 2v16h16M2 6h16v16"/></svg></button>
-              <button className="psl__pt-btn" title="Arrow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M5 19 19 5M19 5h-7M19 5v7"/></svg></button>
-              <button className="psl__pt-btn" title="Box"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="4" width="16" height="16"/></svg></button>
-              <button className="psl__pt-btn" title="Text"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 6h14M12 6v14M9 20h6"/></svg></button>
-              <button className="psl__pt-btn" title="Blur"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="7" cy="12" r="2"/><circle cx="13" cy="8" r="2"/><circle cx="17" cy="14" r="2"/><circle cx="11" cy="17" r="2"/></svg></button>
-              <span className="psl__pt-sep" />
-              <button className="psl__pt-btn" title="Magic wand"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="m4 20 12-12M14 4h2v2M20 8h2v2M18 14h2v2"/></svg></button>
-              <button className="psl__pt-btn" title="Undo"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M3 12h12a4 4 0 1 1 0 8h-3"/><path d="m7 8-4 4 4 4"/></svg></button>
-            </div>
-          </div>
-
-          <div className="psl__detail-meta">
-            <input className="psl__detail-name" defaultValue={current.n} />
-            <div className="psl__detail-row">
-              <span><b>{current.w}×{current.h}</b></span>
-              <span>{current.size} KB</span>
-              <span>PNG</span>
-              <span>{current.day} · {current.time}</span>
-            </div>
-            <div className="psl__detail-tags">
-              <PsAppTag app={current.app} name={APP_INFO[current.app].name} />
-              {current.tags.map((t) => <span key={t} className="ps-tag">{t}</span>)}
-              <span className="ps-tag is-suggest">+ codex</span>
-            </div>
-          </div>
-
-          <div className="psl__ai-card">
-            <div className="psl__ai-card-hdr">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z"/></svg>
-              Codex caption
-              <small>haiku-4.5 · 1.4s</small>
-            </div>
-            <div className="psl__ai-card-text">
-              <b>{APP_INFO[current.app].name}</b> capture showing <b>{current.tags.join(", ")}</b>. Highlighted region likely the <b>error toast at column G37</b>. Suggest tagging <b>finance</b>, <b>Q4</b>.
-            </div>
-            <div className="psl__ai-card-actions">
-              <button className="psl__chip-btn">Regenerate</button>
-              <button className="psl__chip-btn">Apply tags</button>
-              <button className="psl__chip-btn">Copy as alt-text</button>
-            </div>
-          </div>
-
-          <div className="psl__big-cta">
-            <button className="is-primary">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15V5h10"/></svg>
-              Copy
-            </button>
-            <button>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 4v12M6 10l6-6 6 6M4 20h16"/></svg>
-              Share
-            </button>
-            <button>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14"/></svg>
-            </button>
-            <button title="Open full editor">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg>
-              Editor
-            </button>
-          </div>
-        </div>
-      </aside>
+      {/* Focus overlay sits above the grid when triggered */}
+      {focusOpen && view === "grid" && (
+        <FocusStage
+          current={current}
+          onClose={closeFocus}
+          onPrev={() => navInFocus(-1)}
+          onNext={() => navInFocus(+1)}
+          posLabel={posLabel}
+        />
+      )}
 
       <footer className="psl__status">
         <div className="psl__status-l">
@@ -438,7 +639,7 @@ function Library({ initialSelected = 5, sizzleMode = false, sizzlePicks = [] }) 
           <span>Codex auto-tag <b>on</b></span>
         </div>
         <div className="psl__status-r">
-          <span>⌘⇧P new · ⌘L library · ⌘K search</span>
+          <span>{view === "grid" && !focusOpen ? "↵ open · " : "esc close · ← → navigate · "}⌘⇧P new · ⌘L library · ⌘K search</span>
           <span><b>v0.4.2</b></span>
         </div>
       </footer>
@@ -447,4 +648,4 @@ function Library({ initialSelected = 5, sizzleMode = false, sizzlePicks = [] }) 
 }
 
 window.PS = window.PS || {};
-Object.assign(window.PS, { Library, CAPTURES, APP_INFO });
+Object.assign(window.PS, { Library, CAPTURES });

@@ -157,6 +157,41 @@
   box-shadow: 0 0 0 2px rgba(109,186,126,0.18);
 }
 
+.ps-tray__quick {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: calc(100% - 28px);
+  margin: 10px 14px 8px;
+  padding: 9px 12px;
+  background: var(--accent);
+  border: 1px solid var(--accent-bright);
+  border-radius: 8px;
+  color: var(--button-text-on-accent);
+  cursor: pointer;
+  text-align: left;
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px rgba(232,116,58,0.18);
+}
+.ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.ps-tray__quick:active { transform: translateY(1px); }
+.ps-tray__quick-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ps-tray__quick-eyebrow {
+  font: 700 12px/1 var(--font-display);
+  letter-spacing: -0.005em;
+}
+.ps-tray__quick-sub {
+  font: 500 10px/1.2 var(--font-sans);
+  opacity: 0.78;
+}
+.ps-tray__quick-hk { display: flex; gap: 3px; align-items: center; flex-shrink: 0; }
+.ps-tray__quick-hk .ps-kbd {
+  background: rgba(0,0,0,0.22);
+  border-color: rgba(0,0,0,0.28);
+  color: var(--button-text-on-accent);
+  border-bottom-width: 2px;
+}
+
 .ps-tray__hotkey {
   margin: 0 14px 0;
   padding: 10px 0 8px;
@@ -168,48 +203,36 @@
 .ps-tray__hotkey-row { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
 
 .ps-tray__modes {
-  padding: 8px 6px;
+  padding: 4px 6px 6px;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
 }
 .ps-mode {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 11px 9px;
-  border-radius: 8px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
   background: transparent;
   border: 1px solid transparent;
-  text-align: left;
+  border-radius: 6px;
   cursor: pointer;
-  transition: all 120ms var(--ease-out);
-  position: relative;
-  font-family: var(--font-sans);
+  text-align: left;
   color: var(--text-primary);
+  transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
 }
 .ps-mode:hover { background: var(--bg-panel-hover); border-color: var(--border-subtle); }
-.ps-mode.is-primary {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-}
-.ps-mode__row1 { display: flex; align-items: center; gap: 8px; }
+.ps-mode.is-active { background: var(--bg-panel-hover); }
 .ps-mode__icon {
-  width: 28px; height: 28px;
+  width: 22px; height: 22px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 6px;
+  border-radius: 5px;
   background: var(--bg-panel-elevated);
   border: 1px solid var(--border-subtle);
   color: var(--accent);
+  flex-shrink: 0;
 }
-.ps-mode.is-primary .ps-mode__icon {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-  border-color: var(--accent);
-}
-.ps-mode__name { font: 700 11px/1 var(--font-sans); letter-spacing: 0.005em; flex: 1; }
+.ps-mode__name { font: 600 11px/1 var(--font-sans); letter-spacing: 0.005em; flex: 1; min-width: 0; }
 .ps-mode__hk { display: flex; gap: 2px; }
-.ps-mode__hk .ps-kbd { min-width: 16px; height: 16px; font-size: 9px; padding: 0 3px; }
-.ps-mode__sub { font: 500 10px/1.3 var(--font-sans); color: var(--text-muted); }
-.ps-mode.is-primary .ps-mode__sub { color: var(--accent-bright); }
+.ps-mode__hk .ps-kbd { min-width: 14px; height: 14px; font-size: 9px; padding: 0 3px; border-bottom-width: 1px; }
 
 .ps-tray__divider { height: 1px; background: var(--border-subtle); margin: 4px 14px; }
 
@@ -226,6 +249,39 @@
 .ps-tray__row svg { color: var(--text-secondary); flex-shrink: 0; }
 .ps-tray__row-label { flex: 1; }
 .ps-tray__row-kbd { display: flex; gap: 2px; }
+
+.ps-tray__last {
+  margin: 0 14px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ps-tray__last-hdr {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.ps-tray__last-eyebrow {
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ps-tray__last-meta {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+.ps-tray__last-preview {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  max-height: 120px;
+  aspect-ratio: 16 / 10;
+}
+.ps-tray__last-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ps-tray__last-copy {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
 
 .ps-tray__activity {
   margin: 0 14px 12px;
@@ -489,6 +545,81 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--accent-shadow);
 }
+
+/* Hover overlay on grid cells: View + Edit shortcuts */
+.psl__cell-hover {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px;
+  background: linear-gradient(180deg, rgba(8,7,6,0.05) 0%, rgba(8,7,6,0.55) 100%);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+  pointer-events: none;
+}
+.psl__cell:hover .psl__cell-hover { opacity: 1; pointer-events: auto; }
+.psl__cell-hover-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 11px;
+  border-radius: 6px;
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(20,17,14,0.92);
+  color: var(--text-primary);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.psl__cell-hover-btn:hover { border-color: var(--accent); color: var(--accent-bright); }
+.psl__cell-hover-btn.is-primary {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  border-color: var(--accent);
+}
+.psl__cell-hover-btn.is-primary:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+.psl__cell-hover-btn svg { width: 11px; height: 11px; }
+
+/* Hover overlay — View / Edit jump-buttons over the thumb */
+.psl__cell-hover {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px;
+  background: linear-gradient(180deg, rgba(8,7,6,0) 30%, rgba(8,7,6,0.55) 100%);
+  opacity: 0;
+  transition: opacity 100ms var(--ease-out);
+  pointer-events: none;
+}
+.psl__cell:hover .psl__cell-hover,
+.psl__cell.is-selected .psl__cell-hover { opacity: 1; pointer-events: auto; }
+.psl__cell-hover-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px;
+  border-radius: 5px;
+  background: rgba(20,17,14,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all 100ms var(--ease-out);
+}
+.psl__cell-hover-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__cell-hover-btn svg { width: 11px; height: 11px; }
+.psl__cell-hover-btn.is-edit:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+/* Selected ring is bigger so it stays readable next to ghost overlay */
+.psl__cell.is-selected .psl__cell-hover {
+  background: linear-gradient(180deg, rgba(8,7,6,0) 50%, rgba(8,7,6,0.50) 100%);
+}
 .psl__cell-thumb {
   aspect-ratio: 16/10;
   position: relative;
@@ -706,3 +837,436 @@
   color: var(--accent);
 }
 .psl__app-dot svg { width: 10px; height: 10px; }
+
+/* ============================================================
+   GRID-FIRST MODE — full grid takes the whole main area when no
+   image is open. Reel-mode swaps in a top filmstrip + big stage.
+   ============================================================ */
+.psl__grid-only {
+  flex: 1; overflow-y: auto;
+  padding: 16px 18px 18px;
+}
+.psl__grid-only .psl__grid {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+/* sidebar-toggle button on the topbar */
+.psl__rail-toggle {
+  height: 28px; width: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.psl__rail-toggle:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.psl__rail-toggle.is-active { background: var(--accent-soft); color: var(--accent-bright); border-color: var(--accent-border); }
+
+/* ============================================================
+   REEL MODE — main area = filmstrip top + big stage center
+   ============================================================ */
+.psl__reel-mode {
+  display: flex; flex-direction: column;
+  height: 100%;
+  background: var(--bg-app);
+}
+.psl__reel-mode .psl__reel-wrap {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.psl__stage {
+  flex: 1;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(ellipse at center, rgba(232,116,58,0.04) 0%, transparent 60%),
+    var(--bg-app);
+  overflow: hidden;
+  min-height: 0;
+}
+.psl__stage-img {
+  position: relative;
+  max-width: calc(100% - 80px);
+  max-height: calc(100% - 80px);
+  border-radius: 7px;
+  border: 1px solid var(--border-default);
+  box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+  overflow: hidden;
+  aspect-ratio: 16/10;
+  width: 720px;
+}
+.psl__stage-meta {
+  position: absolute;
+  top: 16px; left: 24px;
+  display: flex; align-items: center; gap: 10px;
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+.psl__stage-meta b { color: var(--text-primary); font: 600 12px/1 var(--font-sans); }
+.psl__stage-pos {
+  position: absolute;
+  top: 16px; right: 24px;
+  font: 600 11px/1 var(--font-mono);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: 5px 10px;
+}
+.psl__stage-pos b { color: var(--accent-bright); }
+
+/* nav arrows on the stage */
+.psl__stage-nav {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: rgba(20,17,14,0.85);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+.psl__stage-nav:hover { color: var(--accent-bright); border-color: var(--accent-border); }
+.psl__stage-nav.is-prev { left: 16px; }
+.psl__stage-nav.is-next { right: 16px; }
+
+/* ============================================================
+   FOCUS OVERLAY — single-image view sliding over the grid
+   ============================================================ */
+.psl__focus {
+  position: absolute;
+  top: 52px; left: 220px; right: 0; bottom: 32px;
+  background: var(--bg-app);
+  display: flex;
+  z-index: 20;
+  animation: focus-in 180ms var(--ease-out);
+}
+@keyframes focus-in {
+  from { opacity: 0; transform: scale(0.985); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.psl__focus-stage {
+  flex: 1;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(ellipse at center, rgba(232,116,58,0.04) 0%, transparent 60%),
+    var(--bg-app);
+  border-right: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+.psl__focus-close {
+  position: absolute;
+  top: 14px; right: 14px;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: rgba(20,17,14,0.92);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  z-index: 5;
+  backdrop-filter: blur(12px);
+  transition: all 120ms var(--ease-out);
+}
+.psl__focus-close:hover {
+  border-color: var(--accent);
+  color: var(--accent-bright);
+  transform: rotate(90deg);
+}
+.psl__focus-close-hint {
+  position: absolute;
+  top: 18px; right: 56px;
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  z-index: 5;
+}
+.psl__focus-close-hint .ps-kbd { margin-left: 4px; }
+
+/* ============================================================
+   IN-CANVAS EDIT TOOLBAR — floats bottom-center of stage
+   Lifted from the side-bar's edit controls, scaled up for use.
+   ============================================================ */
+.psl__edit-toolbar {
+  position: absolute;
+  bottom: 24px; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 6px;
+  background: rgba(20,17,14,0.96);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
+  z-index: 4;
+}
+.psl__et-btn {
+  height: 36px;
+  min-width: 36px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.psl__et-btn svg { width: 15px; height: 15px; }
+.psl__et-btn:hover { background: var(--bg-panel-hover); color: var(--text-primary); }
+.psl__et-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.psl__et-btn-key {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 14px; height: 14px;
+  font: 700 9px/1 var(--font-mono);
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 2px;
+}
+.psl__et-btn.is-active .psl__et-btn-key { color: var(--accent-bright); border-color: var(--accent-border); }
+.psl__et-sep {
+  width: 1px; height: 22px;
+  background: var(--border-subtle);
+  margin: 0 4px;
+}
+
+/* swatch & stroke pickers tacked on the right */
+.psl__et-swatch {
+  display: inline-flex; gap: 3px;
+  padding: 0 4px;
+}
+.psl__et-swatch button {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.psl__et-swatch button.is-active { border-color: var(--text-primary); transform: scale(1.1); }
+.psl__et-stroke {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 0 6px;
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   FOCUS-MODE detail rail (right side) — preview removed, just
+   metadata + AI + actions. Includes L/M/H copy row.
+   ============================================================ */
+.psl__focus-rail {
+  width: 340px;
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+}
+.psl__focus-rail .psl__right-tabs { padding-top: 12px; }
+.psl__focus-rail .psl__right-body {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: -1px;
+  padding: 14px 16px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+
+/* The L/M/H copy row, ported from FloatOver */
+.psl__copy-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.psl__copy-btn {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 9px 10px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: all 120ms var(--ease-out);
+  position: relative;
+}
+.psl__copy-btn:hover { border-color: var(--accent-border); background: var(--bg-panel-hover); }
+.psl__copy-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__copy-btn.is-primary:hover { background: var(--accent-strong); }
+.psl__copy-btn.is-copied {
+  background: var(--success);
+  border-color: var(--success);
+  color: var(--button-text-on-accent);
+}
+.psl__copy-btn-row1 {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px;
+}
+.psl__copy-label {
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.psl__copy-kbd {
+  font: 600 9px/1 var(--font-mono);
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: inherit;
+  opacity: 0.85;
+}
+.psl__copy-btn.is-primary .psl__copy-kbd { background: rgba(0,0,0,0.22); border-color: rgba(0,0,0,0.18); }
+.psl__copy-btn:not(.is-primary):not(.is-copied) .psl__copy-kbd { color: var(--text-muted); }
+.psl__copy-dim {
+  font: 600 11px/1.1 var(--font-mono);
+  letter-spacing: -0.01em;
+}
+.psl__copy-bytes {
+  font: 500 9px/1 var(--font-mono);
+  opacity: 0.75;
+}
+
+/* secondary actions row */
+.psl__action-row {
+  display: flex; gap: 6px;
+}
+.psl__action-row button {
+  flex: 1;
+  height: 30px;
+  border-radius: 6px;
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.psl__action-row button:hover { border-color: var(--accent-border); }
+.psl__action-row button.is-danger { color: var(--danger-text); }
+.psl__action-row button.is-danger:hover { border-color: var(--danger-border); background: var(--danger-soft); }
+
+/* a small "viewing" annotated chip in the grid that shows where you clicked from */
+.psl__cell.is-was-open {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  animation: cell-pulse 1.2s var(--ease-out);
+}
+@keyframes cell-pulse {
+  0% { outline-color: var(--accent); }
+  100% { outline-color: rgba(232,116,58,0); }
+}
+
+/* ============================================================
+   Grid cell — selected vs hover overlay (View / Edit)
+   ============================================================ */
+.psl__cell.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 8px 24px var(--accent-shadow);
+}
+
+.psl__cell-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 6px;
+  background: linear-gradient(180deg, rgba(8,7,6,0) 0%, rgba(8,7,6,0.55) 100%);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+  pointer-events: none;
+}
+.psl__cell:hover .psl__cell-overlay { opacity: 1; pointer-events: auto; }
+.psl__cell-overlay-btn {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(20,17,14,0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  transition: all 120ms var(--ease-out);
+}
+.psl__cell-overlay-btn:hover { transform: translateY(-1px); }
+.psl__cell-overlay-btn.is-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__cell-overlay-btn.is-primary:hover { background: var(--accent-strong); }
+.psl__cell-overlay-btn svg { width: 12px; height: 12px; }
+
+/* Right rail in Grid mode — empty state when no selection */
+.psl__rail-empty {
+  flex: 1;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font: 500 12px/1.5 var(--font-sans);
+  gap: 10px;
+}
+.psl__rail-empty svg { color: var(--text-subtle); margin-bottom: 4px; }
+.psl__rail-empty b { color: var(--text-secondary); font-weight: 600; }
+
+/* Grid-mode rail width — same as focus rail for consistency */
+.psl__right-grid {
+  grid-column: 3; grid-row: 2;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.psl__right-grid .psl__right-tabs { padding-top: 12px; }
+.psl__right-grid .psl__right-body {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: -1px;
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+}
+
+/* small preview thumb in grid-mode rail (since focus stage isn't shown) */
+.psl__rail-thumb {
+  position: relative;
+  aspect-ratio: 16/10;
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  cursor: pointer;
+  transition: all 120ms var(--ease-out);
+}
+.psl__rail-thumb:hover { border-color: var(--accent); }
+.psl__rail-thumb-hint {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(8,7,6,0) 0%, rgba(8,7,6,0.85) 100%);
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+  display: flex; align-items: center; justify-content: space-between;
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+.psl__rail-thumb:hover .psl__rail-thumb-hint { opacity: 1; }
+.psl__rail-thumb-hint svg { width: 11px; height: 11px; }

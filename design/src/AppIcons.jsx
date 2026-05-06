@@ -115,5 +115,22 @@ function PsAppTag({ app, name, size = "md" }) {
   );
 }
 
+const APP_INFO = {
+  telegram: { name: "Telegram" },
+  excel:    { name: "Excel" },
+  vscode:   { name: "VS Code" },
+  chrome:   { name: "Chrome" },
+  figma:    { name: "Figma" },
+  slack:    { name: "Slack" },
+  terminal: { name: "Terminal" },
+  notion:   { name: "Notion" },
+  linear:   { name: "Linear" },
+  github:   { name: "GitHub" },
+  zoom:     { name: "Zoom" },
+  safari:   { name: "Safari" },
+  preview:  { name: "Preview" },
+  finder:   { name: "Finder" },
+};
+
 window.PS = window.PS || {};
-Object.assign(window.PS, { PsAppIcon, PsAppTag, APP_ICONS });
+Object.assign(window.PS, { PsAppIcon, PsAppTag, APP_ICONS, APP_INFO });

@@ -608,23 +608,28 @@
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
   flex: 1; overflow-y: auto;
-  /* No padding-top — the sticky day-hdr below carries its own top
-     padding so when pinned its background fully covers the top
-     edge of the scroll pane. Without this, content scrolling up
-     through the wrap's padding zone shows above the pinned header
-     ("things scrolling underneath it"). */
-  padding: 0 18px 18px;
+  /* Zero padding so the sticky day-hdr below can extend its solid
+     background across the FULL width of the scroll pane. The
+     prior `0 18px 18px` left 18px transparent strips on the left
+     and right, where cell thumbnails would scroll visibly behind
+     the leading/trailing edge of the pinned header — the
+     "Yesterday is partially obscured by an image" symptom.
+     The horizontal breathing room moves into `.psl__day-hdr`
+     and `.psl__grid` below. */
+  padding: 0;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
-  /* Sticky to the top of the scroll pane. The `padding-top` here
-     replaces the wrap's old `padding-top: 16px` so the visual
-     breathing room moves WITH the pinned header — the bg covers
-     from the very top edge down through the header content,
-     occluding everything scrolling under it.
-     `padding-bottom: 12px` separates the header from the cells
-     below it both at scroll-top (natural) and when pinned. */
-  padding: 16px 0 12px;
+  /* Horizontal padding lives HERE (not on `.psl__grid-wrap`) so
+     when the header is pinned its background covers the entire
+     scroll-pane width. `padding-top: 16px` replaces the wrap's
+     old `padding-top: 16px` so the visual breathing room moves
+     WITH the pinned header — the bg covers from the very top
+     edge down through the header content, occluding everything
+     scrolling under it. `padding-bottom: 12px` separates the
+     header from the cells below it both at scroll-top (natural)
+     and when pinned. */
+  padding: 16px 18px 12px;
   background: var(--bg-app);
   position: sticky;
   top: 0;
@@ -646,6 +651,9 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
+  /* Horizontal padding moved here from `.psl__grid-wrap` so cells
+     stay inset 18px while the day-hdr above can span full width. */
+  padding: 0 18px 18px;
 }
 /* In-pane error banner. The previous right-rail rendered errors
    inside its body; with the rail gone in Grid mode, errors live

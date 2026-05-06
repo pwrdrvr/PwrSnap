@@ -70,26 +70,43 @@ export function Stage(props: StageProps): ReactElement {
 function FocusStage(props: StageProps): ReactElement {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
-  // Open the dialog on mount, close + tear down on unmount. The
-  // dialog's `close` event fires on Esc, on × click, on form
-  // method="dialog" submission, and on backdrop click (if the
-  // closedby="any" attribute is honored). Map close → CLOSE_FOCUS
-  // dispatch via the close-event listener so reducer state stays in
-  // sync regardless of how the dialog actually closed.
+  // Open the dialog on mount; close it (without state-dispatch
+  // side effects) on unmount.
+  //
+  // We deliberately DO NOT attach a `close` event listener and do NOT
+  // dispatch CLOSE_FOCUS from inside this effect. Reason: under React
+  // 18 StrictMode (dev), the effect runs twice on mount with a
+  // cleanup in between. The cleanup calls `dlg.close()` which queues
+  // a `close` event asynchronously; by the time it fires, the
+  // re-mounted effect has attached a NEW listener, which would catch
+  // the stale event and dispatch CLOSE_FOCUS — closing the dialog
+  // we JUST opened. User-visible symptom: cell click highlights but
+  // Focus never appears to open.
+  //
+  // Instead: every user-interaction path that should close Focus
+  // dispatches CLOSE_FOCUS explicitly:
+  //   • Esc → Library's window keydown handler dispatches CLOSE_FOCUS
+  //     (it then propagates here as a state change, unmounting Stage,
+  //     whose cleanup calls dlg.close() for DOM teardown only)
+  //   • × button → onClose handler below dispatches CLOSE_FOCUS
+  //   • Backdrop mousedown → same
+  //   • Browser's built-in Esc (which fires cancel→close on the
+  //     dialog) is harmless because Library's keydown is the
+  //     authoritative path; the redundant browser-close just becomes
+  //     a no-op dlg.close() in cleanup.
   useEffect(() => {
     const dlg = dialogRef.current;
     if (dlg === null) return;
     if (!dlg.open) dlg.showModal();
-    const handleClose = (): void => {
-      props.dispatch({ type: "CLOSE_FOCUS" });
-    };
-    dlg.addEventListener("close", handleClose);
     return () => {
-      dlg.removeEventListener("close", handleClose);
       if (dlg.open) dlg.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const onClose = (): void => {
+    props.dispatch({ type: "CLOSE_FOCUS" });
+  };
 
   return (
     <dialog
@@ -103,11 +120,11 @@ function FocusStage(props: StageProps): ReactElement {
       // mousedown-with-target-check is the canonical fix.
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
-          dialogRef.current?.close();
+          onClose();
         }
       }}
     >
-      <StageBody {...props} onClose={() => dialogRef.current?.close()} />
+      <StageBody {...props} onClose={onClose} />
     </dialog>
   );
 }

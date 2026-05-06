@@ -182,22 +182,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //   • reelScrollLeftRef — persistent saved value across mounts.
   const reelScrollerRef = useRef<HTMLDivElement | null>(null);
   const reelScrollLeftRef = useRef<number>(0);
-  // Skip-on-first-mount flag for the scrollIntoView effect (D.4).
-  // When the user re-enters Reel, the layout effect restores
-  // scrollLeft from the saved ref. We do NOT want a follow-up
-  // scrollIntoView to immediately override that restore. The flag
-  // resets on mode change so subsequent in-Reel selection changes
-  // (←/→ navigation) DO trigger scroll-into-view.
-  const isReelFirstMountRef = useRef<boolean>(true);
 
   // Restore filmstrip scrollLeft when Reel mounts. Layout effect
   // (not regular effect) so the restore lands before the browser
   // paints — no visual flash of the filmstrip scrolled to 0.
   useLayoutEffect(() => {
-    if (view.kind !== "reel") {
-      isReelFirstMountRef.current = true;
-      return;
-    }
+    if (view.kind !== "reel") return;
     const el = reelScrollerRef.current;
     if (el === null) return;
     el.scrollLeft = reelScrollLeftRef.current;
@@ -217,21 +207,29 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [view.kind]);
 
-  // D.4 — when the selected record changes within Reel (←/→ nav,
-  // or filmstrip frame click that scrolls a frame off-screen),
-  // pull the new selection back into view. `inline: "nearest"` is
-  // deliberately conservative: only scroll if the frame is OUT
-  // of view. If the frame is already visible (e.g. the user just
-  // re-entered Reel and scrollLeft was restored to a position
-  // that already shows the selection), no-op. Avoids fighting
-  // with the layout-effect restore above.
+  // D.4 — pull the selected frame into view whenever:
+  //   • Reel mounts (Grid → Reel toggle, with a selection inherited
+  //     from Grid or fallback'd by the reducer)
+  //   • selection changes within Reel (←/→ keyboard nav, or click
+  //     on an offscreen frame)
+  //
+  // `inline: "nearest"` only scrolls if the frame is genuinely out
+  // of view. If the layout-effect's scrollLeft restore already put
+  // the selected frame on-screen, this is a no-op — the two
+  // effects cooperate cleanly without a skip-flag.
+  //
+  // Layout effect (not regular effect) so the scroll lands before
+  // the browser paints — otherwise the filmstrip flashes at the
+  // restored scrollLeft for one frame before snapping to bring
+  // the selection in.
+  //
+  // Note: `data-frame-id` carries the CaptureRecord's UUID (the
+  // same identity in `view.selectedRecordId`). An earlier version
+  // used the fixture's numeric sequence id and the selector never
+  // matched — the scrollIntoView silently no-op'd on every nav.
   const reelSelectedId = view.kind === "reel" ? view.selectedRecordId : null;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (view.kind !== "reel" || reelSelectedId === null) return;
-    if (isReelFirstMountRef.current) {
-      isReelFirstMountRef.current = false;
-      return;
-    }
     const scroller = reelScrollerRef.current;
     if (scroller === null) return;
     const frame = scroller.querySelector<HTMLElement>(
@@ -686,27 +684,38 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                             {g.day} · {g.date}
                           </div>
                           <div className="psl__reel-day-frames">
-                            {g.items.map((c) => (
-                              <button
-                                key={c.id}
-                                data-frame-id={c.id}
-                                className={
-                                  "psl__frame" +
-                                  (c.id === selected ? " is-selected" : "")
-                                }
-                                onClick={() => onSelectFrame(c)}
-                              >
-                                <CellThumb
-                                  capture={c}
-                                  record={fixtureBacking.recordFor(c.id)}
-                                  width={140}
-                                />
-                                <span className="psl__frame-num">{c.time}</span>
-                                <span className="psl__frame-app">
-                                  <AppIcon app={c.app} size={8} />
-                                </span>
-                              </button>
-                            ))}
+                            {g.items.map((c) => {
+                              // Resolve the underlying CaptureRecord so the
+                              // `data-frame-id` and `is-selected` checks
+                              // both pivot on the record UUID — the same
+                              // identity that `view.selectedRecordId`
+                              // carries. Using `c.id` (numeric fixture
+                              // sequence) here would break the
+                              // `[data-frame-id="${selectedRecordId}"]`
+                              // selector in the scrollIntoView effect AND
+                              // the visual `is-selected` highlight on
+                              // ←/→ navigation (which dispatches NAVIGATE
+                              // against the record id, not the fixture).
+                              const record = fixtureBacking.recordFor(c.id);
+                              const recordId = record?.id ?? null;
+                              const isSelected = recordId === selectedRecordId;
+                              return (
+                                <button
+                                  key={c.id}
+                                  data-frame-id={recordId ?? ""}
+                                  className={
+                                    "psl__frame" + (isSelected ? " is-selected" : "")
+                                  }
+                                  onClick={() => onSelectFrame(c)}
+                                >
+                                  <CellThumb capture={c} record={record} width={140} />
+                                  <span className="psl__frame-num">{c.time}</span>
+                                  <span className="psl__frame-app">
+                                    <AppIcon app={c.app} size={8} />
+                                  </span>
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       ))}

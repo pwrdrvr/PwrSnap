@@ -216,6 +216,14 @@ function toggleTrayWindow(): void {
     window.hide();
     return;
   }
+  // Belt-and-braces against zoomFactor drift. createTrayWindow sets
+  // zoom to 1 on did-finish-load and disables pinch-zoom, but Cmd-+
+  // / Cmd-- via the menu still works during a session and would
+  // persist until the renderer reloaded. Re-zero on every show so a
+  // stray hotkey can never leave the popover laid out at the wrong
+  // CSS-pixel width on the next reopen. Idempotent — calling
+  // setZoomFactor(1) when zoom is already 1 is a no-op.
+  window.webContents.setZoomFactor(1);
   const bounds = tray!.getBounds();
   positionTrayWindow(window, bounds);
   // Apply vibrancy *after* position so external displays don't render

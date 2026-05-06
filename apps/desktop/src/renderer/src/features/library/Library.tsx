@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { Editor } from "../editor/Editor";
 import { AppIcon, AppTag } from "../shared/AppIcons";
@@ -6,6 +6,7 @@ import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { FixtureBackedRecords } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
+import { initialLibraryView, libraryReducer } from "./library-view";
 import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
@@ -62,18 +63,23 @@ export function Library({
 }) {
   const [selected, setSelected] = useState(initialSelected);
   const [activeApp, setActiveApp] = useState<string>("all");
-  const [view, setView] = useState<"reel" | "grid">("reel");
   const [picks] = useState<number[]>(sizzlePicks);
   const sizzle = sizzleMode || picks.length > 0;
 
-  // The single piece of selection state. Null = nothing selected →
-  // grid is shown in the center. String = a real CaptureRecord id →
-  // <Editor> renders in the center, always-edit. There's no
-  // "inspect mode" vs "edit mode" — the editor IS the detail view,
-  // with Pointer (V) as the default tool so clicking the canvas
-  // doesn't draw. Plan §C of docs/plans/...-window-choreography
-  // discussion: "always-edit, no modes at all".
-  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
+  // View-state reducer — single source of truth for {grid, focus, reel}
+  // mode + selected record id. Discriminated-union shape encodes the
+  // illegal-state guard at compile time (focus mode requires non-null
+  // selectedRecordId). Plan: docs/plans/2026-05-05-001-feat-library-
+  // three-state-view-model-plan.md, Phase A. Tests at
+  // ./__tests__/library-view.test.ts.
+  //
+  // Phase A: only `view` and `selectedRecordId` are reduced. Pin/unpin
+  // rail state (pinned/revealed below) stays as plain useState until
+  // Phase B extracts it to features/shared/HoverRevealPanel.tsx. The
+  // editor inline-render path stays until Phase C moves it into the
+  // Stage component.
+  const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
+  const selectedRecordId = view.selectedRecordId;
 
   // Right-rail visibility — PwrAgnt's ThreadContextPanel pattern,
   // adapted for PwrSnap. Two pieces of state:
@@ -135,52 +141,76 @@ export function Library({
 
   // Stale-selection fallback: when the live list no longer contains
   // the selected record (e.g. a soft-delete races an open editor),
-  // clear the selection back to "no selection" rather than dumping
-  // the user into a 404 state. The reel + grid still show the
-  // user's history; they pick something new.
+  // clear the selection back to "no selection" via the reducer's
+  // FILTER_CHANGED action — which already implements the "bail to
+  // grid if selection no longer visible" rule.
   useEffect(() => {
     if (selectedRecordId === null) return;
     if (editorRecord !== null) return;
-    setSelectedRecordId(null);
-  }, [selectedRecordId, editorRecord]);
+    viewDispatch({ type: "FILTER_CHANGED", visibleIds: records.map((r) => r.id) });
+  }, [selectedRecordId, editorRecord, records]);
 
-  // ESC clears the selection (back to "browse the grid"). Editor.tsx
-  // has its own ESC handler for canceling a mid-drag draft; that
-  // one runs first because it's bound at the canvas level. Once
-  // the draft is cleared, our window-level handler fires on the
-  // next ESC and clears the selection.
+  // ESC closes Focus (returns to Grid with selection preserved for
+  // cell highlight). Editor.tsx has its own ESC handler for canceling
+  // a mid-drag draft; that one runs first because it's bound at the
+  // canvas level. Once the draft is cleared, our window-level handler
+  // fires on the next ESC.
+  //
+  // viewRef mirror prevents the stale-closure bug julik flagged: a
+  // closure over `view` in the keydown handler would silently break
+  // after the first mode flip. Reading from a ref always sees current
+  // state without re-binding the listener.
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       if (event.key !== "Escape") return;
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (selectedRecordId !== null) {
+      if (viewRef.current.kind === "focus") {
         event.preventDefault();
-        setSelectedRecordId(null);
+        viewDispatch({ type: "CLOSE_FOCUS" });
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedRecordId]);
+  }, []);
 
   /**
-   * Single-click handler for cells / reel frames. Sets BOTH the
-   * fixture-driven `selected` (drives reel/grid highlight) AND the
-   * real-record selection (drives the center-pane editor + right
-   * rail). Fixture-only cells (dev placeholders without a record)
-   * fall back to clearing the editor selection.
+   * Single-click handler for cells / reel frames. In Phase A the
+   * existing inline-editor path stays — clicking a cell with a
+   * real record opens the Editor in `.psl__edit-pane`. Phase C
+   * replaces this with `OPEN_FOCUS` dispatch and the Stage overlay.
    */
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
     const record = fixtureBacking.recordFor(c.id);
-    setSelectedRecordId(record?.id ?? null);
+    if (record === null) {
+      // Fixture-only cell (dev placeholder) — leave reducer state alone;
+      // the existing FILTER_CHANGED stale-selection fallback will trip
+      // if needed.
+      return;
+    }
+    viewDispatch({ type: "SELECT_IN_GRID", recordId: record.id });
   }
+
+  // The visible/grouped collections drive both the Grid and the Reel
+  // mode, so the segmented toggle's fallback id (for "Reel toggle from
+  // Grid with no selection") needs them in scope before the JSX block.
+  const reelFallbackId = useMemo(() => {
+    const firstVisibleFixture = visible[0];
+    if (firstVisibleFixture === undefined) return null;
+    const record = fixtureBacking.recordFor(firstVisibleFixture.id);
+    return record?.id ?? null;
+  }, [visible, fixtureBacking]);
 
   return (
     <div
       className={"psl" + (pinned ? " has-pinned-rail" : "")}
-      data-mode={selectedRecordId === null ? "browse" : "edit"}
+      data-mode={view.kind}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -197,8 +227,10 @@ export function Library({
         <div className="psl__topbar-c">
           <div className="psl__view">
             <button
-              className={"psl__view-btn" + (view === "reel" ? " is-active" : "")}
-              onClick={() => setView("reel")}
+              className={"psl__view-btn" + (view.kind === "reel" ? " is-active" : "")}
+              onClick={() =>
+                viewDispatch({ type: "TOGGLE_VIEW", to: "reel", fallbackId: reelFallbackId })
+              }
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <rect x="3" y="6" width="4" height="12" />
@@ -208,8 +240,10 @@ export function Library({
               Reel
             </button>
             <button
-              className={"psl__view-btn" + (view === "grid" ? " is-active" : "")}
-              onClick={() => setView("grid")}
+              className={"psl__view-btn" + (view.kind === "grid" ? " is-active" : "")}
+              onClick={() =>
+                viewDispatch({ type: "TOGGLE_VIEW", to: "grid", fallbackId: null })
+              }
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <rect x="3" y="3" width="7" height="7" />

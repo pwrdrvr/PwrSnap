@@ -101,33 +101,53 @@ export function Editor({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
 
-  const refetch = useCallback(async () => {
-    const recordResult = await dispatch("library:byId", { id: captureId });
-    if (!recordResult.ok) {
-      setState({ kind: "error", message: recordResult.error.message });
-      return;
-    }
-    if (recordResult.value === null) {
-      setState({ kind: "error", message: `capture not found: ${captureId}` });
-      return;
-    }
-    const overlaysResult = await dispatch("overlays:list", { captureId });
-    const overlays = overlaysResult.ok ? overlaysResult.value : [];
-    setState({ kind: "loaded", record: recordResult.value, overlays });
-  }, [captureId]);
+  // refetch accepts a "cancelled" predicate so the caller can opt-out
+  // of post-await setState if the component has moved on. Critical for
+  // the rapid mode-flip cases the Library plan introduces (Grid →
+  // Focus[A] → Esc → Focus[B]): without this guard, A's library:byId
+  // can resolve AFTER B has mounted and stomp B's state with A's
+  // record. Plan reference: docs/plans/2026-05-05-001-feat-library-
+  // three-state-view-model-plan.md, Phase A.7.
+  const refetch = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      const recordResult = await dispatch("library:byId", { id: captureId });
+      if (isCancelled()) return;
+      if (!recordResult.ok) {
+        setState({ kind: "error", message: recordResult.error.message });
+        return;
+      }
+      if (recordResult.value === null) {
+        setState({ kind: "error", message: `capture not found: ${captureId}` });
+        return;
+      }
+      const overlaysResult = await dispatch("overlays:list", { captureId });
+      if (isCancelled()) return;
+      const overlays = overlaysResult.ok ? overlaysResult.value : [];
+      setState({ kind: "loaded", record: recordResult.value, overlays });
+    },
+    [captureId]
+  );
 
   useEffect(() => {
-    void refetch();
+    let cancelled = false;
+    void refetch(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [refetch]);
 
   // Re-fetch when overlays change for this capture.
   useEffect(() => {
+    let cancelled = false;
     const unsubscribe = subscribe("events:overlays:changed", (payload) => {
       const p = payload as { captureId?: string };
       if (p.captureId !== undefined && p.captureId !== captureId) return;
-      void refetch();
+      void refetch(() => cancelled);
     });
-    return unsubscribe;
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [captureId, refetch]);
 
   // Auto-focus the text input when entering text-draft state.

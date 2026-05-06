@@ -453,6 +453,18 @@
 .psl__nav.is-active .psl__nav-count { color: var(--accent-bright); }
 
 /* Middle: Reel + grid */
+/* Mode-driven layout switching. The `data-mode` attribute on `.psl`
+   takes one of: grid (default landing) | focus | reel.
+   See library-view.ts for the discriminated-union state model.
+
+   Phase A: only the reel + grid pane visibility changes — the reel
+   band hides in grid mode, the grid pane hides in reel mode. The
+   right rail and the inline editor pane retain their current
+   behavior; Phase B/C will replace them. */
+.psl[data-mode="grid"] .psl__reel-wrap { display: none; }
+.psl[data-mode="reel"] .psl__grid-wrap { display: none; }
+.psl[data-mode="reel"] .psl__edit-pane { display: none; }
+
 .psl__main {
   grid-column: 2; grid-row: 2;
   display: flex; flex-direction: column;

@@ -193,33 +193,46 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const lastSnap: CaptureRecord | undefined = records[0];
 
   // Measure the popover's natural content height and tell main to
-  // setContentSize the BrowserWindow to match. Three pieces make this
-  // robust where the prior measure-and-fit attempts weren't:
+  // setContentSize the BrowserWindow to match.
   //
-  //   1. We measure `scrollHeight`, not `getBoundingClientRect().height`.
-  //      The `.ps-tray` container has `overflow: hidden` (for crisp
-  //      rounded corners against the transparent BrowserWindow), and
-  //      that property causes the border-box returned by
-  //      getBoundingClientRect to track the *current window height*
-  //      rather than the natural content extent — so the wrapper
-  //      reports back whatever main most recently sized us to. That's
-  //      the silent feedback loop that made the previous ResizeObserver
-  //      pass land at fallback-metric heights and stay stuck. scrollHeight
-  //      always reports the content's intrinsic height regardless of
-  //      `overflow`, breaking the loop.
+  // The trick: measure a CHILD's layout coordinates, not anything on
+  // the wrapper. Both `getBoundingClientRect().height` and
+  // `scrollHeight` on `.ps-tray` are subject to a clipping feedback
+  // loop — the wrapper has `overflow: hidden` (load-bearing for the
+  // rounded corners against the transparent panel), and so does its
+  // ancestor `body`. When main sizes the BrowserWindow shorter than
+  // the natural content, body clips the wrapper, and Chromium starts
+  // returning the *clipped* extent for both gBCR and scrollHeight.
+  // The ResizeObserver fires, reads back the clipped value, posts it
+  // again — silent feedback loop. The popover gets stuck whatever
+  // size we first posted, even after fonts swap to the wider Geist
+  // metrics that genuinely need more vertical space.
   //
-  //   2. We re-measure once `document.fonts.ready` resolves, so the
-  //      Geist web-font swap doesn't leave us stuck at the fallback-
-  //      font measurement. (Two rAF hops after fonts.ready give the
-  //      browser time to apply the swap reflow before we read.)
+  // `offsetTop` and `offsetHeight` on a DOM child are computed from
+  // layout, not painting. Overflow clipping changes which pixels
+  // paint; it does NOT change where elements are laid out. So a
+  // child element's `offsetTop + offsetHeight` returns the position
+  // its bottom edge WOULD have if visible, regardless of how much of
+  // it the parent is currently clipping. Measure the last child →
+  // get the natural content extent without ever touching a
+  // potentially-clipped wrapper measurement.
   //
-  //   3. ResizeObserver continues observing for the lifetime of the
-  //      effect, so the last-snap section appearing/disappearing,
-  //      the preview image loading, and any future content-driven
-  //      growth all flow through the same setContentSize path. Each
-  //      post is idempotent (`posted` short-circuits no-ops), so the
-  //      typical run is one IPC for first paint + one after fonts
-  //      ready + zero from the observer.
+  // `.ps-tray { position: relative }` makes the wrapper the
+  // offsetParent of all its children, so `lastChild.offsetTop` is
+  // relative to the wrapper's content box (no padding here, so it's
+  // also relative to the border edge). Adding `offsetHeight` lands
+  // us at the natural content height.
+  //
+  // The other pieces:
+  //   • Re-measure after `document.fonts.ready` (in a double rAF, so
+  //     the post-swap reflow has fully landed) to catch the Geist
+  //     web-font swap that genuinely changes content height.
+  //   • ResizeObserver for ongoing changes (last-snap section
+  //     appearing, etc). The observer fires more than necessary
+  //     during font swap, but each measure() reads the unclipped
+  //     value freshly, so the steady-state is correct regardless.
+  //   • Idempotent posting — a `posted` cursor short-circuits no-op
+  //     IPC traffic.
   //
   // Hard floor + ceiling sit in main (`tray.ts` clamps 200–880), so
   // a renderer-side measurement bug can't shrink the popover to
@@ -241,13 +254,15 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       );
     };
     const measure = (): void => {
-      // scrollHeight is the content extent — see (1) above.
-      post(el.scrollHeight);
+      // Position of the last child's bottom edge, relative to the
+      // wrapper. Layout-based, immune to overflow clipping. See the
+      // long comment above for why this matters.
+      const last = el.lastElementChild as HTMLElement | null;
+      if (last === null) return;
+      post(last.offsetTop + last.offsetHeight);
     };
     measure();
     void document.fonts.ready.then(() => {
-      // Two rAF hops so the post-swap reflow has fully landed before
-      // we re-read scrollHeight; one hop sometimes catches mid-reflow.
       requestAnimationFrame(() => requestAnimationFrame(measure));
     });
     const ro = new ResizeObserver(measure);

@@ -53,11 +53,9 @@ jobs:
       - name: Build preview package (unsigned)
         run: pnpm --filter @pwrsnap/desktop package:dryrun
 
-      - name: Upload DMG and ZIP artifacts
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v5
         with:
           name: PwrSnap-${{ steps.version.outputs.version }}-preview
-          path: |
-            apps/desktop/release-stage/dist/*.dmg
-            apps/desktop/release-stage/dist/*.zip
+          path: apps/desktop/release-stage/dist/*.dmg
           retention-days: 14

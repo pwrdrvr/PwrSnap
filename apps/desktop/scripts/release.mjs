@@ -125,13 +125,20 @@ run(
 );
 
 // 5. electron-builder.
+//    Dryrun mode (preview/dev) builds DMG only — saves ~30s of CI time and
+//    keeps the preview-build artifact uncluttered. Real releases build both
+//    DMG and ZIP because electron-updater requires the ZIP on macOS.
 step(
-  `electron-builder --mac --arm64 (${publish ? "publish" : "no publish"}, ${
+  `electron-builder --mac${dryrun ? " dmg" : ""} --arm64 (${publish ? "publish" : "no publish"}, ${
     dryrun ? "unsigned" : "signed"
   })`
 );
 maybeDecodeAppleApiKey();
-const builderArgs = ["electron-builder", "--mac", "--arm64"];
+const builderArgs = ["electron-builder", "--mac"];
+if (dryrun) {
+  builderArgs.push("dmg");
+}
+builderArgs.push("--arm64");
 if (dryrun) {
   builderArgs.push("--config.mac.identity=null", "--config.mac.notarize=false");
 }

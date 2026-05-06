@@ -105,10 +105,20 @@ function wireTrayResizeChannel(): void {
     ) {
       return;
     }
-    const requested = Math.round((payload as { height: number }).height);
-    if (!Number.isFinite(requested)) return;
-    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requested));
+    const requestedCss = (payload as { height: number }).height;
+    if (!Number.isFinite(requestedCss)) return;
     if (trayWindow === null || trayWindow.isDestroyed()) return;
+    // Renderer measures in CSS pixels (post-zoom). `setContentSize`
+    // takes DIP (zoom-independent). When the session's zoomFactor is
+    // not 1.0 (e.g. user Cmd-+'d in the library — zoom is shared
+    // per-origin via Chromium's HostZoomMap), the two units diverge:
+    // a 600 CSS px tall popover at 1.32× zoom is 600 × 1.32 ≈ 792
+    // DIP. Without this conversion, the BrowserWindow ends up
+    // shorter than the rendered content needs and the popover
+    // visibly clips.
+    const zoom = trayWindow.webContents.zoomFactor;
+    const requestedDip = Math.ceil(requestedCss * zoom);
+    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requestedDip));
     if (trayWindow.getContentSize()[1] === clamped) return;
     // Belt-and-braces: every resize call lifts the implicit minimum
     // size first. The createTrayWindow call already does this once on
@@ -216,14 +226,6 @@ function toggleTrayWindow(): void {
     window.hide();
     return;
   }
-  // Belt-and-braces against zoomFactor drift. createTrayWindow sets
-  // zoom to 1 on did-finish-load and disables pinch-zoom, but Cmd-+
-  // / Cmd-- via the menu still works during a session and would
-  // persist until the renderer reloaded. Re-zero on every show so a
-  // stray hotkey can never leave the popover laid out at the wrong
-  // CSS-pixel width on the next reopen. Idempotent — calling
-  // setZoomFactor(1) when zoom is already 1 is a no-op.
-  window.webContents.setZoomFactor(1);
   const bounds = tray!.getBounds();
   positionTrayWindow(window, bounds);
   // Apply vibrancy *after* position so external displays don't render

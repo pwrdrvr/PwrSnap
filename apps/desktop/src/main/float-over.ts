@@ -77,10 +77,16 @@ function wireFloatOverResizeChannel(): void {
     ) {
       return;
     }
-    const height = Math.round((payload as { height: number }).height);
-    if (!Number.isFinite(height)) return;
-    const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN, Math.min(FLOAT_OVER_HEIGHT_MAX, height));
+    const heightCss = (payload as { height: number }).height;
+    if (!Number.isFinite(heightCss)) return;
     if (singleton === null || singleton.isDestroyed()) return;
+    // Renderer measures CSS pixels (post-zoom). `setContentSize`
+    // takes DIP. Convert via zoomFactor — see the matching block in
+    // tray.ts/wireTrayResizeChannel for the full rationale; same
+    // shared-origin zoom story applies to the float-over.
+    const zoom = singleton.webContents.zoomFactor;
+    const heightDip = Math.ceil(heightCss * zoom);
+    const clamped = Math.max(FLOAT_OVER_HEIGHT_MIN, Math.min(FLOAT_OVER_HEIGHT_MAX, heightDip));
     const current = singleton.getContentSize();
     if (current[1] === clamped) return;
     singleton.setContentSize(FLOAT_OVER_WIDTH, clamped, false);

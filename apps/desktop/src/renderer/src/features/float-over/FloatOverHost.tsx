@@ -59,7 +59,19 @@ export function FloatOverHost(): React.ReactElement {
     post();
     const ro = new ResizeObserver(post);
     ro.observe(el);
-    return () => ro.disconnect();
+    // Main pings us on `webContents.zoom-changed` so the toast
+    // resizes correctly when the session zoom factor changes —
+    // ResizeObserver alone doesn't reliably catch zoom-only layout
+    // changes, and main's CSS→DIP conversion needs us to re-post
+    // through it so the new zoomFactor lands.
+    const unsubRemeasure = window.pwrsnapApi?.on(
+      "events:popover:remeasure",
+      () => post()
+    );
+    return () => {
+      ro.disconnect();
+      unsubRemeasure?.();
+    };
   }, [state.kind]);
 
   // Subscribe to main → renderer state events. One listener for the

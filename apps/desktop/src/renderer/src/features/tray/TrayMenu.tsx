@@ -227,10 +227,10 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     const el = containerRef.current;
     if (el === null) return;
     let posted = -1;
-    const post = (): void => {
+    const post = (force = false): void => {
       const rect = el.getBoundingClientRect();
       const target = Math.ceil(rect.height);
-      if (target === posted) return;
+      if (!force && target === posted) return;
       posted = target;
       window.dispatchEvent(
         new CustomEvent("pwrsnap:tray:resize", {
@@ -239,9 +239,21 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       );
     };
     post();
-    const ro = new ResizeObserver(post);
+    const ro = new ResizeObserver(() => post());
     ro.observe(el);
-    return () => ro.disconnect();
+    // Main pings us on `webContents.zoom-changed` because Chromium's
+    // ResizeObserver doesn't reliably fire on zoom-only changes —
+    // and even if our CSS-pixel measurement is unchanged, main needs
+    // to re-run its CSS→DIP conversion against the new zoomFactor,
+    // so we force a post that bypasses the `posted` cache.
+    const unsubRemeasure = window.pwrsnapApi?.on(
+      "events:popover:remeasure",
+      () => post(true)
+    );
+    return () => {
+      ro.disconnect();
+      unsubRemeasure?.();
+    };
   }, []);
   // The CustomEvent above is a renderer-internal hop — TrayMenuShell
   // (below) listens for it and forwards via window.pwrsnapApi.

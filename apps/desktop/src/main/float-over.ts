@@ -108,6 +108,13 @@ function getOrCreate(): BrowserWindow {
       window.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
     }
   });
+  // Re-measure on zoom changes — see the matching block in
+  // tray.ts/ensureTrayWindow for why ResizeObserver alone isn't
+  // sufficient.
+  window.webContents.on("zoom-changed", () => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(EVENT_CHANNELS.popoverRemeasure, {});
+  });
   window.on("closed", () => {
     if (singleton === window) {
       singleton = null;

@@ -14,6 +14,7 @@
 
 import { join } from "node:path";
 import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createTrayWindow, positionTrayWindow } from "./window";
@@ -84,6 +85,18 @@ function ensureTrayWindow(): BrowserWindow {
   const window = createTrayWindow();
   trayWindow = window;
   wireBlurDismiss(window);
+  // Tell the renderer to re-measure whenever the session zoom factor
+  // changes. We can't rely on ResizeObserver alone — Chromium does
+  // not fire layout-resize observations for pure zoom changes when
+  // the underlying CSS-pixel content height happens to land at the
+  // same value, and `setContentSize` is in DIP, so a stale
+  // CSS-pixel-height post would compute a wrong DIP after zoom
+  // changed. The IPC kicks the renderer to re-post; the resize
+  // handler reads the new zoomFactor and converts.
+  window.webContents.on("zoom-changed", () => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(EVENT_CHANNELS.popoverRemeasure, {});
+  });
   window.on("closed", () => {
     if (trayWindow === window) trayWindow = null;
   });

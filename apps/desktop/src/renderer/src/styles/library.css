@@ -473,7 +473,11 @@
 }
 .psl__reel-wrap {
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border-default);
+  /* `--border-strong` (0.18 alpha) — `--border-default` (0.12)
+     was still too subtle against the dark gradient bg. The design
+     called for a clearly-visible separator between the filmstrip
+     and the stage area. */
+  border-bottom: 1px solid var(--border-strong);
   background: linear-gradient(180deg, var(--bg-sidebar), var(--bg-app));
 }
 .psl__reel-hdr {
@@ -481,26 +485,26 @@
   /* Tightened from 12/18/6 — the design's chrome was airy here.
      With the header text + scrub-keys hint occupying the row, the
      extra padding-top read as wasted whitespace. */
-  padding: 8px 18px 4px;
+  padding: 8px 18px 6px;
+}
+.psl__reel-title {
+  /* Bumped from 9px muted to 10px secondary — the previous
+     near-invisible muted text didn't earn the row it sits in. */
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 /* "scrub ⌘[ / ⌘]" hint on the right side of the reel header.
    Visually subtle — it's a navigation tooltip, not a primary
    control. The actual ⌘[ / ⌘] binding is handled by Library's
    window keydown listener (aliases to ←/→ in Reel). */
 .psl__reel-hint {
-  font: 500 10px/1 var(--font-mono); color: var(--text-muted);
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-secondary);
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__reel-hint b { color: var(--accent-bright); font-weight: 600; }
-.psl__reel-title {
-  font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--text-muted);
-}
-.psl__reel-mode {
-  display: flex; gap: 4px;
-  font: 500 10px/1 var(--font-mono); color: var(--text-muted);
-}
-.psl__reel-mode b { color: var(--accent-bright); }
 
 /* The reel itself: horizontal scrubbable filmstrip */
 .psl__reel {
@@ -604,25 +608,36 @@
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
   flex: 1; overflow-y: auto;
-  padding: 16px 18px 18px;
+  /* No padding-top — the sticky day-hdr below carries its own top
+     padding so when pinned its background fully covers the top
+     edge of the scroll pane. Without this, content scrolling up
+     through the wrap's padding zone shows above the pinned header
+     ("things scrolling underneath it"). */
+  padding: 0 18px 18px;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
-  margin: 18px 0 10px;
-  /* Sticky-top so day headers stay visible at the top of the grid
-     pane as the user scrolls past their group. Without this, the
-     user loses date context several rows into a long day. The
-     `top: -1px` offset (vs 0) covers a sub-pixel gap that
-     occasionally lets a thin line peek through under the header
-     border on hi-DPI displays. */
-  position: sticky;
-  top: -1px;
+  /* Sticky to the top of the scroll pane. The `padding-top` here
+     replaces the wrap's old `padding-top: 16px` so the visual
+     breathing room moves WITH the pinned header — the bg covers
+     from the very top edge down through the header content,
+     occluding everything scrolling under it.
+     `padding-bottom: 12px` separates the header from the cells
+     below it both at scroll-top (natural) and when pinned. */
+  padding: 16px 0 12px;
   background: var(--bg-app);
+  position: sticky;
+  top: 0;
   z-index: 2;
-  padding: 8px 0 10px;
-  margin: 10px 0 0;
+  /* No margin — sticky elements with margins can develop subtle
+     gaps as the parent scrolls. Spacing is built into padding
+     instead. */
+  margin: 0;
 }
-.psl__day-hdr:first-child { margin-top: 0; }
+/* First day-hdr is already at the top via the wrap's zero
+   padding-top; subsequent day-hdrs sit just below the previous
+   day's last row. The cell grid's own gap provides separation,
+   no extra margin needed. */
 .psl__day-hdr-label { font: 700 12px/1 var(--font-display); letter-spacing: -0.005em; }
 .psl__day-hdr-meta { font: 500 10px/1 var(--font-mono); color: var(--text-muted); }
 .psl__day-hdr-line { flex: 1; height: 1px; background: var(--border-subtle); }
@@ -1060,8 +1075,21 @@
   overflow: hidden;
 }
 .psl__reel-mode .psl__reel-wrap {
-  border-bottom: 1px solid var(--border-subtle);
   flex: 0 0 auto;
+}
+/* Reel mode: pin the canvas to the top of stage-wrap so it sits
+   close to the filmstrip, instead of vertically centering in the
+   (often very tall) available space. Wide-aspect captures (e.g.
+   3710×1892) plus center-align created a multi-hundred-pixel
+   air gap below the filmstrip — visually jarring. With flex-start,
+   the canvas pins to the top with breadcrumb above it; any
+   leftover height collects at the bottom. */
+.psl__reel-mode .psl__stage-wrap {
+  align-items: flex-start;
+  /* Top padding so the canvas clears the absolute breadcrumb +
+     position counter (top:12 + their ~22px height + breathing
+     room). */
+  padding-top: 44px;
 }
 .psl__stage-wrap {
   flex: 1;

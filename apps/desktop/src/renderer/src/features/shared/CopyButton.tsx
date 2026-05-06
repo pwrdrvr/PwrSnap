@@ -14,6 +14,38 @@ import { useEffect, useRef, useState } from "react";
 
 export type CopyPreset = "low" | "med" | "high";
 
+/** Estimated output dimensions + bytes for a given preset against a
+ *  source capture's actual width × height × byte size — surfaced on
+ *  each copy button so the user knows what they're about to paste.
+ *  Mirrors the bake-time preset widths in main's clipboard-handlers.ts
+ *  (low=800, med=1440, high=source). Bytes is a heuristic: scale
+ *  shrinks linearly with preset width, so byte count shrinks with
+ *  scale² (image area). Encoding noise is ignored — the goal is a
+ *  rough order-of-magnitude estimate, not an exact figure.
+ *
+ *  Originally lived in TrayMenu.tsx; moved here in Phase C.5 of the
+ *  library three-state plan so the library's DetailRail can use the
+ *  same function without duplication. */
+export function presetMetrics(
+  preset: CopyPreset,
+  srcW: number,
+  srcH: number,
+  srcBytes: number
+): { readonly dim: string; readonly bytes: string } {
+  const targetW = preset === "low" ? 800 : preset === "med" ? 1440 : srcW;
+  const scale = Math.min(1, targetW / Math.max(1, srcW));
+  const w = Math.round(srcW * scale);
+  const h = Math.round(srcH * scale);
+  const bytes = Math.round(srcBytes * scale * scale);
+  return { dim: `${w} × ${h}`, bytes: formatBytes(bytes) };
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export type CopyButtonProps = {
   /** Which preset this button represents — drives the kbd shortcut
    *  hint (⌘1 / ⌘2 / ⌘3) and is passed to onCopy on click. */

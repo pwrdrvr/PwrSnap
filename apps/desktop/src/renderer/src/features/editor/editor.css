@@ -28,6 +28,21 @@
 .editor-root.is-embedded .editor-canvas-wrap {
   min-height: 0;
 }
+/* Chromeless mode (Library's Stage component, Phase C). No titlebar,
+   no toolbar — just the canvas. Fills the parent container; the
+   parent (.psl__stage-img) supplies the chrome (border-radius,
+   shadow, max-width/height bounds). The toolbar is rendered by
+   Library at the Stage level (<EditToolbar>) using shared lifted
+   tool state. */
+.editor-root.is-chromeless {
+  height: 100%;
+  grid-template-rows: 1fr;
+  background: transparent;
+}
+.editor-root.is-chromeless .editor-canvas-wrap {
+  min-height: 0;
+  padding: 0;
+}
 
 .editor-titlebar {
   /* Macros titleBarStyle:'hiddenInset' eats the top 28px for traffic

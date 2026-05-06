@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
-import { CopyButton, type CopyPreset } from "../shared/CopyButton";
+import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { Kbd } from "../shared/Primitives";
 import { cacheUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
@@ -40,26 +40,8 @@ const COPY_PRESETS: Array<{ id: CopyPreset; label: string }> = [
   { id: "high", label: "High" }
 ];
 
-/** Estimated output dimensions and bytes for a given preset against a
- *  source capture's actual width — surfaced on each copy button so the
- *  user knows what they're about to paste. Mirrors the bake-time
- *  preset widths in clipboard-handlers.ts (low=800, med=1440,
- *  high=source). Bytes is a heuristic: ~0.30 bytes per pixel for a
- *  typical PNG-encoded screen capture (UI screenshots compress well;
- *  photographs would land higher). */
-function presetMetrics(
-  preset: "low" | "med" | "high",
-  srcW: number,
-  srcH: number,
-  srcBytes: number
-): { dim: string; bytes: string } {
-  const targetW = preset === "low" ? 800 : preset === "med" ? 1440 : srcW;
-  const scale = Math.min(1, targetW / Math.max(1, srcW));
-  const w = Math.round(srcW * scale);
-  const h = Math.round(srcH * scale);
-  const bytes = Math.round(srcBytes * scale * scale);
-  return { dim: `${w} × ${h}`, bytes: formatBytes(bytes) };
-}
+// presetMetrics moved to features/shared/CopyButton.tsx in Phase C.5
+// of the library three-state plan so DetailRail can use it too.
 
 function ModeIcon({ kind }: { kind: ModeKind }) {
   switch (kind) {
@@ -203,11 +185,8 @@ function relativeTime(iso: string): string {
   return new Date(then).toLocaleDateString();
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+// formatBytes moved to features/shared/CopyButton.tsx (used internally
+// by presetMetrics there; not exported separately).
 
 export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { records } = useLibrary();

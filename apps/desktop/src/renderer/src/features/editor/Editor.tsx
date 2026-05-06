@@ -36,7 +36,7 @@ type LoadState =
   | { kind: "loaded"; record: CaptureRecord; overlays: OverlayRow[] }
   | { kind: "error"; message: string };
 
-type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text";
+export type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text";
 
 type DraftArrow = {
   kind: "arrow";
@@ -69,7 +69,11 @@ type DraftText = {
 
 type Draft = DraftArrow | DraftRect | DraftText;
 
-const TOOLS: { id: Tool; label: string; key: string }[] = [
+/** Single source of truth for tool ids + display labels + single-letter
+ *  keyboard shortcuts. Exported so the Library-level <EditToolbar>
+ *  (used in Focus + Reel modes) renders the same set without duplicating
+ *  the metadata. */
+export const TOOLS: { id: Tool; label: string; key: string }[] = [
   // Pointer is the default — no-op on drag. Lets the user click on
   // the canvas to focus / inspect without accidentally drawing.
   // Drawing tools require an explicit click on the toolbar (or a key
@@ -84,19 +88,56 @@ const TOOLS: { id: Tool; label: string; key: string }[] = [
 
 const MIN_DRAG_LENGTH = 0.005; // 0.5% of canvas — below = treat as click
 
+/** Three structural shapes for the editor:
+ *
+ *   • "full"       — standalone editor window: titlebar + bottom
+ *                    toolbar. Default when no chrome prop is passed.
+ *   • "embedded"   — inline-in-Library mode (Phase 2 Slice C / Phase
+ *                    A transitional): no titlebar, but keeps the
+ *                    bottom toolbar. This branch was dropped in
+ *                    Phase B and may be removed entirely in a
+ *                    future cleanup.
+ *   • "chromeless" — Library Focus + Reel modes: no titlebar, no
+ *                    toolbar. The canvas + draft input only. The
+ *                    floating EditToolbar lives at the Library level
+ *                    and shares tool state via the controlled
+ *                    `tool` / `onToolChange` props. */
+export type EditorChrome = "full" | "embedded" | "chromeless";
+
 export function Editor({
   captureId,
-  embedded = false
+  chrome = "full",
+  tool: toolProp,
+  onToolChange
 }: {
   captureId: string;
-  /** When true, render without the standalone-window titlebar and
-   *  with `height: 100%` (fitting the container) instead of `100vh`
-   *  (full viewport). The Library uses this in edit mode so the
-   *  editor lives inside the main column without overflowing. */
-  embedded?: boolean;
+  /** Chrome shape — see `EditorChrome` above. Defaults to `"full"`
+   *  (standalone editor window). */
+  chrome?: EditorChrome;
+  /** Optional controlled tool state. If both `tool` and `onToolChange`
+   *  are passed, Editor is fully controlled — Library owns the tool
+   *  state and drives the floating EditToolbar. If neither is passed,
+   *  Editor falls back to internal `useState` (standalone-window
+   *  path). Mixed (one without the other) is not supported and will
+   *  fall back to internal state. */
+  tool?: Tool;
+  onToolChange?: (tool: Tool) => void;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  const [tool, setTool] = useState<Tool>("pointer");
+  // Controlled-or-uncontrolled tool state. When the parent passes
+  // both `tool` and `onToolChange`, we mirror their value as the
+  // single source of truth. Otherwise we fall back to internal
+  // useState (the standalone-window invariant).
+  const isControlled = toolProp !== undefined && onToolChange !== undefined;
+  const [internalTool, setInternalTool] = useState<Tool>("pointer");
+  const tool = isControlled ? toolProp : internalTool;
+  const setTool = useCallback(
+    (next: Tool) => {
+      if (isControlled) onToolChange(next);
+      else setInternalTool(next);
+    },
+    [isControlled, onToolChange]
+  );
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
@@ -328,8 +369,14 @@ export function Editor({
 
   const { record, overlays } = state;
   return (
-    <div className={"editor-root" + (embedded ? " is-embedded" : "")}>
-      {!embedded && (
+    <div
+      className={
+        "editor-root" +
+        (chrome === "embedded" ? " is-embedded" : "") +
+        (chrome === "chromeless" ? " is-chromeless" : "")
+      }
+    >
+      {chrome === "full" && (
         <header className="editor-titlebar">
           <span className="editor-title">
             PwrSnap Editor · {record.source_app_name ?? "Capture"} ·{" "}
@@ -374,16 +421,18 @@ export function Editor({
         </div>
       </div>
 
-      <Toolbar
-        tool={tool}
-        onChange={setTool}
-        appliedCount={overlays.length}
-        onClearLast={async () => {
-          const last = overlays[overlays.length - 1];
-          if (last === undefined) return;
-          await dispatch("overlays:delete", { id: last.id });
-        }}
-      />
+      {chrome !== "chromeless" && (
+        <EditorToolbar
+          tool={tool}
+          onChange={setTool}
+          appliedCount={overlays.length}
+          onClearLast={async () => {
+            const last = overlays[overlays.length - 1];
+            if (last === undefined) return;
+            await dispatch("overlays:delete", { id: last.id });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -408,7 +457,13 @@ function rectFromDrag(d: DraftRect): { x: number; y: number; w: number; h: numbe
   };
 }
 
-function Toolbar({
+// EditorToolbar: bottom-row toolbar attached to Editor's own chrome
+// (full + embedded modes). The new <EditToolbar> at
+// features/library/EditToolbar.tsx is a SEPARATE component used by
+// Library's Stage component (chromeless Editor + floating bottom-
+// center toolbar, Phase C). Renamed from `Toolbar` to avoid the
+// name collision flagged by pattern-recognition-specialist.
+function EditorToolbar({
   tool,
   onChange,
   appliedCount,

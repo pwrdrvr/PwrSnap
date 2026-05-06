@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import type { Tool } from "../editor/Editor";
 import { FixtureBackedRecords } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
-import { cacheUrl } from "../../lib/pwrsnap";
+import { Stage } from "./Stage";
+import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -104,12 +106,66 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [appCounts, activeApp]);
 
   // The CaptureRecord for the currently-selected id — passed to
-  // <DetailRail> so it can render metadata + L/M/H copy buttons in
-  // Focus + Reel modes (Phase C). Null = nothing selected.
+  // <DetailRail> + <Stage> so they can render metadata + L/M/H copy
+  // buttons in Focus + Reel modes (Phase C). Null = nothing selected.
   const selectedRecord: CaptureRecord | null = useMemo(() => {
     if (selectedRecordId === null) return null;
     return records.find((r) => r.id === selectedRecordId) ?? null;
   }, [records, selectedRecordId]);
+
+  // Records that match the current activeApp filter, mapped from the
+  // (already-filtered) `visible` fixture list. Drives ←/→ navigation
+  // in Focus + Reel — both modes cycle through this set with wrap-
+  // around at the edges (per the plan's Phase C.8 contract).
+  const visibleRecords: CaptureRecord[] = useMemo(() => {
+    const out: CaptureRecord[] = [];
+    for (const c of visible) {
+      const r = fixtureBacking.recordFor(c.id);
+      if (r !== null) out.push(r);
+    }
+    return out;
+  }, [visible, fixtureBacking]);
+
+  // Index of the selected record in the visible-records list. Drives
+  // the position counter ("idx / total") and the prev/next neighbors.
+  const selectedIdx = useMemo(() => {
+    if (selectedRecordId === null) return -1;
+    return visibleRecords.findIndex((r) => r.id === selectedRecordId);
+  }, [visibleRecords, selectedRecordId]);
+
+  // Previous/next record ids for ←/→ navigation, with wrap-around.
+  // Both are null when the visible set has 0 or 1 records (no
+  // navigation possible).
+  const prevRecordId = useMemo(() => {
+    if (visibleRecords.length <= 1 || selectedIdx < 0) return null;
+    const i = (selectedIdx - 1 + visibleRecords.length) % visibleRecords.length;
+    return visibleRecords[i]?.id ?? null;
+  }, [visibleRecords, selectedIdx]);
+  const nextRecordId = useMemo(() => {
+    if (visibleRecords.length <= 1 || selectedIdx < 0) return null;
+    const i = (selectedIdx + 1) % visibleRecords.length;
+    return visibleRecords[i]?.id ?? null;
+  }, [visibleRecords, selectedIdx]);
+
+  // Lifted tool state — owned by Library so the chromeless Editor
+  // (inside <Stage>) and the floating <EditToolbar> share a single
+  // source of truth. Resets to "pointer" on every mode change so a
+  // user who pressed R in Focus doesn't accidentally drag-rect on a
+  // filmstrip click after Esc → Reel (julik concern #3, plan
+  // resolved decision: option A — predictable beats clever).
+  const [tool, setTool] = useState<Tool>("pointer");
+  useEffect(() => {
+    setTool("pointer");
+  }, [view.kind]);
+
+  // Ref to the scrollable grid container. Used by:
+  //   • Cell click handler — captures scrollTop into the OPEN_FOCUS
+  //     returnAnchor so the cell-pulse effect can find which cell
+  //     to highlight on Focus → Grid return.
+  //   • The Phase B keep-Grid-mounted decision means scrollTop
+  //     persists natively across mode flips (the element is
+  //     display:none'd, not unmounted).
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Stale-selection fallback: when the live list no longer contains
   // the selected record (e.g. a soft-delete races an open Focus),
@@ -120,29 +176,66 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     viewDispatch({ type: "FILTER_CHANGED", visibleIds: records.map((r) => r.id) });
   }, [selectedRecordId, selectedRecord, records]);
 
-  // ESC closes Focus (returns to Grid with selection preserved for
-  // cell highlight). Editor.tsx has its own ESC handler for canceling
-  // a mid-drag draft; that one runs first because it's bound at the
-  // canvas level. Once the draft is cleared, our window-level handler
-  // fires on the next ESC.
-  //
-  // viewRef mirror prevents the stale-closure bug julik flagged: a
-  // closure over `view` in the keydown handler would silently break
-  // after the first mode flip. Reading from a ref always sees current
-  // state without re-binding the listener.
+  // Filter-change-while-Focus bail: when activeApp changes and the
+  // current selection is no longer in the visible set, the reducer
+  // closes Focus and lands the user back in Grid (resolved decision
+  // from the plan — filter is a query, query changed, show new
+  // result set in Grid form).
+  useEffect(() => {
+    viewDispatch({
+      type: "FILTER_CHANGED",
+      visibleIds: visibleRecords.map((r) => r.id)
+    });
+  }, [visibleRecords]);
+
+  // Window keydown handler — Esc closes Focus, ←/→ navigate between
+  // captures in Focus + Reel. Single listener for the lifetime of
+  // Library mount; reads current state via refs so no stale-closure
+  // bug after mode flips (julik concern #4a). Editor's own keydown
+  // handler runs first for canvas-level concerns (V/A/R/H/T/B tool
+  // hotkeys, Esc-to-cancel-draft).
   const viewRef = useRef(view);
+  const prevRecordIdRef = useRef(prevRecordId);
+  const nextRecordIdRef = useRef(nextRecordId);
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
   useEffect(() => {
+    prevRecordIdRef.current = prevRecordId;
+  }, [prevRecordId]);
+  useEffect(() => {
+    nextRecordIdRef.current = nextRecordId;
+  }, [nextRecordId]);
+  useEffect(() => {
     function onKey(event: KeyboardEvent): void {
-      if (event.key !== "Escape") return;
       const target = event.target as HTMLElement | null;
+      // Skip when the user is typing in an input — single-letter
+      // shortcuts and Esc must not steal focus from text fields.
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (target?.isContentEditable) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (viewRef.current.kind === "focus") {
+
+      const kind = viewRef.current.kind;
+      if (event.key === "Escape" && kind === "focus") {
         event.preventDefault();
         viewDispatch({ type: "CLOSE_FOCUS" });
+        return;
+      }
+      if (event.key === "ArrowLeft" && (kind === "focus" || kind === "reel")) {
+        const id = prevRecordIdRef.current;
+        if (id !== null) {
+          event.preventDefault();
+          viewDispatch({ type: "NAVIGATE", recordId: id });
+        }
+        return;
+      }
+      if (event.key === "ArrowRight" && (kind === "focus" || kind === "reel")) {
+        const id = nextRecordIdRef.current;
+        if (id !== null) {
+          event.preventDefault();
+          viewDispatch({ type: "NAVIGATE", recordId: id });
+        }
+        return;
       }
     }
     window.addEventListener("keydown", onKey);
@@ -150,22 +243,108 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, []);
 
   /**
-   * Single-click handler for cells / reel frames. In Phase A the
-   * existing inline-editor path stays — clicking a cell with a
-   * real record opens the Editor in `.psl__edit-pane`. Phase C
-   * replaces this with `OPEN_FOCUS` dispatch and the Stage overlay.
+   * Single-click handler for grid cells. Phase C: dispatches
+   * `OPEN_FOCUS` with the captured grid scroll position + cell id
+   * so the cell-pulse effect can highlight the right cell on
+   * Focus → Grid return. Reel-mode filmstrip frames have their own
+   * NAVIGATE-only click handler (no Focus open from filmstrip).
    */
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
     const record = fixtureBacking.recordFor(c.id);
     if (record === null) {
-      // Fixture-only cell (dev placeholder) — leave reducer state alone;
-      // the existing FILTER_CHANGED stale-selection fallback will trip
-      // if needed.
+      // Fixture-only cell (dev placeholder) — no real record to open.
       return;
     }
-    viewDispatch({ type: "SELECT_IN_GRID", recordId: record.id });
+    viewDispatch({
+      type: "OPEN_FOCUS",
+      recordId: record.id,
+      returnAnchor: {
+        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        cellId: record.id
+      }
+    });
   }
+
+  /**
+   * Reel filmstrip frame click. Updates selectedRecordId without
+   * opening Focus.
+   */
+  function onSelectFrame(c: Capture): void {
+    setSelected(c.id);
+    const record = fixtureBacking.recordFor(c.id);
+    if (record === null) return;
+    viewDispatch({ type: "NAVIGATE", recordId: record.id });
+  }
+
+  /**
+   * Image preload on cell hover (Phase C.12). The grid thumbnail is
+   * 400w; Focus needs the source-resolution image. Preloading on
+   * mouseEnter starts the fetch in the user's reaction window so the
+   * stage doesn't flash blank when Focus opens. ~5 lines of code, big
+   * perceived-perf win. Cancelled if the user moves off the cell
+   * before clicking — but the browser already has the bytes cached
+   * for next time, so the cost is just the eager fetch. */
+  function preloadFullRes(record: CaptureRecord | null): void {
+    if (record === null) return;
+    const img = new Image();
+    img.src = captureSrcUrl(record.id);
+  }
+
+  /**
+   * Cell-pulse effect (Phase C.7). When view.kind transitions from
+   * "focus" back to "grid", briefly add `.is-was-open` to the cell
+   * with id matching `view.returnAnchor.cellId` so the user's eye
+   * can find the cell they came from. Pure CSS animation via
+   * `@keyframes cell-pulse` in library.css; we only manage the class
+   * lifecycle. animationend listener with { once: true } removes the
+   * class self-cleaningly. Force-reflow on re-add so a rapid
+   * open/close/open sequence restarts the animation instead of
+   * no-oping.
+   *
+   * useLayoutEffect (not useEffect) so the class is added before the
+   * browser paints the new Grid frame — eliminates a 1-frame gap
+   * where the user sees Grid mounted with no pulse running.
+   *
+   * The trigger lives in a ref because we need to fire this animation
+   * exactly once per Focus → Grid transition, not on every render.
+   */
+  const lastViewKindRef = useRef(view.kind);
+  const pulseAnchorRef = useRef<string | null>(null);
+  if (lastViewKindRef.current === "focus" && view.kind === "grid") {
+    // Capture the cellId from the view we just left. (We're reading
+    // mid-render, but only setting a ref — no setState, so React is
+    // happy. The previous view's returnAnchor was on the focus state;
+    // we don't have access here, so we use the new view's
+    // selectedRecordId as a proxy — they're the same record.)
+    pulseAnchorRef.current = view.selectedRecordId;
+  }
+  lastViewKindRef.current = view.kind;
+
+  useLayoutEffect(() => {
+    if (view.kind !== "grid") return;
+    const cellId = pulseAnchorRef.current;
+    if (cellId === null) return;
+    pulseAnchorRef.current = null;
+    const cell = gridScrollRef.current?.querySelector<HTMLElement>(
+      `[data-cell-id="${cellId}"]`
+    );
+    if (cell === null || cell === undefined) return;
+    // Force reflow so re-adding the class restarts the animation
+    // (browsers no-op style changes that don't differ from the
+    // current state otherwise).
+    cell.classList.remove("is-was-open");
+    void cell.offsetWidth;
+    cell.classList.add("is-was-open");
+    const onEnd = (): void => {
+      cell.classList.remove("is-was-open");
+    };
+    cell.addEventListener("animationend", onEnd, { once: true });
+    return () => {
+      cell.removeEventListener("animationend", onEnd);
+      cell.classList.remove("is-was-open");
+    };
+  }, [view.kind]);
 
   // The visible/grouped collections drive both the Grid and the Reel
   // mode, so the segmented toggle's fallback id (for "Reel toggle from
@@ -348,7 +527,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                     <button
                       key={c.id}
                       className={"psl__frame" + (c.id === selected ? " is-selected" : "")}
-                      onClick={() => onSelectCell(c)}
+                      onClick={() => onSelectFrame(c)}
                     >
                       <CellThumb capture={c} record={fixtureBacking.recordFor(c.id)} width={140} />
                       <span className="psl__frame-num">{c.time}</span>
@@ -368,7 +547,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             band-aid is removed per Phase B.10; perf hygiene of B.9 —
             loading="lazy" + content-visibility:auto on cells — carries
             us through ~1000 captures without virtualization). */}
-        <div className="psl__grid-wrap">
+        <div className="psl__grid-wrap" ref={gridScrollRef}>
           {grouped.map((g) => (
             <div key={g.day}>
               <div className="psl__day-hdr">
@@ -379,35 +558,43 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                 <span className="psl__day-hdr-line" />
               </div>
               <div className="psl__grid">
-                {g.items.map((c) => (
-                  <div
-                    key={c.id}
-                    className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
-                    data-cell-id={fixtureBacking.recordFor(c.id)?.id ?? ""}
-                    onClick={() => onSelectCell(c)}
-                  >
-                    <div className="psl__cell-thumb">
-                      <CellThumb capture={c} record={fixtureBacking.recordFor(c.id)} width={400} />
-                      <span className="psl__cell-time">{c.time}</span>
-                      <span className="psl__cell-app">
-                        <span className="psl__app-dot">
-                          <AppIcon app={c.app} size={10} />
-                        </span>
-                      </span>
-                    </div>
-                    <div className="psl__cell-meta">
-                      <div className="psl__cell-name">{c.n}</div>
-                      <div className="psl__cell-tags">
-                        <AppTag app={c.app} name={APP_INFO[c.app]?.name ?? "Unknown app"} size="sm" />
-                        {c.tags.slice(0, 1).map((t) => (
-                          <span key={t} className="ps-tag is-sm">
-                            {t}
+                {g.items.map((c) => {
+                  const record = fixtureBacking.recordFor(c.id);
+                  return (
+                    <div
+                      key={c.id}
+                      className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
+                      data-cell-id={record?.id ?? ""}
+                      onClick={() => onSelectCell(c)}
+                      onMouseEnter={() => preloadFullRes(record)}
+                    >
+                      <div className="psl__cell-thumb">
+                        <CellThumb capture={c} record={record} width={400} />
+                        <span className="psl__cell-time">{c.time}</span>
+                        <span className="psl__cell-app">
+                          <span className="psl__app-dot">
+                            <AppIcon app={c.app} size={10} />
                           </span>
-                        ))}
+                        </span>
+                      </div>
+                      <div className="psl__cell-meta">
+                        <div className="psl__cell-name">{c.n}</div>
+                        <div className="psl__cell-tags">
+                          <AppTag
+                            app={c.app}
+                            name={APP_INFO[c.app]?.name ?? "Unknown app"}
+                            size="sm"
+                          />
+                          {c.tags.slice(0, 1).map((t) => (
+                            <span key={t} className="ps-tag is-sm">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -419,9 +606,31 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         )}
       </main>
 
-      {/* Detail rail. Renders null in grid mode (Phase B placeholder
-          shell); Phase C populates it with metadata + Codex caption +
-          L/M/H copy row + action row in focus + reel modes. */}
+      {/* Stage — Focus mode opens it inside a native <dialog> with
+          showModal(); Reel mode renders it in-flow inside the main
+          pane via CSS. The discriminated union ensures selectedRecord
+          is non-null at this point because focus + reel both require
+          a non-null selectedRecordId in the type. */}
+      {(view.kind === "focus" || view.kind === "reel") && selectedRecord !== null && (
+        <Stage
+          view={view}
+          record={selectedRecord}
+          dismissible={view.kind === "focus"}
+          dispatch={viewDispatch}
+          posLabel={{
+            idx: selectedIdx + 1,
+            total: visibleRecords.length
+          }}
+          prevRecordId={prevRecordId}
+          nextRecordId={nextRecordId}
+          tool={tool}
+          onToolChange={setTool}
+        />
+      )}
+
+      {/* Detail rail. Renders null in grid mode (Phase B); Phase C
+          populates it with metadata + Codex caption + L/M/H copy
+          row + action row in focus + reel modes. */}
       <DetailRail view={view} record={selectedRecord} />
 
       <footer className="psl__status">

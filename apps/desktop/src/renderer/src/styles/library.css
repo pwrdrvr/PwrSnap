@@ -527,6 +527,14 @@
   border: 1px solid rgba(255,255,255,0.06);
   cursor: pointer;
   transition: transform 120ms var(--ease-out), border-color 120ms var(--ease-out);
+  /* D.3 — skip layout/paint for offscreen frames in a long
+     horizontal scroller. Through ~1000 captures this avoids the
+     filmstrip-paint-cliff without a virtualization library.
+     `contain-intrinsic-size` matches the explicit width/height
+     above so the layout-skipping doesn't collapse offscreen
+     frames to zero. */
+  content-visibility: auto;
+  contain-intrinsic-size: 70px 56px;
 }
 .psl__frame:hover { transform: translateY(-2px); border-color: var(--accent-border); }
 .psl__frame.is-selected {

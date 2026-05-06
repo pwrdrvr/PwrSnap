@@ -167,6 +167,79 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //     display:none'd, not unmounted).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Reel filmstrip scroll preservation (plan D.2 + D.4). The
+  // filmstrip is rendered inside Stage's `aboveStageSlot`, which
+  // mounts/unmounts as the user toggles Reel ↔ Grid (Stage is
+  // gated by `view.kind === "reel"` at the JSX level). Native
+  // scrollLeft therefore does NOT persist across mode flips the
+  // way the grid's scrollTop does (grid is kept mounted under
+  // display:none). We mirror the value into a ref on every scroll
+  // and restore it on Reel re-entry.
+  //
+  // Two refs:
+  //   • reelScrollerRef — live element handle, set when the
+  //     `.psl__reel` div mounts. null while not in Reel mode.
+  //   • reelScrollLeftRef — persistent saved value across mounts.
+  const reelScrollerRef = useRef<HTMLDivElement | null>(null);
+  const reelScrollLeftRef = useRef<number>(0);
+  // Skip-on-first-mount flag for the scrollIntoView effect (D.4).
+  // When the user re-enters Reel, the layout effect restores
+  // scrollLeft from the saved ref. We do NOT want a follow-up
+  // scrollIntoView to immediately override that restore. The flag
+  // resets on mode change so subsequent in-Reel selection changes
+  // (←/→ navigation) DO trigger scroll-into-view.
+  const isReelFirstMountRef = useRef<boolean>(true);
+
+  // Restore filmstrip scrollLeft when Reel mounts. Layout effect
+  // (not regular effect) so the restore lands before the browser
+  // paints — no visual flash of the filmstrip scrolled to 0.
+  useLayoutEffect(() => {
+    if (view.kind !== "reel") {
+      isReelFirstMountRef.current = true;
+      return;
+    }
+    const el = reelScrollerRef.current;
+    if (el === null) return;
+    el.scrollLeft = reelScrollLeftRef.current;
+  }, [view.kind]);
+
+  // Mirror scrollLeft into the ref so it survives Reel unmount.
+  // Passive listener — we never preventDefault, so passive avoids
+  // the per-frame compositor warning.
+  useEffect(() => {
+    if (view.kind !== "reel") return;
+    const el = reelScrollerRef.current;
+    if (el === null) return;
+    const onScroll = (): void => {
+      reelScrollLeftRef.current = el.scrollLeft;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [view.kind]);
+
+  // D.4 — when the selected record changes within Reel (←/→ nav,
+  // or filmstrip frame click that scrolls a frame off-screen),
+  // pull the new selection back into view. `inline: "nearest"` is
+  // deliberately conservative: only scroll if the frame is OUT
+  // of view. If the frame is already visible (e.g. the user just
+  // re-entered Reel and scrollLeft was restored to a position
+  // that already shows the selection), no-op. Avoids fighting
+  // with the layout-effect restore above.
+  const reelSelectedId = view.kind === "reel" ? view.selectedRecordId : null;
+  useEffect(() => {
+    if (view.kind !== "reel" || reelSelectedId === null) return;
+    if (isReelFirstMountRef.current) {
+      isReelFirstMountRef.current = false;
+      return;
+    }
+    const scroller = reelScrollerRef.current;
+    if (scroller === null) return;
+    const frame = scroller.querySelector<HTMLElement>(
+      `[data-frame-id="${reelSelectedId}"]`
+    );
+    frame?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [view.kind, reelSelectedId]);
+
   // Stale-selection fallback: when the live list no longer contains
   // the selected record (e.g. a soft-delete races an open Focus),
   // bail to grid via the reducer's FILTER_CHANGED action.
@@ -606,7 +679,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         {activeApp === "all" ? "all sources" : APP_INFO[activeApp]?.name}
                       </span>
                     </div>
-                    <div className="psl__reel">
+                    <div className="psl__reel" ref={reelScrollerRef}>
                       {grouped.map((g) => (
                         <div key={g.day} className="psl__reel-day">
                           <div className="psl__reel-day-label">
@@ -616,6 +689,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                             {g.items.map((c) => (
                               <button
                                 key={c.id}
+                                data-frame-id={c.id}
                                 className={
                                   "psl__frame" +
                                   (c.id === selected ? " is-selected" : "")

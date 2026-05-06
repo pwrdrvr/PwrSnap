@@ -337,7 +337,9 @@
   width: 100%; height: 100%;
   display: grid;
   /* Default: rail floats; canvas gets full width minus its 48px
-     spine (handled by .psl__main padding-right below). */
+     mode. The 3rd column is reserved for the DetailRail in Focus +
+     Reel modes; in Grid the column collapses to 0 since DetailRail
+     returns null there. */
   grid-template-columns: 220px 1fr 0;
   grid-template-rows: 52px 1fr 32px;
   background: var(--bg-app);
@@ -346,21 +348,17 @@
   overflow: hidden;
   font-family: var(--font-sans);
 }
-/* Pinned rail takes its own column. PwrAgnt's pattern: pinned is
-   a structural change to the layout; auto-hide is purely visual
-   (the rail floats over the canvas). */
-.psl.has-pinned-rail {
+/* DetailRail occupies its own 360px column in Focus + Reel modes.
+   In Grid mode the column stays at 0 (DetailRail returns null
+   internally). Phase B/C of the library three-state plan. */
+.psl[data-mode="focus"],
+.psl[data-mode="reel"] {
   grid-template-columns: 220px 1fr 360px;
 }
-/* Center pane anchors the floating rail. */
+/* Center pane is the absolute-positioning anchor for the future
+   Focus overlay (Phase C). */
 .psl__main {
   position: relative;
-}
-/* When the rail floats (not pinned), reserve 48px of canvas space
-   on the right for the spine so canvas content doesn't slide
-   under it. */
-.psl:not(.has-pinned-rail) .psl__main {
-  padding-right: 48px;
 }
 .psl__topbar {
   grid-column: 1 / -1; grid-row: 1;
@@ -463,7 +461,6 @@
    behavior; Phase B/C will replace them. */
 .psl[data-mode="grid"] .psl__reel-wrap { display: none; }
 .psl[data-mode="reel"] .psl__grid-wrap { display: none; }
-.psl[data-mode="reel"] .psl__edit-pane { display: none; }
 
 .psl__main {
   grid-column: 2; grid-row: 2;
@@ -564,24 +561,6 @@
 }
 .psl__frame-app svg { width: 8px; height: 8px; }
 
-.psl__playhead {
-  position: absolute;
-  top: 14px; bottom: 6px;
-  width: 1px;
-  background: var(--accent);
-  pointer-events: none;
-  z-index: 3;
-  box-shadow: 0 0 8px var(--accent);
-}
-.psl__playhead::before {
-  content: "";
-  position: absolute;
-  top: -6px; left: -4px;
-  width: 9px; height: 9px;
-  background: var(--accent);
-  transform: rotate(45deg);
-}
-
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
   flex: 1; overflow-y: auto;
@@ -601,6 +580,19 @@
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
 }
+/* In-pane error banner. The previous right-rail rendered errors
+   inside its body; with the rail gone in Grid mode, errors live
+   in the main pane instead. */
+.psl__error {
+  margin: 12px 18px;
+  padding: 10px 14px;
+  background: var(--danger-soft, rgba(220, 80, 80, 0.08));
+  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.32));
+  border-radius: 6px;
+  color: var(--danger-text, #e58a8a);
+  font: 500 12px/1.4 var(--font-sans);
+}
+
 .psl__cell {
   position: relative;
   border-radius: 7px;
@@ -609,6 +601,15 @@
   overflow: hidden;
   cursor: pointer;
   transition: all 120ms var(--ease-out);
+  /* Perf hygiene (Phase B.9). content-visibility:auto skips paint +
+     layout for offscreen cells; contain-intrinsic-size keeps the
+     scrollbar honest by reserving the cell's box. contain:layout
+     paint bounds future cell-level animations (e.g., the Phase C
+     return-pulse outline) so they don't invalidate parent paint.
+     Carries us through ~1000 captures without virtualization. */
+  content-visibility: auto;
+  contain-intrinsic-size: 280px 240px;
+  contain: layout paint;
 }
 .psl__cell:hover { border-color: var(--accent-border); transform: translateY(-1px); }
 .psl__cell.is-selected {
@@ -641,54 +642,44 @@
 .psl__cell-app {
   position: absolute; bottom: 5px; left: 5px;
 }
-.psl__cell-pick {
-  position: absolute; top: 5px; left: 5px;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: rgba(8,7,6,0.85);
-  border: 1px solid rgba(255,255,255,0.12);
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--text-muted);
-  font: 600 9px/1 var(--font-mono);
-}
-.psl__cell.is-in-reel .psl__cell-pick {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--button-text-on-accent);
-}
+/* HoverRevealPanel — pin / auto-hide side panel.
+   Lives in features/shared/HoverRevealPanel.tsx. Extracted from the
+   Library's right rail in Phase B; preserved here as house style for
+   future surfaces (sizzle composer, Phase 4 status panel, future
+   inspector pane). The Library three-state plan dropped the user-
+   facing pin/auto-hide toggle — Focus/Reel always show the rail —
+   but the pattern itself stays available.
 
-/* Right: Detail / editor.
    Two structural modes (PwrAgnt's ThreadContextPanel pattern):
-     • is-pinned   → rail occupies its 360px grid column. Spine
-                     hidden, panel takes full width. Static layout.
-     • is-collapsed / is-open → rail floats absolutely over the
-                     center pane. Default 360px wide, translated
-                     out by translateX(calc(100% - 48px)) so only
-                     the 48px spine peeks in. is-open removes the
-                     transform, exposing the full panel. */
-.psl__right {
+     • is-pinned   → panel occupies its grid column / parent layout.
+                     Spine hidden, panel takes full width. Static.
+     • is-collapsed / is-open → panel floats absolutely over the
+                     center pane. Default width-360 translated out
+                     by translateX(calc(100% - 48px)) so only the
+                     48px spine peeks in. is-open removes the
+                     transform, exposing the full panel.
+
+   Magic numbers (top: 52px / bottom: 32px) are calibrated for the
+   Library's topbar + status bar — future consumers may need to
+   override via CSS specificity or a wrapper class. */
+.hover-reveal-panel {
   background: var(--bg-sidebar);
   border-left: 1px solid var(--border-subtle);
   display: flex; flex-direction: row;
   overflow: hidden;
 }
-/* Pinned: take grid column 3, row 2. Hide the spine since the rail
-   is always visible. */
-.psl__right.is-pinned {
+.hover-reveal-panel.is-pinned {
   grid-column: 3; grid-row: 2;
 }
-.psl__right.is-pinned .psl__right-spine {
+.hover-reveal-panel.is-pinned .hover-reveal-panel__spine {
   display: none;
 }
-/* Floating modes: position absolute, anchored to right edge of
-   the .psl container. Stacks above the canvas. The 48px spine
-   sticks out via the canvas padding-right reservation. */
-.psl__right.is-collapsed,
-.psl__right.is-open {
+.hover-reveal-panel.is-collapsed,
+.hover-reveal-panel.is-open {
   position: absolute;
-  top: 52px;            /* under the topbar */
+  top: 52px;
   right: 0;
-  bottom: 32px;         /* above the status bar */
+  bottom: 32px;
   width: 360px;
   z-index: 30;
   transform: translateX(calc(100% - 48px));
@@ -696,15 +687,11 @@
     transform 160ms ease,
     box-shadow 140ms ease;
 }
-.psl__right.is-open {
+.hover-reveal-panel.is-open {
   transform: translateX(0);
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
 }
-
-/* Spine — the 48px-wide vertical strip on the rail's left edge.
-   Holds the hamburger button. Always rendered when not pinned;
-   dimmed in is-open state since the panel itself is the affordance. */
-.psl__right-spine {
+.hover-reveal-panel__spine {
   display: flex;
   width: 48px;
   flex: 0 0 48px;
@@ -715,10 +702,10 @@
   border-right: 1px solid var(--border-subtle);
   background: var(--bg-panel-elevated, var(--bg-sidebar));
 }
-.psl__right.is-open .psl__right-spine {
+.hover-reveal-panel.is-open .hover-reveal-panel__spine {
   display: none;
 }
-.psl__right-menu-button {
+.hover-reveal-panel__menu-button {
   display: inline-flex;
   width: 36px; height: 36px;
   align-items: center;
@@ -734,30 +721,28 @@
     background 140ms ease,
     color 140ms ease;
 }
-.psl__right-menu-button:hover,
-.psl__right-menu-button:focus-visible,
-.psl__right-menu-button.is-active {
+.hover-reveal-panel__menu-button:hover,
+.hover-reveal-panel__menu-button:focus-visible,
+.hover-reveal-panel__menu-button.is-active {
   border-color: var(--border-default);
   background: var(--bg-panel-hover, var(--bg-row-active));
   color: var(--text-primary);
   outline: none;
 }
-.psl__right-menu-glyph {
+.hover-reveal-panel__menu-glyph {
   display: inline-flex;
   flex-direction: column;
   gap: 4px;
 }
-.psl__right-menu-glyph span {
+.hover-reveal-panel__menu-glyph span {
   display: block;
   width: 14px; height: 2px;
   border-radius: 999px;
   background: currentColor;
 }
-
-/* Panel — the actual content (tabs + body). When floating + collapsed,
-   it's still rendered but visually muted via opacity transition so the
-   reveal feels smooth. */
-.psl__right-panel {
+/* The panel body — content fades + slides in on reveal. Parent
+   passes children that are rendered inside this element. */
+.hover-reveal-panel__panel {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -770,43 +755,11 @@
     opacity 140ms ease,
     transform 160ms ease;
 }
-.psl__right.is-pinned .psl__right-panel,
-.psl__right.is-open .psl__right-panel {
+.hover-reveal-panel.is-pinned .hover-reveal-panel__panel,
+.hover-reveal-panel.is-open .hover-reveal-panel__panel {
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
-}
-
-/* State indicator + Pin/Unpin button in rail header (next to tabs). */
-.psl__right-rail-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  padding-right: 4px;
-}
-.psl__right-rail-state {
-  color: var(--text-muted);
-  font: 500 10px/1 var(--font-sans);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.psl__right-pin-button {
-  height: 22px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-secondary);
-  font: 600 11px/1 var(--font-sans);
-  cursor: pointer;
-}
-.psl__right-pin-button:hover,
-.psl__right-pin-button:focus-visible {
-  color: var(--text-primary);
-  border-color: var(--border-default);
-  background: var(--bg-panel-hover, var(--bg-row-active));
-  outline: none;
 }
 
 .psl__right-tabs {
@@ -942,21 +895,6 @@
 }
 .psl__big-cta button.is-primary:hover { background: var(--accent-strong); }
 
-/* Sizzle composer mode */
-.psl__sizzle-strip {
-  margin: 0 18px 12px;
-  padding: 10px 12px;
-  background: rgba(232,116,58,0.05);
-  border: 1px solid rgba(232,116,58,0.22);
-  border-radius: 8px;
-  display: flex; align-items: center; gap: 10px;
-  font: 500 11px/1.3 var(--font-sans);
-}
-.psl__sizzle-strip svg { color: var(--accent); flex-shrink: 0; }
-.psl__sizzle-strip-text { flex: 1; color: var(--text-primary); }
-.psl__sizzle-strip-text b { color: var(--accent-bright); }
-.psl__sizzle-strip-text small { display: block; color: var(--text-muted); font: 500 10px/1.3 var(--font-mono); margin-top: 2px; }
-
 /* Status bar */
 .psl__status {
   grid-column: 1 / -1; grid-row: 3;
@@ -982,25 +920,3 @@
 }
 .psl__app-dot svg { width: 10px; height: 10px; }
 
-/* ============================================================== */
-/* Phase 2 Slice C — in-library Inspect / Edit modes              */
-/* ============================================================== */
-
-/* Edit pane — wraps the embedded <Editor>. The Editor component has
-   its own .editor-root grid layout; we just give it a fitted
-   container under the reel. The right rail STAYS VISIBLE — the
-   user still wants quick access to the Detail/History/OCR panel
-   while annotating (Codex captions, Apply tags, Copy as alt-text).
-   This is the "always-edit, no modes" pattern: selection-only
-   state, no modal exit needed. */
-.psl__edit-pane {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  position: relative;
-  overflow: hidden;
-}
-.psl__edit-pane > * {
-  flex: 1 1 auto;
-  min-height: 0;
-}

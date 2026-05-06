@@ -676,11 +676,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         <span className="psl__cell-time">{c.time}</span>
                         <span className="psl__cell-app">
                           <span className="psl__app-dot">
-                            <AppIcon
-                              app={c.app}
-                              size={10}
-                              name={appLabels[c.app] ?? c.appName ?? undefined}
-                            />
+                            <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
                           </span>
                         </span>
                       </div>
@@ -689,7 +685,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         <div className="psl__cell-tags">
                           <AppTag
                             app={c.app}
-                            name={appLabels[c.app] ?? c.appName ?? "Unknown app"}
+                            name={appLabels[c.app] ?? "Unknown app"}
                             size="sm"
                           />
                           {c.tags.slice(0, 1).map((t) => (
@@ -782,11 +778,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   <CellThumb capture={c} record={record} width={140} />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
-                                    <AppIcon
-                                      app={c.app}
-                                      size={8}
-                                      name={appLabels[c.app] ?? c.appName ?? undefined}
-                                    />
+                                    <AppIcon app={c.app} size={8} name={appLabels[c.app]} />
                                   </span>
                                 </button>
                               );

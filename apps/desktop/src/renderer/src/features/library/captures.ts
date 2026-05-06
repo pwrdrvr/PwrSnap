@@ -103,12 +103,17 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
  * Curated display names for the apps we ship a hand-drawn icon for.
  * Looked up by `app` key (the curated short id from
  * `mapBundleIdToAppId`). Apps that fall through to the lowercased
- * bundle id are NOT in this map — Library.tsx uses each capture's
- * `appName` (the OS-supplied user-facing name) for those, falling
- * back to `"Unknown app"` only when neither is available.
+ * bundle id (or `"any"`) are NOT in this map — Library.tsx uses each
+ * capture's `appName` (the OS-supplied user-facing name) for those,
+ * falling back to `"Unknown app"` only when neither is available.
+ *
+ * The `"any"` placeholder is intentionally absent: leaving it in here
+ * would shadow a captured `source_app_name` for records whose bundle
+ * id is null but whose name is set (Swift helper succeeded on name
+ * lookup but failed on bundle id), forcing them to render as
+ * "Unknown app" instead of the user-facing name we already have.
  */
 export const APP_INFO: Record<string, { name: string }> = {
-  any: { name: "Unknown app" },
   telegram: { name: "Telegram" },
   excel: { name: "Excel" },
   vscode: { name: "VS Code" },

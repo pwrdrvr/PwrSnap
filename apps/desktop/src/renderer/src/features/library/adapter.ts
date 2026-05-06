@@ -66,6 +66,38 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
 }
 
 /**
+ * Anchored regex patterns matching the lowercased bundle ids of the
+ * apps we ship a hand-drawn glyph for. Each pattern:
+ *
+ *   - Anchors the needle to a dotted segment boundary (start of
+ *     string or preceded by `.`) so we only match dotted SEGMENTS,
+ *     not arbitrary substrings — `com.acme.notion-importer` no
+ *     longer steals Notion's glyph.
+ *   - Allows the legitimate trailing-suffix glueing real bundle ids
+ *     use (`slackmacgap`, `edgemac`, `vscodeinsiders`, `desktop`,
+ *     `client`, `mac`) so we don't false-negative the curated set.
+ *
+ * Order is irrelevant — patterns are pairwise disjoint by anchor +
+ * needle. The first match wins regardless.
+ */
+const KNOWN_APP_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["vscode",   /(?:^|\.)vscode(?:insiders)?(?:\.|$)/],
+  ["chrome",   /(?:^|\.)chrome(?:\.|$)/],
+  ["safari",   /(?:^|\.)safari(?:\.|$)/],
+  ["slack",    /(?:^|\.)slack(?:macgap)?(?:\.|$)/],
+  ["figma",    /(?:^|\.)figma(?:\.desktop)?(?:\.|$)/],
+  ["terminal", /(?:^|\.)(?:terminal|ghostty)(?:\.|$)/],
+  ["notion",   /(?:^|\.)notion(?:\.|$)/],
+  ["github",   /(?:^|\.)github(?:client|desktop)?(?:\.|$)/],
+  ["linear",   /(?:^|\.)linear(?:\.|$)/],
+  ["zoom",     /(?:^|\.)(?:zoom|zoomus)(?:\.|$)/],
+  ["preview",  /(?:^|\.)preview(?:\.|$)/],
+  ["finder",   /(?:^|\.)finder(?:\.|$)/],
+  ["excel",    /(?:^|\.)excel(?:\.|$)/],
+  ["telegram", /(?:^|\.)telegram(?:\.|$)/]
+];
+
+/**
  * Bundle-id → AppId mapping with an open fallback set.
  *
  * Known apps map to a curated short id (`"slack"`, `"vscode"`, …)
@@ -75,28 +107,20 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
  * Library sidebar groups by that key and the chip renders procedural
  * initials taken from the captured `source_app_name`.
  *
- * Substring matching is case-insensitive: real bundle ids use
- * CamelCase tail components (`com.apple.Terminal`, `com.microsoft.VSCode`,
- * `com.hnc.Discord`) that won't match a lowercase substring directly.
+ * Matching is case-insensitive: real bundle ids use CamelCase tail
+ * components (`com.apple.Terminal`, `com.microsoft.VSCode`,
+ * `com.hnc.Discord`) that wouldn't match a lowercase substring
+ * directly. Patterns are anchored to dotted segment boundaries to
+ * keep false positives down (`com.acme.notion-importer` won't pick
+ * up Notion's glyph).
  */
 export function mapBundleIdToAppId(bundleId: string | null): AppId {
   if (bundleId === null) return "any";
   const lower = bundleId.toLowerCase();
   if (lower.length === 0) return "any";
-  if (lower.includes("vscode")) return "vscode";
-  if (lower.includes("chrome")) return "chrome";
-  if (lower.includes("safari")) return "safari";
-  if (lower.includes("slack")) return "slack";
-  if (lower.includes("figma")) return "figma";
-  if (lower.includes("terminal") || lower.includes("ghostty")) return "terminal";
-  if (lower.includes("notion")) return "notion";
-  if (lower.includes("github")) return "github";
-  if (lower.includes("linear")) return "linear";
-  if (lower.includes("zoom")) return "zoom";
-  if (lower.includes("preview")) return "preview";
-  if (lower.includes("finder")) return "finder";
-  if (lower.includes("excel")) return "excel";
-  if (lower.includes("telegram")) return "telegram";
+  for (const [appId, pattern] of KNOWN_APP_PATTERNS) {
+    if (pattern.test(lower)) return appId;
+  }
   return lower;
 }
 

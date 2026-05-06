@@ -82,15 +82,20 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
 
-      - name: Install Electron OS deps
-        # Electron under xvfb on a fresh Ubuntu runner needs the GTK +
-        # libnss / libgbm / libasound stack. `playwright install-deps`
-        # is the cheapest way to land all of them in one step.
-        run: pnpm --filter @pwrsnap/desktop exec playwright install-deps
-
       - name: Run desktop Electron E2E specs
         # The macOS-only specs (screencapture-based) are gated via
         # `test.skip(!isMac)` and don't fail the suite on Linux.
+        #
+        # No `playwright install-deps` step: `ubuntu-latest` ships
+        # Chrome + Firefox preinstalled, which drag in the GTK +
+        # libnss / libgbm / libasound stack Electron needs under
+        # xvfb. PwrAgnt's CI has been running Electron E2E this way
+        # for months without issue, and the apt-install step it
+        # replaces routinely takes 2–5 minutes on cold mirrors. If a
+        # specific library turns out to be missing in some future
+        # ubuntu-latest revision, add a targeted `apt-get install -y
+        # libfoo` (~15s) instead of bringing back the full
+        # `playwright install-deps` blast.
         run: xvfb-run --auto-servernum pnpm run test:desktop-e2e
 
       - name: Upload desktop Playwright artifacts

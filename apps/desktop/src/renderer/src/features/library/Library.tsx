@@ -284,9 +284,38 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       // shortcuts and Esc must not steal focus from text fields.
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (target?.isContentEditable) return;
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
 
       const kind = viewRef.current.kind;
+      const usingMeta = event.metaKey;
+      const usingOtherMod = event.ctrlKey || event.altKey;
+
+      // ⌘[ / ⌘] — Reel-mode scrub aliases for ←/→. Same dispatch,
+      // just a second binding so the on-screen "scrub ⌘[ / ⌘]"
+      // hint is honest. Skip in Focus (Focus uses ←/→ only;
+      // ⌘[/⌘] is "navigate window history" elsewhere in macOS,
+      // and we don't want to override it outside Reel).
+      if (usingMeta && !usingOtherMod && kind === "reel") {
+        if (event.key === "[") {
+          const id = prevRecordIdRef.current;
+          if (id !== null) {
+            event.preventDefault();
+            viewDispatch({ type: "NAVIGATE", recordId: id });
+          }
+          return;
+        }
+        if (event.key === "]") {
+          const id = nextRecordIdRef.current;
+          if (id !== null) {
+            event.preventDefault();
+            viewDispatch({ type: "NAVIGATE", recordId: id });
+          }
+          return;
+        }
+      }
+
+      // Single-key shortcuts must not have any modifier set.
+      if (usingMeta || usingOtherMod) return;
+
       if (event.key === "Escape" && kind === "focus") {
         event.preventDefault();
         viewDispatch({ type: "CLOSE_FOCUS" });
@@ -675,6 +704,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                       <span className="psl__reel-title">
                         Timeline ·{" "}
                         {activeApp === "all" ? "all sources" : APP_INFO[activeApp]?.name}
+                      </span>
+                      <span className="psl__reel-hint" aria-hidden="true">
+                        scrub <b>⌘[ / ⌘]</b>
                       </span>
                     </div>
                     <div className="psl__reel" ref={reelScrollerRef}>

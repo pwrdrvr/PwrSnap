@@ -473,13 +473,25 @@
 }
 .psl__reel-wrap {
   flex-shrink: 0;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-default);
   background: linear-gradient(180deg, var(--bg-sidebar), var(--bg-app));
 }
 .psl__reel-hdr {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 18px 6px;
+  /* Tightened from 12/18/6 — the design's chrome was airy here.
+     With the header text + scrub-keys hint occupying the row, the
+     extra padding-top read as wasted whitespace. */
+  padding: 8px 18px 4px;
 }
+/* "scrub ⌘[ / ⌘]" hint on the right side of the reel header.
+   Visually subtle — it's a navigation tooltip, not a primary
+   control. The actual ⌘[ / ⌘] binding is handled by Library's
+   window keydown listener (aliases to ←/→ in Reel). */
+.psl__reel-hint {
+  font: 500 10px/1 var(--font-mono); color: var(--text-muted);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.psl__reel-hint b { color: var(--accent-bright); font-weight: 600; }
 .psl__reel-title {
   font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--text-muted);
@@ -493,8 +505,11 @@
 /* The reel itself: horizontal scrubbable filmstrip */
 .psl__reel {
   position: relative;
-  height: 116px;
-  padding: 0 18px 14px;
+  height: 110px;
+  /* Tightened bottom padding from 14 to 10 — the divider line
+     plus the meta strip below the filmstrip absorb visual breathing
+     room without extra whitespace. */
+  padding: 0 18px 10px;
   overflow-x: auto;
   overflow-y: hidden;
   display: flex; align-items: stretch; gap: 4px;
@@ -514,6 +529,20 @@
   border-bottom: 1px dashed rgba(245,239,227,0.08);
   margin-bottom: 6px;
   white-space: nowrap;
+  /* Sticky-left so the day label stays visible at the leading
+     edge of the scroller while its day's frames are scrolling
+     past. Without this, "Today" / "Yesterday" disappear off the
+     left as soon as the user scrolls a couple frames into the
+     day group, and the user loses temporal context. */
+  position: sticky;
+  left: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-app) 0%,
+    var(--bg-app) 70%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  z-index: 1;
 }
 .psl__reel-day-frames {
   display: flex; gap: 3px;
@@ -580,6 +609,18 @@
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
   margin: 18px 0 10px;
+  /* Sticky-top so day headers stay visible at the top of the grid
+     pane as the user scrolls past their group. Without this, the
+     user loses date context several rows into a long day. The
+     `top: -1px` offset (vs 0) covers a sub-pixel gap that
+     occasionally lets a thin line peek through under the header
+     border on hi-DPI displays. */
+  position: sticky;
+  top: -1px;
+  background: var(--bg-app);
+  z-index: 2;
+  padding: 8px 0 10px;
+  margin: 10px 0 0;
 }
 .psl__day-hdr:first-child { margin-top: 0; }
 .psl__day-hdr-label { font: 700 12px/1 var(--font-display); letter-spacing: -0.005em; }
@@ -1039,7 +1080,7 @@
 
 .psl__stage-meta {
   position: absolute;
-  top: 16px;
+  top: 12px;
   left: 24px;
   display: flex;
   align-items: center;
@@ -1052,14 +1093,16 @@
   color: var(--text-primary);
   font: 600 12px/1 var(--font-sans);
 }
-/* Position counter ("5 / 32"). Sits top-center of the stage area so
-   it doesn't fight with the × close button (top-right) in Focus
-   mode or feel cramped against the right rail in Reel. */
+/* Position counter ("5 / 32"). Top-right by default with a 60px
+   right offset that leaves clearance for Focus mode's × close
+   button at right:14. In Reel mode there's no × button, so the
+   pill scoots over to right:24 (visual right-edge alignment
+   with the breadcrumb's left:24). top:12 matches the breadcrumb's
+   top offset so they read as one row. */
 .psl__stage-pos {
   position: absolute;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 12px;
+  right: 60px;
   font: 600 11px/1 var(--font-mono);
   color: var(--text-muted);
   background: var(--bg-panel);
@@ -1067,6 +1110,9 @@
   border-radius: 999px;
   padding: 5px 10px;
   z-index: 4;
+}
+.psl__reel-mode .psl__stage-pos {
+  right: 24px;
 }
 .psl__stage-pos b {
   color: var(--accent-bright);

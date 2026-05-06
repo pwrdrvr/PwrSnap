@@ -194,110 +194,109 @@ overflow rules) before landing on the actual platform behavior. If
 you find yourself debugging "popover is stuck at its initial size,"
 check for `setMinimumSize(0, 0)` first.
 
-## Tray popover sizing — fixed heights, NOT measure-and-fit
+## Tray popover sizing — measure with `scrollHeight`, NOT `getBoundingClientRect`
 
-**The tray popover uses a hardcoded `lastSnap`-conditional height.
-Do NOT replace it with a ResizeObserver-driven measure-and-fit
-implementation without reading the rest of this section.**
+**The tray popover sizes itself dynamically. The renderer measures
+the content's natural height and main `setContentSize`s the
+BrowserWindow to match. Do NOT revert to hardcoded heights — fixed
+heights work on the machine you tuned them on and silently mis-fit
+elsewhere (different font fallback metrics, OS font preferences,
+display scaling), as we discovered the hard way.**
 
-Current implementation in `apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx`:
+Implementation in `apps/desktop/src/renderer/src/features/tray/TrayMenu.tsx`
+inside `TrayMenu`'s `useLayoutEffect`. The renderer dispatches
+`pwrsnap:tray:resize` events; the resize handler in
+`apps/desktop/src/main/tray.ts` (`wireTrayResizeChannel`) calls
+`setContentSize` and re-anchors the window. Main clamps the
+posted value to `[TRAY_HEIGHT_MIN=200, TRAY_HEIGHT_MAX=880]` so a
+renderer-side measurement bug can't shrink to nothing or grow
+off-screen.
 
-```ts
-const TRAY_HEIGHT_WITH_LAST_SNAP = 620;
-const TRAY_HEIGHT_EMPTY = 250;
-useLayoutEffect(() => {
-  const targetHeight =
-    lastSnapId === undefined ? TRAY_HEIGHT_EMPTY : TRAY_HEIGHT_WITH_LAST_SNAP;
-  // dispatch pwrsnap:tray:resize with { width: 440, height: targetHeight }
-}, [lastSnapId]);
-```
+### Why `scrollHeight`, specifically
 
-The two heights cover the two structural shapes the tray takes:
+The earlier measure-and-fit attempt used
+`getBoundingClientRect().height` and got stuck at fallback-font
+heights even after Geist loaded. Root cause: `.ps-tray` carries
+`overflow: hidden` (load-bearing — keeps the rounded corners crisp
+against the transparent BrowserWindow). With `overflow: hidden`,
+the element's border-box tracks whatever main has most recently
+sized the window to — *not* the natural content extent — so the
+ResizeObserver was effectively measuring its own previous output.
+Silent feedback loop. `scrollHeight` is unaffected by `overflow`
+because it always reports the intrinsic content extent of the
+element's children.
 
-- **`TRAY_HEIGHT_EMPTY = 250`** — header + Quick Capture button + 6-mode grid only.
-  Active when `useLibrary` returns no captures (fresh-install / DB just cleared).
+### The other gotchas the implementation handles
 
-- **`TRAY_HEIGHT_WITH_LAST_SNAP = 620`** — empty-state content + last-snap section
-  (eyebrow + 120 px preview + Low/Med/High `.fo__copy-btn` row). Active whenever
-  `useLibrary` has at least one capture.
+1. **Electron NSPanel `setContentSize` clamp.** Required for ANY
+   strategy, fixed or dynamic. See the previous section
+   (`setMinimumSize(0, 0)`).
 
-### Why fixed heights instead of measure-and-fit
+2. **Geist web-font swap reflow.** Geist loads with `font-display:
+   swap`, so the popover paints first with system-fallback metrics
+   and reflows when Geist arrives. We re-measure inside a double
+   `requestAnimationFrame` after `document.fonts.ready` to land on
+   the post-swap layout.
 
-The ResizeObserver-driven approach was tried four ways and hit four
-distinct bug surfaces, each masking the next:
+3. **`overflow: hidden` border-box trap.** Solved by `scrollHeight`
+   — see above.
 
-1. **Electron NSPanel `setContentSize` clamp.** The OS-level fix
-   (`setMinimumSize(0, 0)` after construction — see the previous
-   section) is required regardless of measurement strategy, but on
-   its own it's not sufficient.
+4. **Image-load reflow.** The last-snap preview lives inside a
+   fixed `height: 120px` box, so image decode shouldn't change the
+   measured height — but we listen for `load` on any non-complete
+   `<img>` inside `.ps-tray` anyway, as cheap insurance against a
+   future preview that doesn't pin its height.
 
-2. **Geist web-font swap measurement oscillation.** During Geist's
-   `font-display: swap` cycle, the ResizeObserver fires three times
-   in close succession with wildly different heights:
-   - Measurement 1: ~468 px (system fallback metrics)
-   - Measurement 2: ~637 px (transient mid-swap state where the
-     Quick Capture subtext briefly wraps to ~10 lines because font
-     metrics are unstable)
-   - Measurement 3: ~468 px (back to fallback metrics, even though
-     Geist is actually loaded by this point)
+5. **Idempotent posting.** A `posted` cursor short-circuits no-op
+   IPC traffic, so the steady-state cost is one resize on first
+   paint + one after fonts ready (if they differ) + zero from the
+   observer.
 
-   The naive "post the latest measurement" approach lands the popover
-   at 468 px → bottom 112 px clipped (preview tail + copy buttons +
-   bottom border).
+### Tuning + diagnostics
 
-3. **Peak-height sticky-grow.** Adding a `peakHeightRef` so the
-   posted height never shrinks past the largest observed value
-   helped on first-show, but didn't survive `useLayoutEffect`
-   re-runs across `lastSnap` changes (when refetch returns a record
-   with the same id, peak resets but measurement 2 doesn't fire).
-
-4. **`document.fonts.ready` deferral.** Even waiting for fonts.ready,
-   the post-load measurement was inconsistent — sometimes the
-   bounding rect under-reported content extent. Theory: `.ps-tray`
-   has `overflow: hidden`, which under specific layout-engine
-   conditions causes `getBoundingClientRect()` to return the
-   border-box rather than the content-extent.
-
-The tray's content is *structurally fixed* — only two possible
-shapes — so hardcoding their heights eliminates the entire
-measurement-timing class of bugs. Cost is a small amount of empty
-space at the bottom when fonts are still loading or when the
-last-snap preview happens to render shorter than its 120 px slot.
-That tradeoff is fine for a popover.
-
-### Tuning the constants
-
-Use the **forced-height diagnostic** to measure what the popover
-actually needs. Temporarily override the resize handler in
-`apps/desktop/src/main/tray.ts` (`wireTrayResizeChannel`):
+The **forced-height diagnostic** still works: temporarily replace
+the resize handler in `apps/desktop/src/main/tray.ts`
+(`wireTrayResizeChannel`):
 
 ```ts
-const clamped = 800;  // or whatever fixed height you want to test
+const clamped = 800;  // pin to whatever you want to test
 ```
 
-Build, restart the dev session, open the tray. The window will lock
-to 800 px regardless of what the renderer posts. Visible content +
-empty space at the bottom = your true content height. Pick the new
-constant a bit *above* that (~30–40 px headroom for font-metric
-variability across Geist load states), commit, revert the override.
+Useful when you suspect the renderer's measurement is wrong
+(diagnose by ruling out the IPC path) or when you want to see the
+worst-case content extent.
+
+If a future content change pushes the popover near `TRAY_HEIGHT_MAX`
+(880 px), bump the ceiling in `tray.ts` rather than fighting the
+measurement. The popover anchors top-down from the menubar tray
+icon, so growing taller doesn't push off-screen — Electron clamps
+to workArea automatically.
 
 ### When to revisit
 
-- A new top-level section gets added to the tray (third structural
-  shape) — define a third height constant and add a third branch to
-  the conditional.
-- The design changes the size of an existing section (e.g. preview
-  grows from 120 → 160 px) — re-run the forced-height diagnostic
-  and bump `TRAY_HEIGHT_WITH_LAST_SNAP` accordingly.
-- The popover starts to look noticeably empty at the bottom across
-  all states — you can shrink the constant, but verify the worst-
-  case font load doesn't clip first.
+- A new top-level section gets added or content becomes genuinely
+  variable (e.g. multi-snap preview list) — the dynamic measurement
+  should handle it for free, but verify with the forced-height
+  diagnostic that your worst-case content fits under
+  `TRAY_HEIGHT_MAX`.
+- A future `.ps-tray` style change drops `overflow: hidden` — at
+  that point `getBoundingClientRect().height` would also work, but
+  there's no reason to switch off `scrollHeight`; it's strictly
+  more robust.
 
-If you do want to bring back dynamic measurement (because content
-becomes genuinely variable — multiple capture types with very
-different preview aspect ratios, etc.), be aware you'll be fighting
-both Electron and the layout engine. Worth doing only with strong
-test coverage of the font-load timing across cold and warm starts.
+### Why we don't trust fixed heights anymore
+
+We tried fixed heights (`TRAY_HEIGHT_EMPTY = 250`,
+`TRAY_HEIGHT_WITH_LAST_SNAP = 620`) on the dev machine where they
+were measured. They survived for a few weeks, then on a different
+machine — different DPI, different font fallback metrics — the
+populated height landed visibly taller than the actual content,
+leaving an empty band at the bottom of the popover. There's no
+constant that's right on every machine because the constant isn't
+capturing what we actually want (content extent under the real
+loaded font); it's capturing what we measured once on one
+configuration. Fixing the underlying measurement is the durable
+answer.
 
 ## Pull Requests
 

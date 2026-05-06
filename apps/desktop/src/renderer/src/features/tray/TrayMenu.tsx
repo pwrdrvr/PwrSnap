@@ -192,43 +192,78 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { records } = useLibrary();
   const lastSnap: CaptureRecord | undefined = records[0];
 
-  // Tell main to size the window. Two fixed sizes based on which
-  // render path is active:
+  // Measure the popover's natural content height and tell main to
+  // setContentSize the BrowserWindow to match. Three pieces make this
+  // robust where the prior measure-and-fit attempts weren't:
   //
-  //   • No last snap → empty-state height (just header + Quick
-  //     Capture + 6-mode grid).
-  //   • With last snap → populated height (above + last-snap header
-  //     + 120px preview + Low/Med/High copy buttons).
+  //   1. We measure `scrollHeight`, not `getBoundingClientRect().height`.
+  //      The `.ps-tray` container has `overflow: hidden` (for crisp
+  //      rounded corners against the transparent BrowserWindow), and
+  //      that property causes the border-box returned by
+  //      getBoundingClientRect to track the *current window height*
+  //      rather than the natural content extent — so the wrapper
+  //      reports back whatever main most recently sized us to. That's
+  //      the silent feedback loop that made the previous ResizeObserver
+  //      pass land at fallback-metric heights and stay stuck. scrollHeight
+  //      always reports the content's intrinsic height regardless of
+  //      `overflow`, breaking the loop.
   //
-  // Why fixed heights instead of measure-and-fit: the ResizeObserver
-  // approach was unreliable across at least three different bug
-  // surfaces — Electron NSPanel implicit minSize clamping, Geist
-  // web-font swap measurement oscillation (468 → 637 → 468 between
-  // fallback-font, mid-swap, and post-swap states), and font-load-
-  // dependent reflow that didn't trigger observer callbacks. The
-  // tray content is a known, structured layout with exactly two
-  // possible shapes; hardcoding their heights eliminates a whole
-  // class of timing-dependent bugs. Cost is a few px of empty
-  // space at the bottom when fonts haven't loaded yet — acceptable.
+  //   2. We re-measure once `document.fonts.ready` resolves, so the
+  //      Geist web-font swap doesn't leave us stuck at the fallback-
+  //      font measurement. (Two rAF hops after fonts.ready give the
+  //      browser time to apply the swap reflow before we read.)
   //
-  // Heights derived empirically from a forced-800px diagnostic
-  // run + the visible content extents in that screenshot:
-  // populated content was ~580 px, empty-state ~230 px. Add ~30 px
-  // margin so a slightly taller font metric (Geist post-load) still
-  // fits without clipping. Update these if the design changes the
-  // count or size of any major section.
-  const TRAY_HEIGHT_WITH_LAST_SNAP = 620;
-  const TRAY_HEIGHT_EMPTY = 250;
+  //   3. ResizeObserver continues observing for the lifetime of the
+  //      effect, so the last-snap section appearing/disappearing,
+  //      the preview image loading, and any future content-driven
+  //      growth all flow through the same setContentSize path. Each
+  //      post is idempotent (`posted` short-circuits no-ops), so the
+  //      typical run is one IPC for first paint + one after fonts
+  //      ready + zero from the observer.
+  //
+  // Hard floor + ceiling sit in main (`tray.ts` clamps 200–880), so
+  // a renderer-side measurement bug can't shrink the popover to
+  // nothing or grow it off-screen.
   const containerRef = useRef<HTMLDivElement | null>(null);
   const lastSnapId = lastSnap?.id;
   useLayoutEffect(() => {
-    const targetHeight =
-      lastSnapId === undefined ? TRAY_HEIGHT_EMPTY : TRAY_HEIGHT_WITH_LAST_SNAP;
-    window.dispatchEvent(
-      new CustomEvent("pwrsnap:tray:resize", {
-        detail: { width: 440, height: targetHeight }
-      })
-    );
+    const el = containerRef.current;
+    if (el === null) return;
+    let posted = -1;
+    const post = (height: number): void => {
+      const target = Math.ceil(height);
+      if (target === posted) return;
+      posted = target;
+      window.dispatchEvent(
+        new CustomEvent("pwrsnap:tray:resize", {
+          detail: { width: 440, height: target }
+        })
+      );
+    };
+    const measure = (): void => {
+      // scrollHeight is the content extent — see (1) above.
+      post(el.scrollHeight);
+    };
+    measure();
+    void document.fonts.ready.then(() => {
+      // Two rAF hops so the post-swap reflow has fully landed before
+      // we re-read scrollHeight; one hop sometimes catches mid-reflow.
+      requestAnimationFrame(() => requestAnimationFrame(measure));
+    });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    // The last-snap preview image can change measured height when it
+    // finishes decoding, even though the layout box itself is fixed
+    // at 120px — listening for `load` is cheap insurance against
+    // image-load reflow racing the observer.
+    const imgs = el.querySelectorAll("img");
+    imgs.forEach((img) => {
+      if (img.complete) return;
+      img.addEventListener("load", measure, { once: true });
+    });
+    return () => {
+      ro.disconnect();
+    };
   }, [lastSnapId]);
   // The CustomEvent above is a renderer-internal hop — TrayMenuShell
   // (below) listens for it and forwards via window.pwrsnapApi.

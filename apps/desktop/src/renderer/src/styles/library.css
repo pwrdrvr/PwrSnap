@@ -1013,9 +1013,22 @@ dialog.psl__focus,
   overflow: hidden;
 }
 /* Inside Focus dialog (no .psl__stage-wrap), the body fills the
-   first grid column (1fr). */
+   first grid column (1fr). The DetailRail (`.psl__right`) is the
+   exception — it's rendered as a slot inside the dialog (because
+   showModal() puts the dialog in the top-layer and obscures any
+   rail at the Library level), and lives in the second column. */
 dialog.psl__focus > * {
   grid-column: 1;
+}
+dialog.psl__focus > .psl__right {
+  grid-column: 2;
+  grid-row: 1;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .psl__stage-meta {

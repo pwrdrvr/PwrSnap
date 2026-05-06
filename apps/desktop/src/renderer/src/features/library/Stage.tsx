@@ -59,6 +59,13 @@ export type StageProps = {
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
+  /** Optional DetailRail content to render inside the Focus dialog.
+   *  Required because <dialog showModal()> renders in the top-layer
+   *  and visually obscures everything underneath, including a rail
+   *  rendered at the Library level. Reel mode does NOT use this —
+   *  Reel is in-flow, so the Library-level rail is naturally
+   *  visible to its right. */
+  readonly detailRailSlot?: ReactElement;
 };
 
 export function Stage(props: StageProps): ReactElement {
@@ -125,6 +132,7 @@ function FocusStage(props: StageProps): ReactElement {
       }}
     >
       <StageBody {...props} onClose={onClose} />
+      {props.detailRailSlot}
     </dialog>
   );
 }

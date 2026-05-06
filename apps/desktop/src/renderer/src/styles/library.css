@@ -938,33 +938,26 @@
        .is-was-open class on Focus → Grid transition.
    ============================================================ */
 
-/* Focus dialog. Native <dialog> defaults to centered + sized-to-content;
-   we override to fill the viewport since Focus IS the viewport for
-   the duration it's open. ::backdrop styles the dim layer. */
-dialog.psl__focus {
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  max-width: none;
-  max-height: none;
-  padding: 0;
-  margin: 0;
-  border: 0;
+/* Focus container. Plain in-flow div in the Library's content
+   area (grid-column 2, grid-row 2 of the parent `.psl` grid),
+   sitting alongside the topbar / left sidebar / status bar /
+   DetailRail. Replaces an earlier `<dialog showModal()>` approach
+   which obscured the entire viewport with the top-layer + backdrop
+   — the design calls for "focus replaces the grid in the content
+   area," not "focus takes over the whole window." See Stage.tsx
+   header comment for full context. */
+.psl__focus {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   background: var(--bg-app);
-  color: var(--text-primary);
-  /* The visible Focus content: stage on the left, rail on the right.
-     The DetailRail is rendered OUTSIDE the dialog at the Library
-     level; inside the dialog we only render the stage body. */
-  display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-column: 2;
+  grid-row: 2;
   overflow: hidden;
-  /* Subtle entrance animation. Mirrors the design's focus-in
-     keyframes but applied to dialog open via [open]. */
+  /* Subtle entrance animation, mirrors the design's focus-in
+     keyframes. */
   animation: psl-focus-in 180ms var(--ease-out);
-}
-dialog.psl__focus::backdrop {
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(2px);
 }
 @keyframes psl-focus-in {
   from {
@@ -976,12 +969,19 @@ dialog.psl__focus::backdrop {
     transform: scale(1);
   }
 }
+/* Hide the grid pane while Focus is open. Same trick as Reel
+   mode (see `.psl[data-mode="reel"] .psl__grid-wrap` below) —
+   `.psl__focus` paints over `.psl__main` since both occupy the
+   same grid cell, but hiding `.psl__grid-wrap` outright avoids
+   wasted layout/paint work and any z-index ambiguity. */
+.psl[data-mode="focus"] .psl__grid-wrap {
+  display: none;
+}
 
-/* Stage interior (inside dialog for Focus, inside .psl__stage-wrap
-   for Reel). Contains the canvas (chromeless Editor), the floating
-   toolbar, breadcrumb meta row, position counter, prev/next nav
-   buttons, and (Focus only) the × close button. */
-dialog.psl__focus,
+/* Stage interior. Contains the canvas (chromeless Editor), the
+   floating toolbar, breadcrumb meta row, position counter, prev/
+   next nav buttons, and (Focus only) the × close button. */
+.psl__focus,
 .psl__stage-wrap {
   position: relative;
 }
@@ -1010,24 +1010,6 @@ dialog.psl__focus,
       transparent 60%
     ),
     var(--bg-app);
-  overflow: hidden;
-}
-/* Inside Focus dialog (no .psl__stage-wrap), the body fills the
-   first grid column (1fr). The DetailRail (`.psl__right`) is the
-   exception — it's rendered as a slot inside the dialog (because
-   showModal() puts the dialog in the top-layer and obscures any
-   rail at the Library level), and lives in the second column. */
-dialog.psl__focus > * {
-  grid-column: 1;
-}
-dialog.psl__focus > .psl__right {
-  grid-column: 2;
-  grid-row: 1;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--bg-sidebar);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   overflow: hidden;
 }
 

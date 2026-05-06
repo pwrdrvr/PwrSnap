@@ -1,14 +1,31 @@
 // Stage — shared canvas + edit toolbar surface for Focus and Reel modes.
 //
-// Focus mode (dismissible=true): renders inside a native <dialog>
-// element with showModal() — gets free focus management, ESC handling,
-// inert-behind, and ::backdrop styling. Electron 41 ships Chromium 146
-// which fully supports <dialog> and the closedby="any" attribute. See
-// AGENTS.md / framework-docs research in the plan for the rationale.
+// Both modes render as plain in-flow divs that occupy `.psl__main`'s
+// grid cell (col 2, row 2 of the parent `.psl` grid). They sit
+// alongside the topbar / left sidebar / status bar / DetailRail —
+// preserving the app chrome instead of taking over the viewport.
 //
-// Reel mode (dismissible=false): renders as a plain in-flow div in
-// the Library's main pane. Reel is not modal — the user toggles
-// between Reel and Grid via the segmented control.
+// Focus mode (dismissible=true): plain div with class `psl__focus`,
+// adds the × close button + "back to grid esc" hint inside the
+// stage area. Esc dismissal is owned by Library's window keydown
+// handler (single source of truth — see Stage.tsx pre-Phase D
+// history for why we don't observe a dialog `close` event).
+//
+// Reel mode (dismissible=false): plain div with class
+// `psl__reel-mode`, adds the filmstrip above the stage via the
+// `aboveStageSlot` prop. No × button — the user exits Reel via
+// the segmented control.
+//
+// We previously rendered Focus inside a native <dialog> with
+// showModal() to get free focus management + Esc + inert-behind +
+// ::backdrop styling. The tradeoff didn't pay off: showModal()
+// puts content in the browser's top-layer, which means the dialog
+// covers the entire viewport (titlebar + sidebar + status bar all
+// hidden behind the backdrop), and the Library-level DetailRail
+// is also hidden. The user experience the design called for is
+// "Focus replaces the grid in the content area," not "Focus takes
+// over the whole window." A plain div in the content area gives
+// us exactly the right framing without fighting the top-layer.
 //
 // Both modes share:
 //   • Top breadcrumb (capture metadata)
@@ -19,10 +36,9 @@
 //
 // Plan reference:
 //   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
-//   Phase C.1 (Stage), C.10 (mousedown backdrop dismiss),
-//   C.11 (focus management).
+//   Phase C.1 (Stage), C.11 (focus management — Library window keydown).
 
-import { useEffect, useRef, type ReactElement } from "react";
+import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { Editor, type Tool } from "../editor/Editor";
 import { DetailRail } from "./DetailRail";
@@ -37,10 +53,10 @@ export type StageProps = {
   /** The CaptureRecord matching `view.selectedRecordId`. Caller has
    *  already resolved this from the records list. */
   readonly record: CaptureRecord;
-  /** When true (Focus mode): renders inside a native <dialog>, shows
-   *  the × close button, dispatches CLOSE_FOCUS on backdrop click /
-   *  Esc / × click. When false (Reel mode): renders as in-flow content,
-   *  no × button — the user exits Reel via the segmented control. */
+  /** When true (Focus mode): shows the × close button + "back to
+   *  grid esc" hint, dispatches CLOSE_FOCUS on × click. Esc is
+   *  handled at the Library level. When false (Reel mode): no ×
+   *  button — the user exits Reel via the segmented control. */
   readonly dismissible: boolean;
   /** Library reducer dispatcher — Stage dispatches NAVIGATE for prev/
    *  next and CLOSE_FOCUS for dismissible mode. */
@@ -59,86 +75,31 @@ export type StageProps = {
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
-  /** Optional DetailRail content to render inside the Focus dialog.
-   *  Required because <dialog showModal()> renders in the top-layer
-   *  and visually obscures everything underneath, including a rail
-   *  rendered at the Library level. Reel mode does NOT use this —
-   *  Reel is in-flow, so the Library-level rail is naturally
-   *  visible to its right. */
-  readonly detailRailSlot?: ReactElement;
 };
 
 export function Stage(props: StageProps): ReactElement {
   return props.dismissible ? <FocusStage {...props} /> : <ReelStage {...props} />;
 }
 
-/** Focus mode — wraps the stage in a native <dialog> for free focus
- *  management + ESC + inert-behind. */
+/** Focus mode — plain in-flow div in the Library's content area.
+ *  Adds the × close button + Esc hint; Esc handling itself lives
+ *  in Library's window keydown listener so there's exactly one
+ *  authoritative dismissal path. */
 function FocusStage(props: StageProps): ReactElement {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  // Open the dialog on mount; close it (without state-dispatch
-  // side effects) on unmount.
-  //
-  // We deliberately DO NOT attach a `close` event listener and do NOT
-  // dispatch CLOSE_FOCUS from inside this effect. Reason: under React
-  // 18 StrictMode (dev), the effect runs twice on mount with a
-  // cleanup in between. The cleanup calls `dlg.close()` which queues
-  // a `close` event asynchronously; by the time it fires, the
-  // re-mounted effect has attached a NEW listener, which would catch
-  // the stale event and dispatch CLOSE_FOCUS — closing the dialog
-  // we JUST opened. User-visible symptom: cell click highlights but
-  // Focus never appears to open.
-  //
-  // Instead: every user-interaction path that should close Focus
-  // dispatches CLOSE_FOCUS explicitly:
-  //   • Esc → Library's window keydown handler dispatches CLOSE_FOCUS
-  //     (it then propagates here as a state change, unmounting Stage,
-  //     whose cleanup calls dlg.close() for DOM teardown only)
-  //   • × button → onClose handler below dispatches CLOSE_FOCUS
-  //   • Backdrop mousedown → same
-  //   • Browser's built-in Esc (which fires cancel→close on the
-  //     dialog) is harmless because Library's keydown is the
-  //     authoritative path; the redundant browser-close just becomes
-  //     a no-op dlg.close() in cleanup.
-  useEffect(() => {
-    const dlg = dialogRef.current;
-    if (dlg === null) return;
-    if (!dlg.open) dlg.showModal();
-    return () => {
-      if (dlg.open) dlg.close();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const onClose = (): void => {
     props.dispatch({ type: "CLOSE_FOCUS" });
   };
 
   return (
-    <dialog
-      ref={dialogRef}
-      className="psl__focus"
-      aria-label="Capture editor"
-      // Backdrop dismiss on mousedown (NOT click). A user mid-rect-
-      // drag who drags off the canvas onto the backdrop and releases
-      // there would otherwise fire `click` on the backdrop and
-      // dismiss mid-stroke (julik-frontend-races concern #10).
-      // mousedown-with-target-check is the canonical fix.
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <StageBody {...props} onClose={onClose} />
-      {props.detailRailSlot}
-    </dialog>
+    <div className="psl__focus" aria-label="Capture editor">
+      <div className="psl__stage-wrap">
+        <StageBody {...props} onClose={onClose} />
+      </div>
+    </div>
   );
 }
 
-/** Reel mode — plain in-flow content. No dialog, no × button, no
- *  backdrop dismiss. */
+/** Reel mode — plain in-flow content. No × button. */
 function ReelStage(props: StageProps): ReactElement {
   return (
     <div className="psl__reel-mode">

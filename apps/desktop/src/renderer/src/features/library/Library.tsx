@@ -641,24 +641,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                 )
               }
             : {})}
-          {...(view.kind === "focus"
-            ? {
-                detailRailSlot: <DetailRail view={view} record={selectedRecord} />
-              }
-            : {})}
         />
       )}
 
-      {/* Detail rail at Library level. Visible in Reel mode (the
-          third grid column of `.psl[data-mode="reel"]`). In Focus
-          mode the rail is rendered INSIDE the <dialog> via Stage's
-          `detailRailSlot` prop above — necessary because
-          showModal() puts the dialog in the browser's top-layer
-          and any sibling at the Library level is hidden behind
-          the dialog's backdrop. We skip the Library-level render
-          in focus mode to avoid two React copies of the same
-          rail (the Library-level one would be invisible). */}
-      {view.kind !== "focus" && <DetailRail view={view} record={selectedRecord} />}
+      {/* Detail rail. Renders null in grid mode (Phase B); shows
+          metadata + Codex caption + L/M/H copy row + action row in
+          focus + reel modes. Lives in the third grid column
+          (`grid-template-columns: 220px 1fr 360px` when
+          data-mode is focus/reel, collapsed to 0 in grid mode). */}
+      <DetailRail view={view} record={selectedRecord} />
 
       <footer className="psl__status">
         <div className="psl__status-l">

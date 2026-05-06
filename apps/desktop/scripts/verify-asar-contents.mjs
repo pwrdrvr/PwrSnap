@@ -18,8 +18,9 @@ if (!existsSync(asarPath)) {
   process.exit(1);
 }
 
-// @electron/asar is a transitive dependency of electron-builder, so it resolves
-// from the desktop package's node_modules without an extra install step.
+// @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
+// pnpm's isolated layout doesn't hoist transitive deps reliably, so we own it
+// directly to guarantee resolution from this script's location.
 const require = createRequire(import.meta.url);
 const asar = require("@electron/asar");
 const listing = asar.listPackage(asarPath, { isPack: false });

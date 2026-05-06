@@ -1,6 +1,19 @@
 import type { ReactElement } from "react";
 
-export type AppId =
+// AppId is the renderer's app key. For known apps it's a curated
+// short id (`"slack"`, `"vscode"`, …); for unknown apps it's the
+// lowercased CFBundleIdentifier as captured by macOS
+// (`"com.spotify.client"`, `"com.hnc.discord"`). The set is open —
+// any new bundle id captured at runtime gets a procedural initials
+// icon and shows up in the Library sidebar with its real app name.
+export type AppId = string;
+
+/**
+ * Curated short ids that have a hand-drawn glyph in `KNOWN_APP_ICONS`.
+ * Kept as a literal union (not just `string`) so a typo in
+ * `KNOWN_APP_ICONS` keys is caught at compile time.
+ */
+export type KnownAppId =
   | "telegram"
   | "excel"
   | "vscode"
@@ -17,7 +30,11 @@ export type AppId =
   | "finder"
   | "any";
 
-const APP_ICONS: Record<AppId, (s: number) => ReactElement> = {
+// `satisfies` (not a `Record<KnownAppId, …>` annotation) so the dict
+// is exhaustively type-checked against `KnownAppId` at the literal —
+// catching typos like `vsocde` — while the inferred value type stays
+// indexable by `string` for the open-set lookup in `AppIcon` below.
+const KNOWN_APP_ICONS = {
   telegram: (s) => (
     <svg viewBox="0 0 24 24" width={s} height={s} fill="currentColor">
       <path d="M21.4 3.4 2.6 10.6c-1 .4-1 1.7 0 2l4.7 1.6 1.7 5.5c.2.7 1.1 1 1.6.4l2.5-2.4 4.6 3.4c.7.5 1.7.1 1.9-.7l3.3-15.2c.2-1-.7-1.8-1.5-1.4ZM10 14.7l-.4 3.6-1.2-3.9 9-7.8L10 14.7Z" />
@@ -119,11 +136,132 @@ const APP_ICONS: Record<AppId, (s: number) => ReactElement> = {
       <path d="M9 9h6v6H9z" fill="currentColor" />
     </svg>
   )
-};
+} satisfies Record<KnownAppId, (s: number) => ReactElement>;
 
-export function AppIcon({ app, size = 11 }: { app: AppId; size?: number }) {
-  const fn = APP_ICONS[app] ?? APP_ICONS.any;
-  return fn(size);
+/**
+ * Generic reverse-DNS prefixes and tail words that appear in bundle
+ * ids but carry no app-distinctive information. Filtered out before
+ * picking the "longest meaningful segment" for procedural initials.
+ */
+const GENERIC_BUNDLE_SEGMENTS = new Set<string>([
+  "com",
+  "org",
+  "net",
+  "io",
+  "co",
+  "app",
+  "ai",
+  "us",
+  "ru",
+  "client",
+  "desktop",
+  "mac",
+  "macos"
+]);
+
+/**
+ * Take up-to-2-letter initials from a free-form string.
+ *
+ * Splits on EXPLICIT separators (whitespace, dots, dashes,
+ * underscores, slashes) first. Only when the input is a single
+ * mashed-together token without separators does it fall back to a
+ * camelCase split — otherwise `"GitHub Desktop"` would over-split
+ * into `["Git", "Hub", "Desktop"]` and yield `"GH"` instead of the
+ * `"GD"` a reader expects.
+ *
+ * Examples: `"Microsoft Edge"` → `"ME"`, `"GitHub Desktop"` → `"GD"`,
+ * `"Activity Monitor"` → `"AM"`, `"Spotify"` → `"SP"`,
+ * `"iCloudDrive"` → `"IC"` (single mashed token, camelCase split).
+ */
+export function tokenInitials(s: string): string {
+  const explicit = s.split(/[\s._\-/]+/).filter((t) => t.length > 0);
+  if (explicit.length === 0) return s.slice(0, 2).toUpperCase();
+  if (explicit.length > 1) {
+    return (explicit[0]![0]! + explicit[1]![0]!).toUpperCase();
+  }
+  // Single token — try a camelCase split for cases like "iCloudDrive".
+  const camel = explicit[0]!.split(/(?=[A-Z])/).filter((t) => t.length > 0);
+  if (camel.length > 1) {
+    return (camel[0]![0]! + camel[1]![0]!).toUpperCase();
+  }
+  return explicit[0]!.slice(0, 2).toUpperCase();
+}
+
+/**
+ * Compute the up-to-2-letter label for the procedural fallback icon.
+ *
+ * - When a captured user-facing `name` is available, take initials
+ *   from it directly: `"Microsoft Edge"` → `"ME"`, `"Spotify"` →
+ *   `"SP"`, `"Activity Monitor"` → `"AM"`.
+ * - Otherwise, treat `fallback` as a reverse-DNS bundle id and pick
+ *   the longest non-generic dotted segment to derive initials from:
+ *   `"com.spotify.client"` → segment `"spotify"` → `"SP"`,
+ *   `"com.hnc.discord"` → segment `"discord"` → `"DI"`,
+ *   `"com.apple.activitymonitor"` → segment `"activitymonitor"` →
+ *   `"AC"` (the lossy case — without an `appName`, we can't recover
+ *   the camelCase split).
+ *
+ * Always returns at least one uppercase letter; never empty.
+ */
+export function initialsFor(name: string | undefined, fallback: string): string {
+  const trimmed = name?.trim();
+  if (trimmed !== undefined && trimmed.length > 0) {
+    return tokenInitials(trimmed);
+  }
+  const segments = fallback
+    .split(".")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !GENERIC_BUNDLE_SEGMENTS.has(s.toLowerCase()));
+  if (segments.length === 0) {
+    return fallback.length > 0 ? fallback.slice(0, 2).toUpperCase() : "?";
+  }
+  segments.sort((a, b) => b.length - a.length);
+  return tokenInitials(segments[0]!);
+}
+
+function ProceduralIcon({ size, label }: { size: number; label: string }): ReactElement {
+  // Glyph rendered in `currentColor` so it inherits the copper accent
+  // from `.ps-app-tag__tile` (and the dot color in `.psl__app-dot`).
+  // viewBox is 0 0 24 24 to match the hand-drawn icon set; intrinsic
+  // size comes from `width`/`height` attrs, not font-size units.
+  const fontSize = label.length >= 2 ? 11 : 14;
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <text
+        x="12"
+        y="12"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+        fontWeight={700}
+        fontSize={fontSize}
+        letterSpacing="-0.02em"
+        fill="currentColor"
+      >
+        {label}
+      </text>
+    </svg>
+  );
+}
+
+export function AppIcon({
+  app,
+  size = 11,
+  name
+}: {
+  app: AppId;
+  size?: number;
+  /** Captured user-facing app name. Used for procedural-icon initials
+   *  when `app` doesn't have a hand-drawn glyph. */
+  name?: string;
+}): ReactElement {
+  // Cast for the lookup: `satisfies Record<KnownAppId, …>` on the
+  // dict definition gives us literal-level typo protection at write
+  // time; the cast here just opens the dict for a runtime string
+  // key (the open-set fallback).
+  const known = (KNOWN_APP_ICONS as Record<string, (s: number) => ReactElement>)[app];
+  if (known !== undefined) return known(size);
+  return <ProceduralIcon size={size} label={initialsFor(name, app)} />;
 }
 
 type AppTagSize = "sm" | "md" | "lg";
@@ -142,7 +280,7 @@ export function AppTag({
   return (
     <span className={cls} title={`Captured from ${name}`}>
       <span className="ps-app-tag__tile">
-        <AppIcon app={app} size={iconSize} />
+        <AppIcon app={app} size={iconSize} name={name} />
       </span>
       <span className="ps-app-tag__name">{name}</span>
     </span>

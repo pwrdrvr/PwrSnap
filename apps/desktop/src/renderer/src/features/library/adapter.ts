@@ -42,13 +42,18 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
   const captured = new Date(record.captured_at);
   const { day, date } = dayBucket(captured, now);
   const app: AppId = mapBundleIdToAppId(record.source_app_bundle_id);
-  const name =
+  const appName =
     record.source_app_name !== null && record.source_app_name.length > 0
-      ? `${record.source_app_name} · ${timeLabel(captured)}`
+      ? record.source_app_name
+      : null;
+  const name =
+    appName !== null
+      ? `${appName} · ${timeLabel(captured)}`
       : `Snap · ${timeLabel(captured)}`;
   return {
     id: sequence,
     app,
+    appName,
     n: name,
     tags: [],
     day,
@@ -61,27 +66,62 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
 }
 
 /**
- * Best-effort bundle-id → AppId mapping. Phase 3 will populate
- * `source_app_bundle_id` properly; for now everything falls back to
- * the generic "any" mark.
+ * Anchored regex patterns matching the lowercased bundle ids of the
+ * apps we ship a hand-drawn glyph for. Each pattern:
+ *
+ *   - Anchors the needle to a dotted segment boundary (start of
+ *     string or preceded by `.`) so we only match dotted SEGMENTS,
+ *     not arbitrary substrings — `com.acme.notion-importer` no
+ *     longer steals Notion's glyph.
+ *   - Allows the legitimate trailing-suffix glueing real bundle ids
+ *     use (`slackmacgap`, `edgemac`, `vscodeinsiders`, `desktop`,
+ *     `client`, `mac`) so we don't false-negative the curated set.
+ *
+ * Order is irrelevant — patterns are pairwise disjoint by anchor +
+ * needle. The first match wins regardless.
+ */
+const KNOWN_APP_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["vscode",   /(?:^|\.)vscode(?:insiders)?(?:\.|$)/],
+  ["chrome",   /(?:^|\.)chrome(?:\.|$)/],
+  ["safari",   /(?:^|\.)safari(?:\.|$)/],
+  ["slack",    /(?:^|\.)slack(?:macgap)?(?:\.|$)/],
+  ["figma",    /(?:^|\.)figma(?:\.desktop)?(?:\.|$)/],
+  ["terminal", /(?:^|\.)(?:terminal|ghostty)(?:\.|$)/],
+  ["notion",   /(?:^|\.)notion(?:\.|$)/],
+  ["github",   /(?:^|\.)github(?:client|desktop)?(?:\.|$)/],
+  ["linear",   /(?:^|\.)linear(?:\.|$)/],
+  ["zoom",     /(?:^|\.)(?:zoom|zoomus)(?:\.|$)/],
+  ["preview",  /(?:^|\.)preview(?:\.|$)/],
+  ["finder",   /(?:^|\.)finder(?:\.|$)/],
+  ["excel",    /(?:^|\.)excel(?:\.|$)/],
+  ["telegram", /(?:^|\.)telegram(?:\.|$)/]
+];
+
+/**
+ * Bundle-id → AppId mapping with an open fallback set.
+ *
+ * Known apps map to a curated short id (`"slack"`, `"vscode"`, …)
+ * so they pick up the hand-drawn icon set in `AppIcons.tsx`. Anything
+ * we don't have a glyph for falls through to the lowercased bundle
+ * id itself (`"com.spotify.client"`, `"com.hnc.discord"`) — the
+ * Library sidebar groups by that key and the chip renders procedural
+ * initials taken from the captured `source_app_name`.
+ *
+ * Matching is case-insensitive: real bundle ids use CamelCase tail
+ * components (`com.apple.Terminal`, `com.microsoft.VSCode`,
+ * `com.hnc.Discord`) that wouldn't match a lowercase substring
+ * directly. Patterns are anchored to dotted segment boundaries to
+ * keep false positives down (`com.acme.notion-importer` won't pick
+ * up Notion's glyph).
  */
 export function mapBundleIdToAppId(bundleId: string | null): AppId {
   if (bundleId === null) return "any";
-  if (bundleId.includes("vscode") || bundleId.includes("code")) return "vscode";
-  if (bundleId.includes("chrome")) return "chrome";
-  if (bundleId.includes("safari")) return "safari";
-  if (bundleId.includes("slack")) return "slack";
-  if (bundleId.includes("figma")) return "figma";
-  if (bundleId.includes("terminal") || bundleId.includes("ghostty")) return "terminal";
-  if (bundleId.includes("notion")) return "notion";
-  if (bundleId.includes("github")) return "github";
-  if (bundleId.includes("linear")) return "linear";
-  if (bundleId.includes("zoom")) return "zoom";
-  if (bundleId.includes("preview")) return "preview";
-  if (bundleId.includes("finder")) return "finder";
-  if (bundleId.includes("excel")) return "excel";
-  if (bundleId.includes("telegram")) return "telegram";
-  return "any";
+  const lower = bundleId.toLowerCase();
+  if (lower.length === 0) return "any";
+  for (const [appId, pattern] of KNOWN_APP_PATTERNS) {
+    if (pattern.test(lower)) return appId;
+  }
+  return lower;
 }
 
 /**

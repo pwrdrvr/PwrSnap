@@ -84,7 +84,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
 
   // Per-app capture counts — memoized so the per-render `filter().length`
-  // cost (8 apps × N captures = 8N ops/render) doesn't accumulate. Used
+  // cost (N apps × M captures = NM ops/render) doesn't accumulate. Used
   // to (a) drive the count badge in the left-rail Source App list and
   // (b) data-filter the list to only apps that have ≥1 capture (B.8).
   const appCounts = useMemo<Record<string, number>>(() => {
@@ -95,15 +95,48 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return counts;
   }, [fixtureCaptures]);
 
+  // Display name per app key — curated short id wins (so "vscode"
+  // stays "VS Code"), else first non-null `appName` we observed for
+  // that key (the OS-supplied user-facing name from
+  // `record.source_app_name`). Falls back to "Unknown app" only when
+  // neither is available (record missing both bundle id and name).
+  const appLabels = useMemo<Record<string, string>>(() => {
+    const labels: Record<string, string> = {};
+    for (const c of fixtureCaptures) {
+      if (labels[c.app] !== undefined) continue;
+      const known = APP_INFO[c.app]?.name;
+      if (known !== undefined) labels[c.app] = known;
+      else if (c.appName !== null) labels[c.app] = c.appName;
+      else labels[c.app] = "Unknown app";
+    }
+    return labels;
+  }, [fixtureCaptures]);
+
   // Apps that should appear in the left rail: any app with ≥1 capture,
   // PLUS the currently-active filter (so a user who's filtered to
   // "Telegram" and just deleted their last Telegram capture doesn't
-  // get teleported away from the empty filter).
-  const visibleApps = useMemo(() => {
-    return Object.entries(APP_INFO).filter(
-      ([app]) => (appCounts[app] ?? 0) > 0 || activeApp === app
-    );
-  }, [appCounts, activeApp]);
+  // get teleported away from the empty filter). The list is open —
+  // unknown apps (lowercased bundle ids that don't have a curated
+  // glyph) appear here with their OS-supplied name and a procedural
+  // initials icon. Sorted alphabetically by display name for stable
+  // ordering across renders.
+  const visibleApps = useMemo<Array<{ app: string; name: string }>>(() => {
+    const seen = new Set<string>();
+    const out: Array<{ app: string; name: string }> = [];
+    for (const app of Object.keys(appCounts)) {
+      if ((appCounts[app] ?? 0) === 0) continue;
+      seen.add(app);
+      out.push({ app, name: appLabels[app] ?? "Unknown app" });
+    }
+    if (activeApp !== "all" && !seen.has(activeApp)) {
+      out.push({
+        app: activeApp,
+        name: appLabels[activeApp] ?? APP_INFO[activeApp]?.name ?? "Unknown app"
+      });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    return out;
+  }, [appCounts, appLabels, activeApp]);
 
   // The CaptureRecord for the currently-selected id — passed to
   // <DetailRail> + <Stage> so they can render metadata + L/M/H copy
@@ -559,16 +592,16 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
 
         <div className="psl__left-section">Source App</div>
-        {visibleApps.map(([app, info]) => (
+        {visibleApps.map(({ app, name }) => (
           <button
             key={app}
             className={"psl__nav" + (activeApp === app ? " is-active" : "")}
             onClick={() => setActiveApp(app)}
           >
             <span className="psl__nav-icon">
-              <AppIcon app={app as never} size={11} />
+              <AppIcon app={app} size={11} name={name} />
             </span>
-            <span className="psl__nav-label">{info.name}</span>
+            <span className="psl__nav-label">{name}</span>
             <span className="psl__nav-count">{appCounts[app] ?? 0}</span>
           </button>
         ))}
@@ -643,7 +676,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         <span className="psl__cell-time">{c.time}</span>
                         <span className="psl__cell-app">
                           <span className="psl__app-dot">
-                            <AppIcon app={c.app} size={10} />
+                            <AppIcon
+                              app={c.app}
+                              size={10}
+                              name={appLabels[c.app] ?? c.appName ?? undefined}
+                            />
                           </span>
                         </span>
                       </div>
@@ -652,7 +689,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         <div className="psl__cell-tags">
                           <AppTag
                             app={c.app}
-                            name={APP_INFO[c.app]?.name ?? "Unknown app"}
+                            name={appLabels[c.app] ?? c.appName ?? "Unknown app"}
                             size="sm"
                           />
                           {c.tags.slice(0, 1).map((t) => (
@@ -703,7 +740,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                     <div className="psl__reel-hdr">
                       <span className="psl__reel-title">
                         Timeline ·{" "}
-                        {activeApp === "all" ? "all sources" : APP_INFO[activeApp]?.name}
+                        {activeApp === "all"
+                          ? "all sources"
+                          : appLabels[activeApp] ?? APP_INFO[activeApp]?.name ?? "Unknown app"}
                       </span>
                       <span className="psl__reel-hint" aria-hidden="true">
                         scrub <b>⌘[ / ⌘]</b>
@@ -743,7 +782,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   <CellThumb capture={c} record={record} width={140} />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
-                                    <AppIcon app={c.app} size={8} />
+                                    <AppIcon
+                                      app={c.app}
+                                      size={8}
+                                      name={appLabels[c.app] ?? c.appName ?? undefined}
+                                    />
                                   </span>
                                 </button>
                               );

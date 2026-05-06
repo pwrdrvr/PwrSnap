@@ -2,7 +2,15 @@ import type { AppId } from "../shared/AppIcons";
 
 export type Capture = {
   id: number;
+  /** App key — curated short id for known apps (`"slack"`), lowercased
+   *  bundle id (`"com.spotify.client"`) for unknown apps. Used as the
+   *  group key for the sidebar and the icon-lookup key in AppIcon. */
   app: AppId;
+  /** Captured user-facing app name (`"Spotify"`, `"Microsoft Edge"`).
+   *  Drives the chip label and procedural-icon initials when there's
+   *  no hand-drawn glyph for `app`. Null for the demo fixtures and
+   *  any record that came in without a `source_app_name`. */
+  appName: string | null;
   n: string;
   tags: string[];
   day: string;
@@ -81,6 +89,7 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
   return {
     id: i + 1,
     ...c,
+    appName: null,
     day: day.day,
     date: day.date,
     time: day.times[slot] ?? "9:00",
@@ -90,26 +99,30 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
   };
 });
 
-export const APP_INFO: Record<string, { name: string; count: number }> = {
-  // `any` is the fallback the adapter assigns when a real capture's
-  // source_app_bundle_id is null (Phase 1 always; Phase 3 fills the
-  // bundle id via NSWorkspace). Without this entry, every Phase 1
-  // capture crashes the Library when APP_INFO[c.app]!.name evaluates.
-  any: { name: "Unknown app", count: 0 },
-  telegram: { name: "Telegram", count: 3 },
-  excel: { name: "Excel", count: 3 },
-  vscode: { name: "VS Code", count: 3 },
-  chrome: { name: "Chrome", count: 3 },
-  figma: { name: "Figma", count: 3 },
-  slack: { name: "Slack", count: 3 },
-  terminal: { name: "Terminal", count: 3 },
-  notion: { name: "Notion", count: 2 },
-  linear: { name: "Linear", count: 3 },
-  github: { name: "GitHub", count: 2 },
-  zoom: { name: "Zoom", count: 1 },
-  safari: { name: "Safari", count: 1 },
-  preview: { name: "Preview", count: 1 },
-  finder: { name: "Finder", count: 1 }
+/**
+ * Curated display names for the apps we ship a hand-drawn icon for.
+ * Looked up by `app` key (the curated short id from
+ * `mapBundleIdToAppId`). Apps that fall through to the lowercased
+ * bundle id are NOT in this map — Library.tsx uses each capture's
+ * `appName` (the OS-supplied user-facing name) for those, falling
+ * back to `"Unknown app"` only when neither is available.
+ */
+export const APP_INFO: Record<string, { name: string }> = {
+  any: { name: "Unknown app" },
+  telegram: { name: "Telegram" },
+  excel: { name: "Excel" },
+  vscode: { name: "VS Code" },
+  chrome: { name: "Chrome" },
+  figma: { name: "Figma" },
+  slack: { name: "Slack" },
+  terminal: { name: "Terminal" },
+  notion: { name: "Notion" },
+  linear: { name: "Linear" },
+  github: { name: "GitHub" },
+  zoom: { name: "Zoom" },
+  safari: { name: "Safari" },
+  preview: { name: "Preview" },
+  finder: { name: "Finder" }
 };
 
 export type DayGroup = { day: string; date: string; items: Capture[] };

@@ -1,23 +1,14 @@
 import type { ReactElement } from "react";
 
-export type AppId =
-  | "telegram"
-  | "excel"
-  | "vscode"
-  | "chrome"
-  | "figma"
-  | "slack"
-  | "terminal"
-  | "notion"
-  | "safari"
-  | "zoom"
-  | "linear"
-  | "github"
-  | "preview"
-  | "finder"
-  | "any";
+// AppId is the renderer's app key. For known apps it's a curated
+// short id (`"slack"`, `"vscode"`, …); for unknown apps it's the
+// lowercased CFBundleIdentifier as captured by macOS
+// (`"com.spotify.client"`, `"com.hnc.discord"`). The set is open —
+// any new bundle id captured at runtime gets a procedural initials
+// icon and shows up in the Library sidebar with its real app name.
+export type AppId = string;
 
-const APP_ICONS: Record<AppId, (s: number) => ReactElement> = {
+const KNOWN_APP_ICONS: Record<string, (s: number) => ReactElement> = {
   telegram: (s) => (
     <svg viewBox="0 0 24 24" width={s} height={s} fill="currentColor">
       <path d="M21.4 3.4 2.6 10.6c-1 .4-1 1.7 0 2l4.7 1.6 1.7 5.5c.2.7 1.1 1 1.6.4l2.5-2.4 4.6 3.4c.7.5 1.7.1 1.9-.7l3.3-15.2c.2-1-.7-1.8-1.5-1.4ZM10 14.7l-.4 3.6-1.2-3.9 9-7.8L10 14.7Z" />
@@ -121,9 +112,65 @@ const APP_ICONS: Record<AppId, (s: number) => ReactElement> = {
   )
 };
 
-export function AppIcon({ app, size = 11 }: { app: AppId; size?: number }) {
-  const fn = APP_ICONS[app] ?? APP_ICONS.any;
-  return fn(size);
+/**
+ * Compute up-to-2-letter initials for the procedural fallback icon.
+ * Prefers a captured user-facing app name ("Microsoft Edge" → "ME",
+ * "Discord" → "D"); falls back to the bundle-id-derived app key
+ * with the leading reverse-DNS prefix stripped ("com.hnc.discord" →
+ * "D"). Word boundaries are spaces, dots, dashes, underscores, and
+ * camelCase transitions.
+ */
+function initialsFor(name: string | undefined, fallback: string): string {
+  const raw = name !== undefined && name.trim().length > 0 ? name.trim() : fallback;
+  // Strip leading reverse-DNS segments so "com.spotify.client" yields
+  // "Spotify" before tokenization, not "Com".
+  const stripped = raw.replace(/^[a-z][a-z0-9]*(\.[a-z0-9]+)+\.([A-Za-z0-9-]+)$/, "$2");
+  const cleaned = stripped.length > 0 ? stripped : raw;
+  const tokens = cleaned.split(/[\s._\-/]+|(?=[A-Z])/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return cleaned.slice(0, 2).toUpperCase();
+  if (tokens.length === 1) return tokens[0]!.slice(0, 2).toUpperCase();
+  return (tokens[0]![0]! + tokens[1]![0]!).toUpperCase();
+}
+
+function ProceduralIcon({ size, label }: { size: number; label: string }): ReactElement {
+  // Glyph rendered in `currentColor` so it inherits the copper accent
+  // from `.ps-app-tag__tile` (and the dot color in `.psl__app-dot`).
+  // viewBox is 0 0 24 24 to match the hand-drawn icon set; intrinsic
+  // size comes from `width`/`height` attrs, not font-size units.
+  const fontSize = label.length >= 2 ? 11 : 14;
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <text
+        x="12"
+        y="12"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+        fontWeight={700}
+        fontSize={fontSize}
+        letterSpacing="-0.02em"
+        fill="currentColor"
+      >
+        {label}
+      </text>
+    </svg>
+  );
+}
+
+export function AppIcon({
+  app,
+  size = 11,
+  name
+}: {
+  app: AppId;
+  size?: number;
+  /** Captured user-facing app name. Used for procedural-icon initials
+   *  when `app` doesn't have a hand-drawn glyph. */
+  name?: string;
+}): ReactElement {
+  const known = KNOWN_APP_ICONS[app];
+  if (known !== undefined) return known(size);
+  return <ProceduralIcon size={size} label={initialsFor(name, app)} />;
 }
 
 type AppTagSize = "sm" | "md" | "lg";
@@ -142,7 +189,7 @@ export function AppTag({
   return (
     <span className={cls} title={`Captured from ${name}`}>
       <span className="ps-app-tag__tile">
-        <AppIcon app={app} size={iconSize} />
+        <AppIcon app={app} size={iconSize} name={name} />
       </span>
       <span className="ps-app-tag__name">{name}</span>
     </span>

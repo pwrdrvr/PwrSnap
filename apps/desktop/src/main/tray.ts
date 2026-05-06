@@ -14,6 +14,7 @@
 
 import { join } from "node:path";
 import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { createTrayWindow, positionTrayWindow } from "./window";
@@ -84,6 +85,18 @@ function ensureTrayWindow(): BrowserWindow {
   const window = createTrayWindow();
   trayWindow = window;
   wireBlurDismiss(window);
+  // Tell the renderer to re-measure whenever the session zoom factor
+  // changes. We can't rely on ResizeObserver alone — Chromium does
+  // not fire layout-resize observations for pure zoom changes when
+  // the underlying CSS-pixel content height happens to land at the
+  // same value, and `setContentSize` is in DIP, so a stale
+  // CSS-pixel-height post would compute a wrong DIP after zoom
+  // changed. The IPC kicks the renderer to re-post; the resize
+  // handler reads the new zoomFactor and converts.
+  window.webContents.on("zoom-changed", () => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(EVENT_CHANNELS.popoverRemeasure, {});
+  });
   window.on("closed", () => {
     if (trayWindow === window) trayWindow = null;
   });
@@ -95,8 +108,15 @@ function ensureTrayWindow(): BrowserWindow {
  * popover hugs its content. Each call also re-positions to keep the
  * top-right corner anchored under the tray icon (otherwise growing
  * down would push the popover off-screen on a tall display).
+ *
+ * Idempotent — safe to call from both the production `installTray`
+ * boot path and the E2E `showTrayPopoverForE2E` test helper without
+ * stacking duplicate ipcMain listeners.
  */
+let trayResizeChannelWired = false;
 function wireTrayResizeChannel(): void {
+  if (trayResizeChannelWired) return;
+  trayResizeChannelWired = true;
   ipcMain.on(TRAY_RESIZE_CHANNEL, (_event, payload: unknown) => {
     if (
       payload === null ||
@@ -105,10 +125,20 @@ function wireTrayResizeChannel(): void {
     ) {
       return;
     }
-    const requested = Math.round((payload as { height: number }).height);
-    if (!Number.isFinite(requested)) return;
-    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requested));
+    const requestedCss = (payload as { height: number }).height;
+    if (!Number.isFinite(requestedCss)) return;
     if (trayWindow === null || trayWindow.isDestroyed()) return;
+    // Renderer measures in CSS pixels (post-zoom). `setContentSize`
+    // takes DIP (zoom-independent). When the session's zoomFactor is
+    // not 1.0 (e.g. user Cmd-+'d in the library — zoom is shared
+    // per-origin via Chromium's HostZoomMap), the two units diverge:
+    // a 600 CSS px tall popover at 1.32× zoom is 600 × 1.32 ≈ 792
+    // DIP. Without this conversion, the BrowserWindow ends up
+    // shorter than the rendered content needs and the popover
+    // visibly clips.
+    const zoom = trayWindow.webContents.zoomFactor;
+    const requestedDip = Math.ceil(requestedCss * zoom);
+    const clamped = Math.max(TRAY_HEIGHT_MIN, Math.min(TRAY_HEIGHT_MAX, requestedDip));
     if (trayWindow.getContentSize()[1] === clamped) return;
     // Belt-and-braces: every resize call lifts the implicit minimum
     // size first. The createTrayWindow call already does this once on
@@ -258,6 +288,7 @@ export function disposeTray(): void {
     pendingDismiss = null;
   }
   ipcMain.removeAllListeners(TRAY_RESIZE_CHANNEL);
+  trayResizeChannelWired = false;
   if (trayWindow !== null && !trayWindow.isDestroyed()) {
     trayWindow.destroy();
     trayWindow = null;
@@ -266,4 +297,33 @@ export function disposeTray(): void {
     tray.destroy();
     tray = null;
   }
+}
+
+/**
+ * E2E-only: ensure the tray popover BrowserWindow exists, the resize
+ * channel is wired, and the window is visible. Skips the `Tray` icon
+ * creation that `installTray()` does — tests don't need a menubar
+ * NSStatusItem, and creating one in headless CI environments is
+ * unreliable.
+ *
+ * Positions the popover at a fixed top-left location on the primary
+ * display so spec assertions about bounds are stable across machines.
+ */
+export function showTrayPopoverForE2E(): void {
+  wireTrayResizeChannel();
+  const window = ensureTrayWindow();
+  // Stable test position: top-left of the primary display, indented
+  // a few pixels off the menubar. Production positioning happens via
+  // positionTrayWindow + the tray icon's bounds; tests don't have a
+  // tray icon, so we just pin the window somewhere predictable.
+  const primary = screen.getPrimaryDisplay();
+  const wa = primary.workArea;
+  window.setPosition(wa.x + 8, wa.y + 8, false);
+  window.showInactive();
+  window.focus();
+}
+
+/** E2E-only: hide the tray popover synchronously (no debounce). */
+export function hideTrayPopoverForE2E(): void {
+  hideTrayPopoverIfVisible();
 }

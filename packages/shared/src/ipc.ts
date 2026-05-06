@@ -25,7 +25,18 @@ export const EVENT_CHANNELS = {
    *
    * Payload type: `FloatOverEvent` (see protocol.ts).
    */
-  floatOverState: "events:float-over:state"
+  floatOverState: "events:float-over:state",
+  /**
+   * Tells a popover renderer (tray or float-over) to re-measure its
+   * content and re-post the resize IPC. Sent by main when the
+   * webContents `zoom-changed` fires — Electron's ResizeObserver
+   * doesn't reliably fire on zoom changes, so we drive the re-measure
+   * explicitly. Renderer should bypass any "no-op" cache and post
+   * unconditionally.
+   *
+   * Payload: empty object `{}` (the channel itself is the signal).
+   */
+  popoverRemeasure: "events:popover:remeasure"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

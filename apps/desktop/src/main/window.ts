@@ -173,6 +173,23 @@ export function createTrayWindow(): BrowserWindow {
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("tray"));
 
+  // Disable pinch-to-zoom on the trackpad — the popover's a fixed-
+  // layout UI, no legitimate reason to scale it on a gesture.
+  // setVisualZoomLevelLimits is per-webContents and does NOT
+  // propagate through the session, so it's safe to apply here
+  // without affecting the library window.
+  //
+  // We deliberately do NOT call `setZoomFactor` to reset zoom.
+  // Electron stores zoomFactor per-origin in the session's
+  // HostZoomMap, and library + tray load from the same origin
+  // (the dev server URL or `file://` in prod), so any setZoomFactor
+  // call here would propagate to the library and reset its zoom
+  // along with ours. The resize handler in tray.ts compensates by
+  // multiplying renderer-measured CSS pixels by the current
+  // zoomFactor before calling setContentSize, so the popover sizes
+  // correctly at any zoom level the session happens to be at.
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+
   // Note: blur-dismiss is wired in tray.ts (with the 120ms debounce +
   // DevTools / cursor-bounds guards). createTrayWindow stays a pure
   // factory.
@@ -251,6 +268,13 @@ export function createFloatOverWindow(): BrowserWindow {
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.setMenuBarVisibility(false);
   loadRenderer(window, rendererTarget("float-over"));
+
+  // See createTrayWindow for the full story. Block pinch-zoom
+  // (per-webContents, doesn't leak to library) but leave session-
+  // wide zoomFactor alone — the resize handler in float-over.ts
+  // converts CSS pixels → DIP via the current zoomFactor so the
+  // toast sizes correctly even if the user zoomed in the library.
+  window.webContents.setVisualZoomLevelLimits(1, 1);
 
   // Note: positioning + show are owned by `float-over.ts` so they
   // re-run on every capture (workArea may have shifted between shows,

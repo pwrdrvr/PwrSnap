@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
@@ -192,48 +192,77 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { records } = useLibrary();
   const lastSnap: CaptureRecord | undefined = records[0];
 
-  // Tell main to size the window. Two fixed sizes based on which
-  // render path is active:
+  // Measure the popover's natural content height and tell main to
+  // setContentSize the BrowserWindow to match. Mirrors the float-
+  // over toast's pattern in FloatOverHost.tsx: an `inline-block`
+  // outer wrapper that's content-sized in both axes, observed via
+  // ResizeObserver and measured with `getBoundingClientRect`.
   //
-  //   • No last snap → empty-state height (just header + Quick
-  //     Capture + 6-mode grid).
-  //   • With last snap → populated height (above + last-snap header
-  //     + 120px preview + Low/Med/High copy buttons).
+  // Why an OUTER inline-block wrapper, not the .ps-tray container
+  // itself: `.ps-tray` carries `overflow: hidden` (rounded-corner
+  // clipping against the transparent BrowserWindow), so does
+  // `body`, and inside that nested overflow:hidden chain Chromium
+  // starts returning the *clipped* extent rather than the natural
+  // content for both `getBoundingClientRect().height` AND
+  // `scrollHeight`. Read it back into the observer and the popover
+  // gets stuck at whatever short size we first posted. An
+  // `inline-block` wrapper SITTING OUTSIDE the clipped element is
+  // content-sized by layout (inline-block sizes to its content in
+  // both axes) and isn't affected — the parent's overflow only
+  // clips painting, not layout. gBCR on it returns the natural
+  // height regardless of how main is currently sizing the window.
   //
-  // Why fixed heights instead of measure-and-fit: the ResizeObserver
-  // approach was unreliable across at least three different bug
-  // surfaces — Electron NSPanel implicit minSize clamping, Geist
-  // web-font swap measurement oscillation (468 → 637 → 468 between
-  // fallback-font, mid-swap, and post-swap states), and font-load-
-  // dependent reflow that didn't trigger observer callbacks. The
-  // tray content is a known, structured layout with exactly two
-  // possible shapes; hardcoding their heights eliminates a whole
-  // class of timing-dependent bugs. Cost is a few px of empty
-  // space at the bottom when fonts haven't loaded yet — acceptable.
+  // The float-over uses this same pattern (see FloatOverHost.tsx,
+  // `contentRef` on a `display: inline-block; width: 100%` wrapper)
+  // and ships without any of the workarounds we'd previously stacked
+  // on the tray (font-ready re-measures, image-load handlers,
+  // child-coord tricks). Keeping the two surfaces structurally
+  // identical means a fix to either flows naturally to the other.
   //
-  // Heights derived empirically from a forced-800px diagnostic
-  // run + the visible content extents in that screenshot:
-  // populated content was ~580 px, empty-state ~230 px. Add ~30 px
-  // margin so a slightly taller font metric (Geist post-load) still
-  // fits without clipping. Update these if the design changes the
-  // count or size of any major section.
-  const TRAY_HEIGHT_WITH_LAST_SNAP = 620;
-  const TRAY_HEIGHT_EMPTY = 250;
+  // Hard floor + ceiling sit in main (`tray.ts` clamps 200–880), so
+  // a renderer-side measurement bug can't shrink the popover to
+  // nothing or grow it off-screen.
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const lastSnapId = lastSnap?.id;
   useLayoutEffect(() => {
-    const targetHeight =
-      lastSnapId === undefined ? TRAY_HEIGHT_EMPTY : TRAY_HEIGHT_WITH_LAST_SNAP;
-    window.dispatchEvent(
-      new CustomEvent("pwrsnap:tray:resize", {
-        detail: { width: 440, height: targetHeight }
-      })
+    const el = containerRef.current;
+    if (el === null) return;
+    let posted = -1;
+    const post = (force = false): void => {
+      const rect = el.getBoundingClientRect();
+      const target = Math.ceil(rect.height);
+      if (!force && target === posted) return;
+      posted = target;
+      // Direct IPC — same shape as FloatOverHost.tsx. The earlier
+      // version of this code dispatched a `pwrsnap:tray:resize`
+      // CustomEvent that a sibling `<TrayResizeForwarder/>` (with
+      // `useEffect`) listened for and forwarded over IPC. That had
+      // a race: `useLayoutEffect` here fires BEFORE `useEffect`
+      // anywhere, so the first post was dispatched before the
+      // forwarder's listener was attached and got dropped. In
+      // production, follow-up ResizeObserver fires usually rescued
+      // it; in the E2E harness (faster, more stable layout) the
+      // observer didn't re-fire and the popover got stuck at its
+      // 440×440 constructor frame. Calling the preload API directly
+      // removes the race entirely.
+      window.pwrsnapApi?.requestTrayResize?.({ width: 440, height: target });
+    };
+    post();
+    const ro = new ResizeObserver(() => post());
+    ro.observe(el);
+    // Main pings us on `webContents.zoom-changed` because Chromium's
+    // ResizeObserver doesn't reliably fire on zoom-only changes —
+    // and even if our CSS-pixel measurement is unchanged, main needs
+    // to re-run its CSS→DIP conversion against the new zoomFactor,
+    // so we force a post that bypasses the `posted` cache.
+    const unsubRemeasure = window.pwrsnapApi?.on(
+      "events:popover:remeasure",
+      () => post(true)
     );
-  }, [lastSnapId]);
-  // The CustomEvent above is a renderer-internal hop — TrayMenuShell
-  // (below) listens for it and forwards via window.pwrsnapApi.
-  // Splitting keeps the JSX tree easy to read while letting the
-  // forwarding logic sit close to the lifecycle effect.
+    return () => {
+      ro.disconnect();
+      unsubRemeasure?.();
+    };
+  }, []);
 
   const onCapture = (mode: "auto" | "region" | "window"): void => {
     void dispatch("capture:interactive", { mode });
@@ -244,7 +273,8 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   };
 
   return (
-    <div className="ps-tray" ref={containerRef}>
+    <div ref={containerRef} style={{ display: "inline-block", width: "100%" }}>
+    <div className="ps-tray">
       <div className="ps-tray__hdr">
         <div className="ps-tray__brand">
           <PwrSnapMark size={16} />
@@ -361,22 +391,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       )}
       <div style={{ height: 8 }} />
     </div>
+    </div>
   );
 }
 
-/**
- * Catches the layout-effect resize event and forwards via the
- * window.pwrsnapApi side channel. Sits at the App.tsx root so it
- * survives any TrayMenu re-renders.
- */
-export function TrayResizeForwarder(): null {
-  useEffect(() => {
-    const handler = (event: Event): void => {
-      const ce = event as CustomEvent<{ width: number; height: number }>;
-      window.pwrsnapApi?.requestTrayResize?.(ce.detail);
-    };
-    window.addEventListener("pwrsnap:tray:resize", handler as EventListener);
-    return () => window.removeEventListener("pwrsnap:tray:resize", handler as EventListener);
-  }, []);
-  return null;
-}

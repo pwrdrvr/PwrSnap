@@ -455,15 +455,27 @@
   transform: translateX(0);
   box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
 }
-/* Spine — the 36px sliver that's always visible when not pinned.
-   Hover over it (or the panel) reveals the panel as a peek. The
-   button inside re-pins. Sits in column 1 of the grid. */
+/* Spine — the 36px sliver that's the only visible part of the left
+   column when collapsed. Hover over it (or the panel area) reveals
+   the panel as a peek. Sits in column 1 of the grid.
+   * z-index: 1 is intentional — anchors the spine BELOW the panel
+     (z:30) so any sub-pixel mismatch between the panel's `left: 0`
+     and the spine's grid placement doesn't leave the spine peeking
+     through the panel during peek.
+   * visibility flips to hidden during peek so the panel is the sole
+     visible surface in that column — keeps the spine's layout slot
+     so its return after the peek-out animation has no flash. */
 .psl__left-spine {
   grid-column: 1; grid-row: 2;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   display: flex; flex-direction: column; align-items: center;
   padding: 8px 0;
+  position: relative;
+  z-index: 1;
+}
+.psl[data-left="peek"] .psl__left-spine {
+  visibility: hidden;
 }
 .psl__left-spine-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -479,26 +491,31 @@
   background: var(--bg-panel-hover);
   color: var(--text-primary);
 }
-/* Pin/unpin toggle inside the panel header (visible only when pinned).
-   Click collapses the bar to its spine. */
+/* Pin/unpin toggle inside the panel header. Visible whenever the
+   panel itself is on screen (pinned OR peek) so the user can pin
+   from either state. Was previously rendered with text-muted color
+   on a dark sidebar — invisible in practice. Now it's an explicit
+   button: outlined, accent-tinted, large enough to read at a glance. */
 .psl__left-section--top {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px;
 }
 .psl__left-pin {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px;
+  width: 24px; height: 24px;
   margin-right: -4px;     /* tighten against right edge of section */
-  border-radius: 4px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-muted);
+  border-radius: 5px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
   cursor: pointer;
-  transition: background 100ms var(--ease-out), color 100ms var(--ease-out);
+  transition: background 100ms var(--ease-out), color 100ms var(--ease-out), border-color 100ms var(--ease-out);
 }
+.psl__left-pin svg { width: 13px; height: 13px; }
 .psl__left-pin:hover {
-  background: var(--bg-panel-hover);
-  color: var(--text-primary);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  border-color: var(--accent);
 }
 .psl__left-section { font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); padding: 10px 10px 6px; }
 .psl__left-section:first-child { padding-top: 0; }

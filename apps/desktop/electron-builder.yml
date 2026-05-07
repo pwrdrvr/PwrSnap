@@ -54,6 +54,16 @@ files:
 extraResources:
   - from: "build/native/window-list"
     to: "PwrSnapWindowList"
+  # Tray template icon (16×16 base + @2x/@3x). Electron's nativeImage
+  # auto-loads the @Nx siblings when given the base path, so all three
+  # PNGs need to live next to each other under Contents/Resources/.
+  # Resolved at runtime by resolveTrayIconPath() in main/tray.ts.
+  - from: "build/tray-icon-template.png"
+    to: "tray-icon-template.png"
+  - from: "build/tray-icon-template@2x.png"
+    to: "tray-icon-template@2x.png"
+  - from: "build/tray-icon-template@3x.png"
+    to: "tray-icon-template@3x.png"
 
 electronFuses:
   runAsNode: false

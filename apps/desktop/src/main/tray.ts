@@ -12,6 +12,7 @@
 //   • Right-click opens a real Menu (Quit / Open / Settings) — popover
 //     is for the rich UI, the native menu is the fallback.
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -71,12 +72,12 @@ export function hideTrayPopoverIfVisible(): void {
 }
 
 function resolveTrayIconPath(): string {
-  // The tray PNG ships under apps/desktop/build/. In dev,
-  // app.getAppPath() resolves to apps/desktop. In production
-  // packaged builds, the file lives next to the bundled
-  // resources — electron-builder includes `build/` via the
-  // `extraResources` mechanism (TODO Phase 3 — for Phase 1, dev
-  // path is sufficient).
+  // Production: shipped under Contents/Resources/ via electron-builder.yml's
+  // `extraResources`. nativeImage auto-loads the @2x/@3x siblings when
+  // given the base path, as long as they're in the same directory.
+  const productionPath = join(process.resourcesPath, "tray-icon-template.png");
+  if (existsSync(productionPath)) return productionPath;
+  // Dev: served straight out of the workspace `build/` dir.
   return join(app.getAppPath(), "build/tray-icon-template.png");
 }
 

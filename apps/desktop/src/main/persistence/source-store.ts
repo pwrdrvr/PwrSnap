@@ -15,7 +15,7 @@ import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
-import { getCacheRoot, getCapturesRoot, getTrashRoot } from "./paths";
+import { getCacheRoot, getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:source-store");
@@ -143,29 +143,53 @@ export async function statSource(srcPath: string): Promise<{ byteSize: number }>
 }
 
 /**
- * Resolve a capture record's effective on-disk source path. For live
- * records this is the row's `legacy_src_path` (the bundle-flow rewire
- * in the next phase routes bundle-backed captures through a different
- * seam). For soft-deleted records the file has been renamed into
- * `<userData>/.trash/<id><ext>` — the row's path columns deliberately
- * don't update so Restore can put it back. The extension comes from
- * the original source path (PR #64): PNG for images, MP4 for video,
- * etc. Hardcoding `.png` would lose video sources on trash/restore.
- * Throws if the record has neither a legacy nor (eventually) a bundle
- * source — that's a programming error, not a runtime miss.
+ * Resolve a capture record's effective on-disk source path. Four
+ * cases, in priority order:
+ *
+ *   1. **Soft-deleted** — return `<userData>/.trash/<id><ext>`. The
+ *      extension comes from `legacy_src_path` (PR #64: video sources
+ *      use `.mp4`, image sources `.png`). The row's path columns
+ *      deliberately don't update through trash + restore; they
+ *      remember where the file came from so Restore can put it back.
+ *   2. **Bundle-backed (`bundle_path` non-null)** — return the
+ *      per-capture cache path under `<userData>/cache/<id>/source.png`.
+ *      `persistCaptureFromTemp` writes this eagerly at capture time
+ *      so synchronous callers (compose, clipboard render) get a real
+ *      filesystem path without round-tripping through yauzl. Safe to
+ *      delete; the bundle is the source of truth.
+ *   3. **Legacy (`legacy_src_path` non-null)** — return the
+ *      pre-bundle-migration path. Legacy captures continue to live at
+ *      `~/Documents/PwrSnap/<id>.{png,mp4}` until the legacy migration
+ *      wraps them in bundles.
+ *
+ * Throws when a row has neither bundle nor legacy source — that's a
+ * programming error (a row inserted without either path), not a
+ * runtime miss.
  */
 export function effectiveSrcPathFor(record: {
   id: string;
   legacy_src_path: string | null;
+  bundle_path?: string | null;
   deleted_at: string | null;
 }): string {
+  if (record.deleted_at !== null) {
+    // Trash file extension matches the original source — `.mp4` for
+    // video, `.png` for image. Fall back to `.png` only when the row
+    // has no path column to inspect (bundle-only captures that were
+    // soft-deleted before the bundle-flow rewire took over the trash
+    // path).
+    const ext = record.legacy_src_path !== null
+      ? extname(record.legacy_src_path)
+      : ".png";
+    return join(getTrashRoot(), `${record.id}${ext}`);
+  }
+  if (record.bundle_path !== null && record.bundle_path !== undefined) {
+    return getCacheSourcePath(record.id);
+  }
   if (record.legacy_src_path === null) {
     throw new Error(
-      `source-store: capture ${record.id} has no legacy_src_path; bundle path not wired yet`
+      `source-store: capture ${record.id} has neither bundle_path nor legacy_src_path`
     );
-  }
-  if (record.deleted_at !== null) {
-    return join(getTrashRoot(), `${record.id}${extname(record.legacy_src_path)}`);
   }
   return record.legacy_src_path;
 }

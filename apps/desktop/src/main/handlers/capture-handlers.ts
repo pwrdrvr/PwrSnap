@@ -52,6 +52,7 @@ import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
+import { persistCaptureFromTemp } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
@@ -732,23 +733,20 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  const stored = await putCaptureSource(tempPath);
-  const { record, isNew } = insertOrFindCapture({
-    id: stored.id,
-    kind: "image",
-    captured_at: new Date().toISOString(),
-    source_app_bundle_id: sourceApp?.bundleId ?? null,
-    source_app_name: sourceApp?.appName ?? null,
-    legacy_src_path: stored.srcPath,
-    width_px: stored.widthPx,
-    height_px: stored.heightPx,
-    device_pixel_ratio: options.devicePixelRatio ?? 2, // Phase 3+ derives from the active display
-    byte_size: stored.byteSize,
-    sha256: stored.sha256
+  const { record, isDedup } = await persistCaptureFromTemp({
+    tempPath,
+    sourceApp:
+      sourceApp === null
+        ? null
+        : {
+            bundleId: sourceApp.bundleId,
+            appName: sourceApp.appName
+          },
+    devicePixelRatio: options.devicePixelRatio
   });
   log.info("capture persisted", {
     captureId: record.id,
-    isNew,
+    isDedup,
     sourceAppBundleId: record.source_app_bundle_id,
     sourceAppName: record.source_app_name
   });

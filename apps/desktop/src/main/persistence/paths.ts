@@ -88,6 +88,27 @@ export function getLegacyCacheRoot(): string {
   return join(getDataRoot(), "cache");
 }
 
+/**
+ * Per-capture extracted-source cache. The bundle's `source.png` is
+ * materialized here on first use so synchronous callers
+ * (`effectiveSrcPathFor`, the `pwrsnap-capture://` resolver,
+ * `compose()`) can hand a real filesystem path to sharp without
+ * extracting on every read. Regenerable from the bundle; safe to
+ * delete.
+ */
+export function getCacheSourcePath(captureId: string): string {
+  return join(getCacheRoot(), captureId, "source.png");
+}
+
+/**
+ * Schema-fail bundles park here, never auto-deleted, so the user
+ * (or doctor) can decide whether to recover or discard. Distinct
+ * from `.trash/` which is a soft-delete with a 14d retention sweep.
+ */
+export function getQuarantineRoot(): string {
+  return join(getDataRoot(), ".quarantine");
+}
+
 export function getTrashRoot(): string {
   return join(getDataRoot(), ".trash");
 }

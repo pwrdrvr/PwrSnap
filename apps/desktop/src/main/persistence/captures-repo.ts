@@ -82,6 +82,14 @@ export type InsertCapture = {
    * is null.
    */
   legacy_src_path: string | null;
+  /**
+   * Bundle pair paths. Optional for the legacy-data path (which uses
+   * `legacy_src_path` only); required for new bundle-flow captures.
+   */
+  bundle_path?: string | null;
+  flat_png_path?: string | null;
+  bundle_modified_at?: string | null;
+  bundle_overlays_version?: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -135,23 +143,35 @@ function insertOrFindCaptureInTx(
   db: ReturnType<typeof getDb>,
   input: InsertCapture
 ): { record: CaptureRecord; isNew: boolean } {
+  // Bundle columns are optional on InsertCapture (legacy-data path uses
+  // legacy_src_path only). Normalize undefined → null/0 before binding
+  // so the prepared statement always sees a value for every @-param.
+  const params = {
+    ...input,
+    bundle_path: input.bundle_path ?? null,
+    flat_png_path: input.flat_png_path ?? null,
+    bundle_modified_at: input.bundle_modified_at ?? null,
+    bundle_overlays_version: input.bundle_overlays_version ?? 0
+  };
   const inserted = db
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
         source_app_bundle_id, source_app_name, legacy_src_path,
+        bundle_path, flat_png_path, bundle_modified_at, bundle_overlays_version,
         width_px, height_px, device_pixel_ratio,
         byte_size, sha256, overlays_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
         @source_app_bundle_id, @source_app_name, @legacy_src_path,
+        @bundle_path, @flat_png_path, @bundle_modified_at, @bundle_overlays_version,
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )
       ON CONFLICT(sha256) DO NOTHING
       RETURNING *`
     )
-    .get(input) as CaptureRow | undefined;
+    .get(params) as CaptureRow | undefined;
 
   if (inserted !== undefined) {
     bumpAppStat(input.source_app_bundle_id, +1);
@@ -164,6 +184,21 @@ function insertOrFindCaptureInTx(
     .prepare("SELECT * FROM captures WHERE sha256 = ?")
     .get(input.sha256) as CaptureRow;
   return { record: rowToRecord(existing), isNew: false };
+}
+
+/**
+ * Look up a capture by sha256. Used by the bundle-flow capture
+ * orchestrator to dedup BEFORE packing a bundle: identical pixels
+ * produce one bundle, not two. The existing `sha256 UNIQUE`
+ * constraint is the safety net; this lookup is the optimization
+ * that avoids wasted pack/write work.
+ */
+export function findCaptureBySha256(sha256: string): CaptureRecord | null {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM captures WHERE sha256 = ?").get(sha256) as
+    | CaptureRow
+    | undefined;
+  return row ? rowToRecord(row) : null;
 }
 
 export function getCaptureById(id: string): CaptureRecord | null {

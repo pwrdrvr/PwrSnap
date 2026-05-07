@@ -18,8 +18,11 @@
 //
 // See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md.
 
-import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { nanoid } from "nanoid";
+import sharp from "sharp";
 import yauzl from "yauzl";
 import yazl from "yazl";
 
@@ -30,6 +33,16 @@ import {
   isBundleEntryName,
   type BundleEntryName
 } from "@pwrsnap/shared";
+
+import type { CaptureRecord } from "@pwrsnap/shared";
+
+import { writeFile } from "node:fs/promises";
+
+import { findCaptureBySha256, insertOrFindCapture } from "./captures-repo";
+import { getCacheSourcePath, getCapturesRoot } from "./paths";
+import { getMainLogger } from "../log";
+
+const log = getMainLogger("pwrsnap:bundle-store");
 
 /**
  * Validate a ZIP central directory against the four-entry allowlist.
@@ -376,4 +389,198 @@ export async function readBundleEntry(
   } finally {
     zipFile.close();
   }
+}
+
+// ---------------------------------------------------------------------------
+// High-level write seam — bundle pair I/O.
+// ---------------------------------------------------------------------------
+
+export type WriteBundlePairResult = {
+  bundlePath: string;
+  flatPngPath: string;
+};
+
+/**
+ * Pack and atomically write the `<id>.pwrsnap` bundle plus its paired
+ * `<id>.png` flat composite into `outputDir`. Bundle goes first (it's
+ * the system of record); the paired flat PNG goes second (regenerable
+ * derivative). A crash between the two leaves the bundle in place;
+ * the doctor reconcile pass regenerates the missing PNG from the
+ * bundle's `composite.png` on next boot.
+ *
+ * Both writes use the atomic-rename pattern (temp file in same dir,
+ * fsync before rename, fsync dir after). 0o600 on temp files; no
+ * world-readable window.
+ *
+ * `outputDir` is created if missing — first capture path triggers
+ * the macOS TCC prompt for `~/Documents/` access here.
+ */
+export async function writeBundlePair(args: {
+  outputDir: string;
+  filenameStem: string;
+  manifest: BundleManifestV1;
+  overlays: BundleOverlaysV1;
+  sourcePng: Buffer;
+  compositePng: Buffer;
+}): Promise<WriteBundlePairResult> {
+  const bundlePath = join(args.outputDir, `${args.filenameStem}.pwrsnap`);
+  const flatPngPath = join(args.outputDir, `${args.filenameStem}.png`);
+
+  const bundleBuf = await packBundle({
+    manifest: args.manifest,
+    overlays: args.overlays,
+    sourcePng: args.sourcePng,
+    compositePng: args.compositePng
+  });
+
+  // Bundle FIRST — system of record. If we crash between the two,
+  // the doctor finds the bundle and regenerates the paired PNG.
+  await atomicWriteBundle(bundlePath, bundleBuf);
+  await atomicWriteBundle(flatPngPath, args.compositePng);
+
+  return { bundlePath, flatPngPath };
+}
+
+// ---------------------------------------------------------------------------
+// Capture-flow orchestrator — the single seam capture-handlers uses to
+// turn a freshly-captured PNG temp file into a bundle pair + DB row.
+// ---------------------------------------------------------------------------
+
+export type PersistCaptureFromTempArgs = {
+  tempPath: string;
+  sourceApp: { bundleId: string | null; appName: string | null } | null;
+  /** Defaults to `getCapturesRoot()` (`~/Documents/PwrSnap/`). */
+  outputDir?: string;
+  /**
+   * Captured-display DPR. Defaults to 2 (Retina). The clipboard-paste
+   * caller (PR #48) passes 1 because pasted bytes aren't from a
+   * physical display. Surfaces in `CaptureRecord.device_pixel_ratio`
+   * for thumbnail / preset-rendering math.
+   */
+  devicePixelRatio?: number;
+};
+
+export type PersistCaptureFromTempResult = {
+  record: CaptureRecord;
+  isDedup: boolean;
+};
+
+/**
+ * Read a screencapture-CLI temp file, dedup by sha256, and (on cache
+ * miss) pack a `.pwrsnap` bundle + paired flat PNG into the output
+ * dir, then insert the DB row pointing at both. On dedup hit, the
+ * temp file is unlinked and the existing record is returned without
+ * writing anything new — two captures of identical pixels produce
+ * one bundle, not two.
+ *
+ * Initial bundle has `composite.png == source.png` byte-identically
+ * because there are no overlays applied yet. Subsequent overlay
+ * edits trigger a `scheduleRepack` debounce that re-renders the
+ * composite and re-packs the bundle.
+ */
+export async function persistCaptureFromTemp(
+  args: PersistCaptureFromTempArgs
+): Promise<PersistCaptureFromTempResult> {
+  const buf = await readFile(args.tempPath);
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+
+  const existing = findCaptureBySha256(sha256);
+  if (existing !== null && existing.deleted_at === null) {
+    log.info("bundle-store: dedup hit on capture", { id: existing.id, sha256 });
+    try {
+      await unlink(args.tempPath);
+    } catch {
+      // best-effort
+    }
+    return { record: existing, isDedup: true };
+  }
+
+  const id = nanoid(16);
+  const meta = await sharp(buf).metadata();
+  const widthPx = meta.width ?? 0;
+  const heightPx = meta.height ?? 0;
+  if (widthPx === 0 || heightPx === 0) {
+    throw new Error(`bundle-store: failed to read PNG dimensions from ${args.tempPath}`);
+  }
+
+  const now = new Date().toISOString();
+  const outputDir = args.outputDir ?? getCapturesRoot();
+  const filenameStem = id;
+  const pairedPngFilename = `${filenameStem}.png`;
+
+  const manifest: BundleManifestV1 = {
+    bundle_format_version: 1,
+    capture_id: id,
+    source_sha256: sha256,
+    source_dimensions: { width_px: widthPx, height_px: heightPx },
+    paired_png_filename: pairedPngFilename,
+    created_at: now,
+    bundle_modified_at: now
+  };
+
+  const overlays: BundleOverlaysV1 = {
+    overlays_format_version: 1,
+    overlays_version: 0,
+    overlays: [],
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+
+  // Initial composite == source: no overlays applied yet, so the
+  // baked render is byte-identical to the source PNG.
+  const { bundlePath, flatPngPath } = await writeBundlePair({
+    outputDir,
+    filenameStem,
+    manifest,
+    overlays,
+    sourcePng: buf,
+    compositePng: buf
+  });
+
+  // Materialize source.png to the per-capture cache so synchronous
+  // callers (compose(), the `pwrsnap-capture://` resolver,
+  // `effectiveSrcPathFor`) can hand a real path to sharp without
+  // extracting from the ZIP on every read. Cache is regenerable
+  // from the bundle; safe to delete.
+  const cacheSource = getCacheSourcePath(id);
+  await mkdir(dirname(cacheSource), { recursive: true });
+  await writeFile(cacheSource, buf);
+
+  // Clean up the screencapture temp file — we have the bytes baked
+  // into the bundle now.
+  try {
+    await unlink(args.tempPath);
+  } catch {
+    // best-effort; boot-time temp sweep catches strays
+  }
+
+  const { record } = insertOrFindCapture({
+    id,
+    kind: "image",
+    captured_at: now,
+    source_app_bundle_id: args.sourceApp?.bundleId ?? null,
+    source_app_name: args.sourceApp?.appName ?? null,
+    legacy_src_path: null,
+    bundle_path: bundlePath,
+    flat_png_path: flatPngPath,
+    bundle_modified_at: now,
+    bundle_overlays_version: 0,
+    width_px: widthPx,
+    height_px: heightPx,
+    device_pixel_ratio: args.devicePixelRatio ?? 2,
+    byte_size: buf.length,
+    sha256
+  });
+
+  log.info("bundle-store: persisted new capture", {
+    id,
+    bundlePath,
+    flatPngPath,
+    byteSize: buf.length,
+    widthPx,
+    heightPx
+  });
+
+  return { record, isDedup: false };
 }

@@ -172,7 +172,7 @@ Most-common Electron failures:
 | "The signature does not include a secure timestamp." | `--timestamp` flag missing on inner sign | electron-builder ≥ 26 handles this automatically; upgrade builder |
 | "The executable does not have the hardened runtime enabled." | Missing `mac.hardenedRuntime: true` | Confirm in `electron-builder.yml` |
 | "The entitlement com.apple.security.cs.allow-jit ... is missing on a helper bundle." | `entitlementsInherit` not pointing at the same plist | Confirm `mac.entitlements` and `mac.entitlementsInherit` both reference `build/entitlements.mac.plist` |
-| "library validation failed" loading better-sqlite3 or sharp at runtime | Missing `disable-library-validation` entitlement | PwrSnap requires it (unlike PwrAgnt). Confirm `build/entitlements.mac.plist` includes `com.apple.security.cs.disable-library-validation` |
+| "library validation failed" loading sharp's libvips at runtime | Missing `disable-library-validation` entitlement | PwrSnap requires it because sharp dlopens `libvips-cpp.42.x.dylib` (pre-signed by sharp's maintainer, not our team). Confirm `build/entitlements.mac.plist` includes `com.apple.security.cs.disable-library-validation`. **Note:** `better-sqlite3` alone does NOT need this — PwrAgnt ships it without the entitlement because electron-builder re-signs the `.node` file with our Developer ID during packaging. |
 | Hangs on "Waiting for notarization status..." for >30 min | Apple infrastructure congestion | Wait or re-submit; both submissions count against the same successful staple |
 
 ---

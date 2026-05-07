@@ -22,8 +22,8 @@ PwrSnap can build an unsigned DMG via `package:dryrun`, but:
 - The DMG has no branded background — macOS shows a blank window with unlabeled
   icons, making the install experience confusing.
 - No entitlements plist exists, so hardened runtime will crash the app on launch
-  once signing is enabled (PwrSnap ships `better-sqlite3` + `sharp` native
-  modules, unlike PwrAgnt which has none).
+  once signing is enabled (PwrSnap ships `sharp` which dlopens a pre-signed
+  `libvips` dylib at runtime, unlike PwrAgnt which has no sharp dep).
 - No `verify-asar-contents` guard — forbidden files (TS sources, docs, env,
   screenshots) can silently leak into the bundle.
 - No release metadata validation — version/tag/changelog mismatches can slip
@@ -74,10 +74,18 @@ expanding `electron-builder.yml` with the missing sections.
   </plist>
   ```
   **Critical difference from PwrAgnt:** PwrSnap includes
-  `disable-library-validation` because `better-sqlite3` and `sharp` ship
-  prebuilt `.node` binaries signed by upstream authors (different team ID) or
-  ad-hoc signed. Without this entitlement the hardened runtime kills the process
-  on first native module load.
+  `disable-library-validation` because of **sharp specifically**, not
+  better-sqlite3. PwrAgnt also ships better-sqlite3 (and successfully
+  notarizes through 6+ releases) because electron-builder rebuilds and
+  re-signs the better-sqlite3 `.node` file with our Developer ID during
+  packaging — library validation is satisfied for the SQLite path.
+
+  Sharp is the actual blocker: `sharp.node` dlopens `libvips-cpp.42.x.dylib`
+  at runtime, and that dylib is pre-signed by sharp's maintainer (different
+  team). Without this entitlement (or a custom afterPack codesign of the
+  dylib), the hardened runtime kills the process on first sharp call. See
+  the buildout plan §"Bundle Layout & Signing" for the long-term shape
+  (afterPack `codesign --force --deep` + drop the entitlement).
 
 - [ ] Add `entitlements` and `entitlementsInherit` to `electron-builder.yml`
   mac section:
@@ -285,12 +293,12 @@ notarized DMG that installs cleanly.
    canvas size) in sync between the script and `electron-builder.yml`, and
    makes future brand tweaks trivial (change a color constant, regenerate).
 
-2. **Omit `disable-library-validation` and rebuild native modules from source
-   during the release.** Rejected because `better-sqlite3` and `sharp` are
-   large native builds with system SDK requirements; electron-builder's
-   `rebuild` step already runs but the resulting binaries are still signed with
-   the build machine's ad-hoc identity, not our Developer ID. The entitlement
-   is the standard Electron approach for apps with prebuilt native deps.
+2. **Omit `disable-library-validation` and re-sign sharp's libvips dylib in an
+   afterPack hook.** This is the long-term hardening path documented in the
+   buildout plan's "Bundle Layout & Signing" table. Deferred for v0.0.1
+   velocity — the entitlement is a standard, notarization-accepted shortcut
+   used by most Electron+sharp apps. (better-sqlite3 doesn't need either
+   approach; electron-builder already re-signs its `.node` file.)
 
 3. **Use a separate releases repo (like PwrAgnt Phase 2 discusses).** Deferred
    — for now, publish to the same private `pwrdrvr/PwrSnap` repo. The
@@ -351,7 +359,7 @@ notarized DMG that installs cleanly.
 - [ ] `electron-builder.yml` has complete `dmg:`, `mac:`, `publish:`, and `files:` sections
 - [ ] `pnpm --filter @pwrsnap/desktop package:dryrun` succeeds end-to-end
 - [ ] Resulting DMG shows branded installer with arrow and correct icon positions
-- [ ] App launched from unsigned DMG loads `better-sqlite3` and `sharp` without crash
+- [ ] App launched from signed DMG loads `better-sqlite3` (re-signed by electron-builder) and `sharp` (entitlement-permitted libvips dlopen) without crash
 - [ ] `pnpm release:check --tag v0.0.1` passes
 - [ ] `pnpm --filter @pwrsnap/desktop verify:asar-contents` passes after dryrun
 - [ ] `preview-build.yml` triggers on `build-preview` label and uploads DMG artifact
@@ -385,7 +393,7 @@ notarized DMG that installs cleanly.
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| `disable-library-validation` not sufficient for native modules | Low | High (crash on launch) | Test locally before pushing secrets; if needed, investigate rebuilding native deps with our signing identity |
+| `disable-library-validation` not sufficient for sharp's libvips dlopen | Low | High (crash on first sharp call) | Test signed build locally before pushing secrets; if it still crashes, investigate afterPack `codesign --force --deep` on the libvips dylib (long-term path anyway) |
 | DMG background renders incorrectly on non-Retina | Medium | Low (cosmetic) | Accept 1x limitation (matches PwrAgnt); note for future improvement |
 | `pnpm deploy` skips native helper binary | Low | High (app missing window-list) | Explicit `build:native` step in both workflows, before release step |
 | Notarization rejected due to new entitlement | Low | Medium (blocks release) | Test with `--no-publish` first; Apple docs confirm `disable-library-validation` is a standard entitlement |

@@ -1,24 +1,44 @@
 // useLibrary — useSyncExternalStore over the captures-changed event
-// channel. StrictMode-safe (no double-subscribe), survives renderer
-// re-mounts cleanly. Per the deepening review: the renderer must use
-// useSyncExternalStore for live external sources, not useEffect +
-// watchCaptures, otherwise React 19's intentional dev double-mount
-// duplicates listeners.
+// channel + keyset pagination. StrictMode-safe (no double-subscribe),
+// survives renderer re-mounts cleanly.
+//
+// Snapshot shape:
+//   - rows: CaptureRecord[]      // accumulated across loaded pages
+//   - appStats / totalLive       // populated from the head-page response
+//   - hasMore: boolean           // there's a nextCursor — call loadMore()
+//   - loading, isLoadingMore     // first-fetch vs. successive-page state
+//   - loadMore(): Promise<void>  // appends the next page to `rows`
+//
+// The handler returns appStats + totalLive only on head-page requests,
+// so we cache them on the snapshot and don't refetch on every page.
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import type { CaptureRecord, LibraryAppStat, LibraryCursor } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
 
 type Snapshot = {
   loading: boolean;
-  records: CaptureRecord[];
+  isLoadingMore: boolean;
+  rows: CaptureRecord[];
+  nextCursor: LibraryCursor | null;
+  appStats: LibraryAppStat[];
+  totalLive: number;
   error: string | null;
   /** Bumps on every refetch — drives useSyncExternalStore. */
   version: number;
 };
 
-const initialSnapshot: Snapshot = { loading: true, records: [], error: null, version: 0 };
+const initialSnapshot: Snapshot = {
+  loading: true,
+  isLoadingMore: false,
+  rows: [],
+  nextCursor: null,
+  appStats: [],
+  totalLive: 0,
+  error: null,
+  version: 0
+};
 
 // Module-level store. The renderer mounts one Library; the singleton
 // snapshot survives StrictMode double-mount.
@@ -41,57 +61,108 @@ function subscribeToStore(listener: () => void): () => void {
   };
 }
 
-let inFlight: Promise<void> | null = null;
+let inFlightHead: Promise<void> | null = null;
+let inFlightMore: Promise<void> | null = null;
 
-async function refetch(): Promise<void> {
-  if (inFlight !== null) return inFlight;
-  inFlight = (async () => {
+/**
+ * Refetch the head page. On `events:captures:changed`, this drops
+ * any loaded subsequent pages and reloads page 1 — Phase 4+ can
+ * upgrade this to a delta-merge that preserves loaded windows; for
+ * now, refetch-from-top matches the existing behavior.
+ */
+async function refetchHead(): Promise<void> {
+  if (inFlightHead !== null) return inFlightHead;
+  inFlightHead = (async () => {
     try {
       // includeDeleted: true so the renderer can partition into a live
-       // list and a trash list off a single fetch — the Trash sidebar
-       // view reads the same snapshot. ~hundreds of rows; the extra
-       // payload is negligible compared to a second round-trip.
-      const result = await dispatch("library:list", { limit: 500, includeDeleted: true });
+      // list and a trash list off the same paginated snapshot — the
+      // Trash sidebar reads the same data. At keyset scale this means
+      // soft-deleted rows are intermixed with live rows by captured_at
+      // and arrive page-by-page; client-side partitioning still works.
+      // (At 100k+ scale a dedicated `library:listTrash` command is the
+      // proper fix, but that's a follow-up.)
+      const result = await dispatch("library:list", { limit: 100, includeDeleted: true });
       if (!result.ok) {
         setSnapshot({
+          ...snapshot,
           loading: false,
-          records: snapshot.records,
           error: result.error.message,
           version: snapshot.version + 1
         });
         return;
       }
+      const { rows, nextCursor, appStats, totalLive } = result.value;
       setSnapshot({
         loading: false,
-        records: result.value,
+        isLoadingMore: false,
+        rows,
+        nextCursor,
+        appStats: appStats ?? [],
+        totalLive: totalLive ?? rows.length,
         error: null,
         version: snapshot.version + 1
       });
     } finally {
-      inFlight = null;
+      inFlightHead = null;
     }
   })();
-  return inFlight;
+  return inFlightHead;
+}
+
+async function loadMore(): Promise<void> {
+  if (inFlightMore !== null) return inFlightMore;
+  if (snapshot.nextCursor === null) return;
+  inFlightMore = (async () => {
+    setSnapshot({ ...snapshot, isLoadingMore: true, version: snapshot.version + 1 });
+    try {
+      const result = await dispatch("library:list", {
+        cursor: snapshot.nextCursor ?? undefined,
+        limit: 100,
+        includeDeleted: true
+      });
+      if (!result.ok) {
+        setSnapshot({
+          ...snapshot,
+          isLoadingMore: false,
+          error: result.error.message,
+          version: snapshot.version + 1
+        });
+        return;
+      }
+      const { rows, nextCursor } = result.value;
+      setSnapshot({
+        ...snapshot,
+        isLoadingMore: false,
+        rows: [...snapshot.rows, ...rows],
+        nextCursor,
+        version: snapshot.version + 1
+      });
+    } finally {
+      inFlightMore = null;
+    }
+  })();
+  return inFlightMore;
 }
 
 let subscribed = false;
 function ensureSubscription(): void {
   if (subscribed) return;
   subscribed = true;
-  // Initial fetch.
-  void refetch();
-  // Server pushes events:captures:changed after every insert / soft-
-  // delete; renderer just refetches. (The server sends `{ changedIds }`;
-  // Phase 2+ can use it to do delta merges instead of a full refetch.)
+  void refetchHead();
   subscribe(EVENT_CHANNELS.capturesChanged, () => {
-    void refetch();
+    void refetchHead();
   });
 }
 
 export type UseLibraryResult = {
   loading: boolean;
-  records: CaptureRecord[];
+  isLoadingMore: boolean;
+  rows: CaptureRecord[];
+  hasMore: boolean;
+  appStats: LibraryAppStat[];
+  totalLive: number;
   error: string | null;
+  loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
 };
 
@@ -102,12 +173,16 @@ export function useLibrary(): UseLibraryResult {
   useEffect(() => {
     ensureSubscription();
   }, []);
-  const refresh = useCallback(() => refetch(), []);
   return {
     loading: data.loading,
-    records: data.records,
+    isLoadingMore: data.isLoadingMore,
+    rows: data.rows,
+    hasMore: data.nextCursor !== null,
+    appStats: data.appStats,
+    totalLive: data.totalLive,
     error: data.error,
-    refresh
+    loadMore,
+    refresh: refetchHead
   };
 }
 

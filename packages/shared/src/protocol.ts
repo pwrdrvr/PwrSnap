@@ -144,7 +144,28 @@ export type Commands = {
   };
 
   // ---- library ----
-  "library:list": { req: CaptureFilter; res: CaptureRecord[] };
+  /**
+   * Keyset-paginated timeline read. When `cursor` is omitted, returns
+   * the most-recent page and includes `appStats` + `totalLive` for the
+   * sidebar (head-page-only — saves a round-trip without paying for
+   * stats on every page). Subsequent pages omit those.
+   */
+  "library:list": {
+    req: {
+      cursor?: LibraryCursor | undefined;
+      limit?: number | undefined;
+      appBundleId?: string | undefined;
+      includeDeleted?: boolean | undefined;
+    };
+    res: {
+      rows: CaptureRecord[];
+      nextCursor: LibraryCursor | null;
+      /** Head-page only. */
+      appStats?: LibraryAppStat[];
+      /** Head-page only. Live row count served from app_stats. */
+      totalLive?: number;
+    };
+  };
   "library:byId": { req: { id: string }; res: CaptureRecord | null };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };

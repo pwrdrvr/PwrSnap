@@ -5,7 +5,7 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { Tool } from "../editor/Editor";
-import { FixtureBackedRecords } from "./adapter";
+import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
@@ -64,6 +64,20 @@ function CellThumb({
 }
 
 /**
+ * Derive a display label from a bundle id when no curated name is
+ * registered (`com.pwrsnap.synth.air-table` → "Air Table"). Takes the
+ * last dotted segment, splits on hyphens, and Title-Cases each word.
+ */
+function labelFromBundleId(bundleId: string): string {
+  const tail = bundleId.split(".").pop() ?? bundleId;
+  return tail
+    .split(/[-_]+/)
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/**
  * Local-date stamp as YYYY-MM-DD. Used as a memo key so date-derived
  * UI (the "Today" filter, day-bucket headers) rebuilds when the local
  * date changes — including across midnight while the app stays open.
@@ -119,7 +133,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const selectedRecordId = view.selectedRecordId;
 
-  const { records, error } = useLibrary();
+  const {
+    rows: records,
+    error,
+    hasMore,
+    isLoadingMore,
+    loadMore,
+    totalLive,
+    appStats
+  } = useLibrary();
 
   // Local-date watcher. The fixture day-bucket ("Today" / "Yesterday"
   // / "Earlier") is computed against `new Date()` when the snapshot is
@@ -163,10 +185,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     };
   }, []);
 
-  // Partition records into live + trash. The renderer asks
-  // `library:list` for `includeDeleted: true` (single round-trip) and
-  // splits here so the Trash sidebar entry just swaps the active
-  // universe without a second fetch.
+  // Partition records into live + trash. useLibrary fetches with
+  // `includeDeleted: true`, so the keyset-paginated snapshot contains
+  // both; we partition here so the Trash sidebar entry swaps the
+  // active universe without a second fetch.
   const liveRecords = useMemo(
     () => records.filter((r) => r.deleted_at === null),
     [records]
@@ -216,13 +238,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     // the Today badge resets to 0 at midnight without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveRecords, todayDateStr]);
+  // Per-app counts come from the denormalized `app_stats` table via
+  // useLibrary's head-page response — stable on first paint, doesn't
+  // climb as keyset pages stream in. Multiple bundle ids can map to
+  // the same fixture app key (e.g. `com.tinyspeck.slackmacgap` and
+  // `slack` both fold into `slack`), so we aggregate after mapping.
   const appCounts = useMemo<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
-    for (const c of liveFixturesForCounts) {
-      counts[c.app] = (counts[c.app] ?? 0) + 1;
+    for (const stat of appStats) {
+      const appId = mapBundleIdToAppId(stat.bundleId);
+      counts[appId] = (counts[appId] ?? 0) + stat.count;
     }
     return counts;
-  }, [liveFixturesForCounts]);
+  }, [appStats]);
 
   // "Today" sidebar count — live records whose adapter-bucket landed
   // in the Today bucket (see adapter.ts:dayBucket). Live-only because
@@ -232,22 +260,38 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     [liveFixturesForCounts]
   );
 
-  // Display name per app key — curated short id wins (so "vscode"
-  // stays "VS Code"), else first non-null `appName` we observed for
-  // that key (the OS-supplied user-facing name from
-  // `record.source_app_name`). Falls back to "Unknown app" only when
-  // neither is available (record missing both bundle id and name).
+  // Display name per app key. Like appCounts, derived from app_stats
+  // so the sidebar is stable on first paint instead of filling in as
+  // records stream. For each bundle id:
+  //   1. Curated short id wins (so com.tinyspeck.slackmacgap → "Slack").
+  //   2. Otherwise, derive a Title-Case label from the bundle id's
+  //      tail segment (so com.pwrsnap.synth.air-table → "Air Table").
+  //   3. Loaded records refine the label when an OS-supplied
+  //      `source_app_name` is available — that takes precedence.
   const appLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
+    // Pass 1: derive from app_stats bundle ids alone (stable on load).
+    for (const stat of appStats) {
+      const appId = mapBundleIdToAppId(stat.bundleId);
+      if (labels[appId] !== undefined) continue;
+      const curated = APP_INFO[appId]?.name;
+      if (curated !== undefined) {
+        labels[appId] = curated;
+      } else if (stat.bundleId !== null) {
+        labels[appId] = labelFromBundleId(stat.bundleId);
+      } else {
+        labels[appId] = "Unknown app";
+      }
+    }
+    // Pass 2: refine with OS-supplied `source_app_name` once records
+    // stream in (real captures pick up nicer names than slug-derived).
     for (const c of liveFixturesForCounts) {
-      if (labels[c.app] !== undefined) continue;
-      const known = APP_INFO[c.app]?.name;
-      if (known !== undefined) labels[c.app] = known;
-      else if (c.appName !== null) labels[c.app] = c.appName;
-      else labels[c.app] = "Unknown app";
+      if (APP_INFO[c.app]?.name !== undefined) continue; // curated already picked
+      if (c.appName === null) continue;
+      labels[c.app] = c.appName;
     }
     return labels;
-  }, [liveFixturesForCounts]);
+  }, [appStats, liveFixturesForCounts]);
 
   // Apps that should appear in the left rail: any app with ≥1 capture,
   // PLUS the currently-active filter (so a user who's filtered to

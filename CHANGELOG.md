@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.0-alpha.2 - 2026-05-06
+
+- Decode the GitHub Actions `CSC_LINK` signing certificate secret to a
+  temporary `.p12` file before invoking electron-builder.
+- Re-cut the desktop alpha after the failed `v1.0.0-alpha.1` tag run.
+
 ## v1.0.0-alpha.1 - 2026-05-06
 
 - Fixed the macOS entitlements plist so codesign can parse it during packaged

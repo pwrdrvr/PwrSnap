@@ -89,6 +89,32 @@ function maybeDecodeAppleApiKey() {
   console.log(`  decoded APPLE_API_KEY_BASE64 -> ${target}`);
 }
 
+// 1b. Decode CI-provided signing certificate (if present) to a real .p12 file.
+//     electron-builder accepts base64 in CSC_LINK, but decoding it here avoids
+//     ambiguity where a secret value gets interpreted as a relative file path
+//     from the staged app directory.
+function maybeDecodeCscLink() {
+  const link = process.env.CSC_LINK;
+  if (!link) return;
+  if (
+    link.startsWith("http://")
+    || link.startsWith("https://")
+    || link.startsWith("file://")
+    || link.startsWith("/")
+    || link.startsWith("~/")
+    || existsSync(link)
+  ) {
+    return;
+  }
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(link)) {
+    return;
+  }
+  const target = join(tmpdir(), "PwrSnap_Developer_ID_Application.p12");
+  writeFileSync(target, Buffer.from(link, "base64"));
+  process.env.CSC_LINK = target;
+  console.log(`  decoded CSC_LINK -> ${target}`);
+}
+
 // 2. Build (electron-vite -> apps/desktop/out/).
 step("electron-vite build");
 runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });
@@ -134,6 +160,9 @@ step(
   })`
 );
 maybeDecodeAppleApiKey();
+if (!dryrun) {
+  maybeDecodeCscLink();
+}
 const builderArgs = ["electron-builder", "--mac"];
 if (dryrun) {
   builderArgs.push("dmg");

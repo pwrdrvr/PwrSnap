@@ -131,9 +131,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
+  const isTodayView = activeApp === "today";
   const visible =
     activeApp === "all" || isTrashView
       ? fixtureCaptures
+      : isTodayView
+      ? fixtureCaptures.filter((c) => c.day === "Today")
       : fixtureCaptures.filter((c) => c.app === activeApp);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
   const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
@@ -155,6 +158,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     }
     return counts;
   }, [liveFixturesForCounts]);
+
+  // "Today" sidebar count — live records whose adapter-bucket landed
+  // in the Today bucket (see adapter.ts:dayBucket). Live-only because
+  // soft-deleted captures don't show up in the Today filter.
+  const todayCount = useMemo(
+    () => liveFixturesForCounts.filter((c) => c.day === "Today").length,
+    [liveFixturesForCounts]
+  );
 
   // Display name per app key — curated short id wins (so "vscode"
   // stays "VS Code"), else first non-null `appName` we observed for
@@ -498,6 +509,28 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     void dispatch("library:delete", { id: record.id });
   }
 
+  /** Restore a soft-deleted capture from the in-trash hover affordance. */
+  function restoreCaptureAction(captureId: number, event: ReactMouseEvent): void {
+    event.stopPropagation();
+    const record = fixtureBacking.recordFor(captureId);
+    if (record === null) return;
+    void dispatch("library:restore", { id: record.id });
+  }
+
+  /**
+   * Permanently delete a single trashed capture. Confirms first —
+   * library:purge is irreversible and the user shouldn't lose a
+   * capture to a stray click.
+   */
+  function purgeCaptureAction(captureId: number, event: ReactMouseEvent): void {
+    event.stopPropagation();
+    const record = fixtureBacking.recordFor(captureId);
+    if (record === null) return;
+    const ok = window.confirm("Permanently delete this capture? This cannot be undone.");
+    if (!ok) return;
+    void dispatch("library:purge", { id: record.id });
+  }
+
   /**
    * Empty trash. Confirmation lives in the renderer (no native dialog
    * needed) — `library:purgeAll` is irreversible so a single yes/no
@@ -720,7 +753,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__nav-label">All Captures</span>
           <span className="psl__nav-count">{liveRecords.length}</span>
         </button>
-        <button className="psl__nav">
+        <button
+          className={"psl__nav" + (isTodayView ? " is-active" : "")}
+          onClick={() => setActiveApp("today")}
+        >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
               <circle cx="12" cy="12" r="9" />
@@ -728,7 +764,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </svg>
           </span>
           <span className="psl__nav-label">Today</span>
-          <span className="psl__nav-count">8</span>
+          <span className="psl__nav-count">{todayCount}</span>
         </button>
         <button
           className={"psl__nav" + (isTrashView ? " is-active" : "")}
@@ -852,19 +888,46 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                             <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
                           </span>
                         </span>
-                        {!isTrashView && record !== null && (
-                          <button
-                            type="button"
-                            className="psl__cell-trash"
-                            title="Move to Trash"
-                            aria-label="Move to Trash"
-                            onClick={(e) => trashCapture(c.id, e)}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                            </svg>
-                          </button>
-                        )}
+                        {record !== null &&
+                          (isTrashView ? (
+                            <span className="psl__cell-actions">
+                              <button
+                                type="button"
+                                className="psl__cell-trash psl__cell-trash--restore"
+                                title="Restore"
+                                aria-label="Restore from Trash"
+                                onClick={(e) => restoreCaptureAction(c.id, e)}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                                  <path d="M3 4v5h5" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                className="psl__cell-trash psl__cell-trash--purge"
+                                title="Delete permanently"
+                                aria-label="Delete permanently"
+                                onClick={(e) => purgeCaptureAction(c.id, e)}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                                </svg>
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="psl__cell-trash"
+                              title="Move to Trash"
+                              aria-label="Move to Trash"
+                              onClick={(e) => trashCapture(c.id, e)}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                              </svg>
+                            </button>
+                          ))}
                       </div>
                       <div className="psl__cell-meta">
                         <div className="psl__cell-name">{c.n}</div>
@@ -924,6 +987,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                         Timeline ·{" "}
                         {activeApp === "all"
                           ? "all sources"
+                          : isTodayView
+                          ? "today"
+                          : isTrashView
+                          ? "trash"
                           : appLabels[activeApp] ?? APP_INFO[activeApp]?.name ?? "Unknown app"}
                       </span>
                       <span className="psl__reel-hint" aria-hidden="true">
@@ -966,20 +1033,49 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} />
                                   </span>
-                                  {!isTrashView && record !== null && (
-                                    <span
-                                      role="button"
-                                      tabIndex={-1}
-                                      className="psl__frame-trash"
-                                      title="Move to Trash"
-                                      aria-label="Move to Trash"
-                                      onClick={(e) => trashCapture(c.id, e)}
-                                    >
-                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                      </svg>
-                                    </span>
-                                  )}
+                                  {record !== null &&
+                                    (isTrashView ? (
+                                      <span className="psl__frame-actions">
+                                        <span
+                                          role="button"
+                                          tabIndex={-1}
+                                          className="psl__frame-trash psl__frame-trash--restore"
+                                          title="Restore"
+                                          aria-label="Restore from Trash"
+                                          onClick={(e) => restoreCaptureAction(c.id, e)}
+                                        >
+                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M3 12a9 9 0 1 0 3-6.7" />
+                                            <path d="M3 4v5h5" />
+                                          </svg>
+                                        </span>
+                                        <span
+                                          role="button"
+                                          tabIndex={-1}
+                                          className="psl__frame-trash psl__frame-trash--purge"
+                                          title="Delete permanently"
+                                          aria-label="Delete permanently"
+                                          onClick={(e) => purgeCaptureAction(c.id, e)}
+                                        >
+                                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                                          </svg>
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span
+                                        role="button"
+                                        tabIndex={-1}
+                                        className="psl__frame-trash"
+                                        title="Move to Trash"
+                                        aria-label="Move to Trash"
+                                        onClick={(e) => trashCapture(c.id, e)}
+                                      >
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                          <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                                        </svg>
+                                      </span>
+                                    ))}
                                 </button>
                               );
                             })}

@@ -16,7 +16,34 @@ export type CaptureRecord = {
   id: string;
   kind: "image" | "video";
   captured_at: string;
-  src_path: string;
+  /**
+   * Pre-bundle-migration src_path. NULL for captures created after
+   * the bundle migration shipped. Historical record only — never
+   * read by the live read path; the legacy migration consumes this
+   * once when converting old rows to bundle pairs.
+   */
+  legacy_src_path: string | null;
+  /**
+   * Path to the `.pwrsnap` ZIP bundle under ~/Documents/PwrSnap/.
+   * The system of record post-migration. NULL until the legacy
+   * migration walks this row.
+   */
+  bundle_path: string | null;
+  /**
+   * Paired flat composite PNG sibling — the user-shareable image
+   * that double-clicks open in Photos / Quick Look / Slack.
+   * Regenerable from the bundle's composite.png; the doctor
+   * recreates it if missing.
+   */
+  flat_png_path: string | null;
+  /** ISO-8601 timestamp of the most recent bundle re-pack. */
+  bundle_modified_at: string | null;
+  /**
+   * Convergence checkpoint with bundle's overlays.json. A re-pack is
+   * owed when `overlays_version > bundle_overlays_version` (e.g.,
+   * detected on boot after a crash mid-debounce).
+   */
+  bundle_overlays_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;

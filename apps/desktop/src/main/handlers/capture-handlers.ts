@@ -309,7 +309,18 @@ export function registerCaptureHandlers(): void {
       });
     }
     const { shell } = await import("electron");
-    shell.showItemInFolder(record.src_path);
+    // After the bundle-flow rewire, this prefers `flat_png_path` (the
+    // user-shareable composite). Until then, legacy_src_path is the only
+    // file we know about for pre-migration captures.
+    const revealPath = record.flat_png_path ?? record.legacy_src_path;
+    if (revealPath === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture ${req.captureId} has no on-disk path to reveal`
+      });
+    }
+    shell.showItemInFolder(revealPath);
     return ok(undefined);
   });
 
@@ -728,7 +739,7 @@ async function persistAndBroadcast(
     captured_at: new Date().toISOString(),
     source_app_bundle_id: sourceApp?.bundleId ?? null,
     source_app_name: sourceApp?.appName ?? null,
-    src_path: stored.srcPath,
+    legacy_src_path: stored.srcPath,
     width_px: stored.widthPx,
     height_px: stored.heightPx,
     device_pixel_ratio: options.devicePixelRatio ?? 2, // Phase 3+ derives from the active display

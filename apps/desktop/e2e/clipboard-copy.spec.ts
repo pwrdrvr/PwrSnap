@@ -103,7 +103,7 @@ async function seedCapture(
         captured_at: new Date().toISOString(),
         source_app_bundle_id: "com.test.clipboard-spec",
         source_app_name: "Clipboard Spec",
-        src_path: payload.pngPath,
+        legacy_src_path: payload.pngPath,
         width_px: payload.widthPx,
         height_px: payload.heightPx,
         device_pixel_ratio: 2,

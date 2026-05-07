@@ -85,13 +85,17 @@ test.describe("region capture (macOS, opt-in)", () => {
         // painted color. Allow ±8 per channel for compositor jitter.
         const cx = Math.floor(record.width_px / 2);
         const cy = Math.floor(record.height_px / 2);
-        const sampled = await samplePixel(record.src_path, cx, cy);
+        const samplePath = record.legacy_src_path;
+        if (samplePath === null) {
+          throw new Error("region-capture spec: expected legacy_src_path on freshly captured record");
+        }
+        const sampled = await samplePixel(samplePath, cx, cy);
         const expected = hexToRgb(target.color);
 
         expect(
           colorsClose(sampled, expected, 12),
           `expected ${formatRgb(expected)} at center; got ${formatRgb(sampled)} (${path.basename(
-            record.src_path
+            samplePath
           )})`
         ).toBe(true);
       } finally {

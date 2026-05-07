@@ -29,7 +29,11 @@ type CaptureRow = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
-  src_path: string;
+  legacy_src_path: string | null;
+  bundle_path: string | null;
+  flat_png_path: string | null;
+  bundle_modified_at: string | null;
+  bundle_overlays_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -44,7 +48,11 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     id: row.id,
     kind: row.kind,
     captured_at: row.captured_at,
-    src_path: row.src_path,
+    legacy_src_path: row.legacy_src_path,
+    bundle_path: row.bundle_path,
+    flat_png_path: row.flat_png_path,
+    bundle_modified_at: row.bundle_modified_at,
+    bundle_overlays_version: row.bundle_overlays_version,
     width_px: row.width_px,
     height_px: row.height_px,
     device_pixel_ratio: row.device_pixel_ratio,
@@ -67,7 +75,13 @@ export type InsertCapture = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
-  src_path: string;
+  /**
+   * Pre-bundle-migration source path. New captures (post-bundle-flow
+   * rewire) pass `null` here and populate `bundle_path` instead. The
+   * legacy migration walks rows where this is non-null and bundle_path
+   * is null.
+   */
+  legacy_src_path: string | null;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -78,8 +92,9 @@ export type InsertCapture = {
 /**
  * Insert a new capture row. If a row with the same `sha256` already
  * exists (UNIQUE constraint), returns the existing record instead —
- * dedup by content hash. Source PNG should already be persisted via
- * `source-store.put()` before this is called.
+ * dedup by content hash. The bundle / paired-PNG / legacy source files
+ * should already be on disk before this is called; bundle_path /
+ * flat_png_path / legacy_src_path columns point at them.
  *
  * Implementation: `INSERT … ON CONFLICT(sha256) DO NOTHING RETURNING *`
  * collapses the existing-row check + insert into a single round trip.
@@ -124,12 +139,12 @@ function insertOrFindCaptureInTx(
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, src_path,
+        source_app_bundle_id, source_app_name, legacy_src_path,
         width_px, height_px, device_pixel_ratio,
         byte_size, sha256, overlays_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
-        @source_app_bundle_id, @source_app_name, @src_path,
+        @source_app_bundle_id, @source_app_name, @legacy_src_path,
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )
@@ -261,9 +276,14 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
 
 /**
  * Soft-delete: set `deleted_at` to now and decrement `app_stats` for
- * the row's bundle. Caller (`source-store.moveSourceToTrash`) handles
- * the file move. Wrapped in db.transaction() so the invariant cannot
- * drift on partial failure.
+ * the row's bundle. Caller (`source-store.moveSourceToTrash` or the
+ * bundle-pair trash path) handles the file move. Wrapped in
+ * db.transaction() so the invariant cannot drift on partial failure.
+ *
+ * Atomic ordering: DB write first, then file move — on crash, the file
+ * is reachable via the record's path columns (legacy_src_path for
+ * pre-bundle captures; bundle_path / flat_png_path for bundle captures)
+ * but the row is soft-deleted, so library queries skip it.
  *
  * Idempotent: a second call on an already-deleted row is a no-op
  * (the WHERE deleted_at IS NULL clause filters it).
@@ -284,9 +304,10 @@ export function softDeleteCapture(id: string): void {
  * Inverse of softDeleteCapture: clear deleted_at so the row reappears
  * in live library queries, and re-increment the app_stats bucket.
  * Caller is responsible for moving the trash file back to its
- * original src_path. Wrapped in db.transaction() so the
- * SUM(app_stats.count) == COUNT(live captures) invariant cannot drift
- * on partial failure.
+ * original location (legacy_src_path for pre-bundle captures;
+ * bundle_path / flat_png_path for bundle captures). Wrapped in
+ * db.transaction() so the SUM(app_stats.count) == COUNT(live captures)
+ * invariant cannot drift on partial failure.
  */
 export function restoreCapture(id: string): void {
   const db = getDb();

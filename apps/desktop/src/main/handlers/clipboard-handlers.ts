@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
+import { effectiveSrcPathFor } from "../persistence/source-store";
 import { renderViaCoordinator } from "../render/coordinator";
 import { getMainLogger } from "../log";
 
@@ -40,7 +41,7 @@ export function registerClipboardHandlers(): void {
     try {
       const result = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: record.src_path,
+        srcPath: effectiveSrcPathFor(record),
         imageWidthPx: record.width_px,
         imageHeightPx: record.height_px,
         width: targetWidth,

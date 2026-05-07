@@ -144,21 +144,30 @@ export async function statSource(srcPath: string): Promise<{ byteSize: number }>
 
 /**
  * Resolve a capture record's effective on-disk source path. For live
- * records this is just `record.src_path`. For soft-deleted records the
- * file has been renamed into `<userData>/.trash/<id><ext>` (the row's
- * `src_path` deliberately doesn't update — it remembers where the file
- * came from so Restore can put it back). The extension is whatever the
- * original source used; PNG for images, MP4 for video, …. Hardcoding
- * `.png` would lose video sources on trash/restore — `extname(src_path)`
- * keeps both kinds working through the same code path.
+ * records this is the row's `legacy_src_path` (the bundle-flow rewire
+ * in the next phase routes bundle-backed captures through a different
+ * seam). For soft-deleted records the file has been renamed into
+ * `<userData>/.trash/<id><ext>` — the row's path columns deliberately
+ * don't update so Restore can put it back. The extension comes from
+ * the original source path (PR #64): PNG for images, MP4 for video,
+ * etc. Hardcoding `.png` would lose video sources on trash/restore.
+ * Throws if the record has neither a legacy nor (eventually) a bundle
+ * source — that's a programming error, not a runtime miss.
  */
 export function effectiveSrcPathFor(record: {
   id: string;
-  src_path: string;
+  legacy_src_path: string | null;
   deleted_at: string | null;
 }): string {
-  if (record.deleted_at === null) return record.src_path;
-  return join(getTrashRoot(), `${record.id}${extname(record.src_path)}`);
+  if (record.legacy_src_path === null) {
+    throw new Error(
+      `source-store: capture ${record.id} has no legacy_src_path; bundle path not wired yet`
+    );
+  }
+  if (record.deleted_at !== null) {
+    return join(getTrashRoot(), `${record.id}${extname(record.legacy_src_path)}`);
+  }
+  return record.legacy_src_path;
 }
 
 /**

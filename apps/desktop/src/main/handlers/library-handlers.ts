@@ -123,7 +123,13 @@ export function registerLibraryHandlers(): void {
     bus.cancel(req.id);
     softDeleteCapture(req.id);
     try {
-      await moveSourceToTrash(record.src_path, record.id);
+      // Pre-bundle-flow path. Bundle-pair trash semantics (move both
+      // .pwrsnap and .png) land with the bundle-store seam in the next
+      // commit — until then we still operate on the legacy single-PNG
+      // location.
+      if (record.legacy_src_path !== null) {
+        await moveSourceToTrash(record.legacy_src_path, record.id);
+      }
     } catch (cause) {
       log.warn("library:delete: trash move failed", {
         captureId: req.id,
@@ -146,7 +152,9 @@ export function registerLibraryHandlers(): void {
     }
     restoreCapture(req.id);
     try {
-      await restoreSourceFromTrash(req.id, record.src_path);
+      if (record.legacy_src_path !== null) {
+        await restoreSourceFromTrash(req.id, record.legacy_src_path);
+      }
     } catch (cause) {
       log.warn("library:restore: file restore failed", {
         captureId: req.id,

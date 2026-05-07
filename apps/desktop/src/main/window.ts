@@ -218,6 +218,10 @@ export function createTrayWindow(): BrowserWindow {
   // for the same reason (test fixture wants to shrink the window
   // below its initial frame).
   window.setMinimumSize(0, 0);
+  // Hide from the macOS Window menu. The tray popover is conceptually
+  // a popover, not a window — letting it appear as another "PwrSnap"
+  // entry in the menu would confuse the user.
+  window.excludedFromShownWindowsMenu = true;
 
   window.setWindowButtonVisibility?.(false);
   window.setMenuBarVisibility(false);
@@ -300,6 +304,12 @@ export function createFloatOverWindow(): BrowserWindow {
   // the content area; without this, setContentSize is silently
   // clamped to the constructor's `width`/`height` floor.
   window.setMinimumSize(0, 0);
+  // Hide from the macOS Window menu. The float-over is a transient
+  // toast (and now stays parked off-screen between captures via
+  // float-over.ts/parkOffScreen — `isVisible()` is `true` forever
+  // after first show), so without this it would appear as a permanent
+  // "PwrSnap Toast" entry in the Window menu.
+  window.excludedFromShownWindowsMenu = true;
 
   // Floating level (NSWindowLevel 3) — the macOS-native level for
   // persistent toasts/HUDs (CleanShot X, Shottr, Loom, macshot all

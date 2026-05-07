@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { Tool } from "../editor/Editor";
@@ -10,7 +11,7 @@ import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
-import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -415,6 +416,46 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (selectedRecord !== null) return;
     viewDispatch({ type: "FILTER_CHANGED", visibleIds: records.map((r) => r.id) });
   }, [selectedRecordId, selectedRecord, records]);
+
+  // External "open this capture in Focus" trigger. Fired by main when
+  // the float-over toast's Edit button (or any future entry point)
+  // calls `library:openInLibrary` — main brings the window forward
+  // and broadcasts the captureId; we navigate.
+  //
+  // Two-stage effect so an event that lands BEFORE useLibrary has
+  // refetched the new capture still resolves cleanly:
+  //   1. Subscribe handler stashes the captureId in `pendingOpenId`
+  //      and resets activeApp to "all" so the capture isn't filtered
+  //      out by the current Trash / Today / app-source view.
+  //   2. A separate effect watches for that captureId to appear in
+  //      records, then dispatches OPEN_FOCUS once. Self-clearing.
+  const [pendingOpenId, setPendingOpenId] = useState<string | null>(null);
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.libraryOpenCapture, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const id = (payload as { captureId?: unknown }).captureId;
+      if (typeof id !== "string") return;
+      setPendingOpenId(id);
+      setActiveApp("all");
+    });
+  }, []);
+  useEffect(() => {
+    if (pendingOpenId === null) return;
+    const record = records.find((r) => r.id === pendingOpenId);
+    // Wait until the record lands in the live list (capture commit
+    // races: the broadcast may arrive before useLibrary's refetch).
+    if (record === undefined) return;
+    setPendingOpenId(null);
+    if (record.deleted_at !== null) return; // user trashed it mid-flight; bail.
+    viewDispatch({
+      type: "OPEN_FOCUS",
+      recordId: record.id,
+      returnAnchor: {
+        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        cellId: record.id
+      }
+    });
+  }, [pendingOpenId, records]);
 
   // Filter-change-while-Focus bail: when activeApp changes and the
   // current selection is no longer in the visible set, the reducer

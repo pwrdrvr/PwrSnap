@@ -15,6 +15,11 @@ import {
   softDeleteCapture
 } from "../persistence/captures-repo";
 import {
+  moveBundlePairToTrash,
+  purgeBundlePairFromTrash,
+  restoreBundlePairFromTrash
+} from "../persistence/bundle-store";
+import {
   moveSourceToTrash,
   purgeCacheForCapture,
   purgeOneFromTrash,
@@ -123,11 +128,16 @@ export function registerLibraryHandlers(): void {
     bus.cancel(req.id);
     softDeleteCapture(req.id);
     try {
-      // Pre-bundle-flow path. Bundle-pair trash semantics (move both
-      // .pwrsnap and .png) land with the bundle-store seam in the next
-      // commit — until then we still operate on the legacy single-PNG
-      // location.
-      if (record.legacy_src_path !== null) {
+      if (record.bundle_path !== null) {
+        // Bundle-pair trash: both files move to <userData>/.trash/<id>/,
+        // paired PNG first (regenerable), bundle second (system of record).
+        await moveBundlePairToTrash({
+          captureId: req.id,
+          bundlePath: record.bundle_path,
+          flatPngPath: record.flat_png_path
+        });
+      } else if (record.legacy_src_path !== null) {
+        // Pre-bundle (legacy) capture — trash the single flat PNG.
         await moveSourceToTrash(record.legacy_src_path, record.id);
       }
     } catch (cause) {
@@ -152,7 +162,13 @@ export function registerLibraryHandlers(): void {
     }
     restoreCapture(req.id);
     try {
-      if (record.legacy_src_path !== null) {
+      if (record.bundle_path !== null) {
+        await restoreBundlePairFromTrash({
+          captureId: req.id,
+          bundlePath: record.bundle_path,
+          flatPngPath: record.flat_png_path
+        });
+      } else if (record.legacy_src_path !== null) {
         await restoreSourceFromTrash(req.id, record.legacy_src_path);
       }
     } catch (cause) {
@@ -178,7 +194,16 @@ export function registerLibraryHandlers(): void {
       });
     }
     try {
-      await purgeOneFromTrash(req.id, record.src_path);
+      // Bundle captures live at <userData>/.trash/<id>/{<id>.pwrsnap, <id>.png};
+      // legacy captures live as a single <userData>/.trash/<id><ext> file
+      // where the extension comes from the original legacy_src_path
+      // (PR #64: .png for image, .mp4 for video). Branch on what the
+      // record actually has.
+      if (record.bundle_path !== null) {
+        await purgeBundlePairFromTrash(req.id);
+      } else if (record.legacy_src_path !== null) {
+        await purgeOneFromTrash(req.id, record.legacy_src_path);
+      }
     } catch (cause) {
       log.warn("library:purge: trash file remove failed", {
         captureId: req.id,
@@ -213,8 +238,11 @@ export function registerLibraryHandlers(): void {
       // alone doesn't tell purgeOneFromTrash which file to remove.
       const record = getCaptureById(id);
       try {
-        if (record !== null) {
-          await purgeOneFromTrash(id, record.src_path);
+        if (record === null) continue;
+        if (record.bundle_path !== null) {
+          await purgeBundlePairFromTrash(id);
+        } else if (record.legacy_src_path !== null) {
+          await purgeOneFromTrash(id, record.legacy_src_path);
         }
       } catch (cause) {
         log.warn("library:purgeAll: trash file remove failed", {

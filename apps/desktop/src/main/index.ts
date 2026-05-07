@@ -56,6 +56,7 @@ import {
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
+import { sweepBundleTrash } from "./persistence/bundle-store";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
@@ -620,7 +621,10 @@ async function runBootGc(): Promise<void> {
   const expired = listExpiredTrash(14);
   if (expired.length > 0) {
     log.info("gc: hard-deleting expired captures", { count: expired.length });
-    await sweepTrash(expired);
+    // Sweep both layouts: legacy <id>.png flat trash files, and
+    // bundle-pair <id>/ directories. Both are best-effort; either
+    // one missing for a given id is fine.
+    await Promise.allSettled([sweepTrash(expired), sweepBundleTrash(expired)]);
     gcHardDeleteCaptures(expired);
   }
 }

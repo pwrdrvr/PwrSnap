@@ -19,7 +19,8 @@
 // See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md.
 
 import { createHash } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
@@ -45,7 +46,7 @@ import {
   insertOrFindCapture,
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
-import { getCacheSourcePath, getCapturesRoot } from "./paths";
+import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
 
@@ -771,4 +772,174 @@ function bundleOverlaysFromRows(
 function basename(p: string): string {
   const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+// ---------------------------------------------------------------------------
+// Trash + GC for bundle pairs.
+// ---------------------------------------------------------------------------
+
+const TRASH_RETENTION_DAYS = 14;
+
+/**
+ * Move a bundle + paired PNG to `<userData>/.trash/<id>/`. Two
+ * atomic renames (paired PNG first, bundle second), reversed on
+ * failure so a partial failure never leaves the SoR (the bundle)
+ * orphaned in the live folder while the derivative (the paired
+ * PNG) sits in trash.
+ *
+ * Idempotent: missing files are silently skipped (deleted-out-of-band
+ * by Finder, already-trashed twice in a row, etc.).
+ */
+export async function moveBundlePairToTrash(args: {
+  captureId: string;
+  bundlePath: string | null;
+  flatPngPath: string | null;
+}): Promise<void> {
+  const trashDir = join(getTrashRoot(), args.captureId);
+  await mkdir(trashDir, { recursive: true });
+
+  const pngTrashPath =
+    args.flatPngPath !== null ? join(trashDir, basename(args.flatPngPath)) : null;
+  const bundleTrashPath =
+    args.bundlePath !== null ? join(trashDir, basename(args.bundlePath)) : null;
+
+  // Paired PNG FIRST (derivative). On failure here, nothing's
+  // moved — return early; the live folder is still consistent.
+  if (args.flatPngPath !== null && pngTrashPath !== null && existsSync(args.flatPngPath)) {
+    try {
+      await rename(args.flatPngPath, pngTrashPath);
+    } catch (cause) {
+      log.warn("trash move: paired PNG rename failed (bailing before bundle move)", {
+        captureId: args.captureId,
+        flatPngPath: args.flatPngPath,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return;
+    }
+  }
+
+  // Bundle SECOND (system of record). On failure, reverse the
+  // PNG move so the live folder converges back to its prior state.
+  if (args.bundlePath !== null && bundleTrashPath !== null && existsSync(args.bundlePath)) {
+    try {
+      await rename(args.bundlePath, bundleTrashPath);
+    } catch (cause) {
+      log.warn("trash move: bundle rename failed; reversing paired-PNG rename", {
+        captureId: args.captureId,
+        bundlePath: args.bundlePath,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      if (
+        args.flatPngPath !== null &&
+        pngTrashPath !== null &&
+        existsSync(pngTrashPath)
+      ) {
+        try {
+          await rename(pngTrashPath, args.flatPngPath);
+        } catch (reverseCause) {
+          log.error(
+            "trash move: reverse rename also failed; bundle pair is now split — surface to user via doctor",
+            {
+              captureId: args.captureId,
+              message: reverseCause instanceof Error ? reverseCause.message : String(reverseCause)
+            }
+          );
+        }
+      }
+      throw cause;
+    }
+  }
+}
+
+/**
+ * Restore a bundle + paired PNG from `<userData>/.trash/<id>/` to
+ * their original locations. Inverse of `moveBundlePairToTrash`.
+ * Skips missing files (idempotent).
+ */
+export async function restoreBundlePairFromTrash(args: {
+  captureId: string;
+  bundlePath: string | null;
+  flatPngPath: string | null;
+}): Promise<void> {
+  const trashDir = join(getTrashRoot(), args.captureId);
+
+  if (args.flatPngPath !== null) {
+    const pngTrashPath = join(trashDir, basename(args.flatPngPath));
+    if (existsSync(pngTrashPath)) {
+      await mkdir(dirname(args.flatPngPath), { recursive: true });
+      await rename(pngTrashPath, args.flatPngPath);
+    }
+  }
+  if (args.bundlePath !== null) {
+    const bundleTrashPath = join(trashDir, basename(args.bundlePath));
+    if (existsSync(bundleTrashPath)) {
+      await mkdir(dirname(args.bundlePath), { recursive: true });
+      await rename(bundleTrashPath, args.bundlePath);
+    }
+  }
+
+  // Best-effort cleanup of the per-id trash directory if it's empty.
+  try {
+    const remaining = await readdir(trashDir);
+    if (remaining.length === 0) {
+      await rm(trashDir, { recursive: true, force: true });
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Hard-remove a single capture's bundle-pair trash directory. Used
+ * by `library:purge` and `library:purgeAll`. Idempotent — missing
+ * trash dir is a no-op. Does not touch the legacy `<id>.png` flat
+ * trash file; callers that need to clean both call
+ * `purgeOneFromTrash` (legacy) + this in sequence.
+ */
+export async function purgeBundlePairFromTrash(captureId: string): Promise<void> {
+  const trashDir = join(getTrashRoot(), captureId);
+  if (!existsSync(trashDir)) return;
+  await rm(trashDir, { recursive: true, force: true });
+}
+
+/**
+ * Boot-time GC for bundle-pair trash. Walks every per-id directory
+ * under `<userData>/.trash/<id>/`, removes those whose mtime
+ * exceeds TRASH_RETENTION_DAYS. Pairs cleanly with `sweepTrash`
+ * from source-store (which still handles legacy `<id>.png` flat
+ * trash files); both are called from `runBootGc()`.
+ */
+export async function sweepBundleTrash(
+  expiredCaptureIds: readonly string[]
+): Promise<{ removedDirs: number }> {
+  const trashRoot = getTrashRoot();
+  if (!existsSync(trashRoot)) {
+    return { removedDirs: 0 };
+  }
+
+  const cutoffMs = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+
+  for (const id of expiredCaptureIds) {
+    const trashDir = join(trashRoot, id);
+    if (!existsSync(trashDir)) continue;
+    try {
+      const stat = statSync(trashDir);
+      if (!stat.isDirectory()) continue;
+      if (stat.mtimeMs < cutoffMs) {
+        await rm(trashDir, { recursive: true, force: true });
+        removed += 1;
+      }
+    } catch (err) {
+      log.warn("bundle trash sweep failed for capture", {
+        captureId: id,
+        message: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  if (removed > 0) {
+    log.info("bundle trash swept", { removedDirs: removed });
+  }
+  return { removedDirs: removed };
 }

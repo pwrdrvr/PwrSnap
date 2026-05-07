@@ -1,8 +1,25 @@
-import { BrowserWindow, screen, type Rectangle } from "electron";
+import { app, BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:window");
+
+/**
+ * Module-level reference to the (singleton) Library window.
+ *
+ * Why a tracked ref instead of `BrowserWindow.getAllWindows().find(...)`:
+ *
+ *   1. The library's URL is the only one without a `stage=` fragment,
+ *      but the focus-sink loads `data:text/html,` which ALSO has no
+ *      stage — the URL-regex check would silently match the sink and
+ *      "focus" / "raise" the wrong window.
+ *   2. The dock-icon lifecycle (show on open, hide on close) needs to
+ *      be wired to the SAME object the rest of the app treats as the
+ *      library — easier to reason about with a single source of truth.
+ *
+ * Cleared in the `closed` handler.
+ */
+let libraryWindow: BrowserWindow | null = null;
 
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -48,27 +65,31 @@ const baseWebPreferences = {
 } as const;
 
 /**
- * Find the main library window (the only PwrSnap window whose URL
- * has no `stage=` fragment). Tray, float-over, region selector, edit
- * windows all carry distinct stage hashes; the library is the
- * residue. Returns null if no library is currently created/alive.
- *
- * Used by the capture flow to hide the library during the selector
- * lifecycle — Cocoa's next-key-window cascade would otherwise raise
- * (and un-minimize) the library when the tray popover closes.
+ * Return the live singleton Library window, or null when no library is
+ * currently open. Callers that want to ENSURE the library exists
+ * should use `createMainWindow()` (idempotent) instead.
  */
 export function findMainLibraryWindow(): BrowserWindow | null {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    const url = win.webContents.getURL();
-    if (url.length > 0 && !/[#&?]stage=/.test(url)) {
-      return win;
-    }
+  if (libraryWindow !== null && !libraryWindow.isDestroyed()) {
+    return libraryWindow;
   }
   return null;
 }
 
+/**
+ * Create the Library window if one doesn't already exist; otherwise
+ * return the existing singleton. Idempotent — clicking "Open Library"
+ * five times raises the same window five times rather than spawning
+ * five copies.
+ *
+ * Owns the dock-icon lifecycle on macOS: shows the icon when the
+ * library becomes ready/focused, hides it when the library is closed.
+ * The app stays alive in the background via the tray.
+ */
 export function createMainWindow(): BrowserWindow {
+  if (libraryWindow !== null && !libraryWindow.isDestroyed()) {
+    return libraryWindow;
+  }
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -81,19 +102,48 @@ export function createMainWindow(): BrowserWindow {
     backgroundColor: "#0a0908",
     webPreferences: baseWebPreferences
   });
+  libraryWindow = window;
 
   loadRenderer(window, rendererTarget());
 
   window.once("ready-to-show", () => {
     log.info("main window ready-to-show", { id: window.id });
     window.show();
+    // Claim the dock icon as soon as the library is on screen. On
+    // macOS this flips activation policy → Regular; on other
+    // platforms `app.dock` is undefined and this is a no-op.
+    if (process.platform === "darwin") {
+      void app.dock?.show();
+    }
+  });
+
+  // Defensive re-claim: every focus on the library re-asserts the
+  // dock icon. The `activateApp(previousAppPid)` call in the capture
+  // flow (capture-handlers.ts) deactivates PwrSnap to return the user
+  // to their previous app — that side-effect (in combination with our
+  // persistent panel windows) periodically strips the dock icon's
+  // representation. Re-claiming on every Library focus event puts it
+  // back the next time the user clicks the Library or it otherwise
+  // becomes key. `app.dock.show()` is idempotent when already visible.
+  window.on("focus", () => {
+    if (process.platform === "darwin") {
+      void app.dock?.show();
+    }
   });
 
   // Lifecycle diagnostics — these helped track down the
   // "library closes after ~10s" bug, which turned out to be
   // a duplicate-instance issue, not a true window-close.
   window.on("close", () => log.info("main window close event", { id: window.id }));
-  window.on("closed", () => log.info("main window closed", { id: window.id }));
+  window.on("closed", () => {
+    log.info("main window closed", { id: window.id });
+    if (libraryWindow === window) libraryWindow = null;
+    // No library = no dock icon. Tray icon keeps the app alive in the
+    // background; the user re-opens via right-click → "Open Library".
+    if (process.platform === "darwin") {
+      app.dock?.hide();
+    }
+  });
   window.webContents.on("render-process-gone", (_event, details) => {
     log.warn("main window renderer crashed", { id: window.id, reason: details.reason });
   });

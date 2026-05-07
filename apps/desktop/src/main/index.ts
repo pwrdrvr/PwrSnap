@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, Menu, shell } from "electron";
+import { app, dialog, globalShortcut, Menu, shell } from "electron";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
 // (showFloatOverForCapture is no longer called from the bootstrap;
@@ -20,7 +20,7 @@ import { sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
-import { createMainWindow } from "./window";
+import { createMainWindow, findMainLibraryWindow } from "./window";
 
 const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
@@ -211,24 +211,12 @@ export function bootstrapApp(): void {
   }
   app.on("second-instance", () => {
     // Another `pnpm dev` (or another launch of the .app) tried to
-    // start. Bring our existing main window forward. Match by URL
-    // hash absence (no `stage=` fragment) — the title check used
-    // to work but every PwrSnap window now sets distinct
-    // document.title per stage, so the original title equality
-    // check would also match the tray/edit/etc.
-    const windows = BrowserWindow.getAllWindows();
-    const main = windows.find((w) => {
-      if (w.isDestroyed()) return false;
-      const url = w.webContents.getURL();
-      return url.length > 0 && !/[#&?]stage=/.test(url);
-    });
-    if (main !== undefined) {
-      if (main.isMinimized()) main.restore();
-      main.show();
-      main.focus();
-    } else if (windows.length === 0) {
-      createMainWindow();
-    }
+    // start. Raise (or recreate) the library singleton so the user
+    // gets the window they were trying to launch.
+    const main = findMainLibraryWindow() ?? createMainWindow();
+    if (main.isMinimized()) main.restore();
+    if (!main.isVisible()) main.show();
+    main.focus();
   });
 
   // Privileged schemes MUST be registered before app is ready.
@@ -256,17 +244,6 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
-    // Defensive: explicitly show the dock icon. Nothing in our
-    // code calls app.dock.hide(), but Cocoa can leave the icon
-    // unclaimed in some scenarios — particularly after we activate
-    // the user's previous app via NSRunningApplication on the
-    // selector cancel/commit path. Calling show() is idempotent;
-    // if the icon is already visible this is a no-op. Returns a
-    // Promise on macOS — we don't need to await it.
-    if (process.platform === "darwin") {
-      void app.dock?.show();
-    }
-
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
@@ -359,9 +336,18 @@ export function bootstrapApp(): void {
     void runBootGc();
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
-      }
+      // Fired when the user clicks the dock icon. Since the dock
+      // icon only exists while the library is open, this normally
+      // means "raise the library" — but also covers the case where
+      // some macOS automation pokes us awake.
+      //
+      // The earlier `getAllWindows().length === 0` guard was dead
+      // code: the focus-sink + tray + float-over panels persist for
+      // the app's lifetime, so the array was never empty.
+      const main = findMainLibraryWindow() ?? createMainWindow();
+      if (main.isMinimized()) main.restore();
+      if (!main.isVisible()) main.show();
+      main.focus();
     });
   });
 

@@ -124,6 +124,7 @@ mac:
     # Audio capture description (Fast Video Capture, issue #64).
     # macOS uses this when the user opts into system-audio recording.
     NSAudioCaptureUsageDescription: "PwrSnap records system audio for screen-recording exports when you turn it on."
+    NSDocumentsFolderUsageDescription: "Save your screenshots in Documents so you can find them in Finder and sync them via iCloud."
   target:
     - target: dmg
       arch: [universal]

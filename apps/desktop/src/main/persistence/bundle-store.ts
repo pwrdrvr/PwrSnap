@@ -34,12 +34,19 @@ import {
   type BundleEntryName
 } from "@pwrsnap/shared";
 
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureRecord, OverlayRow } from "@pwrsnap/shared";
 
 import { writeFile } from "node:fs/promises";
 
-import { findCaptureBySha256, insertOrFindCapture } from "./captures-repo";
+import { compose } from "../render/compose";
+import {
+  findCaptureBySha256,
+  getCaptureById,
+  insertOrFindCapture,
+  updateCaptureBundleAfterRepack
+} from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot } from "./paths";
+import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:bundle-store");
@@ -583,4 +590,185 @@ export async function persistCaptureFromTemp(
   });
 
   return { record, isDedup: false };
+}
+
+// ---------------------------------------------------------------------------
+// Re-pack debounce — replaces the bundle when overlays change.
+// ---------------------------------------------------------------------------
+
+const REPACK_DEBOUNCE_MS = 1_000;
+
+// Pending timers keyed by capture id. Setting a new timer for the
+// same capture clears the previous — debounce by latest edit, not
+// by edit count.
+const repackTimers = new Map<string, NodeJS.Timeout>();
+
+// In-flight repack promises so concurrent doctor walks (Phase 2)
+// can cooperate via a shared mutex instead of racing on the same
+// capture's bundle file.
+const repackInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Debounced re-pack request. Called after every overlay write
+ * (insertOverlay, rejectOverlay) — the existing
+ * `captures.overlays_version` bump is the convergence trigger.
+ * Multiple rapid edits coalesce into one re-pack run; the bundle
+ * stays consistent with the latest DB state ≥1s after the user
+ * stops editing.
+ *
+ * The DB stays the live read path during the debounce window. A
+ * crash during the window reruns the pack on next boot via the
+ * `overlays_version > bundle_overlays_version` check the doctor
+ * applies in Phase 2.
+ */
+export function scheduleRepack(captureId: string): void {
+  const existing = repackTimers.get(captureId);
+  if (existing !== undefined) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    repackTimers.delete(captureId);
+    void runRepack(captureId).catch((err: unknown) => {
+      log.error("bundle-store: repack failed", {
+        captureId,
+        message: err instanceof Error ? err.message : String(err)
+      });
+    });
+  }, REPACK_DEBOUNCE_MS);
+  repackTimers.set(captureId, timer);
+}
+
+/**
+ * Wait for any in-flight repack on a capture to complete. Used by
+ * the Phase 2 doctor reconcile pass so its central-directory walk
+ * doesn't race a bundle rewrite on the same capture.
+ */
+export async function awaitInFlightRepack(captureId: string): Promise<void> {
+  const promise = repackInFlight.get(captureId);
+  if (promise !== undefined) {
+    await promise;
+  }
+}
+
+async function runRepack(captureId: string): Promise<void> {
+  const existing = repackInFlight.get(captureId);
+  if (existing !== undefined) {
+    // Coalesce: a repack is already running for this capture. Wait
+    // for it to finish, then start a fresh one (latest state will
+    // be picked up because we re-read the DB inside the run).
+    await existing;
+  }
+
+  const promise = (async () => {
+    const record = getCaptureById(captureId);
+    if (record === null) {
+      log.warn("bundle-store: repack target missing", { captureId });
+      return;
+    }
+    if (record.bundle_path === null || record.flat_png_path === null) {
+      // Pre-bundle (legacy) capture or row never finished writing.
+      // Either case, we can't repack — skip silently. The legacy
+      // migration (Phase 1) wraps these into bundles; once that's
+      // done, this branch becomes unreachable.
+      log.warn("bundle-store: repack skipped; no bundle path on row", { captureId });
+      return;
+    }
+
+    const sourcePath = getCacheSourcePath(captureId);
+
+    // compose() reads applied overlays via listLiveOverlays internally;
+    // it produces the source-width composite as a cache file we can
+    // read back. width = source width = no resize.
+    const composeResult = await compose({
+      captureId,
+      srcPath: sourcePath,
+      imageWidthPx: record.width_px,
+      imageHeightPx: record.height_px,
+      width: record.width_px,
+      format: "png"
+    });
+
+    const compositePng = await readFile(composeResult.cachePath);
+    const sourcePng = await readFile(sourcePath);
+
+    const liveOverlays = listLiveOverlays(captureId);
+    const overlaysJson = bundleOverlaysFromRows(record, liveOverlays);
+
+    const now = new Date().toISOString();
+    const manifest: BundleManifestV1 = {
+      bundle_format_version: 1,
+      capture_id: captureId,
+      source_sha256: record.sha256,
+      source_dimensions: { width_px: record.width_px, height_px: record.height_px },
+      paired_png_filename: basename(record.flat_png_path),
+      created_at: record.captured_at,
+      bundle_modified_at: now
+    };
+
+    const bundleBuf = await packBundle({
+      manifest,
+      overlays: overlaysJson,
+      sourcePng,
+      compositePng
+    });
+
+    // Bundle FIRST (system of record), paired PNG SECOND
+    // (regenerable derivative). Atomic-rename pattern handles
+    // crash safety per file; the doctor regenerates the paired
+    // PNG from bundle.composite.png if a crash leaves them out
+    // of sync.
+    await atomicWriteBundle(record.bundle_path, bundleBuf);
+    await atomicWriteBundle(record.flat_png_path, compositePng);
+
+    updateCaptureBundleAfterRepack(captureId, {
+      bundle_modified_at: now,
+      bundle_overlays_version: record.overlays_version
+    });
+
+    log.info("bundle-store: repacked", {
+      captureId,
+      overlaysCount: liveOverlays.length,
+      bundleBytes: bundleBuf.length
+    });
+  })();
+
+  repackInFlight.set(captureId, promise);
+  try {
+    await promise;
+  } finally {
+    repackInFlight.delete(captureId);
+  }
+}
+
+function bundleOverlaysFromRows(
+  record: CaptureRecord,
+  rows: readonly OverlayRow[]
+): BundleOverlaysV1 {
+  return {
+    overlays_format_version: 1,
+    overlays_version: record.overlays_version,
+    overlays: rows.map((row) => ({
+      id: row.id,
+      // listLiveOverlays returns rows whose `data` is an Overlay
+      // (already zod-parsed at the repo boundary). The shared
+      // BundleOverlayRecord schema re-validates on pack/unpack so
+      // any drift surfaces loudly.
+      data: row.data,
+      schema_version: row.schema_version,
+      source: row.source,
+      z_index: row.z_index,
+      created_at: row.created_at,
+      applied_at: row.applied_at,
+      rejected_at: row.rejected_at,
+      superseded_by: row.superseded_by,
+      ai_run_id: row.ai_run_id
+    })),
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+}
+
+function basename(p: string): string {
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(idx + 1) : p;
 }

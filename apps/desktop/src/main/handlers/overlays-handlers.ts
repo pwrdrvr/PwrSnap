@@ -16,6 +16,7 @@ import { ok, err, EVENT_CHANNELS, Overlay as OverlaySchema } from "@pwrsnap/shar
 import { nanoid } from "nanoid";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
+import { scheduleRepack } from "../persistence/bundle-store";
 import {
   insertOverlay,
   listLiveOverlays,
@@ -70,6 +71,7 @@ export function registerOverlaysHandlers(): void {
       kind: parseResult.data.kind
     });
     broadcastOverlaysChanged(req.captureId);
+    scheduleRepack(req.captureId);
     return ok(row);
   });
 
@@ -78,6 +80,7 @@ export function registerOverlaysHandlers(): void {
     log.info("overlay rejected", { id: req.id, captureId });
     if (captureId !== null) {
       broadcastOverlaysChanged(captureId);
+      scheduleRepack(captureId);
     }
     return ok(undefined);
   });

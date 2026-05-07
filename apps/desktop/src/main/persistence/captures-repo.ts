@@ -201,6 +201,28 @@ export function findCaptureBySha256(sha256: string): CaptureRecord | null {
   return row ? rowToRecord(row) : null;
 }
 
+/**
+ * Update bundle convergence columns after a successful re-pack.
+ * Called from `bundle-store.runRepack` once the new bundle has been
+ * written; this advances `bundle_overlays_version` to match the
+ * row's `overlays_version` at pack time. The doctor's mid-debounce
+ * recovery rule (`overlays_version > bundle_overlays_version`
+ * means re-pack owed) reads these columns to decide whether to
+ * re-pack on boot.
+ */
+export function updateCaptureBundleAfterRepack(
+  captureId: string,
+  fields: { bundle_modified_at: string; bundle_overlays_version: number }
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE captures
+     SET bundle_modified_at = @bundle_modified_at,
+         bundle_overlays_version = @bundle_overlays_version
+     WHERE id = @id`
+  ).run({ id: captureId, ...fields });
+}
+
 export function getCaptureById(id: string): CaptureRecord | null {
   const db = getDb();
   const row = db.prepare("SELECT * FROM captures WHERE id = ?").get(id) as CaptureRow | undefined;

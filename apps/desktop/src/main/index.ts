@@ -322,6 +322,40 @@ export function bootstrapApp(): void {
       registerCaptureShortcut();
     }
     createMainWindow();
+
+    // ── Dev probe-only CLI mode ───────────────────────────────────
+    // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,
+    // probes need the live UI session (Library window, IPC dispatcher,
+    // library handlers). Used to re-measure UI perf against an
+    // already-seeded data root without paying the seed cost again.
+    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+      const probeFlag = process.argv.find((arg) => arg.startsWith("--probe="));
+      if (probeFlag !== undefined) {
+        const seederModule = await import("./dev/seeder");
+        const name = probeFlag.slice("--probe=".length) as Parameters<
+          typeof seederModule.runProbeOnly
+        >[0];
+        // Give the renderer a moment to mount + commit its first row
+        // before we kick off the probes — the cold-load probe times
+        // window-reload → firstPaint, which depends on the renderer
+        // being subscribed.
+        setTimeout(() => {
+          seederModule
+            .runProbeOnly(name)
+            .then((result) => {
+              log.info("probe CLI run complete", result);
+              app.exit(0);
+            })
+            .catch((cause: unknown) => {
+              log.error("probe CLI run failed", {
+                message: cause instanceof Error ? cause.message : String(cause)
+              });
+              app.exit(1);
+            });
+        }, 1500);
+      }
+    }
+
     if (isE2E) {
       // E2E test bridge. Playwright's `electronApp.evaluate(fn, arg)`
       // runs `fn` in the main process; specs reach into the bus via

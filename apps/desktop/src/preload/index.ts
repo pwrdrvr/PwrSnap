@@ -22,7 +22,8 @@ import { contextBridge, ipcRenderer } from "electron";
 // sandbox: true (which we always run with) doesn't allow arbitrary
 // requires from a preload, so the file would fail silently and
 // pwrsnapApi never reach the renderer.
-import { IPC_CMD } from "@pwrsnap/shared/ipc";
+import { EVENT_CHANNELS, IPC_CMD } from "@pwrsnap/shared/ipc";
+import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -235,6 +236,15 @@ const pwrsnapApi = {
     screenHeight: number;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_DIAGNOSTICS_CHANNEL, payload);
+  },
+  /**
+   * Renderer → main perf signal. Phase 5 of the perf-seeder plan —
+   * the seeder reads these marks to compute first-paint cold-load
+   * latency. Discriminated-union payload (`PerfMarkPayload`) means
+   * new mark kinds can be added without growing the API surface.
+   */
+  perfMark(payload: PerfMarkPayload): void {
+    ipcRenderer.send(EVENT_CHANNELS.perfMark, payload);
   }
 };
 

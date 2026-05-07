@@ -6,6 +6,7 @@
 
 import type {
   CommandName,
+  PerfMarkPayload,
   PwrSnapError,
   Req,
   Res,
@@ -73,6 +74,21 @@ export function subscribe(
  * preserve case. See apps/desktop/src/main/protocols.ts for the
  * matching parser.
  */
+/**
+ * Send a renderer→main perf mark. Phase 5 of the perf-seeder plan —
+ * the seeder reads these to compute first-paint cold-load latency
+ * and other render-side metrics. Fire-and-forget; no response.
+ */
+export function perfMark(payload: PerfMarkPayload): void {
+  // `pwrsnapApi.perfMark` was added in Phase 5; preload may be older
+  // in dev hot-reload. Soft-fail rather than throwing in renderer
+  // code that doesn't expect the call to fail.
+  const api = window.pwrsnapApi as
+    | (Window["pwrsnapApi"] & { perfMark?: (payload: PerfMarkPayload) => void })
+    | undefined;
+  api?.perfMark?.(payload);
+}
+
 export function captureSrcUrl(captureId: string): string {
   return `pwrsnap-capture://r/${captureId}`;
 }

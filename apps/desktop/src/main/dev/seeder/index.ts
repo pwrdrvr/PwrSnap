@@ -12,11 +12,11 @@ import type { MenuItemConstructorOptions } from "electron";
 import { getMainLogger } from "../../log";
 import { setExtraTrayMenuItems } from "../../tray";
 import { isFlagged, PROFILE_NAMES, type ProfileName } from "./profiles";
-import { runProfile } from "./runner";
+import { runProbeOnly, runProfile } from "./runner";
 
 const log = getMainLogger("pwrsnap:dev-seeder");
 
-export { runProfile } from "./runner";
+export { runProbeOnly, runProfile } from "./runner";
 export type { ProfileName } from "./profiles";
 
 export function registerDevSeeder(): void {
@@ -28,14 +28,21 @@ function installTrayItems(): void {
   const items: MenuItemConstructorOptions[] = [
     {
       label: "Seed perf dataset",
-      submenu: [
-        ...PROFILE_NAMES.map<MenuItemConstructorOptions>((name) => ({
-          label: isFlagged(name) ? `${name} (stress)` : name,
-          click: () => {
-            void runProfileFromTray(name);
-          }
-        }))
-      ]
+      submenu: PROFILE_NAMES.map<MenuItemConstructorOptions>((name) => ({
+        label: isFlagged(name) ? `${name} (stress)` : name,
+        click: () => {
+          void runProfileFromTray(name);
+        }
+      }))
+    },
+    {
+      label: "Probe perf (no re-seed)",
+      submenu: PROFILE_NAMES.map<MenuItemConstructorOptions>((name) => ({
+        label: isFlagged(name) ? `${name} (stress)` : name,
+        click: () => {
+          void runProbeOnlyFromTray(name);
+        }
+      }))
     }
   ];
   setExtraTrayMenuItems(items);
@@ -52,6 +59,22 @@ async function runProfileFromTray(name: ProfileName): Promise<void> {
     });
   } catch (cause) {
     log.error("tray-seed failed", {
+      profile: name,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+async function runProbeOnlyFromTray(name: ProfileName): Promise<void> {
+  try {
+    const result = await runProbeOnly(name);
+    log.info("tray-probe completed", {
+      profile: result.profile,
+      totalMs: result.totalMs,
+      measurementPath: result.measurementPath
+    });
+  } catch (cause) {
+    log.error("tray-probe failed", {
       profile: name,
       message: cause instanceof Error ? cause.message : String(cause)
     });

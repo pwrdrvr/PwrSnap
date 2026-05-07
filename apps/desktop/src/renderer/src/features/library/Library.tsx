@@ -8,7 +8,7 @@ import {
   useRef,
   useState
 } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureRecord, ScrollProbeRequest } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
@@ -20,7 +20,7 @@ import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
-import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -151,6 +151,22 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     totalLive,
     appStats
   } = useLibrary();
+
+  // Phase 5 perf instrumentation. Fires once per Library mount when
+  // the grid commits its first row of real data — the seeder reads
+  // these marks to compute cold-load latency. Skipped in dev when
+  // Library mounts with empty records (the dispatch arrives later).
+  const firstPaintFired = useRef(false);
+  useLayoutEffect(() => {
+    if (firstPaintFired.current) return;
+    if (records.length === 0) return;
+    firstPaintFired.current = true;
+    perfMark({
+      kind: "library:firstPaint",
+      rowsRendered: records.length,
+      timeOriginMs: performance.timeOrigin
+    });
+  }, [records.length]);
 
   // Local-date watcher. The fixture day-bucket ("Today" / "Yesterday"
   // / "Earlier") is computed against `new Date()` when the snapshot is
@@ -389,6 +405,83 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //     persists natively across mode flips (the element is
   //     display:none'd, not unmounted).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll probe — Phase 5 of the perf plan. Subscribes to the
+  // main-side trigger and runs a RAF dropped-frame counter while
+  // programmatically scrolling the grid container at fixed velocity.
+  // Result posts back via perfMark; the seeder's runScrollProbes
+  // awaits it on the perfMark channel and writes a JSONL row.
+  //
+  // Idempotent: a probe arriving while another is already running
+  // posts back an `already_running` error rather than starting a
+  // second loop.
+  const scrollProbeRunningRef = useRef(false);
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.perfScrollProbeRequest, (rawPayload) => {
+      const payload = rawPayload as ScrollProbeRequest;
+      if (scrollProbeRunningRef.current) {
+        perfMark({ kind: "perf:scrollProbe:error", reason: "already_running" });
+        return;
+      }
+      const el = gridScrollRef.current;
+      if (el === null) {
+        perfMark({ kind: "perf:scrollProbe:error", reason: "no_scroll_container" });
+        return;
+      }
+      scrollProbeRunningRef.current = true;
+      const start = performance.now();
+      const deadline = start + payload.durationMs;
+      const startScrollTop = el.scrollTop;
+      const frameDeltas: number[] = [];
+      // 60Hz target frame budget = 1000/60 ≈ 16.67ms. Treat anything
+      // longer than 1.5× that as a dropped frame.
+      const dropThresholdMs = 1.5 * (1000 / 60);
+      let lastTs = start;
+      let droppedFrames = 0;
+
+      const tick = (now: number): void => {
+        const delta = now - lastTs;
+        lastTs = now;
+        // Skip the first delta — it's measured from probe-start to
+        // the first RAF callback, which is uninformative.
+        if (frameDeltas.length > 0 || now > start + 16) {
+          frameDeltas.push(delta);
+          if (delta > dropThresholdMs) droppedFrames += 1;
+        } else {
+          frameDeltas.push(delta);
+        }
+
+        // Advance the scroll position. When we hit the bottom, snap
+        // back to start so the probe keeps measuring scroll-driven
+        // layout work for the full duration.
+        const next = el.scrollTop + payload.pxPerFrame;
+        const max = el.scrollHeight - el.clientHeight;
+        el.scrollTop = next > max ? startScrollTop : next;
+
+        if (now < deadline) {
+          window.requestAnimationFrame(tick);
+        } else {
+          scrollProbeRunningRef.current = false;
+          // Drop the warm-up frame for stats (its delta is the
+          // probe-start → first-RAF gap, not a real frame interval).
+          const stats = frameDeltas.slice(1);
+          stats.sort((a, b) => a - b);
+          const p95 = stats.length === 0
+            ? 0
+            : (stats[Math.min(stats.length - 1, Math.floor(0.95 * stats.length))] ?? 0);
+          perfMark({
+            kind: "perf:scrollProbe:result",
+            durationMs: now - start,
+            frames: stats.length,
+            droppedFrames,
+            droppedPct: stats.length === 0 ? 0 : droppedFrames / stats.length,
+            p95FrameMs: p95
+          });
+        }
+      };
+      window.requestAnimationFrame(tick);
+    });
+  }, []);
 
   // Reel filmstrip scroll preservation (plan D.2 + D.4). The
   // filmstrip is rendered inside Stage's `aboveStageSlot`, which
@@ -962,7 +1055,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </svg>
           </span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{liveRecords.length}</span>
+          <span className="psl__nav-count">{totalLive}</span>
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}
@@ -1442,10 +1535,17 @@ function VirtualizedGrid({
     estimateSize: (i) =>
       flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
     overscan: 5,
-    rangeExtractor,
-    // React 19 — opt into batched updates; silences flushSync warnings
-    // during scroll. Slight measurement-jitter trade-off, acceptable.
-    useScrollendEvent: true
+    rangeExtractor
+    // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
+    // browser's `scrollend` event, which fires only when scroll stops
+    // — so `rangeExtractor` doesn't update the active sticky header
+    // during scroll. Result: as the user scrolls through multiple
+    // day-sections, the previous section's header un-mounts (it's
+    // outside the rendered range) and the new section's header is
+    // never marked active, so no CSS-sticky pinning happens until
+    // scroll stops. Visible symptom: sticky headers vanish during
+    // scroll. Default (scroll event, fires per frame) keeps the
+    // active-sticky calculation in lockstep with browser scroll.
   });
 
 

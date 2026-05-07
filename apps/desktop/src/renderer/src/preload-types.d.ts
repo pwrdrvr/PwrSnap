@@ -5,7 +5,7 @@
 // using `window.pwrsnapApi.dispatch` directly — the helper provides
 // typed Req<C> / Res<C> inference per command name.
 
-import type { CommandName, Req, Res, PwrSnapError, Result } from "@pwrsnap/shared";
+import type { CommandName, PerfMarkPayload, Req, Res, PwrSnapError, Result } from "@pwrsnap/shared";
 
 export type WindowSnapEntry = {
   windowId: number;
@@ -66,6 +66,7 @@ declare global {
         screenWidth: number;
         screenHeight: number;
       }): void;
+      perfMark(payload: PerfMarkPayload): void;
     };
   }
 }

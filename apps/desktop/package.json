@@ -31,6 +31,7 @@
     "@fontsource/geist-sans": "^5.2.5",
     "@pwrsnap/codex-app-server-protocol": "workspace:*",
     "@pwrsnap/shared": "workspace:*",
+    "@shutterstock/p-map-iterable": "^1.1.2",
     "@tanstack/react-virtual": "^3.13.24",
     "better-sqlite3": "^12.6.0",
     "electron-log": "^5.4.3",

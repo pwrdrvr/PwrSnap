@@ -1,7 +1,7 @@
 {
   "name": "@pwrsnap/desktop",
   "productName": "PwrSnap",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0-alpha.1",
   "private": true,
   "description": "Mac-first agentic screen capture tool",
   "author": "PwrDrvr LLC",

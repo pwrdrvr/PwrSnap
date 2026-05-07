@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.0-alpha.3 - 2026-05-06
+
+- Restored the missing tray icon in the packaged desktop app.
+
 ## v1.0.0-alpha.2 - 2026-05-06
 
 - Decode the GitHub Actions `CSC_LINK` signing certificate secret to a

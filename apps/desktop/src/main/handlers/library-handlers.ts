@@ -1,7 +1,6 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
-import { BrowserWindow } from "electron";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
@@ -11,7 +10,7 @@ import {
   softDeleteCapture
 } from "../persistence/captures-repo";
 import { moveSourceToTrash } from "../persistence/source-store";
-import { createEditWindow, createMainWindow } from "../window";
+import { createEditWindow, createMainWindow, findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -54,24 +53,12 @@ export function registerLibraryHandlers(): void {
   });
 
   bus.register("library:focus", async () => {
-    // Find the main library BrowserWindow. We can't match by title
-    // because every PwrSnap window loads the same renderer entry
-    // (<title>PwrSnap</title>) — tray + float-over + selector +
-    // edit all share the title. Match by URL hash instead: the
-    // library window is the only one without a `stage=` fragment
-    // in its URL.
-    //
-    // Don't check for a specific path substring like index.html —
-    // in dev the URL is `http://localhost:5173/...` (Vite dev
-    // server), in prod it's `file:///path/out/renderer/index.html`.
-    // Both paths are valid library URLs; the discriminator is just
-    // the absence of `stage=`.
-    let main = BrowserWindow.getAllWindows().find((w) => {
-      if (w.isDestroyed()) return false;
-      const url = w.webContents.getURL();
-      return url.length > 0 && !/[#&?]stage=/.test(url);
-    });
-    if (main === undefined) {
+    // Singleton: raise the existing library window if alive, otherwise
+    // create one. Dock-icon show/hide is owned by the window's
+    // `ready-to-show` / `closed` handlers — see createMainWindow in
+    // ../window.ts.
+    let main = findMainLibraryWindow();
+    if (main === null) {
       log.info("library:focus: recreating main window");
       main = createMainWindow();
     }

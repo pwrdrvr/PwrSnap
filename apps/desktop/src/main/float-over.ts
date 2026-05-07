@@ -53,6 +53,67 @@ let lastEvent: FloatOverEvent | null = null;
 /** True once the renderer has finished loading at least once. Until
  *  then, IPC events are buffered in `lastEvent` and re-sent on dom-ready. */
 let rendererReady = false;
+/** True after the first `showInactive()` call on the singleton. Subsequent
+ *  show transitions skip `showInactive()` because we never `hide()` the
+ *  window — see parkOffScreen() / restoreOnScreen() for the off-screen
+ *  pseudo-hide model. Reset when the singleton is recreated. */
+let everShown = false;
+
+/** Where we park the float-over between uses. Far enough off-screen that
+ *  no real display layout includes it, even on a 16K virtual workspace. */
+const PARK_X = -20_000;
+const PARK_Y = -20_000;
+
+/**
+ * Park the float-over off-screen with opacity 0 and mouse events
+ * disabled — our pseudo-hide. The reason we don't call `BrowserWindow.hide()`
+ * (which is `[NSWindow orderOut:]` under the hood):
+ *
+ * `orderOut:` removes the window from AppKit's on-screen list, which
+ * triggers a key-window cascade for our app (PwrSnap). The cascade
+ * lands on the [focus-sink](./focus-sink.ts) — also a floating-level
+ * non-activating panel with `visibleOnAllWorkspaces` — and the act of
+ * shuffling key state across two floating panels of an inactive app
+ * appears to ripple back into whichever app the user is currently
+ * typing in, yanking their `firstResponder` out from under them.
+ *
+ * Symptom: user takes a snap, clicks Terminal/Claude, starts typing —
+ * when the toast auto-dismisses, the active app silently loses
+ * keyboard focus.
+ *
+ * Park-off-screen sidesteps this entirely: the window stays in
+ * AppKit's list, no cascade, no ripple. The transparent panel at
+ * opacity 0 has effectively zero compositor cost (AppKit special-
+ * cases windows offscreen + opacity 0).
+ */
+function parkOffScreen(window: BrowserWindow): void {
+  window.setIgnoreMouseEvents(true);
+  window.setOpacity(0);
+  window.setPosition(PARK_X, PARK_Y, false);
+}
+
+/**
+ * Restore the float-over to its anchored position with full opacity
+ * and mouse events re-enabled. On the very first show of the session
+ * we additionally call `showInactive()` to add the window to AppKit's
+ * window list; subsequent shows skip that because the window is
+ * already in the list (just parked off-screen).
+ *
+ * Caller is responsible for setting position via anchorBottomRight
+ * BEFORE calling this — order matters because parkOffScreen left the
+ * window at PARK_X/PARK_Y and we don't want a one-frame flash.
+ */
+function restoreOnScreen(window: BrowserWindow): void {
+  window.setIgnoreMouseEvents(false);
+  window.setOpacity(1);
+  if (!everShown) {
+    window.showInactive();
+    everShown = true;
+  }
+  // moveTop within the floating level — beats other floating windows
+  // that may have come up since our last show.
+  window.moveTop();
+}
 
 /**
  * Listen for float-over-renderer resize requests and `setContentSize`
@@ -90,7 +151,14 @@ function wireFloatOverResizeChannel(): void {
     const current = singleton.getContentSize();
     if (current[1] === clamped) return;
     singleton.setContentSize(FLOAT_OVER_WIDTH, clamped, false);
-    if (singleton.isVisible()) {
+    // Re-anchor only when the toast is logically on-screen. We can't
+    // use `singleton.isVisible()` here — with the off-screen pseudo-
+    // hide model, the window stays "visible" in AppKit's sense forever
+    // after the first show, so isVisible() always returns true.
+    // anchorBottomRight while parked would tug the parked window from
+    // (-20000, -20000) to the bottom-right of the user's display — a
+    // visible flash on the next dismiss when we re-park.
+    if (state.kind !== "hidden") {
       anchorBottomRight(singleton);
     }
   });
@@ -121,8 +189,18 @@ function getOrCreate(): BrowserWindow {
       state = { kind: "hidden" };
       lastEvent = null;
       rendererReady = false;
+      // Reset the everShown flag so the next getOrCreate() goes
+      // through the first-show path again (calls showInactive()
+      // to add the new window to AppKit's window list).
+      everShown = false;
     }
   });
+  // Park the freshly-created window off-screen immediately. Construction
+  // already sets `show: false`, but parkOffScreen also flips opacity +
+  // ignore-mouse-events so the FIRST restoreOnScreen has a clean slate
+  // to undo. Without this, the very first show might briefly paint
+  // at opacity 1 before anchorBottomRight runs.
+  parkOffScreen(window);
   return window;
 }
 
@@ -196,16 +274,13 @@ export function setFloatOverState(event: FloatOverEvent): void {
     case "show-idle": {
       const window = getOrCreate();
       state = { kind: "idle" };
+      // Anchor BEFORE restoring opacity — the window may currently be
+      // parked at (PARK_X, PARK_Y) from a previous dismiss; moving it
+      // first while still at opacity 0 avoids a one-frame flash.
       anchorBottomRight(window);
-      // showInactive() — never steal focus. Selector (screen-saver
-      // level) covers this window visually; user doesn't see the
-      // empty placeholder.
-      if (!window.isVisible()) {
-        window.showInactive();
-      }
-      // moveTop within the floating level — beats other floating
-      // windows that may have come up since our last show.
-      window.moveTop();
+      // Selector (screen-saver level) covers this window visually
+      // through the IDLE phase; user doesn't see the empty placeholder.
+      restoreOnScreen(window);
       break;
     }
     case "show-loaded": {
@@ -214,21 +289,18 @@ export function setFloatOverState(event: FloatOverEvent): void {
       // Re-anchor in case the user dragged-display between idle and
       // commit. (Cursor moved → bottom-right of the new display.)
       anchorBottomRight(window);
-      if (!window.isVisible()) {
-        window.showInactive();
-      }
-      window.moveTop();
+      restoreOnScreen(window);
       armCopyShortcuts(event.captureId);
       break;
     }
     case "cancel": {
-      // Synchronous hide, no exit animation. The user pressed Esc
+      // Synchronous park, no exit animation. The user pressed Esc
       // out of the selector; the float-over was pre-shown UNDER the
-      // selector and they should never have seen it. Hide first,
+      // selector and they should never have seen it. Park first,
       // selector hides 50ms later, no flash.
       state = { kind: "hidden" };
-      if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
-        singleton.hide();
+      if (singleton !== null && !singleton.isDestroyed()) {
+        parkOffScreen(singleton);
       }
       disarmCopyShortcuts();
       break;
@@ -236,10 +308,11 @@ export function setFloatOverState(event: FloatOverEvent): void {
     case "dismiss": {
       // User explicitly dismissed via the X / Esc on the toast / auto-
       // dismiss timer. The renderer played its exit animation and is
-      // telling us to hide. No animation here — the renderer faded.
+      // telling us to park. No animation here — the renderer faded.
+      // See parkOffScreen() for why we don't call hide().
       state = { kind: "hidden" };
-      if (singleton !== null && !singleton.isDestroyed() && singleton.isVisible()) {
-        singleton.hide();
+      if (singleton !== null && !singleton.isDestroyed()) {
+        parkOffScreen(singleton);
       }
       disarmCopyShortcuts();
       break;
@@ -253,9 +326,12 @@ export function setFloatOverState(event: FloatOverEvent): void {
     singleton.webContents.send(EVENT_CHANNELS.floatOverState, event);
   }
 
+  // `state.kind` is the source of truth for logical visibility — see
+  // the comment on parkOffScreen / the resize handler. `isVisible()` is
+  // not useful here: it stays true forever once the window is shown.
   log.info("float-over state", {
     kind: event.kind,
-    visible: singleton?.isVisible() ?? false
+    logicalState: state.kind
   });
 }
 

@@ -49,6 +49,14 @@ async function inspectFloatOver(
 ): Promise<{
   exists: boolean;
   visible: boolean;
+  /**
+   * BrowserWindow opacity (0.0 – 1.0). Source of truth for "user can
+   * actually see the toast" because the float-over uses an off-screen
+   * pseudo-hide (opacity 0 + position -20000) instead of `.hide()`,
+   * to avoid AppKit's key-window cascade triggering keyboard focus
+   * loss in other apps. See parkOffScreen() in main/float-over.ts.
+   */
+  opacity: number | null;
   bounds: { x: number; y: number; width: number; height: number } | null;
   dataState: string | null;
 }> {
@@ -57,7 +65,7 @@ async function inspectFloatOver(
       !w.isDestroyed() && w.webContents.getURL().includes("stage=float-over")
     );
     if (win === undefined) {
-      return { exists: false, visible: false, bounds: null, dataState: null };
+      return { exists: false, visible: false, opacity: null, bounds: null, dataState: null };
     }
     let dataState: string | null = null;
     try {
@@ -74,6 +82,7 @@ async function inspectFloatOver(
     return {
       exists: true,
       visible: win.isVisible(),
+      opacity: win.getOpacity(),
       bounds: win.getBounds(),
       dataState
     };
@@ -160,21 +169,23 @@ test.describe("float-over visibility", () => {
 
       await setFloatOverState(app, { kind: "show-loaded", captureId });
 
-      // Visible within 200ms — the BrowserWindow gets created lazily on
-      // first state, so we allow some warmup. After showInactive + the
-      // renderer's first paint (~50ms typical), `isVisible` flips true.
+      // Opacity reaches 1.0 within 200ms — the BrowserWindow is created
+      // lazily on first state, parked off-screen + opacity 0, then
+      // restoreOnScreen() flips opacity back to 1. We track opacity
+      // (not isVisible) because the off-screen pseudo-hide leaves
+      // isVisible() === true forever after the first showInactive.
       await expect
-        .poll(async () => (await inspectFloatOver(app)).visible, {
+        .poll(async () => (await inspectFloatOver(app)).opacity, {
           timeout: 800,
           intervals: [25, 50, 100]
         })
-        .toBe(true);
+        .toBe(1);
 
       // Still visible at 4s. The standard variant's auto-dismiss is
       // 6s, so 4s should be comfortably mid-countdown.
       await app.window.waitForTimeout(4000);
       const at4s = await inspectFloatOver(app);
-      expect(at4s.visible, "toast should still be visible at T+4s").toBe(true);
+      expect(at4s.opacity, "toast should still be visible at T+4s").toBe(1);
     } finally {
       await app.close();
     }
@@ -200,53 +211,57 @@ test.describe("float-over visibility", () => {
 
       // Second toast should be visible immediately and stay visible.
       await expect
-        .poll(async () => (await inspectFloatOver(app)).visible, {
+        .poll(async () => (await inspectFloatOver(app)).opacity, {
           timeout: 800,
           intervals: [25, 50, 100]
         })
-        .toBe(true);
+        .toBe(1);
 
       // 500ms after the second toast — well past the 220ms exit
       // window where the old stale-timer bug would have hidden it.
       await app.window.waitForTimeout(500);
       const after500 = await inspectFloatOver(app);
-      expect(after500.visible, "second toast should still be visible at T+500ms").toBe(true);
+      expect(after500.opacity, "second toast should still be visible at T+500ms").toBe(1);
 
       // 4s mark — still visible.
       await app.window.waitForTimeout(3500);
       const after4s = await inspectFloatOver(app);
-      expect(after4s.visible, "second toast should still be visible at T+4s").toBe(true);
+      expect(after4s.opacity, "second toast should still be visible at T+4s").toBe(1);
     } finally {
       await app.close();
     }
   });
 
-  test("cancel hides the float-over synchronously", async () => {
+  test("cancel parks the float-over off-screen synchronously", async () => {
     const app = await launchPwrSnap();
     try {
       // Pre-show under selector — the IDLE state. User would never
       // see this directly because the selector covers the display.
       await setFloatOverState(app, { kind: "show-idle" });
 
-      // The IDLE state still creates the window; isVisible should
-      // become true once the renderer has painted.
+      // The IDLE state creates the window and restores opacity to 1.
       await expect
-        .poll(async () => (await inspectFloatOver(app)).visible, {
+        .poll(async () => (await inspectFloatOver(app)).opacity, {
           timeout: 800,
           intervals: [25, 50, 100]
         })
-        .toBe(true);
+        .toBe(1);
 
-      // Now cancel. setFloatOverState(cancel) calls window.hide()
-      // synchronously inside the same tick.
+      // Now cancel. setFloatOverState(cancel) calls parkOffScreen()
+      // synchronously inside the same tick — opacity → 0 and the
+      // window is repositioned far off-screen.
       await setFloatOverState(app, { kind: "cancel" });
 
-      // Visible should flip false within one tick — cancel is
-      // synchronous on the main side and the window state is
-      // observable immediately via the BrowserWindow API.
+      // Park flips opacity to 0 and bounds to (-20000, -20000) within
+      // one tick. The BrowserWindow is intentionally never `.hide()`-d
+      // — that would call AppKit's `[NSWindow orderOut:]` which
+      // triggers the key-window cascade we're trying to avoid (yanks
+      // keyboard focus from the user's other app). See parkOffScreen
+      // in main/float-over.ts for the full rationale.
       const after = await inspectFloatOver(app);
-      expect(after.exists, "window persists; cancel only hides").toBe(true);
-      expect(after.visible, "cancel hides the window synchronously").toBe(false);
+      expect(after.exists, "window persists; cancel only parks").toBe(true);
+      expect(after.opacity, "cancel parks the window at opacity 0").toBe(0);
+      expect(after.bounds?.x, "cancel parks the window off-screen").toBeLessThan(-10000);
     } finally {
       await app.close();
     }

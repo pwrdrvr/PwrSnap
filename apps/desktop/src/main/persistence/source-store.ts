@@ -25,7 +25,7 @@ const TRASH_RETENTION_DAYS = 14;
 export type StoredSource = {
   /** UUID-shaped capture identifier (nanoid). */
   id: string;
-  /** Absolute on-disk path under <userData>/captures/<yyyy>/<mm>/<id>.png */
+  /** Absolute on-disk path. Default layout: ~/Documents/PwrSnap/<id>.png */
   srcPath: string;
   sha256: string;
   byteSize: number;
@@ -35,7 +35,11 @@ export type StoredSource = {
 
 /**
  * Take a freshly-captured PNG (path to a temp file the screencapture
- * CLI wrote) and persist it under captures/<yyyy>/<mm>/<id>.png.
+ * CLI wrote) and persist it under `<capturesRoot>/<id>.png`. By
+ * default that's `~/Documents/PwrSnap/<id>.png` — see db.ts for why.
+ * No yyyy/mm subdirectories; the DB indexes captured_at so we never
+ * need to walk the filesystem to find captures.
+ *
  * Returns the immutable storage record. Hashes via SHA-256 — caller
  * uses the hash for dedup against existing rows.
  *
@@ -55,17 +59,14 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
     throw new Error(`source-store: failed to read PNG dimensions from ${tempPath}`);
   }
 
-  const now = new Date();
-  const yyyy = String(now.getFullYear());
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dir = join(getCapturesRoot(), yyyy, mm);
+  const dir = getCapturesRoot();
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}.png`);
 
-  // Same-volume rename — atomic on APFS, doesn't double-write the buffer.
-  // tempPath comes from `screencapture -t png /tmp/...`, which is on
-  // /private/tmp; if /tmp is on a different volume than userData, this
-  // falls back to a copy + unlink under the hood (fs/promises.rename).
+  // Same-volume rename — atomic on APFS when both paths are on the
+  // home volume (typical: /tmp ↔ ~/Documents both on /). If /tmp is
+  // on a different volume, fs/promises.rename falls back to a copy
+  // + unlink under the hood, still atomic from the consumer's POV.
   await rename(tempPath, srcPath);
 
   log.info("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
@@ -114,10 +115,11 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
 }
 
 /**
- * Inverse of moveSourceToTrash: move <userData>/.trash/<id>.png back to
- * its original src_path. Recreates the parent dir (the original yyyy/mm
- * folder may have been pruned by a future cleanup pass; today it isn't,
- * but keep the mkdir defensive).
+ * Inverse of moveSourceToTrash: move <userData>/.trash/<id>.png back
+ * to its original src_path. Recreates the parent dir defensively —
+ * for old rows captured under the previous yyyy/mm layout the dir
+ * may have been pruned, and for new rows ~/Documents/PwrSnap/
+ * always exists but mkdir(recursive: true) is a no-op when it does.
  */
 export async function restoreSourceFromTrash(captureId: string, srcPath: string): Promise<void> {
   const trashRoot = getTrashRoot();

@@ -90,8 +90,7 @@ export function FloatOver({
   initialTags = [],
   aiSuggestions = ["pwragnt", "ui", "thread-list"],
   aiDescription = "PwrAgnt thread list with selected resume-menu thread",
-  thinking = false,
-  pinned: pinnedProp = false
+  thinking = false
 }: {
   variant?: VariantId;
   src: string;
@@ -111,7 +110,6 @@ export function FloatOver({
   aiSuggestions?: string[];
   aiDescription?: string;
   thinking?: boolean;
-  pinned?: boolean;
 }) {
   const cfg = VARIANTS[variant];
   // Note: the prior `copiedId` / `initiallyCopied` state is gone — the
@@ -120,7 +118,6 @@ export function FloatOver({
   // no bytes-text swap). See features/shared/CopyButton.tsx.
   const [description, setDescription] = useState(initialDescription);
   const [tags, setTags] = useState<string[]>(initialTags);
-  const [pinned, setPinned] = useState(pinnedProp);
   const [hovering, setHovering] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
@@ -140,7 +137,6 @@ export function FloatOver({
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isPaused =
-    pinned ||
     hovering ||
     description.length > 0 ||
     tags.length > initialTags.length ||
@@ -220,16 +216,10 @@ export function FloatOver({
           <div className="fo__hdr-sub">{dimText(srcW, srcH)} · just now</div>
         </div>
         <div className="fo__hdr-actions">
-          <button
-            className={"fo__icon-btn " + (pinned ? "is-pinned" : "")}
-            title={pinned ? "Unpin" : "Pin (don't auto-dismiss)"}
-            onClick={() => setPinned(!pinned)}
-          >
-            <FoIcon name="pin" size={12} />
-          </button>
-          <button className="fo__icon-btn" title="Open in editor">
-            <FoIcon name="pen-line" size={12} />
-          </button>
+          {/* Auto-dismiss pauses on hover / typing — no need for a
+              separate Pin affordance. The footer Edit button is the
+              primary editor entry; an extra pencil here would be
+              redundant. */}
           <button className="fo__icon-btn" title="Dismiss" onClick={dismissNow}>
             <FoIcon name="x" size={12} />
           </button>
@@ -365,7 +355,12 @@ export function FloatOver({
             </div>
           ) : (
             <div className="fo__dest-saved">
-              <FoIcon name="check" size={11} /> saved · ~/Snaps/2026-05-03
+              {/* Path mirrors db.getCapturesRoot() — see that comment
+                  for why captures live in Documents instead of
+                  Application Support. Hardcoded for now; if a future
+                  setting makes this configurable, surface that value
+                  through props. */}
+              <FoIcon name="check" size={11} /> saved · ~/Documents/PwrSnap
             </div>
           )}
           <div className="fo__foot-actions">

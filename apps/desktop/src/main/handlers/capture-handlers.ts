@@ -8,7 +8,7 @@
 //      cancellation.
 //   2. captureRegion() — shells out to /usr/sbin/screencapture, writes
 //      a temp PNG.
-//   3. putCaptureSource() — moves to <userData>/captures/<yyyy>/<mm>,
+//   3. putCaptureSource() — moves to ~/Documents/PwrSnap/<id>.png,
 //      hashes, returns metadata.
 //   4. insertOrFindCapture() — INSERT (or dedup-return if sha256 hit).
 //   5. webContents.send 'events:captures:changed' — library + float-over

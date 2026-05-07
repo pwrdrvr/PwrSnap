@@ -738,11 +738,23 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               defaultValue=""
             />
           </div>
-          <button className="psl__chip-btn psl__chip-btn--accent" style={{ height: 28 }}>
+          {/* Mirrors the tray's Quick Capture button — same wording,
+              same action, same hotkey. Routes through `capture:interactive`
+              with `auto` mode (smart pick: region / window / full screen
+              based on what the cursor is pointing at). */}
+          <button
+            className="psl__chip-btn psl__chip-btn--accent"
+            style={{ height: 28 }}
+            type="button"
+            title="Smart auto-mode · picks region, window, or full screen"
+            onClick={() => {
+              void dispatch("capture:interactive", { mode: "auto" });
+            }}
+          >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
               <path d="M5 12h14M12 5v14" />
             </svg>
-            New snap · ⌘⇧P
+            Quick Capture · ⌘⇧P
           </button>
         </div>
       </header>

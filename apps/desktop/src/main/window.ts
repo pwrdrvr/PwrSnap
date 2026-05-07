@@ -122,13 +122,24 @@ export function createMainWindow(): BrowserWindow {
   // flow (capture-handlers.ts) deactivates PwrSnap to return the user
   // to their previous app — that side-effect (in combination with our
   // persistent panel windows) periodically strips the dock icon's
-  // representation. Re-claiming on every Library focus event puts it
-  // back the next time the user clicks the Library or it otherwise
-  // becomes key. `app.dock.show()` is idempotent when already visible.
+  // representation. Re-claiming on the next Library focus puts it
+  // back.
+  //
+  // BUT: macOS fires a CASCADE of focus events when the user
+  // alt-tabs back to PwrSnap (window-key → window-main → app-active,
+  // plus the focus-sink at floating level cascading down to Library).
+  // Calling `app.dock?.show()` unconditionally on each one was
+  // hammering `[NSApp setActivationPolicy:Regular]`, and every
+  // policy-set call triggered AppKit to redraw the window
+  // decorations — that's the 10× traffic-light flash users saw on
+  // app refocus. Guard with `app.dock.isVisible()` so we only call
+  // `show()` when the dock genuinely isn't visible (i.e. only
+  // immediately after `activateApp()` stripped it). Subsequent
+  // focus events become no-ops.
   window.on("focus", () => {
-    if (process.platform === "darwin") {
-      void app.dock?.show();
-    }
+    if (process.platform !== "darwin") return;
+    if (app.dock?.isVisible()) return;
+    void app.dock?.show();
   });
 
   // Lifecycle diagnostics — these helped track down the

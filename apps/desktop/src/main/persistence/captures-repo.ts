@@ -137,11 +137,30 @@ export function softDeleteCapture(id: string): void {
   db.prepare("UPDATE captures SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL").run(id);
 }
 
+/**
+ * Inverse of softDeleteCapture: clear deleted_at so the row reappears
+ * in live library queries. Caller is responsible for moving the trash
+ * file back to its original src_path.
+ */
+export function restoreCapture(id: string): void {
+  const db = getDb();
+  db.prepare("UPDATE captures SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL").run(id);
+}
+
 export function hardDeleteCapture(id: string): void {
   const db = getDb();
   // ON DELETE CASCADE removes the render_cache rows; future Phase 2+
   // tables (overlays etc) will cascade similarly.
   db.prepare("DELETE FROM captures WHERE id = ?").run(id);
+}
+
+/** Every currently-soft-deleted capture id. Used by Empty-Trash. */
+export function listSoftDeletedIds(): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT id FROM captures WHERE deleted_at IS NOT NULL")
+    .all() as Array<{ id: string }>;
+  return rows.map((r) => r.id);
 }
 
 /**

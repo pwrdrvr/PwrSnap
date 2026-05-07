@@ -140,55 +140,108 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
         </div>
 
         <div className="psl__action-row">
-          <button type="button" disabled title="Coming soon">
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M12 4v12M6 10l6-6 6 6M4 20h16" />
-            </svg>
-            Share
-          </button>
-          <button
-            type="button"
-            title="Open in standalone editor window"
-            onClick={() => {
-              void dispatch("editor:open", { captureId: record.id });
-            }}
-          >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
-            </svg>
-            Editor
-          </button>
-          <button
-            type="button"
-            className="is-danger"
-            title="Move to Trash"
-            disabled
-          >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-            </svg>
-          </button>
+          {record.deleted_at !== null ? (
+            <>
+              <button
+                type="button"
+                title="Restore from Trash"
+                onClick={() => {
+                  void dispatch("library:restore", { id: record.id });
+                }}
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <path d="M3 4v5h5" />
+                </svg>
+                Restore
+              </button>
+              <button
+                type="button"
+                className="is-danger"
+                title="Delete permanently"
+                onClick={() => {
+                  const ok = window.confirm(
+                    "Permanently delete this capture? This cannot be undone."
+                  );
+                  if (!ok) return;
+                  void dispatch("library:purge", { id: record.id });
+                }}
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                </svg>
+                Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" disabled title="Coming soon">
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M12 4v12M6 10l6-6 6 6M4 20h16" />
+                </svg>
+                Share
+              </button>
+              <button
+                type="button"
+                title="Open in standalone editor window"
+                onClick={() => {
+                  void dispatch("editor:open", { captureId: record.id });
+                }}
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+                </svg>
+                Editor
+              </button>
+              <button
+                type="button"
+                className="is-danger"
+                title="Move to Trash"
+                onClick={() => {
+                  void dispatch("library:delete", { id: record.id });
+                }}
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                </svg>
+              </button>
+            </>
+          )}
         </div>
       </div>
     </aside>

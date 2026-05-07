@@ -47,7 +47,11 @@ async function refetch(): Promise<void> {
   if (inFlight !== null) return inFlight;
   inFlight = (async () => {
     try {
-      const result = await dispatch("library:list", { limit: 500 });
+      // includeDeleted: true so the renderer can partition into a live
+       // list and a trash list off a single fetch — the Trash sidebar
+       // view reads the same snapshot. ~hundreds of rows; the extra
+       // payload is negligible compared to a second round-trip.
+      const result = await dispatch("library:list", { limit: 500, includeDeleted: true });
       if (!result.ok) {
         setSnapshot({
           loading: false,

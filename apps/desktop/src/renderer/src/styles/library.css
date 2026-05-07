@@ -336,11 +336,14 @@
   position: relative;            /* anchors the floating .psl__right rail */
   width: 100%; height: 100%;
   display: grid;
-  /* Default: rail floats; canvas gets full width minus its 48px
-     mode. The 3rd column is reserved for the DetailRail in Focus +
-     Reel modes; in Grid the column collapses to 0 since DetailRail
-     returns null there. */
-  grid-template-columns: 220px 1fr 0;
+  /* Custom-property-driven columns so the left + right column widths
+     can flex independently without listing every combination. The
+     left column is 220px when pinned, 36px when collapsed/peeking
+     (a thin spine). The right column is 0 in Grid mode and 360px
+     in Focus/Reel (DetailRail returns null in Grid). */
+  --left-col: 220px;
+  --right-col: 0px;
+  grid-template-columns: var(--left-col) 1fr var(--right-col);
   grid-template-rows: 52px 1fr 32px;
   background: var(--bg-app);
   border: 1px solid var(--border-default);
@@ -353,7 +356,14 @@
    internally). Phase B/C of the library three-state plan. */
 .psl[data-mode="focus"],
 .psl[data-mode="reel"] {
-  grid-template-columns: 220px 1fr 360px;
+  --right-col: 360px;
+}
+/* Collapsed left bar — only the 36px spine sticks out. Peek state
+   reuses the same column width; the panel itself slides on as an
+   absolute-positioned overlay (see .psl__left rules). */
+.psl[data-left="collapsed"],
+.psl[data-left="peek"] {
+  --left-col: 36px;
 }
 /* Center pane is the absolute-positioning anchor for the future
    Focus overlay (Phase C). */
@@ -422,6 +432,73 @@
   overflow-y: auto;
   padding: 12px 8px;
   display: flex; flex-direction: column; gap: 2px;
+}
+/* When the bar is unpinned, the panel is taken out of the grid flow
+   and floats absolutely. The grid leaves 36px of dead column for the
+   spine; the panel slides in from the left to overlay the canvas
+   when the user hovers, and slides back off when they leave (200ms
+   debounce in Library.tsx avoids flicker). */
+.psl[data-left="collapsed"] .psl__left,
+.psl[data-left="peek"] .psl__left {
+  position: absolute;
+  top: 52px;             /* below topbar */
+  left: 0;
+  bottom: 32px;          /* above status bar */
+  width: 220px;
+  z-index: 30;
+  transform: translateX(-100%);
+  transition:
+    transform 160ms ease,
+    box-shadow 140ms ease;
+}
+.psl[data-left="peek"] .psl__left {
+  transform: translateX(0);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+}
+/* Spine — the 36px sliver that's always visible when not pinned.
+   Hover over it (or the panel) reveals the panel as a peek. The
+   button inside re-pins. Sits in column 1 of the grid. */
+.psl__left-spine {
+  grid-column: 1; grid-row: 2;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 8px 0;
+}
+.psl__left-spine-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.psl__left-spine-btn:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+/* Pin/unpin toggle inside the panel header (visible only when pinned).
+   Click collapses the bar to its spine. */
+.psl__left-section--top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.psl__left-pin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  margin-right: -4px;     /* tighten against right edge of section */
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.psl__left-pin:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
 }
 .psl__left-section { font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); padding: 10px 10px 6px; }
 .psl__left-section:first-child { padding-top: 0; }
@@ -604,6 +681,26 @@
   color: var(--accent);
 }
 .psl__frame-app svg { width: 8px; height: 8px; }
+/* Hover-only trash affordance on filmstrip frames. Same pattern as
+   `.psl__cell-trash` but smaller — frames are 70×56. Sits in the
+   top-right opposite the bottom-right app dot. */
+.psl__frame-trash {
+  position: absolute; top: 2px; right: 2px;
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 3px;
+  background: rgba(8, 7, 6, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.psl__frame:hover .psl__frame-trash { opacity: 1; }
+.psl__frame-trash:hover {
+  background: var(--danger-soft, rgba(220, 80, 80, 0.18));
+  color: var(--danger-text, #e58a8a);
+}
 
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
@@ -667,6 +764,33 @@
   color: var(--danger-text, #e58a8a);
   font: 500 12px/1.4 var(--font-sans);
 }
+/* Trash-view banner. Pinned at the top of the grid pane when the
+   user is on the Trash sidebar entry; explains the 14d retention and
+   surfaces the Empty Trash bulk action. */
+.psl__trash-banner {
+  margin: 12px 18px;
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 12px;
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-secondary);
+}
+.psl__trash-banner-text { flex: 1; }
+.psl__trash-banner-btn {
+  font: 600 11px/1 var(--font-sans);
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.32));
+  color: var(--danger-text, #e58a8a);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out);
+}
+.psl__trash-banner-btn:hover {
+  background: var(--danger-soft, rgba(220, 80, 80, 0.12));
+}
 
 .psl__cell {
   position: relative;
@@ -716,6 +840,29 @@
 }
 .psl__cell-app {
   position: absolute; bottom: 5px; left: 5px;
+}
+/* Hover-only trash affordance on grid cells. Hidden by default, fades
+   in on cell hover. Sits in the bottom-right corner — opposite the
+   bottom-left app dot, balanced. stopPropagation in the click handler
+   prevents the parent cell's onClick from also firing (which would
+   open Focus on a record about to disappear). */
+.psl__cell-trash {
+  position: absolute; bottom: 5px; right: 5px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 5px;
+  background: rgba(8, 7, 6, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.psl__cell:hover .psl__cell-trash,
+.psl__cell-trash:focus-visible { opacity: 1; }
+.psl__cell-trash:hover {
+  background: var(--danger-soft, rgba(220, 80, 80, 0.18));
+  color: var(--danger-text, #e58a8a);
 }
 /* HoverRevealPanel — pin / auto-hide side panel.
    Lives in features/shared/HoverRevealPanel.tsx. Extracted from the

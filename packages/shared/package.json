@@ -12,7 +12,8 @@
     "./overlay": "./src/overlay-schemas.ts",
     "./result": "./src/result.ts",
     "./ipc": "./src/ipc.ts",
-    "./appearance-arg": "./src/appearance-arg.ts"
+    "./appearance-arg": "./src/appearance-arg.ts",
+    "./bundle-manifest": "./src/bundle-manifest-schema.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

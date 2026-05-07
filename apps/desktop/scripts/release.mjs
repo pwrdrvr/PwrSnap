@@ -130,7 +130,7 @@ run(
 //    DMG and ZIP because electron-updater requires the ZIP on macOS.
 step(
   `electron-builder --mac${dryrun ? " dmg" : ""} --arm64 (${publish ? "publish" : "no publish"}, ${
-    dryrun ? "unsigned" : "signed"
+    dryrun ? "ad-hoc signed" : "signed"
   })`
 );
 maybeDecodeAppleApiKey();
@@ -140,20 +140,26 @@ if (dryrun) {
 }
 builderArgs.push("--arm64");
 if (dryrun) {
-  builderArgs.push("--config.mac.identity=null", "--config.mac.notarize=false");
+  // Use ad-hoc signing (identity=-) instead of no signing (identity=null).
+  // electron-builder modifies the Electron binary to set fuses, which
+  // invalidates its original code signature. Without re-signing, macOS
+  // kills the app with SIGKILL (Code Signature Invalid) on launch.
+  // Ad-hoc signing creates a locally valid signature that satisfies
+  // macOS page validation without requiring a Developer ID certificate.
+  builderArgs.push("--config.mac.identity=-", "--config.mac.notarize=false");
 }
 builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" : "");
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("npx", cleanedArgs, { cwd: stageDir });
 
-// 6. Verify no forbidden files leaked into the asar bundle.
-//    Pass the .app path explicitly — the script's default resolves relative to
-//    cwd, which would compound to release-stage/release-stage/... otherwise.
-step("verify asar contents");
-const appPath = join(stageDir, "dist", "mac-arm64", "PwrSnap.app");
-runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), appPath], {
-  cwd: stageDir
-});
+// 6. Post-build asar contents check — fails if forbidden files (TS sources,
+//    tests, third-party docs, design docs, screenshots, etc.) leaked into the
+//    bundle. Exclusions are configured in electron-builder.yml; this script
+//    is a belt-and-braces guard against accidental edits to that YAML.
+//    Pass the .app path explicitly so resolution doesn't compound off cwd.
+step("verify packaged asar contents");
+const builtApp = join(stageDir, "dist", "mac-arm64", "PwrSnap.app");
+runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), builtApp]);
 
 step("done");
 const dist = join(stageDir, "dist");

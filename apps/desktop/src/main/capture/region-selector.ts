@@ -496,15 +496,37 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
       const screenUrl = `pwrsnap-screen://r/${activeScreenSnapshot.id}`;
       win.webContents.send(SELECTOR_MODE_CHANNEL, { mode, screenUrl });
     }
-    win.show();
-    // Re-enter simple-fullscreen. The renderer paints the menu bar
-    // / dock area itself via the screen snapshot, so covering the
-    // real menu bar is fine — the user sees a 1-frame-old version
-    // of it instead of the live one. This matches every native Mac
-    // capture tool (Cleanshot, Shottr, SnagIt) and protects the
-    // selection from screen changes mid-drag (apps starting,
-    // notifications popping, tests running etc.).
+    // Order matters: setSimpleFullScreen(true) BEFORE show().
+    //
+    // Without this, `win.show()` paints the renderer's first frame
+    // while Cocoa is still clipping content to the work-area (the
+    // region below the menu bar) — even though the BrowserWindow
+    // bounds cover the full display. The screen snapshot, painted
+    // at body coords (0, 0), then sits 25-or-so pixels below where
+    // it should, with the LIVE menu bar still visible above. ~150ms
+    // later setSimpleFullScreen settles, the menu bar slides out,
+    // the window's content area expands, and the snapshot suddenly
+    // jumps up by the menu-bar height — visible to the user as the
+    // whole screen "lurching."
+    //
+    // First ⌘⇧P after launch happened to look clean because no prior
+    // teardown had toggled setSimpleFullScreen back to false; the
+    // pre-warmed window inherited a permissive style mask. Subsequent
+    // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
+    // had reset it.
+    //
+    // Doing the toggle while the window is hidden lets the style-
+    // mask change settle off-screen; show() then reveals the window
+    // already in its final geometry. Snapshot's menu bar pixels land
+    // exactly where the user expects them, no jump.
+    //
+    // The renderer paints the menu bar / dock area itself via the
+    // screen snapshot, so covering the real menu bar is fine — user
+    // sees a 1-frame-old version of it instead of the live one.
+    // Matches every native Mac capture tool (Cleanshot, Shottr,
+    // SnagIt).
     enterMenuBarOverlayMode(win);
+    win.show();
     win.focus();
     // webContents.focus() in addition to BrowserWindow.focus() —
     // belt and braces. focus() makes the NSWindow key, but

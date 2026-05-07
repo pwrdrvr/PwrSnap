@@ -14,6 +14,7 @@
 import { compose, type RenderRequest, type RenderResult } from "./compose";
 import { getCaptureById } from "../persistence/captures-repo";
 import { listLiveOverlays } from "../persistence/overlays-repo";
+import { effectiveSrcPathFor } from "../persistence/source-store";
 import { computeRenderHash } from "./overlay-hash";
 
 const inFlight = new Map<string, Promise<RenderResult>>();
@@ -59,7 +60,10 @@ export async function renderViaCoordinator(req: RenderRequest): Promise<RenderRe
 /**
  * Resolve `(captureId, width, format)` to a cache file path. Looks up
  * the capture's source path, then composes (or hits the cache).
- * Returns null if the capture doesn't exist or is soft-deleted.
+ * Returns null only if the capture row doesn't exist; soft-deleted
+ * records still resolve, against the trash file — the Trash view
+ * needs working thumbnails + a working Focus image so the user can
+ * see what they're about to restore or permanently delete.
  *
  * This is the function `protocols.ts` calls from its `pwrsnap-cache://`
  * resolver — wires the protocol to the render pipeline.
@@ -70,11 +74,11 @@ export async function resolveCacheFile(req: {
   format: "png" | "webp";
 }): Promise<string | null> {
   const record = getCaptureById(req.captureId);
-  if (record === null || record.deleted_at !== null) return null;
+  if (record === null) return null;
 
   const result = await renderViaCoordinator({
     captureId: req.captureId,
-    srcPath: record.src_path,
+    srcPath: effectiveSrcPathFor(record),
     imageWidthPx: record.width_px,
     imageHeightPx: record.height_px,
     width: req.width,

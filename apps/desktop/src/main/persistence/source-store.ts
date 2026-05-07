@@ -81,6 +81,23 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
 }
 
 /**
+ * Resolve a capture record's effective on-disk source path. For live
+ * records this is just `record.src_path`. For soft-deleted records the
+ * file has been renamed into `<userData>/.trash/<id>.png` (the row's
+ * `src_path` deliberately doesn't update — it remembers where the file
+ * came from so Restore can put it back). Use this anywhere that needs
+ * to actually open the source file.
+ */
+export function effectiveSrcPathFor(record: {
+  id: string;
+  src_path: string;
+  deleted_at: string | null;
+}): string {
+  if (record.deleted_at === null) return record.src_path;
+  return join(getTrashRoot(), `${record.id}.png`);
+}
+
+/**
  * Move a capture's source PNG to <userData>/.trash/<id>.png. Called
  * from `library:delete` after the DB row is soft-deleted. Idempotent —
  * if the file is already in trash, this is a no-op.

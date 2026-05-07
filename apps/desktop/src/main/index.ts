@@ -16,7 +16,7 @@ import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
 import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
-import { sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
+import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
@@ -152,10 +152,14 @@ async function runInteractiveCapture(): Promise<void> {
 const protocolResolver: ProtocolResolver = {
   async captureSourcePath(captureId) {
     const record = getCaptureById(captureId);
-    if (record === null || record.deleted_at !== null) {
+    if (record === null) {
       return null;
     }
-    return record.src_path;
+    // Soft-deleted records resolve through their trash file
+    // (`<userData>/.trash/<id>.png`) so the Trash view's thumbnails +
+    // Focus image keep working — the user can see what they're about
+    // to restore or permanently delete.
+    return effectiveSrcPathFor(record);
   },
   async cacheFile(req) {
     return resolveCacheFile(req);

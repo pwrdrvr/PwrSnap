@@ -701,6 +701,19 @@
   background: var(--danger-soft, rgba(220, 80, 80, 0.18));
   color: var(--danger-text, #e58a8a);
 }
+/* In-trash filmstrip affordance: Restore + Permanent Delete pair.
+   Pinned to top-right, just like the single trash icon. */
+.psl__frame-actions {
+  position: absolute; top: 2px; right: 2px;
+  display: inline-flex; gap: 2px;
+}
+.psl__frame-actions .psl__frame-trash {
+  position: static;
+}
+.psl__frame-trash--restore:hover {
+  background: var(--accent-soft, rgba(232, 116, 58, 0.18));
+  color: var(--accent-bright, var(--accent));
+}
 
 /* Grid below reel — day-grouped traditional */
 .psl__grid-wrap {
@@ -863,6 +876,23 @@
 .psl__cell-trash:hover {
   background: var(--danger-soft, rgba(220, 80, 80, 0.18));
   color: var(--danger-text, #e58a8a);
+}
+/* In-trash hover affordance: pair of icons (Restore + Permanent
+   Delete). Sits in the same bottom-right slot as the single soft-
+   delete icon. The group inherits the cell-hover reveal — the
+   buttons inside drop their own absolute positioning since the
+   `<span>` wrapper handles placement. */
+.psl__cell-actions {
+  position: absolute; bottom: 5px; right: 5px;
+  display: inline-flex; gap: 4px;
+}
+.psl__cell-actions .psl__cell-trash {
+  position: static;     /* container places us; reset the per-icon abs */
+}
+/* Restore icon: positive accent on hover (the safe action). */
+.psl__cell-trash--restore:hover {
+  background: var(--accent-soft, rgba(232, 116, 58, 0.18));
+  color: var(--accent-bright, var(--accent));
 }
 /* HoverRevealPanel — pin / auto-hide side panel.
    Lives in features/shared/HoverRevealPanel.tsx. Extracted from the

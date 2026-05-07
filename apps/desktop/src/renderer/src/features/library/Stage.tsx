@@ -154,9 +154,13 @@ function StageBody({
         <span>
           · {record.width_px}×{record.height_px}
         </span>
-      </div>
-      <div className="psl__stage-pos">
-        <b>{posLabel.idx}</b> / {posLabel.total}
+        {/* Position counter lives inline at the end of the breadcrumb so
+            it can't collide with the X / "back to grid" affordances on
+            the right edge. Used to be absolute-positioned at right:60,
+            which overlapped the close-hint at right:56. */}
+        <span className="psl__stage-pos">
+          <b>{posLabel.idx}</b> / {posLabel.total}
+        </span>
       </div>
 
       {dismissible && (

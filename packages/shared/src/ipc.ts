@@ -45,7 +45,19 @@ export const EVENT_CHANNELS = {
    *
    * Payload: `{ captureId: string }`.
    */
-  libraryOpenCapture: "events:library:open-capture"
+  libraryOpenCapture: "events:library:open-capture",
+  /**
+   * Renderer → main perf signals for the dev seeder's measurement
+   * pipeline (Phase 5 of the perf plan). The renderer dispatches
+   * `library:firstPaint` from a `useLayoutEffect` after the grid
+   * commits its first row; the seeder times window-create →
+   * firstPaint to characterize cold-load.
+   *
+   * Payload type: `PerfMarkPayload`. Discriminated union — add new
+   * marks as new union members; `assertNever` on the read side
+   * catches missed cases.
+   */
+  perfMark: "events:perf:mark"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -71,3 +83,19 @@ export type FloatOverEvent =
   | { kind: "show-loaded"; captureId: string }
   | { kind: "cancel" }
   | { kind: "dismiss" };
+
+/**
+ * Renderer → main perf-mark payloads. New marks land here as new
+ * union members; readers narrow with `kind` and call `assertNever`
+ * on the never-arm so missed cases fail to typecheck.
+ *
+ * `timeOriginMs` carries the renderer's `performance.timeOrigin` so
+ * main can reconcile clock skew between processes when computing
+ * cold-load latency.
+ */
+export type PerfMarkPayload =
+  | {
+      kind: "library:firstPaint";
+      rowsRendered: number;
+      timeOriginMs: number;
+    };

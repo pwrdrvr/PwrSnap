@@ -21,7 +21,8 @@ import { copyFile, link, mkdir, readdir, readFile, writeFile } from "node:fs/pro
 import { join, relative } from "node:path";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
-import { getCacheRoot, getCapturesRoot, getDb, getDbPath } from "../persistence/db";
+import { getDb } from "../persistence/db";
+import { getCacheRoot, getCapturesRoot, getDbPath } from "../persistence/paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:export");

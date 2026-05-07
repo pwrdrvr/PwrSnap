@@ -260,6 +260,13 @@ export function bootstrapApp(): void {
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerOverlaysHandlers();
+    // Dev seeder — gated on DEV at static-substitution time + a
+    // belt-and-suspenders runtime NODE_ENV check. Production builds
+    // tree-shake the entire `dev/seeder` subtree out of the bundle.
+    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+      const { registerDevSeeder } = await import("./dev/seeder");
+      registerDevSeeder();
+    }
     // export-handler.ts re-registers `library:export` over the
     // not-implemented stub from library-handlers.ts. Order matters.
     registerExportHandler();

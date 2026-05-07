@@ -20,9 +20,9 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrowserWindow, screen } from "electron";
+import { screen } from "electron";
 import sharp from "sharp";
-import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { ok, err } from "@pwrsnap/shared";
 import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
@@ -40,12 +40,7 @@ import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
-function broadcastCapturesChanged(changedIds: string[]): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds });
-  }
-}
+import { broadcastCapturesChanged } from "../events";
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -208,6 +203,41 @@ export function registerCaptureHandlers(): void {
       message: "capture:prepareDrag lands with the render pipeline (Phase 1.6+)"
     });
   });
+
+  // Synthetic ingest path — DEV only. The dev seeder dispatches this
+  // to populate large datasets through the live command-bus chain so
+  // DB page packing, index maintenance, and broadcast cost reflect
+  // production behavior. Production builds: this branch tree-shakes
+  // out (electron-vite statically replaces `import.meta.env.DEV`).
+  if (import.meta.env.DEV) {
+    bus.register("capture:ingest", async (req) => {
+      try {
+        const stored = await putCaptureSource(req.tempPngPath);
+        const { record, isNew } = insertOrFindCapture({
+          id: stored.id,
+          kind: "image",
+          captured_at: req.capturedAt,
+          source_app_bundle_id: req.sourceAppBundleId,
+          source_app_name: req.sourceAppName,
+          src_path: stored.srcPath,
+          width_px: req.widthPxHint ?? stored.widthPx,
+          height_px: req.heightPxHint ?? stored.heightPx,
+          device_pixel_ratio: req.devicePixelRatio ?? 2,
+          byte_size: stored.byteSize,
+          sha256: stored.sha256
+        });
+        broadcastCapturesChanged([record.id]);
+        return ok({ record, isNew });
+      } catch (cause) {
+        return err({
+          kind: "capture",
+          code: "ingest_failed",
+          message: cause instanceof Error ? cause.message : String(cause),
+          cause
+        });
+      }
+    });
+  }
 }
 
 /**

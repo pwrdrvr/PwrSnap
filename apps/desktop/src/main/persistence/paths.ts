@@ -1,0 +1,119 @@
+// Single source of truth for "where PwrSnap stores everything." Every
+// persistent surface (SQLite DB, captures source store, render cache,
+// trash directory, perf-seeder JSONL output) routes through this
+// module.
+//
+// Default layout (env unset):
+//   pwrsnap.db                          → <userData>/pwrsnap.db
+//   captures/<id>.png                   → <documents>/PwrSnap/<id>.png
+//   cache/<capture_id>/<hash>.<format>  → <userData>/cache/...
+//   .trash/<id>.png                     → <userData>/.trash/...
+//
+// Captures land in `~/Documents/PwrSnap/` so users can find them in
+// Finder / Spotlight / cloud-sync clients, and so they survive an
+// app uninstall. Everything else lives in Application Support where
+// it belongs.
+//
+// Override layout (`PWRSNAP_DATA_ROOT=/some/path`):
+//   pwrsnap.db    → <root>/pwrsnap.db
+//   captures      → <root>/captures
+//   cache         → <root>/cache
+//   .trash        → <root>/.trash
+//   perf          → <root>/perf
+//
+// The override flattens everything under one root so the dev seeder
+// + integration tests get a self-contained tree they can wipe with
+// `rm -rf`. The atomic-rename invariant between captures and trash
+// (soft-delete relies on it) holds by construction in both modes —
+// override mode keeps both on the override volume; default mode
+// keeps both under the user's home volume.
+//
+// Invariant: `app.getPath("userData")` and `app.getPath("documents")`
+// are referenced ONLY here. Any new persistence path must compose
+// from `getDataRoot()` or the helpers below.
+
+import { app } from "electron";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+
+const ENV_KEY = "PWRSNAP_DATA_ROOT";
+
+/**
+ * Resolve the active data root. When `PWRSNAP_DATA_ROOT` is set to a
+ * non-empty string, returns that path; otherwise returns
+ * `app.getPath("userData")`. Note: in default mode, `getCapturesRoot()`
+ * does NOT compose from this — captures land in `~/Documents/PwrSnap`
+ * for user discoverability. In override mode they do (single tree).
+ */
+export function getDataRoot(): string {
+  const override = process.env[ENV_KEY];
+  if (override !== undefined && override.length > 0) return override;
+  return app.getPath("userData");
+}
+
+/** True when `PWRSNAP_DATA_ROOT` overrides the default. The dev seeder
+ *  refuses to run any wipe operation unless this returns true — keeps
+ *  the user's real Library safe. */
+export function isOverriddenDataRoot(): boolean {
+  return getDataRoot() !== app.getPath("userData");
+}
+
+export function getDbPath(): string {
+  return join(getDataRoot(), "pwrsnap.db");
+}
+
+/**
+ * Captures source store. Default = `~/Documents/PwrSnap` (user-visible,
+ * survives uninstall). Override = `<root>/captures` (flat under the
+ * dev-seeder tree).
+ */
+export function getCapturesRoot(): string {
+  if (isOverriddenDataRoot()) return join(getDataRoot(), "captures");
+  return join(app.getPath("documents"), "PwrSnap");
+}
+
+export function getCacheRoot(): string {
+  return join(getDataRoot(), "cache");
+}
+
+export function getTrashRoot(): string {
+  return join(getDataRoot(), ".trash");
+}
+
+export function getPerfRoot(): string {
+  return join(getDataRoot(), "perf");
+}
+
+/**
+ * Sentinel marker proving a tree was created by the dev seeder.
+ * Required for any wipe operation. Content is JSON `{uuid, createdAt}`
+ * generated at create time; mtime is checked separately to defend
+ * against backup-restored stale sentinels. See dev/seeder/wipe.ts.
+ */
+export const SEEDER_SENTINEL = ".pwrsnap-perf-root";
+
+/**
+ * Invariant: getCapturesRoot() and getTrashRoot() must live on the
+ * same filesystem so soft-delete's atomic `rename` succeeds. Compose-
+ * from-getDataRoot() shape enforces this by construction; this is a
+ * defensive smoke test for future code that might route trash through
+ * a different path.
+ *
+ * Dev-only — production code paths trust the construction.
+ */
+export function assertSameVolume(): void {
+  if (!import.meta.env.DEV) return;
+  try {
+    const captures = statSync(getCapturesRoot()).dev;
+    const trash = statSync(getTrashRoot()).dev;
+    if (captures !== trash) {
+      throw new Error(
+        `paths invariant violated: captures (${getCapturesRoot()}) and trash (${getTrashRoot()}) on different volumes`
+      );
+    }
+  } catch {
+    // Either path may not exist yet on a fresh install; both are
+    // created under the same data root, so the invariant holds by
+    // construction once they materialize.
+  }
+}

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
-import { getCapturesRoot, getTrashRoot } from "./db";
+import { getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:source-store");
@@ -36,9 +36,12 @@ export type StoredSource = {
 /**
  * Take a freshly-captured PNG (path to a temp file the screencapture
  * CLI wrote) and persist it under `<capturesRoot>/<id>.png`. By
- * default that's `~/Documents/PwrSnap/<id>.png` — see db.ts for why.
- * No yyyy/mm subdirectories; the DB indexes captured_at so we never
- * need to walk the filesystem to find captures.
+ * default that's `~/Documents/PwrSnap/<id>.png` — see paths.ts for why.
+ * Under `PWRSNAP_DATA_ROOT` override mode the same flat layout applies
+ * relative to `<root>/captures/`. No yyyy/mm subdirectories: filenames
+ * are nanoid-shaped, sort fine in Finder by mtime, and the DB indexes
+ * captured_at — the file system is asked only "give me this exact
+ * path", not "list everything from May 2026."
  *
  * Returns the immutable storage record. Hashes via SHA-256 — caller
  * uses the hash for dedup against existing rows.

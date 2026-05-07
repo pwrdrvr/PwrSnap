@@ -27,7 +27,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import type { OverlayRow } from "@pwrsnap/shared";
 import { computeArrowGeometry } from "@pwrsnap/shared";
-import { getCacheRoot } from "../persistence/db";
+import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { getMainLogger } from "../log";
 import { computeRenderHash } from "./overlay-hash";

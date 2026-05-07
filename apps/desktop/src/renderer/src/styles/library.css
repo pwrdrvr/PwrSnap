@@ -437,13 +437,25 @@
    and floats absolutely. The grid leaves 36px of dead column for the
    spine; the panel slides in from the left to overlay the canvas
    when the user hovers, and slides back off when they leave (200ms
-   debounce in Library.tsx avoids flicker). */
+   debounce in Library.tsx avoids flicker).
+
+   Subtle CSS pitfall worked around here: the base `.psl__left` rule
+   places the element via `grid-column: 1; grid-row: 2`, and per the
+   CSS Grid spec, an absolutely-positioned grid item with an explicit
+   placement uses its GRID AREA (the cell) as its containing block —
+   NOT the grid container. With both top and bottom set, that gave
+   inconsistent measurements: top was measured from the cell top,
+   bottom from `.psl`'s padding edge. The fix: clear the grid
+   placement (`grid-area: auto`) when absolute so the CB falls back
+   cleanly to `.psl`. Then top: 52px (below topbar) and bottom: 32px
+   (above status bar) work as expected. */
 .psl[data-left="collapsed"] .psl__left,
 .psl[data-left="peek"] .psl__left {
   position: absolute;
-  top: 52px;             /* below topbar */
+  grid-area: auto;
+  top: 52px;
   left: 0;
-  bottom: 32px;          /* above status bar */
+  bottom: 32px;
   width: 220px;
   z-index: 30;
   transform: translateX(-100%);

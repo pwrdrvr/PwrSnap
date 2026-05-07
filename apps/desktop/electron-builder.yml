@@ -9,13 +9,42 @@ asarUnpack:
   - "**/*.node"
 compression: normal
 
+# Files included in the .app bundle. Run via apps/desktop/scripts/release.mjs
+# which first runs `pnpm deploy` to materialize a flat node_modules tree, since
+# pnpm's symlinked virtual store interacts poorly with electron-builder's
+# default node_modules walk.
 files:
   - "out/**/*"
   - "package.json"
+  # Compiled JS only — drop sources, declarations, and sourcemaps.
   - "!**/*.map"
   - "!**/*.ts"
+  - "!**/*.tsx"
+  - "!**/*.d.ts"
+  - "!**/tsconfig*.json"
+  # Tests of any flavor.
   - "!**/*.test.*"
+  - "!**/*.spec.*"
   - "!**/__tests__/**"
+  - "!**/__mocks__/**"
+  - "!**/test/**"
+  - "!**/tests/**"
+  - "!**/e2e/**"
+  - "!**/playwright.config.*"
+  # Markdown / docs from third-party packages and our own workspace packages.
+  - "!**/*.md"
+  - "!**/*.mdx"
+  - "!**/docs/**"
+  # Misc dotfiles and examples that occasionally ship inside dependency tarballs.
+  - "!**/.env*"
+  - "!**/.npmignore"
+  - "!**/.editorconfig"
+  - "!**/.eslintrc*"
+  - "!**/.prettierrc*"
+  - "!**/.github/**"
+  # Our own workspace package metadata is unused at runtime — vite inlines.
+  - "!**/node_modules/@pwrsnap/*/AGENTS.md"
+  - "!**/node_modules/@pwrsnap/*/src/**"
 
 # Native helpers (Swift CLIs that wrap macOS-only system APIs).
 # Compiled by `apps/desktop/scripts/build-native.mjs` into
@@ -41,7 +70,9 @@ mac:
   icon: build/icon.icns
   hardenedRuntime: true
   gatekeeperAssess: false
-  notarize: false
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   helperBundleId: com.pwrdrvr.pwrsnap.helper
   helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
   helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU
@@ -60,4 +91,26 @@ mac:
       arch: [arm64]
 
 dmg:
+  background: build/dmg-background.png
+  window:
+    width: 660
+    height: 400
+  iconSize: 112
+  iconTextSize: 12
+  contents:
+    - x: 170
+      y: 230
+      type: file
+    - x: 500
+      y: 230
+      type: link
+      path: /Applications
   writeUpdateInfo: false
+
+# Phase 1: github provider against the existing private pwrdrvr/PwrSnap repo.
+publish:
+  provider: github
+  owner: pwrdrvr
+  repo: PwrSnap
+  private: true
+  releaseType: release

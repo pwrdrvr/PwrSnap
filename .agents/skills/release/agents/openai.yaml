@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release"
+  short_description: "Cut guarded PwrSnap desktop releases"
+  default_prompt: "Prepare or publish a guarded PwrSnap desktop release."

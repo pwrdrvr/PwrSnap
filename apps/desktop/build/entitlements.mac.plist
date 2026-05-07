@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened Runtime exemptions required by Electron's V8 engine.
+       allow-jit: V8 JIT-compiles JS into RWX pages.
+       allow-unsigned-executable-memory: Electron mmaps non-MAP_JIT executable
+       pages; required on every Electron app to date. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- disable-library-validation: needed because of `sharp`, NOT because of
+       `better-sqlite3`. PwrAgnt also ships better-sqlite3 and does NOT need
+       this entitlement — electron-builder rebuilds and re-signs the
+       better-sqlite3 .node file with our Developer ID during packaging, so
+       library validation is satisfied for the SQLite path.
+
+       Sharp is two-layer: the JS↔C++ bridge `sharp.node` (which DOES get
+       re-signed by electron-builder), plus a libvips-cpp.42.x.dylib that
+       sharp.node dlopens at runtime. The libvips dylib lives under
+       node_modules/@img/sharp-libvips-darwin-arm64/lib/ and ships
+       pre-signed by sharp's maintainer (different team). The hardened
+       runtime kills the dlopen unless we either disable library validation
+       OR re-sign the libvips dylib ourselves with our Developer ID.
+
+       TODO(harden): drop this entitlement and add an electron-builder
+       afterPack hook that runs `codesign --force --deep --sign $IDENTITY`
+       on every .dylib under app.asar.unpacked/node_modules/@img/**. The
+       buildout plan §"Bundle Layout & Signing" already specifies this as
+       the long-term shape; we're only deferring it for v0.0.1 velocity. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

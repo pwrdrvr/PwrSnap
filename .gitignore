@@ -60,4 +60,5 @@ Thumbs.db
 # ---- Working state ----
 .local/
 .worktrees/
+.claude/worktrees/
 .design-canvas.state.json

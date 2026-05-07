@@ -57,6 +57,7 @@ import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { sweepBundleTrash } from "./persistence/bundle-store";
+import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
@@ -945,6 +946,15 @@ export function bootstrapApp(): void {
       log.info("e2e bridge installed");
     }
     void runBootGc();
+    // Legacy-bundle migration runs in the background after window
+    // creation — first launch of the bundle-flow build wraps every
+    // pre-bundle capture into a .pwrsnap. Idempotent re-runs are
+    // free (filtered by `bundle_path IS NULL`).
+    void runLegacyBundleMigration().catch((err: unknown) => {
+      log.warn("legacy-bundle migration failed at boot", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    });
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

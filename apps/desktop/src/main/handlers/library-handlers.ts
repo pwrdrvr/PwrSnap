@@ -33,6 +33,58 @@ function broadcastCapturesChanged(changedIds: string[]): void {
   }
 }
 
+/**
+ * Bring the singleton Library window forward, creating it if it isn't
+ * alive. Returns the window plus a `justCreated` flag — callers that
+ * push state to the renderer use it to know whether to wait for the
+ * page to load before sending IPC. Window discovery is delegated to
+ * `findMainLibraryWindow` (singleton lookup); `createMainWindow` is
+ * itself idempotent so the create-fallback is safe to call.
+ */
+function bringLibraryForward(): {
+  window: BrowserWindow;
+  justCreated: boolean;
+} {
+  const existing = findMainLibraryWindow();
+  const justCreated = existing === null;
+  const window = existing ?? createMainWindow();
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+  return { window, justCreated };
+}
+
+/**
+ * Push a `libraryOpenCapture` event to the Library renderer so it can
+ * navigate to the capture in Focus mode. Two cases:
+ *
+ *   • Existing window — renderer is already mounted and listening,
+ *     so we send immediately.
+ *   • Just-created window — `webContents.send` would race the React
+ *     mount (the event would land before any subscriber registers).
+ *     We wait for `did-finish-load` and then add a small grace so
+ *     the renderer's `useEffect` subscribe has a chance to attach.
+ *     100ms is well past the typical mount interval and safely below
+ *     human perception.
+ */
+function sendOpenCaptureWhenReady(
+  window: BrowserWindow,
+  captureId: string,
+  justCreated: boolean
+): void {
+  const send = (): void => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(EVENT_CHANNELS.libraryOpenCapture, { captureId });
+  };
+  if (justCreated || window.webContents.isLoading()) {
+    window.webContents.once("did-finish-load", () => {
+      setTimeout(send, 100);
+    });
+  } else {
+    send();
+  }
+}
+
 export function registerLibraryHandlers(): void {
   bus.register("library:list", async (req) => {
     const records = listCaptures(req);
@@ -143,14 +195,28 @@ export function registerLibraryHandlers(): void {
     // create one. Dock-icon show/hide is owned by the window's
     // `ready-to-show` / `closed` handlers — see createMainWindow in
     // ../window.ts.
-    let main = findMainLibraryWindow();
-    if (main === null) {
-      log.info("library:focus: recreating main window");
-      main = createMainWindow();
+    bringLibraryForward();
+    return ok(undefined);
+  });
+
+  bus.register("library:openInLibrary", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
     }
-    if (main.isMinimized()) main.restore();
-    if (!main.isVisible()) main.show();
-    main.focus();
+    if (record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "deleted",
+        message: `capture is in trash: ${req.captureId}`
+      });
+    }
+    const { window: main, justCreated } = bringLibraryForward();
+    sendOpenCaptureWhenReady(main, req.captureId, justCreated);
     return ok(undefined);
   });
 

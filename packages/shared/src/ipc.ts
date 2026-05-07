@@ -36,7 +36,16 @@ export const EVENT_CHANNELS = {
    *
    * Payload: empty object `{}` (the channel itself is the signal).
    */
-  popoverRemeasure: "events:popover:remeasure"
+  popoverRemeasure: "events:popover:remeasure",
+  /**
+   * Tells the Library renderer to navigate to a specific capture and
+   * open it in Focus mode. Used by `library:openInLibrary` so the
+   * float-over toast's Edit button can hand off into the inline
+   * editor without spawning a separate window.
+   *
+   * Payload: `{ captureId: string }`.
+   */
+  libraryOpenCapture: "events:library:open-capture"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

@@ -112,6 +112,13 @@ export type Commands = {
   "library:export": { req: { destDir: string }; res: { destDir: string; manifestPath: string } };
   /** Bring the main library window forward — used by the tray's "Open Library" row. */
   "library:focus": { req: Record<string, never>; res: void };
+  /**
+   * Bring the Library window forward and open `captureId` in inline
+   * Focus mode (Stage with editing tools), not a standalone editor
+   * window. Used by the float-over toast's Edit button to hand the
+   * just-captured image into the Library editor.
+   */
+  "library:openInLibrary": { req: { captureId: string }; res: void };
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };

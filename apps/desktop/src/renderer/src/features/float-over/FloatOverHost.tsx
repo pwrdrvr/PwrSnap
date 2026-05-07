@@ -213,9 +213,14 @@ export function FloatOverHost(): React.ReactElement {
           void dispatch("float-over:dismiss", {});
         }}
         onEdit={() => {
-          // Open the editor in a new window. Toast stays put — closing
-          // it is independent of opening the editor.
-          void dispatch("editor:open", { captureId: record.id });
+          // Hand off to the Library window's inline editor (Focus mode
+          // + Stage), not the standalone Edit Window. Library:open
+          // brings the Library forward and tells its renderer to
+          // navigate to this capture in Focus. Dismiss the toast as
+          // attention transfers — keeping it open behind the Library
+          // would be visual noise.
+          void dispatch("library:openInLibrary", { captureId: record.id });
+          void dispatch("float-over:dismiss", {});
         }}
       />
     );

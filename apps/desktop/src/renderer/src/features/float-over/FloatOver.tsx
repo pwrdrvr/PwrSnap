@@ -372,7 +372,13 @@ export function FloatOver({
             <button className="fo__foot-btn" onClick={dismissNow}>
               Dismiss
             </button>
-            <button className="fo__foot-btn is-primary">
+            <button
+              className="fo__foot-btn is-primary"
+              type="button"
+              onClick={() => onEdit?.()}
+              disabled={onEdit === undefined}
+              title="Open in Library editor"
+            >
               <FoIcon name="pen-line" size={11} /> Edit
             </button>
           </div>

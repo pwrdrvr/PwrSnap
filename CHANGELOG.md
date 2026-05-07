@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.0-alpha.1 - 2026-05-06
+
+- Fixed the macOS entitlements plist so codesign can parse it during packaged
+  builds.
+- Re-cut the first desktop alpha after the failed `v1.0.0-alpha.0` tag run.
+
 ## v1.0.0-alpha.0 - 2026-05-06
 
 - First closed-source desktop alpha for macOS arm64 dogfooding.

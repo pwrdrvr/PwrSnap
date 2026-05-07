@@ -27,8 +27,8 @@
        OR re-sign the libvips dylib ourselves with our Developer ID.
 
        TODO(harden): drop this entitlement and add an electron-builder
-       afterPack hook that runs `codesign --force --deep --sign $IDENTITY`
-       on every .dylib under app.asar.unpacked/node_modules/@img/**. The
+       afterPack hook that re-signs every .dylib under
+       app.asar.unpacked/node_modules/@img/** with the release identity. The
        buildout plan §"Bundle Layout & Signing" already specifies this as
        the long-term shape; we're only deferring it for v0.0.1 velocity. -->
   <key>com.apple.security.cs.disable-library-validation</key>

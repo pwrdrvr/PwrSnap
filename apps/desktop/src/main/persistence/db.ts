@@ -34,19 +34,39 @@ export type SchemaMigration = {
 };
 
 /**
- * Resolve the DB file path. PwrSnap stores everything under
- * `app.getPath('userData')`:
+ * On-disk layout. Most things live under `app.getPath('userData')`
+ * (an opaque Application Support folder users don't browse):
  *   pwrsnap.db
- *   captures/<yyyy>/<mm>/<uuid>.png   (managed by source-store.ts)
- *   cache/<capture_id>/<hash>.<format> (managed by render-cache, Phase 1.6)
- *   .trash/<uuid>.png                  (soft-deleted captures)
+ *   cache/<capture_id>/<hash>.<format>  — managed by render-cache (Phase 1.6)
+ *   .trash/<uuid>.png                   — soft-deleted captures
+ *
+ * Source captures (the originals — what users actually want to look
+ * at, attach to tickets, drag elsewhere) live in a USER-VISIBLE place
+ * instead, under `~/Documents/PwrSnap/<uuid>.png`. Two reasons to
+ * keep them outside userData:
+ *   1. Discoverability — Documents shows up in Finder, in Spotlight,
+ *      in cloud-sync clients. Application Support is hidden by
+ *      default and most users never see it.
+ *   2. Survives an app uninstall — `~/Documents/PwrSnap` doesn't get
+ *      blown away when someone trashes the .app.
+ *
+ * No yyyy/mm date subfolders: filenames are nanoid-shaped, sort fine
+ * in Finder by mtime, and the DB indexes captured_at — the file
+ * system is asked only "give me this exact path", not "list me
+ * everything from May 2026".
+ *
+ * Existing rows from before this change keep absolute src_paths
+ * pointing at the old userData layout; they continue to resolve.
+ * No automated migration — files in Application Support are still
+ * readable, and a user who wants them in Documents can copy them
+ * over manually.
  */
 export function getDbPath(): string {
   return join(app.getPath("userData"), "pwrsnap.db");
 }
 
 export function getCapturesRoot(): string {
-  return join(app.getPath("userData"), "captures");
+  return join(app.getPath("documents"), "PwrSnap");
 }
 
 export function getCacheRoot(): string {

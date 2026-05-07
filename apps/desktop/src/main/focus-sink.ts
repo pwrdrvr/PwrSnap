@@ -91,6 +91,13 @@ export function installFocusSink(): void {
   // below the selector's screen-saver level. Cocoa's cascade walks
   // high-to-low, so the sink is chosen before the Library.
   sink.setAlwaysOnTop(true, "floating");
+  // Hide from the macOS Window menu. The sink is `showInactive()`-d at
+  // boot to be a valid cascade target, which means AppKit lists it
+  // under the app's Window menu as a second "PwrSnap" entry alongside
+  // the Library — confusing for the user and meaningless to click.
+  // The `excludedFromShownWindowsMenu` property flips the underlying
+  // NSWindow's `excludedFromWindowsMenu` so it never appears.
+  sink.excludedFromShownWindowsMenu = true;
   // Survive Spaces transitions and fullscreen apps so the sink is
   // always a candidate, regardless of which Space the user is on.
   sink.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });

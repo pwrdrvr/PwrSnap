@@ -38,9 +38,11 @@ The bundle/doctor/manifest core, paired-PNG asymmetric durability, atomic-rename
 
 PwrSnap moves its durable on-disk state from `<userData>/captures/` + `<userData>/pwrsnap.db`
 to a Snagit-style ZIP bundle (`<name>.pwrsnap`) plus a paired flat composite PNG
-(`<name>.png`) under `~/Documents/PwrSnap/`. The bundle becomes the system of
-record. The sqlite DB demotes to a fast, rebuildable index. A doctor flow
-reconstructs the DB from on-disk bundles whenever it's missing or stale.
+(`<name>.png`) under `~/Documents/PwrSnap/`. The bundle becomes the durable
+system of record. The sqlite DB stays the live read path that drives every
+IPC, every Library render, every overlay lookup — its runtime role doesn't
+change — but it's now rebuildable from the on-disk bundles. A doctor flow
+reconstructs the DB whenever it's missing or stale.
 
 Wiping `<userData>` (reinstall, machine swap, manual cleanup) costs a re-scan,
 never data. Users see their screenshots as image files in Finder and
@@ -527,8 +529,8 @@ The whole "captures live in `~/Documents/PwrSnap/`" reality lands here. No
 intermediate "bundles emitted alongside DB" half-state is shipped — that
 window had a data-loss gap if `<userData>` was wiped before Phase 2 (doctor)
 existed. After Phase 1 ships, `~/Documents/PwrSnap/` has a complete bundle
-for every capture; the DB is still authoritative as fast-path index, and
-Phase 2 demotes it.
+for every capture; the DB stays the live read path that drives the UI, and
+Phase 2 adds the rebuild-from-bundles recovery path.
 
 Files added:
 - [`packages/shared/src/bundle-manifest-schema.ts`](packages/shared/src/bundle-manifest-schema.ts) — zod schemas (six manifest fields).
@@ -580,7 +582,7 @@ Success criteria:
 - 14-day retention sweep handles per-id directories.
 - Two captures of identical pixels → one bundle (sha256 dedup pre-check verified).
 
-#### Phase 2 — Doctor + DB demotion (8-10h)
+#### Phase 2 — Doctor + reconcile flow (8-10h)
 
 Files added:
 - [`apps/desktop/src/main/persistence/doctor.ts`](apps/desktop/src/main/persistence/doctor.ts).
@@ -745,7 +747,7 @@ E2E scenarios that unit tests with mocks would not catch:
 
 - [ ] Every new capture writes a `.pwrsnap` bundle + paired `.png` to `~/Documents/PwrSnap/` (R1, R2).
 - [ ] Bundle is system of record; paired PNG is regenerable derivative (R3).
-- [ ] DB demoted to rebuildable index after Phase 2 (R4).
+- [ ] DB rebuildable from bundles via doctor reconcile after Phase 2 (R4). Runtime role of the DB unchanged — it still drives the UI as the live read path.
 - [ ] `library:doctor` reconcile flow works at boot and on demand (R5).
 - [ ] Overlay edits trigger debounced bundle re-pack within ~1s (R6).
 - [ ] Source PNG lives inside the bundle (R7).
@@ -818,8 +820,8 @@ Solo founder + Claude. Total estimate **~22-32h** of focused work across 3
 phases (down from 35-45h after YAGNI cuts and phase consolidation). Phase 1
 alone (~15-20h) reaches "captures durably stored in `~/Documents/PwrSnap/`,
 existing data migrated, no data-loss window if `<userData>` wiped after
-this lands". Phase 2 (~8-10h) demotes the DB. Phase 3 (~4-6h) is
-disaster-recovery test + cleanup.
+this lands". Phase 2 (~8-10h) adds the doctor reconcile flow that rebuilds
+the DB from bundles. Phase 3 (~4-6h) is disaster-recovery test + cleanup.
 
 ## Future Considerations
 
@@ -866,7 +868,7 @@ disaster-recovery test + cleanup.
 - **Origin document:** [docs/brainstorms/2026-05-07-durable-edit-storage-requirements.md](docs/brainstorms/2026-05-07-durable-edit-storage-requirements.md). Key decisions carried forward:
   - Snagit-style `.pwrsnap` ZIP bundle + paired flat PNG (origin §Key Decisions)
   - Source PNG lives inside the bundle (origin §Key Decisions)
-  - DB demoted to rebuildable index (origin §R4)
+  - DB stays the live read path; bundles are the durable record; DB is rebuildable from bundles (origin §R4)
   - `<userData>` holds nothing of value (origin §R10)
   - Embedded-PNG-metadata path rejected (origin §Key Decisions)
 

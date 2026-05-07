@@ -44,11 +44,14 @@ brainstorm).
   regenerates it from the bundle. If the user deletes the bundle but keeps the PNG,
   the standalone PNG re-imports as a flat screenshot with no overlays.
 
-- **R4.** `<userData>/pwrsnap.db` is demoted to a fast query index, rebuildable from
-  on-disk bundles. App boot reconciles: any orphan bundle without a DB row is
-  imported; any DB row whose bundle is missing is treated as a delete (or surfaced
-  for the user to confirm if conservative). After full reconcile, the DB and the
-  on-disk bundles agree.
+- **R4.** Bundles are the durable system of record; `<userData>/pwrsnap.db`
+  remains the live read path that drives every IPC, every Library render,
+  every overlay lookup — its runtime role doesn't change. What changes is
+  the durability story: the DB is now rebuildable from the on-disk bundles.
+  App boot reconciles: any orphan bundle without a DB row is imported; any
+  DB row whose bundle is missing is treated as a delete (or surfaced for
+  the user to confirm if conservative). After full reconcile, the DB and
+  the on-disk bundles agree.
 
 - **R5.** A `pwrsnap doctor` / restore flow exists and is callable from Settings →
   Storage. It walks `~/Documents/PwrSnap/`, parses every bundle, and rebuilds the DB
@@ -127,7 +130,10 @@ brainstorm).
   came from the user; they own the data." Eliminates the dual-location restore
   problem and keeps bundle truly self-contained.
 
-- **DB demoted to a rebuildable index.** Removes "lose userData, lose everything"
+- **DB role unchanged at runtime; bundles add a recovery path.** The DB stays
+  the live read path that drives the UI. What changes is durability — bundles
+  on disk are now the system of record, and the DB can be rebuilt from them
+  when needed. Removes "lose userData, lose everything"
   failure mode entirely. The DB remains the hot read path for performance, but the
   source-of-truth is the on-disk bundle.
 

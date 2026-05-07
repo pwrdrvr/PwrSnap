@@ -20,9 +20,13 @@
 
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import yauzl from "yauzl";
+import yazl from "yazl";
 
 import {
   BUNDLE_ENTRY_ALLOWLIST,
+  BundleManifestV1,
+  BundleOverlaysV1,
   isBundleEntryName,
   type BundleEntryName
 } from "@pwrsnap/shared";
@@ -171,5 +175,205 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
     // The single-volume rename above is still atomic at the
     // filesystem-state level; we lose only the post-crash durability
     // guarantee, not consistency.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// yazl/yauzl pack + unpack surface.
+// ---------------------------------------------------------------------------
+
+export type PackBundleArgs = {
+  manifest: BundleManifestV1;
+  overlays: BundleOverlaysV1;
+  /**
+   * Source PNG bytes — written to the ZIP as `source.png` in STORE
+   * mode (no DEFLATE recompression; PNG is already DEFLATE'd
+   * internally and a second pass costs CPU for negligible size win).
+   */
+  sourcePng: Buffer;
+  /**
+   * Composite PNG bytes (the latest render with overlays baked in).
+   * Same STORE-mode treatment as `sourcePng`.
+   */
+  compositePng: Buffer;
+};
+
+/**
+ * Pack a `.pwrsnap` bundle into an in-memory Buffer. Pure function —
+ * does not touch the filesystem. Caller wraps this with
+ * `atomicWriteBundle` to land it on disk crash-safely.
+ *
+ * Manifest + overlays are validated through their zod schemas before
+ * serialization. PNG entries use STORE; JSON entries use DEFLATE.
+ */
+export async function packBundle(args: PackBundleArgs): Promise<Buffer> {
+  const validatedManifest = BundleManifestV1.parse(args.manifest);
+  const validatedOverlays = BundleOverlaysV1.parse(args.overlays);
+
+  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
+  const overlaysBuf = Buffer.from(JSON.stringify(validatedOverlays));
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const zip = new yazl.ZipFile();
+    zip.addBuffer(manifestBuf, "manifest.json");
+    zip.addBuffer(overlaysBuf, "overlays.json");
+    zip.addBuffer(args.sourcePng, "source.png", { compress: false });
+    zip.addBuffer(args.compositePng, "composite.png", { compress: false });
+
+    // Attach listeners BEFORE `zip.end()` — yazl's outputStream
+    // transitions to flowing mode as soon as a data listener is
+    // present; if `end()` ran first the chunks could be missed.
+    const chunks: Buffer[] = [];
+    zip.outputStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    zip.outputStream.on("end", () => resolve(Buffer.concat(chunks)));
+    zip.outputStream.on("error", reject);
+
+    zip.end();
+  });
+}
+
+/**
+ * Open a bundle for read, walk the central directory, validate every
+ * entry against the allowlist, and hand the caller a `(zipFile,
+ * entries)` pair. The caller is responsible for closing the zipFile
+ * when done — typically via `closeBundle(zipFile)` in a finally block.
+ *
+ * This is the chokepoint for the trust-boundary check: every bundle
+ * read in the codebase flows through this helper. Zip-Slip / shadow-
+ * entry / extra-entry / missing-entry attacks all fail here, before
+ * any byte is extracted.
+ */
+async function openAndValidateBundle(bundlePath: string): Promise<{
+  zipFile: yauzl.ZipFile;
+  entries: Map<BundleEntryName, yauzl.Entry>;
+}> {
+  await assertSafeBundleFile(bundlePath);
+
+  return new Promise<{
+    zipFile: yauzl.ZipFile;
+    entries: Map<BundleEntryName, yauzl.Entry>;
+  }>((resolve, reject) => {
+    // autoClose: false because we need the file open AFTER walking
+    // the central directory — extract calls happen post-'end'.
+    // Default autoClose=true closes once readEntry() runs past the
+    // last entry, which makes openReadStream throw "closed".
+    yauzl.open(bundlePath, { lazyEntries: true, autoClose: false }, (err, zipFile) => {
+      if (err !== null) return reject(err);
+      if (zipFile === undefined) {
+        return reject(new Error("bundle-store: yauzl.open returned no zipFile"));
+      }
+
+      const allNames: string[] = [];
+      const entries = new Map<BundleEntryName, yauzl.Entry>();
+
+      zipFile.on("entry", (entry: yauzl.Entry) => {
+        allNames.push(entry.fileName);
+        if (isBundleEntryName(entry.fileName) && !entries.has(entry.fileName)) {
+          entries.set(entry.fileName, entry);
+        }
+        zipFile.readEntry();
+      });
+
+      zipFile.on("end", () => {
+        const validation = validateBundleZipEntryNames(allNames);
+        if (!validation.ok) {
+          zipFile.close();
+          // Sanitized error message — entry names are attacker-controlled
+          // and could carry log-injection / terminal-escape sequences.
+          // We log counts (safe) and a sanitized preview to main, but
+          // surface only generic info upward.
+          return reject(
+            new Error(
+              `bundle-store: bundle ${bundlePath} failed central-directory validation`
+            )
+          );
+        }
+        resolve({ zipFile, entries });
+      });
+
+      zipFile.on("error", (zerr: Error) => {
+        zipFile.close();
+        reject(zerr);
+      });
+
+      zipFile.readEntry();
+    });
+  });
+}
+
+function readEntryToBuffer(zipFile: yauzl.ZipFile, entry: yauzl.Entry): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    zipFile.openReadStream(entry, (err, stream) => {
+      if (err !== null) return reject(err);
+      if (stream === undefined) {
+        return reject(new Error("bundle-store: yauzl.openReadStream returned no stream"));
+      }
+      const chunks: Buffer[] = [];
+      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("end", () => resolve(Buffer.concat(chunks)));
+      stream.on("error", reject);
+    });
+  });
+}
+
+/**
+ * Read and zod-parse the bundle's `manifest.json`. The cheapest hot
+ * path for the doctor reconcile — pulls only the central directory +
+ * manifest entry, never decompresses source.png / composite.png /
+ * overlays.json on this call.
+ */
+export async function readBundleManifest(bundlePath: string): Promise<BundleManifestV1> {
+  const { zipFile, entries } = await openAndValidateBundle(bundlePath);
+  try {
+    const manifestEntry = entries.get("manifest.json");
+    if (manifestEntry === undefined) {
+      throw new Error("bundle-store: validated bundle missing manifest.json (impossible)");
+    }
+    const buf = await readEntryToBuffer(zipFile, manifestEntry);
+    const json = JSON.parse(buf.toString("utf8"));
+    return BundleManifestV1.parse(json);
+  } finally {
+    zipFile.close();
+  }
+}
+
+/**
+ * Read and zod-parse the bundle's `overlays.json`. Pulled only when
+ * the doctor needs to rebuild a DB row's overlays from disk.
+ */
+export async function readBundleOverlays(bundlePath: string): Promise<BundleOverlaysV1> {
+  const { zipFile, entries } = await openAndValidateBundle(bundlePath);
+  try {
+    const overlaysEntry = entries.get("overlays.json");
+    if (overlaysEntry === undefined) {
+      throw new Error("bundle-store: validated bundle missing overlays.json (impossible)");
+    }
+    const buf = await readEntryToBuffer(zipFile, overlaysEntry);
+    const json = JSON.parse(buf.toString("utf8"));
+    return BundleOverlaysV1.parse(json);
+  } finally {
+    zipFile.close();
+  }
+}
+
+/**
+ * Extract one entry from a validated bundle as a Buffer. Used by the
+ * `pwrsnap-capture://` resolver to materialize `source.png` into the
+ * per-capture cache, and by the legacy migration to read paired-PNG
+ * candidates.
+ */
+export async function readBundleEntry(
+  bundlePath: string,
+  entryName: BundleEntryName
+): Promise<Buffer> {
+  const { zipFile, entries } = await openAndValidateBundle(bundlePath);
+  try {
+    const entry = entries.get(entryName);
+    if (entry === undefined) {
+      throw new Error(`bundle-store: validated bundle missing ${entryName} (impossible)`);
+    }
+    return await readEntryToBuffer(zipFile, entry);
+  } finally {
+    zipFile.close();
   }
 }

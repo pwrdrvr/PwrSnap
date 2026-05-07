@@ -1,7 +1,16 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState
+} from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { Tool } from "../editor/Editor";
@@ -408,6 +417,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [view.kind]);
 
   // Mirror scrollLeft into the ref so it survives Reel unmount.
+  // Also dispatches `loadMore` when the user scrolls within
+  // REEL_LOADMORE_THRESHOLD_PX of the right edge — without this,
+  // the filmstrip stops at whatever keyset page boundary has been
+  // loaded (~800 captures with default 100/page × 8 fetches), and
+  // the reel appears truncated to that horizon. Mirrors the grid
+  // virtualizer's loadMore-on-near-tail trigger.
+  //
   // Passive listener — we never preventDefault, so passive avoids
   // the per-frame compositor warning.
   useEffect(() => {
@@ -416,10 +432,31 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (el === null) return;
     const onScroll = (): void => {
       reelScrollLeftRef.current = el.scrollLeft;
+      if (!hasMore || isLoadingMore) return;
+      const remaining = el.scrollWidth - (el.scrollLeft + el.clientWidth);
+      if (remaining < REEL_LOADMORE_THRESHOLD_PX) {
+        void loadMore();
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [view.kind]);
+  }, [view.kind, hasMore, isLoadingMore, loadMore]);
+
+  // Initial reel mount: if the filmstrip's content fits within the
+  // viewport (so there's no scroll to trigger loadMore), but more
+  // pages exist, fetch them up-front. Also re-checks after each
+  // page lands so a fast loader walks all the way to the dataset
+  // tail (or the user toggles away). Without this, a small initial
+  // viewport on a large dataset never triggers the scroll path.
+  useEffect(() => {
+    if (view.kind !== "reel") return;
+    const el = reelScrollerRef.current;
+    if (el === null) return;
+    if (!hasMore || isLoadingMore) return;
+    if (el.scrollWidth <= el.clientWidth + REEL_LOADMORE_THRESHOLD_PX) {
+      void loadMore();
+    }
+  }, [view.kind, hasMore, isLoadingMore, loadMore, records.length]);
 
   // D.4 — pull the selected frame into view whenever:
   //   • Reel mounts (Grid → Reel toggle, with a selection inherited
@@ -731,6 +768,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     const cellId = pulseAnchorRef.current;
     if (cellId === null) return;
     pulseAnchorRef.current = null;
+
+    // Stack semantics: the grid is kept mounted and just
+    // display:none'd during focus mode, so scrollTop is preserved
+    // natively. With cellsPerRow no longer churning on zero-width
+    // measurements (see useCellsPerRow), the virtualizer's row
+    // offsets stay stable across the focus open/close cycle. We
+    // don't reposition scroll on return — the user lands exactly
+    // where they were when they clicked.
+    //
+    // The pulse animation just highlights the cell that was open.
+    // querySelector runs against the now-visible grid; if the cell
+    // is in the rendered range (very likely, since it's where the
+    // user was looking when they clicked), the animation plays.
     const cell = gridScrollRef.current?.querySelector<HTMLElement>(
       `[data-cell-id="${cellId}"]`
     );
@@ -776,7 +826,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__count">
             {isTrashView
               ? `${trashRecords.length} in trash`
-              : `${liveRecords.length} captures`}
+              : `${totalLive} captures`}
           </span>
         </div>
         <div className="psl__topbar-c">
@@ -1021,96 +1071,22 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
-          {grouped.map((g) => (
-            <div key={g.day}>
-              <div className="psl__day-hdr">
-                <span className="psl__day-hdr-label">{g.day}</span>
-                <span className="psl__day-hdr-meta">
-                  {g.date} · {g.items.length} captures
-                </span>
-                <span className="psl__day-hdr-line" />
-              </div>
-              <div className="psl__grid">
-                {g.items.map((c) => {
-                  const record = fixtureBacking.recordFor(c.id);
-                  return (
-                    <div
-                      key={c.id}
-                      className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
-                      data-cell-id={record?.id ?? ""}
-                      onClick={() => onSelectCell(c)}
-                      onMouseEnter={() => preloadFullRes(record)}
-                    >
-                      <div className="psl__cell-thumb">
-                        <CellThumb capture={c} record={record} width={400} />
-                        <span className="psl__cell-time">{c.time}</span>
-                        <span className="psl__cell-app">
-                          <span className="psl__app-dot">
-                            <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
-                          </span>
-                        </span>
-                        {record !== null &&
-                          (isTrashView ? (
-                            <span className="psl__cell-actions">
-                              <button
-                                type="button"
-                                className="psl__cell-trash psl__cell-trash--restore"
-                                title="Restore"
-                                aria-label="Restore from Trash"
-                                onClick={(e) => restoreCaptureAction(c.id, e)}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                                  <path d="M3 4v5h5" />
-                                </svg>
-                              </button>
-                              <button
-                                type="button"
-                                className="psl__cell-trash psl__cell-trash--purge"
-                                title="Delete permanently"
-                                aria-label="Delete permanently"
-                                onClick={(e) => purgeCaptureAction(c.id, e)}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                </svg>
-                              </button>
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              className="psl__cell-trash"
-                              title="Move to Trash"
-                              aria-label="Move to Trash"
-                              onClick={(e) => trashCapture(c.id, e)}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                              </svg>
-                            </button>
-                          ))}
-                      </div>
-                      <div className="psl__cell-meta">
-                        <div className="psl__cell-name">{c.n}</div>
-                        <div className="psl__cell-tags">
-                          <AppTag
-                            app={c.app}
-                            name={appLabels[c.app] ?? "Unknown app"}
-                            size="sm"
-                          />
-                          {c.tags.slice(0, 1).map((t) => (
-                            <span key={t} className="ps-tag is-sm">
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+          <VirtualizedGrid
+            grouped={grouped}
+            scrollElement={gridScrollRef}
+            selected={selected}
+            fixtureBacking={fixtureBacking}
+            appLabels={appLabels}
+            onSelectCell={onSelectCell}
+            preloadFullRes={preloadFullRes}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            loadMore={loadMore}
+            isTrashView={isTrashView}
+            trashCapture={trashCapture}
+            restoreCaptureAction={restoreCaptureAction}
+            purgeCaptureAction={purgeCaptureAction}
+          />
         </div>
         {error !== null && (
           <div className="psl__error" role="alert">
@@ -1162,7 +1138,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                       {grouped.map((g) => (
                         <div key={g.day} className="psl__reel-day">
                           <div className="psl__reel-day-label">
-                            {g.day} · {g.date}
+                            {g.date.length > 0 ? `${g.day} · ${g.date}` : g.day}
                           </div>
                           <div className="psl__reel-day-frames">
                             {g.items.map((c) => {
@@ -1274,6 +1250,440 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </span>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// ── Virtualized day-grouped grid (row-level) ─────────────────────
+//
+// Row-level virtualization: each virtual item is either a day-section
+// header OR a single grid-row of cellsPerRow cells. DOM cell count is
+// bounded by `(visibleRows + overscan) × cellsPerRow` regardless of
+// how many captures live in any single day.
+//
+// We tried day-level virtualization first (one virtual item per
+// day-group). At 10k captures with maxPerDay=200, a single heavy day
+// entering the overscan would mount 200 cells at once, and the
+// renderer choked on layout work even with content-visibility:auto.
+// Row-level virt caps the per-frame mount count regardless of day
+// shape.
+//
+// `cellsPerRow` is computed from container width via ResizeObserver
+// — matches the original CSS `repeat(auto-fill, minmax(180px, 1fr))`
+// behavior. The flat row list rebuilds when cellsPerRow changes.
+//
+// `measureElement` corrects estimateSize after first render so the
+// scrollbar tracks correctly.
+
+const HEADER_ESTIMATE_PX = 60;
+const CELL_ROW_ESTIMATE_PX = 280; // one row of cells (cell aspect 16:10 + meta)
+const CELL_MIN_WIDTH = 180; // matches CSS minmax(180px, 1fr)
+const CELL_GAP = 12;
+const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single-grid layout
+const GRID_HORIZONTAL_PADDING = 18;
+/** Horizontal pixels from the reel's right edge at which to fire
+ *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
+ *  scroll speeds buys enough lead time for the next keyset page to
+ *  land before the user runs out of frames. */
+const REEL_LOADMORE_THRESHOLD_PX = 3000;
+
+type DayGroup = ReturnType<typeof groupByDay>[number];
+
+type CellAction = (captureId: number, event: ReactMouseEvent) => void;
+
+type LibraryRow =
+  | { kind: "header"; day: string; date: string; count: number }
+  | {
+      kind: "cells";
+      cells: DayGroup["items"];
+      /** True when this is the last cell-row of its day-group. The
+       *  renderer adds extra padding-bottom on these so the visual gap
+       *  to the next day-header matches the original single-grid
+       *  layout (12px between rows in same day, 18px after last row
+       *  of day). Without this distinction, days look 6px tighter. */
+      isLastInDay: boolean;
+    };
+
+type VirtualizedGridProps = {
+  grouped: DayGroup[];
+  scrollElement: React.RefObject<HTMLDivElement | null>;
+  selected: number;
+  fixtureBacking: FixtureBackedRecords;
+  appLabels: Record<string, string>;
+  onSelectCell: (c: Capture) => void;
+  preloadFullRes: (record: CaptureRecord | null) => void;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  loadMore: () => Promise<void>;
+  isTrashView: boolean;
+  trashCapture: CellAction;
+  restoreCaptureAction: CellAction;
+  purgeCaptureAction: CellAction;
+};
+
+/** Compute how many cells fit per row at the current container width.
+ *  Defaults to 4 if the container hasn't measured yet.
+ *
+ *  Stickiness on display:none — when the grid is hidden during focus
+ *  mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`),
+ *  ResizeObserver fires with `clientWidth = 0` and naive math drops
+ *  cellsPerRow to 1. flatRows then re-flattens to 10k cell-rows
+ *  (one per cell), the virtualizer relayouts everything, and on
+ *  focus close the user lands at a wildly different scroll position.
+ *  Stack semantics — opening/closing focus shouldn't reflow the
+ *  grid at all. Treat zero-width measurements as "no information"
+ *  and keep the last computed value. */
+function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): number {
+  const [cellsPerRow, setCellsPerRow] = useState(4);
+  useLayoutEffect(() => {
+    const el = scrollElement.current;
+    if (el === null) return;
+    const compute = (): void => {
+      const width = el.clientWidth;
+      // Skip zero-width measurements (the grid is display:none).
+      // The previous cellsPerRow stays in effect, so flatRows + the
+      // virtualizer's offset cache don't churn while the user is in
+      // focus mode.
+      if (width <= 0) return;
+      const inner = width - 2 * GRID_HORIZONTAL_PADDING;
+      const next = Math.max(1, Math.floor((inner + CELL_GAP) / (CELL_MIN_WIDTH + CELL_GAP)));
+      setCellsPerRow((prev) => (prev === next ? prev : next));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scrollElement]);
+  return cellsPerRow;
+}
+
+function VirtualizedGrid({
+  grouped,
+  scrollElement,
+  selected,
+  fixtureBacking,
+  appLabels,
+  onSelectCell,
+  preloadFullRes,
+  hasMore,
+  isLoadingMore,
+  loadMore,
+  isTrashView,
+  trashCapture,
+  restoreCaptureAction,
+  purgeCaptureAction
+}: VirtualizedGridProps) {
+  const cellsPerRow = useCellsPerRow(scrollElement);
+
+  // Flatten day-groups → 1-D row list. Each header gets one row;
+  // each day's items are sliced into rows of cellsPerRow. Memoized
+  // on (grouped, cellsPerRow); pure scroll doesn't recompute.
+  // Track header indexes too so the sticky-header rangeExtractor
+  // can pin the active header without re-walking flatRows on every
+  // scroll event.
+  const { flatRows, headerIndexes } = useMemo<{
+    flatRows: LibraryRow[];
+    headerIndexes: number[];
+  }>(() => {
+    const rows: LibraryRow[] = [];
+    const headers: number[] = [];
+    for (const g of grouped) {
+      headers.push(rows.length);
+      rows.push({ kind: "header", day: g.day, date: g.date, count: g.items.length });
+      const cellRowCount = Math.ceil(g.items.length / cellsPerRow);
+      for (let i = 0, k = 0; i < g.items.length; i += cellsPerRow, k++) {
+        rows.push({
+          kind: "cells",
+          cells: g.items.slice(i, i + cellsPerRow),
+          isLastInDay: k === cellRowCount - 1
+        });
+      }
+    }
+    return { flatRows: rows, headerIndexes: headers };
+  }, [grouped, cellsPerRow]);
+
+  // Sticky-header bookkeeping. The active sticky index = the topmost
+  // header whose flat index is at or above the current scroll-window
+  // start. We render the active one with `position: sticky; top: 0`
+  // and ALL other items normally (absolute-positioned via translateY).
+  // The rangeExtractor pins the active header into the rendered set
+  // even when its natural position is scrolled above the viewport —
+  // canonical TanStack Virtual sticky pattern, see the library's
+  // sticky example. Without this, scrolling past the day boundary
+  // would unmount the header and the sticky behavior would vanish.
+  const activeStickyIndexRef = useRef(0);
+  const isSticky = useCallback(
+    (index: number) => headerIndexes.includes(index),
+    [headerIndexes]
+  );
+  const isActiveSticky = useCallback(
+    (index: number) => activeStickyIndexRef.current === index,
+    []
+  );
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      // Find the topmost header that's at or above the scroll-window
+      // start. Iterate descending so the first match is the topmost
+      // one already-passed.
+      const active =
+        [...headerIndexes].reverse().find((idx) => range.startIndex >= idx) ?? 0;
+      activeStickyIndexRef.current = active;
+      // Always include the active sticky in the rendered range so it
+      // stays in DOM and can paint via `position: sticky`.
+      const next = new Set([active, ...defaultRangeExtractor(range)]);
+      return [...next].sort((a, b) => a - b);
+    },
+    [headerIndexes]
+  );
+
+  const virtualizer = useVirtualizer({
+    count: flatRows.length,
+    getScrollElement: () => scrollElement.current,
+    estimateSize: (i) =>
+      flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
+    overscan: 5,
+    rangeExtractor,
+    // React 19 — opt into batched updates; silences flushSync warnings
+    // during scroll. Slight measurement-jitter trade-off, acceptable.
+    useScrollendEvent: true
+  });
+
+
+  // Infinite-scroll boundary: when the last visible virtual row is
+  // within K rows of the loaded tail, dispatch loadMore(). K=10 is
+  // generous enough that the next page lands before the user runs
+  // out of rendered rows.
+  const items = virtualizer.getVirtualItems();
+  const lastItem = items[items.length - 1];
+  useEffect(() => {
+    if (!hasMore || isLoadingMore) return;
+    if (lastItem === undefined) return;
+    if (lastItem.index >= flatRows.length - 10) {
+      void loadMore();
+    }
+  }, [lastItem, flatRows.length, hasMore, isLoadingMore, loadMore]);
+
+  // Grid template — exactly cellsPerRow columns. Used by every
+  // cell-row virtual item. Reused via inline style so all rows in a
+  // resize tick render with the same template (no flicker).
+  const gridTemplate = `repeat(${cellsPerRow}, 1fr)`;
+
+  return (
+    <div
+      style={{
+        height: `${virtualizer.getTotalSize()}px`,
+        width: "100%",
+        position: "relative"
+      }}
+    >
+      {items.map((vi) => {
+        const row = flatRows[vi.index];
+        if (row === undefined) return null;
+        // Sticky pinning: the active sticky index uses
+        // `position: sticky` instead of absolute, so the browser
+        // pins it at the top of the scroll viewport as the user
+        // scrolls past its natural position. All other items
+        // (including non-active headers further down) use the
+        // standard absolute-positioned virtualizer translation.
+        const sticky = isSticky(vi.index);
+        const activeSticky = sticky && isActiveSticky(vi.index);
+        const positionStyle: React.CSSProperties = activeSticky
+          ? {
+              position: "sticky",
+              top: 0,
+              zIndex: 2
+            }
+          : {
+              position: "absolute",
+              top: 0,
+              transform: `translateY(${vi.start}px)`
+            };
+        return (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            // measureElement only on non-sticky rows: TanStack's
+            // measureElement reads getBoundingClientRect, but a
+            // sticky-pinned element's rect reports the pinned
+            // position, not its natural offset. Letting it measure
+            // would corrupt the offset cache and the row would jump.
+            // Sticky rows keep their estimateSize until the user
+            // scrolls past them and they unstick.
+            ref={activeSticky ? undefined : virtualizer.measureElement}
+            style={{
+              ...positionStyle,
+              left: 0,
+              width: "100%"
+            }}
+          >
+            {row.kind === "header" ? (
+              <div className="psl__day-hdr">
+                <span className="psl__day-hdr-label">{row.day}</span>
+                <span className="psl__day-hdr-meta">
+                  {row.date.length > 0 ? `${row.date} · ` : ""}
+                  {row.count} captures
+                </span>
+                <span className="psl__day-hdr-line" />
+              </div>
+            ) : (
+              <CellRow
+                cells={row.cells}
+                gridTemplate={gridTemplate}
+                isLastInDay={row.isLastInDay}
+                selected={selected}
+                fixtureBacking={fixtureBacking}
+                appLabels={appLabels}
+                onSelectCell={onSelectCell}
+                preloadFullRes={preloadFullRes}
+                isTrashView={isTrashView}
+                trashCapture={trashCapture}
+                restoreCaptureAction={restoreCaptureAction}
+                purgeCaptureAction={purgeCaptureAction}
+              />
+            )}
+          </div>
+        );
+      })}
+      {isLoadingMore && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            padding: "12px 18px",
+            opacity: 0.6,
+            fontSize: 12
+          }}
+        >
+          Loading more…
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CellRow({
+  cells,
+  gridTemplate,
+  isLastInDay,
+  selected,
+  fixtureBacking,
+  appLabels,
+  onSelectCell,
+  preloadFullRes,
+  isTrashView,
+  trashCapture,
+  restoreCaptureAction,
+  purgeCaptureAction
+}: {
+  cells: DayGroup["items"];
+  gridTemplate: string;
+  isLastInDay: boolean;
+  selected: number;
+  fixtureBacking: FixtureBackedRecords;
+  appLabels: Record<string, string>;
+  onSelectCell: (c: Capture) => void;
+  preloadFullRes: (record: CaptureRecord | null) => void;
+  isTrashView: boolean;
+  trashCapture: CellAction;
+  restoreCaptureAction: CellAction;
+  purgeCaptureAction: CellAction;
+}) {
+  // Inline grid styling — `.psl__grid` from the CSS uses auto-fill;
+  // we override with explicit columns matching the computed
+  // cellsPerRow so every virtualized row has the same column count
+  // and the visual matches the prior layout.
+  //
+  // Padding-bottom matches the original single-grid behavior:
+  //   • Within a day (rows 1..N-1):  CELL_GAP (12px) between rows
+  //   • Last row of a day:           CELL_GAP_DAY_END (18px) so the
+  //     gap to the next day-header matches what the original single
+  //     `.psl__grid` produced via its 18px `padding-bottom`.
+  // Without the special-case, days were ~6px tighter than the
+  // original layout.
+  return (
+    <div
+      className="psl__grid"
+      style={{
+        gridTemplateColumns: gridTemplate,
+        paddingBottom: isLastInDay ? CELL_GAP_DAY_END : CELL_GAP,
+        paddingTop: 0
+      }}
+    >
+      {cells.map((c) => {
+        const record = fixtureBacking.recordFor(c.id);
+        return (
+          <div
+            key={c.id}
+            className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
+            data-cell-id={record?.id ?? ""}
+            onClick={() => onSelectCell(c)}
+            onMouseEnter={() => preloadFullRes(record ?? null)}
+          >
+            <div className="psl__cell-thumb">
+              <CellThumb capture={c} record={record} width={400} />
+              <span className="psl__cell-time">{c.time}</span>
+              <span className="psl__cell-app">
+                <span className="psl__app-dot">
+                  <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
+                </span>
+              </span>
+              {record !== null &&
+                (isTrashView ? (
+                  <span className="psl__cell-actions">
+                    <button
+                      type="button"
+                      className="psl__cell-trash psl__cell-trash--restore"
+                      title="Restore"
+                      aria-label="Restore from Trash"
+                      onClick={(e) => restoreCaptureAction(c.id, e)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 12a9 9 0 1 0 3-6.7" />
+                        <path d="M3 4v5h5" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="psl__cell-trash psl__cell-trash--purge"
+                      title="Delete permanently"
+                      aria-label="Delete permanently"
+                      onClick={(e) => purgeCaptureAction(c.id, e)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                      </svg>
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="psl__cell-trash"
+                    title="Move to Trash"
+                    aria-label="Move to Trash"
+                    onClick={(e) => trashCapture(c.id, e)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                    </svg>
+                  </button>
+                ))}
+            </div>
+            <div className="psl__cell-meta">
+              <div className="psl__cell-name">{c.n}</div>
+              <div className="psl__cell-tags">
+                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" />
+                {c.tags.slice(0, 1).map((t) => (
+                  <span key={t} className="ps-tag is-sm">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

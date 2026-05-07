@@ -639,6 +639,17 @@
   border-bottom: 1px dashed rgba(245,239,227,0.08);
   margin-bottom: 6px;
   white-space: nowrap;
+  /* Override the parent column-flex's default `align-items: stretch`
+     so the label keeps its intrinsic text-width instead of stretching
+     to match the day's frame-row width. A heavy day (e.g. 200
+     frames × 70px = 14,000px wide) would otherwise stretch the
+     label to 14,000px; sticky-left would then pin a label-as-wide-
+     as-the-scrollable-content bar at the viewport's left edge and
+     visually overlay every frame scrolling underneath. With
+     `align-self: flex-start`, the label stays compact and the
+     sticky-left pin reads as a pill at the leading edge of the
+     scroller, exactly as designed. */
+  align-self: flex-start;
   /* Sticky-left so the day label stays visible at the leading
      edge of the scroller while its day's frames are scrolling
      past. Without this, "Today" / "Yesterday" disappear off the

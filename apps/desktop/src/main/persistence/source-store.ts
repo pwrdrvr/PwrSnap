@@ -72,7 +72,11 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
   // + unlink under the hood, still atomic from the consumer's POV.
   await rename(tempPath, srcPath);
 
-  log.info("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
+  // debug-level: this fires once per capture, including 100k× under
+  // the dev seeder. Production can re-enable via the logger's level
+  // override; a single ⌘⇧P capture is logged elsewhere by the
+  // capture handlers' "capture persisted" line at info.
+  log.debug("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
 
   return {
     id,

@@ -765,10 +765,18 @@
      old `padding-top: 16px` so the visual breathing room moves
      WITH the pinned header — the bg covers from the very top
      edge down through the header content, occluding everything
-     scrolling under it. `padding-bottom: 12px` separates the
-     header from the cells below it both at scroll-top (natural)
-     and when pinned. */
-  padding: 16px 18px 12px;
+     scrolling under it.
+     `padding-bottom: 4px` is intentionally slim — the gap to the
+     cells comes from `.psl__grid`'s padding-top below. The day-hdr
+     paints `bg-app` across its whole padding box (sticky), so any
+     pixels INSIDE its padding-bottom would cover the selected
+     cell's 1px box-shadow outline when a top-row cell is selected
+     and the user is scrolled to the very top — the symptom was
+     "the top of the selection highlight is missing". Moving the
+     breathing space onto the grid keeps the day-hdr's painted
+     area tight to the text and gives the cell outline somewhere
+     to render. */
+  padding: 16px 18px 4px;
   background: var(--bg-app);
   position: sticky;
   top: 0;
@@ -791,8 +799,12 @@
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
   /* Horizontal padding moved here from `.psl__grid-wrap` so cells
-     stay inset 18px while the day-hdr above can span full width. */
-  padding: 0 18px 18px;
+     stay inset 18px while the day-hdr above can span full width.
+     `padding-top: 8px` carries the visual gap that used to sit in
+     the day-hdr's padding-bottom, but in space the day-hdr's
+     painted background DOESN'T cover — so a top-row cell's
+     selection outline is visible. */
+  padding: 8px 18px 18px;
 }
 /* In-pane error banner. The previous right-rail rendered errors
    inside its body; with the rail gone in Grid mode, errors live
@@ -1335,26 +1347,21 @@
   color: var(--text-primary);
   font: 600 12px/1 var(--font-sans);
 }
-/* Position counter ("5 / 32"). Top-right by default with a 60px
-   right offset that leaves clearance for Focus mode's × close
-   button at right:14. In Reel mode there's no × button, so the
-   pill scoots over to right:24 (visual right-edge alignment
-   with the breadcrumb's left:24). top:12 matches the breadcrumb's
-   top offset so they read as one row. */
+/* Position counter ("5 / 32"). Lives inline as the last child of
+   `.psl__stage-meta` (see Stage.tsx) so it sits at the end of the
+   breadcrumb. The previous absolute positioning at top:12 right:60
+   collided with the focus-close-hint at right:56. Keeping the pill
+   look (mono font + rounded border + accent for the index) so it
+   still reads as a position indicator inside the breadcrumb. */
 .psl__stage-pos {
-  position: absolute;
-  top: 12px;
-  right: 60px;
+  display: inline-flex; align-items: center;
   font: 600 11px/1 var(--font-mono);
   color: var(--text-muted);
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  padding: 5px 10px;
-  z-index: 4;
-}
-.psl__reel-mode .psl__stage-pos {
-  right: 24px;
+  padding: 4px 9px;
+  margin-left: 4px;
 }
 .psl__stage-pos b {
   color: var(--accent-bright);

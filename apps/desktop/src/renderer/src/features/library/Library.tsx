@@ -62,6 +62,20 @@ function CellThumb({
   return <Thumb c={capture} />;
 }
 
+/**
+ * Local-date stamp as YYYY-MM-DD. Used as a memo key so date-derived
+ * UI (the "Today" filter, day-bucket headers) rebuilds when the local
+ * date changes — including across midnight while the app stays open.
+ * Date-only on purpose; intra-day re-renders shouldn't invalidate
+ * fixture caches.
+ */
+function formatLocalDate(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [selected, setSelected] = useState(initialSelected);
   const [activeApp, setActiveApp] = useState<string>("all");
@@ -106,6 +120,48 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
   const { records, error } = useLibrary();
 
+  // Local-date watcher. The fixture day-bucket ("Today" / "Yesterday"
+  // / "Earlier") is computed against `new Date()` when the snapshot is
+  // built, then frozen on the fixture object. If the user keeps the
+  // app open across midnight, yesterday's captures still claim
+  // `day: "Today"` until the next records refetch, which can be hours
+  // away. This watcher tracks the local date as a YYYY-MM-DD string;
+  // when it changes, the fixture-backing memos below take it as a dep
+  // and rebuild against a fresh `now`, so day-hdrs, the Today badge,
+  // and the Today filter all re-flow at the same moment.
+  //
+  // Two trigger sources, both needed:
+  //   • setTimeout scheduled for ~5s past the next midnight — handles
+  //     the "app sat open all night" case while the machine stays
+  //     awake.
+  //   • window 'focus' event — setTimeout pauses while the machine is
+  //     asleep, so a wake-from-sleep doesn't fire the midnight timer
+  //     on time. Refocusing PwrSnap re-checks; if the date moved, we
+  //     update.
+  const [todayDateStr, setTodayDateStr] = useState(() => formatLocalDate(new Date()));
+  useEffect(() => {
+    let nextTimer: ReturnType<typeof setTimeout> | undefined;
+    function checkDate(): void {
+      const next = formatLocalDate(new Date());
+      setTodayDateStr((prev) => (prev === next ? prev : next));
+    }
+    function scheduleMidnight(): void {
+      const now = new Date();
+      const m = new Date(now);
+      m.setHours(24, 0, 5, 0); // 5s past midnight; small buffer for clock drift
+      nextTimer = setTimeout(() => {
+        checkDate();
+        scheduleMidnight();
+      }, m.getTime() - now.getTime());
+    }
+    scheduleMidnight();
+    window.addEventListener("focus", checkDate);
+    return () => {
+      if (nextTimer !== undefined) clearTimeout(nextTimer);
+      window.removeEventListener("focus", checkDate);
+    };
+  }, []);
+
   // Partition records into live + trash. The renderer asks
   // `library:list` for `includeDeleted: true` (single round-trip) and
   // splits here so the Trash sidebar entry just swaps the active
@@ -127,7 +183,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
   const fixtureBacking = useMemo(
     () => new FixtureBackedRecords(universeRecords),
-    [universeRecords]
+    // todayDateStr drives the day-bucket inside FixtureBackedRecords;
+    // including it forces a rebuild when the local date crosses so the
+    // grid's day-hdrs ("Today" / "Yesterday") update without a refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [universeRecords, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
@@ -150,7 +210,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const liveFixturesForCounts = useMemo(() => {
     const backing = new FixtureBackedRecords(liveRecords);
     return backing.fixtures();
-  }, [liveRecords]);
+    // todayDateStr — see comment on `fixtureBacking` above. Same
+    // reason: rebuilds the day-bucket against the new local date so
+    // the Today badge resets to 0 at midnight without a refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveRecords, todayDateStr]);
   const appCounts = useMemo<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
     for (const c of liveFixturesForCounts) {

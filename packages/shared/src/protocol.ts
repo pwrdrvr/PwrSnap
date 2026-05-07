@@ -102,6 +102,12 @@ export type Commands = {
   "library:byId": { req: { id: string }; res: CaptureRecord | null };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };
+  /** Restore a soft-deleted capture: clears deleted_at and moves the source PNG back from <root>/.trash/. */
+  "library:restore": { req: { id: string }; res: void };
+  /** Hard-delete a single soft-deleted capture: removes the row + the trash file. */
+  "library:purge": { req: { id: string }; res: void };
+  /** Empty the trash: hard-deletes every currently soft-deleted capture and removes its trash file. */
+  "library:purgeAll": { req: Record<string, never>; res: { removedCount: number } };
   /** Phase 1 backup CLI hook. */
   "library:export": { req: { destDir: string }; res: { destDir: string; manifestPath: string } };
   /** Bring the main library window forward — used by the tray's "Open Library" row. */

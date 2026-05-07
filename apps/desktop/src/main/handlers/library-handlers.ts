@@ -1,19 +1,37 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
-import { ok, err } from "@pwrsnap/shared";
+import { BrowserWindow } from "electron";
+import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
   getCaptureById,
   hardDeleteCapture,
   listCaptures,
+  listSoftDeletedIds,
+  restoreCapture,
   softDeleteCapture
 } from "../persistence/captures-repo";
-import { moveSourceToTrash } from "../persistence/source-store";
+import {
+  moveSourceToTrash,
+  purgeOneFromTrash,
+  restoreSourceFromTrash
+} from "../persistence/source-store";
 import { createEditWindow, createMainWindow, findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
+
+// Mirror of capture-handlers.broadcastCapturesChanged. The renderer's
+// useLibrary subscribes to this event channel and refetches; without a
+// broadcast a soft-delete / restore / purge would be invisible until
+// the next capture nudged the list.
+function broadcastCapturesChanged(changedIds: string[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds });
+  }
+}
 
 export function registerLibraryHandlers(): void {
   bus.register("library:list", async (req) => {
@@ -40,7 +58,75 @@ export function registerLibraryHandlers(): void {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
+    broadcastCapturesChanged([req.id]);
     return ok(undefined);
+  });
+
+  bus.register("library:restore", async (req) => {
+    const record = getCaptureById(req.id);
+    if (record === null) {
+      return err({ kind: "validation", code: "not_found", message: `capture not found: ${req.id}` });
+    }
+    if (record.deleted_at === null) {
+      // Already live — make this idempotent rather than an error so a
+      // double-click on Restore doesn't surface as a failure toast.
+      return ok(undefined);
+    }
+    restoreCapture(req.id);
+    try {
+      await restoreSourceFromTrash(req.id, record.src_path);
+    } catch (cause) {
+      log.warn("library:restore: file restore failed", {
+        captureId: req.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    broadcastCapturesChanged([req.id]);
+    return ok(undefined);
+  });
+
+  bus.register("library:purge", async (req) => {
+    const record = getCaptureById(req.id);
+    if (record === null) {
+      return err({ kind: "validation", code: "not_found", message: `capture not found: ${req.id}` });
+    }
+    if (record.deleted_at === null) {
+      return err({
+        kind: "validation",
+        code: "not_in_trash",
+        message: `capture is not in trash: ${req.id}`
+      });
+    }
+    try {
+      await purgeOneFromTrash(req.id);
+    } catch (cause) {
+      log.warn("library:purge: trash file remove failed", {
+        captureId: req.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    hardDeleteCapture(req.id);
+    broadcastCapturesChanged([req.id]);
+    return ok(undefined);
+  });
+
+  bus.register("library:purgeAll", async () => {
+    const ids = listSoftDeletedIds();
+    let removed = 0;
+    for (const id of ids) {
+      try {
+        await purgeOneFromTrash(id);
+      } catch (cause) {
+        log.warn("library:purgeAll: trash file remove failed", {
+          captureId: id,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+      hardDeleteCapture(id);
+      removed += 1;
+    }
+    if (removed > 0) broadcastCapturesChanged(ids);
+    return ok({ removedCount: removed });
   });
 
   bus.register("library:export", async () => {

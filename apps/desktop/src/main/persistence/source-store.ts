@@ -97,6 +97,36 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
 }
 
 /**
+ * Inverse of moveSourceToTrash: move <userData>/.trash/<id>.png back to
+ * its original src_path. Recreates the parent dir (the original yyyy/mm
+ * folder may have been pruned by a future cleanup pass; today it isn't,
+ * but keep the mkdir defensive).
+ */
+export async function restoreSourceFromTrash(captureId: string, srcPath: string): Promise<void> {
+  const trashRoot = getTrashRoot();
+  const trashPath = join(trashRoot, `${captureId}.png`);
+  if (!existsSync(trashPath)) {
+    log.warn("trash restore: trash file missing", { trashPath, captureId });
+    return;
+  }
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(srcPath), { recursive: true });
+  await rename(trashPath, srcPath);
+}
+
+/**
+ * Hard-remove a single trash file by capture id. Used by per-row
+ * "delete permanently" from the trash view. Idempotent — missing
+ * file is fine.
+ */
+export async function purgeOneFromTrash(captureId: string): Promise<void> {
+  const trashRoot = getTrashRoot();
+  const trashPath = join(trashRoot, `${captureId}.png`);
+  if (!existsSync(trashPath)) return;
+  await rm(trashPath, { force: true });
+}
+
+/**
  * Boot-time GC sweep. Deletes everything in <userData>/.trash/ that
  * exceeds `TRASH_RETENTION_DAYS` mtime age. Cheap and safe — we never
  * touch live files, only ones already moved to trash.

@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -9,7 +10,7 @@ import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
-import { cacheUrl, captureSrcUrl } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -65,6 +66,35 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [selected, setSelected] = useState(initialSelected);
   const [activeApp, setActiveApp] = useState<string>("all");
 
+  // Left-bar pin / collapse / hover-peek (PwrAgnt's HoverRevealPanel
+  // pattern, mirrored for the left side). Default = pinned. State is
+  // intentionally per-window for now; a future settings entry can lift
+  // it once we decide where view-prefs live (see CLAUDE.md preference
+  // notes).
+  //   • leftPinned — sticky: occupies its grid column, always visible.
+  //   • leftRevealed — transient: hover-peek when not pinned.
+  // Both effective when (pinned || revealed).
+  const [leftPinned, setLeftPinned] = useState(true);
+  const [leftRevealed, setLeftRevealed] = useState(false);
+  const leftHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const revealLeft = useCallback(() => {
+    if (leftHideTimerRef.current !== undefined) {
+      clearTimeout(leftHideTimerRef.current);
+      leftHideTimerRef.current = undefined;
+    }
+    setLeftRevealed(true);
+  }, []);
+  const hideLeft = useCallback(() => {
+    if (leftHideTimerRef.current !== undefined) clearTimeout(leftHideTimerRef.current);
+    // 200ms debounce — matches HoverRevealPanel. Without it, the slide
+    // transition under the cursor causes flicker (mouseleave fires as
+    // the panel moves out from under the pointer mid-animation).
+    leftHideTimerRef.current = setTimeout(() => {
+      setLeftRevealed(false);
+      leftHideTimerRef.current = undefined;
+    }, 200);
+  }, []);
+
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
   // illegal-state guard at compile time (focus mode requires non-null
@@ -75,11 +105,36 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const selectedRecordId = view.selectedRecordId;
 
   const { records, error } = useLibrary();
-  const fixtureBacking = useMemo(() => new FixtureBackedRecords(records), [records]);
+
+  // Partition records into live + trash. The renderer asks
+  // `library:list` for `includeDeleted: true` (single round-trip) and
+  // splits here so the Trash sidebar entry just swaps the active
+  // universe without a second fetch.
+  const liveRecords = useMemo(
+    () => records.filter((r) => r.deleted_at === null),
+    [records]
+  );
+  const trashRecords = useMemo(
+    () => records.filter((r) => r.deleted_at !== null),
+    [records]
+  );
+
+  // Universe of records the current view operates on. Trash is a
+  // top-level swap (not a per-app filter) so the per-app filter only
+  // applies when viewing live captures.
+  const isTrashView = activeApp === "trash";
+  const universeRecords = isTrashView ? trashRecords : liveRecords;
+
+  const fixtureBacking = useMemo(
+    () => new FixtureBackedRecords(universeRecords),
+    [universeRecords]
+  );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
   const visible =
-    activeApp === "all" ? fixtureCaptures : fixtureCaptures.filter((c) => c.app === activeApp);
+    activeApp === "all" || isTrashView
+      ? fixtureCaptures
+      : fixtureCaptures.filter((c) => c.app === activeApp);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
   const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
 
@@ -87,13 +142,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // cost (N apps × M captures = NM ops/render) doesn't accumulate. Used
   // to (a) drive the count badge in the left-rail Source App list and
   // (b) data-filter the list to only apps that have ≥1 capture (B.8).
+  // Always sourced from LIVE records: trash is a separate surface, not
+  // a slice of the per-app counts.
+  const liveFixturesForCounts = useMemo(() => {
+    const backing = new FixtureBackedRecords(liveRecords);
+    return backing.fixtures();
+  }, [liveRecords]);
   const appCounts = useMemo<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
-    for (const c of fixtureCaptures) {
+    for (const c of liveFixturesForCounts) {
       counts[c.app] = (counts[c.app] ?? 0) + 1;
     }
     return counts;
-  }, [fixtureCaptures]);
+  }, [liveFixturesForCounts]);
 
   // Display name per app key — curated short id wins (so "vscode"
   // stays "VS Code"), else first non-null `appName` we observed for
@@ -102,7 +163,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // neither is available (record missing both bundle id and name).
   const appLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
-    for (const c of fixtureCaptures) {
+    for (const c of liveFixturesForCounts) {
       if (labels[c.app] !== undefined) continue;
       const known = APP_INFO[c.app]?.name;
       if (known !== undefined) labels[c.app] = known;
@@ -110,7 +171,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       else labels[c.app] = "Unknown app";
     }
     return labels;
-  }, [fixtureCaptures]);
+  }, [liveFixturesForCounts]);
 
   // Apps that should appear in the left rail: any app with ≥1 capture,
   // PLUS the currently-active filter (so a user who's filtered to
@@ -425,6 +486,35 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }
 
   /**
+   * Soft-delete a capture from the grid/reel hover affordance. The
+   * trash icon sits on top of the cell; without stopPropagation the
+   * cell's click handler would also fire and open Focus on a record
+   * that's about to disappear from the visible set.
+   */
+  function trashCapture(captureId: number, event: ReactMouseEvent): void {
+    event.stopPropagation();
+    const record = fixtureBacking.recordFor(captureId);
+    if (record === null) return;
+    void dispatch("library:delete", { id: record.id });
+  }
+
+  /**
+   * Empty trash. Confirmation lives in the renderer (no native dialog
+   * needed) — `library:purgeAll` is irreversible so a single yes/no
+   * prompt is the right friction.
+   */
+  function emptyTrash(): void {
+    if (trashRecords.length === 0) return;
+    const ok = window.confirm(
+      `Permanently delete ${trashRecords.length} capture${
+        trashRecords.length === 1 ? "" : "s"
+      }? This cannot be undone.`
+    );
+    if (!ok) return;
+    void dispatch("library:purgeAll", {});
+  }
+
+  /**
    * Cell-pulse effect (Phase C.7). When view.kind transitions from
    * "focus" back to "grid", briefly add `.is-was-open` to the cell
    * with id matching `view.returnAnchor.cellId` so the user's eye
@@ -489,8 +579,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return record?.id ?? null;
   }, [visible, fixtureBacking]);
 
+  const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
+
   return (
-    <div className="psl" data-mode={view.kind}>
+    <div className="psl" data-mode={view.kind} data-left={leftState}>
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -499,7 +591,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </span>
             <PwrSnapWordmark />
           </div>
-          <span className="psl__count">{records.length} captures</span>
+          <span className="psl__count">
+            {isTrashView
+              ? `${trashRecords.length} in trash`
+              : `${liveRecords.length} captures`}
+          </span>
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
@@ -533,7 +629,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </div>
         </div>
         <div className="psl__topbar-r">
-          <div className="psl__search-wrap">
+          {/* Search not yet implemented — hidden until the index lands. */}
+          <div className="psl__search-wrap" style={{ display: "none" }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
               <path d="m20 20-3.5-3.5" />
@@ -553,8 +650,61 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </div>
       </header>
 
-      <aside className="psl__left">
-        <div className="psl__left-section">Library</div>
+      {/* Spine — visible only when the left bar is collapsed (not
+          pinned). Mirrors PwrAgnt's HoverRevealPanel pattern but for
+          the left side. Click pins; hovering the spine OR the panel
+          triggers a peek. The aside.psl__left below carries the same
+          mouse handlers, so the panel stays revealed while the cursor
+          is anywhere over it. */}
+      {!leftPinned && (
+        <div
+          className="psl__left-spine"
+          onMouseEnter={revealLeft}
+          onMouseLeave={hideLeft}
+        >
+          <button
+            type="button"
+            className="psl__left-spine-btn"
+            aria-label="Pin sidebar"
+            title="Pin sidebar"
+            onClick={() => setLeftPinned(true)}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      <aside
+        className="psl__left"
+        onMouseEnter={() => {
+          if (!leftPinned) revealLeft();
+        }}
+        onMouseLeave={() => {
+          if (!leftPinned) hideLeft();
+        }}
+      >
+        <div className="psl__left-section psl__left-section--top">
+          <span>Library</span>
+          {/* In-panel pin toggle. Visible whenever the panel is on
+              screen (pinned OR peeking) so the user can pin from
+              either state. Hidden in `collapsed` because the panel
+              itself is offscreen and the spine button takes over. */}
+          {(leftPinned || leftRevealed) && (
+            <button
+              type="button"
+              className="psl__left-pin"
+              aria-label={leftPinned ? "Unpin sidebar" : "Pin sidebar"}
+              title={leftPinned ? "Unpin sidebar (collapse to spine)" : "Pin sidebar"}
+              onClick={() => setLeftPinned((v) => !v)}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d={leftPinned ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"} />
+              </svg>
+            </button>
+          )}
+        </div>
         <button
           className={"psl__nav" + (activeApp === "all" ? " is-active" : "")}
           onClick={() => setActiveApp("all")}
@@ -568,7 +718,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </svg>
           </span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{records.length}</span>
+          <span className="psl__nav-count">{liveRecords.length}</span>
         </button>
         <button className="psl__nav">
           <span className="psl__nav-icon">
@@ -580,7 +730,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__nav-label">Today</span>
           <span className="psl__nav-count">8</span>
         </button>
-        <button className="psl__nav">
+        <button
+          className={"psl__nav" + (isTrashView ? " is-active" : "")}
+          onClick={() => setActiveApp("trash")}
+        >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
               <path d="M5 4l1 16h12l1-16" />
@@ -588,7 +741,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </svg>
           </span>
           <span className="psl__nav-label">Trash</span>
-          <span className="psl__nav-count">14</span>
+          <span className="psl__nav-count">{trashRecords.length}</span>
         </button>
 
         <div className="psl__left-section">Source App</div>
@@ -651,6 +804,26 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             sibling" layout had both elements landing in grid-column 2 /
             grid-row 2 which made Stage paint on top of the filmstrip. */}
         <div className="psl__grid-wrap" ref={gridScrollRef}>
+          {isTrashView && (
+            <div className="psl__trash-banner">
+              <span className="psl__trash-banner-text">
+                {trashRecords.length === 0
+                  ? "Trash is empty."
+                  : `${trashRecords.length} item${
+                      trashRecords.length === 1 ? "" : "s"
+                    } in trash. Items are permanently removed after 14 days.`}
+              </span>
+              {trashRecords.length > 0 && (
+                <button
+                  type="button"
+                  className="psl__trash-banner-btn"
+                  onClick={emptyTrash}
+                >
+                  Empty Trash
+                </button>
+              )}
+            </div>
+          )}
           {grouped.map((g) => (
             <div key={g.day}>
               <div className="psl__day-hdr">
@@ -679,6 +852,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                             <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
                           </span>
                         </span>
+                        {!isTrashView && record !== null && (
+                          <button
+                            type="button"
+                            className="psl__cell-trash"
+                            title="Move to Trash"
+                            aria-label="Move to Trash"
+                            onClick={(e) => trashCapture(c.id, e)}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                       <div className="psl__cell-meta">
                         <div className="psl__cell-name">{c.n}</div>
@@ -780,6 +966,20 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} />
                                   </span>
+                                  {!isTrashView && record !== null && (
+                                    <span
+                                      role="button"
+                                      tabIndex={-1}
+                                      className="psl__frame-trash"
+                                      title="Move to Trash"
+                                      aria-label="Move to Trash"
+                                      onClick={(e) => trashCapture(c.id, e)}
+                                    >
+                                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                                      </svg>
+                                    </span>
+                                  )}
                                 </button>
                               );
                             })}
@@ -804,14 +1004,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       <footer className="psl__status">
         <div className="psl__status-l">
           <span>
-            <span className="a">●</span> 3.2 GB local · <b>iCloud sync</b>
+            <span className="a">●</span> 3.2 GB local
           </span>
           <span>
             Codex auto-tag <b>on</b>
           </span>
         </div>
         <div className="psl__status-r">
-          <span>⌘⇧P new · ⌘L library · ⌘K search</span>
+          <span>⌘⇧P new · ⌘L library</span>
           <span>
             <b>v0.0.1</b>
           </span>

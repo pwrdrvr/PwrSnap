@@ -767,6 +767,15 @@
      The horizontal breathing room moves into `.psl__day-hdr`
      and `.psl__grid` below. */
   padding: 0;
+  /* Disable browser scroll anchoring. Virtualized lists fight scroll
+     anchoring: every measureElement read shifts row heights from
+     estimate to measured, the browser interprets that as content
+     above-the-anchor changing size, and "compensates" by moving
+     scrollTop. Combined with the Focus → Grid display:none → block
+     transition, scrollTop ends up many thousands of pixels off from
+     the saved position. The virtualizer is already authoritative
+     for which rows render where — let it own the scroll geometry. */
+  overflow-anchor: none;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;

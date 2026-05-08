@@ -401,10 +401,29 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //   • Cell click handler — captures scrollTop into the OPEN_FOCUS
   //     returnAnchor so the cell-pulse effect can find which cell
   //     to highlight on Focus → Grid return.
-  //   • The Phase B keep-Grid-mounted decision means scrollTop
-  //     persists natively across mode flips (the element is
-  //     display:none'd, not unmounted).
+  //   • Stack-semantics restore on Focus → Grid (see
+  //     `gridReturnScrollTopRef` below).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Saved scrollTop captured the moment Focus opens. Restored on
+  // Focus → Grid via the useLayoutEffect below.
+  //
+  // Why this can't ride on the browser's `display: none` preservation:
+  // Chromium *does* normally restore scrollTop when an element
+  // un-display:none's, BUT only if the element's scrollHeight is
+  // still ≥ the saved scrollTop at restore time. Our virtualizer's
+  // total height is computed from `flatRows.length × estimateSize`,
+  // and during the focus-open round-trip several state changes (the
+  // ResizeObserver firing on display:none with width=0, the
+  // virtualizer's measureElement readings on now-hidden rows, the
+  // measure-cache reset that some code paths trigger) can transiently
+  // shrink the reported scrollHeight to a value below the saved
+  // scrollTop. The browser then clamps scrollTop to 0 and there's no
+  // signal we can listen for after the fact. Saving + restoring
+  // explicitly is robust to all of those quirks: we own the value, we
+  // know exactly when to put it back, and we don't depend on
+  // virtualizer-internal timing.
+  const gridReturnScrollTopRef = useRef<number>(0);
 
   // Scroll probe — Phase 5 of the perf plan. Subscribes to the
   // main-side trigger and runs a RAF dropped-frame counter while
@@ -621,11 +640,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (record === undefined) return;
     setPendingOpenId(null);
     if (record.deleted_at !== null) return; // user trashed it mid-flight; bail.
+    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+    gridReturnScrollTopRef.current = savedScrollTop;
     viewDispatch({
       type: "OPEN_FOCUS",
       recordId: record.id,
       returnAnchor: {
-        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        scrollTop: savedScrollTop,
         cellId: record.id
       }
     });
@@ -740,11 +761,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       // Fixture-only cell (dev placeholder) — no real record to open.
       return;
     }
+    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+    gridReturnScrollTopRef.current = savedScrollTop;
     viewDispatch({
       type: "OPEN_FOCUS",
       recordId: record.id,
       returnAnchor: {
-        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        scrollTop: savedScrollTop,
         cellId: record.id
       }
     });
@@ -862,19 +885,53 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (cellId === null) return;
     pulseAnchorRef.current = null;
 
-    // Stack semantics: the grid is kept mounted and just
-    // display:none'd during focus mode, so scrollTop is preserved
-    // natively. With cellsPerRow no longer churning on zero-width
-    // measurements (see useCellsPerRow), the virtualizer's row
-    // offsets stay stable across the focus open/close cycle. We
-    // don't reposition scroll on return — the user lands exactly
-    // where they were when they clicked.
+    // Stack semantics: restore the grid's scrollTop to where it was
+    // when Focus opened. We can't rely on Chromium's display:none
+    // scrollTop preservation here — at the moment .psl__grid-wrap
+    // un-display:none's, several layout-driven scroll adjustments
+    // converge in the next frame:
+    //   • the virtualizer's measureElement passes re-fire as cells
+    //     are forced back into layout
+    //   • content-visibility:auto cells flip from intrinsic-size to
+    //     measured size, shifting their parent rows by ~20px each
+    //   • the browser's first scroll listener post-display:block
+    //     re-syncs the virtualizer's scrollOffset cache
+    // Empirically this drifts scrollTop by ~1500-2000px within the
+    // first 2-3 frames. Even `overflow-anchor: none` on the wrap
+    // and `shouldAdjustScrollPositionOnItemSizeChange: () => false`
+    // on the virtualizer don't cover all of it — the residual
+    // drift is layout-driven inside Chromium and there's no API
+    // surface that prevents it.
     //
-    // The pulse animation just highlights the cell that was open.
-    // querySelector runs against the now-visible grid; if the cell
-    // is in the rendered range (very likely, since it's where the
-    // user was looking when they clicked), the animation plays.
-    const cell = gridScrollRef.current?.querySelector<HTMLElement>(
+    // Cheapest robust answer: re-stamp scrollTop across the first
+    // few rAFs. Each write is idempotent (no-op when scrollTop is
+    // already savedTop), and 6 frames is more than enough for the
+    // settle to complete in dev + production builds. The writes
+    // stop after frame 6 regardless.
+    const wrap = gridScrollRef.current;
+    const savedTop = gridReturnScrollTopRef.current;
+    if (wrap !== null && savedTop > 0) {
+      wrap.scrollTop = savedTop;
+      let frame = 0;
+      const restamp = (): void => {
+        const el = gridScrollRef.current;
+        if (el === null) return;
+        if (el.scrollTop !== savedTop) {
+          el.scrollTop = savedTop;
+        }
+        frame += 1;
+        if (frame < 6) {
+          requestAnimationFrame(restamp);
+        }
+      };
+      requestAnimationFrame(restamp);
+    }
+
+    // Cell-pulse highlight: querySelector runs against the now-
+    // visible grid; if the cell is in the rendered range (very
+    // likely, since it's where the user was looking when they
+    // clicked), the animation plays.
+    const cell = wrap?.querySelector<HTMLElement>(
       `[data-cell-id="${cellId}"]`
     );
     if (cell === null || cell === undefined) return;
@@ -1535,7 +1592,21 @@ function VirtualizedGrid({
     estimateSize: (i) =>
       flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
     overscan: 5,
-    rangeExtractor
+    rangeExtractor,
+    // Disable TanStack's auto-adjust-scrollOffset-on-measureElement
+    // logic. By default, when measureElement reports an item-size
+    // delta for a row above the current scrollOffset, the virtualizer
+    // self-scrolls scrollTop by the delta to "keep visual position
+    // stable." This is correct for streams of variable-height items
+    // mid-scroll, but breaks our Focus → Grid transition: when the
+    // grid wrap un-display:none's, every visible row re-fires
+    // measureElement, each delta accumulates a `scrollAdjustments`
+    // term, and scrollTop drifts thousands of pixels off the saved
+    // position. Our rows have effectively-stable measured heights
+    // (color-banded thumbs all same size; day-headers same shape),
+    // so disabling the compensation costs nothing visible during
+    // normal scroll.
+    shouldAdjustScrollPositionOnItemSizeChange: () => false
     // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
     // browser's `scrollend` event, which fires only when scroll stops
     // — so `rangeExtractor` doesn't update the active sticky header

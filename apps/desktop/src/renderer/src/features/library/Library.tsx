@@ -1592,21 +1592,7 @@ function VirtualizedGrid({
     estimateSize: (i) =>
       flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
     overscan: 5,
-    rangeExtractor,
-    // Disable TanStack's auto-adjust-scrollOffset-on-measureElement
-    // logic. By default, when measureElement reports an item-size
-    // delta for a row above the current scrollOffset, the virtualizer
-    // self-scrolls scrollTop by the delta to "keep visual position
-    // stable." This is correct for streams of variable-height items
-    // mid-scroll, but breaks our Focus → Grid transition: when the
-    // grid wrap un-display:none's, every visible row re-fires
-    // measureElement, each delta accumulates a `scrollAdjustments`
-    // term, and scrollTop drifts thousands of pixels off the saved
-    // position. Our rows have effectively-stable measured heights
-    // (color-banded thumbs all same size; day-headers same shape),
-    // so disabling the compensation costs nothing visible during
-    // normal scroll.
-    shouldAdjustScrollPositionOnItemSizeChange: () => false
+    rangeExtractor
     // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
     // browser's `scrollend` event, which fires only when scroll stops
     // — so `rangeExtractor` doesn't update the active sticky header
@@ -1618,6 +1604,16 @@ function VirtualizedGrid({
     // scroll. Default (scroll event, fires per frame) keeps the
     // active-sticky calculation in lockstep with browser scroll.
   });
+  // Disable TanStack's auto-adjust-scrollOffset-on-measureElement
+  // logic. By default, when measureElement reports an item-size delta
+  // for a row above the current scrollOffset, the virtualizer self-
+  // scrolls scrollTop by the delta to "keep visual position stable."
+  // Correct for streams of variable-height items mid-scroll, but
+  // contributes to the Focus → Grid scrollTop drift fixed by the
+  // rAF re-stamp loop in the focus-pulse useLayoutEffect. Set after
+  // construction because this is a class property on the Virtualizer
+  // instance (not a constructor option in the TS surface).
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
 
 
   // Infinite-scroll boundary: when the last visible virtual row is

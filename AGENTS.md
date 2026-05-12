@@ -535,3 +535,7 @@ architecture, not necessarily the host architecture. The script honors
 `process.arch`, and `apps/desktop/src/main/persistence/native-binding.ts`
 ignores the sidecar unless its metadata matches the running Electron version,
 `better-sqlite3` version, and `process.arch`.
+
+Do not "fix" the ABI mismatch by copying the Electron binary over
+`build/Release`, because that breaks Node-based tests with the inverse
+`NODE_MODULE_VERSION` mismatch.

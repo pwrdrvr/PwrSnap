@@ -50,7 +50,7 @@ import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
-import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
+import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { persistCaptureFromTemp } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
@@ -418,7 +418,7 @@ export function registerCaptureHandlers(): void {
           captured_at: req.capturedAt,
           source_app_bundle_id: req.sourceAppBundleId,
           source_app_name: req.sourceAppName,
-          src_path: stored.srcPath,
+          legacy_src_path: stored.srcPath,
           width_px: req.widthPxHint ?? stored.widthPx,
           height_px: req.heightPxHint ?? stored.heightPx,
           device_pixel_ratio: req.devicePixelRatio ?? 2,

@@ -24,7 +24,8 @@ import { type BundleManifestV1, type BundleOverlaysV1 } from "@pwrsnap/shared";
 
 import { getMainLogger } from "../log";
 import { compose } from "../render/compose";
-import { getDb, getCacheSourcePath } from "./db";
+import { getDb } from "./db";
+import { getCacheSourcePath } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
 import { writeBundlePair } from "./bundle-store";
 

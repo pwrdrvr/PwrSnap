@@ -1,5 +1,6 @@
 import { app, BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
+import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:window");
@@ -113,7 +114,7 @@ export function createMainWindow(): BrowserWindow {
     // macOS this flips activation policy → Regular; on other
     // platforms `app.dock` is undefined and this is a no-op.
     if (process.platform === "darwin") {
-      void app.dock?.show();
+      showDockWithDevelopmentIcon();
     }
   });
 
@@ -138,8 +139,9 @@ export function createMainWindow(): BrowserWindow {
   // focus events become no-ops.
   window.on("focus", () => {
     if (process.platform !== "darwin") return;
+    installDevelopmentDockIcon();
     if (app.dock?.isVisible()) return;
-    void app.dock?.show();
+    showDockWithDevelopmentIcon();
   });
 
   // Lifecycle diagnostics — these helped track down the

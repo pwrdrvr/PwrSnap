@@ -108,4 +108,12 @@ for (size, filename) in sizes {
   print("  \(filename) (\(size)x\(size))")
 }
 
+let dockIconRep = renderIcon(size: 1024)
+guard let dockIconPngData = dockIconRep.representation(using: .png, properties: [:]) else {
+  fatalError("Unable to create PNG for icon.png")
+}
+let dockIconFile = outputURL.deletingLastPathComponent().appendingPathComponent("icon.png")
+try dockIconPngData.write(to: dockIconFile)
+print("  icon.png (1024x1024)")
+
 print("Generated \(sizes.count) icon variants in \(outputDir)")

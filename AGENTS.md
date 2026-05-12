@@ -365,3 +365,37 @@ clipping chain and the entire class of bug disappears.
   `packageManager` field).
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.
+
+## better-sqlite3 + Electron native binding repair
+
+PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
+system Node ABI and Electron ABI can diverge, especially after switching
+worktrees, updating Electron, or running `pnpm install` under a different Node
+version. The usual symptom during `pnpm --filter @pwrsnap/desktop dev` is:
+
+```text
+better_sqlite3.node was compiled against a different Node.js version
+NODE_MODULE_VERSION <old>. This version of Node.js requires NODE_MODULE_VERSION <new>.
+```
+
+Do not chase this as a database bug. Repair the native sidecar from the repo
+root:
+
+```bash
+pnpm install
+cd apps/desktop && node ./scripts/rebuild-native-for-electron.mjs
+```
+
+The script keeps two binaries on purpose:
+
+- `better-sqlite3/build/Release/better_sqlite3.node` stays compiled for system
+  Node so unit tests and scripts can `require("better-sqlite3")`.
+- `better-sqlite3/electron-native/better_sqlite3.node` is compiled/downloaded
+  for Electron and is what the app loads at runtime.
+
+For release/package work, the Electron sidecar must be built for the target
+architecture, not necessarily the host architecture. The script honors
+`npm_config_arch` / `npm_config_target_arch` before falling back to
+`process.arch`, and `apps/desktop/src/main/persistence/native-binding.ts`
+ignores the sidecar unless its metadata matches the running Electron version,
+`better-sqlite3` version, and `process.arch`.

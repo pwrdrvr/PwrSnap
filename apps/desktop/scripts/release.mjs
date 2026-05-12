@@ -29,7 +29,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -39,6 +39,7 @@ const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const stageDir = join(desktopRoot, "release-stage");
+const releaseArch = "arm64";
 
 const args = process.argv.slice(2);
 const dryrun = args.includes("--dryrun");
@@ -131,7 +132,20 @@ runChecked(
   { cwd: repoRoot }
 );
 
-// 4. Seed the stage with the build output + electron-builder inputs.
+// 4. Build the staged Electron-native sqlite sidecar. The stage contains only
+//    production dependencies, so the script gets the packaged Electron version
+//    from electron-builder.yml instead of devDependency resolution.
+step("prepare staged better-sqlite3 Electron sidecar");
+runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
+  cwd: stageDir,
+  env: {
+    PWRSNAP_ELECTRON_VERSION: readElectronBuilderVersion(),
+    npm_config_arch: releaseArch,
+    npm_config_target_arch: releaseArch
+  }
+});
+
+// 5. Seed the stage with the build output + electron-builder inputs.
 //    pnpm deploy copies the package source tree (including out/ if it
 //    exists) into the stage. Remove stale copies before our controlled
 //    cp to avoid macOS cp -R nesting (cp -R src dst/ creates dst/src/
@@ -150,7 +164,7 @@ run(
   `cp ${join(desktopRoot, "electron-builder.yml")} ${join(stageDir, "electron-builder.yml")}`
 );
 
-// 5. electron-builder.
+// 6. electron-builder.
 //    Dryrun mode (preview/dev) builds DMG only — saves ~30s of CI time and
 //    keeps the preview-build artifact uncluttered. Real releases build both
 //    DMG and ZIP because electron-updater requires the ZIP on macOS.
@@ -167,7 +181,7 @@ const builderArgs = ["electron-builder", "--mac"];
 if (dryrun) {
   builderArgs.push("dmg");
 }
-builderArgs.push("--arm64");
+builderArgs.push(`--${releaseArch}`);
 if (dryrun) {
   // Use ad-hoc signing (identity=-) instead of no signing (identity=null).
   // electron-builder modifies the Electron binary to set fuses, which
@@ -181,7 +195,7 @@ builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" :
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("npx", cleanedArgs, { cwd: stageDir });
 
-// 6. Post-build asar contents check — fails if forbidden files (TS sources,
+// 7. Post-build asar contents check — fails if forbidden files (TS sources,
 //    tests, third-party docs, design docs, screenshots, etc.) leaked into the
 //    bundle. Exclusions are configured in electron-builder.yml; this script
 //    is a belt-and-braces guard against accidental edits to that YAML.
@@ -193,3 +207,12 @@ runChecked("node", [join(desktopRoot, "scripts", "verify-asar-contents.mjs"), bu
 step("done");
 const dist = join(stageDir, "dist");
 console.log(`  artifacts: ${dist}`);
+
+function readElectronBuilderVersion() {
+  const config = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8");
+  const match = /^electronVersion:\s*([^\s#]+)/m.exec(config);
+  if (!match) {
+    throw new Error("electron-builder.yml is missing electronVersion");
+  }
+  return match[1];
+}

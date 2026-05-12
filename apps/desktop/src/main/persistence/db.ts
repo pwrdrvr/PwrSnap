@@ -23,6 +23,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { app } from "electron";
 import { getMainLogger } from "../log";
+import { getNativeBinding } from "./native-binding";
 
 const log = getMainLogger("pwrsnap:db");
 
@@ -96,7 +97,7 @@ export async function openDatabase(): Promise<Database.Database> {
   }
 
   log.info("opening database", { dbPath });
-  const db = new Database(dbPath);
+  const db = new Database(dbPath, { nativeBinding: getNativeBinding() });
 
   // Pragmas. All except foreign_keys are persistent; foreign_keys is
   // per-connection and must be set at every open.

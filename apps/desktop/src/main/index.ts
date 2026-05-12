@@ -1,6 +1,7 @@
 import { app, dialog, globalShortcut, Menu, shell } from "electron";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
+import { installDevelopmentDockIcon } from "./development-dock-icon";
 // (showFloatOverForCapture is no longer called from the bootstrap;
 // the capture-handlers `capture:interactive` now drives the entire
 // float-over lifecycle. Kept as an export from float-over.ts for the
@@ -248,6 +249,7 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
+    installDevelopmentDockIcon();
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();

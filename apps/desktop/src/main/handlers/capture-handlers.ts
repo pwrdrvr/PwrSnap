@@ -742,6 +742,8 @@ async function persistAndBroadcast(
     sourceAppName: record.source_app_name
   });
   broadcastCapturesChanged([record.id]);
-  maybeEnqueueCaptureEnrichment(record.id);
+  if (isNew) {
+    maybeEnqueueCaptureEnrichment(record.id);
+  }
   return ok(record);
 }

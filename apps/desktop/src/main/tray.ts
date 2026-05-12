@@ -14,7 +14,16 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { app, ipcMain, Menu, nativeImage, screen, Tray, type BrowserWindow } from "electron";
+import {
+  app,
+  ipcMain,
+  Menu,
+  type MenuItemConstructorOptions,
+  nativeImage,
+  screen,
+  Tray,
+  type BrowserWindow
+} from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
@@ -23,6 +32,25 @@ import { createTrayWindow, positionTrayWindow } from "./window";
 const log = getMainLogger("pwrsnap:tray");
 
 const BLUR_DISMISS_DEBOUNCE_MS = 120;
+
+/**
+ * Extra menu items appended to the right-click menu (after a
+ * separator). Used by the dev seeder to add "Seed perf dataset > …"
+ * entries in DEV builds. Empty in production. Not a registration API
+ * with deduplication — caller controls the array.
+ */
+let extraMenuItems: MenuItemConstructorOptions[] = [];
+
+/**
+ * Append items to the tray's right-click menu. Returns a `restore`
+ * function that drops the items. Call from `registerDevSeeder()`.
+ */
+export function setExtraTrayMenuItems(items: MenuItemConstructorOptions[]): () => void {
+  extraMenuItems = items;
+  return () => {
+    extraMenuItems = [];
+  };
+}
 const TRAY_RESIZE_CHANNEL = "tray:resize";
 
 /** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen.
@@ -212,7 +240,7 @@ export function installTray(): Tray {
     if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
       trayWindow.hide();
     }
-    const menu = Menu.buildFromTemplate([
+    const baseTemplate: MenuItemConstructorOptions[] = [
       {
         label: "Capture (Auto)…",
         accelerator: "CommandOrControl+Shift+P",
@@ -230,7 +258,14 @@ export function installTray(): Tray {
       // Settings still pending — landed in Phase 3. Keep it
       // disabled so the surface signals "coming soon" instead of
       // looking broken.
-      { label: "Settings…", enabled: false },
+      { label: "Settings…", enabled: false }
+    ];
+    const extras = extraMenuItems.length > 0
+      ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]
+      : [];
+    const menu = Menu.buildFromTemplate([
+      ...baseTemplate,
+      ...extras,
       { type: "separator" },
       { role: "quit" }
     ]);

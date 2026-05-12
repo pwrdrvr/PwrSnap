@@ -23,19 +23,25 @@ test("library window boots and renders the brand mark", async () => {
   }
 });
 
-test("library:list returns an empty array on a fresh HOME", async () => {
+test("library:list returns an empty head page on a fresh HOME", async () => {
   // Exercises the command bus end-to-end through the E2E bridge —
   // proves the dispatcher, the library handler, and the Result envelope
   // are wired correctly without depending on any platform-specific
   // subsystem (TCC, screencapture, etc.).
+  //
+  // `library:list` returns a keyset-paginated head page:
+  //   { rows, nextCursor, appStats?, totalLive? }
+  // On a clean HOME `rows` is empty, `nextCursor` is null, and the
+  // head-only fields report zero live captures.
   const app = await launchPwrSnap();
   try {
     const result = await app.dispatch("library:list", {});
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(Array.isArray(result.value)).toBe(true);
-      // A clean tmpdir HOME → no captures yet.
-      expect(result.value).toHaveLength(0);
+      expect(Array.isArray(result.value.rows)).toBe(true);
+      expect(result.value.rows).toHaveLength(0);
+      expect(result.value.nextCursor).toBeNull();
+      expect(result.value.totalLive ?? 0).toBe(0);
     }
   } finally {
     await app.close();

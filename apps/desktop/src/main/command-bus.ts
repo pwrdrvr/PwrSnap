@@ -22,7 +22,7 @@ import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:command-bus");
 
-export type CommandPrincipal = "ipc" | "rpc" | "mcp";
+export type CommandPrincipal = "ipc" | "rpc" | "mcp" | "seeder";
 
 export type CommandContext = {
   signal: AbortSignal;

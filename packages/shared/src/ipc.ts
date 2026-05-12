@@ -45,7 +45,31 @@ export const EVENT_CHANNELS = {
    *
    * Payload: `{ captureId: string }`.
    */
-  libraryOpenCapture: "events:library:open-capture"
+  libraryOpenCapture: "events:library:open-capture",
+  /**
+   * Renderer → main perf signals for the dev seeder's measurement
+   * pipeline (Phase 5 of the perf plan). The renderer dispatches
+   * `library:firstPaint` from a `useLayoutEffect` after the grid
+   * commits its first row; the seeder times window-create →
+   * firstPaint to characterize cold-load. Also carries the result
+   * payload of a scroll probe (see `perfScrollProbeRequest`).
+   *
+   * Payload type: `PerfMarkPayload`. Discriminated union — add new
+   * marks as new union members; `assertNever` on the read side
+   * catches missed cases.
+   */
+  perfMark: "events:perf:mark",
+  /**
+   * Main → renderer scroll-probe trigger. The seeder sends a
+   * `ScrollProbeRequest`; the Library renderer programmatically
+   * scrolls its virtualizer at fixed velocity for the requested
+   * duration, RAF-counts dropped frames, and posts the result back
+   * via `perfMark` as a `perf:scrollProbe:result` payload.
+   *
+   * One-way send — gated by an awaiter on the main side that
+   * resolves on the matching `perfMark` arrival.
+   */
+  perfScrollProbeRequest: "events:perf:scrollProbe:request"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -71,3 +95,43 @@ export type FloatOverEvent =
   | { kind: "show-loaded"; captureId: string }
   | { kind: "cancel" }
   | { kind: "dismiss" };
+
+/**
+ * Main → renderer scroll-probe trigger payload. The renderer drives
+ * the actual scroll + frame-time measurement; main only times the
+ * round-trip and writes the JSONL row.
+ */
+export type ScrollProbeRequest = {
+  /** Total probe window in ms (e.g. 5000). */
+  durationMs: number;
+  /** Pixels to advance the scroll position each RAF tick. */
+  pxPerFrame: number;
+};
+
+/**
+ * Renderer → main perf-mark payloads. New marks land here as new
+ * union members; readers narrow with `kind` and call `assertNever`
+ * on the never-arm so missed cases fail to typecheck.
+ *
+ * `timeOriginMs` carries the renderer's `performance.timeOrigin` so
+ * main can reconcile clock skew between processes when computing
+ * cold-load latency.
+ */
+export type PerfMarkPayload =
+  | {
+      kind: "library:firstPaint";
+      rowsRendered: number;
+      timeOriginMs: number;
+    }
+  | {
+      kind: "perf:scrollProbe:result";
+      durationMs: number;
+      frames: number;
+      droppedFrames: number;
+      droppedPct: number;
+      p95FrameMs: number;
+    }
+  | {
+      kind: "perf:scrollProbe:error";
+      reason: "no_scroll_container" | "already_running";
+    };

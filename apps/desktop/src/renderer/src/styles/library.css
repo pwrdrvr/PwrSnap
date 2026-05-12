@@ -639,6 +639,17 @@
   border-bottom: 1px dashed rgba(245,239,227,0.08);
   margin-bottom: 6px;
   white-space: nowrap;
+  /* Override the parent column-flex's default `align-items: stretch`
+     so the label keeps its intrinsic text-width instead of stretching
+     to match the day's frame-row width. A heavy day (e.g. 200
+     frames × 70px = 14,000px wide) would otherwise stretch the
+     label to 14,000px; sticky-left would then pin a label-as-wide-
+     as-the-scrollable-content bar at the viewport's left edge and
+     visually overlay every frame scrolling underneath. With
+     `align-self: flex-start`, the label stays compact and the
+     sticky-left pin reads as a pill at the leading edge of the
+     scroller, exactly as designed. */
+  align-self: flex-start;
   /* Sticky-left so the day label stays visible at the leading
      edge of the scroller while its day's frames are scrolling
      past. Without this, "Today" / "Yesterday" disappear off the
@@ -756,6 +767,15 @@
      The horizontal breathing room moves into `.psl__day-hdr`
      and `.psl__grid` below. */
   padding: 0;
+  /* Disable browser scroll anchoring. Virtualized lists fight scroll
+     anchoring: every measureElement read shifts row heights from
+     estimate to measured, the browser interprets that as content
+     above-the-anchor changing size, and "compensates" by moving
+     scrollTop. Combined with the Focus → Grid display:none → block
+     transition, scrollTop ends up many thousands of pixels off from
+     the saved position. The virtualizer is already authoritative
+     for which rows render where — let it own the scroll geometry. */
+  overflow-anchor: none;
 }
 .psl__day-hdr {
   display: flex; align-items: center; gap: 10px;
@@ -800,11 +820,22 @@
   gap: 12px;
   /* Horizontal padding moved here from `.psl__grid-wrap` so cells
      stay inset 18px while the day-hdr above can span full width.
-     `padding-top: 8px` carries the visual gap that used to sit in
+     `padding-top: 14px` carries the visual gap that used to sit in
      the day-hdr's padding-bottom, but in space the day-hdr's
      painted background DOESN'T cover — so a top-row cell's
-     selection outline is visible. */
-  padding: 8px 18px 18px;
+     selection outline is visible.
+     The 14 (was 8) buys ~6px of additional breathing room for the
+     virtualized layout: each row sits inside a
+     `position: absolute; transform: translateY(N)` wrapper whose N
+     is computed from cumulative measured heights. When the user
+     scrolls down and back up, the browser routinely lands scrollTop
+     at a few pixels above 0 (sub-pixel sizing + the rAF restamp
+     loop's frame-by-frame settling). With 8px the sticky day-hdr's
+     painted bg-app then overlaps the cell's top border — selected
+     cells lose the top of their orange ring (corners visible, flat
+     top clipped). 14px is enough room to absorb the worst observed
+     misalignment without making the day-to-grid gap look airy. */
+  padding: 14px 18px 18px;
 }
 /* In-pane error banner. The previous right-rail rendered errors
    inside its body; with the rail gone in Grid mode, errors live

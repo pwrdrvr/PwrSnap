@@ -189,8 +189,8 @@ function relativeTime(iso: string): string {
 // by presetMetrics there; not exported separately).
 
 export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
-  const { records } = useLibrary();
-  const lastSnap: CaptureRecord | undefined = records[0];
+  const { rows } = useLibrary();
+  const lastSnap: CaptureRecord | undefined = rows[0];
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-

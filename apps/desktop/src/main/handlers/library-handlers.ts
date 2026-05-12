@@ -5,7 +5,9 @@ import { BrowserWindow } from "electron";
 import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
+  getAppStats,
   getCaptureById,
+  getTotalLive,
   hardDeleteCapture,
   listCaptures,
   listSoftDeletedIds,
@@ -87,8 +89,19 @@ function sendOpenCaptureWhenReady(
 
 export function registerLibraryHandlers(): void {
   bus.register("library:list", async (req) => {
-    const records = listCaptures(req);
-    return ok(records);
+    const { rows, nextCursor } = listCaptures(req);
+    // Head-page requests (no cursor) return appStats + totalLive so
+    // the sidebar binds without a separate round-trip. Subsequent
+    // pages omit them to keep the response small.
+    if (req.cursor === undefined) {
+      return ok({
+        rows,
+        nextCursor,
+        appStats: getAppStats(),
+        totalLive: getTotalLive()
+      });
+    }
+    return ok({ rows, nextCursor });
   });
 
   bus.register("library:byId", async (req) => {

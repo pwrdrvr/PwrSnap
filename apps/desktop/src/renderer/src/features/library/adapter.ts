@@ -8,8 +8,30 @@ import type { CaptureRecord } from "@pwrsnap/shared";
 import type { AppId } from "../shared/AppIcons";
 import type { Capture } from "./captures";
 
-const DAY_LABELS = ["Today", "Yesterday", "Earlier"];
-
+/**
+ * Bucket a capture's date into a section header. The returned `day`
+ * string is the section's grouping key (so it must be UNIQUE per
+ * calendar day — otherwise `groupByDay` collapses different days
+ * into the same bucket and the user sees one giant section). The
+ * `date` string is the short meta shown to the right of the header,
+ * or empty when the `day` field already conveys the absolute date.
+ *
+ * Format:
+ *   - Same day as `now`            → day="Today",     date="May 7"
+ *   - Day before `now`             → day="Yesterday", date="May 6"
+ *   - Same year, older             → day="Wed, May 4", date=""
+ *   - Different year               → day="Wed, May 4, 2025", date=""
+ *
+ * Relative labels (Today / Yesterday) keep the absolute date in the
+ * meta line so the user knows what date "Today" maps to. Explicit-
+ * date labels already include the date in the day field, so the meta
+ * line drops the redundant date and just shows "{count} captures".
+ *
+ * Including the weekday in older labels keeps the sidebar scannable
+ * (most users remember "I took that on a Tuesday" before the exact
+ * date). The year is included only when it differs from `now`'s year
+ * — recent labels stay short, cross-year labels disambiguate.
+ */
 function dayBucket(captured: Date, now: Date): { day: string; date: string } {
   const sameDay =
     captured.getFullYear() === now.getFullYear() &&
@@ -23,10 +45,19 @@ function dayBucket(captured: Date, now: Date): { day: string; date: string } {
     captured.getDate() === yesterday.getDate();
 
   const monthShort = captured.toLocaleString(undefined, { month: "short" });
-  const date = `${monthShort} ${captured.getDate()}`;
-  if (sameDay) return { day: DAY_LABELS[0]!, date };
-  if (isYesterday) return { day: DAY_LABELS[1]!, date };
-  return { day: DAY_LABELS[2]!, date };
+  const sameYear = captured.getFullYear() === now.getFullYear();
+  const absoluteDate = sameYear
+    ? `${monthShort} ${captured.getDate()}`
+    : `${monthShort} ${captured.getDate()}, ${captured.getFullYear()}`;
+
+  if (sameDay) return { day: "Today", date: absoluteDate };
+  if (isYesterday) return { day: "Yesterday", date: absoluteDate };
+  const weekday = captured.toLocaleString(undefined, { weekday: "short" });
+  const day = `${weekday}, ${absoluteDate}`;
+  // Date is empty for explicit-date labels — the day field already
+  // contains the absolute date; the renderers omit the "·" + date
+  // segment when this is empty so we don't get "Wed, May 4 · May 4".
+  return { day, date: "" };
 }
 
 function timeLabel(captured: Date): string {

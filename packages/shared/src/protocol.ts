@@ -36,11 +36,29 @@ export type CaptureRecord = {
 };
 
 export type CaptureFilter = {
-  before?: string;
-  limit?: number;
-  appBundleId?: string;
-  includeDeleted?: boolean;
+  before?: string | undefined;
+  limit?: number | undefined;
+  appBundleId?: string | undefined;
+  includeDeleted?: boolean | undefined;
 };
+
+/**
+ * Composite cursor for keyset pagination of `library:list`. Encodes
+ * the last row of the previous page so the next request can resume
+ * with `(captured_at, id) < (cursor.capturedAt, cursor.id)`. Round-
+ * tripped opaquely by callers — pass `nextCursor` directly back into
+ * the next request.
+ */
+export type LibraryCursor = { capturedAt: string; id: string };
+
+/**
+ * One bucket of the denormalized app-counts surface. Returned in
+ * `library:list`'s head-page response so the sidebar can render
+ * counts without a separate round-trip or a `COUNT(*)` over the
+ * captures table. `bundleId === null` is the "captures with unknown
+ * source app" bucket.
+ */
+export type LibraryAppStat = { bundleId: string | null; count: number };
 
 export type RenderPreset = "low" | "med" | "high";
 
@@ -88,6 +106,34 @@ export type Commands = {
     req: { mode?: "auto" | "region" | "window" };
     res: CaptureRecord;
   };
+  /**
+   * Synthetic ingest path — accepts a temp PNG already on disk and a
+   * backdated `capturedAt`, persists via the same source-store +
+   * captures-repo chain as `capture:region`. Used by the dev seeder
+   * to populate large datasets through the live command-bus so DB
+   * page packing + index maintenance reflect production behavior.
+   *
+   * Registered ONLY when `import.meta.env.DEV` is true; absent from
+   * production bundles. If/when a real consumer (an agent flow that
+   * generates synthesized snaps) lands, lift the gate after adding
+   * a path-traversal validator on `tempPngPath`.
+   */
+  "capture:ingest": {
+    req: {
+      /** Absolute path to a temp PNG. Caller owns; handler reads, hashes, persists. */
+      tempPngPath: string;
+      /** ISO 8601 with millisecond precision. Drives the captures/<yyyy>/<mm>/ layout
+       *  and the row's `captured_at` column. */
+      capturedAt: string;
+      sourceAppBundleId: string | null;
+      sourceAppName: string | null;
+      /** Optional dim hints — when omitted, source-store reads via sharp.metadata(). */
+      widthPxHint?: number | undefined;
+      heightPxHint?: number | undefined;
+      devicePixelRatio?: number | undefined;
+    };
+    res: { record: CaptureRecord; isNew: boolean };
+  };
   "capture:fullScreen": { req: { displayId: number }; res: CaptureRecord };
   "capture:window": { req: { windowId: number }; res: CaptureRecord };
   "capture:reveal": { req: { captureId: string }; res: void };
@@ -98,7 +144,28 @@ export type Commands = {
   };
 
   // ---- library ----
-  "library:list": { req: CaptureFilter; res: CaptureRecord[] };
+  /**
+   * Keyset-paginated timeline read. When `cursor` is omitted, returns
+   * the most-recent page and includes `appStats` + `totalLive` for the
+   * sidebar (head-page-only — saves a round-trip without paying for
+   * stats on every page). Subsequent pages omit those.
+   */
+  "library:list": {
+    req: {
+      cursor?: LibraryCursor | undefined;
+      limit?: number | undefined;
+      appBundleId?: string | undefined;
+      includeDeleted?: boolean | undefined;
+    };
+    res: {
+      rows: CaptureRecord[];
+      nextCursor: LibraryCursor | null;
+      /** Head-page only. */
+      appStats?: LibraryAppStat[];
+      /** Head-page only. Live row count served from app_stats. */
+      totalLive?: number;
+    };
+  };
   "library:byId": { req: { id: string }; res: CaptureRecord | null };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };

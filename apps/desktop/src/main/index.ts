@@ -250,6 +250,43 @@ export function bootstrapApp(): void {
 
   app.whenReady().then(async () => {
     installDevelopmentDockIcon();
+
+    // ── Dev seeder CLI mode ───────────────────────────────────────
+    // Detect `--seed=<profile>` BEFORE `openDatabase()`. The seeder's
+    // first action is to wipe the data root; an early DB open would
+    // place files there before the wipe ran, tripping the sentinel
+    // guard ("contains data but no .pwrsnap-perf-root sentinel").
+    // Production builds tree-shake the entire dev/seeder subtree out
+    // — gate on `import.meta.env.DEV` (static substitution) plus a
+    // runtime NODE_ENV defense-in-depth.
+    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+      const seedFlag = process.argv.find((arg) => arg.startsWith("--seed="));
+      if (seedFlag !== undefined) {
+        const seederModule = await import("./dev/seeder");
+        // Register capture handlers so the runner can dispatch
+        // `capture:ingest`. The handler body uses `getDb()` which
+        // throws until `openDatabase()` runs — runner does that
+        // itself, after wipe.
+        registerCaptureHandlers();
+        const name = seedFlag.slice("--seed=".length) as Parameters<
+          typeof seederModule.runProfile
+        >[0];
+        const allowFlagged = process.argv.includes("--seed-stress");
+        try {
+          const result = await seederModule.runProfile(name, { allowFlagged });
+          log.info("seed CLI run complete", result);
+          app.exit(0);
+        } catch (cause: unknown) {
+          log.error("seed CLI run failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+          app.exit(1);
+        }
+        return; // do NOT bring up the rest of the UI
+      }
+    }
+
+    // ── Normal boot ───────────────────────────────────────────────
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
@@ -260,6 +297,14 @@ export function bootstrapApp(): void {
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerOverlaysHandlers();
+    // Dev seeder — gated on DEV at static-substitution time + a
+    // belt-and-suspenders runtime NODE_ENV check. Production builds
+    // tree-shake the entire `dev/seeder` subtree out of the bundle.
+    // (Tray menu only here; the CLI-flag path is handled earlier.)
+    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+      const { registerDevSeeder } = await import("./dev/seeder");
+      registerDevSeeder();
+    }
     // export-handler.ts re-registers `library:export` over the
     // not-implemented stub from library-handlers.ts. Order matters.
     registerExportHandler();
@@ -277,6 +322,40 @@ export function bootstrapApp(): void {
       registerCaptureShortcut();
     }
     createMainWindow();
+
+    // ── Dev probe-only CLI mode ───────────────────────────────────
+    // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,
+    // probes need the live UI session (Library window, IPC dispatcher,
+    // library handlers). Used to re-measure UI perf against an
+    // already-seeded data root without paying the seed cost again.
+    if (import.meta.env.DEV && process.env.NODE_ENV !== "production") {
+      const probeFlag = process.argv.find((arg) => arg.startsWith("--probe="));
+      if (probeFlag !== undefined) {
+        const seederModule = await import("./dev/seeder");
+        const name = probeFlag.slice("--probe=".length) as Parameters<
+          typeof seederModule.runProbeOnly
+        >[0];
+        // Give the renderer a moment to mount + commit its first row
+        // before we kick off the probes — the cold-load probe times
+        // window-reload → firstPaint, which depends on the renderer
+        // being subscribed.
+        setTimeout(() => {
+          seederModule
+            .runProbeOnly(name)
+            .then((result) => {
+              log.info("probe CLI run complete", result);
+              app.exit(0);
+            })
+            .catch((cause: unknown) => {
+              log.error("probe CLI run failed", {
+                message: cause instanceof Error ? cause.message : String(cause)
+              });
+              app.exit(1);
+            });
+        }, 1500);
+      }
+    }
+
     if (isE2E) {
       // E2E test bridge. Playwright's `electronApp.evaluate(fn, arg)`
       // runs `fn` in the main process; specs reach into the bus via

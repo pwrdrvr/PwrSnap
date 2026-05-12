@@ -1,17 +1,26 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState
+} from "react";
+import type { CaptureRecord, ScrollProbeRequest } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { Tool } from "../editor/Editor";
-import { FixtureBackedRecords } from "./adapter";
+import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
-import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -61,6 +70,20 @@ function CellThumb({
     );
   }
   return <Thumb c={capture} />;
+}
+
+/**
+ * Derive a display label from a bundle id when no curated name is
+ * registered (`com.pwrsnap.synth.air-table` → "Air Table"). Takes the
+ * last dotted segment, splits on hyphens, and Title-Cases each word.
+ */
+function labelFromBundleId(bundleId: string): string {
+  const tail = bundleId.split(".").pop() ?? bundleId;
+  return tail
+    .split(/[-_]+/)
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 /**
@@ -119,7 +142,31 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const selectedRecordId = view.selectedRecordId;
 
-  const { records, error } = useLibrary();
+  const {
+    rows: records,
+    error,
+    hasMore,
+    isLoadingMore,
+    loadMore,
+    totalLive,
+    appStats
+  } = useLibrary();
+
+  // Phase 5 perf instrumentation. Fires once per Library mount when
+  // the grid commits its first row of real data — the seeder reads
+  // these marks to compute cold-load latency. Skipped in dev when
+  // Library mounts with empty records (the dispatch arrives later).
+  const firstPaintFired = useRef(false);
+  useLayoutEffect(() => {
+    if (firstPaintFired.current) return;
+    if (records.length === 0) return;
+    firstPaintFired.current = true;
+    perfMark({
+      kind: "library:firstPaint",
+      rowsRendered: records.length,
+      timeOriginMs: performance.timeOrigin
+    });
+  }, [records.length]);
 
   // Local-date watcher. The fixture day-bucket ("Today" / "Yesterday"
   // / "Earlier") is computed against `new Date()` when the snapshot is
@@ -163,10 +210,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     };
   }, []);
 
-  // Partition records into live + trash. The renderer asks
-  // `library:list` for `includeDeleted: true` (single round-trip) and
-  // splits here so the Trash sidebar entry just swaps the active
-  // universe without a second fetch.
+  // Partition records into live + trash. useLibrary fetches with
+  // `includeDeleted: true`, so the keyset-paginated snapshot contains
+  // both; we partition here so the Trash sidebar entry swaps the
+  // active universe without a second fetch.
   const liveRecords = useMemo(
     () => records.filter((r) => r.deleted_at === null),
     [records]
@@ -216,13 +263,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     // the Today badge resets to 0 at midnight without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveRecords, todayDateStr]);
+  // Per-app counts come from the denormalized `app_stats` table via
+  // useLibrary's head-page response — stable on first paint, doesn't
+  // climb as keyset pages stream in. Multiple bundle ids can map to
+  // the same fixture app key (e.g. `com.tinyspeck.slackmacgap` and
+  // `slack` both fold into `slack`), so we aggregate after mapping.
   const appCounts = useMemo<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
-    for (const c of liveFixturesForCounts) {
-      counts[c.app] = (counts[c.app] ?? 0) + 1;
+    for (const stat of appStats) {
+      const appId = mapBundleIdToAppId(stat.bundleId);
+      counts[appId] = (counts[appId] ?? 0) + stat.count;
     }
     return counts;
-  }, [liveFixturesForCounts]);
+  }, [appStats]);
 
   // "Today" sidebar count — live records whose adapter-bucket landed
   // in the Today bucket (see adapter.ts:dayBucket). Live-only because
@@ -232,22 +285,38 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     [liveFixturesForCounts]
   );
 
-  // Display name per app key — curated short id wins (so "vscode"
-  // stays "VS Code"), else first non-null `appName` we observed for
-  // that key (the OS-supplied user-facing name from
-  // `record.source_app_name`). Falls back to "Unknown app" only when
-  // neither is available (record missing both bundle id and name).
+  // Display name per app key. Like appCounts, derived from app_stats
+  // so the sidebar is stable on first paint instead of filling in as
+  // records stream. For each bundle id:
+  //   1. Curated short id wins (so com.tinyspeck.slackmacgap → "Slack").
+  //   2. Otherwise, derive a Title-Case label from the bundle id's
+  //      tail segment (so com.pwrsnap.synth.air-table → "Air Table").
+  //   3. Loaded records refine the label when an OS-supplied
+  //      `source_app_name` is available — that takes precedence.
   const appLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
+    // Pass 1: derive from app_stats bundle ids alone (stable on load).
+    for (const stat of appStats) {
+      const appId = mapBundleIdToAppId(stat.bundleId);
+      if (labels[appId] !== undefined) continue;
+      const curated = APP_INFO[appId]?.name;
+      if (curated !== undefined) {
+        labels[appId] = curated;
+      } else if (stat.bundleId !== null) {
+        labels[appId] = labelFromBundleId(stat.bundleId);
+      } else {
+        labels[appId] = "Unknown app";
+      }
+    }
+    // Pass 2: refine with OS-supplied `source_app_name` once records
+    // stream in (real captures pick up nicer names than slug-derived).
     for (const c of liveFixturesForCounts) {
-      if (labels[c.app] !== undefined) continue;
-      const known = APP_INFO[c.app]?.name;
-      if (known !== undefined) labels[c.app] = known;
-      else if (c.appName !== null) labels[c.app] = c.appName;
-      else labels[c.app] = "Unknown app";
+      if (APP_INFO[c.app]?.name !== undefined) continue; // curated already picked
+      if (c.appName === null) continue;
+      labels[c.app] = c.appName;
     }
     return labels;
-  }, [liveFixturesForCounts]);
+  }, [appStats, liveFixturesForCounts]);
 
   // Apps that should appear in the left rail: any app with ≥1 capture,
   // PLUS the currently-active filter (so a user who's filtered to
@@ -332,10 +401,106 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //   • Cell click handler — captures scrollTop into the OPEN_FOCUS
   //     returnAnchor so the cell-pulse effect can find which cell
   //     to highlight on Focus → Grid return.
-  //   • The Phase B keep-Grid-mounted decision means scrollTop
-  //     persists natively across mode flips (the element is
-  //     display:none'd, not unmounted).
+  //   • Stack-semantics restore on Focus → Grid (see
+  //     `gridReturnScrollTopRef` below).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Saved scrollTop captured the moment Focus opens. Restored on
+  // Focus → Grid via the useLayoutEffect below.
+  //
+  // Why this can't ride on the browser's `display: none` preservation:
+  // Chromium *does* normally restore scrollTop when an element
+  // un-display:none's, BUT only if the element's scrollHeight is
+  // still ≥ the saved scrollTop at restore time. Our virtualizer's
+  // total height is computed from `flatRows.length × estimateSize`,
+  // and during the focus-open round-trip several state changes (the
+  // ResizeObserver firing on display:none with width=0, the
+  // virtualizer's measureElement readings on now-hidden rows, the
+  // measure-cache reset that some code paths trigger) can transiently
+  // shrink the reported scrollHeight to a value below the saved
+  // scrollTop. The browser then clamps scrollTop to 0 and there's no
+  // signal we can listen for after the fact. Saving + restoring
+  // explicitly is robust to all of those quirks: we own the value, we
+  // know exactly when to put it back, and we don't depend on
+  // virtualizer-internal timing.
+  const gridReturnScrollTopRef = useRef<number>(0);
+
+  // Scroll probe — Phase 5 of the perf plan. Subscribes to the
+  // main-side trigger and runs a RAF dropped-frame counter while
+  // programmatically scrolling the grid container at fixed velocity.
+  // Result posts back via perfMark; the seeder's runScrollProbes
+  // awaits it on the perfMark channel and writes a JSONL row.
+  //
+  // Idempotent: a probe arriving while another is already running
+  // posts back an `already_running` error rather than starting a
+  // second loop.
+  const scrollProbeRunningRef = useRef(false);
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.perfScrollProbeRequest, (rawPayload) => {
+      const payload = rawPayload as ScrollProbeRequest;
+      if (scrollProbeRunningRef.current) {
+        perfMark({ kind: "perf:scrollProbe:error", reason: "already_running" });
+        return;
+      }
+      const el = gridScrollRef.current;
+      if (el === null) {
+        perfMark({ kind: "perf:scrollProbe:error", reason: "no_scroll_container" });
+        return;
+      }
+      scrollProbeRunningRef.current = true;
+      const start = performance.now();
+      const deadline = start + payload.durationMs;
+      const startScrollTop = el.scrollTop;
+      const frameDeltas: number[] = [];
+      // 60Hz target frame budget = 1000/60 ≈ 16.67ms. Treat anything
+      // longer than 1.5× that as a dropped frame.
+      const dropThresholdMs = 1.5 * (1000 / 60);
+      let lastTs = start;
+      let droppedFrames = 0;
+
+      const tick = (now: number): void => {
+        const delta = now - lastTs;
+        lastTs = now;
+        // Skip the first delta — it's measured from probe-start to
+        // the first RAF callback, which is uninformative.
+        if (frameDeltas.length > 0 || now > start + 16) {
+          frameDeltas.push(delta);
+          if (delta > dropThresholdMs) droppedFrames += 1;
+        } else {
+          frameDeltas.push(delta);
+        }
+
+        // Advance the scroll position. When we hit the bottom, snap
+        // back to start so the probe keeps measuring scroll-driven
+        // layout work for the full duration.
+        const next = el.scrollTop + payload.pxPerFrame;
+        const max = el.scrollHeight - el.clientHeight;
+        el.scrollTop = next > max ? startScrollTop : next;
+
+        if (now < deadline) {
+          window.requestAnimationFrame(tick);
+        } else {
+          scrollProbeRunningRef.current = false;
+          // Drop the warm-up frame for stats (its delta is the
+          // probe-start → first-RAF gap, not a real frame interval).
+          const stats = frameDeltas.slice(1);
+          stats.sort((a, b) => a - b);
+          const p95 = stats.length === 0
+            ? 0
+            : (stats[Math.min(stats.length - 1, Math.floor(0.95 * stats.length))] ?? 0);
+          perfMark({
+            kind: "perf:scrollProbe:result",
+            durationMs: now - start,
+            frames: stats.length,
+            droppedFrames,
+            droppedPct: stats.length === 0 ? 0 : droppedFrames / stats.length,
+            p95FrameMs: p95
+          });
+        }
+      };
+      window.requestAnimationFrame(tick);
+    });
+  }, []);
 
   // Reel filmstrip scroll preservation (plan D.2 + D.4). The
   // filmstrip is rendered inside Stage's `aboveStageSlot`, which
@@ -364,6 +529,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [view.kind]);
 
   // Mirror scrollLeft into the ref so it survives Reel unmount.
+  // Also dispatches `loadMore` when the user scrolls within
+  // REEL_LOADMORE_THRESHOLD_PX of the right edge — without this,
+  // the filmstrip stops at whatever keyset page boundary has been
+  // loaded (~800 captures with default 100/page × 8 fetches), and
+  // the reel appears truncated to that horizon. Mirrors the grid
+  // virtualizer's loadMore-on-near-tail trigger.
+  //
   // Passive listener — we never preventDefault, so passive avoids
   // the per-frame compositor warning.
   useEffect(() => {
@@ -372,10 +544,31 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (el === null) return;
     const onScroll = (): void => {
       reelScrollLeftRef.current = el.scrollLeft;
+      if (!hasMore || isLoadingMore) return;
+      const remaining = el.scrollWidth - (el.scrollLeft + el.clientWidth);
+      if (remaining < REEL_LOADMORE_THRESHOLD_PX) {
+        void loadMore();
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [view.kind]);
+  }, [view.kind, hasMore, isLoadingMore, loadMore]);
+
+  // Initial reel mount: if the filmstrip's content fits within the
+  // viewport (so there's no scroll to trigger loadMore), but more
+  // pages exist, fetch them up-front. Also re-checks after each
+  // page lands so a fast loader walks all the way to the dataset
+  // tail (or the user toggles away). Without this, a small initial
+  // viewport on a large dataset never triggers the scroll path.
+  useEffect(() => {
+    if (view.kind !== "reel") return;
+    const el = reelScrollerRef.current;
+    if (el === null) return;
+    if (!hasMore || isLoadingMore) return;
+    if (el.scrollWidth <= el.clientWidth + REEL_LOADMORE_THRESHOLD_PX) {
+      void loadMore();
+    }
+  }, [view.kind, hasMore, isLoadingMore, loadMore, records.length]);
 
   // D.4 — pull the selected frame into view whenever:
   //   • Reel mounts (Grid → Reel toggle, with a selection inherited
@@ -447,11 +640,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (record === undefined) return;
     setPendingOpenId(null);
     if (record.deleted_at !== null) return; // user trashed it mid-flight; bail.
+    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+    gridReturnScrollTopRef.current = savedScrollTop;
     viewDispatch({
       type: "OPEN_FOCUS",
       recordId: record.id,
       returnAnchor: {
-        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        scrollTop: savedScrollTop,
         cellId: record.id
       }
     });
@@ -566,11 +761,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       // Fixture-only cell (dev placeholder) — no real record to open.
       return;
     }
+    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
+    gridReturnScrollTopRef.current = savedScrollTop;
     viewDispatch({
       type: "OPEN_FOCUS",
       recordId: record.id,
       returnAnchor: {
-        scrollTop: gridScrollRef.current?.scrollTop ?? 0,
+        scrollTop: savedScrollTop,
         cellId: record.id
       }
     });
@@ -687,7 +884,54 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     const cellId = pulseAnchorRef.current;
     if (cellId === null) return;
     pulseAnchorRef.current = null;
-    const cell = gridScrollRef.current?.querySelector<HTMLElement>(
+
+    // Stack semantics: restore the grid's scrollTop to where it was
+    // when Focus opened. We can't rely on Chromium's display:none
+    // scrollTop preservation here — at the moment .psl__grid-wrap
+    // un-display:none's, several layout-driven scroll adjustments
+    // converge in the next frame:
+    //   • the virtualizer's measureElement passes re-fire as cells
+    //     are forced back into layout
+    //   • content-visibility:auto cells flip from intrinsic-size to
+    //     measured size, shifting their parent rows by ~20px each
+    //   • the browser's first scroll listener post-display:block
+    //     re-syncs the virtualizer's scrollOffset cache
+    // Empirically this drifts scrollTop by ~1500-2000px within the
+    // first 2-3 frames. Even `overflow-anchor: none` on the wrap
+    // and `shouldAdjustScrollPositionOnItemSizeChange: () => false`
+    // on the virtualizer don't cover all of it — the residual
+    // drift is layout-driven inside Chromium and there's no API
+    // surface that prevents it.
+    //
+    // Cheapest robust answer: re-stamp scrollTop across the first
+    // few rAFs. Each write is idempotent (no-op when scrollTop is
+    // already savedTop), and 6 frames is more than enough for the
+    // settle to complete in dev + production builds. The writes
+    // stop after frame 6 regardless.
+    const wrap = gridScrollRef.current;
+    const savedTop = gridReturnScrollTopRef.current;
+    if (wrap !== null && savedTop > 0) {
+      wrap.scrollTop = savedTop;
+      let frame = 0;
+      const restamp = (): void => {
+        const el = gridScrollRef.current;
+        if (el === null) return;
+        if (el.scrollTop !== savedTop) {
+          el.scrollTop = savedTop;
+        }
+        frame += 1;
+        if (frame < 6) {
+          requestAnimationFrame(restamp);
+        }
+      };
+      requestAnimationFrame(restamp);
+    }
+
+    // Cell-pulse highlight: querySelector runs against the now-
+    // visible grid; if the cell is in the rendered range (very
+    // likely, since it's where the user was looking when they
+    // clicked), the animation plays.
+    const cell = wrap?.querySelector<HTMLElement>(
       `[data-cell-id="${cellId}"]`
     );
     if (cell === null || cell === undefined) return;
@@ -732,7 +976,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__count">
             {isTrashView
               ? `${trashRecords.length} in trash`
-              : `${liveRecords.length} captures`}
+              : `${totalLive} captures`}
           </span>
         </div>
         <div className="psl__topbar-c">
@@ -868,7 +1112,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             </svg>
           </span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{liveRecords.length}</span>
+          <span className="psl__nav-count">{totalLive}</span>
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}
@@ -977,96 +1221,22 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
-          {grouped.map((g) => (
-            <div key={g.day}>
-              <div className="psl__day-hdr">
-                <span className="psl__day-hdr-label">{g.day}</span>
-                <span className="psl__day-hdr-meta">
-                  {g.date} · {g.items.length} captures
-                </span>
-                <span className="psl__day-hdr-line" />
-              </div>
-              <div className="psl__grid">
-                {g.items.map((c) => {
-                  const record = fixtureBacking.recordFor(c.id);
-                  return (
-                    <div
-                      key={c.id}
-                      className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
-                      data-cell-id={record?.id ?? ""}
-                      onClick={() => onSelectCell(c)}
-                      onMouseEnter={() => preloadFullRes(record)}
-                    >
-                      <div className="psl__cell-thumb">
-                        <CellThumb capture={c} record={record} width={400} />
-                        <span className="psl__cell-time">{c.time}</span>
-                        <span className="psl__cell-app">
-                          <span className="psl__app-dot">
-                            <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
-                          </span>
-                        </span>
-                        {record !== null &&
-                          (isTrashView ? (
-                            <span className="psl__cell-actions">
-                              <button
-                                type="button"
-                                className="psl__cell-trash psl__cell-trash--restore"
-                                title="Restore"
-                                aria-label="Restore from Trash"
-                                onClick={(e) => restoreCaptureAction(c.id, e)}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M3 12a9 9 0 1 0 3-6.7" />
-                                  <path d="M3 4v5h5" />
-                                </svg>
-                              </button>
-                              <button
-                                type="button"
-                                className="psl__cell-trash psl__cell-trash--purge"
-                                title="Delete permanently"
-                                aria-label="Delete permanently"
-                                onClick={(e) => purgeCaptureAction(c.id, e)}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                                </svg>
-                              </button>
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              className="psl__cell-trash"
-                              title="Move to Trash"
-                              aria-label="Move to Trash"
-                              onClick={(e) => trashCapture(c.id, e)}
-                            >
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
-                              </svg>
-                            </button>
-                          ))}
-                      </div>
-                      <div className="psl__cell-meta">
-                        <div className="psl__cell-name">{c.n}</div>
-                        <div className="psl__cell-tags">
-                          <AppTag
-                            app={c.app}
-                            name={appLabels[c.app] ?? "Unknown app"}
-                            size="sm"
-                          />
-                          {c.tags.slice(0, 1).map((t) => (
-                            <span key={t} className="ps-tag is-sm">
-                              {t}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+          <VirtualizedGrid
+            grouped={grouped}
+            scrollElement={gridScrollRef}
+            selected={selected}
+            fixtureBacking={fixtureBacking}
+            appLabels={appLabels}
+            onSelectCell={onSelectCell}
+            preloadFullRes={preloadFullRes}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            loadMore={loadMore}
+            isTrashView={isTrashView}
+            trashCapture={trashCapture}
+            restoreCaptureAction={restoreCaptureAction}
+            purgeCaptureAction={purgeCaptureAction}
+          />
         </div>
         {error !== null && (
           <div className="psl__error" role="alert">
@@ -1118,7 +1288,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                       {grouped.map((g) => (
                         <div key={g.day} className="psl__reel-day">
                           <div className="psl__reel-day-label">
-                            {g.day} · {g.date}
+                            {g.date.length > 0 ? `${g.day} · ${g.date}` : g.day}
                           </div>
                           <div className="psl__reel-day-frames">
                             {g.items.map((c) => {
@@ -1230,6 +1400,457 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </span>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// ── Virtualized day-grouped grid (row-level) ─────────────────────
+//
+// Row-level virtualization: each virtual item is either a day-section
+// header OR a single grid-row of cellsPerRow cells. DOM cell count is
+// bounded by `(visibleRows + overscan) × cellsPerRow` regardless of
+// how many captures live in any single day.
+//
+// We tried day-level virtualization first (one virtual item per
+// day-group). At 10k captures with maxPerDay=200, a single heavy day
+// entering the overscan would mount 200 cells at once, and the
+// renderer choked on layout work even with content-visibility:auto.
+// Row-level virt caps the per-frame mount count regardless of day
+// shape.
+//
+// `cellsPerRow` is computed from container width via ResizeObserver
+// — matches the original CSS `repeat(auto-fill, minmax(180px, 1fr))`
+// behavior. The flat row list rebuilds when cellsPerRow changes.
+//
+// `measureElement` corrects estimateSize after first render so the
+// scrollbar tracks correctly.
+
+const HEADER_ESTIMATE_PX = 60;
+const CELL_ROW_ESTIMATE_PX = 280; // one row of cells (cell aspect 16:10 + meta)
+const CELL_MIN_WIDTH = 180; // matches CSS minmax(180px, 1fr)
+const CELL_GAP = 12;
+const CELL_GAP_DAY_END = 18; // .psl__grid padding-bottom in the original single-grid layout
+const GRID_HORIZONTAL_PADDING = 18;
+/** Horizontal pixels from the reel's right edge at which to fire
+ *  `loadMore`. ~3 viewport-widths of frames at typical filmstrip
+ *  scroll speeds buys enough lead time for the next keyset page to
+ *  land before the user runs out of frames. */
+const REEL_LOADMORE_THRESHOLD_PX = 3000;
+
+type DayGroup = ReturnType<typeof groupByDay>[number];
+
+type CellAction = (captureId: number, event: ReactMouseEvent) => void;
+
+type LibraryRow =
+  | { kind: "header"; day: string; date: string; count: number }
+  | {
+      kind: "cells";
+      cells: DayGroup["items"];
+      /** True when this is the last cell-row of its day-group. The
+       *  renderer adds extra padding-bottom on these so the visual gap
+       *  to the next day-header matches the original single-grid
+       *  layout (12px between rows in same day, 18px after last row
+       *  of day). Without this distinction, days look 6px tighter. */
+      isLastInDay: boolean;
+    };
+
+type VirtualizedGridProps = {
+  grouped: DayGroup[];
+  scrollElement: React.RefObject<HTMLDivElement | null>;
+  selected: number;
+  fixtureBacking: FixtureBackedRecords;
+  appLabels: Record<string, string>;
+  onSelectCell: (c: Capture) => void;
+  preloadFullRes: (record: CaptureRecord | null) => void;
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  loadMore: () => Promise<void>;
+  isTrashView: boolean;
+  trashCapture: CellAction;
+  restoreCaptureAction: CellAction;
+  purgeCaptureAction: CellAction;
+};
+
+/** Compute how many cells fit per row at the current container width.
+ *  Defaults to 4 if the container hasn't measured yet.
+ *
+ *  Stickiness on display:none — when the grid is hidden during focus
+ *  mode (`.psl[data-mode="focus"] .psl__grid-wrap { display: none }`),
+ *  ResizeObserver fires with `clientWidth = 0` and naive math drops
+ *  cellsPerRow to 1. flatRows then re-flattens to 10k cell-rows
+ *  (one per cell), the virtualizer relayouts everything, and on
+ *  focus close the user lands at a wildly different scroll position.
+ *  Stack semantics — opening/closing focus shouldn't reflow the
+ *  grid at all. Treat zero-width measurements as "no information"
+ *  and keep the last computed value. */
+function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): number {
+  const [cellsPerRow, setCellsPerRow] = useState(4);
+  useLayoutEffect(() => {
+    const el = scrollElement.current;
+    if (el === null) return;
+    const compute = (): void => {
+      const width = el.clientWidth;
+      // Skip zero-width measurements (the grid is display:none).
+      // The previous cellsPerRow stays in effect, so flatRows + the
+      // virtualizer's offset cache don't churn while the user is in
+      // focus mode.
+      if (width <= 0) return;
+      const inner = width - 2 * GRID_HORIZONTAL_PADDING;
+      const next = Math.max(1, Math.floor((inner + CELL_GAP) / (CELL_MIN_WIDTH + CELL_GAP)));
+      setCellsPerRow((prev) => (prev === next ? prev : next));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [scrollElement]);
+  return cellsPerRow;
+}
+
+function VirtualizedGrid({
+  grouped,
+  scrollElement,
+  selected,
+  fixtureBacking,
+  appLabels,
+  onSelectCell,
+  preloadFullRes,
+  hasMore,
+  isLoadingMore,
+  loadMore,
+  isTrashView,
+  trashCapture,
+  restoreCaptureAction,
+  purgeCaptureAction
+}: VirtualizedGridProps) {
+  const cellsPerRow = useCellsPerRow(scrollElement);
+
+  // Flatten day-groups → 1-D row list. Each header gets one row;
+  // each day's items are sliced into rows of cellsPerRow. Memoized
+  // on (grouped, cellsPerRow); pure scroll doesn't recompute.
+  // Track header indexes too so the sticky-header rangeExtractor
+  // can pin the active header without re-walking flatRows on every
+  // scroll event.
+  const { flatRows, headerIndexes } = useMemo<{
+    flatRows: LibraryRow[];
+    headerIndexes: number[];
+  }>(() => {
+    const rows: LibraryRow[] = [];
+    const headers: number[] = [];
+    for (const g of grouped) {
+      headers.push(rows.length);
+      rows.push({ kind: "header", day: g.day, date: g.date, count: g.items.length });
+      const cellRowCount = Math.ceil(g.items.length / cellsPerRow);
+      for (let i = 0, k = 0; i < g.items.length; i += cellsPerRow, k++) {
+        rows.push({
+          kind: "cells",
+          cells: g.items.slice(i, i + cellsPerRow),
+          isLastInDay: k === cellRowCount - 1
+        });
+      }
+    }
+    return { flatRows: rows, headerIndexes: headers };
+  }, [grouped, cellsPerRow]);
+
+  // Sticky-header bookkeeping. The active sticky index = the topmost
+  // header whose flat index is at or above the current scroll-window
+  // start. We render the active one with `position: sticky; top: 0`
+  // and ALL other items normally (absolute-positioned via translateY).
+  // The rangeExtractor pins the active header into the rendered set
+  // even when its natural position is scrolled above the viewport —
+  // canonical TanStack Virtual sticky pattern, see the library's
+  // sticky example. Without this, scrolling past the day boundary
+  // would unmount the header and the sticky behavior would vanish.
+  const activeStickyIndexRef = useRef(0);
+  const isSticky = useCallback(
+    (index: number) => headerIndexes.includes(index),
+    [headerIndexes]
+  );
+  const isActiveSticky = useCallback(
+    (index: number) => activeStickyIndexRef.current === index,
+    []
+  );
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      // Find the topmost header that's at or above the scroll-window
+      // start. Iterate descending so the first match is the topmost
+      // one already-passed.
+      const active =
+        [...headerIndexes].reverse().find((idx) => range.startIndex >= idx) ?? 0;
+      activeStickyIndexRef.current = active;
+      // Always include the active sticky in the rendered range so it
+      // stays in DOM and can paint via `position: sticky`.
+      const next = new Set([active, ...defaultRangeExtractor(range)]);
+      return [...next].sort((a, b) => a - b);
+    },
+    [headerIndexes]
+  );
+
+  const virtualizer = useVirtualizer({
+    count: flatRows.length,
+    getScrollElement: () => scrollElement.current,
+    estimateSize: (i) =>
+      flatRows[i]?.kind === "header" ? HEADER_ESTIMATE_PX : CELL_ROW_ESTIMATE_PX,
+    overscan: 5,
+    rangeExtractor
+    // NOTE: do NOT set `useScrollendEvent: true`. That opts into the
+    // browser's `scrollend` event, which fires only when scroll stops
+    // — so `rangeExtractor` doesn't update the active sticky header
+    // during scroll. Result: as the user scrolls through multiple
+    // day-sections, the previous section's header un-mounts (it's
+    // outside the rendered range) and the new section's header is
+    // never marked active, so no CSS-sticky pinning happens until
+    // scroll stops. Visible symptom: sticky headers vanish during
+    // scroll. Default (scroll event, fires per frame) keeps the
+    // active-sticky calculation in lockstep with browser scroll.
+  });
+  // Disable TanStack's auto-adjust-scrollOffset-on-measureElement
+  // logic. By default, when measureElement reports an item-size delta
+  // for a row above the current scrollOffset, the virtualizer self-
+  // scrolls scrollTop by the delta to "keep visual position stable."
+  // Correct for streams of variable-height items mid-scroll, but
+  // contributes to the Focus → Grid scrollTop drift fixed by the
+  // rAF re-stamp loop in the focus-pulse useLayoutEffect. Set after
+  // construction because this is a class property on the Virtualizer
+  // instance (not a constructor option in the TS surface).
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
+
+
+  // Infinite-scroll boundary: when the last visible virtual row is
+  // within K rows of the loaded tail, dispatch loadMore(). K=10 is
+  // generous enough that the next page lands before the user runs
+  // out of rendered rows.
+  const items = virtualizer.getVirtualItems();
+  const lastItem = items[items.length - 1];
+  useEffect(() => {
+    if (!hasMore || isLoadingMore) return;
+    if (lastItem === undefined) return;
+    if (lastItem.index >= flatRows.length - 10) {
+      void loadMore();
+    }
+  }, [lastItem, flatRows.length, hasMore, isLoadingMore, loadMore]);
+
+  // Grid template — exactly cellsPerRow columns. Used by every
+  // cell-row virtual item. Reused via inline style so all rows in a
+  // resize tick render with the same template (no flicker).
+  const gridTemplate = `repeat(${cellsPerRow}, 1fr)`;
+
+  return (
+    <div
+      style={{
+        height: `${virtualizer.getTotalSize()}px`,
+        width: "100%",
+        position: "relative"
+      }}
+    >
+      {items.map((vi) => {
+        const row = flatRows[vi.index];
+        if (row === undefined) return null;
+        // Sticky pinning: the active sticky index uses
+        // `position: sticky` instead of absolute, so the browser
+        // pins it at the top of the scroll viewport as the user
+        // scrolls past its natural position. All other items
+        // (including non-active headers further down) use the
+        // standard absolute-positioned virtualizer translation.
+        const sticky = isSticky(vi.index);
+        const activeSticky = sticky && isActiveSticky(vi.index);
+        const positionStyle: React.CSSProperties = activeSticky
+          ? {
+              position: "sticky",
+              top: 0,
+              zIndex: 2
+            }
+          : {
+              position: "absolute",
+              top: 0,
+              transform: `translateY(${vi.start}px)`
+            };
+        return (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            // measureElement only on non-sticky rows: TanStack's
+            // measureElement reads getBoundingClientRect, but a
+            // sticky-pinned element's rect reports the pinned
+            // position, not its natural offset. Letting it measure
+            // would corrupt the offset cache and the row would jump.
+            // Sticky rows keep their estimateSize until the user
+            // scrolls past them and they unstick.
+            ref={activeSticky ? undefined : virtualizer.measureElement}
+            style={{
+              ...positionStyle,
+              left: 0,
+              width: "100%"
+            }}
+          >
+            {row.kind === "header" ? (
+              <div className="psl__day-hdr">
+                <span className="psl__day-hdr-label">{row.day}</span>
+                <span className="psl__day-hdr-meta">
+                  {row.date.length > 0 ? `${row.date} · ` : ""}
+                  {row.count} captures
+                </span>
+                <span className="psl__day-hdr-line" />
+              </div>
+            ) : (
+              <CellRow
+                cells={row.cells}
+                gridTemplate={gridTemplate}
+                isLastInDay={row.isLastInDay}
+                selected={selected}
+                fixtureBacking={fixtureBacking}
+                appLabels={appLabels}
+                onSelectCell={onSelectCell}
+                preloadFullRes={preloadFullRes}
+                isTrashView={isTrashView}
+                trashCapture={trashCapture}
+                restoreCaptureAction={restoreCaptureAction}
+                purgeCaptureAction={purgeCaptureAction}
+              />
+            )}
+          </div>
+        );
+      })}
+      {isLoadingMore && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            padding: "12px 18px",
+            opacity: 0.6,
+            fontSize: 12
+          }}
+        >
+          Loading more…
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CellRow({
+  cells,
+  gridTemplate,
+  isLastInDay,
+  selected,
+  fixtureBacking,
+  appLabels,
+  onSelectCell,
+  preloadFullRes,
+  isTrashView,
+  trashCapture,
+  restoreCaptureAction,
+  purgeCaptureAction
+}: {
+  cells: DayGroup["items"];
+  gridTemplate: string;
+  isLastInDay: boolean;
+  selected: number;
+  fixtureBacking: FixtureBackedRecords;
+  appLabels: Record<string, string>;
+  onSelectCell: (c: Capture) => void;
+  preloadFullRes: (record: CaptureRecord | null) => void;
+  isTrashView: boolean;
+  trashCapture: CellAction;
+  restoreCaptureAction: CellAction;
+  purgeCaptureAction: CellAction;
+}) {
+  // Inline grid styling — `.psl__grid` from the CSS uses auto-fill;
+  // we override with explicit columns matching the computed
+  // cellsPerRow so every virtualized row has the same column count
+  // and the visual matches the prior layout.
+  //
+  // Padding-bottom matches the original single-grid behavior:
+  //   • Within a day (rows 1..N-1):  CELL_GAP (12px) between rows
+  //   • Last row of a day:           CELL_GAP_DAY_END (18px) so the
+  //     gap to the next day-header matches what the original single
+  //     `.psl__grid` produced via its 18px `padding-bottom`.
+  // Without the special-case, days were ~6px tighter than the
+  // original layout.
+  return (
+    <div
+      className="psl__grid"
+      style={{
+        gridTemplateColumns: gridTemplate,
+        paddingBottom: isLastInDay ? CELL_GAP_DAY_END : CELL_GAP,
+        paddingTop: 0
+      }}
+    >
+      {cells.map((c) => {
+        const record = fixtureBacking.recordFor(c.id);
+        return (
+          <div
+            key={c.id}
+            className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
+            data-cell-id={record?.id ?? ""}
+            onClick={() => onSelectCell(c)}
+            onMouseEnter={() => preloadFullRes(record ?? null)}
+          >
+            <div className="psl__cell-thumb">
+              <CellThumb capture={c} record={record} width={400} />
+              <span className="psl__cell-time">{c.time}</span>
+              <span className="psl__cell-app">
+                <span className="psl__app-dot">
+                  <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
+                </span>
+              </span>
+              {record !== null &&
+                (isTrashView ? (
+                  <span className="psl__cell-actions">
+                    <button
+                      type="button"
+                      className="psl__cell-trash psl__cell-trash--restore"
+                      title="Restore"
+                      aria-label="Restore from Trash"
+                      onClick={(e) => restoreCaptureAction(c.id, e)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 12a9 9 0 1 0 3-6.7" />
+                        <path d="M3 4v5h5" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="psl__cell-trash psl__cell-trash--purge"
+                      title="Delete permanently"
+                      aria-label="Delete permanently"
+                      onClick={(e) => purgeCaptureAction(c.id, e)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                      </svg>
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="psl__cell-trash"
+                    title="Move to Trash"
+                    aria-label="Move to Trash"
+                    onClick={(e) => trashCapture(c.id, e)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 7h18M8 7V4h8v3M6 7l1 14h10l1-14" />
+                    </svg>
+                  </button>
+                ))}
+            </div>
+            <div className="psl__cell-meta">
+              <div className="psl__cell-name">{c.n}</div>
+              <div className="psl__cell-tags">
+                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" />
+                {c.tags.slice(0, 1).map((t) => (
+                  <span key={t} className="ps-tag is-sm">
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

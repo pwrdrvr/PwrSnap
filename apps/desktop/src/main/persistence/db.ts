@@ -2,6 +2,11 @@
 // (better-sqlite3) — fits Electron's main-process model without async
 // connection-pool overhead.
 //
+// Path resolution lives in ./paths.ts — every persistence path
+// composes from `getDataRoot()` so the dev seeder + integration tests
+// can reroot via `PWRSNAP_DATA_ROOT`. This module never calls
+// `app.getPath("userData")` directly.
+//
 // Pragmas chosen for desktop workloads (per better-sqlite3 research):
 //   • WAL + synchronous=NORMAL  — concurrent readers, single writer,
 //     crash-safe (FULL is overkill for desktop; NORMAL trades a tiny
@@ -11,6 +16,11 @@
 //   • cache_size=-64MB          — 64MB page cache (negative = KiB).
 //   • foreign_keys=ON           — required for ON DELETE CASCADE on
 //     render_cache → captures.
+//   • PRAGMA optimize=0x10002   — SQLite team's recommendation since
+//     3.46. The 0x10002 mask forces analysis on a fresh connection
+//     (no query history yet); 3.46+ self-limits runtime so it doesn't
+//     stall startup. Re-run `PRAGMA optimize` (no mask) at quit so
+//     stats reflect the session's workload.
 //
 // Migrations are numbered raw `.sql` files under ./migrations/. A
 // `schema_migrations` table tracks applied versions. Each file is one
@@ -21,9 +31,9 @@ import Database from "better-sqlite3";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { app } from "electron";
 import { getMainLogger } from "../log";
 import { getNativeBinding } from "./native-binding";
+import { getDbPath } from "./paths";
 
 const log = getMainLogger("pwrsnap:db");
 
@@ -33,50 +43,6 @@ export type SchemaMigration = {
   version: number;
   appliedAt: string;
 };
-
-/**
- * On-disk layout. Most things live under `app.getPath('userData')`
- * (an opaque Application Support folder users don't browse):
- *   pwrsnap.db
- *   cache/<capture_id>/<hash>.<format>  — managed by render-cache (Phase 1.6)
- *   .trash/<uuid>.png                   — soft-deleted captures
- *
- * Source captures (the originals — what users actually want to look
- * at, attach to tickets, drag elsewhere) live in a USER-VISIBLE place
- * instead, under `~/Documents/PwrSnap/<uuid>.png`. Two reasons to
- * keep them outside userData:
- *   1. Discoverability — Documents shows up in Finder, in Spotlight,
- *      in cloud-sync clients. Application Support is hidden by
- *      default and most users never see it.
- *   2. Survives an app uninstall — `~/Documents/PwrSnap` doesn't get
- *      blown away when someone trashes the .app.
- *
- * No yyyy/mm date subfolders: filenames are nanoid-shaped, sort fine
- * in Finder by mtime, and the DB indexes captured_at — the file
- * system is asked only "give me this exact path", not "list me
- * everything from May 2026".
- *
- * Existing rows from before this change keep absolute src_paths
- * pointing at the old userData layout; they continue to resolve.
- * No automated migration — files in Application Support are still
- * readable, and a user who wants them in Documents can copy them
- * over manually.
- */
-export function getDbPath(): string {
-  return join(app.getPath("userData"), "pwrsnap.db");
-}
-
-export function getCapturesRoot(): string {
-  return join(app.getPath("documents"), "PwrSnap");
-}
-
-export function getCacheRoot(): string {
-  return join(app.getPath("userData"), "cache");
-}
-
-export function getTrashRoot(): string {
-  return join(app.getPath("userData"), ".trash");
-}
 
 /**
  * Open the database, run pending migrations, and return the connection.
@@ -111,7 +77,61 @@ export async function openDatabase(): Promise<Database.Database> {
 
   runMigrations(db);
 
+  // PRAGMA optimize must run AFTER migrations so any new indexes
+  // exist and have stats populated on first use. The 0x10002 mask is
+  // SQLite's recommended "fresh-connection" form — it analyzes
+  // tables that benefit from it without scheduling a full ANALYZE.
+  db.pragma("optimize = 0x10002");
+
   dbInstance = db;
+
+  // Dev-only invariant self-check: app_stats sum should match live
+  // captures count. Auto-heals on drift via recomputeAppStats() —
+  // catches the realistic dev-workflow case of switching branches
+  // where one branch's code path doesn't keep app_stats in sync
+  // (e.g. main inserted captures pre-bumpAppStat) and surfaces a
+  // single one-line warning instead of crashing boot.
+  //
+  // Skipped before the 0003 migration lands (app_stats table
+  // doesn't exist yet) — that migration is required before this
+  // check can run.
+  if (import.meta.env.DEV) {
+    try {
+      const drift = db
+        .prepare(
+          `SELECT
+             (SELECT COALESCE(SUM(count), 0) FROM app_stats)
+           - (SELECT COUNT(*) FROM captures WHERE deleted_at IS NULL)
+           AS d`
+        )
+        .get() as { d: number };
+      if (drift.d !== 0) {
+        log.warn("app_stats drift detected — auto-healing", { drift: drift.d });
+        // Inline recompute to avoid the import cycle with captures-repo
+        // (which imports getDb from this module). Same body as
+        // recomputeAppStats() in captures-repo.ts — kept in sync by
+        // proximity since both touch app_stats only.
+        db.transaction(() => {
+          db.exec("DELETE FROM app_stats");
+          db.exec(
+            `INSERT INTO app_stats (source_app_bundle_id, count)
+             SELECT source_app_bundle_id, COUNT(*)
+             FROM captures
+             WHERE deleted_at IS NULL
+             GROUP BY source_app_bundle_id`
+          );
+        })();
+      }
+    } catch (err) {
+      // Pre-0003 DB → app_stats doesn't exist. That's fine; the
+      // migration will land on next open. Anything else (actual SQL
+      // error, repair failure) should fail loud.
+      const msg = err instanceof Error ? err.message : String(err);
+      const isMissingTable = msg.includes("no such table: app_stats");
+      if (!isMissingTable) throw err;
+    }
+  }
+
   return db;
 }
 
@@ -168,10 +188,19 @@ function resolveMigrationsDir(): string {
 
 /**
  * Close the database. Call from `before-quit`. Performs a WAL
- * checkpoint truncate so the next open starts with a clean WAL.
+ * checkpoint truncate + `PRAGMA optimize` (SQLite-team recommended
+ * shutdown sequence as of 3.46) so the next open starts with a clean
+ * WAL and refreshed stats.
  */
 export function closeDatabase(): void {
   if (!dbInstance) return;
+  try {
+    dbInstance.pragma("optimize");
+  } catch (err) {
+    log.warn("pragma optimize failed at close", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+  }
   try {
     dbInstance.pragma("wal_checkpoint(TRUNCATE)");
   } catch (err) {

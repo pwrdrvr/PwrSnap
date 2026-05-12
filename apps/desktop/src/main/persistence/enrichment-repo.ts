@@ -118,6 +118,25 @@ export function getEnrichmentSummaries(captureIds: string[]): CaptureEnrichmentS
   });
 }
 
+export function setLatestEnrichmentRun(captureId: string, aiRunId: string): CaptureEnrichment {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO capture_enrichments (
+      capture_id, latest_ai_run_id, updated_at
+    ) VALUES (
+      @captureId, @aiRunId, datetime('now')
+    )
+    ON CONFLICT(capture_id) DO UPDATE SET
+      latest_ai_run_id = excluded.latest_ai_run_id,
+      updated_at = datetime('now')`
+  ).run({ captureId, aiRunId });
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) {
+    throw new Error(`capture not found: ${captureId}`);
+  }
+  return enrichment;
+}
+
 export function storeCompletedEnrichment(params: {
   captureId: string;
   aiRunId: string;

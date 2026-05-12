@@ -23,6 +23,7 @@ import {
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
+import { registerCodexHandlers } from "./handlers/codex-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
@@ -752,13 +753,14 @@ export function bootstrapApp(): void {
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();
+    registerSettingsHandlers();
+    registerCodexHandlers();
     registerCaptureHandlers();
     registerClipboardHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerOverlaysHandlers();
     registerRecordingHandlers();
-    registerSettingsHandlers();
     registerStorageHandlers();
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the

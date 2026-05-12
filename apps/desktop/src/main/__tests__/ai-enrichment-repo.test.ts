@@ -14,6 +14,7 @@ const {
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
+  setLatestEnrichmentRun,
   storeCompletedEnrichment
 } = await import("../persistence/enrichment-repo");
 
@@ -131,6 +132,15 @@ describe("AI enrichment repositories", () => {
 
     expect(enrichment?.ocrText).toBeNull();
     expect(enrichment?.suggestedTags).toEqual([]);
+  });
+
+  test("latest run is visible before completion", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    const enrichment = setLatestEnrichmentRun("cap_1", run.id);
+
+    expect(enrichment.latestRunId).toBe(run.id);
+    expect(enrichment.status).toBe("queued");
+    expect(enrichment.ocrText).toBeNull();
   });
 
   test("summaries are batch-friendly and compact", () => {

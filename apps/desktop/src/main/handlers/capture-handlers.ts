@@ -49,6 +49,7 @@ import {
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
+import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -741,5 +742,6 @@ async function persistAndBroadcast(
     sourceAppName: record.source_app_name
   });
   broadcastCapturesChanged([record.id]);
+  maybeEnqueueCaptureEnrichment(record.id);
   return ok(record);
 }

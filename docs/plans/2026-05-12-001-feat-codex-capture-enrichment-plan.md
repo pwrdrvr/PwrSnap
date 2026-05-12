@@ -49,7 +49,7 @@ This plan narrows Phase 4 to the feature requested now: OCR + description + tag 
 - `packages/codex-app-server-protocol/src/v2/ThreadStartParams.ts`, `TurnStartParams.ts`, `UserInput.ts`, and `ServerRequest.ts` show the local generated protocol surface for ephemeral threads, image/localImage input, output schemas, and dynamic tool calls.
 - `apps/desktop/src/main/codex-app-server/json-rpc.ts` and `apps/desktop/src/main/codex-app-server/stdio-transport.ts` already provide the transport foundation for a high-level PwrSnap client.
 - `apps/desktop/src/main/settings/codex-discovery.ts` already discovers Codex binaries and honors `PWRSNAP_CODEX_COMMAND`.
-- `packages/shared/src/protocol.ts` already declares settings fields for `aiEnabled` and `aiConsentAcceptedAt`, an `events:ai-run:updated` event channel, and placeholder `codex:*` command-bus commands.
+- `packages/shared/src/protocol.ts` declares the nested settings shape (`settings.ai.enabled`, `settings.ai.consentAcceptedAt`, and `settings.codex.*`), an `events:ai-run:updated` event channel, and placeholder `codex:*` command-bus commands.
 - `apps/desktop/src/main/handlers/capture-handlers.ts` owns the capture commit seam and calls `setFloatOverState({ kind: "show-loaded", captureId })` after persistence.
 - `apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx` keeps the float-over renderer mounted and fetches `library:byId` on `show-loaded`, making it a natural subscriber for enrichment updates.
 - `apps/desktop/src/renderer/src/features/float-over/FloatOver.tsx` already has local description, tag, thinking, and Codex suggestion UI states to replace with persisted data.
@@ -75,7 +75,7 @@ This plan narrows Phase 4 to the feature requested now: OCR + description + tag 
 - Introduce a PwrSnap-specific high-level client instead of expanding transport primitives: `json-rpc.ts` and `stdio-transport.ts` stay generic; `apps/desktop/src/main/ai/codex-client.ts` owns PwrSnap-specific thread lifecycle, notification collection, timeouts, and typed enrichment requests.
 - Emit events and let renderers refetch: This matches `events:captures:changed` and `useLibrary.ts`. Main sends `events:ai-run:updated` and `events:captures:changed` where accepted metadata affects visible capture rows; renderers use command-bus reads instead of receiving full mutable snapshots.
 - Keep `library:list` focused and add batch enrichment reads: Do not inflate `CaptureRecord` with optional AI fields in the first pass. Add `codex:enrichment` for one capture and `codex:enrichmentsForCaptures` for list/detail surfaces so the Library can avoid N+1 IPC without changing the capture row contract.
-- Ship a narrow SQLite-backed settings/consent store with this feature: `Settings` already has `aiEnabled` and `aiConsentAcceptedAt`, but the repo does not currently show registered settings handlers. Implement the minimal durable settings path needed for consent, Codex command selection, and AI enable/disable before auto-enrichment is wired.
+- Use the file-backed desktop settings service for AI consent, Codex command selection, and AI enable/disable before auto-enrichment is wired.
 - Do not create `ai_runs` rows for disabled or no-consent auto-enrichment: No screenshot-derived AI work has started in those states, so the correct behavior is no Codex subprocess, no temp derivative, and no run ledger row. Explicit user-invoked `codex:enrich` can return a `consent_required` or `ai_disabled` error result.
 
 ## Open Questions
@@ -108,7 +108,7 @@ sequenceDiagram
 
   Capture->>DB: persist capture row + source PNG
   Capture->>Toast: events:float-over:state show-loaded
-  Capture->>Settings: read aiEnabled + consent
+  Capture->>Settings: read ai.enabled + consentAcceptedAt
   Capture->>AI: enqueue enrichment(captureId)
   Toast->>DB: library:byId + codex:enrichment read
   AI->>DB: ai_runs status=running
@@ -220,9 +220,8 @@ sequenceDiagram
 **Dependencies:** Unit 1
 
 **Files:**
-- Create: `apps/desktop/src/main/settings/settings-store.ts`
 - Create: `apps/desktop/src/main/handlers/settings-handlers.ts`
-- Create: `apps/desktop/src/main/persistence/migrations/0004_settings.sql`
+- Modify: `apps/desktop/src/main/settings/desktop-settings-service.ts`
 - Modify: `apps/desktop/src/main/index.ts`
 - Modify: `packages/shared/src/protocol.ts`
 - Modify: `apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx`
@@ -230,9 +229,9 @@ sequenceDiagram
 - Test: `apps/desktop/src/main/__tests__/settings-handlers.test.ts`
 
 **Approach:**
-- Implement `settings:read` and `settings:write` against a small SQLite-backed settings table, using the existing `Settings` shape from `packages/shared/src/protocol.ts`.
-- Keep defaults privacy-preserving: `aiEnabled` false and `aiConsentAcceptedAt` null on fresh install.
-- Support Codex command selection through the existing `codexCommand` field and `apps/desktop/src/main/settings/codex-discovery.ts`; auto-discovery can still select newest when no explicit path is set.
+- Reuse `settings:read` and `settings:write` from the desktop file-backed settings service, using the nested `Settings` shape from `packages/shared/src/protocol.ts`.
+- Keep defaults privacy-preserving: `settings.ai.enabled` false and `settings.ai.consentAcceptedAt` null on fresh install.
+- Support Codex command selection through `settings.codex.mode`, `settings.codex.pinnedPath`, and `apps/desktop/src/main/settings/codex-discovery.ts`; auto-discovery can still select newest when no explicit path is set.
 - Add a minimal consent affordance in the float-over's AI strip on the first eligible capture. It should have three states: not asked, accepted, and declined/not now. The copy should state that PwrSnap sends a downsampled screenshot to the user's local Codex install, and Codex may route to the user's configured provider.
 - Make consent acceptance an explicit settings write. Until accepted, auto-enrichment does not enqueue, does not create an `ai_runs` row, and must not spawn Codex.
 
@@ -244,7 +243,7 @@ sequenceDiagram
 
 **Test scenarios:**
 - Happy path: fresh settings read returns AI disabled with no consent timestamp.
-- Happy path: accepting consent persists `aiConsentAcceptedAt` and enabling AI persists `aiEnabled`.
+- Happy path: accepting consent persists `settings.ai.consentAcceptedAt` and enabling AI persists `settings.ai.enabled`.
 - Happy path: configured Codex command round-trips through `settings:write` and `settings:read`.
 - Edge case: partial settings patch updates one field without clearing omitted fields.
 - Error path: malformed settings file or row falls back to safe defaults and reports a typed settings error.
@@ -275,7 +274,7 @@ sequenceDiagram
 **Approach:**
 - Register command-bus handlers for `codex:enrich`, `codex:enrichment`, `codex:enrichmentsForCaptures`, `codex:acceptDescription`, `codex:acceptTag`, `codex:rejectTag`, and `codex:cancel`.
 - Enqueue enrichment only when `insertOrFindCapture` returns a new image capture. Dedup hits should reuse existing metadata rather than re-running Codex.
-- Respect `settings.aiEnabled` and `settings.aiConsentAcceptedAt` from Unit 3 before doing any image preparation or Codex process work.
+- Respect `settings.ai.enabled` and `settings.ai.consentAcceptedAt` from Unit 3 before doing any image preparation or Codex process work.
 - Apply a short post-capture debounce and a low concurrency cap so rapid capture bursts do not spawn unlimited Codex subprocesses.
 - Key cancellation by `captureId` using the command bus's cancellation model; capture delete, purge, or explicit cancel should prevent later writes.
 - Broadcast `events:ai-run:updated` with lightweight identifiers, not full OCR payloads. Renderers refetch via command-bus reads.

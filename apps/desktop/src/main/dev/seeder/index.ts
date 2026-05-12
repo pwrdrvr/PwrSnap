@@ -10,6 +10,7 @@
 import type { MenuItemConstructorOptions } from "electron";
 
 import { getMainLogger } from "../../log";
+import { isOverriddenDataRoot } from "../../persistence/paths";
 import { setExtraTrayMenuItems } from "../../tray";
 import { isFlagged, PROFILE_NAMES, type ProfileName } from "./profiles";
 import { runProbeOnly, runProfile } from "./runner";
@@ -19,7 +20,25 @@ const log = getMainLogger("pwrsnap:dev-seeder");
 export { runProbeOnly, runProfile } from "./runner";
 export type { ProfileName } from "./profiles";
 
+/**
+ * Wire dev-seeder tray items. Gated on `PWRSNAP_DATA_ROOT` being set
+ * — a normal `pnpm dev` launch against the user's real Library data
+ * root does NOT show the "Seed perf dataset" / "Probe perf" submenus.
+ * This is belt-and-braces on top of `assertCanWipe()`'s override
+ * requirement: the wipe path can't destroy real user data either
+ * way, but exposing the buttons at all invites misclicks and turns a
+ * "structurally impossible" guarantee into a "throws an error" one.
+ * Show the menu only when the developer has explicitly opted into a
+ * perf-rooted data dir.
+ */
 export function registerDevSeeder(): void {
+  if (!isOverriddenDataRoot()) {
+    log.info(
+      "dev seeder skipped — PWRSNAP_DATA_ROOT not set, " +
+        "running against real user data root"
+    );
+    return;
+  }
   log.info("dev seeder registered");
   installTrayItems();
 }

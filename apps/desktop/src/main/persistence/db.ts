@@ -86,10 +86,15 @@ export async function openDatabase(): Promise<Database.Database> {
   dbInstance = db;
 
   // Dev-only invariant self-check: app_stats sum should match live
-  // captures count. Catches drift on next boot rather than waiting
-  // for CI. Skipped before the 0003 migration lands (app_stats
-  // table doesn't exist yet) — that migration is required before
-  // this check can run.
+  // captures count. Auto-heals on drift via recomputeAppStats() —
+  // catches the realistic dev-workflow case of switching branches
+  // where one branch's code path doesn't keep app_stats in sync
+  // (e.g. main inserted captures pre-bumpAppStat) and surfaces a
+  // single one-line warning instead of crashing boot.
+  //
+  // Skipped before the 0003 migration lands (app_stats table
+  // doesn't exist yet) — that migration is required before this
+  // check can run.
   if (import.meta.env.DEV) {
     try {
       const drift = db
@@ -101,14 +106,29 @@ export async function openDatabase(): Promise<Database.Database> {
         )
         .get() as { d: number };
       if (drift.d !== 0) {
-        throw new Error(`app_stats drift: ${drift.d} (sum != live count)`);
+        log.warn("app_stats drift detected — auto-healing", { drift: drift.d });
+        // Inline recompute to avoid the import cycle with captures-repo
+        // (which imports getDb from this module). Same body as
+        // recomputeAppStats() in captures-repo.ts — kept in sync by
+        // proximity since both touch app_stats only.
+        db.transaction(() => {
+          db.exec("DELETE FROM app_stats");
+          db.exec(
+            `INSERT INTO app_stats (source_app_bundle_id, count)
+             SELECT source_app_bundle_id, COUNT(*)
+             FROM captures
+             WHERE deleted_at IS NULL
+             GROUP BY source_app_bundle_id`
+          );
+        })();
       }
     } catch (err) {
       // Pre-0003 DB → app_stats doesn't exist. That's fine; the
-      // migration will land on next open. Other errors (actual drift)
-      // surface as `Error: app_stats drift: …` and should fail loud.
+      // migration will land on next open. Anything else (actual SQL
+      // error, repair failure) should fail loud.
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.startsWith("app_stats drift:")) throw err;
+      const isMissingTable = msg.includes("no such table: app_stats");
+      if (!isMissingTable) throw err;
     }
   }
 

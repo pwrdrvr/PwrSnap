@@ -1,0 +1,97 @@
+/**
+ * Keep better-sqlite3's Node and Electron native bindings side-by-side.
+ *
+ * The default build/Release/better_sqlite3.node remains compiled for the
+ * developer's Node runtime, so unit tests and scripts keep working. This script
+ * downloads the Electron-compatible prebuild into electron-native/ and the app
+ * opts into that binding when running inside Electron.
+ */
+
+import { execSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+
+const require = createRequire(import.meta.url);
+
+const betterSqlite3PackagePath = require.resolve("better-sqlite3/package.json");
+const betterSqlite3Dir = dirname(betterSqlite3PackagePath);
+const betterSqlite3Version = require(betterSqlite3PackagePath).version;
+const electronVersion = require("electron/package.json").version;
+
+const electronNativeDir = join(betterSqlite3Dir, "electron-native");
+const targetBinary = join(electronNativeDir, "better_sqlite3.node");
+const metadataFile = join(electronNativeDir, "metadata.json");
+const defaultBinary = join(betterSqlite3Dir, "build", "Release", "better_sqlite3.node");
+const backupBinary = join(betterSqlite3Dir, "build", "Release", "better_sqlite3.node.bak");
+const expectedMetadata = {
+  arch: process.arch,
+  betterSqlite3Version,
+  electronVersion
+};
+
+if (isCurrentElectronBinary()) {
+  console.log(`Electron better-sqlite3 binary already exists for Electron ${electronVersion}.`);
+  process.exit(0);
+}
+
+console.log(`Downloading better-sqlite3 prebuild for Electron ${electronVersion}...`);
+rmSync(electronNativeDir, { force: true, recursive: true });
+
+if (existsSync(defaultBinary)) {
+  copyFileSync(defaultBinary, backupBinary);
+}
+
+try {
+  execSync(
+    `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${process.arch} --tag-prefix=v --strip`,
+    { cwd: betterSqlite3Dir, stdio: "inherit" }
+  );
+} catch (error) {
+  restoreDefaultBinary();
+  console.error("Failed to download Electron better-sqlite3 prebuild:", error.message);
+  process.exit(1);
+}
+
+mkdirSync(electronNativeDir, { recursive: true });
+copyFileSync(defaultBinary, targetBinary);
+writeFileSync(metadataFile, `${JSON.stringify(expectedMetadata, null, 2)}\n`);
+restoreDefaultBinary();
+
+console.log(`Electron better-sqlite3 binary placed at ${targetBinary}`);
+
+function isCurrentElectronBinary() {
+  if (!existsSync(targetBinary) || !existsSync(metadataFile)) {
+    return false;
+  }
+
+  try {
+    const metadata = JSON.parse(readFileSync(metadataFile, "utf8"));
+    return (
+      metadata.arch === expectedMetadata.arch &&
+      metadata.betterSqlite3Version === expectedMetadata.betterSqlite3Version &&
+      metadata.electronVersion === expectedMetadata.electronVersion
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resolvePrebuildInstallCommand() {
+  const packageBin = resolve(betterSqlite3Dir, "node_modules", ".bin", "prebuild-install");
+  if (existsSync(packageBin)) {
+    return packageBin;
+  }
+
+  const pnpmFallback = resolve(betterSqlite3Dir, "..", "prebuild-install", "bin.js");
+  return `node ${pnpmFallback}`;
+}
+
+function restoreDefaultBinary() {
+  if (!existsSync(backupBinary)) {
+    return;
+  }
+
+  copyFileSync(backupBinary, defaultBinary);
+  unlinkSync(backupBinary);
+}

@@ -1,0 +1,256 @@
+import { nanoid } from "nanoid";
+import type { CaptureEnrichment, CaptureEnrichmentSummary, EnrichmentResult } from "@pwrsnap/shared";
+import {
+  CaptureEnrichmentSchema,
+  EnrichmentResultSchema,
+  normalizeTagLabel
+} from "@pwrsnap/shared";
+import { getDb } from "./db";
+
+type EnrichmentRow = {
+  capture_id: string;
+  latest_ai_run_id: string | null;
+  status: CaptureEnrichment["status"];
+  ocr_text: string | null;
+  suggested_description: string | null;
+  accepted_description: string | null;
+  description_accepted_at: string | null;
+};
+
+type TagSuggestionRow = {
+  id: string;
+  label: string;
+  confidence: number | null;
+  accepted_at: string | null;
+  rejected_at: string | null;
+};
+
+type AcceptedTagRow = {
+  label: string;
+};
+
+function emptyEnrichment(captureId: string): CaptureEnrichment {
+  return {
+    captureId,
+    latestRunId: null,
+    status: null,
+    ocrText: null,
+    suggestedDescription: null,
+    acceptedDescription: null,
+    descriptionAcceptedAt: null,
+    suggestedTags: [],
+    acceptedTags: []
+  };
+}
+
+function readTagSuggestions(captureId: string): TagSuggestionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT id, label, confidence, accepted_at, rejected_at
+       FROM enrichment_tag_suggestions
+       WHERE capture_id = ?
+       ORDER BY accepted_at IS NOT NULL DESC, confidence DESC, created_at ASC`
+    )
+    .all(captureId) as TagSuggestionRow[];
+}
+
+function readAcceptedTags(captureId: string): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT tags.label
+       FROM capture_tags
+       JOIN tags ON tags.id = capture_tags.tag_id
+       WHERE capture_tags.capture_id = ?
+       ORDER BY capture_tags.created_at ASC, tags.label ASC`
+    )
+    .all(captureId) as AcceptedTagRow[];
+  return rows.map((row) => row.label);
+}
+
+export function getCaptureEnrichment(captureId: string): CaptureEnrichment | null {
+  const db = getDb();
+  const capture = db.prepare("SELECT id FROM captures WHERE id = ?").get(captureId) as
+    | { id: string }
+    | undefined;
+  if (!capture) return null;
+
+  const row = db
+    .prepare(
+      `SELECT capture_enrichments.capture_id,
+              capture_enrichments.latest_ai_run_id,
+              ai_runs.status,
+              capture_enrichments.ocr_text,
+              capture_enrichments.suggested_description,
+              capture_enrichments.accepted_description,
+              capture_enrichments.description_accepted_at
+       FROM capture_enrichments
+       LEFT JOIN ai_runs ON ai_runs.id = capture_enrichments.latest_ai_run_id
+       WHERE capture_enrichments.capture_id = ?`
+    )
+    .get(captureId) as EnrichmentRow | undefined;
+
+  if (!row) return emptyEnrichment(captureId);
+
+  return CaptureEnrichmentSchema.parse({
+    captureId: row.capture_id,
+    latestRunId: row.latest_ai_run_id,
+    status: row.status,
+    ocrText: row.ocr_text,
+    suggestedDescription: row.suggested_description,
+    acceptedDescription: row.accepted_description,
+    descriptionAcceptedAt: row.description_accepted_at,
+    suggestedTags: readTagSuggestions(captureId),
+    acceptedTags: readAcceptedTags(captureId)
+  });
+}
+
+export function getEnrichmentSummaries(captureIds: string[]): CaptureEnrichmentSummary[] {
+  if (captureIds.length === 0) return [];
+  return captureIds.map((captureId) => {
+    const enrichment = getCaptureEnrichment(captureId);
+    return {
+      captureId,
+      status: enrichment?.status ?? null,
+      acceptedDescription: enrichment?.acceptedDescription ?? null,
+      acceptedTags: enrichment?.acceptedTags ?? [],
+      suggestedTagCount: enrichment?.suggestedTags.filter((tag) => tag.accepted_at === null && tag.rejected_at === null).length ?? 0
+    };
+  });
+}
+
+export function storeCompletedEnrichment(params: {
+  captureId: string;
+  aiRunId: string;
+  result: EnrichmentResult;
+}): CaptureEnrichment {
+  const parsed = EnrichmentResultSchema.parse(params.result);
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const capture = db
+      .prepare("SELECT id FROM captures WHERE id = ? AND deleted_at IS NULL")
+      .get(params.captureId) as { id: string } | undefined;
+    if (!capture) {
+      throw new Error(`capture not found or deleted: ${params.captureId}`);
+    }
+
+    db.prepare(
+      `INSERT INTO capture_enrichments (
+        capture_id, latest_ai_run_id, ocr_text, suggested_description, updated_at
+      ) VALUES (
+        @captureId, @aiRunId, @ocrText, @suggestedDescription, datetime('now')
+      )
+      ON CONFLICT(capture_id) DO UPDATE SET
+        latest_ai_run_id = excluded.latest_ai_run_id,
+        ocr_text = excluded.ocr_text,
+        suggested_description = excluded.suggested_description,
+        updated_at = datetime('now')`
+    ).run({
+      captureId: params.captureId,
+      aiRunId: params.aiRunId,
+      ocrText: parsed.ocrText,
+      suggestedDescription: parsed.description || null
+    });
+
+    const insertTag = db.prepare(
+      `INSERT OR IGNORE INTO enrichment_tag_suggestions (
+        id, capture_id, ai_run_id, label, normalized_label, confidence
+      ) VALUES (
+        @id, @captureId, @aiRunId, @label, @normalizedLabel, @confidence
+      )`
+    );
+    for (const tag of parsed.tags) {
+      const normalizedLabel = normalizeTagLabel(tag.label);
+      if (normalizedLabel.length === 0) continue;
+      insertTag.run({
+        id: nanoid(),
+        captureId: params.captureId,
+        aiRunId: params.aiRunId,
+        label: tag.label.trim(),
+        normalizedLabel,
+        confidence: tag.confidence
+      });
+    }
+  });
+  tx();
+  const enrichment = getCaptureEnrichment(params.captureId);
+  if (enrichment === null) {
+    throw new Error(`capture not found after enrichment write: ${params.captureId}`);
+  }
+  return enrichment;
+}
+
+export function acceptDescription(captureId: string, description: string): CaptureEnrichment {
+  const trimmed = description.trim();
+  if (trimmed.length === 0) {
+    throw new Error("description must not be empty");
+  }
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO capture_enrichments (
+      capture_id, accepted_description, description_accepted_at, updated_at
+    ) VALUES (
+      @captureId, @description, datetime('now'), datetime('now')
+    )
+    ON CONFLICT(capture_id) DO UPDATE SET
+      accepted_description = excluded.accepted_description,
+      description_accepted_at = excluded.description_accepted_at,
+      updated_at = datetime('now')`
+  ).run({ captureId, description: trimmed });
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+export function acceptSuggestedTag(captureId: string, tagId: string): CaptureEnrichment {
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const suggestion = db
+      .prepare(
+        `SELECT id, ai_run_id, label, normalized_label
+         FROM enrichment_tag_suggestions
+         WHERE id = ? AND capture_id = ? AND rejected_at IS NULL`
+      )
+      .get(tagId, captureId) as
+      | { id: string; ai_run_id: string; label: string; normalized_label: string }
+      | undefined;
+    if (!suggestion) throw new Error(`tag suggestion not found: ${tagId}`);
+
+    const existingTag = db
+      .prepare("SELECT id FROM tags WHERE kind = 'content' AND normalized_label = ?")
+      .get(suggestion.normalized_label) as { id: string } | undefined;
+    const tagRowId = existingTag?.id ?? nanoid();
+    if (!existingTag) {
+      db.prepare(
+        `INSERT INTO tags (id, label, normalized_label, kind)
+         VALUES (?, ?, ?, 'content')`
+      ).run(tagRowId, suggestion.label, suggestion.normalized_label);
+    }
+
+    db.prepare(
+      `INSERT OR IGNORE INTO capture_tags (capture_id, tag_id, source, ai_run_id)
+       VALUES (?, ?, 'codex', ?)`
+    ).run(captureId, tagRowId, suggestion.ai_run_id);
+
+    db.prepare(
+      `UPDATE enrichment_tag_suggestions
+       SET accepted_at = COALESCE(accepted_at, datetime('now'))
+       WHERE id = ?`
+    ).run(tagId);
+  });
+  tx();
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+export function rejectSuggestedTag(captureId: string, tagId: string): CaptureEnrichment {
+  const db = getDb();
+  db.prepare(
+    `UPDATE enrichment_tag_suggestions
+     SET rejected_at = COALESCE(rejected_at, datetime('now'))
+     WHERE id = ? AND capture_id = ?`
+  ).run(tagId, captureId);
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}

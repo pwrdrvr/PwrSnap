@@ -470,6 +470,36 @@ doesn't.
 - Electron + electron-vite versions pinned in `apps/desktop/package.json`,
   matching PwrAgnt for tool consistency.
 
+## Node / native module ABI hygiene
+
+Always enter the repo with nvm before installing dependencies:
+
+```bash
+source ~/.nvm/nvm.sh
+nvm use
+pnpm install
+```
+
+The root `preinstall` script checks that `node` exactly matches `.nvmrc` and,
+on local machines with `~/.nvm`, that the active Node binary is coming from
+nvm. Do not bypass this check. Native modules are sensitive to the Node/Electron
+ABI they were built against; installing with the wrong Node can leave
+`better-sqlite3.node` built for the wrong `NODE_MODULE_VERSION` and Electron
+will fail at runtime with a message like:
+
+```text
+was compiled against a different Node.js version using NODE_MODULE_VERSION ...
+```
+
+If that happens, switch to the pinned nvm Node and rebuild Electron native
+dependencies from the repo root:
+
+```bash
+source ~/.nvm/nvm.sh
+nvm use
+pnpm rebuild:electron-native
+```
+
 ## better-sqlite3 + Electron native binding repair
 
 PwrSnap uses `better-sqlite3`, which ships a native `.node` binary. The
@@ -486,8 +516,10 @@ Do not chase this as a database bug. Repair the native sidecar from the repo
 root:
 
 ```bash
+source ~/.nvm/nvm.sh
+nvm use
 pnpm install
-cd apps/desktop && node ./scripts/rebuild-native-for-electron.mjs
+pnpm rebuild:electron-native
 ```
 
 The script keeps two binaries on purpose:

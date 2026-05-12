@@ -8,10 +8,12 @@
   "copyright": "Copyright © 2026 PwrDrvr LLC",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "preinstall": "node ./scripts/check-node-version.mjs",
     "build": "pnpm --filter @pwrsnap/desktop build",
     "dev": "pnpm --filter @pwrsnap/desktop dev",
     "design": "npx --yes serve design -l 4321",
     "codex:generate-protocol": "pnpm --filter @pwrsnap/codex-app-server-protocol generate",
+    "rebuild:electron-native": "pnpm --filter @pwrsnap/desktop rebuild:electron-native",
     "typecheck": "pnpm -r --if-present typecheck",
     "licenses:check": "node ./scripts/check-package-license-policy.mjs && node ./scripts/generate-third-party-licenses.mjs --check",
     "licenses:generate": "node ./scripts/generate-third-party-licenses.mjs",

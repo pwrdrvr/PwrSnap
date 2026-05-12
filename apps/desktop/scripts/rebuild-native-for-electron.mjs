@@ -7,7 +7,7 @@
  * opts into that binding when running inside Electron.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const betterSqlite3PackagePath = require.resolve("better-sqlite3/package.json");
 const betterSqlite3Dir = dirname(betterSqlite3PackagePath);
 const betterSqlite3Version = require(betterSqlite3PackagePath).version;
-const electronVersion = require("electron/package.json").version;
+const electronVersion = resolveElectronVersion();
 const electronArch = resolveElectronArch();
 
 const electronNativeDir = join(betterSqlite3Dir, "electron-native");
@@ -30,6 +30,8 @@ const expectedMetadata = {
   betterSqlite3Version,
   electronVersion
 };
+
+ensureDefaultNodeBinding();
 
 if (isCurrentElectronBinary()) {
   console.log(`Electron better-sqlite3 binary already exists for Electron ${electronVersion}.`);
@@ -99,4 +101,49 @@ function restoreDefaultBinary() {
 
 function resolveElectronArch() {
   return process.env.npm_config_arch || process.env.npm_config_target_arch || process.arch;
+}
+
+function resolveElectronVersion() {
+  if (process.env.PWRSNAP_ELECTRON_VERSION) {
+    return process.env.PWRSNAP_ELECTRON_VERSION;
+  }
+
+  try {
+    return require("electron/package.json").version;
+  } catch {
+    throw new Error(
+      "Unable to resolve Electron version; set PWRSNAP_ELECTRON_VERSION when running from a production dependency tree."
+    );
+  }
+}
+
+function ensureDefaultNodeBinding() {
+  if (isDefaultNodeBindingUsable()) {
+    return;
+  }
+
+  console.log("Default better-sqlite3 Node binding is unusable; rebuilding for system Node...");
+  const env = {
+    ...process.env,
+    npm_config_arch: process.arch,
+    npm_config_runtime: "node",
+    npm_config_target: process.versions.node,
+    npm_config_target_arch: process.arch
+  };
+  execFileSync("npm", ["run", "install"], { cwd: betterSqlite3Dir, env, stdio: "inherit" });
+
+  if (!isDefaultNodeBindingUsable()) {
+    throw new Error("better-sqlite3 default Node binding is still unusable after rebuild");
+  }
+}
+
+function isDefaultNodeBindingUsable() {
+  try {
+    execFileSync(process.execPath, ["-e", "require(process.argv[1])", betterSqlite3Dir], {
+      stdio: "ignore"
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }

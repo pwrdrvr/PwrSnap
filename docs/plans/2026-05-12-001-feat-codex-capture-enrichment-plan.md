@@ -1,7 +1,7 @@
 ---
 title: feat: Add Codex capture enrichment
 type: feat
-status: active
+status: completed
 date: 2026-05-12
 deepened: 2026-05-12
 ---
@@ -13,6 +13,16 @@ deepened: 2026-05-12
 Add a Codex App Server-backed enrichment pipeline that runs after each image capture, sends a bounded downsampled copy of the screenshot to the user's local Codex install, and stores OCR text, a suggested description, and suggested tags. The post-capture float-over should appear immediately in its current flow, show Codex reading state while enrichment is in flight, and update in place when suggestions arrive.
 
 The implementation should preserve the existing PwrSnap invariant: every AI feature goes through Codex App Server over stdio JSON-RPC, never direct provider APIs.
+
+## Implementation Status
+
+Completed on 2026-05-12 on branch `feat/codex-capture-enrichment`.
+
+- Added local SQLite persistence for AI run state, OCR, suggested descriptions, suggested tags, accepted descriptions, accepted tags, and AI settings/consent.
+- Added a PwrSnap-specific Codex App Server client that sends a metadata-stripped 1024px-long-edge JPEG derivative through `localImage` and validates structured output before persistence.
+- Wired automatic best-effort enrichment after new captures only, gated by explicit AI enablement and consent.
+- Updated the float-over and Library detail rail to show running/completed/failed enrichment state and persist accepted suggestions.
+- Added tests for schema validation, image downsizing, settings defaults, command handling, cancellation, and persistence lifecycle.
 
 ## Problem Frame
 
@@ -122,7 +132,7 @@ sequenceDiagram
 
 ## Implementation Units
 
-- [ ] **Unit 1: Add AI enrichment persistence**
+- [x] **Unit 1: Add AI enrichment persistence**
 
 **Goal:** Create durable tables and repository modules for run status, OCR text, description suggestions, tag suggestions, and accepted user metadata.
 
@@ -167,7 +177,7 @@ sequenceDiagram
 - Repository tests prove accepted metadata and raw suggestions are distinct.
 - Shared schemas reject invalid statuses, empty tag labels, and overlong description/OCR payloads.
 
-- [ ] **Unit 2: Build the Codex App Server enrichment client**
+- [x] **Unit 2: Build the Codex App Server enrichment client**
 
 **Goal:** Implement the PwrSnap-specific high-level Codex client and image preparation pipeline for a bounded OCR/description/tag request.
 
@@ -211,7 +221,7 @@ sequenceDiagram
 - Image-prep tests prove the token/cost guardrail is enforced independent of source resolution.
 - Client tests use a fake JSON-RPC transport to cover success, timeout, schema mismatch, and cancellation without requiring a live Codex install.
 
-- [ ] **Unit 3: Add AI settings and consent gate**
+- [x] **Unit 3: Add AI settings and consent gate**
 
 **Goal:** Provide the minimal durable settings and consent surface required before screenshots are sent through Codex.
 
@@ -253,7 +263,7 @@ sequenceDiagram
 - Settings handlers are registered at bootstrap and callable through the existing command bus.
 - Tests prove consent is explicit and defaults cannot accidentally enable AI.
 
-- [ ] **Unit 4: Orchestrate enrichment from capture commit**
+- [x] **Unit 4: Orchestrate enrichment from capture commit**
 
 **Goal:** Start enrichment automatically for new captures, apply settings/consent gates, update run status, and broadcast state changes to renderers.
 
@@ -299,7 +309,7 @@ sequenceDiagram
 - Unit tests use fake repositories and a fake Codex client to prove gating, queueing, event emission, and cancellation.
 - Main bootstrap registers the new handlers exactly once with the existing command bus.
 
-- [ ] **Unit 5: Wire float-over suggestions and acceptance**
+- [x] **Unit 5: Wire float-over suggestions and acceptance**
 
 **Goal:** Replace mocked float-over AI state with live enrichment status, suggested description, suggested tags, and persistence-backed accept/edit behavior.
 
@@ -343,7 +353,7 @@ sequenceDiagram
 - Renderer tests prove stale events and user-edit races are handled.
 - Manual smoke: capture an image, see the toast immediately, watch AI status update, accept a tag, dismiss, reopen Library, and see accepted metadata persisted.
 
-- [ ] **Unit 6: Surface enrichment in Library and detail rail**
+- [x] **Unit 6: Surface enrichment in Library and detail rail**
 
 **Goal:** Make accepted tags, accepted/suggested description, and OCR available outside the transient float-over.
 
@@ -388,7 +398,7 @@ sequenceDiagram
 - Renderer tests cover adapter mapping and selected-record detail rendering.
 - Manual smoke confirms grid, focus/detail rail, and float-over agree on accepted metadata after refresh.
 
-- [ ] **Unit 7: Add privacy, failure, and lifecycle verification**
+- [x] **Unit 7: Add privacy, failure, and lifecycle verification**
 
 **Goal:** Lock down the high-risk paths: consent silence, no direct provider calls, bounded image inputs, cancellation, and non-blocking UX.
 

@@ -179,6 +179,9 @@ export function FloatOver({
   initialDescription = "",
   initialTags = [],
   enrichment,
+  aiEnabled = false,
+  aiConsentAccepted = false,
+  onEnableAi,
   onAcceptDescription,
   onAcceptTag,
   onRejectTag
@@ -217,12 +220,16 @@ export function FloatOver({
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
+  aiEnabled?: boolean;
+  aiConsentAccepted?: boolean;
+  onEnableAi?: () => void;
   onAcceptDescription?: (description: string) => void;
   onAcceptTag?: (tagId: string) => void;
   onRejectTag?: (tagId: string) => void;
 }) {
   const cfg = VARIANTS[variant];
   const aiStatus = enrichment?.status ?? null;
+  const aiNeedsConsent = !aiEnabled || !aiConsentAccepted;
   const acceptedDescription = enrichment?.acceptedDescription ?? initialDescription;
   const suggestedDescription = enrichment?.suggestedDescription ?? "";
   const acceptedTags = enrichment?.acceptedTags ?? initialTags;
@@ -663,10 +670,17 @@ export function FloatOver({
               <>
                 Codex thinks: <b>{suggestedDescription}</b>
               </>
+            ) : aiNeedsConsent ? (
+              <>Enable Codex to read a bounded copy of this snap.</>
             ) : (
               <>Codex has no suggestion yet.</>
             )}
           </span>
+          {!thinking && suggestedDescription.length === 0 && aiNeedsConsent && (
+            <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+              Enable
+            </button>
+          )}
           {!thinking && !aiFailed && !aiAccepted && suggestedDescription.length > 0 && (
             <button
               className="fo__ai-accept"

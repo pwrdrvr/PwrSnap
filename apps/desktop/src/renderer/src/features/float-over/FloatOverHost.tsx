@@ -23,7 +23,8 @@ import {
   type CaptureEnrichment,
   type CaptureRecord,
   type FloatOverEvent,
-  type RenderPreset
+  type RenderPreset,
+  type Settings
 } from "@pwrsnap/shared";
 import { FloatOver, type FloatOverExportState } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
@@ -32,7 +33,12 @@ import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/p
 type HostState =
   | { kind: "idle" }
   | { kind: "loading"; captureId: string }
-  | { kind: "loaded"; record: CaptureRecord; enrichment: CaptureEnrichment | null }
+  | {
+      kind: "loaded";
+      record: CaptureRecord;
+      enrichment: CaptureEnrichment | null;
+      settings: Settings | null;
+    }
   | { kind: "error"; captureId: string; message: string };
 
 const INITIAL_COPY_PULSES: Record<RenderPreset, number> = {
@@ -115,7 +121,12 @@ export function FloatOverHost(): React.ReactElement {
           // show a stale "Saved" badge from the previous recording.
           setVideoExportState({ kind: "idle" });
           if (event.record !== undefined) {
-            setState({ kind: "loaded", record: event.record, enrichment: null });
+            setState({
+              kind: "loaded",
+              record: event.record,
+              enrichment: null,
+              settings: null
+            });
           } else {
             setState({ kind: "loading", captureId: event.captureId });
           }
@@ -165,12 +176,16 @@ export function FloatOverHost(): React.ReactElement {
         return;
       }
       const record = result.value;
-      void dispatch("codex:enrichment", { captureId }).then((enrichmentResult) => {
+      void Promise.all([
+        dispatch("codex:enrichment", { captureId }),
+        dispatch("settings:read", {})
+      ]).then(([enrichmentResult, settingsResult]) => {
         if (cancelled) return;
         setState({
           kind: "loaded",
           record,
-          enrichment: enrichmentResult.ok ? enrichmentResult.value : null
+          enrichment: enrichmentResult.ok ? enrichmentResult.value : null,
+          settings: settingsResult.ok ? settingsResult.value : null
         });
       });
     });
@@ -188,6 +203,19 @@ export function FloatOverHost(): React.ReactElement {
           return current;
         }
         return { ...current, enrichment };
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.settingsChanged, (payload) => {
+      const settings = payload as Settings;
+      setState((current) => {
+        if (current.kind !== "loaded") return current;
+        return { ...current, settings };
       });
     });
     return () => {
@@ -262,7 +290,7 @@ export function FloatOverHost(): React.ReactElement {
       </div>
     );
   } else {
-    const { enrichment, record } = state;
+    const { enrichment, record, settings } = state;
     const isVideo =
       record.kind === "video" && record.video !== null && record.video !== undefined;
     const previewSrc = captureSrcUrl(record.id);
@@ -352,6 +380,23 @@ export function FloatOverHost(): React.ReactElement {
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         enrichment={enrichment}
+        aiEnabled={settings?.ai.enabled ?? false}
+        aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
+        onEnableAi={() => {
+          void dispatch("settings:write", {
+            ai: {
+              enabled: true,
+              consentAcceptedAt: new Date().toISOString()
+            }
+          }).then((result) => {
+            if (!result.ok) return;
+            setState((current) => {
+              if (current.kind !== "loaded" || current.record.id !== record.id) return current;
+              return { ...current, settings: result.value };
+            });
+            void dispatch("codex:enrich", { captureId: record.id });
+          });
+        }}
         onAcceptDescription={(description) => {
           void dispatch("codex:acceptDescription", { captureId: record.id, description });
         }}

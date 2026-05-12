@@ -223,13 +223,16 @@ describe("Codex handlers", () => {
   });
 
   test("codex:cancel aborts an active background run", async () => {
-    writeSettings({
-      aiEnabled: true,
-      aiConsentAcceptedAt: "2026-05-12T12:00:00.000Z"
-    });
     const client = new HangingCodexClient();
     registerCodexHandlers({
-      clientFactory: () => client as never
+      clientFactory: () => client as never,
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+          }
+        })
     });
 
     const started = await bus.dispatch(

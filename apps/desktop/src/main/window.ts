@@ -280,9 +280,8 @@ export function positionTrayWindow(window: BrowserWindow, trayBounds: Rectangle)
 }
 
 export function createFloatOverWindow(): BrowserWindow {
-  // Sized to fit the standard variant of the toast. Height is generous so
-  // the annotation textarea + AI strip + footer never clip; the window is
-  // transparent so the unused area below the toast is invisible.
+  // Sized to fit the standard variant of the toast until the renderer's
+  // ResizeObserver posts the exact content height.
   const width = 392;
   const height = 700;
 
@@ -307,7 +306,10 @@ export function createFloatOverWindow(): BrowserWindow {
     skipTaskbar: true,
     alwaysOnTop: true,
     focusable: true,
-    hasShadow: false,
+    // Use the native window shadow so the visible shadow can extend
+    // outside the BrowserWindow without enlarging the transparent
+    // hit-test region around the toast.
+    hasShadow: true,
     webPreferences: baseWebPreferences
   });
   // ⚠️  Same gotcha as createTrayWindow — see that function's comment

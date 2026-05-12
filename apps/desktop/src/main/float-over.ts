@@ -170,12 +170,20 @@ function getOrCreate(): BrowserWindow {
   const window = createFloatOverWindow();
   singleton = window;
   rendererReady = false;
-  window.webContents.once("did-finish-load", () => {
+  const markRendererReady = (): void => {
     rendererReady = true;
     if (lastEvent !== null && !window.isDestroyed()) {
       window.webContents.send(EVENT_CHANNELS.floatOverState, lastEvent);
     }
-  });
+  };
+  const markRendererReadyAfterReactMount = (): void => {
+    setTimeout(markRendererReady, 100);
+  };
+  if (window.webContents.getURL() !== "" && !window.webContents.isLoadingMainFrame()) {
+    markRendererReadyAfterReactMount();
+  } else {
+    window.webContents.once("did-finish-load", markRendererReadyAfterReactMount);
+  }
   // Re-measure on zoom changes — see the matching block in
   // tray.ts/ensureTrayWindow for why ResizeObserver alone isn't
   // sufficient.

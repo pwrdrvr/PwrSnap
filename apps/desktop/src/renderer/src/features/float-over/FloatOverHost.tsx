@@ -32,19 +32,11 @@ export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
-  // toast. The window is constructed at a generous 700px height (we
-  // can't know the toast height at create time), but rendering a
-  // 580-ish px toast inside it leaves ~120px of empty body below the
-  // toast — and that empty region was rendering as a grayish "tail"
-  // (the toast's `box-shadow: 0 24px 64px rgba(0,0,0,0.55)` bleeding
-  // into transparent body) AND extending the window's bottom edge
-  // into the macOS Dock area.
-  //
-  // Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize` plumbing.
-  // Body shadow extends `y_offset + blur ≈ 88px` past the toast's
-  // bottom edge; we pad with 96px so the soft shadow doesn't clip
-  // against the bottom of the new window bounds.
-  const SHADOW_PADDING_PX = 96;
+  // toast. Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize`
+  // plumbing: post the wrapper's natural height only. Do not add
+  // transparent shadow padding here — BrowserWindow hit testing uses
+  // the full rectangular window bounds, so extra invisible content
+  // below the toast blocks clicks on whatever sits under it.
   const contentRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const el = contentRef.current;
@@ -53,7 +45,7 @@ export function FloatOverHost(): React.ReactElement {
       const rect = el.getBoundingClientRect();
       window.pwrsnapApi?.requestFloatOverResize?.({
         width: Math.ceil(rect.width),
-        height: Math.ceil(rect.height + SHADOW_PADDING_PX)
+        height: Math.ceil(rect.height)
       });
     };
     post();

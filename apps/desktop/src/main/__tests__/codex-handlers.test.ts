@@ -133,6 +133,31 @@ class FakeCodexClient {
   }
 }
 
+class HangingCodexClient {
+  aborted = false;
+
+  async enrichCapture(request: { abortSignal?: AbortSignal }): Promise<never> {
+    if (request.abortSignal?.aborted) {
+      this.aborted = true;
+      throw new DOMException("aborted", "AbortError");
+    }
+    return await new Promise<never>((_resolve, reject) => {
+      request.abortSignal?.addEventListener(
+        "abort",
+        () => {
+          this.aborted = true;
+          reject(new DOMException("aborted", "AbortError"));
+        },
+        { once: true }
+      );
+    });
+  }
+
+  async close(): Promise<void> {
+    return;
+  }
+}
+
 describe("Codex handlers", () => {
   beforeEach(async () => {
     tempRoot = join(tmpdir(), `pwrsnap-codex-handlers-test-${process.pid}-${Date.now()}`);
@@ -195,5 +220,37 @@ describe("Codex handlers", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("ai_disabled");
     }
+  });
+
+  test("codex:cancel aborts an active background run", async () => {
+    writeSettings({
+      aiEnabled: true,
+      aiConsentAcceptedAt: "2026-05-12T12:00:00.000Z"
+    });
+    const client = new HangingCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => client as never
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "running");
+
+    const cancelled = await bus.dispatch(
+      "codex:cancel",
+      { runId: started.value.runId },
+      { principal: "ipc" }
+    );
+
+    expect(cancelled.ok).toBe(true);
+    await waitFor(() => getAiRun(started.value.runId)?.status === "cancelled");
+    await waitFor(() => client.aborted);
+    expect(client.aborted).toBe(true);
   });
 });

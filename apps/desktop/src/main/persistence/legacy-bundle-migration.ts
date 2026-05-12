@@ -40,7 +40,7 @@ type LegacyRow = {
   height_px: number;
   byte_size: number;
   sha256: string;
-  overlays_version: number;
+  edits_version: number;
 };
 
 export type LegacyMigrationResult = {
@@ -62,7 +62,7 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
       `SELECT id, captured_at,
               source_app_bundle_id, source_app_name,
               legacy_src_path, width_px, height_px,
-              byte_size, sha256, overlays_version
+              byte_size, sha256, edits_version
        FROM captures
        WHERE bundle_path IS NULL
          AND legacy_src_path IS NOT NULL
@@ -149,7 +149,9 @@ async function migrateRow(row: LegacyRow): Promise<void> {
 
   const overlays: BundleOverlaysV1 = {
     overlays_format_version: 1,
-    overlays_version: row.overlays_version,
+    // Wire-format field name stays `overlays_version` (v1 bundle JSON
+    // shape is locked); source is the renamed DB column `edits_version`.
+    overlays_version: row.edits_version,
     overlays: liveOverlays.map((o) => ({
       id: o.id,
       data: o.data,
@@ -196,7 +198,7 @@ async function migrateRow(row: LegacyRow): Promise<void> {
        SET bundle_path = @bundle_path,
            flat_png_path = @flat_png_path,
            bundle_modified_at = @bundle_modified_at,
-           bundle_overlays_version = overlays_version
+           bundle_edits_version = edits_version
        WHERE id = @id`
     )
     .run({

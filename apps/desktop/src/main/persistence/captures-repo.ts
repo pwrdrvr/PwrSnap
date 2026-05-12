@@ -33,13 +33,14 @@ type CaptureRow = {
   bundle_path: string | null;
   flat_png_path: string | null;
   bundle_modified_at: string | null;
-  bundle_overlays_version: number;
+  bundle_format_version: number;
+  bundle_edits_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
   byte_size: number;
   sha256: string;
-  overlays_version: number;
+  edits_version: number;
   deleted_at: string | null;
 };
 
@@ -52,7 +53,8 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     bundle_path: row.bundle_path,
     flat_png_path: row.flat_png_path,
     bundle_modified_at: row.bundle_modified_at,
-    bundle_overlays_version: row.bundle_overlays_version,
+    bundle_format_version: row.bundle_format_version,
+    bundle_edits_version: row.bundle_edits_version,
     width_px: row.width_px,
     height_px: row.height_px,
     device_pixel_ratio: row.device_pixel_ratio,
@@ -60,7 +62,7 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     sha256: row.sha256,
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
-    overlays_version: row.overlays_version,
+    edits_version: row.edits_version,
     deleted_at: row.deleted_at,
     // video metadata is hydrated separately by the read APIs below —
     // rowToRecord is shared with insert paths where the metadata
@@ -89,7 +91,13 @@ export type InsertCapture = {
   bundle_path?: string | null;
   flat_png_path?: string | null;
   bundle_modified_at?: string | null;
-  bundle_overlays_version?: number;
+  /**
+   * v1 = 1 (default; new captures created before v2 write path landed);
+   * v2 = 2 (captures written via persistCaptureFromTempV2). Cached
+   * projection; doctor reconciles from manifest at read time.
+   */
+  bundle_format_version?: number;
+  bundle_edits_version?: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -151,20 +159,23 @@ function insertOrFindCaptureInTx(
     bundle_path: input.bundle_path ?? null,
     flat_png_path: input.flat_png_path ?? null,
     bundle_modified_at: input.bundle_modified_at ?? null,
-    bundle_overlays_version: input.bundle_overlays_version ?? 0
+    bundle_format_version: input.bundle_format_version ?? 1,
+    bundle_edits_version: input.bundle_edits_version ?? 0
   };
   const inserted = db
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
         source_app_bundle_id, source_app_name, legacy_src_path,
-        bundle_path, flat_png_path, bundle_modified_at, bundle_overlays_version,
+        bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, overlays_version, deleted_at
+        byte_size, sha256, edits_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
         @source_app_bundle_id, @source_app_name, @legacy_src_path,
-        @bundle_path, @flat_png_path, @bundle_modified_at, @bundle_overlays_version,
+        @bundle_path, @flat_png_path, @bundle_modified_at,
+        @bundle_format_version, @bundle_edits_version,
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )
@@ -204,21 +215,25 @@ export function findCaptureBySha256(sha256: string): CaptureRecord | null {
 /**
  * Update bundle convergence columns after a successful re-pack.
  * Called from `bundle-store.runRepack` once the new bundle has been
- * written; this advances `bundle_overlays_version` to match the
- * row's `overlays_version` at pack time. The doctor's mid-debounce
- * recovery rule (`overlays_version > bundle_overlays_version`
- * means re-pack owed) reads these columns to decide whether to
- * re-pack on boot.
+ * written; this advances `bundle_edits_version` to match the row's
+ * `edits_version` at pack time. The doctor's mid-debounce recovery
+ * rule (`edits_version > bundle_edits_version` means re-pack owed)
+ * reads these columns to decide whether to re-pack on boot.
+ *
+ * Renamed from updateCaptureBundleAfterRepack's earlier signature in
+ * migration 0004 — `bundle_overlays_version` → `bundle_edits_version`.
+ * Same semantics work for both v1 (overlays) and v2 (layers); the
+ * table being read is gated by `bundle_format_version`.
  */
 export function updateCaptureBundleAfterRepack(
   captureId: string,
-  fields: { bundle_modified_at: string; bundle_overlays_version: number }
+  fields: { bundle_modified_at: string; bundle_edits_version: number }
 ): void {
   const db = getDb();
   db.prepare(
     `UPDATE captures
      SET bundle_modified_at = @bundle_modified_at,
-         bundle_overlays_version = @bundle_overlays_version
+         bundle_edits_version = @bundle_edits_version
      WHERE id = @id`
   ).run({ id: captureId, ...fields });
 }

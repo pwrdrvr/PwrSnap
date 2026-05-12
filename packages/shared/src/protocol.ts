@@ -39,11 +39,21 @@ export type CaptureRecord = {
   /** ISO-8601 timestamp of the most recent bundle re-pack. */
   bundle_modified_at: string | null;
   /**
-   * Convergence checkpoint with bundle's overlays.json. A re-pack is
-   * owed when `overlays_version > bundle_overlays_version` (e.g.,
-   * detected on boot after a crash mid-debounce).
+   * v1 = flat overlays array; v2 = layer tree. Cached projection of
+   * `manifest.bundle_format_version` from the on-disk bundle; the
+   * doctor reconciles this on every reconcile pass so a rename-vs-
+   * UPDATE crash gap doesn't leave the row claiming v1 while the
+   * bundle is v2. Stored value is a hint, not authoritative — read
+   * paths that need to dispatch on format should consult the bundle.
    */
-  bundle_overlays_version: number;
+  bundle_format_version: number;
+  /**
+   * Convergence checkpoint with the bundle's edit state
+   * (overlays.json for v1; document.json/layers for v2). A re-pack is
+   * owed when `edits_version > bundle_edits_version` (e.g., detected
+   * on boot after a crash mid-debounce).
+   */
+  bundle_edits_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -53,13 +63,19 @@ export type CaptureRecord = {
   source_app_name: string | null;
   /**
    * Monotonic counter, bumped in the same transaction as every
-   * overlay write (see `insertOverlay` / `rejectOverlay` in
-   * persistence/overlays-repo.ts). Renderers append this to the
-   * `pwrsnap-cache://` URL as a cache-buster so Chromium re-fetches
-   * the rendered image after the user edits — without it the
-   * 5-minute browser HTTP cache serves the stale render.
+   * edit write (overlay insert for v1; layer insert for v2 — see
+   * `insertOverlay` / `rejectOverlay` in persistence/overlays-repo.ts
+   * and the future `insertLayer` in persistence/layers-repo.ts).
+   * Renderers append this to the `pwrsnap-cache://` URL as a
+   * cache-buster so Chromium re-fetches the rendered image after
+   * the user edits — without it the 5-minute browser HTTP cache
+   * serves the stale render.
+   *
+   * Renamed from `overlays_version` in migration 0004 to unify v1/v2
+   * convergence semantics. The table being read (overlays vs layers)
+   * is gated by `bundle_format_version`.
    */
-  overlays_version: number;
+  edits_version: number;
   deleted_at: string | null;
   /**
    * Set for `kind === "video"` rows. Carries duration, audio-track

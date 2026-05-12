@@ -573,7 +573,8 @@ export async function persistCaptureFromTemp(
     bundle_path: bundlePath,
     flat_png_path: flatPngPath,
     bundle_modified_at: now,
-    bundle_overlays_version: 0,
+    bundle_format_version: 1,        // v1 write path until v2 ships
+    bundle_edits_version: 0,
     width_px: widthPx,
     height_px: heightPx,
     device_pixel_ratio: args.devicePixelRatio ?? 2,
@@ -612,14 +613,14 @@ const repackInFlight = new Map<string, Promise<void>>();
 /**
  * Debounced re-pack request. Called after every overlay write
  * (insertOverlay, rejectOverlay) — the existing
- * `captures.overlays_version` bump is the convergence trigger.
+ * `captures.edits_version` bump is the convergence trigger.
  * Multiple rapid edits coalesce into one re-pack run; the bundle
  * stays consistent with the latest DB state ≥1s after the user
  * stops editing.
  *
  * The DB stays the live read path during the debounce window. A
  * crash during the window reruns the pack on next boot via the
- * `overlays_version > bundle_overlays_version` check the doctor
+ * `edits_version > bundle_edits_version` check the doctor
  * applies in Phase 2.
  */
 export function scheduleRepack(captureId: string): void {
@@ -722,7 +723,7 @@ async function runRepack(captureId: string): Promise<void> {
 
     updateCaptureBundleAfterRepack(captureId, {
       bundle_modified_at: now,
-      bundle_overlays_version: record.overlays_version
+      bundle_edits_version: record.edits_version
     });
 
     log.info("bundle-store: repacked", {
@@ -746,7 +747,11 @@ function bundleOverlaysFromRows(
 ): BundleOverlaysV1 {
   return {
     overlays_format_version: 1,
-    overlays_version: record.overlays_version,
+    // Wire-format JSON field name for v1 bundles stays `overlays_version`
+    // — that's the on-disk shape of overlays.json inside .pwrsnap v1.
+    // The DB column it mirrors was renamed to `edits_version` in
+    // migration 0004.
+    overlays_version: record.edits_version,
     overlays: rows.map((row) => ({
       id: row.id,
       // listLiveOverlays returns rows whose `data` is an Overlay

@@ -890,11 +890,11 @@ export function bootstrapApp(): void {
         // window — the main bug class the prior e2e suite missed.
         setFloatOverState: (event: Parameters<typeof setFloatOverState>[0]) =>
           setFloatOverState(event),
-        getOverlaysVersion: (captureId: string) => {
+        getEditsVersion: (captureId: string) => {
           const row = getDb()
-            .prepare("SELECT overlays_version FROM captures WHERE id = ?")
-            .get(captureId) as { overlays_version: number } | undefined;
-          return row?.overlays_version ?? null;
+            .prepare("SELECT edits_version FROM captures WHERE id = ?")
+            .get(captureId) as { edits_version: number } | undefined;
+          return row?.edits_version ?? null;
         },
         // Read the system clipboard's current image. Returns null
         // when the clipboard doesn't currently hold an image. Used by

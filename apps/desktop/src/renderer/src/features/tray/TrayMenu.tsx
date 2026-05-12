@@ -470,7 +470,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                 />
               ) : (
                 <img
-                  src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
+                  src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.edits_version)}
                   alt="Last snap"
                 />
               )}

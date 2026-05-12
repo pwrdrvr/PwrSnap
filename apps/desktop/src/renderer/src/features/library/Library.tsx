@@ -72,7 +72,7 @@ function CellThumb({
   if (record !== null) {
     return (
       <img
-        src={cacheUrl(record.id, width, "webp", record.overlays_version)}
+        src={cacheUrl(record.id, width, "webp", record.edits_version)}
         alt=""
         // loading=lazy + decoding=async let the browser skip decode
         // for offscreen cells. With content-visibility:auto on the

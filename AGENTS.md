@@ -214,11 +214,12 @@ Implementations:
 - Float-over: [FloatOverHost.tsx](apps/desktop/src/renderer/src/features/float-over/FloatOverHost.tsx)
   → dispatches `float-over:resize`. Main listens in
   [float-over.ts](apps/desktop/src/main/float-over.ts) (`wireFloatOverResizeChannel`).
-  Adds `SHADOW_PADDING_PX = 96` to the measured height so the
-  toast's drop shadow doesn't clip against the BrowserWindow's
-  bottom edge (the tray doesn't need this — its OS shadow comes
-  from `hasShadow: true` and renders outside the renderer's
-  measurement entirely).
+  Posts the measured wrapper height directly. Do not add transparent
+  shadow padding to the measured height — BrowserWindow hit testing
+  uses the full rectangular content bounds, so invisible padding below
+  the toast blocks clicks on the Dock / windows underneath. The float-
+  over uses the same native `hasShadow: true` approach as the tray for
+  shadow outside the renderer's measured content.
 
 The shape of the renderer code is the same in both:
 

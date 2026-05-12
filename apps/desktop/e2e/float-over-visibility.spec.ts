@@ -16,9 +16,9 @@
 //      leave the second toast visible-then-hidden after ~220ms — the
 //      stale exit-animation timer bug is regressed.
 //
-//   3. A `cancel` event hides the window synchronously with no
-//      lingering visibility (matches the "user pressed Esc, never
-//      saw the empty pre-show" semantics).
+//   3. A `cancel` event hides the window synchronously via opacity
+//      with no lingering visibility (matches the "user pressed Esc,
+//      never saw the empty pre-show" semantics).
 //
 // Why we drive setFloatOverState directly instead of running through
 // the full pickRegion + screencapture path: the headless E2E harness
@@ -58,6 +58,10 @@ async function inspectFloatOver(
    */
   opacity: number | null;
   bounds: { x: number; y: number; width: number; height: number } | null;
+  contentSize: { width: number; height: number } | null;
+  zoomFactor: number | null;
+  wrapperCssHeight: number | null;
+  toastCssHeight: number | null;
   dataState: string | null;
 }> {
   return await app.electronApp.evaluate(async ({ BrowserWindow }) => {
@@ -65,28 +69,90 @@ async function inspectFloatOver(
       !w.isDestroyed() && w.webContents.getURL().includes("stage=float-over")
     );
     if (win === undefined) {
-      return { exists: false, visible: false, opacity: null, bounds: null, dataState: null };
+      return {
+        exists: false,
+        visible: false,
+        opacity: null,
+        bounds: null,
+        contentSize: null,
+        zoomFactor: null,
+        wrapperCssHeight: null,
+        toastCssHeight: null,
+        dataState: null
+      };
     }
     let dataState: string | null = null;
+    let wrapperCssHeight: number | null = null;
+    let toastCssHeight: number | null = null;
     try {
       // Read the renderer's [data-state] attribute on the host div.
       // Wrapped in try/catch because executeJavaScript can fail if the
       // page hasn't loaded yet.
-      dataState = (await win.webContents.executeJavaScript(
-        "document.querySelector('[data-state]')?.getAttribute('data-state') ?? null",
+      const rendererInfo = (await win.webContents.executeJavaScript(
+        `(() => {
+          const wrapper = document.querySelector('#root > div');
+          const toast = document.querySelector('.fo');
+          return {
+            dataState: document.querySelector('[data-state]')?.getAttribute('data-state') ?? null,
+            wrapperCssHeight: wrapper?.getBoundingClientRect().height ?? null,
+            toastCssHeight: toast?.getBoundingClientRect().height ?? null
+          };
+        })()`,
         true
-      )) as string | null;
+      )) as {
+        dataState: string | null;
+        wrapperCssHeight: number | null;
+        toastCssHeight: number | null;
+      };
+      dataState = rendererInfo.dataState;
+      wrapperCssHeight = rendererInfo.wrapperCssHeight;
+      toastCssHeight = rendererInfo.toastCssHeight;
     } catch {
       dataState = null;
     }
+    const [contentWidth, contentHeight] = win.getContentSize();
     return {
       exists: true,
       visible: win.isVisible(),
       opacity: win.getOpacity(),
       bounds: win.getBounds(),
+      contentSize: { width: contentWidth, height: contentHeight },
+      zoomFactor: win.webContents.zoomFactor,
+      wrapperCssHeight,
+      toastCssHeight,
       dataState
     };
   });
+}
+
+/**
+ * Wait until the float-over content size settles after the renderer
+ * has loaded the capture and posted its ResizeObserver measurement.
+ */
+async function waitForStableFloatOverSize(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  { stableMs = 300, timeoutMs = 5000 }: { stableMs?: number; timeoutMs?: number } = {}
+): Promise<{ width: number; height: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { width: number; height: number } | null = null;
+  let stableSince = 0;
+  while (Date.now() < deadline) {
+    const info = await inspectFloatOver(app);
+    if (info.contentSize !== null && info.toastCssHeight !== null) {
+      if (last !== null && info.contentSize.height === last.height && info.contentSize.width === last.width) {
+        if (Date.now() - stableSince >= stableMs) {
+          return info.contentSize;
+        }
+      } else {
+        last = info.contentSize;
+        stableSince = Date.now();
+      }
+    }
+    await app.window.waitForTimeout(50);
+  }
+  throw new Error(
+    `float-over contentSize never stabilized within ${timeoutMs}ms; last=${JSON.stringify(last)}`
+  );
 }
 
 /**
@@ -191,6 +257,30 @@ test.describe("float-over visibility", () => {
     }
   });
 
+  test("content bounds hug the toast without transparent shadow padding", async () => {
+    const app = await launchPwrSnap();
+    try {
+      const captureId = await seedCapture(app);
+      await setFloatOverState(app, { kind: "show-loaded", captureId });
+      await waitForStableFloatOverSize(app);
+
+      const info = await inspectFloatOver(app);
+      expect(info.contentSize).not.toBeNull();
+      expect(info.zoomFactor).not.toBeNull();
+      expect(info.wrapperCssHeight).not.toBeNull();
+      expect(info.toastCssHeight).not.toBeNull();
+      expect(info.contentSize!.width).toBe(392);
+
+      const expectedDip = Math.ceil(info.toastCssHeight! * info.zoomFactor!);
+      expect(info.contentSize!.height).toBeGreaterThanOrEqual(expectedDip - 2);
+      expect(info.contentSize!.height).toBeLessThanOrEqual(expectedDip + 2);
+      expect(info.wrapperCssHeight!).toBeGreaterThanOrEqual(info.toastCssHeight! - 2);
+      expect(info.wrapperCssHeight!).toBeLessThanOrEqual(info.toastCssHeight! + 2);
+    } finally {
+      await app.close();
+    }
+  });
+
   test("rapid show-loaded → show-loaded keeps the second toast visible past 4s", async () => {
     // This catches the stale-setTimeout bug. With the old design
     // (loadURL reload), the first toast's exit-animation timer would
@@ -232,7 +322,7 @@ test.describe("float-over visibility", () => {
     }
   });
 
-  test("cancel parks the float-over off-screen synchronously", async () => {
+  test("cancel hides the float-over synchronously", async () => {
     const app = await launchPwrSnap();
     try {
       // Pre-show under selector — the IDLE state. User would never
@@ -248,20 +338,19 @@ test.describe("float-over visibility", () => {
         .toBe(1);
 
       // Now cancel. setFloatOverState(cancel) calls parkOffScreen()
-      // synchronously inside the same tick — opacity → 0 and the
-      // window is repositioned far off-screen.
+      // synchronously inside the same tick, so opacity drops to 0
+      // before the selector goes away.
       await setFloatOverState(app, { kind: "cancel" });
 
-      // Park flips opacity to 0 and bounds to (-20000, -20000) within
-      // one tick. The BrowserWindow is intentionally never `.hide()`-d
-      // — that would call AppKit's `[NSWindow orderOut:]` which
-      // triggers the key-window cascade we're trying to avoid (yanks
-      // keyboard focus from the user's other app). See parkOffScreen
-      // in main/float-over.ts for the full rationale.
+      // Park flips opacity to 0 within one tick. The BrowserWindow is
+      // intentionally never `.hide()`-d — that would call AppKit's
+      // `[NSWindow orderOut:]` which triggers the key-window cascade
+      // we're trying to avoid (yanks keyboard focus from the user's
+      // other app). Electron may clamp the off-screen position for
+      // visible panels, so opacity is the stable assertion here.
       const after = await inspectFloatOver(app);
       expect(after.exists, "window persists; cancel only parks").toBe(true);
       expect(after.opacity, "cancel parks the window at opacity 0").toBe(0);
-      expect(after.bounds?.x, "cancel parks the window off-screen").toBeLessThan(-10000);
     } finally {
       await app.close();
     }

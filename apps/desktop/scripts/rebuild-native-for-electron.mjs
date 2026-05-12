@@ -18,6 +18,7 @@ const betterSqlite3PackagePath = require.resolve("better-sqlite3/package.json");
 const betterSqlite3Dir = dirname(betterSqlite3PackagePath);
 const betterSqlite3Version = require(betterSqlite3PackagePath).version;
 const electronVersion = require("electron/package.json").version;
+const electronArch = resolveElectronArch();
 
 const electronNativeDir = join(betterSqlite3Dir, "electron-native");
 const targetBinary = join(electronNativeDir, "better_sqlite3.node");
@@ -25,7 +26,7 @@ const metadataFile = join(electronNativeDir, "metadata.json");
 const defaultBinary = join(betterSqlite3Dir, "build", "Release", "better_sqlite3.node");
 const backupBinary = join(betterSqlite3Dir, "build", "Release", "better_sqlite3.node.bak");
 const expectedMetadata = {
-  arch: process.arch,
+  arch: electronArch,
   betterSqlite3Version,
   electronVersion
 };
@@ -35,7 +36,7 @@ if (isCurrentElectronBinary()) {
   process.exit(0);
 }
 
-console.log(`Downloading better-sqlite3 prebuild for Electron ${electronVersion}...`);
+console.log(`Downloading better-sqlite3 prebuild for Electron ${electronVersion} (${electronArch})...`);
 rmSync(electronNativeDir, { force: true, recursive: true });
 
 if (existsSync(defaultBinary)) {
@@ -44,7 +45,7 @@ if (existsSync(defaultBinary)) {
 
 try {
   execSync(
-    `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${process.arch} --tag-prefix=v --strip`,
+    `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${electronArch} --tag-prefix=v --strip`,
     { cwd: betterSqlite3Dir, stdio: "inherit" }
   );
 } catch (error) {
@@ -94,4 +95,8 @@ function restoreDefaultBinary() {
 
   copyFileSync(backupBinary, defaultBinary);
   unlinkSync(backupBinary);
+}
+
+function resolveElectronArch() {
+  return process.env.npm_config_arch || process.env.npm_config_target_arch || process.arch;
 }

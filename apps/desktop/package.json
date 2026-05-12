@@ -43,6 +43,7 @@
     "react-dom": "^19.2.0",
     "safe-stable-stringify": "^2.5.0",
     "sharp": "^0.34.0",
+    "transformation-matrix": "^3.1.0",
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
     "zod": "^4.0.0"

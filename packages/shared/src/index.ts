@@ -11,3 +11,4 @@ export * from "./ipc";
 export * from "./arrow";
 export * from "./appearance-arg";
 export * from "./bundle-manifest-schema";
+export * from "./bundle-manifest-schema-v2";

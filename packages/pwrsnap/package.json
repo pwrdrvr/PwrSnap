@@ -1,0 +1,34 @@
+{
+  "name": "pwrsnap",
+  "version": "0.0.0",
+  "description": "PwrSnap placeholder package",
+  "author": "PwrDrvr LLC <harold@pwrdrvr.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/pwrdrvr/PwrSnap#readme",
+  "bugs": {
+    "url": "https://github.com/pwrdrvr/PwrSnap/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pwrdrvr/PwrSnap.git",
+    "directory": "packages/pwrsnap"
+  },
+  "keywords": [
+    "pwrsnap",
+    "screen-capture",
+    "macos",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "pwrsnap": "./bin/pwrsnap.mjs"
+  },
+  "files": [
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

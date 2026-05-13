@@ -1259,7 +1259,7 @@ export async function persistCaptureFromTempV2(
     bundle_edits_version: 0,
     width_px: widthPx,
     height_px: heightPx,
-    device_pixel_ratio: 2,
+    device_pixel_ratio: args.devicePixelRatio ?? 2,
     byte_size: buf.length,
     sha256
   });

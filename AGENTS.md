@@ -102,6 +102,24 @@ Both shapes go through Codex App Server:
 
 PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
+## Bundle format v2 — experimental, opt-in
+
+The v2 layer-tree bundle format (multi-source canvas, layer tree,
+contextual effects, private-UTI clipboard) is **merged but gated
+behind a feature flag**:
+
+- Flag: `PWRSNAP_BUNDLE_V2=1` env var
+- Source of truth: [apps/desktop/src/main/feature-flags.ts](apps/desktop/src/main/feature-flags.ts)
+- Default: **off** — new captures write v1 bundles so `overlays:*`
+  IPC keeps working
+- Read path: always dual-format — both v1 and v2 captures render
+  correctly regardless of flag state
+
+The flag will be promoted to the default once the layer-editor UI
+ships, the v1→v2 doctor lands, and Phase 6 E2E specs are green. See
+[docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
+§"Shipping Status" for the full promotion checklist.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

@@ -8,6 +8,43 @@ origin: docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md
 
 # Bundle format v2 — multi-source canvas + layer tree + contextual effects
 
+## Shipping Status — Option A (experimental, opt-in)
+
+**As of 2026-05-12** the v2 data layer (Phases 1–5) is merged behind
+an experimental feature flag. New captures default to **v1 bundle
+writes** so the existing `overlays:*` IPC keeps working — the editor's
+only annotation surface today. The v2 write path lives but is gated:
+
+- Flag: `PWRSNAP_BUNDLE_V2=1` env var (see
+  [apps/desktop/src/main/feature-flags.ts](../../apps/desktop/src/main/feature-flags.ts))
+- Default: **off** (v1 write path)
+- Read path: **always dual-format** — both v1 and v2 captures render
+  correctly via `coordinator.ts:resolveCacheFile` branching on
+  `record.bundle_format_version`.
+- Clipboard `copyLayerFragment` / `pasteLayerFragment`: refuse v1
+  captures (correct — non-default users never see them); ignore the
+  flag for receive-side validation because flag state is per-instance.
+
+### What still blocks promoting v2 to the default
+
+1. **Layer-editor UI in the renderer.** The editor calls only
+   `overlays:upsert` today. With v2 captures, overlays IPC refuses
+   (correct), so annotation breaks. Needs: layer panel, multi-image
+   canvas drag-drop, effect palette.
+2. **v1 → v2 doctor promotion.** Users with existing v1 captures need
+   a one-shot wrap that produces an equivalent layer tree (single
+   raster + per-overlay vector/effect siblings).
+3. **Phase 6 E2E specs.** No round-trip coverage of capture → edit →
+   repack → reload on v2 yet. `clipboard-layer-fragment.spec.ts` not
+   written (5-defense layers exercised only at the zod-schema level).
+4. **Cross-instance UTI roundtrip verification.** The macOS UTI write
+   and read have not been validated against a packaged second
+   PwrSnap instance.
+
+Promotion path (in order): land layer-editor UI → land v1→v2 doctor
+→ ship Phase 6 specs → flip default in `isV2WriteEnabled()` → add
+Settings → Experimental UI toggle backed by the same getter.
+
 ## Enhancement Summary
 
 **Deepened on:** 2026-05-07

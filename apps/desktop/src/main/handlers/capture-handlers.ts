@@ -52,7 +52,8 @@ import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
-import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { persistCaptureFromTemp, persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { isV2WriteEnabled } from "../feature-flags";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
@@ -733,24 +734,35 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // v2 capture-flow: every new capture lands as a v2 bundle with a
-  // root group + raster layer pointing at the single source. v1 read
-  // path stays alive for unmigrated bundles (AirDrop imports, peer
-  // iCloud), but production never writes v1 again.
-  const { record, isDedup } = await persistCaptureFromTempV2({
+  // v2 layer-tree bundle is opt-in via PWRSNAP_BUNDLE_V2=1 (see
+  // feature-flags.ts). Default path writes a v1 bundle so the
+  // existing overlays:* IPC keeps working — the editor's only
+  // annotation surface today. The read path in coordinator.ts
+  // handles both formats transparently, so existing v2 captures
+  // (written before this gate landed, or by users with the flag on)
+  // render correctly regardless of where the flag sits now.
+  //
+  // devicePixelRatio threads through both write paths so PR #48's
+  // clipboard-paste flow (which passes 1, since pasted bytes aren't
+  // from a physical display) doesn't get hardcoded to 2.
+  const persistArgs = {
     tempPath,
     sourceApp:
       sourceApp === null
         ? null
-        : {
-            bundleId: sourceApp.bundleId,
-            appName: sourceApp.appName
-          },
+        : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
     devicePixelRatio: options.devicePixelRatio
-  });
+  };
+
+  const { record, isDedup } = isV2WriteEnabled()
+    ? await persistCaptureFromTempV2(persistArgs)
+    : await persistCaptureFromTemp(persistArgs);
+
+
   log.info("capture persisted", {
     captureId: record.id,
     isDedup,
+    bundleFormatVersion: record.bundle_format_version,
     sourceAppBundleId: record.source_app_bundle_id,
     sourceAppName: record.source_app_name
   });

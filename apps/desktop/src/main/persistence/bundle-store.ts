@@ -256,6 +256,70 @@ export async function packBundle(args: PackBundleArgs): Promise<Buffer> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// v2 pack surface.
+// ---------------------------------------------------------------------------
+
+export type PackBundleV2Args = {
+  manifest: BundleManifestV2;
+  document: BundleDocumentV2;
+  /**
+   * Map sha256 → bytes. Content-addressable; the writer stores each
+   * entry at `sources/<sha>.png` and the reader verifies sha256 on
+   * extract.
+   */
+  sources: Map<string, Buffer>;
+  /**
+   * Map nanoid → bytes. Used by rasterized effects (effect→raster
+   * "freeze") and future raster masks / brush strokes.
+   */
+  layerBytes: Map<string, Buffer>;
+  compositePng: Buffer;
+};
+
+/**
+ * Pack a v2 `.pwrsnap` bundle into an in-memory Buffer. Pure function;
+ * caller wraps with `atomicWriteBundle` to land on disk crash-safely.
+ *
+ * Layout written:
+ *   manifest.json        — DEFLATE; BundleManifestV2 zod-parsed
+ *   document.json        — DEFLATE; BundleDocumentV2 zod-parsed
+ *   sources/<sha>.png    — STORE; one entry per unique source sha
+ *   layers/<id>.png      — STORE; one entry per raster layer file
+ *   composite.png        — STORE; final flattened render
+ *
+ * yazl validates filenames at write time (`..`, leading `/`, etc.
+ * rejected). Source sha entries use `${sha}.png` form which passes
+ * the v2 path validator on read.
+ */
+export async function packBundleV2(args: PackBundleV2Args): Promise<Buffer> {
+  const validatedManifest = BundleManifestV2.parse(args.manifest);
+  const validatedDocument = BundleDocumentV2.parse(args.document);
+
+  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
+  const documentBuf = Buffer.from(JSON.stringify(validatedDocument));
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const zip = new yazl.ZipFile();
+    zip.addBuffer(manifestBuf, "manifest.json");
+    zip.addBuffer(documentBuf, "document.json");
+    for (const [sha, bytes] of args.sources) {
+      zip.addBuffer(bytes, `sources/${sha}.png`, { compress: false });
+    }
+    for (const [id, bytes] of args.layerBytes) {
+      zip.addBuffer(bytes, `layers/${id}.png`, { compress: false });
+    }
+    zip.addBuffer(args.compositePng, "composite.png", { compress: false });
+
+    const chunks: Buffer[] = [];
+    zip.outputStream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    zip.outputStream.on("end", () => resolve(Buffer.concat(chunks)));
+    zip.outputStream.on("error", reject);
+
+    zip.end();
+  });
+}
+
 /**
  * Open a bundle for read, walk the central directory, validate every
  * entry against the allowlist, and hand the caller a `(zipFile,
@@ -846,32 +910,58 @@ const repackTimers = new Map<string, NodeJS.Timeout>();
 const repackInFlight = new Map<string, Promise<void>>();
 
 /**
- * Debounced re-pack request. Called after every overlay write
- * (insertOverlay, rejectOverlay) — the existing
+ * Debounced re-pack request. Called after every edit (overlay insert
+ * / reject for v1, layer upsert / delete for v2) — the existing
  * `captures.edits_version` bump is the convergence trigger.
- * Multiple rapid edits coalesce into one re-pack run; the bundle
- * stays consistent with the latest DB state ≥1s after the user
- * stops editing.
+ * Multiple rapid edits coalesce into one re-pack run.
+ *
+ * Debounce window is version-aware: v1 captures use 1s (small bundle,
+ * fast re-pack); v2 captures use 5s (larger bundle, ~1.5-3s pack cost
+ * for tree-walking compositor, hence longer pause to coalesce). When
+ * the bundle lives under iCloud Drive (`~/Library/Mobile Documents`),
+ * defer to 30s idle so a 100MB bundle re-uploads on natural pauses
+ * rather than every keystroke.
  *
  * The DB stays the live read path during the debounce window. A
  * crash during the window reruns the pack on next boot via the
- * `edits_version > bundle_edits_version` check the doctor
- * applies in Phase 2.
+ * `edits_version > bundle_edits_version` check the doctor applies.
  */
 export function scheduleRepack(captureId: string): void {
   const existing = repackTimers.get(captureId);
   if (existing !== undefined) clearTimeout(existing);
 
+  const delay = computeRepackDelayMs(captureId);
+
   const timer = setTimeout(() => {
     repackTimers.delete(captureId);
-    void runRepack(captureId).catch((err: unknown) => {
+    const record = getCaptureById(captureId);
+    if (record === null) return;
+    const runner = record.bundle_format_version >= 2 ? runRepackV2 : runRepack;
+    void runner(captureId).catch((err: unknown) => {
       log.error("bundle-store: repack failed", {
         captureId,
         message: err instanceof Error ? err.message : String(err)
       });
     });
-  }, REPACK_DEBOUNCE_MS);
+  }, delay);
   repackTimers.set(captureId, timer);
+}
+
+const REPACK_DEBOUNCE_MS_V2 = 5_000;
+const REPACK_DEBOUNCE_MS_ICLOUD = 30_000;
+
+function computeRepackDelayMs(captureId: string): number {
+  const record = getCaptureById(captureId);
+  if (record === null) return REPACK_DEBOUNCE_MS;
+  // iCloud-aware: a bundle sitting under ~/Library/Mobile Documents/
+  // (Apple's iCloud Drive backing dir) triggers a full re-upload on
+  // every re-pack. Defer to 30s idle so drawing 10 arrows in
+  // succession doesn't saturate uplink with 10 separate uploads.
+  if (record.bundle_path !== null && record.bundle_path.includes("/Mobile Documents/")) {
+    return REPACK_DEBOUNCE_MS_ICLOUD;
+  }
+  if (record.bundle_format_version >= 2) return REPACK_DEBOUNCE_MS_V2;
+  return REPACK_DEBOUNCE_MS;
 }
 
 /**
@@ -1012,6 +1102,290 @@ function bundleOverlaysFromRows(
 function basename(p: string): string {
   const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+// ---------------------------------------------------------------------------
+// v2 capture-flow orchestrator.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a screencapture-CLI temp file, dedup by sha256, and (on miss)
+ * pack a v2 `.pwrsnap` bundle + paired flat PNG. Inserts the capture
+ * row at `bundle_format_version = 2` and seeds the `layers` table
+ * with a root group + a raster layer pointing at the single source.
+ *
+ * Initial v2 document has the canvas == source dimensions and one
+ * raster at identity transform — visually indistinguishable from the
+ * v1 path, but the bundle/document/DB tree is the v2 shape. The
+ * editor can then add overlay / vector / effect layers on top.
+ */
+export async function persistCaptureFromTempV2(
+  args: PersistCaptureFromTempArgs
+): Promise<PersistCaptureFromTempResult> {
+  // Lazy-import to avoid cycle: layers-repo → captures-repo →
+  // bundle-store. layers-repo only used by the v2 orchestrator.
+  const { insertLayerTreeForCapture } = await import("./layers-repo");
+
+  const buf = await readFile(args.tempPath);
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+
+  const existing = findCaptureBySha256(sha256);
+  if (existing !== null && existing.deleted_at === null) {
+    log.info("bundle-store v2: dedup hit on capture", { id: existing.id, sha256 });
+    try {
+      await unlink(args.tempPath);
+    } catch {
+      // best-effort
+    }
+    return { record: existing, isDedup: true };
+  }
+
+  const id = nanoid(16);
+  const meta = await sharp(buf).metadata();
+  const widthPx = meta.width ?? 0;
+  const heightPx = meta.height ?? 0;
+  if (widthPx === 0 || heightPx === 0) {
+    throw new Error(`bundle-store v2: failed to read PNG dimensions from ${args.tempPath}`);
+  }
+
+  const now = new Date().toISOString();
+  const outputDir = args.outputDir ?? getCapturesRoot();
+  const filenameStem = id;
+  const pairedPngFilename = `${filenameStem}.png`;
+
+  const rootGroupId = nanoid(16);
+  const rasterLayerId = nanoid(16);
+
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: { width_px: widthPx, height_px: heightPx },
+    paired_png_filename: pairedPngFilename,
+    created_at: now,
+    bundle_modified_at: now
+  };
+
+  const initialLayers = [
+    {
+      id: rootGroupId,
+      parent_id: null,
+      kind: "group" as const,
+      collapsed: false,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    },
+    {
+      id: rasterLayerId,
+      parent_id: rootGroupId,
+      kind: "raster" as const,
+      source_ref: { kind: "embedded" as const, sha256 },
+      natural_width_px: widthPx,
+      natural_height_px: heightPx,
+      name: "Source",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal" as const,
+      transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+      z_index: 0,
+      source: "user" as const,
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    }
+  ];
+
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 0,
+    layers: initialLayers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+
+  // Pack v2 bundle. Single source → single sources/<sha>.png entry;
+  // no rasterized layers yet.
+  const bundlePath = join(outputDir, `${filenameStem}.pwrsnap`);
+  const flatPngPath = join(outputDir, pairedPngFilename);
+
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sha256, buf]]),
+    layerBytes: new Map(),
+    compositePng: buf
+  });
+
+  // Bundle FIRST (system of record), paired PNG SECOND (regenerable).
+  await atomicWriteBundle(bundlePath, bundleBuf);
+  await atomicWriteBundle(flatPngPath, buf);
+
+  // Materialize source.png to per-capture cache.
+  const cacheSource = getCacheSourcePath(id);
+  await mkdir(dirname(cacheSource), { recursive: true });
+  await writeFile(cacheSource, buf);
+
+  try {
+    await unlink(args.tempPath);
+  } catch {
+    // best-effort
+  }
+
+  const { record } = insertOrFindCapture({
+    id,
+    kind: "image",
+    captured_at: now,
+    source_app_bundle_id: args.sourceApp?.bundleId ?? null,
+    source_app_name: args.sourceApp?.appName ?? null,
+    legacy_src_path: null,
+    bundle_path: bundlePath,
+    flat_png_path: flatPngPath,
+    bundle_modified_at: now,
+    bundle_format_version: 2,
+    bundle_edits_version: 0,
+    width_px: widthPx,
+    height_px: heightPx,
+    device_pixel_ratio: 2,
+    byte_size: buf.length,
+    sha256
+  });
+
+  // Seed the layers table so listLayerTree returns the initial tree
+  // without re-reading the bundle. The bundle's document.json is the
+  // durable record; the layers table is the cached projection.
+  insertLayerTreeForCapture(id, initialLayers);
+
+  log.info("bundle-store: persisted new v2 capture", {
+    id,
+    bundlePath,
+    flatPngPath,
+    byteSize: buf.length,
+    widthPx,
+    heightPx
+  });
+
+  return { record, isDedup: false };
+}
+
+// ---------------------------------------------------------------------------
+// v2 repack — re-renders composite from layer tree, re-packs bundle.
+// ---------------------------------------------------------------------------
+
+async function runRepackV2(captureId: string): Promise<void> {
+  const existing = repackInFlight.get(captureId);
+  if (existing !== undefined) {
+    await existing;
+  }
+
+  const { listLayerTree } = await import("./layers-repo");
+  const { composeV2 } = await import("../render/compose-tree");
+
+  const promise = (async () => {
+    const record = getCaptureById(captureId);
+    if (record === null) {
+      log.warn("bundle-store: v2 repack target missing", { captureId });
+      return;
+    }
+    if (record.bundle_path === null || record.flat_png_path === null) {
+      log.warn("bundle-store: v2 repack skipped; no bundle path on row", { captureId });
+      return;
+    }
+
+    // Walk the layer tree to produce a fresh composite at canvas
+    // resolution. composeV2 writes to its own cache dir; we read the
+    // resulting bytes back to embed in the bundle.
+    const composeResult = await composeV2({
+      captureId,
+      bundlePath: record.bundle_path,
+      canvasWidthPx: record.width_px,
+      canvasHeightPx: record.height_px,
+      width: record.width_px, // no resize for the bundle's composite
+      format: "png"
+    });
+    const compositePng = await readFile(composeResult.cachePath);
+
+    // Re-collect sources: every raster layer in the live tree
+    // references a source by sha. Read each from the cache (we
+    // materialized them at capture time / on first read via
+    // readSourceFromBundle).
+    const layers = listLayerTree(captureId);
+    const sources = new Map<string, Buffer>();
+    for (const node of layers) {
+      if (node.kind === "raster" && !sources.has(node.source_ref.sha256)) {
+        try {
+          const bytes = await readSourceFromBundle(record.bundle_path, node.source_ref.sha256);
+          sources.set(node.source_ref.sha256, bytes);
+        } catch (cause) {
+          log.warn("bundle-store: v2 repack failed to read source", {
+            captureId,
+            sha: node.source_ref.sha256.slice(0, 8),
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    const manifest: BundleManifestV2 = {
+      bundle_format_version: 2,
+      capture_id: captureId,
+      canvas_dimensions: { width_px: record.width_px, height_px: record.height_px },
+      paired_png_filename: basename(record.flat_png_path),
+      created_at: record.captured_at,
+      bundle_modified_at: now
+    };
+    const document: BundleDocumentV2 = {
+      document_format_version: 1,
+      edits_version: record.edits_version,
+      layers,
+      tags: [],
+      description: null,
+      ai_runs: []
+    };
+
+    const bundleBuf = await packBundleV2({
+      manifest,
+      document,
+      sources,
+      layerBytes: new Map(), // v2.0: no rasterized effects yet
+      compositePng
+    });
+
+    await atomicWriteBundle(record.bundle_path, bundleBuf);
+    await atomicWriteBundle(record.flat_png_path, compositePng);
+
+    updateCaptureBundleAfterRepack(captureId, {
+      bundle_modified_at: now,
+      bundle_edits_version: record.edits_version
+    });
+
+    log.info("bundle-store: v2 repacked", {
+      captureId,
+      layerCount: layers.length,
+      bundleBytes: bundleBuf.length
+    });
+  })();
+
+  repackInFlight.set(captureId, promise);
+  try {
+    await promise;
+  } finally {
+    repackInFlight.delete(captureId);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
-import { persistCaptureFromTemp } from "../persistence/bundle-store";
+import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
@@ -733,7 +733,11 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  const { record, isDedup } = await persistCaptureFromTemp({
+  // v2 capture-flow: every new capture lands as a v2 bundle with a
+  // root group + raster layer pointing at the single source. v1 read
+  // path stays alive for unmigrated bundles (AirDrop imports, peer
+  // iCloud), but production never writes v1 again.
+  const { record, isDedup } = await persistCaptureFromTempV2({
     tempPath,
     sourceApp:
       sourceApp === null

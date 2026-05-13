@@ -13,6 +13,7 @@ import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
+import { registerSettingsHandlers } from "./handlers/settings-handlers";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
@@ -27,6 +28,7 @@ const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
 const APP_WEBSITE = "https://pwrdrvr.com";
 const CAPTURE_SHORTCUT = "CommandOrControl+Shift+P";
+const SETTINGS_SHORTCUT = "CommandOrControl+,";
 const isMac = process.platform === "darwin";
 
 /**
@@ -93,6 +95,19 @@ function registerCaptureShortcut(): void {
   });
   if (!ok) {
     log.warn("failed to register global shortcut", { shortcut: CAPTURE_SHORTCUT });
+  }
+}
+
+function registerSettingsShortcut(): void {
+  // ⌘, → open (or focus) the Settings window. Same bus-routing
+  // discipline as ⌘⇧P so a future MCP / HTTP transport gets it for
+  // free.
+  const log = getMainLogger("pwrsnap:shortcut");
+  const ok = globalShortcut.register(SETTINGS_SHORTCUT, () => {
+    void bus.dispatch("settings:open", {}, { principal: "ipc" });
+  });
+  if (!ok) {
+    log.warn("failed to register global shortcut", { shortcut: SETTINGS_SHORTCUT });
   }
 }
 
@@ -305,6 +320,7 @@ export function bootstrapApp(): void {
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerOverlaysHandlers();
+    registerSettingsHandlers();
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds
     // tree-shake the entire `dev/seeder` subtree out of the bundle.
@@ -328,6 +344,7 @@ export function bootstrapApp(): void {
     preWarmRegionSelector();
     if (!isE2E) {
       registerCaptureShortcut();
+      registerSettingsShortcut();
     }
     createMainWindow();
 

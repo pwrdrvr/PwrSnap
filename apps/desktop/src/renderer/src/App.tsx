@@ -2,15 +2,24 @@ import { Editor } from "./features/editor/Editor";
 import { Library } from "./features/library/Library";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
+import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
 
-type Stage = "library" | "float-over" | "tray" | "region" | "edit";
+type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
   const params = new URLSearchParams(hash);
   const v = params.get("stage");
-  if (v === "tray" || v === "float-over" || v === "region" || v === "edit") return v;
+  if (
+    v === "tray" ||
+    v === "float-over" ||
+    v === "region" ||
+    v === "edit" ||
+    v === "settings"
+  ) {
+    return v;
+  }
   return "library";
 }
 
@@ -41,7 +50,8 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   tray: "PwrSnap Tray",
   "float-over": "PwrSnap Toast",
   region: "PwrSnap Capture",
-  edit: "PwrSnap Editor"
+  edit: "PwrSnap Editor",
+  settings: "PwrSnap Settings"
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
@@ -54,6 +64,9 @@ export function App() {
   }
   if (STAGE === "region") {
     return <RegionSelector />;
+  }
+  if (STAGE === "settings") {
+    return <SettingsApp />;
   }
   if (STAGE === "edit") {
     if (CAPTURE_ID === null) {

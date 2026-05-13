@@ -65,28 +65,35 @@ let inFlightHead: Promise<void> | null = null;
 let inFlightMore: Promise<void> | null = null;
 let headRefreshQueued = false;
 
+/** Initial-load retry schedule. The first `library:list` after a fresh
+ *  BrowserWindow can race the preload's `contextBridge.exposeInMainWorld`
+ *  or land before the bus handler is registered. Both resolve within
+ *  ~100ms, but the silent "loading: false, rows: []" state used to
+ *  persist until a capture event happened to fire — leaving the user
+ *  with a blank Library and no recovery path. Retry briefly on the
+ *  first head fetch so a transient failure doesn't strand the UI. */
+const INITIAL_RETRY_DELAYS_MS = [80, 250, 800] as const;
+
 /**
  * Refetch the head page. On `events:captures:changed`, this drops
  * any loaded subsequent pages and reloads page 1 — Phase 4+ can
  * upgrade this to a delta-merge that preserves loaded windows; for
  * now, refetch-from-top matches the existing behavior.
+ *
+ * `isInitial` toggles transient-failure retry. Capture-change refetches
+ * skip the retry — if they fail, the next event triggers another one.
  */
-async function refetchHead(): Promise<void> {
+async function refetchHead(isInitial = false): Promise<void> {
   if (inFlightHead !== null) {
     headRefreshQueued = true;
     return inFlightHead;
   }
   inFlightHead = (async () => {
     try {
-      // includeDeleted: true so the renderer can partition into a live
-      // list and a trash list off the same paginated snapshot — the
-      // Trash sidebar reads the same data. At keyset scale this means
-      // soft-deleted rows are intermixed with live rows by captured_at
-      // and arrive page-by-page; client-side partitioning still works.
-      // (At 100k+ scale a dedicated `library:listTrash` command is the
-      // proper fix, but that's a follow-up.)
-      const result = await dispatch("library:list", { limit: 100, includeDeleted: true });
+      const result = await fetchHeadOnce(isInitial);
       if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.warn("[useLibrary] library:list failed", result.error);
         setSnapshot({
           ...snapshot,
           loading: false,
@@ -115,6 +122,31 @@ async function refetchHead(): Promise<void> {
     }
   })();
   return inFlightHead;
+}
+
+async function fetchHeadOnce(
+  isInitial: boolean
+): Promise<Awaited<ReturnType<typeof dispatch<"library:list">>>> {
+  // includeDeleted: true so the renderer can partition into live + trash
+  // lists off the same paginated snapshot. At keyset scale this means
+  // soft-deleted rows are intermixed with live rows by captured_at;
+  // client-side partitioning still works.
+  const req = { limit: 100, includeDeleted: true };
+  let result = await dispatch("library:list", req);
+  if (result.ok || !isInitial) return result;
+  // Initial-load retry — small backoff schedule. Logs each retry so a
+  // recurring failure leaves a breadcrumb in DevTools.
+  for (const delay of INITIAL_RETRY_DELAYS_MS) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[useLibrary] initial library:list failed (${result.error.code}); retrying in ${delay}ms`,
+      result.error
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    result = await dispatch("library:list", req);
+    if (result.ok) return result;
+  }
+  return result;
 }
 
 async function loadMore(): Promise<void> {
@@ -159,7 +191,10 @@ function ensureSubscription(): void {
   subscribe(EVENT_CHANNELS.capturesChanged, () => {
     void refetchHead();
   });
-  void refetchHead();
+  // First-ever read: runs the retry backoff on transient failure so
+  // a preload/handler race doesn't strand the UI at "loading: false,
+  // rows: []" forever.
+  void refetchHead(/* isInitial */ true);
   // Cover startup-time writes that can land after the first head
   // request starts but before this renderer has installed its event
   // subscription. The extra once-only read is cheap and keeps the

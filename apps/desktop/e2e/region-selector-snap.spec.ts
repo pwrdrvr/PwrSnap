@@ -553,11 +553,16 @@ async function hydrateWindowList(
 async function showAndGetSelector(
   app: Awaited<ReturnType<typeof launchPwrSnap>>
 ): Promise<Page> {
-  await app.electronApp.evaluate(({ BrowserWindow }) => {
+  await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
     const w = BrowserWindow.getAllWindows().find(
       (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
     );
     if (w === undefined) throw new Error("no selector window");
+    if (process.platform === "darwin" && !w.isSimpleFullScreen()) {
+      w.setSimpleFullScreen(true);
+      const display = screen.getDisplayMatching(w.getBounds());
+      w.setContentBounds(display.bounds);
+    }
     w.show();
     w.focus();
   });

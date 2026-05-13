@@ -65,6 +65,10 @@ const baseWebPreferences = {
   nodeIntegration: false
 } as const;
 
+function isE2E(): boolean {
+  return process.env.PWRSNAP_E2E === "1";
+}
+
 /**
  * Return the live singleton Library window, or null when no library is
  * currently open. Callers that want to ENSURE the library exists
@@ -113,7 +117,7 @@ export function createMainWindow(): BrowserWindow {
     // Claim the dock icon as soon as the library is on screen. On
     // macOS this flips activation policy → Regular; on other
     // platforms `app.dock` is undefined and this is a no-op.
-    if (process.platform === "darwin") {
+    if (process.platform === "darwin" && !isE2E()) {
       showDockWithDevelopmentIcon();
     }
   });
@@ -139,6 +143,7 @@ export function createMainWindow(): BrowserWindow {
   // focus events become no-ops.
   window.on("focus", () => {
     if (process.platform !== "darwin") return;
+    if (isE2E()) return;
     installDevelopmentDockIcon();
     if (app.dock?.isVisible()) return;
     showDockWithDevelopmentIcon();

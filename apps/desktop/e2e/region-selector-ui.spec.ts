@@ -16,11 +16,16 @@ async function showAndGetRegionSelector(
 ): Promise<Page> {
   // Force-show the pre-warmed selector for the primary display so it
   // becomes interactive (BrowserWindow.show()).
-  await app.electronApp.evaluate(({ BrowserWindow }) => {
+  await app.electronApp.evaluate(({ BrowserWindow, screen }) => {
     const selector = BrowserWindow.getAllWindows().find(
       (w) => !w.isDestroyed() && w.webContents.getURL().includes("stage=region")
     );
     if (selector === undefined) throw new Error("no region-selector window found");
+    if (process.platform === "darwin" && !selector.isSimpleFullScreen()) {
+      selector.setSimpleFullScreen(true);
+      const display = screen.getDisplayMatching(selector.getBounds());
+      selector.setContentBounds(display.bounds);
+    }
     selector.show();
     selector.focus();
   });

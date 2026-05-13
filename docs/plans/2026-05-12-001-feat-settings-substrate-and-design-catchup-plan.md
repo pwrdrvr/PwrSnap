@@ -1,8 +1,9 @@
 ---
 title: Settings substrate + design-handoff catch-up
 type: feat
-status: active
+status: completed
 date: 2026-05-12
+pr: https://github.com/pwrdrvr/PwrSnap/pull/20
 ---
 
 # Settings substrate + design-handoff catch-up

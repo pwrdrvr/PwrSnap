@@ -1,5 +1,5 @@
 -- @no-foreign-keys
--- 0003_bundle_storage — durable edit storage moves the system of record
+-- 0004_bundle_storage — durable edit storage moves the system of record
 -- out of <userData>/captures/ into Snagit-style ZIP bundles
 -- (`.pwrsnap`) plus paired flat composite PNGs in ~/Documents/PwrSnap/.
 -- See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md.

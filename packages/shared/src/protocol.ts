@@ -7,6 +7,7 @@
 // apps/desktop/src/main/command-bus.ts. The renderer + RPC server pick
 // up the new command for free.
 
+import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
@@ -785,10 +786,36 @@ export type Commands = {
     res: StorageMaintenanceResult;
   };
 
-  // ---- overlays (Phase 2+) ----
+  // ---- overlays (v1 captures only) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
   "overlays:upsert": { req: { captureId: string; overlay: Overlay }; res: OverlayRow };
   "overlays:delete": { req: { id: string }; res: void };
+
+  // ---- layers (v2 captures only) ----
+  /** List the live layer tree for a v2 capture. Flat array; tree is
+   *  built by the consumer via parent_id pointers. Refuses v1
+   *  captures (use overlays:* instead). */
+  "layers:list": { req: { captureId: string }; res: BundleLayerNode[] };
+  /** Insert a layer node. The node carries its own id (nanoid) and
+   *  parent_id. Caller validates the shape; main re-validates via
+   *  the zod discriminated union before persisting. */
+  "layers:upsert": { req: { captureId: string; layer: BundleLayerNode }; res: BundleLayerNode };
+  /** Move a layer to a new parent (or root via newParentId=null).
+   *  Refuses cycles via a recursive-CTE check inside a BEGIN
+   *  IMMEDIATE transaction — safe under concurrent reparents from
+   *  multiple IPC dispatchers. */
+  "layers:reparent": {
+    req: { id: string; newParentId: string | null };
+    res: { status: "ok" | "would_create_cycle" | "not_found" };
+  };
+  /** Atomic UPDATE on z_index. Renderers typically use gap-based
+   *  reordering (1000-step increments) so most reorders touch only
+   *  the moving layer. */
+  "layers:reorder": { req: { id: string; zIndex: number }; res: void };
+  /** Soft-delete a layer. Cascades rejected_at transitively to every
+   *  descendant in one transaction — leaving orphaned-but-live
+   *  children would render undefined behavior. */
+  "layers:delete": { req: { id: string }; res: void };
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };

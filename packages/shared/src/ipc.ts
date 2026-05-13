@@ -116,6 +116,26 @@ export type ScrollProbeRequest = {
 };
 
 /**
+ * `events:settings:changed` broadcast payload. Sent to every live
+ * BrowserWindow after a successful `settings:write`, `settings:
+ * replaceSecret`, or `settings:clearSecret`. Renderers replace their
+ * local snapshot on receipt — both the persisted Settings shape and
+ * the masked secret-status map are carried so a single subscribe
+ * suffices for the whole Settings surface.
+ *
+ * Plaintext secret values never appear in this payload (or anywhere
+ * else that crosses the IPC boundary) — only `{ configured, lastSetAt }`
+ * per name.
+ */
+export type SettingsChangedEvent = {
+  settings: import("./protocol").Settings;
+  secrets: Record<
+    import("./protocol").DesktopSettingsSecretName,
+    import("./protocol").SecretStatus
+  >;
+};
+
+/**
  * Renderer → main perf-mark payloads. New marks land here as new
  * union members; readers narrow with `kind` and call `assertNever`
  * on the never-arm so missed cases fail to typecheck.

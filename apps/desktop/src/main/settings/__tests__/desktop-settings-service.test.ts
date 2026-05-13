@@ -1,0 +1,184 @@
+// Unit tests for DesktopSettingsService. Each test scopes itself to
+// a fresh `mkdtempSync` directory so the file-system invariants
+// (atomic rename, quarantine on corruption, lazy migration) can be
+// asserted against a real fs without touching the user's userData.
+
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+// Stub electron — the service module itself doesn't import electron, but
+// codex-discovery (transitive) loads electron-log. electron-log's main
+// entry handles being loaded outside Electron, but be explicit to keep
+// the test env hermetic.
+vi.mock("electron", () => ({
+  app: {
+    getPath: (name: string): string => {
+      if (name === "userData") return "/tmp/pwrsnap-test-settings-service";
+      throw new Error(`unexpected app.getPath: ${name}`);
+    }
+  },
+  BrowserWindow: { getAllWindows: () => [] }
+}));
+
+import {
+  DesktopSettingsService,
+  defaultSettings,
+  mergeSettings
+} from "../desktop-settings-service";
+
+let workDir = "";
+
+beforeEach(() => {
+  workDir = mkdtempSync(join(tmpdir(), "pwrsnap-settings-svc-"));
+});
+
+afterEach(() => {
+  // Leave the dir on disk — mkdtemp gives a unique name, and dropping
+  // it would make a failing test harder to diagnose.
+});
+
+function makeService(): DesktopSettingsService {
+  return new DesktopSettingsService({ filePath: join(workDir, "settings.json") });
+}
+
+describe("DesktopSettingsService.read", () => {
+  test("returns defaults when the file is missing", async () => {
+    const svc = makeService();
+    const settings = await svc.read();
+    expect(settings).toEqual(defaultSettings());
+  });
+
+  test("returns defaults + quarantines the file on JSON parse failure", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, "not-json-{[", "utf8");
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings).toEqual(defaultSettings());
+    const entries = readdirSync(workDir);
+    const quarantine = entries.find((n) => n.includes("corrupt-"));
+    expect(quarantine).toBeDefined();
+  });
+
+  test("returns defaults + quarantines on unrecognized shape", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(filePath, JSON.stringify({ banana: true, schemaVersion: 99 }), "utf8");
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings).toEqual(defaultSettings());
+    const entries = readdirSync(workDir);
+    expect(entries.some((n) => n.includes("corrupt-"))).toBe(true);
+  });
+});
+
+describe("DesktopSettingsService.write", () => {
+  test("write + read round-trips", async () => {
+    const svc = makeService();
+    const merged = await svc.write({
+      codex: { mode: "pinned", pinnedPath: "/opt/codex" }
+    });
+    expect(merged.codex.mode).toBe("pinned");
+    expect(merged.codex.pinnedPath).toBe("/opt/codex");
+
+    const read = await svc.read();
+    expect(read.codex.mode).toBe("pinned");
+    expect(read.codex.pinnedPath).toBe("/opt/codex");
+    // Untouched fields default
+    expect(read.ai.enabled).toBe(false);
+    expect(read.hotkeys.quickCapture).toBe("CommandOrControl+Shift+P");
+  });
+
+  test("undefined patch fields leave existing values untouched", async () => {
+    const svc = makeService();
+    await svc.write({ codex: { pinnedPath: "/opt/codex" } });
+    // Second write — patch ONLY ai.enabled; codex.pinnedPath must survive.
+    await svc.write({ ai: { enabled: true } });
+    const read = await svc.read();
+    expect(read.codex.pinnedPath).toBe("/opt/codex");
+    expect(read.ai.enabled).toBe(true);
+  });
+
+  test("empty-string pinnedPath IS a write (clears the pin)", async () => {
+    const svc = makeService();
+    await svc.write({ codex: { pinnedPath: "/opt/codex" } });
+    await svc.write({ codex: { pinnedPath: "" } });
+    const read = await svc.read();
+    expect(read.codex.pinnedPath).toBe("");
+  });
+
+  test("atomic write: no `.tmp` sidecar persists after a successful write", async () => {
+    const svc = makeService();
+    await svc.write({ codex: { pinnedPath: "/opt/codex" } });
+    const entries = readdirSync(workDir);
+    expect(entries.some((n) => n.endsWith(".tmp"))).toBe(false);
+    // Final file is present + parseable.
+    const raw = readFileSync(join(workDir, "settings.json"), "utf8");
+    expect(JSON.parse(raw).codex.pinnedPath).toBe("/opt/codex");
+  });
+
+  test("concurrent writes serialize: second sees the first's result", async () => {
+    const svc = makeService();
+    // Fire both writes without awaiting between — the queue MUST serialize
+    // them so the second's read picks up the first's pinnedPath.
+    const a = svc.write({ codex: { pinnedPath: "/a" } });
+    const b = svc.write({ ai: { enabled: true } });
+    const [r1, r2] = await Promise.all([a, b]);
+    expect(r1.codex.pinnedPath).toBe("/a");
+    expect(r2.codex.pinnedPath).toBe("/a"); // carried over
+    expect(r2.ai.enabled).toBe(true);
+    const read = await svc.read();
+    expect(read.codex.pinnedPath).toBe("/a");
+    expect(read.ai.enabled).toBe(true);
+  });
+});
+
+describe("DesktopSettingsService legacy-shape catalog", () => {
+  test("a hand-crafted unrecognized v0 JSON quarantines + returns defaults", async () => {
+    // Today's catalog has only v1. A v0-shaped file (no schemaVersion,
+    // flat keys) is not recognized and is treated as corruption — that's
+    // the right behavior with one shape entry. The TEST verifies the
+    // catalog-based reader plugs into the corruption path, and that the
+    // hook (adding a v0 entry) lands cleanly when needed.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ codexCommand: "/usr/local/bin/codex" }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings).toEqual(defaultSettings());
+    const entries = readdirSync(workDir);
+    expect(entries.some((n) => n.includes("corrupt-"))).toBe(true);
+  });
+
+  test("v1 shape with missing nested keys gets defaults filled in", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ schemaVersion: 1, codex: { mode: "pinned", pinnedPath: "/x", profile: "" } }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.codex.pinnedPath).toBe("/x");
+    expect(settings.codex.mode).toBe("pinned");
+    expect(settings.ai.enabled).toBe(false); // filled
+    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+P"); // filled
+  });
+});
+
+describe("mergeSettings", () => {
+  test("undefined fields preserve current; defined fields overwrite", () => {
+    const current = defaultSettings();
+    const merged = mergeSettings(current, {
+      codex: { pinnedPath: "/x" },
+      hotkeys: { quickCapture: null }
+    });
+    expect(merged.codex.pinnedPath).toBe("/x");
+    expect(merged.codex.mode).toBe("auto"); // preserved
+    expect(merged.hotkeys.quickCapture).toBeNull(); // null IS a write
+    expect(merged.hotkeys.region).toBe("CommandOrControl+Shift+R"); // preserved
+  });
+});

@@ -242,19 +242,29 @@ export class DesktopSettingsService {
       const current = await this.read();
       const merged = mergeSettings(current, patch);
       await this.atomicWriteJson(merged);
+      // Invalidate the Codex discovery cache whenever a write touches
+      // `codex.*`. Otherwise the snapshot's `resolvedPath` (computed
+      // from `settings.codex.{mode, pinnedPath}` at snapshot time)
+      // can lag the just-written settings by up to 30s, so the AI
+      // Providers "Using" badge sticks to the prior choice after a
+      // pin. Only invalidate on success so a rejected write doesn't
+      // force an extra (uncached) discovery on the next read.
+      if (patch.codex !== undefined) this.codexSnapshotCache = null;
       return merged;
     };
 
     // Chain onto the existing queue so concurrent writes serialize.
-    // We capture the resolved value via a fresh wrapper so a rejection
-    // in one write doesn't poison subsequent writes — the queue's
-    // promise resolves to `undefined` regardless of inner outcome.
-    const queued = this.writeQueue.then(task, task);
-    this.writeQueue = queued.then(
-      () => undefined,
-      () => undefined
-    );
-    return queued;
+    // Use `.catch(() => undefined).then(task)` so the queue's baton is
+    // always a resolved Promise — `then(task, task)` runs `task` on
+    // both fulfillment and rejection (correct intent) but is harder
+    // to reason about, and the prior double-chain through
+    // `this.writeQueue = next.then(_, _)` discarded inner results
+    // without strictly serializing concurrent writes. The caller of
+    // `next` still observes any rejection from `task`; only the
+    // queue itself swallows it so subsequent writes can proceed.
+    const next = this.writeQueue.catch(() => undefined).then(task);
+    this.writeQueue = next.catch(() => undefined);
+    return next;
   }
 
   /**

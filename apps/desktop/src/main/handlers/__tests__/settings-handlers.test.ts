@@ -64,7 +64,7 @@ type FakeWindow = {
   isMinimized: ReturnType<typeof vi.fn>;
   show: ReturnType<typeof vi.fn>;
   restore: ReturnType<typeof vi.fn>;
-  webContents: { executeJavaScript: ReturnType<typeof vi.fn> };
+  webContents: { send: ReturnType<typeof vi.fn> };
 };
 
 function makeFakeWindow(): FakeWindow {
@@ -74,7 +74,7 @@ function makeFakeWindow(): FakeWindow {
     isMinimized: vi.fn(() => false),
     show: vi.fn(),
     restore: vi.fn(),
-    webContents: { executeJavaScript: vi.fn(() => Promise.resolve(undefined)) }
+    webContents: { send: vi.fn() }
   };
 }
 
@@ -142,16 +142,139 @@ describe("settings:open", () => {
     expect(mocks.createSettingsWindow).toHaveBeenCalledWith("page=hotkeys");
   });
 
-  test("navigates the existing window when `page` is supplied", async () => {
+  test("navigates the existing window via typed event when `page` is supplied", async () => {
     const fake = makeFakeWindow();
     mocks.findSettingsWindow.mockReturnValue(fake);
 
     await bus.dispatch("settings:open", { page: "about" }, { principal: "ipc" });
 
-    expect(fake.webContents.executeJavaScript).toHaveBeenCalledTimes(1);
-    const arg = fake.webContents.executeJavaScript.mock.calls[0]![0] as string;
-    expect(arg).toContain("page=about");
-    expect(arg).toContain("stage=settings");
+    expect(fake.webContents.send).toHaveBeenCalledTimes(1);
+    expect(fake.webContents.send).toHaveBeenCalledWith(
+      "events:settings:navigate",
+      { page: "about" }
+    );
+  });
+
+  test("rejects unknown `page` with kind=validation, code=invalid_page", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSettingsWindow.mockReturnValue(fake);
+
+    const result = await bus.dispatch(
+      "settings:open",
+      // Intentionally bypass the type guard — the bus passes JSON through.
+      { page: "not-a-page" } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_page");
+    // No event fired for the rejected request.
+    expect(fake.webContents.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings:* validation", () => {
+  test("settings:write rejects null over a non-nullable string field", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      // pinnedPath is `string`, not `string | null` — null is rejected.
+      { codex: { pinnedPath: null } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_codex_pinnedPath");
+  });
+
+  test("settings:write rejects an invalid codex.mode literal", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { codex: { mode: "bogus" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_codex_mode");
+  });
+
+  test("settings:write rejects non-boolean ai.enabled", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { ai: { enabled: "yes" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_enabled");
+  });
+
+  test("settings:refreshCodexDiscovery rejects non-boolean force", async () => {
+    const result = await bus.dispatch(
+      "settings:refreshCodexDiscovery",
+      { force: "truthy" } as unknown as { force?: boolean },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_force");
+  });
+
+  test("settings:replaceSecret rejects unknown secret name", async () => {
+    const result = await bus.dispatch(
+      "settings:replaceSecret",
+      { name: "bogusKey", value: "x" } as unknown as {
+        name: "grokApiKey";
+        value: string;
+      },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_secret_name");
+  });
+
+  test("settings:replaceSecret rejects an oversized value", async () => {
+    const huge = "x".repeat(70_000);
+    const result = await bus.dispatch(
+      "settings:replaceSecret",
+      { name: "grokApiKey", value: huge },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("secret_too_large");
+  });
+
+  test("settings:replaceSecret rejects empty value (route through clearSecret)", async () => {
+    const result = await bus.dispatch(
+      "settings:replaceSecret",
+      { name: "grokApiKey", value: "" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("empty_secret");
+  });
+
+  test("settings:clearSecret rejects unknown secret name", async () => {
+    const result = await bus.dispatch(
+      "settings:clearSecret",
+      { name: "bogusKey" } as unknown as { name: "grokApiKey" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_secret_name");
   });
 });
 

@@ -21,12 +21,12 @@ import { BrowserWindow, app } from "electron";
 import { join } from "node:path";
 import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
-  DesktopSettingsSecretName,
   PwrSnapError,
   Result,
   SecretStatus,
   Settings,
-  SettingsChangedEvent
+  SettingsChangedEvent,
+  SettingsNavigateEvent
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { createSettingsWindow, findSettingsWindow } from "../window";
@@ -36,6 +36,13 @@ import {
   DesktopSecretStore,
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
+import {
+  validateClearSecret,
+  validateRefreshCodexDiscovery,
+  validateReplaceSecret,
+  validateSettingsOpen,
+  validateSettingsWrite
+} from "./settings-validators";
 
 const log = getMainLogger("pwrsnap:settings-handlers");
 
@@ -111,27 +118,26 @@ function toSettingsError(
 
 export function registerSettingsHandlers(): void {
   bus.register("settings:open", async (req) => {
+    const validated = validateSettingsOpen(req);
+    if (!validated.ok) return err(validated.error);
+    const { page } = validated.value;
     const existing = findSettingsWindow();
     if (existing !== null) {
       if (existing.isMinimized()) existing.restore();
       if (!existing.isVisible()) existing.show();
       existing.focus();
-      if (req.page !== undefined) {
-        existing.webContents
-          .executeJavaScript(
-            `window.location.hash = "stage=settings&page=${req.page}";`,
-            true
-          )
-          .catch((cause: unknown) => {
-            log.warn("settings:open: failed to set hash on existing window", {
-              page: req.page,
-              message: cause instanceof Error ? cause.message : String(cause)
-            });
-          });
+      if (page !== undefined) {
+        // Typed event broadcast — replaces the prior `executeJavaScript`
+        // template-injection footgun. The renderer's `useActivePage`
+        // hook receives `{ page }` and flips its hash through the
+        // existing `setActivePage`, which re-validates against the
+        // same `SETTINGS_PAGES` allowlist used here.
+        const payload: SettingsNavigateEvent = { page };
+        existing.webContents.send(EVENT_CHANNELS.settingsNavigate, payload);
       }
       return ok(undefined);
     }
-    const extraHash = req.page !== undefined ? `page=${req.page}` : undefined;
+    const extraHash = page !== undefined ? `page=${page}` : undefined;
     createSettingsWindow(extraHash);
     return ok(undefined);
   });
@@ -149,10 +155,12 @@ export function registerSettingsHandlers(): void {
   bus.register("settings:write", async (
     patch
   ): Promise<Result<Settings, PwrSnapError>> => {
+    const validated = validateSettingsWrite(patch);
+    if (!validated.ok) return err(validated.error);
     const { service, secrets } = ensureServices();
     let merged: Settings;
     try {
-      merged = await service.write(patch);
+      merged = await service.write(validated.value);
     } catch (cause) {
       return err(
         toSettingsError(
@@ -167,9 +175,11 @@ export function registerSettingsHandlers(): void {
   });
 
   bus.register("settings:refreshCodexDiscovery", async (req) => {
+    const validated = validateRefreshCodexDiscovery(req);
+    if (!validated.ok) return err(validated.error);
     const { service } = ensureServices();
     try {
-      const force = req.force === true;
+      const force = validated.value.force === true;
       const snapshot = await service.getCodexDiscoverySnapshot({ force });
       return ok(snapshot);
     } catch (cause) {
@@ -202,10 +212,12 @@ export function registerSettingsHandlers(): void {
   bus.register("settings:replaceSecret", async (
     req
   ): Promise<Result<SecretStatus, PwrSnapError>> => {
+    const validated = validateReplaceSecret(req);
+    if (!validated.ok) return err(validated.error);
     const { service, secrets } = ensureServices();
     let status: SecretStatus;
     try {
-      status = await secrets.replace(req.name, req.value);
+      status = await secrets.replace(validated.value.name, validated.value.value);
     } catch (cause) {
       if (cause instanceof SecretUnavailableError) {
         return err(toSettingsError("secret_unavailable", cause.message, cause));
@@ -225,10 +237,12 @@ export function registerSettingsHandlers(): void {
   bus.register("settings:clearSecret", async (
     req
   ): Promise<Result<SecretStatus, PwrSnapError>> => {
+    const validated = validateClearSecret(req);
+    if (!validated.ok) return err(validated.error);
     const { service, secrets } = ensureServices();
     let status: SecretStatus;
     try {
-      status = await secrets.clear(req.name);
+      status = await secrets.clear(validated.value.name);
     } catch (cause) {
       return err(
         toSettingsError(

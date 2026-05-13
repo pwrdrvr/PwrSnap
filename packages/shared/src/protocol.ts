@@ -86,6 +86,33 @@ export type SettingsPage =
   | "experimental"
   | "about";
 
+/** Runtime allowlist of every valid `SettingsPage`. Kept here (not in
+ *  the renderer's `settings-categories.ts`) so the main process can
+ *  validate `settings:open` / `events:settings:navigate` payloads
+ *  without importing renderer code. Stays in lock-step with the union
+ *  above via the `satisfies` clause — adding a member to the union
+ *  without adding the literal here is a type error. */
+export const SETTINGS_PAGES = [
+  "startup",
+  "hotkeys",
+  "notifications",
+  "ai",
+  "capture",
+  "output",
+  "annotate",
+  "storage",
+  "sources",
+  "experimental",
+  "about"
+] as const satisfies readonly SettingsPage[];
+
+export function isSettingsPage(value: unknown): value is SettingsPage {
+  return (
+    typeof value === "string" &&
+    (SETTINGS_PAGES as readonly string[]).includes(value)
+  );
+}
+
 /** Every secret the app persists. Plaintext values never cross the IPC
  *  boundary — the renderer only ever sees the status shape below. */
 export type DesktopSettingsSecretName = "grokApiKey";

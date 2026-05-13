@@ -169,6 +169,90 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
   });
 });
 
+describe("DesktopSettingsService write-queue serialization on rejection", () => {
+  test("three queued writes where the middle one rejects: outer pair still applies; rejection bubbles only to its caller", async () => {
+    const svc = makeService();
+    // Patch the private atomicWriteJson to reject on the second call.
+    // Cast through `unknown` to reach the private member without
+    // exposing it on the public type. (`exactOptionalPropertyTypes`
+    // doesn't object to this — we're replacing, not adding.)
+    const internal = svc as unknown as {
+      atomicWriteJson: (value: unknown) => Promise<void>;
+    };
+    const realAtomic = internal.atomicWriteJson.bind(svc);
+    let callIdx = 0;
+    internal.atomicWriteJson = async (value: unknown): Promise<void> => {
+      callIdx += 1;
+      if (callIdx === 2) {
+        throw new Error("synthetic-write-failure");
+      }
+      await realAtomic(value);
+    };
+
+    // Three concurrent writes. The middle's rejection MUST NOT poison
+    // the queue — first + third both apply, second's rejection bubbles
+    // to its own awaiter.
+    const a = svc.write({ codex: { pinnedPath: "/a" } });
+    const b = svc.write({ ai: { enabled: true } });
+    const c = svc.write({ codex: { profile: "/c-profile" } });
+
+    const r1 = await a;
+    await expect(b).rejects.toThrow("synthetic-write-failure");
+    const r3 = await c;
+
+    expect(r1.codex.pinnedPath).toBe("/a");
+    // Third write builds on the first's committed state; the second
+    // never landed, so ai.enabled stays at its default.
+    expect(r3.codex.pinnedPath).toBe("/a");
+    expect(r3.codex.profile).toBe("/c-profile");
+    expect(r3.ai.enabled).toBe(false);
+
+    // Queue isn't deadlocked — a fourth write resolves.
+    const r4 = await svc.write({ experimental: { v2FileFormat: true } });
+    expect(r4.experimental.v2FileFormat).toBe(true);
+  });
+});
+
+describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", () => {
+  test("a codex.* write invalidates the snapshot cache so the next read reflects the new mode", async () => {
+    // Stub the discovery + resolve modules so the snapshot is
+    // deterministic across machines. We're testing the cache
+    // invalidation contract here, not Codex discovery itself.
+    const codexDiscovery = await import("../codex-discovery");
+    const discoverSpy = vi
+      .spyOn(codexDiscovery, "discoverCodexCommands")
+      .mockImplementation(async () => ({
+        candidates: []
+      }));
+    const resolveSpy = vi
+      .spyOn(codexDiscovery, "resolveCodexCommand")
+      .mockImplementation(async ({ command }) => ({
+        command,
+        source: "config" as const,
+        version: "stub"
+      }));
+
+    try {
+      const svc = makeService();
+      // Prime the cache against the default settings (mode=auto, no pin).
+      const first = await svc.getCodexDiscoverySnapshot();
+      // `resolveCodexCommand` is called with "codex" when no pin is set.
+      expect(first.resolvedPath).toBe("codex");
+
+      // Pin a path through the real write path.
+      await svc.write({ codex: { mode: "pinned", pinnedPath: "/opt/codex-pinned" } });
+
+      // Cache MUST have been invalidated — the next snapshot should
+      // reflect the new pin, not the prior `codex` resolved path.
+      const second = await svc.getCodexDiscoverySnapshot();
+      expect(second.resolvedPath).toBe("/opt/codex-pinned");
+    } finally {
+      discoverSpy.mockRestore();
+      resolveSpy.mockRestore();
+    }
+  });
+});
+
 describe("mergeSettings", () => {
   test("undefined fields preserve current; defined fields overwrite", () => {
     const current = defaultSettings();

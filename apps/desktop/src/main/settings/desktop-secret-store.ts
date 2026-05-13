@@ -195,12 +195,13 @@ export class DesktopSecretStore {
   }
 
   private async serialize<T>(task: () => Promise<T>): Promise<T> {
-    const queued = this.writeQueue.then(task, task);
-    this.writeQueue = queued.then(
-      () => undefined,
-      () => undefined
-    );
-    return queued;
+    // `catch(() => undefined).then(task)` so the queue's baton always
+    // resolves regardless of prior outcome — the caller of `next`
+    // still observes their own rejection; only the queue itself
+    // swallows it so subsequent secret writes proceed.
+    const next = this.writeQueue.catch(() => undefined).then(task);
+    this.writeQueue = next.catch(() => undefined);
+    return next;
   }
 }
 

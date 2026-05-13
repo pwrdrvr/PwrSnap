@@ -184,7 +184,7 @@ export type Settings = {
     window: string;
   };
   experimental: {
-    /** Slot for the upcoming PSP1 file format. Wired but unused. */
+    /** Slot for the upcoming PwrSnap1 file format. Wired but unused. */
     v2FileFormat: boolean;
   };
 };

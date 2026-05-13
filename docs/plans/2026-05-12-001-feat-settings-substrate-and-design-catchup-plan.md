@@ -330,7 +330,7 @@ export type SettingsPatch = {
   preload init payload). License stamp `UNLICENSED · © 2026 PwrDrvr
   LLC`. Links: product website (if set), `docs/` repo URL.
 - `apps/desktop/src/renderer/src/features/settings/pages/ExperimentalPage.tsx`
-  — single switch row "Enable v2 capture file format (PSP1)", bound to
+  — single switch row "Enable v2 capture file format (PwrSnap1)", bound to
   `settings.experimental.v2FileFormat`. Persists across reload. The
   feature it enables doesn't exist yet — the row says so in its
   subtitle ("Build coming in a later release. Toggle persists so you

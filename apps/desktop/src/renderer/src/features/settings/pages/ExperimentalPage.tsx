@@ -28,7 +28,7 @@ export function ExperimentalPage(): ReactElement {
 
       <Card eyebrow="FILE FORMAT" title="File format">
         <Row
-          label="PSP1 capture format"
+          label="PwrSnap1 capture format"
           sub="Build coming in a later release. Toggle persists so you can opt in early."
           tag="experimental"
         >

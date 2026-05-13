@@ -150,7 +150,11 @@ export function registerCaptureHandlers(): void {
       // we hide it, the toast is already painted at floating level
       // and instantly visible. No post-hoc show race.
       if (persisted.ok) {
-        setFloatOverState({ kind: "show-loaded", captureId: persisted.value.id });
+        setFloatOverState({
+          kind: "show-loaded",
+          captureId: persisted.value.id,
+          record: persisted.value
+        });
       }
       return persisted;
     } finally {

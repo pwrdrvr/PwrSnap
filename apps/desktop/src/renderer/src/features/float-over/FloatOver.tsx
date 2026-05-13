@@ -80,6 +80,7 @@ function FoTags({
 export function FloatOver({
   variant = "standard",
   src,
+  enhancedSrc,
   srcW = 2880,
   srcH = 1800,
   onDismiss,
@@ -94,6 +95,7 @@ export function FloatOver({
 }: {
   variant?: VariantId;
   src: string;
+  enhancedSrc?: string | undefined;
   srcW?: number;
   srcH?: number;
   onDismiss?: () => void;
@@ -123,6 +125,8 @@ export function FloatOver({
   const [exiting, setExiting] = useState(false);
   const [aiAccepted, setAiAccepted] = useState(false);
   const [storage, setStorage] = useState({ drive: false, dropbox: false, s3: false });
+  const [visibleSrc, setVisibleSrc] = useState(src);
+  const [sourceLoaded, setSourceLoaded] = useState(false);
 
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
@@ -141,6 +145,24 @@ export function FloatOver({
     description.length > 0 ||
     tags.length > initialTags.length ||
     aiAccepted;
+
+  useEffect(() => {
+    setVisibleSrc(src);
+    setSourceLoaded(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!sourceLoaded || enhancedSrc === undefined || enhancedSrc === src) return;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (!cancelled) setVisibleSrc(enhancedSrc);
+    };
+    img.src = enhancedSrc;
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceLoaded, src, enhancedSrc]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -227,7 +249,14 @@ export function FloatOver({
       </div>
 
       <div className="fo__preview">
-        <img src={src} alt="capture preview" draggable />
+        <img
+          src={visibleSrc}
+          alt="capture preview"
+          draggable
+          onLoad={() => {
+            if (visibleSrc === src) setSourceLoaded(true);
+          }}
+        />
         <div className="fo__preview-dim">
           <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
           <b>{dimText(srcW, srcH)}</b>

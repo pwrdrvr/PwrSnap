@@ -21,10 +21,8 @@ import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
   activateApp,
-  boundsApproxEqual,
   listWindows,
   selfPidSet,
-  selfWindowBoundsList,
   type WindowInfo
 } from "./window-list";
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
@@ -292,16 +290,23 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
     activeScreenSnapshot = null;
     void releaseSnapshot(stale.id);
   }
-  // Synchronously dismiss the tray popover BEFORE the snapshot so its
-  // pixels aren't included in the captured frame. The tray is a
-  // BrowserWindow (not an NSStatusItem-backed menu) so it won't dismiss
-  // itself when the user clicks an item — we have to hide it. Then
-  // wait one compositor frame (~50ms is the macshot-validated value)
-  // for the hide to flush before we shell out to screencapture.
+  // Synchronously dismiss PwrSnap capture chrome BEFORE the snapshot
+  // and window-list enumeration so our own popovers/toasts neither
+  // appear in the frozen background nor become snap candidates. The
+  // user's normal PwrSnap windows (Library / Edit) are intentionally
+  // left alone: if they're on screen, they're valid capture targets.
   hideTrayPopoverIfVisible();
+  setFloatOverState({ kind: "cancel" });
   await new Promise((resolve) => setTimeout(resolve, 50));
+
+  let rawSnapshot: WindowInfo[] = [];
   try {
-    activeScreenSnapshot = await captureAndRegister(targetDisplay.id);
+    const [screenSnapshot, windows] = await Promise.all([
+      captureAndRegister(targetDisplay.id),
+      listWindows()
+    ]);
+    activeScreenSnapshot = screenSnapshot;
+    rawSnapshot = windows;
   } catch (err) {
     log.warn("screen snapshot failed; selector aborted", {
       message: err instanceof Error ? err.message : String(err)
@@ -309,160 +314,135 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
     return { ok: false, reason: "destroyed" };
   }
 
-  // Fetch the on-screen window list in the background — by the time
-  // the user reaches for ⇧, the renderer has the list cached and
-  // hit-tests locally with no IPC round-trip.
-  //
-  // The selector window covers the entire display via simple-
-  // fullscreen (we paint our own simulation of the menu bar + dock
-  // via the snapshot, so we can safely override Cocoa's "no window
-  // over the menu bar" rule). Coords are display-bounds-relative.
+  // The on-screen window list was captured BEFORE the selector and
+  // float-over are shown. That ordering is load-bearing: if we let
+  // listWindows resolve after show(), the selector's own full-display
+  // BrowserWindow can appear as a topmost "Electron" capture target.
+  // Coords are display-bounds-relative because the selector window
+  // covers display.bounds via simple-fullscreen.
   const displayBounds = targetDisplay.bounds;
-  // Identify our own windows so the renderer can treat them as
-  // occluders (hover-over-library returns no snap, not the hidden
-  // 1Password underneath). Two-axis match:
-  //   - process pid (CGWindow's owner pid is the main app pid)
-  //   - bounds matching one of our visible BrowserWindows
-  // The bounds match is what makes DevTools and other auxiliary
-  // windows snappable — they share our pid but have different
-  // bounds, so the user can capture them.
   const ourPids = selfPidSet();
-  const ourBounds = selfWindowBoundsList();
+  lastSnapshot = rawSnapshot;
 
-  void listWindows().then((rawSnapshot) => {
-    lastSnapshot = rawSnapshot;
+  // Snapshot the previously-frontmost app's pid. We intentionally
+  // skip our own pid for restoration so hiding the selector doesn't
+  // raise the Library unless the user explicitly opens it.
+  const topNonOurs = rawSnapshot.find((w) => !ourPids.has(w.pid));
+  previousAppPid = topNonOurs?.pid ?? null;
 
-    // Snapshot the previously-frontmost app's pid. The helper
-    // returns windows in z-order, so the first non-ours window
-    // belongs to whatever app was frontmost when the user pressed
-    // ⌘⇧P (we hadn't activated yet at the moment listWindows
-    // ran). Stored at module scope; restored after the selector
-    // hides via NSRunningApplication.activate.
-    const topNonOurs = rawSnapshot.find((w) => !ourPids.has(w.pid));
-    previousAppPid = topNonOurs?.pid ?? null;
-
-    // Step 1: keep windows that overlap the active display. Anything
-    // entirely on another monitor is irrelevant to this selector.
-    const onThisDisplay = rawSnapshot.filter((w) => {
-      const wx2 = w.bounds.x + w.bounds.width;
-      const wy2 = w.bounds.y + w.bounds.height;
-      const dx2 = displayBounds.x + displayBounds.width;
-      const dy2 = displayBounds.y + displayBounds.height;
-      return (
-        wx2 > displayBounds.x &&
-        w.bounds.x < dx2 &&
-        wy2 > displayBounds.y &&
-        w.bounds.y < dy2
-      );
-    });
-
-    // Step 2: per-app frontmost collapse. Auxiliary panels of
-    // OTHER apps drop out (a Slack inspector panel isn't a snap
-    // target when the main Slack window is what the user wants).
-    // Windows owned by us are kept so the renderer can de-prioritize
-    // them in the hit-test (we don't snap to our own library).
-    const meaningful = onThisDisplay.filter(
-      (w) => w.isFrontmostInApp || ourPids.has(w.pid)
+  // Step 1: keep windows that overlap the active display. Anything
+  // entirely on another monitor is irrelevant to this selector.
+  const onThisDisplay = rawSnapshot.filter((w) => {
+    const wx2 = w.bounds.x + w.bounds.width;
+    const wy2 = w.bounds.y + w.bounds.height;
+    const dx2 = displayBounds.x + displayBounds.width;
+    const dy2 = displayBounds.y + displayBounds.height;
+    return (
+      wx2 > displayBounds.x &&
+      w.bounds.x < dx2 &&
+      wy2 > displayBounds.y &&
+      w.bounds.y < dy2
     );
-
-    // No visibility / occlusion filter. Showing a window's outline
-    // even when it's mostly obscured matches what every other
-    // capture tool does — the user wants to capture the WINDOW,
-    // not the visible-fragment of the window. The screen snapshot
-    // already covers the visual; the snap highlight just tags the
-    // bounds. Rect math happens in display-bounds-relative window-
-    // local coords; the selector covers display.bounds via
-    // setSimpleFullScreen.
-    const localized = meaningful
-      .map((w, idx) => ({ w, idx }))
-      .filter(({ w }) => w.bounds.width * w.bounds.height >= MIN_AREA_PX)
-      .map(({ w, idx }) => ({
-        windowId: w.windowId,
-        pid: w.pid,
-        bundleId: w.bundleId,
-        appName: w.appName,
-        title: w.title,
-        // ownedByUs requires BOTH same-pid AND bounds matching one
-        // of our user-facing BrowserWindows. DevTools shares our
-        // pid but its bounds are unique (e.g. detached at 113,386,
-        // 800x600) so it lands as snappable.
-        ownedByUs:
-          ourPids.has(w.pid) &&
-          ourBounds.some((b) => boundsApproxEqual(b, w.bounds)),
-        // listWindows returns z-order ascending (index 0 = frontmost).
-        // After our `meaningful` filter, indices change but z-order
-        // is preserved, so the array index continues to work.
-        zIndex: idx,
-        // Rect = rawRect; we no longer split visible-bbox from raw
-        // bounds. Both fields stay so the renderer doesn't need a
-        // shape change, but they're identical now.
-        rect: {
-          x: w.bounds.x - displayBounds.x,
-          y: w.bounds.y - displayBounds.y,
-          w: w.bounds.width,
-          h: w.bounds.height
-        },
-        rawRect: {
-          x: w.bounds.x - displayBounds.x,
-          y: w.bounds.y - displayBounds.y,
-          w: w.bounds.width,
-          h: w.bounds.height
-        }
-      }));
-
-    log.info("snap candidates", {
-      raw: rawSnapshot.length,
-      onThisDisplay: onThisDisplay.length,
-      meaningful: meaningful.length,
-      afterVisibilityFilter: localized.length,
-      ourPids: Array.from(ourPids),
-      // Display the cursor was on when pickRegion fired. Pair this
-      // with the renderer's [viewport] log to see if the renderer's
-      // CSS coord space matches display.bounds 1:1.
-      display: {
-        id: targetDisplay.id,
-        bounds: targetDisplay.bounds,
-        workArea: targetDisplay.workArea,
-        scaleFactor: targetDisplay.scaleFactor
-      },
-      // The selector window's actual on-screen bounds + content size
-      // post-simple-fullscreen. If contentBounds != display.bounds
-      // we have a coord-space mismatch — the renderer's CSS pixels
-      // are NOT 1:1 with display logical points, which would explain
-      // a doubled-size rect.
-      selectorWindow: {
-        bounds: win.getBounds(),
-        contentBounds: win.getContentBounds(),
-        contentSize: win.getContentSize(),
-        isSimpleFullScreen: win.isSimpleFullScreen()
-      },
-      candidates: localized.map((c) => ({
-        z: c.zIndex,
-        id: c.windowId,
-        app: c.appName,
-        ours: c.ownedByUs,
-        rect: c.rect,
-        rawRect: c.rawRect
-      }))
-    });
-    if (!win.isDestroyed()) {
-      // Ship display.bounds — the selector window covers the entire
-      // display via setSimpleFullScreen, so display-bounds is the
-      // logical-px rect the renderer's CSS coord space scales into.
-      // On macOS scaled-mode displays (fractional devicePixelRatio,
-      // e.g. 2.629), the renderer's window.innerWidth is NOT equal
-      // to displayBounds.width even though Electron's getContentSize
-      // agrees. The renderer computes scale = innerWidth /
-      // displayBounds.width.
-      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, {
-        windows: localized,
-        displayBounds: {
-          width: displayBounds.width,
-          height: displayBounds.height
-        }
-      });
-    }
   });
+
+  // Step 2: per-app frontmost collapse. Auxiliary panels of OTHER
+  // apps drop out (a Slack inspector panel isn't a snap target when
+  // the main Slack window is what the user wants). PwrSnap's own
+  // Library/Edit windows are kept as normal candidates; capture
+  // chrome has already been hidden before enumeration.
+  const meaningful = onThisDisplay.filter(
+    (w) => w.isFrontmostInApp || ourPids.has(w.pid)
+  );
+
+  // No visibility / occlusion filter. Showing a window's outline
+  // even when it's mostly obscured matches what every other capture
+  // tool does — the user wants to capture the WINDOW, not the
+  // visible-fragment of the window. The screen snapshot already
+  // covers the visual; the snap highlight just tags the bounds.
+  const localized = meaningful
+    .map((w, idx) => ({ w, idx }))
+    .filter(({ w }) => w.bounds.width * w.bounds.height >= MIN_AREA_PX)
+    .map(({ w, idx }) => ({
+      windowId: w.windowId,
+      pid: w.pid,
+      bundleId: w.bundleId,
+      appName: w.appName,
+      title: w.title,
+      // Legacy diagnostic field retained for preload/API shape
+      // stability. PwrSnap-owned user windows are now snappable.
+      ownedByUs: ourPids.has(w.pid),
+      // listWindows returns z-order ascending (index 0 = frontmost).
+      // After our `meaningful` filter, indices change but z-order is
+      // preserved, so the array index continues to work.
+      zIndex: idx,
+      // Rect = rawRect; we no longer split visible-bbox from raw
+      // bounds. Both fields stay so the renderer doesn't need a shape
+      // change, but they're identical now.
+      rect: {
+        x: w.bounds.x - displayBounds.x,
+        y: w.bounds.y - displayBounds.y,
+        w: w.bounds.width,
+        h: w.bounds.height
+      },
+      rawRect: {
+        x: w.bounds.x - displayBounds.x,
+        y: w.bounds.y - displayBounds.y,
+        w: w.bounds.width,
+        h: w.bounds.height
+      }
+    }));
+
+  log.info("snap candidates", {
+    raw: rawSnapshot.length,
+    onThisDisplay: onThisDisplay.length,
+    meaningful: meaningful.length,
+    afterVisibilityFilter: localized.length,
+    ourPids: Array.from(ourPids),
+    // Display the cursor was on when pickRegion fired. Pair this
+    // with the renderer's [viewport] log to see if the renderer's
+    // CSS coord space matches display.bounds 1:1.
+    display: {
+      id: targetDisplay.id,
+      bounds: targetDisplay.bounds,
+      workArea: targetDisplay.workArea,
+      scaleFactor: targetDisplay.scaleFactor
+    },
+    // The selector window is still hidden at enumeration time. These
+    // bounds are logged before simple-fullscreen so a future "Electron
+    // full-screen candidate" regression is easy to spot in the raw
+    // candidate list.
+    selectorWindow: {
+      bounds: win.getBounds(),
+      contentBounds: win.getContentBounds(),
+      contentSize: win.getContentSize(),
+      isSimpleFullScreen: win.isSimpleFullScreen()
+    },
+    candidates: localized.map((c) => ({
+      z: c.zIndex,
+      id: c.windowId,
+      app: c.appName,
+      ours: c.ownedByUs,
+      rect: c.rect,
+      rawRect: c.rawRect
+    }))
+  });
+  if (!win.isDestroyed()) {
+    // Ship display.bounds — the selector window covers the entire
+    // display via setSimpleFullScreen, so display-bounds is the
+    // logical-px rect the renderer's CSS coord space scales into.
+    // On macOS scaled-mode displays (fractional devicePixelRatio,
+    // e.g. 2.629), the renderer's window.innerWidth is NOT equal
+    // to displayBounds.width even though Electron's getContentSize
+    // agrees. The renderer computes scale = innerWidth /
+    // displayBounds.width.
+    win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, {
+      windows: localized,
+      displayBounds: {
+        width: displayBounds.width,
+        height: displayBounds.height
+      }
+    });
+  }
 
   // Arm Esc + Enter via globalShortcut for the duration of the
   // selector. macOS sometimes withholds keyboard events from a

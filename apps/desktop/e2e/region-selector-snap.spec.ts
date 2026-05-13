@@ -178,17 +178,11 @@ test("click-without-drag on a window enters adjusting + ↵ commits with snapped
   }
 });
 
-test("a PwrSnap-owned window covering another window blocks the snap (no fall-through)", async () => {
-  // The bug we shipped 415194b for and re-fixed in this commit:
-  //   - PwrSnap's library window sits on top in the z-order.
-  //   - 1Password sits underneath, occluded.
-  //   - The user moves the cursor over the library.
-  //   - Pre-fix: library was filtered out before hit-testing → the
-  //     algorithm walked past it and reported 1Password underneath
-  //     (the "Not 1password" screenshot).
-  //   - Fix: keep our windows in the candidate list, mark them
-  //     ownedByUs:true. The hit-test sees them as topmost-at-cursor
-  //     and returns null → snap target stays "display".
+test("a PwrSnap-owned window covering another window is itself snappable", async () => {
+  // PwrSnap's normal user windows (Library / Edit) are legitimate
+  // capture targets. If the Library is topmost under the cursor, the
+  // selector should snap to it, not fall through to a hidden window
+  // underneath and not retreat to full-display mode.
   const app = await launchPwrSnap();
   try {
     const selector = await showAndGetSelector(app);
@@ -223,11 +217,12 @@ test("a PwrSnap-owned window covering another window blocks the snap (no fall-th
 
     // Hover over the overlapping region. Both windows' bounds
     // contain (300, 200), but ours is z-order frontmost. Snap
-    // should be display, not 1Password.
+    // should be PwrSnap, not 1Password or display.
     await selector.mouse.move(300, 200);
     await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "display"
+      "window"
     );
+    await expect(selector.locator(".region-dims-chip")).toContainText("PwrSnap");
 
     // Move outside our window but still inside 1Password's bounds.
     // ...wait, in this scenario both rects are identical, so the
@@ -397,10 +392,10 @@ test("Tab cycles to the next window underneath the cursor", async () => {
   }
 });
 
-test("when our window only partially occludes another, the visible portion still snaps", async () => {
+test("when our window only partially occludes another, both visible windows can snap", async () => {
   // Library covers the upper half of 1Password. 1Password's lower
   // half is visible. The renderer should:
-  //   - cursor in upper overlap zone → display (ours blocks)
+  //   - cursor in upper overlap zone → PwrSnap
   //   - cursor in lower visible-1Password zone → 1Password
   const app = await launchPwrSnap();
   try {
@@ -439,11 +434,12 @@ test("when our window only partially occludes another, the visible portion still
       () => document.body.dataset.windowListCount === "2"
     );
 
-    // Cursor in upper overlap (covered by ours): display snap.
+    // Cursor in upper overlap (covered by ours): PwrSnap snap.
     await selector.mouse.move(400, 100);
     await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
-      "display"
+      "window"
     );
+    await expect(selector.locator(".region-dims-chip")).toContainText("PwrSnap");
 
     // Cursor in lower half (1Password visible): 1Password snap with
     // the visible-only rect (NOT the full 800×400 raw bounds).

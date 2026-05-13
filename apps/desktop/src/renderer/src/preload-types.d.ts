@@ -13,8 +13,8 @@ export type WindowSnapEntry = {
   bundleId: string | null;
   appName: string | null;
   title: string | null;
-  /** True for PwrSnap-owned windows. Renderer treats them as
-   *  occluders for hit-testing but never snaps to them. */
+  /** True when the candidate belongs to this PwrSnap process.
+   *  Diagnostic only; normal PwrSnap windows are snappable. */
   ownedByUs: boolean;
   /** Z-order; 0 = frontmost. Walked ascending in the renderer's
    *  hit-test (first raw-bounds match = topmost-at-cursor). */

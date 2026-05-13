@@ -14,7 +14,8 @@
     "./ipc": "./src/ipc.ts",
     "./appearance-arg": "./src/appearance-arg.ts",
     "./bundle-manifest": "./src/bundle-manifest-schema.ts",
-    "./bundle-manifest-v2": "./src/bundle-manifest-schema-v2.ts"
+    "./bundle-manifest-v2": "./src/bundle-manifest-schema-v2.ts",
+    "./clipboard-layer-fragment": "./src/clipboard-layer-fragment.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

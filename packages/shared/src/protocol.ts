@@ -827,6 +827,21 @@ export type Commands = {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
   };
+  /** v2 only: serialize selected layers (or the entire live tree if
+   *  layerIds omitted) into a clipboard payload — private UTI for
+   *  PwrSnap-to-PwrSnap fidelity, standard PNG fallback for everyone
+   *  else (Slack, Messages, Mail). */
+  "clipboard:copyLayerFragment": {
+    req: { captureId: string; layerIds?: string[] };
+    res: { layerCount: number; sourceCount: number; bytes: number };
+  };
+  /** v2 only: paste a previously-copied fragment into the target
+   *  capture. Returns the inserted layer ids so the renderer can
+   *  select / animate them. Refuses on v1 captures. */
+  "clipboard:pasteLayerFragment": {
+    req: { captureId: string; parentId?: string | null };
+    res: { insertedLayerIds: string[]; fallbackUsedPng: boolean };
+  };
 
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };

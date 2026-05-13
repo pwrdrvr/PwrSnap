@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+minimumReleaseAge: 10080
 allowBuilds:
   better-sqlite3: true
   electron: true

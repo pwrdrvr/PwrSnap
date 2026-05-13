@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — Settings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="stylesheet" href="src/floatover.css" />
+<link rel="stylesheet" href="src/library.css" />
+<link rel="stylesheet" href="src/settings.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/design-canvas.jsx"></script>
+<script type="text/babel" src="src/AppIcons.jsx"></script>
+<script type="text/babel" src="src/TrayMenu.jsx"></script>
+<script type="text/babel" src="src/Settings.jsx"></script>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { Settings, TrayMenu, TrayMenubar } = window.PS;
+
+// ============================================================
+// Notes panel
+// ============================================================
+function NotesPanel({ children, title }) {
+  return (
+    <div style={{
+      width: "100%", height: "100%",
+      padding: 32,
+      background: "var(--bg-app)",
+      borderRadius: 12,
+      border: "1px solid var(--border-subtle)",
+      fontFamily: "var(--font-sans)",
+      color: "var(--text-secondary)",
+      overflow: "auto",
+    }}>
+      <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 8px", letterSpacing: "-0.01em" }}>{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+function SettingsNotes() {
+  return (
+    <NotesPanel title="Settings dialog">
+      <p style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 14px" }}>
+        Modeled on the <b style={{color:"var(--text-primary)"}}>PwrAgnt Settings</b> layout: traffic-light titlebar +
+        breadcrumb, left rail grouped by <b style={{color:"var(--text-primary)"}}>General · Capture · Library · Advanced</b>,
+        and a scrolling main area of <b style={{color:"var(--text-primary)"}}>collapsible cards</b> with
+        <code style={{ font: "500 11px/1 var(--font-mono)", margin: "0 4px", color: "var(--accent-bright)" }}>eyebrow + title</code>
+        and label/sub-text on the left, control on the right.
+      </p>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" }}>① Output &amp; format (hero)</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 12px" }}>
+        <li><b style={{color:"var(--text-primary)"}}>File format</b> — 4 swatches, the active one highlights amber.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Save location</b> — segmented Auto/Custom toggle + amber-highlighted "Using" row, just like the Codex paths card in PwrAgnt.</li>
+        <li><b style={{color:"var(--text-primary)"}}>L / M / H presets</b> — surfaces the only knob users actually care about: what scale gets copied to clipboard.</li>
+        <li>Self-test card collapsed by default — symmetry with the Connection test row.</li>
+      </ul>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" }}>② Hotkeys</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 12px" }}>
+        <li>Every capture mode + library + tray + settings have a row, current binding shown as a <code style={{ font: "500 11px/1 var(--font-mono)", color: "var(--text-primary)" }}>⌘⇧X</code> chip; click to remap.</li>
+        <li>Unbound hotkeys show a dashed "+ click to set" placeholder rather than empty space.</li>
+      </ul>
+
+      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" }}>③ Updated tray header</div>
+      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 12px" }}>
+        <li>Removed <b style={{color:"var(--text-primary)"}}>LOCAL</b> — was load-bearing on a concept that never existed.</li>
+        <li>Added <b style={{color:"var(--text-primary)"}}>Library</b> (folder glyph) and <b style={{color:"var(--text-primary)"}}>Settings</b> (gear) icon buttons to the left of the IDLE status pill.</li>
+        <li>Both also reachable from the right-click context menu on the menubar icon — the tray buttons are the discoverable surface.</li>
+      </ul>
+
+      <p style={{ font: "400 12px/1.45 var(--font-mono)", color: "var(--text-muted)", margin: "16px 0 0" }}>
+        Tokens used: pwragnt vocabulary — <code>--bg-row-active</code>, <code>--accent-border</code>, <code>--accent-soft</code> on the "Using" highlight; <code>--success-soft</code> on the PASS badge.
+      </p>
+    </NotesPanel>
+  );
+}
+
+// ============================================================
+// Tray host frame — desktop with menubar + tray
+// ============================================================
+function TrayHost({ activeMode = "region" }) {
+  return (
+    <div style={{
+      position: "relative", width: "100%", height: "100%",
+      background: "linear-gradient(140deg, #0a0908 0%, #14110d 50%, #050403 100%)",
+      borderRadius: 12, overflow: "hidden",
+      border: "1px solid var(--border-default)",
+    }}>
+      <TrayMenubar />
+      <svg style={{ position: "absolute", top: 26, right: 88, width: 60, height: 14, pointerEvents: "none" }}>
+        <line x1="0" y1="0" x2="0" y2="10" stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 2" opacity="0.5" />
+      </svg>
+      <TrayMenu activeMode={activeMode} />
+      <div style={{
+        position: "absolute", left: 24, right: 24, top: 64, bottom: 24,
+        display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 24,
+        opacity: 0.32,
+      }}>
+        {Array.from({length: 16}).map((_, i) => (
+          <div key={i} style={{
+            aspectRatio: "1",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.04)",
+            borderRadius: 8,
+          }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Main
+// ============================================================
+function App() {
+  return (
+    <DesignCanvas projectName="PwrSnap" deliverable="Settings">
+
+      <DCSection id="settings-output" title="① Settings · Output & format">
+        <DCArtboard id="settings-output-page" label="Settings · Output & format · the hero page" width={1280} height={920}>
+          <Settings initialPage="output" />
+        </DCArtboard>
+        <DCArtboard id="settings-notes" label="Design notes" width={480} height={920}>
+          <SettingsNotes />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="settings-ai" title="② Settings · AI Providers · Backends & credentials">
+        <DCArtboard id="settings-ai-page" label="Settings · AI Providers · roles + Codex + OpenAI" width={1280} height={1280}>
+          <Settings initialPage="ai" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="settings-hotkeys" title="③ Settings · Hotkeys">
+        <DCArtboard id="settings-hotkeys-page" label="Settings · Hotkeys · global capture + app surfaces" width={1280} height={920}>
+          <Settings initialPage="hotkeys" />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="tray-updated" title="④ Tray header · Library + Settings icons, no more LOCAL">
+        <DCArtboard id="tray-host" label="Tray dropdown · two new icon buttons left of IDLE" width={920} height={620}>
+          <TrayHost activeMode="region" />
+        </DCArtboard>
+      </DCSection>
+
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — Tray</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="stylesheet" href="src/floatover.css" />
+<link rel="stylesheet" href="src/library.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/design-canvas.jsx"></script>
+<script type="text/babel" src="src/AppIcons.jsx"></script>
+<script type="text/babel" src="src/TrayMenu.jsx"></script>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { TrayMenu, TrayMenubar } = window.PS;
+
+// ============================================================
+// Notes panel
+// ============================================================
+function NotesPanel({ children, title }) {
+  return (
+    <div style={{
+      width: "100%", height: "100%",
+      padding: 36,
+      background: "var(--bg-app)",
+      borderRadius: 12,
+      border: "1px solid var(--border-subtle)",
+      fontFamily: "var(--font-sans)",
+      color: "var(--text-secondary)",
+      overflow: "auto",
+    }}>
+      <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 6px", letterSpacing: "-0.01em" }}>{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+// ============================================================
+// Tray host frame — desktop with menubar + tray dropping from PwrSnap icon
+// ============================================================
+function TrayHost({ activeMode = "region" }) {
+  return (
+    <div style={{
+      position: "relative", width: "100%", height: "100%",
+      background: "linear-gradient(140deg, #0a0908 0%, #14110d 50%, #050403 100%)",
+      borderRadius: 12, overflow: "hidden",
+      border: "1px solid var(--border-default)",
+    }}>
+      <TrayMenubar />
+      {/* dotted line from menubar PwrSnap icon to tray */}
+      <svg style={{ position: "absolute", top: 26, right: 88, width: 60, height: 14, pointerEvents: "none" }}>
+        <line x1="0" y1="0" x2="0" y2="10" stroke="var(--accent)" strokeWidth="1" strokeDasharray="2 2" opacity="0.5" />
+      </svg>
+      <TrayMenu activeMode={activeMode} />
+      {/* Faux desktop content under it */}
+      <div style={{
+        position: "absolute", left: 24, right: 24, top: 64, bottom: 24,
+        display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 24,
+        opacity: 0.32,
+      }}>
+        {Array.from({length: 16}).map((_, i) => (
+          <div key={i} style={{
+            aspectRatio: "1",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.04)",
+            borderRadius: 8,
+          }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Tray notes
+// ============================================================
+function TrayNotes() {
+  return (
+    <NotesPanel title="Tray menu">
+      <p style={{ font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 14px" }}>
+        Drops from the menubar PwrSnap icon. The app is keyboard-driven first — the tray exists for <b style={{color:"var(--text-primary)"}}>mode discovery</b> and <b style={{color:"var(--text-primary)"}}>library access</b>, not as the primary capture surface.
+      </p>
+      <ul style={{ font: "400 13px/1.6 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 14px" }}>
+        <li>Six capture modes — Region (primary), Window, Full Screen, All Screens, Scrolling, Timed.</li>
+        <li>Every row shows its hotkey. <b style={{color:"var(--text-primary)"}}>⌘⇧P</b> is the global "smart" trigger that fires the active mode.</li>
+        <li>Last-snap card lets you re-copy / reopen instantly — covers the "I already took it, where did it go" case.</li>
+        <li>Status pill (top-right) shows storage target and idle/recording state.</li>
+        <li>Library, Search, Preferences sit below as global app actions.</li>
+      </ul>
+      <p style={{ font: "400 12px/1.5 var(--font-mono)", color: "var(--text-muted)", margin: 0 }}>
+        Width: 380px. Anchors to the menubar icon. Closes on Esc, click-outside, or shortcut-fire.
+      </p>
+    </NotesPanel>
+  );
+}
+
+// ============================================================
+// Main
+// ============================================================
+function App() {
+  return (
+    <DesignCanvas projectName="PwrSnap" deliverable="Tray">
+
+      <DCSection id="tray" title="Tray menu">
+        <DCArtboard id="tray-host" label="Tray dropdown · from menubar" width={920} height={620}>
+          <TrayHost activeMode="region" />
+        </DCArtboard>
+        <DCArtboard id="tray-notes" label="Notes" width={460} height={620}>
+          <TrayNotes />
+        </DCArtboard>
+      </DCSection>
+
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

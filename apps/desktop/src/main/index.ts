@@ -7,6 +7,7 @@ import { installDevelopmentDockIcon } from "./development-dock-icon";
 // float-over lifecycle. Kept as an export from float-over.ts for the
 // agent-flow / headless path.)
 import { disposeFocusSink, installFocusSink } from "./focus-sink";
+import { registerAppHandlers } from "./handlers/app-handlers";
 import { registerCaptureHandlers } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
@@ -315,6 +316,7 @@ export function bootstrapApp(): void {
     await openDatabase();
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
+    registerAppHandlers();
     registerCaptureHandlers();
     registerClipboardHandlers();
     registerFloatOverHandlers();

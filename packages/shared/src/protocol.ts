@@ -309,6 +309,19 @@ export type Commands = {
     res: SecretStatus;
   };
 
+  // ---- app ----
+  /** Static build/runtime metadata for the About page. Stable shape;
+   *  add fields only when a new About row demands them. */
+  "app:version": {
+    req: Record<string, never>;
+    res: {
+      version: string;
+      electronVersion: string;
+      nodeVersion: string;
+      chromeVersion: string;
+    };
+  };
+
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };
 

@@ -20,7 +20,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CaptureRecord, FloatOverEvent } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
-import { cacheUrl, dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 
 type HostState =
   | { kind: "idle" }
@@ -78,7 +78,11 @@ export function FloatOverHost(): React.ReactElement {
           setState({ kind: "idle" });
           return;
         case "show-loaded":
-          setState({ kind: "loading", captureId: event.captureId });
+          if (event.record !== undefined) {
+            setState({ kind: "loaded", record: event.record });
+          } else {
+            setState({ kind: "loading", captureId: event.captureId });
+          }
           return;
         case "cancel":
         case "dismiss":
@@ -186,13 +190,16 @@ export function FloatOverHost(): React.ReactElement {
     );
   } else {
     const { record } = state;
-    // 1440px medium preset matches the float-over's intended display
-    // size and pre-warms the cache for the user's most-likely first
-    // ⌘ shortcut.
-    const previewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
+    const previewSrc = captureSrcUrl(record.id);
+    // Source PNG paints immediately after capture. Keep the 1440px
+    // rendered WebP as a progressive enhancement so cache-miss
+    // compose work cannot leave the visible preview blank.
+    const enhancedPreviewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
     body = (
       <FloatOver
+        key={record.id}
         src={previewSrc}
+        enhancedSrc={enhancedPreviewSrc}
         onCopy={(preset) => {
           void dispatch("clipboard:copy", { captureId: record.id, preset });
         }}

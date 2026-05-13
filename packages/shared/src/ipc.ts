@@ -6,6 +6,8 @@
 // out of the registry. Event channels (server → client broadcasts) use
 // the typed map below.
 
+import type { CaptureRecord } from "./protocol";
+
 export const IPC_CMD = "cmd" as const;
 
 export const EVENT_CHANNELS = {
@@ -81,9 +83,9 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
  *     window is established at the floating window level UNDER the
  *     selector (which is at screen-saver level), so the user never
  *     sees it before the selector hides.
- *   - `show-loaded` — capture committed; populate the toast with the
- *     captureId. Renderer fetches the record and starts the
- *     auto-dismiss countdown.
+ *   - `show-loaded` — capture committed; populate the toast. Main
+ *     includes the CaptureRecord when it already has it so the toast
+ *     can paint without a renderer→main metadata round trip.
  *   - `cancel`      — selector cancelled; hide the toast SYNCHRONOUSLY
  *     with no exit animation. Used so the user never sees the
  *     pre-shown placeholder when they Esc out of the selector.
@@ -92,7 +94,7 @@ export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
  */
 export type FloatOverEvent =
   | { kind: "show-idle" }
-  | { kind: "show-loaded"; captureId: string }
+  | { kind: "show-loaded"; captureId: string; record?: CaptureRecord | undefined }
   | { kind: "cancel" }
   | { kind: "dismiss" };
 

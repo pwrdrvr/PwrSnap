@@ -1403,7 +1403,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           dispatch={viewDispatch}
           posLabel={{
             idx: selectedIdx + 1,
-            total: visibleRecords.length
+            // Use the denormalized total-live count from app_stats —
+            // same source as the top-bar's "N captures" indicator —
+            // so the 1/N matches whether or not later pages are
+            // loaded yet. `visibleRecords.length` only counts what
+            // the keyset cursor has fetched so far.
+            total: isTrashView ? visibleRecords.length : totalLive
           }}
           prevRecordId={prevRecordId}
           nextRecordId={nextRecordId}

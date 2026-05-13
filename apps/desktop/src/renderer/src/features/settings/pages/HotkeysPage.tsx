@@ -6,7 +6,7 @@
 
 import type { ReactElement } from "react";
 import { Card, Hk, HkUnset, Row } from "../components";
-import { useSettings } from "../useSettings";
+import { useSettingsContext } from "../SettingsContext";
 
 /**
  * Translate an Electron accelerator string (e.g. `CommandOrControl+Shift+P`,
@@ -76,7 +76,7 @@ function modifierToGlyph(part: string): string {
 }
 
 export function HotkeysPage(): ReactElement {
-  const { settings, loading } = useSettings();
+  const { settings, loading } = useSettingsContext();
 
   // While the first settings:read is in flight we still render the
   // structure — the rows just degrade to HkUnset. The page is purely

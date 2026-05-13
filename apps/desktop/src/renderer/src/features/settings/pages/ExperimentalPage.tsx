@@ -5,10 +5,10 @@
 
 import type { ReactElement } from "react";
 import { Card, Row, Switch } from "../components";
-import { useSettings } from "../useSettings";
+import { useSettingsContext } from "../SettingsContext";
 
 export function ExperimentalPage(): ReactElement {
-  const { settings, patch } = useSettings();
+  const { settings, patch } = useSettingsContext();
   const v2 = settings?.experimental.v2FileFormat ?? false;
   const ready = settings !== null;
 

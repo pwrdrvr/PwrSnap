@@ -194,13 +194,22 @@ describe("useSettings", () => {
 
   test("patch() dispatches settings:write with the patch", async () => {
     let lastReq: unknown = null;
+    const nextSettings: Settings = {
+      ...baseSettings,
+      experimental: { v2FileFormat: true }
+    };
     const api = buildApi({
       onWrite: (req) => {
         lastReq = req;
-        return {
-          ok: true,
-          value: { ...baseSettings, experimental: { v2FileFormat: true } }
-        };
+        // Mirror real main behavior — broadcast fires before the
+        // write resolves. The hook no longer optimistically sets
+        // state from the dispatch's return value (todo #004), so
+        // the broadcast is the only path that updates settings.
+        api.pushEvent(EVENT_CHANNELS.settingsChanged, {
+          settings: nextSettings,
+          secrets: baseSecrets
+        });
+        return { ok: true, value: nextSettings };
       }
     });
     installFakeApi(api);
@@ -211,6 +220,131 @@ describe("useSettings", () => {
     });
     expect(lastReq).toEqual({ experimental: { v2FileFormat: true } });
     expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+  });
+
+  test("concurrent patch() resolutions do not reverse last-write-wins", async () => {
+    // Two writes in flight. The hook no longer optimistically sets
+    // settings from the dispatch return value (todo #004); the only
+    // state writer is the broadcast subscriber, so even with
+    // out-of-order resolutions the local state ends up reflecting
+    // the LAST broadcast — which is the LAST write to actually hit
+    // disk in main's writeQueue order.
+    let resolveA: ((r: AnyResult) => void) | null = null;
+    let resolveB: ((r: AnyResult) => void) | null = null;
+    const settingsA: Settings = {
+      ...baseSettings,
+      experimental: { v2FileFormat: false }
+    };
+    const settingsB: Settings = {
+      ...baseSettings,
+      experimental: { v2FileFormat: true }
+    };
+    let writeIndex = 0;
+    const api = buildApi({
+      onWrite: () => {
+        // Return a never-resolving placeholder; we'll resolve A/B
+        // explicitly below. The buildApi shim swaps in a control
+        // promise via the dispatch override below.
+        return { ok: true, value: baseSettings };
+      }
+    });
+    // Replace dispatch with a version that hands us A/B promises.
+    const originalDispatch = api.dispatch.bind(api);
+    api.dispatch = async (name: string, req: unknown): Promise<AnyResult> => {
+      if (name === "settings:write") {
+        writeIndex++;
+        return new Promise<AnyResult>((resolve) => {
+          if (writeIndex === 1) resolveA = resolve;
+          else if (writeIndex === 2) resolveB = resolve;
+        });
+      }
+      return originalDispatch(name, req);
+    };
+    installFakeApi(api);
+    await mount();
+    await flush();
+
+    // Fire two parallel patch calls.
+    let pA: Promise<void> | undefined;
+    let pB: Promise<void> | undefined;
+    await act(async () => {
+      pA = capturedValue?.patch({ experimental: { v2FileFormat: false } });
+      pB = capturedValue?.patch({ experimental: { v2FileFormat: true } });
+    });
+
+    // Main's writeQueue processed A then B then broadcast(A) then
+    // broadcast(B). Simulate that order: B broadcasts last.
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.settingsChanged, {
+        settings: settingsA,
+        secrets: baseSecrets
+      });
+      api.pushEvent(EVENT_CHANNELS.settingsChanged, {
+        settings: settingsB,
+        secrets: baseSecrets
+      });
+    });
+
+    // Now resolve the two dispatches OUT OF ORDER — B's promise
+    // settles first, A's settles after. If the hook were calling
+    // setSettings(result.value) after each write, this is when the
+    // reversal would happen.
+    await act(async () => {
+      resolveB?.({ ok: true, value: settingsB });
+      resolveA?.({ ok: true, value: settingsA });
+      await pB;
+      await pA;
+    });
+
+    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+  });
+
+  test("broadcast during initial-load Promise.all wins over stale disk read", async () => {
+    // Hold the initial `settings:read` open and have a broadcast
+    // arrive during the await. Without the `loaded` ref (todo #006)
+    // the post-await block would overwrite the broadcast state with
+    // the older read value.
+    let resolveRead: ((r: AnyResult) => void) | null = null;
+    const broadcastSettings: Settings = {
+      ...baseSettings,
+      experimental: { v2FileFormat: true }
+    };
+    const staleReadSettings: Settings = {
+      ...baseSettings,
+      experimental: { v2FileFormat: false }
+    };
+
+    const api = buildApi();
+    const originalDispatch = api.dispatch.bind(api);
+    api.dispatch = async (name: string, req: unknown): Promise<AnyResult> => {
+      if (name === "settings:read") {
+        return new Promise<AnyResult>((resolve) => {
+          resolveRead = resolve;
+        });
+      }
+      return originalDispatch(name, req);
+    };
+    installFakeApi(api);
+    await mount();
+    // Don't flush yet — initialLoad is awaiting settings:read.
+
+    // Broadcast arrives mid-await.
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.settingsChanged, {
+        settings: broadcastSettings,
+        secrets: baseSecrets
+      });
+    });
+    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+
+    // Now resolve the stale read. `loaded.current` is already
+    // true, so the post-await block must bail.
+    await act(async () => {
+      resolveRead?.({ ok: true, value: staleReadSettings });
+      await flush();
+    });
+    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+    expect(capturedValue?.loading).toBe(false);
   });
 
   test("read failure populates error and clears loading", async () => {

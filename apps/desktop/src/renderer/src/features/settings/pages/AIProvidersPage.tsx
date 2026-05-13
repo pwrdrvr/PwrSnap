@@ -32,7 +32,7 @@ import {
   SegmentedControl,
   type SegmentOption
 } from "../components";
-import { useSettings } from "../useSettings";
+import { useSettingsContext } from "../SettingsContext";
 
 const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
@@ -41,7 +41,7 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
 
 export function AIProvidersPage(): ReactElement {
   const { settings, secrets, patch, refreshCodex, replaceSecret, clearSecret } =
-    useSettings();
+    useSettingsContext();
   const [snapshot, setSnapshot] = useState<DesktopCodexDiscoverySnapshot | null>(
     null
   );

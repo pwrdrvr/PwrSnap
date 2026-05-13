@@ -8,6 +8,7 @@
 
 import type { ReactElement } from "react";
 import { ComingSoon } from "./ComingSoon";
+import { SettingsProvider } from "./SettingsContext";
 import { SETTINGS_PAGES_FLAT } from "./settings-categories";
 import { SettingsTitleBar } from "./SettingsTitleBar";
 import { Sidebar } from "./Sidebar";
@@ -59,10 +60,12 @@ export function SettingsApp(): ReactElement {
   }
 
   return (
-    <div className="pss" data-screen-label="Settings">
-      <SettingsTitleBar here={item.name} />
-      <Sidebar active={active} />
-      <main className="pss__main">{page}</main>
-    </div>
+    <SettingsProvider>
+      <div className="pss" data-screen-label="Settings">
+        <SettingsTitleBar here={item.name} />
+        <Sidebar active={active} />
+        <main className="pss__main">{page}</main>
+      </div>
+    </SettingsProvider>
   );
 }

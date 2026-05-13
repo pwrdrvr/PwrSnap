@@ -17,7 +17,7 @@
   height: 100%;
   display: grid;
   grid-template-columns: 220px 1fr;
-  grid-template-rows: 38px 1fr;
+  grid-template-rows: 52px 1fr;
   background: var(--bg-app);
   border-radius: 12px;
   overflow: hidden;
@@ -27,15 +27,15 @@
 }
 
 /* Title bar — Electron renders the real macOS traffic lights via
- * `titleBarStyle: "hiddenInset"`. The `pss__lights` placeholder is
- * kept for layout symmetry (the breadcrumb sits in the same horizontal
- * slot as the design) but visually suppressed. */
+ * `titleBarStyle: "hiddenInset"`. Left padding clears them. Matches
+ * the main library window's `.psl__topbar` chrome so the two surfaces
+ * read as the same app. */
 .pss__titlebar {
   grid-column: 1 / -1;
   grid-row: 1;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 78px; /* left pad clears the OS traffic lights */
+  padding: 0 16px 0 92px; /* left pad clears the OS traffic lights */
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
   gap: 14px;
@@ -46,27 +46,23 @@
 .pss__titlebar .pss__title-r-icon {
   -webkit-app-region: no-drag;
 }
-.pss__lights {
-  display: none; /* OS draws these; placeholder hidden */
-}
-.pss__lights span {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  display: block;
-}
-.pss__lights span:nth-child(1) { background: #ff5f57; }
-.pss__lights span:nth-child(2) { background: #febc2e; }
-.pss__lights span:nth-child(3) { background: #28c840; }
 .pss__title-brand {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font: 700 13px/1 var(--font-display);
+  font: 700 14px/1 var(--font-display);
   letter-spacing: -0.01em;
-  margin-left: 4px;
 }
-.pss__title-brand .a { color: var(--accent); }
+.pss__title-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+}
 .pss__title-crumb {
   display: inline-flex;
   align-items: center;

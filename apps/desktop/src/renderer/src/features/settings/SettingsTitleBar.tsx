@@ -1,15 +1,11 @@
-// Settings window chrome — ported from design/src/Settings.jsx's
-// `TitleBar` component (lines 58–75).
-//
-// Real macOS traffic lights are drawn by Electron via
-// `titleBarStyle: "hiddenInset"` over this row; the `pss__lights`
-// span is a visual placeholder retained from the design so the
-// breadcrumb sits in the right horizontal slot. It's kept off in
-// CSS via `visibility: hidden` to avoid stacking on top of the OS
-// traffic lights.
+// Settings window chrome. Matches the library's `.psl__topbar` so
+// the two surfaces read as the same app — 22×22 framed brand mark
+// + PwrSnapWordmark, then the breadcrumb. Real macOS traffic lights
+// are drawn by Electron via `titleBarStyle: "hiddenInset"`; left
+// padding on `.pss__titlebar` clears them.
 
 import type { ReactElement } from "react";
-import { PwrSnapMark } from "../shared/BrandMark";
+import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 
 type SettingsTitleBarProps = {
   here: string;
@@ -18,17 +14,12 @@ type SettingsTitleBarProps = {
 export function SettingsTitleBar({ here }: SettingsTitleBarProps): ReactElement {
   return (
     <header className="pss__titlebar">
-      <span className="pss__lights" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-      <span className="pss__title-brand">
-        <PwrSnapMark size={14} />
-        <span>
-          Pwr<span className="a">Snap</span>
+      <div className="pss__title-brand">
+        <span className="pss__title-mark">
+          <PwrSnapMark size={18} />
         </span>
-      </span>
+        <PwrSnapWordmark />
+      </div>
       <span className="pss__title-crumb">
         Settings <span className="sep">›</span> <span className="here">{here}</span>
       </span>

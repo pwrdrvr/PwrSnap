@@ -1,8 +1,3 @@
-// Segmented control. Two or more mutually-exclusive options laid
-// out horizontally; the active one glows copper. Mirrors the
-// design's `.pss__seg / .pss__seg-btn` shape (design/src/Settings.jsx
-// AIProvidersPage line 559+).
-
 import type { ReactElement } from "react";
 
 export type SegmentOption<T extends string> = {

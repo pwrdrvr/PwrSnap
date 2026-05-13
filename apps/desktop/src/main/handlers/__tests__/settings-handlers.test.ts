@@ -30,23 +30,22 @@ vi.mock("../../log", () => ({
   })
 }));
 
-// settings-handlers.ts imports `app` from electron for the lazy-init
-// path, and `BrowserWindow` for the broadcast helper. Stub both —
-// the open-window tests below don't exercise either, but module load
-// must succeed without an Electron runtime.
-vi.mock("electron", () => ({
+// Stub `electron` so module-load succeeds without a runtime.
+vi.mock("electron", (): Partial<typeof import("electron")> => ({
   app: {
     getPath: (name: string): string => {
       if (name === "userData") return "/tmp/pwrsnap-test-userData-settings-handlers";
       throw new Error(`unexpected app.getPath: ${name}`);
     }
-  },
-  BrowserWindow: { getAllWindows: () => [] },
+  } as unknown as typeof import("electron").app,
+  BrowserWindow: {
+    getAllWindows: () => []
+  } as unknown as typeof import("electron").BrowserWindow,
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (s: string): Buffer => Buffer.from(`enc:${s}`),
     decryptString: (b: Buffer): string => b.toString("utf8").replace(/^enc:/, "")
-  }
+  } as unknown as typeof import("electron").safeStorage
 }));
 
 // Import AFTER the mocks so the SUT's module-load picks them up.

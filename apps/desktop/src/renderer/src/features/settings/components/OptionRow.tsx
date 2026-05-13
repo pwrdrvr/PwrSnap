@@ -1,7 +1,3 @@
-// `.pss__opt` — a single option row inside a card (Codex candidate,
-// auth profile, etc.). Mirrors design/src/Settings.jsx AIProvidersPage
-// lines 578–622.
-
 import type { ReactElement, ReactNode } from "react";
 
 type OptionRowProps = {

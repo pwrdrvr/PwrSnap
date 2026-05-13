@@ -1,11 +1,7 @@
 // Pure-function unit tests for the AI Providers page helpers.
-// The full component renders a snapshot table + secret control; we
-// skip the component render (no @testing-library) and test the
-// small helpers it extracts.
 
 import { describe, expect, test, vi } from "vitest";
-import type { DesktopCodexDiscoverySnapshot } from "@pwrsnap/shared";
-import { formatLastSetAt, resolveUsing } from "../AIProvidersPage";
+import { formatLastSetAt } from "../AIProvidersPage";
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {
@@ -40,49 +36,5 @@ describe("formatLastSetAt", () => {
 
   test("returns the raw input on parse failure rather than crashing", () => {
     expect(formatLastSetAt("not-an-iso-date")).toBe("not-an-iso-date");
-  });
-});
-
-describe("resolveUsing", () => {
-  const snapshot: DesktopCodexDiscoverySnapshot = {
-    refreshedAt: "2026-05-12T12:00:00.000Z",
-    resolvedPath: "/opt/homebrew/bin/codex",
-    candidates: [
-      {
-        path: "/opt/homebrew/bin/codex",
-        source: "path",
-        version: "0.125.0",
-        available: true
-      },
-      {
-        path: "/Applications/Codex.app/Contents/Resources/codex",
-        source: "application",
-        version: "0.130.0",
-        available: true
-      }
-    ]
-  };
-
-  test("returns true when path matches the resolved binary", () => {
-    expect(resolveUsing(snapshot, "/opt/homebrew/bin/codex")).toBe(true);
-  });
-
-  test("returns false for non-resolved paths", () => {
-    expect(
-      resolveUsing(snapshot, "/Applications/Codex.app/Contents/Resources/codex")
-    ).toBe(false);
-  });
-
-  test("returns false when snapshot is null", () => {
-    expect(resolveUsing(null, "/opt/homebrew/bin/codex")).toBe(false);
-  });
-
-  test("returns false when resolvedPath is null on the snapshot", () => {
-    expect(
-      resolveUsing(
-        { ...snapshot, resolvedPath: null },
-        "/opt/homebrew/bin/codex"
-      )
-    ).toBe(false);
   });
 });

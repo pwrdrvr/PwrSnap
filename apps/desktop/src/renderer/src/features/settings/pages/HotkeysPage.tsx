@@ -11,13 +11,11 @@ import { useSettingsContext } from "../SettingsContext";
 /**
  * Translate an Electron accelerator string (e.g. `CommandOrControl+Shift+P`,
  * `Cmd+Alt+R`, `Option+Backspace`) into the array of glyphs the
- * `Hk` component renders. Returns an empty array for `null` so the
- * page can render `<HkUnset />` cleanly.
- *
- * Pure — no DOM access — so it's trivially testable.
+ * `Hk` component renders. Returns an empty array for an empty input
+ * so the page can render `<HkUnset />` cleanly.
  */
-export function acceleratorToDisplayKeys(accel: string | null): string[] {
-  if (accel === null || accel.length === 0) return [];
+export function acceleratorToDisplayKeys(accel: string): string[] {
+  if (accel.length === 0) return [];
   const parts = accel.split("+").map((p) => p.trim());
   const out: string[] = [];
   for (const raw of parts) {
@@ -76,13 +74,10 @@ function modifierToGlyph(part: string): string {
 }
 
 export function HotkeysPage(): ReactElement {
-  const { settings, loading } = useSettingsContext();
-
-  // While the first settings:read is in flight we still render the
-  // structure — the rows just degrade to HkUnset. The page is purely
-  // read-display, so loading state isn't load-bearing.
+  // Read-display only — while settings:read is in flight, rows
+  // degrade to HkUnset, so we don't need a loading state here.
+  const { settings } = useSettingsContext();
   const hk = settings?.hotkeys ?? null;
-  void loading;
 
   return (
     <>
@@ -104,21 +99,21 @@ export function HotkeysPage(): ReactElement {
           sub="The smart trigger. Picks region, window, or full-screen based on the cursor."
           tag="preview"
         >
-          {renderHk(hk?.quickCapture ?? null)}
+          {renderHk(hk?.quickCapture ?? "")}
         </Row>
         <Row
           label="Region"
           sub="Drag a marquee on any display."
           tag="global"
         >
-          {renderHk(hk?.region ?? null)}
+          {renderHk(hk?.region ?? "")}
         </Row>
         <Row
           label="Window"
           sub="Click a window. &#x2325; to include shadow."
           tag="global"
         >
-          {renderHk(hk?.window ?? null)}
+          {renderHk(hk?.window ?? "")}
         </Row>
         <Row
           label="Full Screen"
@@ -196,7 +191,7 @@ export function HotkeysPage(): ReactElement {
   );
 }
 
-function renderHk(accel: string | null): ReactElement {
+function renderHk(accel: string): ReactElement {
   const keys = acceleratorToDisplayKeys(accel);
   if (keys.length === 0) return <HkUnset />;
   return <Hk keys={keys} />;

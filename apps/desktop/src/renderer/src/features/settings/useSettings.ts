@@ -1,29 +1,15 @@
-// Renderer-side hook for the Settings substrate.
+// Race-handling notes for this hook:
 //
-// Subscribes to `events:settings:changed` and keeps a local snapshot
-// of both the persisted `Settings` shape and the masked secret-status
-// map. Every mutation (`patch`, `replaceSecret`, `clearSecret`) goes
-// through the command bus; the broadcast is the single source of truth
-// for follow-up state updates.
-//
-// This hook is hoisted to `SettingsApp` via `SettingsContext` so each
-// window has exactly one subscriber + one initial-load pair of
-// dispatches.
-//
-// Race-handling notes:
-//
-//   • `patch()` does NOT optimistically set local state after the
-//     dispatch resolves — the main process awaits the broadcast before
-//     returning, so by the time we'd setSettings(result.value) the
-//     subscriber has already done it. Eliminating the optimistic write
-//     kills a class of "second write resolves first, first arrives and
+//   • `patch()` does NOT optimistically set local state — the main
+//     process awaits the `events:settings:changed` broadcast before
+//     returning, so the subscriber has already updated state by the
+//     time the dispatch resolves. Skipping the optimistic write kills
+//     a class of "second write resolves first, first arrives and
 //     reverts to stale state" bugs.
 //
-//   • `refreshCodex`, `replaceSecret`, `clearSecret` each stamp their
-//     local-state update with a monotonic `writeSeq`. A late resolution
-//     (newer call has been issued in the meantime) is dropped — we do
-//     NOT call setState. These verbs don't ride the broadcast, so per-
-//     callback seq is the simplest correct guard.
+//   • `refreshCodex`, `replaceSecret`, `clearSecret` each stamp a
+//     monotonic `writeSeq`. A late resolution (newer call has been
+//     issued in the meantime) is dropped.
 //
 //   • The initial load races against the broadcast subscriber. If a
 //     sibling window writes during the `Promise.all` await, the
@@ -166,7 +152,7 @@ export function useSettings(): UseSettingsValue {
         throw new Error(result.error.message);
       }
       setSecrets((prev) =>
-        prev === null ? prev : ({ ...prev, [name]: result.value } as SecretMap)
+        prev === null ? prev : { ...prev, [name]: result.value }
       );
       setError(null);
     },
@@ -183,7 +169,7 @@ export function useSettings(): UseSettingsValue {
         throw new Error(result.error.message);
       }
       setSecrets((prev) =>
-        prev === null ? prev : ({ ...prev, [name]: result.value } as SecretMap)
+        prev === null ? prev : { ...prev, [name]: result.value }
       );
       setError(null);
     },

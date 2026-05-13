@@ -1,9 +1,6 @@
-// Generic collapsible-card primitive used by every Settings page.
-// Mirrors the design's `Card` helper (design/src/Settings.jsx
-// lines 121–136). Collapse state is visual-only for v1 — the
-// chevron flips but the header isn't a button. Slice F could
-// promote it to a button + state-bag when independent collapse
-// lands; for now everything ships expanded.
+// Collapse state is visual-only for v1 — the chevron flips but the
+// header isn't a button. Promote to a real toggle when independent
+// per-card collapse lands.
 
 import type { ReactElement, ReactNode } from "react";
 

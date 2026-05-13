@@ -1,21 +1,7 @@
-// Command-bus handlers for the `settings:*` namespace.
-//
-// Slice B landed `settings:open` only. Slice C extends this module
-// with the full read/write/discovery/secret surface, all routed
-// through the same handler-registration shape.
-//
-// The service + secret store are lazy module-level singletons keyed
-// off `app.getPath("userData")`. They're constructed on first
-// `registerSettingsHandlers()` rather than at module load so unit
-// tests that mock `electron` (no app instance) don't crash, and so
-// the production build doesn't touch the file system before
-// `app.whenReady()`. The lazy-singleton pattern mirrors the rest of
-// the handlers/* dir.
-//
-// Every write — `settings:write`, `settings:replaceSecret`,
-// `settings:clearSecret` — broadcasts `events:settings:changed` to
-// every BrowserWindow. The renderer's `useSettings` hook subscribes
-// to that channel and replaces its local snapshot on receipt.
+// Lazy module-level singletons because `app.getPath("userData")` is
+// unavailable at module load (tests mock `electron` without an app
+// instance, production hasn't fired `app.whenReady()` yet). Every
+// write broadcasts `events:settings:changed` to every BrowserWindow.
 
 import { BrowserWindow, app } from "electron";
 import { join } from "node:path";
@@ -46,10 +32,6 @@ import {
 
 const log = getMainLogger("pwrsnap:settings-handlers");
 
-// Lazy module-level singletons. Constructed on first call to
-// `registerSettingsHandlers()` (or via test injection — see
-// `__setSettingsServiceForTests`). `app` isn't ready at module load,
-// so we can't compute these statically.
 let settingsService: DesktopSettingsService | null = null;
 let secretStore: DesktopSecretStore | null = null;
 
@@ -72,12 +54,6 @@ function ensureServices(): {
   return { service: settingsService, secrets: secretStore };
 }
 
-/**
- * Test-only injection seam. Lets the integration test point the
- * handlers at a tmpdir-backed service without subprocessing Electron.
- * Production code MUST NOT call this; the lazy-init path is correct
- * for the real app.
- */
 export function __setSettingsServicesForTests(injected: {
   service?: DesktopSettingsService | null;
   secrets?: DesktopSecretStore | null;
@@ -256,18 +232,8 @@ export function registerSettingsHandlers(): void {
     return ok(status);
   });
 
-  // Bind the lookup so test resets that null out the singleton don't
-  // affect any code that's already captured a service reference. (No-op
-  // today — kept as a marker for the lazy-init pattern.)
-  void ((): void => {
-    // intentionally empty
-  })();
 }
 
-/**
- * Used by tests to wipe the lazy singletons + the bus registration so
- * a re-import inside `vi.resetModules()` is clean.
- */
 export function __resetSettingsHandlersForTests(): void {
   settingsService = null;
   secretStore = null;

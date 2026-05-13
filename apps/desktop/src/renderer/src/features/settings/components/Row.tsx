@@ -1,7 +1,3 @@
-// Generic label/sub + control row used inside every Settings Card.
-// Mirrors the design's `Row` helper (design/src/Settings.jsx lines
-// 108–119).
-
 import type { ReactElement, ReactNode } from "react";
 
 type RowProps = {

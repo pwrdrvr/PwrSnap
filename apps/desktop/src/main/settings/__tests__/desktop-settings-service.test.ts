@@ -258,11 +258,11 @@ describe("mergeSettings", () => {
     const current = defaultSettings();
     const merged = mergeSettings(current, {
       codex: { pinnedPath: "/x" },
-      hotkeys: { quickCapture: null }
+      hotkeys: { quickCapture: "" }
     });
     expect(merged.codex.pinnedPath).toBe("/x");
     expect(merged.codex.mode).toBe("auto"); // preserved
-    expect(merged.hotkeys.quickCapture).toBeNull(); // null IS a write
+    expect(merged.hotkeys.quickCapture).toBe(""); // "" IS a write
     expect(merged.hotkeys.region).toBe("CommandOrControl+Shift+R"); // preserved
   });
 });

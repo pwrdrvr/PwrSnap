@@ -1,18 +1,5 @@
-// safeStorage-backed secret store. Persists a small set of named
-// secrets to `<userData>/pwrsnap-secrets.bin` encrypted via Electron's
-// `safeStorage` (Keychain on macOS, libsecret/DPAPI elsewhere).
-//
-// On-disk shape: the encrypted blob decrypts to a JSON object keyed
-// by `DesktopSettingsSecretName`. Each value is
-// `{ value: string; lastSetAt: string }`. Plaintext NEVER touches
-// disk and NEVER crosses the IPC boundary — the renderer-visible
+// Plaintext NEVER crosses the IPC boundary — the renderer-visible
 // API returns only `SecretStatus` (`{ configured, lastSetAt }`).
-//
-// Mirrors (not lifts) PwrAgnt's interface from
-// ~/github/PwrAgnt/apps/desktop/src/main/settings/desktop-secret-store.ts.
-// PwrAgnt ships the interface + an in-memory test implementation;
-// the production safeStorage-backed implementation is what we need
-// here, so this file is the real impl, not a port.
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -22,14 +9,20 @@ import { getMainLogger } from "../log";
 
 type Logger = ReturnType<typeof getMainLogger>;
 
-/**
- * Every secret name persisted by the app. Used by `getAllStatus` to
- * project a default `{ configured: false, lastSetAt: null }` for
- * unset names — the renderer's AI Providers page needs every known
- * name in its initial render so the masked status rows can mount
- * without first-launch flicker.
- */
-export const KNOWN_SECRET_NAMES = ["grokApiKey"] as const satisfies readonly DesktopSettingsSecretName[];
+export const KNOWN_SECRET_NAMES = [
+  "grokApiKey"
+] as const satisfies readonly DesktopSettingsSecretName[];
+
+// Compile-time check the other direction: adding a new
+// `DesktopSettingsSecretName` without appending it here fails to
+// compile. `Exclude<>` returns `never` only when every union member
+// appears in the tuple.
+type _KnownSecretNamesExhaustive =
+  Exclude<DesktopSettingsSecretName, typeof KNOWN_SECRET_NAMES[number]> extends never
+    ? true
+    : false;
+const _knownSecretNamesExhaustive: _KnownSecretNamesExhaustive = true;
+void _knownSecretNamesExhaustive;
 
 export type DesktopSecretStoreConfig = {
   filePath: string;
@@ -53,20 +46,11 @@ export class DesktopSecretStore {
     this.log = config.logger ?? getMainLogger("pwrsnap:secret-store");
   }
 
-  getFilePath(): string {
-    return this.filePath;
-  }
-
-  /** Mask a single secret to the status shape returned across the IPC
-   *  boundary. Never includes the plaintext value. */
   async getStatus(name: DesktopSettingsSecretName): Promise<SecretStatus> {
     const blob = await this.readBlob();
     return toStatus(blob[name]);
   }
 
-  /** Map of `{ name → status }` for every KNOWN secret, even if absent.
-   *  Renderer relies on this so its mount-time render has every row
-   *  ready. */
   async getAllStatus(): Promise<Record<DesktopSettingsSecretName, SecretStatus>> {
     const blob = await this.readBlob();
     const out = {} as Record<DesktopSettingsSecretName, SecretStatus>;
@@ -76,11 +60,6 @@ export class DesktopSecretStore {
     return out;
   }
 
-  /**
-   * Set or overwrite the named secret. Throws if `safeStorage` is not
-   * available (e.g., on CI / first launch before the OS keychain is
-   * up). Callers at the bus handler layer translate into a Result-err.
-   */
   async replace(name: DesktopSettingsSecretName, value: string): Promise<SecretStatus> {
     if (!safeStorage.isEncryptionAvailable()) {
       throw new SecretUnavailableError(
@@ -99,11 +78,8 @@ export class DesktopSecretStore {
     });
   }
 
-  /**
-   * Remove the named secret from the blob. If clearing leaves the
-   * blob empty, we write an empty `{}` rather than deleting the file
-   * so subsequent reads stay simple (one code path).
-   */
+  // Clear writes an empty `{}` rather than deleting the file so the
+  // read path has one shape to handle.
   async clear(name: DesktopSettingsSecretName): Promise<SecretStatus> {
     return this.serialize(async () => {
       const blob = await this.readBlob();
@@ -116,13 +92,9 @@ export class DesktopSecretStore {
     });
   }
 
-  /**
-   * Main-process-only accessor for the plaintext. Used by future
-   * features that spawn a process needing the secret (e.g., Phase 4
-   * Grok client). Renderer code MUST NEVER call this — it is not
-   * registered on the command bus. Returns `null` when the secret
-   * is unset.
-   */
+  // Main-process-only accessor — NOT registered on the command bus,
+  // plaintext must never leave the main process. Phase 4 Grok client
+  // is the intended consumer.
   async getValue(name: DesktopSettingsSecretName): Promise<string | null> {
     const blob = await this.readBlob();
     const stored = blob[name];
@@ -205,9 +177,6 @@ export class DesktopSecretStore {
   }
 }
 
-/** Distinguished error thrown when safeStorage is unavailable. The
- *  handler layer translates into a Result-err with code
- *  `secret_unavailable`. */
 export class SecretUnavailableError extends Error {
   constructor(message: string) {
     super(message);

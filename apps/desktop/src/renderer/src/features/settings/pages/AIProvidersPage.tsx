@@ -1,26 +1,8 @@
-// AI Providers settings page. Ported from design/src/Settings.jsx
-// `AIProvidersPage` (lines 477–710), narrowed to the surfaces with
-// live backing today: Codex discovery (live), Grok keychain (live),
-// Job routing (visual preview only — Phase 4 wires it for real).
-//
-// Codex discovery:
-//   • Snapshot is fetched on mount via `settings:refreshCodexDiscovery`
-//     with force=false (cache-friendly). A "Refresh" header button
-//     re-fetches with force=true.
-//   • Each candidate is a clickable Use button (writes
-//     codex.mode=pinned + codex.pinnedPath=path). Switching the
-//     segmented control back to Auto Discovery keeps the pinnedPath
-//     value so the user doesn't lose it on toggle.
-//   • The "Using" pill follows `snapshot.resolvedPath`, NOT
-//     `settings.codex.mode` — same logic stdio-transport uses to
-//     spawn Codex.
-//
-// Grok secret:
-//   • Status comes from `useSettings().secrets`. Plaintext never
-//     crosses the IPC boundary.
-//   • Replace expands an inline input; Enter submits.
+// The "Using" pill follows `snapshot.resolvedPath`, NOT
+// `settings.codex.mode` — same logic stdio-transport uses to spawn
+// Codex, so the renderer doesn't lie about which binary actually runs.
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
@@ -48,7 +30,9 @@ export function AIProvidersPage(): ReactElement {
   const [snapshotLoading, setSnapshotLoading] = useState<boolean>(true);
 
   // Cache-friendly first fetch on mount; only force=true when the user
-  // clicks Refresh.
+  // clicks Refresh. `refreshCodex` is a stable `useCallback` from
+  // `useSettings` with an empty dep list, so this effect runs exactly
+  // once per mount even though we list it as a dep.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -263,8 +247,6 @@ export function AIProvidersPage(): ReactElement {
   );
 }
 
-// ── Helpers ────────────────────────────────────────────────────
-
 type CodexCandidatesProps = {
   snapshot: DesktopCodexDiscoverySnapshot | null;
   loading: boolean;
@@ -276,30 +258,19 @@ function CodexCandidates({
   loading,
   onPin
 }: CodexCandidatesProps): ReactElement {
-  if (snapshot === null) {
+  if (snapshot === null || snapshot.candidates.length === 0) {
+    const stillSearching = snapshot === null && loading;
     return (
       <div className="pss__opt">
-        <span className="pss__opt-icon">…</span>
+        <span className="pss__opt-icon">{stillSearching ? "…" : "!"}</span>
         <div className="pss__opt-text">
           <span className="pss__opt-primary">
-            {loading ? "Discovering Codex binaries…" : "No Codex binary detected"}
+            {stillSearching
+              ? "Discovering Codex binaries…"
+              : "No Codex binary detected"}
           </span>
           <span className="pss__opt-sub">
             Install Codex Desktop or run <code>brew install codex</code>.
-          </span>
-        </div>
-      </div>
-    );
-  }
-  if (snapshot.candidates.length === 0) {
-    return (
-      <div className="pss__opt">
-        <span className="pss__opt-icon">!</span>
-        <div className="pss__opt-text">
-          <span className="pss__opt-primary">No Codex binary detected</span>
-          <span className="pss__opt-sub">
-            Discovery returned an empty set. Install Codex Desktop or run
-            <code>brew install codex</code>.
           </span>
         </div>
       </div>
@@ -373,17 +344,30 @@ function GrokKeyControl({
   const [working, setWorking] = useState<boolean>(false);
   const configured = status?.configured === true;
 
+  // Cancel disables itself while a write is in flight (see the
+  // disabled={working} below), but the user can still trigger
+  // unmount via window close or page navigation mid-await. Guard
+  // the `finally` setState so we don't fire on an unmounted control.
+  const mountedRef = useRef<boolean>(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const submit = async (): Promise<void> => {
     if (draft.length === 0) return;
     setWorking(true);
     try {
       await onReplace(draft);
+      if (!mountedRef.current) return;
       setDraft("");
       setEditing(false);
     } catch {
       // useSettings has already surfaced the error; just bail.
     } finally {
-      setWorking(false);
+      if (mountedRef.current) setWorking(false);
     }
   };
 
@@ -421,6 +405,7 @@ function GrokKeyControl({
             <button
               className="pss__key-btn"
               type="button"
+              disabled={working}
               onClick={() => {
                 setDraft("");
                 setEditing(false);
@@ -518,14 +503,6 @@ function JobRoutingRow({
   );
 }
 
-/**
- * Format `lastSetAt` ISO-8601 for the Grok status row. Returns a
- * relative phrase for recent times and a date for anything older
- * than a week — matches the design's "set 3 days ago" shape.
- *
- * Pure — no React, no `Intl.RelativeTimeFormat` dependency, no
- * window globals — so it tests trivially.
- */
 export function formatLastSetAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "—";
   const then = Date.parse(iso);
@@ -540,20 +517,5 @@ export function formatLastSetAt(iso: string | null): string {
   if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
-  // Older than a week: drop to an absolute date (no time-of-day,
-  // matches design's calm tone).
   return new Date(then).toISOString().slice(0, 10);
-}
-
-/**
- * Whether `candidatePath` is the one `resolveCodexCommand` will pick
- * for the next spawn, given a snapshot. Tiny helper extracted so it
- * can be unit-tested without a React render.
- */
-export function resolveUsing(
-  snapshot: DesktopCodexDiscoverySnapshot | null,
-  candidatePath: string
-): boolean {
-  if (snapshot === null) return false;
-  return snapshot.resolvedPath === candidatePath;
 }

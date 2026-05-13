@@ -1,8 +1,3 @@
-// Experimental settings page. Single row today: the PSP1 file-format
-// toggle. The underlying feature ships later; the row persists the
-// preference so users can opt in early. Mirrors the Slice D scope —
-// keep it tiny on purpose, this page grows as new experiments land.
-
 import type { ReactElement } from "react";
 import { Card, Row, Switch } from "../components";
 import { useSettingsContext } from "../SettingsContext";
@@ -11,6 +6,12 @@ export function ExperimentalPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const v2 = settings?.experimental.v2FileFormat ?? false;
   const ready = settings !== null;
+
+  const onChange = ready
+    ? (next: boolean): void => {
+        void patch({ experimental: { v2FileFormat: next } });
+      }
+    : undefined;
 
   return (
     <>
@@ -31,16 +32,7 @@ export function ExperimentalPage(): ReactElement {
           sub="Build coming in a later release. Toggle persists so you can opt in early."
           tag="experimental"
         >
-          <Switch
-            on={v2}
-            {...(ready
-              ? {
-                  onChange: (next: boolean): void => {
-                    void patch({ experimental: { v2FileFormat: next } });
-                  }
-                }
-              : {})}
-          />
+          <Switch on={v2} onChange={onChange} />
         </Row>
       </Card>
     </>

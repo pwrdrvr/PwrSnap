@@ -166,9 +166,9 @@ export type Settings = {
   /** Phase 1 hotkeys are immutable in code today; this is read-only display.
    *  Persisted so a future "Edit" gesture has a place to write. */
   hotkeys: {
-    quickCapture: string | null;
-    region: string | null;
-    window: string | null;
+    quickCapture: string;
+    region: string;
+    window: string;
   };
   experimental: {
     /** Slot for the upcoming PSP1 file format. Wired but unused. */

@@ -1,25 +1,7 @@
-// Persists PwrSnap user settings to a single JSON file in the app's
-// userData directory, plus surfaces Codex CLI discovery + resolution
-// to the renderer via the same service.
-//
-// Mirrors (not lifts) ~/github/PwrAgnt/apps/desktop/src/main/settings/
-// desktop-settings-service.ts. The PwrAgnt service is 1100+ LOC and
-// couples worktrees/gh/git/messaging discovery — none of which PwrSnap
-// needs today. This is a fresh, narrowed implementation that:
-//   • atomically writes via tmpfile + fs.rename;
-//   • runs every read through an ordered legacy-shape catalog so the
-//     reader survives schema growth without forcing migrations on
-//     read (we only rewrite on the next `write`);
-//   • quarantines unreadable files to `pwrsnap-settings.corrupt-<ts>.json`
-//     and falls back to defaults so a corrupted blob doesn't brick
-//     the app;
-//   • serializes concurrent writes through a single promise chain so
-//     two simultaneous renderer dispatches can't interleave reads.
-//
-// Reuses the existing codex-discovery module — does NOT modify it.
-// Translates the desktop-side discovery snapshot into the shared
-// shape exposed to the renderer (the desktop module's snapshot
-// pre-dates the shared protocol and uses different field names).
+// Atomic write via tmp+rename. Reads route through an ordered legacy-
+// shape catalog (see SHAPE_CATALOG below) so schema growth doesn't
+// force eager migrations on read — we rewrite on the next `write`.
+// Concurrent writes serialize through a single promise chain.
 
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -40,9 +22,6 @@ export type DesktopSettingsServiceConfig = {
   logger?: Logger;
 };
 
-/** Returns the canonical v1 defaults. Used as the read-path fallback
- *  (missing file / corruption) and as the starting point for any
- *  patch merge. */
 export function defaultSettings(): Settings {
   return {
     schemaVersion: 1,
@@ -120,9 +99,9 @@ function parseV1(raw: unknown): Settings | null {
       consentAcceptedAt: pickStringOrNull(ai.consentAcceptedAt, defaults.ai.consentAcceptedAt)
     },
     hotkeys: {
-      quickCapture: pickStringOrNull(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
-      region: pickStringOrNull(hotkeys.region, defaults.hotkeys.region),
-      window: pickStringOrNull(hotkeys.window, defaults.hotkeys.window)
+      quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
+      region: pickString(hotkeys.region, defaults.hotkeys.region),
+      window: pickString(hotkeys.window, defaults.hotkeys.window)
     },
     experimental: {
       v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)
@@ -134,10 +113,8 @@ const SHAPE_CATALOG: readonly ShapeEntry[] = [
   { shape: "v1", parse: parseV1 }
 ];
 
-/** Translate the desktop-side discovery candidate shape (with
- *  `command` / `executable` / `selected` fields) into the shared
- *  shape (`path` / `available`). Renderer compares `candidate.path`
- *  to `snapshot.resolvedPath` for the "Using" badge. */
+// Translate the desktop-side discovery candidate shape into the shared
+// shape exposed to the renderer.
 function toSharedCandidate(input: {
   command: string;
   source: SharedCodexCandidateSource;
@@ -175,7 +152,6 @@ export class DesktopSettingsService {
     this.log = config.logger ?? getMainLogger("pwrsnap:settings-service");
   }
 
-  /** Resolved data path. Useful for diagnostics (About page) + tests. */
   getFilePath(): string {
     return this.filePath;
   }
@@ -372,8 +348,6 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
 }
 
-/** Deep-merge a `SettingsPatch` onto a `Settings`, with
- *  `undefined`-means-leave-untouched semantics at every level. */
 export function mergeSettings(current: Settings, patch: SettingsPatch): Settings {
   return {
     schemaVersion: 1,

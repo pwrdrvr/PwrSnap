@@ -27,8 +27,7 @@ describe("acceleratorToDisplayKeys", () => {
     expect(acceleratorToDisplayKeys("Ctrl+Space")).toEqual(["⌃", "Space"]);
   });
 
-  test("returns an empty array for null and the empty string", () => {
-    expect(acceleratorToDisplayKeys(null)).toEqual([]);
+  test("returns an empty array for the empty string", () => {
     expect(acceleratorToDisplayKeys("")).toEqual([]);
   });
 

@@ -169,12 +169,12 @@ export function validateSettingsWrite(
     const hotkeys = p.hotkeys as Record<string, unknown>;
     for (const key of ["quickCapture", "region", "window"] as const) {
       const v = hotkeys[key];
-      if (!isUndefined(v) && !isStringOrNull(v)) {
+      if (!isUndefined(v) && !isString(v)) {
         return {
           ok: false,
           error: validationError(
             "invalid_hotkey",
-            `settings:write: hotkeys.${key} must be a string or null`
+            `settings:write: hotkeys.${key} must be a string`
           )
         };
       }

@@ -321,6 +321,10 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
   // Coords are display-bounds-relative because the selector window
   // covers display.bounds via simple-fullscreen.
   const displayBounds = targetDisplay.bounds;
+  const displayCursor = {
+    x: cursor.x - displayBounds.x,
+    y: cursor.y - displayBounds.y
+  };
   const ourPids = selfPidSet();
   lastSnapshot = rawSnapshot;
 
@@ -426,23 +430,14 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
       rawRect: c.rawRect
     }))
   });
-  if (!win.isDestroyed()) {
-    // Ship display.bounds — the selector window covers the entire
-    // display via setSimpleFullScreen, so display-bounds is the
-    // logical-px rect the renderer's CSS coord space scales into.
-    // On macOS scaled-mode displays (fractional devicePixelRatio,
-    // e.g. 2.629), the renderer's window.innerWidth is NOT equal
-    // to displayBounds.width even though Electron's getContentSize
-    // agrees. The renderer computes scale = innerWidth /
-    // displayBounds.width.
-    win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, {
-      windows: localized,
-      displayBounds: {
-        width: displayBounds.width,
-        height: displayBounds.height
-      }
-    });
-  }
+  const windowListPayload = {
+    windows: localized,
+    displayBounds: {
+      width: displayBounds.width,
+      height: displayBounds.height
+    },
+    cursor: displayCursor
+  };
 
   // Arm Esc + Enter via globalShortcut for the duration of the
   // selector. macOS sometimes withholds keyboard events from a
@@ -472,9 +467,12 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
     // synchronously on receipt (mode → body[data-mode]; snapshot →
     // <img> background), so by the first paint we're showing the
     // frozen-in-time pixels and we're already in the right mode.
-    if (!win.isDestroyed() && activeScreenSnapshot !== null) {
-      const screenUrl = `pwrsnap-screen://r/${activeScreenSnapshot.id}`;
-      win.webContents.send(SELECTOR_MODE_CHANNEL, { mode, screenUrl });
+    const modePayload =
+      activeScreenSnapshot !== null
+        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}` }
+        : null;
+    if (!win.isDestroyed() && modePayload !== null) {
+      win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
     }
     // Order matters: setSimpleFullScreen(true) BEFORE show().
     //
@@ -513,6 +511,19 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
     // webContents focus is what governs whether keystrokes route
     // to the renderer's document.
     win.webContents.focus();
+    // Send the pre-show window snapshot AFTER show/focus. The
+    // snapshot itself was captured before the selector became
+    // visible, so it cannot include our overlay, but delaying IPC
+    // delivery avoids the pre-warmed renderer missing the message
+    // before its React subscriptions are mounted.
+    win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, windowListPayload);
+    setTimeout(() => {
+      if (win.isDestroyed() || pendingResolver !== resolve) return;
+      if (modePayload !== null) {
+        win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+      }
+      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, windowListPayload);
+    }, 50);
   });
   uninstallSelectorGlobalShortcuts();
   return result;

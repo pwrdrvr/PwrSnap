@@ -88,6 +88,28 @@ test("hovering a window locks the rect to its bounds (no modifier)", async () =>
   }
 });
 
+test("window-list cursor initializes the snap target before mouse movement", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const selector = await showAndGetSelector(app);
+    await selector.waitForFunction(() => document.body.dataset.snap !== undefined);
+
+    const cx = SYNTHETIC_WINDOW.rect.x + SYNTHETIC_WINDOW.rect.w / 2;
+    const cy = SYNTHETIC_WINDOW.rect.y + SYNTHETIC_WINDOW.rect.h / 2;
+    await hydrateWindowList(app, [SYNTHETIC_WINDOW], { x: cx, y: cy });
+    await selector.waitForFunction(
+      () => document.body.dataset.windowListCount === "1"
+    );
+
+    await expect.poll(async () => selector.locator("body").getAttribute("data-snap")).toBe(
+      "window"
+    );
+    await expect(selector.locator(".region-dims-chip")).toContainText("Target App");
+  } finally {
+    await app.close();
+  }
+});
+
 test("click-without-drag on a window enters adjusting + ↵ commits with snappedWindowId", async () => {
   const app = await launchPwrSnap();
   try {
@@ -526,7 +548,8 @@ type SnapEntry = {
  */
 async function hydrateWindowList(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  windows: readonly SnapEntry[]
+  windows: readonly SnapEntry[],
+  cursor?: { x: number; y: number }
 ): Promise<void> {
   // Find the selector page from the test side, query its viewport,
   // then hand a matching displayBounds to the renderer so scale=1.
@@ -538,6 +561,10 @@ async function hydrateWindowList(
     width: window.innerWidth,
     height: window.innerHeight
   }));
+  const payload =
+    cursor === undefined
+      ? { windows: [...windows], displayBounds: innerSize }
+      : { windows: [...windows], displayBounds: innerSize, cursor };
   await app.electronApp.evaluate(
     ({ BrowserWindow }, payload) => {
       const w = BrowserWindow.getAllWindows().find(
@@ -546,7 +573,7 @@ async function hydrateWindowList(
       if (w === undefined) throw new Error("no selector window");
       w.webContents.send("region-selector:window-list", payload);
     },
-    { windows: [...windows], displayBounds: innerSize }
+    payload
   );
 }
 

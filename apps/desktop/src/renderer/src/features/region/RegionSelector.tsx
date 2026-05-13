@@ -221,7 +221,7 @@ export function RegionSelector() {
       // Rescale every rect from display-logical px → CSS px so the
       // renderer can hit-test against event.clientX/Y (CSS px) and
       // render via inline `style.width` (CSS px) directly.
-      windowsRef.current = payload.windows.map((w) => ({
+      const scaledWindows = payload.windows.map((w) => ({
         ...w,
         rect: {
           x: w.rect.x * scale,
@@ -236,6 +236,17 @@ export function RegionSelector() {
           h: w.rawRect.h * scale
         }
       }));
+      windowsRef.current = scaledWindows;
+      if (payload.cursor !== undefined && interactionRef.current.kind === "snap") {
+        const cursor = {
+          x: payload.cursor.x * scale,
+          y: payload.cursor.y * scale
+        };
+        lastMouseRef.current = cursor;
+        const next = snapAt(cursor.x, cursor.y);
+        setSnapTarget(next);
+        setRect(rectForSnap(next));
+      }
       document.body.dataset.windowListCount = String(payload.windows.length);
     });
     document.body.dataset.windowListReady = "1";

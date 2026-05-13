@@ -145,6 +145,7 @@ const pwrsnapApi = {
     handler: (payload: {
       windows: WindowSnapEntry[];
       displayBounds: { width: number; height: number };
+      cursor?: { x: number; y: number };
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -152,6 +153,7 @@ const pwrsnapApi = {
         payload as {
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
+          cursor?: { x: number; y: number };
         }
       );
     ipcRenderer.on(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);

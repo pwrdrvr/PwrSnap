@@ -46,6 +46,7 @@ declare global {
         handler: (payload: {
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
+          cursor?: { x: number; y: number };
         }) => void
       ): () => void;
       onSelectorKey(handler: (payload: { key: string }) => void): () => void;

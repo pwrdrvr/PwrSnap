@@ -1152,6 +1152,21 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               defaultValue=""
             />
           </div>
+          {/* Settings gear — opens the Settings window. Sits just
+              left of Quick Capture so the right side reads as
+              "configure · capture". */}
+          <button
+            className="psl__icon-btn"
+            type="button"
+            title="Settings  (⌘,)"
+            aria-label="Open Settings"
+            onClick={() => { void dispatch("settings:open", {}); }}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
+            </svg>
+          </button>
           {/* Mirrors the tray's Quick Capture button — same wording,
               same action, same hotkey. Routes through `capture:interactive`
               with `auto` mode (smart pick: region / window / full screen

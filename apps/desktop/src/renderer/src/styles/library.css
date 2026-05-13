@@ -1237,6 +1237,20 @@
 .psl__chip-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+/* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's
+   border + hover treatment so the Settings gear sits flush next to
+   Quick Capture without looking like a different control. */
+.psl__icon-btn {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.psl__icon-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.psl__icon-btn:active { transform: translateY(1px); }
 
 .psl__big-cta {
   display: flex; gap: 6px;

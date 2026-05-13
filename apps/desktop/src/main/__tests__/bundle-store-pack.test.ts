@@ -83,8 +83,10 @@ describe("packBundle + readBundleManifest roundtrip", () => {
     const got = await readBundleManifest(bundlePath);
     expect(got.bundle_format_version).toBe(1);
     expect(got.capture_id).toBe(validManifest.capture_id);
-    expect(got.source_sha256).toBe(validManifest.source_sha256);
-    expect(got.source_dimensions).toEqual(validManifest.source_dimensions);
+    if (got.bundle_format_version === 1) {
+      expect(got.source_sha256).toBe(validManifest.source_sha256);
+      expect(got.source_dimensions).toEqual(validManifest.source_dimensions);
+    }
     expect(got.paired_png_filename).toBe(validManifest.paired_png_filename);
     expect(got.created_at).toBe(validManifest.created_at);
     expect(got.bundle_modified_at).toBe(validManifest.bundle_modified_at);

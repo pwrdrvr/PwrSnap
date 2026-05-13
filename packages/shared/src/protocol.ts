@@ -71,22 +71,93 @@ export type CapturePresetMetric = {
   fromCache: boolean;
 };
 
-export type Settings = {
-  /**
-   * User-configured Codex CLI binary path. When empty, discovery picks
-   * the newest detected install. Override via `PWRSNAP_CODEX_COMMAND`
-   * env var.
-   */
-  codexCommand: string;
-  /**
-   * Phase 4: AI-pipeline kill switch + per-feature toggles.
-   * Defaulted off-until-consent; populated when Phase 4 ships.
-   */
-  aiEnabled: boolean;
-  aiConsentAcceptedAt: string | null;
+/** Identifier for every Settings sidebar page. Used by `settings:open`
+ *  to deep-link directly to a section. */
+export type SettingsPage =
+  | "startup"
+  | "hotkeys"
+  | "notifications"
+  | "ai"
+  | "capture"
+  | "output"
+  | "annotate"
+  | "storage"
+  | "sources"
+  | "experimental"
+  | "about";
+
+/** Every secret the app persists. Plaintext values never cross the IPC
+ *  boundary — the renderer only ever sees the status shape below. */
+export type DesktopSettingsSecretName = "grokApiKey";
+
+export type SecretStatus = {
+  configured: boolean;
+  lastSetAt: string | null;
 };
 
-export type SettingsPatch = Partial<Settings>;
+/** Where a discovered Codex binary came from. `env` = PWRSNAP_CODEX_COMMAND
+ *  override; `config` = user-pinned in Settings; `path` = `which codex`;
+ *  `application` = Codex.app bundled binary. */
+export type DesktopCodexCandidateSource = "env" | "config" | "path" | "application";
+
+export type DesktopCodexDiscoveryCandidate = {
+  path: string;
+  source: DesktopCodexCandidateSource;
+  version: string | null;
+  available: boolean;
+};
+
+export type DesktopCodexDiscoverySnapshot = {
+  candidates: DesktopCodexDiscoveryCandidate[];
+  /** The path that `resolveCodexCommand` will pick for the next spawn,
+   *  or `null` if none is usable. Renderers compare to `candidate.path`
+   *  to draw the "Using" badge. */
+  resolvedPath: string | null;
+  /** ISO-8601 timestamp of when this snapshot was produced. */
+  refreshedAt: string;
+};
+
+export type Settings = {
+  /** Bumped when the on-disk shape changes. Readers below the current
+   *  version go through the legacy-shape catalog in the service before
+   *  being normalized. */
+  schemaVersion: 1;
+  codex: {
+    mode: "auto" | "pinned";
+    /** Path the user pinned. Empty string = no pin. Kept across mode
+     *  toggles so flipping back to "pinned" restores the prior choice. */
+    pinnedPath: string;
+    /** CODEX_HOME / profile dir. Empty string = system default (`~/.codex`). */
+    profile: string;
+  };
+  ai: {
+    /** Phase 4 AI-pipeline kill switch. */
+    enabled: boolean;
+    /** ISO-8601; null until the user accepts the AI consent modal. */
+    consentAcceptedAt: string | null;
+  };
+  /** Phase 1 hotkeys are immutable in code today; this is read-only display.
+   *  Persisted so a future "Edit" gesture has a place to write. */
+  hotkeys: {
+    quickCapture: string | null;
+    region: string | null;
+    window: string | null;
+  };
+  experimental: {
+    /** Slot for the upcoming PSP1 file format. Wired but unused. */
+    v2FileFormat: boolean;
+  };
+};
+
+/** Deep-partial patch shape. `undefined` = leave untouched. Each nested
+ *  object is independently optional so a renderer can write a single
+ *  field without echoing the rest. */
+export type SettingsPatch = {
+  codex?: Partial<Settings["codex"]>;
+  ai?: Partial<Settings["ai"]>;
+  hotkeys?: Partial<Settings["hotkeys"]>;
+  experimental?: Partial<Settings["experimental"]>;
+};
 
 /**
  * Map of every command-bus command. Each entry declares the request
@@ -216,6 +287,27 @@ export type Commands = {
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };
   "settings:write": { req: SettingsPatch; res: Settings };
+  /** Open (or focus, if already open) the Settings BrowserWindow. */
+  "settings:open": { req: { page?: SettingsPage }; res: void };
+  /** Re-run Codex CLI discovery and return the snapshot. `force: false`
+   *  is allowed to return a service-cached snapshot. */
+  "settings:refreshCodexDiscovery": {
+    req: { force?: boolean };
+    res: DesktopCodexDiscoverySnapshot;
+  };
+  /** Status of every persisted secret. Never returns plaintext. */
+  "settings:secretStatus": {
+    req: Record<string, never>;
+    res: Record<DesktopSettingsSecretName, SecretStatus>;
+  };
+  "settings:replaceSecret": {
+    req: { name: DesktopSettingsSecretName; value: string };
+    res: SecretStatus;
+  };
+  "settings:clearSecret": {
+    req: { name: DesktopSettingsSecretName };
+    res: SecretStatus;
+  };
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };

@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  CodexTestResult,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
@@ -22,12 +23,21 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
 ];
 
 export function AIProvidersPage(): ReactElement {
-  const { settings, secrets, patch, refreshCodex, replaceSecret, clearSecret } =
-    useSettingsContext();
+  const {
+    settings,
+    secrets,
+    patch,
+    refreshCodex,
+    testCodex,
+    replaceSecret,
+    clearSecret
+  } = useSettingsContext();
   const [snapshot, setSnapshot] = useState<DesktopCodexDiscoverySnapshot | null>(
     null
   );
   const [snapshotLoading, setSnapshotLoading] = useState<boolean>(true);
+  const [codexTest, setCodexTest] = useState<CodexTestResult | null>(null);
+  const [codexTesting, setCodexTesting] = useState<boolean>(false);
 
   // Cache-friendly first fetch on mount; only force=true when the user
   // clicks Refresh. `refreshCodex` is a stable `useCallback` from
@@ -173,24 +183,37 @@ export function AIProvidersPage(): ReactElement {
             <span className="pss__test-icon">C</span>
             <div className="pss__test-l">
               <span className="pss__test-cmd">
-                {snapshot?.resolvedPath ?? "—"}
+                {codexTest?.account ?? snapshot?.resolvedPath ?? "—"}
               </span>
-              <span className="pss__test-sub">spawn --version</span>
+              <span className="pss__test-sub">
+                {codexTestSubLine(codexTest, codexTesting)}
+              </span>
             </div>
             <div className="pss__test-r">
-              <span className="pss__badge">Not tested</span>
+              <span
+                className={
+                  "pss__badge" + (codexTest ? ` ${codexTestBadgeClass(codexTest)}` : "")
+                }
+              >
+                {codexTestBadgeLabel(codexTest, codexTesting)}
+              </span>
               <button
                 className="pss__test-btn"
                 type="button"
+                disabled={codexTesting}
                 onClick={() => {
-                  // Phase 4 wires the real test; v1 is inert.
-                  // eslint-disable-next-line no-console
-                  console.warn(
-                    "[Settings] AI Providers connection test is a Phase 4 placeholder"
-                  );
+                  void (async () => {
+                    setCodexTesting(true);
+                    try {
+                      const result = await testCodex();
+                      if (result !== null) setCodexTest(result);
+                    } finally {
+                      setCodexTesting(false);
+                    }
+                  })();
                 }}
               >
-                Test
+                {codexTesting ? "Testing…" : "Test"}
               </button>
             </div>
           </div>
@@ -518,4 +541,40 @@ export function formatLastSetAt(iso: string | null): string {
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
   return new Date(then).toISOString().slice(0, 10);
+}
+
+export function codexTestBadgeLabel(
+  result: CodexTestResult | null,
+  testing: boolean
+): string {
+  if (testing) return "Testing…";
+  if (result === null) return "Not tested";
+  switch (result.status) {
+    case "ok": return result.detail ?? "OK";
+    case "unset": return "No Codex";
+    case "failed": return "Failed";
+  }
+}
+
+export function codexTestBadgeClass(result: CodexTestResult): string {
+  switch (result.status) {
+    case "ok": return "is-using";
+    case "unset": return "";
+    case "failed": return "is-accent";
+  }
+}
+
+export function codexTestSubLine(
+  result: CodexTestResult | null,
+  testing: boolean
+): string {
+  if (testing) return "spawn --version";
+  if (result === null) return "spawn --version";
+  if (result.status === "ok") {
+    return `${result.durationMs}ms · ${formatLastSetAt(result.testedAt)}`;
+  }
+  if (result.status === "unset") {
+    return "no Codex binary resolved";
+  }
+  return result.errorMessage ?? "spawn failed";
 }

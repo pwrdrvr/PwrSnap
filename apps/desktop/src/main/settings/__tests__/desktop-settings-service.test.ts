@@ -253,6 +253,26 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
   });
 });
 
+describe("DesktopSettingsService.testCodex", () => {
+  test("unset when no Codex binary resolves", async () => {
+    const codexDiscovery = await import("../codex-discovery");
+    const resolveSpy = vi
+      .spyOn(codexDiscovery, "resolveCodexCommand")
+      .mockImplementation(async () => {
+        throw new Error("no codex");
+      });
+    try {
+      const svc = makeService();
+      const result = await svc.testCodex();
+      expect(result.status).toBe("unset");
+      expect(result.account).toBeNull();
+      expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      resolveSpy.mockRestore();
+    }
+  });
+});
+
 describe("mergeSettings", () => {
   test("undefined fields preserve current; defined fields overwrite", () => {
     const current = defaultSettings();

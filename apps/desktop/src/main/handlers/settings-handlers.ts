@@ -169,6 +169,22 @@ export function registerSettingsHandlers(): void {
     }
   });
 
+  bus.register("settings:testCodex", async () => {
+    const { service } = ensureServices();
+    try {
+      const result = await service.testCodex();
+      return ok(result);
+    } catch (cause) {
+      return err(
+        toSettingsError(
+          "test_failed",
+          cause instanceof Error ? cause.message : String(cause),
+          cause
+        )
+      );
+    }
+  });
+
   bus.register("settings:secretStatus", async () => {
     const { secrets } = ensureServices();
     try {

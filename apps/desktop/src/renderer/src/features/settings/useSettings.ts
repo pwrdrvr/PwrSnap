@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CodexTestResult,
   DesktopCodexDiscoverySnapshot,
   DesktopSettingsSecretName,
   PwrSnapError,
@@ -39,6 +40,7 @@ export type UseSettingsValue = {
   error: PwrSnapError | null;
   patch: (p: SettingsPatch) => Promise<void>;
   refreshCodex: (force?: boolean) => Promise<DesktopCodexDiscoverySnapshot | null>;
+  testCodex: () => Promise<CodexTestResult | null>;
   replaceSecret: (name: DesktopSettingsSecretName, value: string) => Promise<void>;
   clearSecret: (name: DesktopSettingsSecretName) => Promise<void>;
 };
@@ -59,6 +61,7 @@ export function useSettings(): UseSettingsValue {
   // counter; a resolution whose `seq` no longer matches `.current`
   // is dropped (newer call in flight).
   const refreshSeq = useRef<number>(0);
+  const testCodexSeq = useRef<number>(0);
   const replaceSeq = useRef<number>(0);
   const clearSeq = useRef<number>(0);
 
@@ -142,6 +145,17 @@ export function useSettings(): UseSettingsValue {
     []
   );
 
+  const testCodex = useCallback(async (): Promise<CodexTestResult | null> => {
+    const seq = ++testCodexSeq.current;
+    const result = await dispatch("settings:testCodex", {});
+    if (seq !== testCodexSeq.current) return null;
+    if (!result.ok) {
+      setError(result.error);
+      return null;
+    }
+    return result.value;
+  }, []);
+
   const replaceSecret = useCallback(
     async (name: DesktopSettingsSecretName, value: string): Promise<void> => {
       const seq = ++replaceSeq.current;
@@ -183,6 +197,7 @@ export function useSettings(): UseSettingsValue {
     error,
     patch,
     refreshCodex,
+    testCodex,
     replaceSecret,
     clearSecret
   };

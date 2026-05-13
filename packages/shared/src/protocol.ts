@@ -144,6 +144,19 @@ export type DesktopCodexDiscoverySnapshot = {
   refreshedAt: string;
 };
 
+/** Outcome of a Codex `--version` probe via the connection-test button.
+ *  Ported from PwrAgnt's CredentialTester.testCodex. */
+export type CodexTestStatus = "unset" | "ok" | "failed";
+
+export type CodexTestResult = {
+  status: CodexTestStatus;
+  testedAt: string;
+  durationMs: number;
+  account: string | null;
+  detail?: string;
+  errorMessage?: string;
+};
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -321,6 +334,12 @@ export type Commands = {
   "settings:refreshCodexDiscovery": {
     req: { force?: boolean };
     res: DesktopCodexDiscoverySnapshot;
+  };
+  /** Spawn the currently-resolved Codex binary with `--version` and
+   *  parse the banner. Used by the AI Providers connection-test row. */
+  "settings:testCodex": {
+    req: Record<string, never>;
+    res: CodexTestResult;
   };
   /** Status of every persisted secret. Never returns plaintext. */
   "settings:secretStatus": {

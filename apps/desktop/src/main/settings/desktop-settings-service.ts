@@ -3,17 +3,32 @@
 // force eager migrations on read — we rewrite on the next `write`.
 // Concurrent writes serialize through a single promise chain.
 
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import type {
+  CodexTestResult,
   DesktopCodexCandidateSource as SharedCodexCandidateSource,
   DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
   DesktopCodexDiscoverySnapshot as SharedCodexSnapshot,
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
-import { discoverCodexCommands, resolveCodexCommand } from "./codex-discovery";
+import {
+  compareCodexCliVersions,
+  discoverCodexCommands,
+  MINIMUM_CODEX_CLI_VERSION,
+  resolveCodexCommand
+} from "./codex-discovery";
 import { getMainLogger } from "../log";
+
+const execFile = promisify(execFileCallback);
+
+/** Per-probe timeout for Codex `--version` in `testCodex`. Mirrors
+ *  PwrAgnt's `DEFAULT_PROBE_TIMEOUT_MS`. */
+const CODEX_TEST_TIMEOUT_MS = 7500;
+const ERROR_MESSAGE_LIMIT = 240;
 
 type Logger = ReturnType<typeof getMainLogger>;
 
@@ -302,6 +317,84 @@ export class DesktopSettingsService {
     return snapshot;
   }
 
+  /**
+   * Spawn the currently-resolved Codex binary with `--version`, parse
+   * the banner, and version-check against `MINIMUM_CODEX_CLI_VERSION`.
+   * Mirrors PwrAgnt's `CredentialTester.testCodex` shape so a future
+   * lift of the tester arrives at the same protocol.
+   */
+  async testCodex(): Promise<CodexTestResult> {
+    const startedAt = Date.now();
+    const settings = await this.read();
+    let resolvedCommand: string | null = null;
+    try {
+      const resolved = await resolveCodexCommand({
+        command:
+          settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
+            ? settings.codex.pinnedPath
+            : "codex",
+        env: process.env
+      });
+      resolvedCommand = resolved.command;
+    } catch {
+      resolvedCommand = null;
+    }
+
+    if (resolvedCommand === null) {
+      return {
+        status: "unset",
+        testedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        account: null
+      };
+    }
+
+    const probeStart = Date.now();
+    try {
+      const { stdout, stderr } = await execFile(resolvedCommand, ["--version"], {
+        timeout: CODEX_TEST_TIMEOUT_MS
+      });
+      const durationMs = Date.now() - probeStart;
+      const testedAt = new Date().toISOString();
+      const output = `${stdout?.toString() ?? ""}\n${stderr?.toString() ?? ""}`;
+      const match = output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/);
+      if (match) {
+        const version = match[1] as string;
+        if (compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) < 0) {
+          return {
+            status: "failed",
+            testedAt,
+            durationMs,
+            account: resolvedCommand,
+            errorMessage: `Codex CLI ${version} is older than the minimum supported version ${MINIMUM_CODEX_CLI_VERSION}`
+          };
+        }
+        return {
+          status: "ok",
+          testedAt,
+          durationMs,
+          account: resolvedCommand,
+          detail: version
+        };
+      }
+      return {
+        status: "failed",
+        testedAt,
+        durationMs,
+        account: resolvedCommand,
+        errorMessage: "version banner not recognized in stdout/stderr"
+      };
+    } catch (cause) {
+      return {
+        status: "failed",
+        testedAt: new Date().toISOString(),
+        durationMs: Date.now() - probeStart,
+        account: resolvedCommand,
+        errorMessage: clipError(cause)
+      };
+    }
+  }
+
   // ---- internals ----
 
   private async quarantine(reason: string): Promise<void> {
@@ -370,4 +463,16 @@ function mergeSection<T extends Record<string, unknown>>(
     out[key] = value;
   }
   return out as T;
+}
+
+function clipError(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.name === "AbortError"
+        ? "request timed out"
+        : error.message
+      : String(error);
+  return message.length <= ERROR_MESSAGE_LIMIT
+    ? message
+    : `${message.slice(0, ERROR_MESSAGE_LIMIT - 1)}…`;
 }

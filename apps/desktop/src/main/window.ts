@@ -211,8 +211,10 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
     return settingsWindow;
   }
   const window = new BrowserWindow({
-    width: 960,
-    height: 620,
+    width: 1040,
+    height: 720,
+    minWidth: 720,
+    minHeight: 480,
     show: false,
     title: "PwrSnap Settings",
     titleBarStyle: "hiddenInset",

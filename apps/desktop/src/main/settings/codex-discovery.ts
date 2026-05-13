@@ -29,6 +29,10 @@ import { PWRSNAP_CODEX_COMMAND_ENV } from "./env";
 
 const execFile = promisify(execFileCallback);
 
+/** Minimum Codex CLI version PwrSnap will spawn. Mirrors PwrAgnt's
+ *  threshold; older binaries miss protocol features we rely on. */
+export const MINIMUM_CODEX_CLI_VERSION = "0.125.0";
+
 export type DesktopCodexCandidateSource = "env" | "config" | "path" | "application";
 
 export type DesktopCodexDiscoveryCandidate = {

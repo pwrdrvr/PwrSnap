@@ -6,16 +6,13 @@
 // — anything in front of that window would have been matched first,
 // so the picked window IS the one visually under the cursor.
 //
-// The earlier bug was unrelated to that algorithm: we were filtering
-// PwrSnap-owned windows out BEFORE the hit-test. So if the library
-// window covered a hidden 1Password window and the cursor was over
-// the library, the algorithm walked past the (filtered-out) library
-// and reported 1Password — which the user can't actually see at the
-// cursor. Fix: keep our windows in the list, mark them as
-// `ownedByUs`, and have the hit-test return null when the topmost
-// match is one of ours. The cursor is visually on a window we don't
-// want to snap to, so the answer is "no window snap" — fall through
-// to display snap.
+// The earlier class of bug was unrelated to that algorithm: filtering
+// a non-snappable blocker out BEFORE the hit-test lets the algorithm
+// walk past it and report a hidden window underneath. If a caller has
+// a true blocker, keep it in the list and have `pickWindowAt` return
+// null when that topmost match is hit. Product code currently avoids
+// this for PwrSnap capture chrome by hiding it before enumeration;
+// normal PwrSnap user windows remain snappable.
 //
 // The second piece — the snap rect should reflect the *visible*
 // portion of a window, not its raw bounds — needs the geometry
@@ -88,8 +85,7 @@ export function computeVisibility<T extends WithBounds>(
  *
  * Returns null when:
  *   - The cursor is over background (no window's bounds contain it).
- *   - The topmost window at the point is a blocker (e.g. one of our
- *     own PwrSnap windows). The user is visually on a non-snappable
+ *   - The topmost window at the point is a blocker. The user is visually on a non-snappable
  *     surface; fall back to display snap.
  */
 export function pickWindowAt<T extends WithBounds>(

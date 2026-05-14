@@ -116,64 +116,95 @@ export async function launchPwrSnap(
     }
   }
 
-  const electronApp = await electron.launch({
-    args: [mainEntry],
-    cwd: desktopRoot,
-    env
-  });
+  let electronApp: ElectronApplication | null = null;
+  try {
+    const launchedApp = await electron.launch({
+      args: [mainEntry],
+      cwd: desktopRoot,
+      env
+    });
+    electronApp = launchedApp;
 
-  // The main process pre-warms a region-selector BrowserWindow before
-  // it opens the library window. firstWindow() races them and may
-  // hand back the selector. Find the library window by title instead
-  // so specs always see the user-facing surface.
-  const window = await waitForLibraryWindow(electronApp);
+    // The main process pre-warms a region-selector BrowserWindow before
+    // it opens the library window. firstWindow() races them and may
+    // hand back the selector. Find the library window by title instead
+    // so specs always see the user-facing surface.
+    const window = await waitForLibraryWindow(launchedApp);
 
-  if (options.windowSize !== undefined) {
-    const size = options.windowSize;
-    await electronApp.evaluate(({ BrowserWindow }, target) => {
-      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-      if (!win) throw new Error("no live BrowserWindow to resize");
-      win.setMinimumSize(0, 0);
-      win.setContentSize(target.width, target.height);
-    }, size);
-    await expect
-      .poll(async () =>
-        window.evaluate(() => ({
-          innerWidth: globalThis.innerWidth,
-          innerHeight: globalThis.innerHeight
-        }))
-      )
-      .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
-  }
-
-  return {
-    electronApp,
-    window,
-    homeRoot,
-    dispatch: async <C extends CommandName>(name: C, req: Req<C>) => {
-      // Drive the command bus through the E2E bridge that main installs
-      // when `PWRSNAP_E2E=1`. The bridge re-uses the same `bus.dispatch`
-      // that ipcMain calls, so the Result envelope a spec sees is the
-      // exact same shape a renderer would.
-      const result = await electronApp.evaluate(
-        async (_electron, payload: { name: string; req: unknown }) => {
-          const bridge = (
-            globalThis as unknown as {
-              __PWRSNAP_TEST__?: { dispatch: (n: string, r: unknown) => Promise<unknown> };
-            }
-          ).__PWRSNAP_TEST__;
-          if (bridge === undefined) {
-            throw new Error("PWRSNAP_E2E bridge not installed — did you set PWRSNAP_E2E=1?");
-          }
-          return await bridge.dispatch(payload.name, payload.req);
-        },
-        { name, req }
-      );
-      return result as Result<Res<C>, PwrSnapError>;
-    },
-    close: async () => {
-      await electronApp.close();
-      await rm(homeRoot, { recursive: true, force: true });
+    if (options.windowSize !== undefined) {
+      const size = options.windowSize;
+      await launchedApp.evaluate(({ BrowserWindow }, target) => {
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+        if (!win) throw new Error("no live BrowserWindow to resize");
+        win.setMinimumSize(0, 0);
+        win.setContentSize(target.width, target.height);
+      }, size);
+      await expect
+        .poll(async () =>
+          window.evaluate(() => ({
+            innerWidth: globalThis.innerWidth,
+            innerHeight: globalThis.innerHeight
+          }))
+        )
+        .toMatchObject({ innerWidth: size.width, innerHeight: size.height });
     }
-  };
+
+    return {
+      electronApp: launchedApp,
+      window,
+      homeRoot,
+      dispatch: async <C extends CommandName>(name: C, req: Req<C>) => {
+        // Drive the command bus through the E2E bridge that main installs
+        // when `PWRSNAP_E2E=1`. The bridge re-uses the same `bus.dispatch`
+        // that ipcMain calls, so the Result envelope a spec sees is the
+        // exact same shape a renderer would.
+        const result = await launchedApp.evaluate(
+          async (_electron, payload: { name: string; req: unknown }) => {
+            const bridge = (
+              globalThis as unknown as {
+                __PWRSNAP_TEST__?: { dispatch: (n: string, r: unknown) => Promise<unknown> };
+              }
+            ).__PWRSNAP_TEST__;
+            if (bridge === undefined) {
+              throw new Error("PWRSNAP_E2E bridge not installed — did you set PWRSNAP_E2E=1?");
+            }
+            return await bridge.dispatch(payload.name, payload.req);
+          },
+          { name, req }
+        );
+        return result as Result<Res<C>, PwrSnapError>;
+      },
+      close: async () => {
+        try {
+          await launchedApp.evaluate(({ app }) => {
+            app.dock?.hide();
+          });
+        } catch {
+          // The app may already be gone after a failed assertion.
+        }
+        try {
+          await launchedApp.close();
+        } finally {
+          await rm(homeRoot, { recursive: true, force: true });
+        }
+      }
+    };
+  } catch (cause) {
+    if (electronApp !== null) {
+      try {
+        await electronApp.evaluate(({ app }) => {
+          app.dock?.hide();
+        });
+      } catch {
+        // Ignore cleanup failures; preserve the original launch error.
+      }
+      try {
+        await electronApp.close();
+      } catch {
+        // Ignore cleanup failures; preserve the original launch error.
+      }
+    }
+    await rm(homeRoot, { recursive: true, force: true });
+    throw cause;
+  }
 }

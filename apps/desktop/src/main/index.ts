@@ -249,7 +249,11 @@ export function bootstrapApp(): void {
   });
 
   app.whenReady().then(async () => {
-    installDevelopmentDockIcon();
+    if (isE2E && process.platform === "darwin") {
+      app.dock?.hide();
+    } else {
+      installDevelopmentDockIcon();
+    }
 
     // ── Dev seeder CLI mode ───────────────────────────────────────
     // Detect `--seed=<profile>` BEFORE `openDatabase()`. The seeder's

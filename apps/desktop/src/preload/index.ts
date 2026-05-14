@@ -69,9 +69,9 @@ export type WindowSnapEntry = {
   bundleId: string | null;
   appName: string | null;
   title: string | null;
-  /** True for windows owned by PwrSnap itself (library, float-over,
-   *  selector windows). The renderer keeps these in the hit-test
-   *  list as occluders but never snaps to them. */
+  /** True when the candidate belongs to this PwrSnap process. This
+   *  is diagnostic only: normal PwrSnap user windows are valid snap
+   *  targets, while capture chrome is hidden before enumeration. */
   ownedByUs: boolean;
   /** Z-order index in the original CGWindow scan; 0 = frontmost.
    *  The hit-test walks ascending z to find the topmost window
@@ -145,6 +145,7 @@ const pwrsnapApi = {
     handler: (payload: {
       windows: WindowSnapEntry[];
       displayBounds: { width: number; height: number };
+      cursor?: { x: number; y: number };
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -152,6 +153,7 @@ const pwrsnapApi = {
         payload as {
           windows: WindowSnapEntry[];
           displayBounds: { width: number; height: number };
+          cursor?: { x: number; y: number };
         }
       );
     ipcRenderer.on(REGION_SELECTOR_WINDOW_LIST_CHANNEL, wrapped);

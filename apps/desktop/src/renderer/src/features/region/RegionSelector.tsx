@@ -221,7 +221,7 @@ export function RegionSelector() {
       // Rescale every rect from display-logical px → CSS px so the
       // renderer can hit-test against event.clientX/Y (CSS px) and
       // render via inline `style.width` (CSS px) directly.
-      windowsRef.current = payload.windows.map((w) => ({
+      const scaledWindows = payload.windows.map((w) => ({
         ...w,
         rect: {
           x: w.rect.x * scale,
@@ -236,6 +236,17 @@ export function RegionSelector() {
           h: w.rawRect.h * scale
         }
       }));
+      windowsRef.current = scaledWindows;
+      if (payload.cursor !== undefined && interactionRef.current.kind === "snap") {
+        const cursor = {
+          x: payload.cursor.x * scale,
+          y: payload.cursor.y * scale
+        };
+        lastMouseRef.current = cursor;
+        const next = snapAt(cursor.x, cursor.y);
+        setSnapTarget(next);
+        setRect(rectForSnap(next));
+      }
       document.body.dataset.windowListCount = String(payload.windows.length);
     });
     document.body.dataset.windowListReady = "1";
@@ -263,11 +274,9 @@ export function RegionSelector() {
   function findWindowAt(clientX: number, clientY: number): WindowSnapEntry | null {
     // Walk the z-order ascending (frontmost first). Hit-test uses
     // the RAW bounds so the result matches what the OS considers
-    // topmost-at-point. If the topmost is one of our own windows
-    // (the library, float-over, etc.), return null — the cursor is
-    // visually on a non-snappable surface; fall back to display
-    // snap rather than picking a window underneath that the user
-    // can't actually see.
+    // topmost-at-point. PwrSnap's normal user windows are valid
+    // targets; main hides capture chrome before it takes this
+    // snapshot so we don't need a same-process exclusion here.
     for (const w of windowsRef.current) {
       if (
         clientX >= w.rawRect.x &&
@@ -275,7 +284,7 @@ export function RegionSelector() {
         clientY >= w.rawRect.y &&
         clientY <= w.rawRect.y + w.rawRect.h
       ) {
-        return w.ownedByUs ? null : w;
+        return w;
       }
     }
     return null;
@@ -419,14 +428,12 @@ export function RegionSelector() {
         // Tab cycles through windows whose raw bounds also contain
         // the cursor — useful for capturing a window mostly hidden
         // under another. Walks forward in z-order on Tab, backward
-        // on Shift+Tab. Skips windows we own (library, float-over,
-        // etc.) since they're never snap targets.
+        // on Shift+Tab.
         event.preventDefault();
         const cur = lastCursor();
         const all = windowsRef.current;
         const candidates = all.filter(
           (w) =>
-            !w.ownedByUs &&
             cur.x >= w.rawRect.x &&
             cur.x <= w.rawRect.x + w.rawRect.w &&
             cur.y >= w.rawRect.y &&

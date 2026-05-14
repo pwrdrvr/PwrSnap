@@ -5,5 +5,6 @@ minimumReleaseAge: 10080
 allowBuilds:
   better-sqlite3: true
   electron: true
+  electron-winstaller: true
   esbuild: true
   sharp: true

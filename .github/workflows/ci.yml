@@ -26,6 +26,7 @@ jobs:
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
         with:
+          node-version: "24.14.1"
           lookup-only: "true"
 
   lint:
@@ -38,6 +39,8 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
 
       - name: Lint
         run: pnpm run lint
@@ -52,6 +55,8 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
 
       - name: Build
         run: pnpm run build
@@ -66,6 +71,8 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
 
       - name: Test
         run: pnpm run test
@@ -81,6 +88,8 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: pwrdrvr/configure-nodejs@v1
+        with:
+          node-version: "24.14.1"
 
       - name: Run desktop Electron E2E specs
         # The macOS-only specs (screencapture-based) are gated via

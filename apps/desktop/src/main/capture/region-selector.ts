@@ -21,6 +21,7 @@ import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
   activateApp,
+  boundsApproxEqual,
   listWindows,
   selfPidSet,
   type WindowInfo
@@ -30,6 +31,7 @@ import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState } from "../float-over";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
+const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
 
 const log = getMainLogger("pwrsnap:region-selector");
 
@@ -55,6 +57,22 @@ let activeScreenSnapshot: ScreenSnapshot | null = null;
 // the user lands back where they were instead of looking at our
 // library window.
 let previousAppPid: number | null = null;
+
+type SelectorWindowListPayload = {
+  windows: {
+    windowId: number;
+    pid: number;
+    bundleId: string | null;
+    appName: string | null;
+    title: string | null;
+    ownedByUs: boolean;
+    zIndex: number;
+    rect: { x: number; y: number; w: number; h: number };
+    rawRect: { x: number; y: number; w: number; h: number };
+  }[];
+  displayBounds: { width: number; height: number };
+  cursor: { x: number; y: number };
+};
 
 export type SelectorResult =
   | {
@@ -299,44 +317,187 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
   setFloatOverState({ kind: "cancel" });
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  let rawSnapshot: WindowInfo[] = [];
-  try {
-    const [screenSnapshot, windows] = await Promise.all([
-      captureAndRegister(targetDisplay.id),
-      listWindows()
-    ]);
-    activeScreenSnapshot = screenSnapshot;
-    rawSnapshot = windows;
-  } catch (err) {
-    log.warn("screen snapshot failed; selector aborted", {
-      message: err instanceof Error ? err.message : String(err)
-    });
-    return { ok: false, reason: "destroyed" };
-  }
-
-  // The on-screen window list was captured BEFORE the selector and
-  // float-over are shown. That ordering is load-bearing: if we let
-  // listWindows resolve after show(), the selector's own full-display
-  // BrowserWindow can appear as a topmost "Electron" capture target.
-  // Coords are display-bounds-relative because the selector window
-  // covers display.bounds via simple-fullscreen.
   const displayBounds = targetDisplay.bounds;
   const displayCursor = {
     x: cursor.x - displayBounds.x,
     y: cursor.y - displayBounds.y
   };
   const ourPids = selfPidSet();
-  lastSnapshot = rawSnapshot;
+  let windowListPayload: SelectorWindowListPayload | null = null;
+  let windowListResolver: ((result: SelectorResult) => void) | null = null;
+  let acceptingWindowList = true;
+  let selectorVisible = false;
+  const deliverWindowListPayload = (payload: SelectorWindowListPayload): void => {
+    if (
+      !acceptingWindowList ||
+      !selectorVisible ||
+      pendingResolver !== windowListResolver ||
+      win.isDestroyed()
+    ) {
+      return;
+    }
+    win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, payload);
+    setTimeout(() => {
+      if (
+        !acceptingWindowList ||
+        pendingResolver !== windowListResolver ||
+        win.isDestroyed()
+      ) {
+        return;
+      }
+      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, payload);
+    }, 50);
+  };
+  const windowListPromise = listWindows()
+    .then((rawSnapshot) => {
+      if (!acceptingWindowList) return;
+      if (selectorVisible && pendingResolver !== windowListResolver) return;
+      const prepared = prepareWindowListPayload({
+        rawSnapshot,
+        targetDisplay,
+        displayCursor,
+        ourPids,
+        selectorWindow: win
+      });
+      lastSnapshot = prepared.snapshot;
+      previousAppPid = prepared.previousAppPid;
+      windowListPayload = prepared.payload;
+      deliverWindowListPayload(prepared.payload);
+    })
+    .catch((err) => {
+      log.warn("window-list helper failed during selector startup", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    });
+
+  try {
+    const screenSnapshot = await captureAndRegister(targetDisplay.id);
+    activeScreenSnapshot = screenSnapshot;
+  } catch (err) {
+    log.warn("screen snapshot failed; selector aborted", {
+      message: err instanceof Error ? err.message : String(err)
+    });
+    acceptingWindowList = false;
+    void windowListPromise;
+    return { ok: false, reason: "destroyed" };
+  }
+
+  // Arm Esc + Enter via globalShortcut for the duration of the
+  // selector. macOS sometimes withholds keyboard events from a
+  // newly-shown window until the user clicks to "engage" it — the
+  // renderer's keydown listener exists but the event never reaches
+  // it. globalShortcut bypasses focus entirely; for the brief
+  // duration the selector is up the user has nothing else they'd
+  // want Esc / ↵ doing anyway, since the screen-saver-level overlay
+  // covers everything.
+  installSelectorGlobalShortcuts(win);
+
+  const result = await new Promise<SelectorResult>((resolve) => {
+    pendingResolver = resolve;
+    windowListResolver = resolve;
+    // Pre-show the float-over UNDER the selector. The float-over is
+    // at floating window level (3); the selector below is at
+    // screen-saver level (1000), so the selector covers the float-
+    // over visually until we hide it. This lets the post-commit
+    // reveal be instantaneous (the toast is already painted at the
+    // right position) and avoids the post-hoc show race that left
+    // the toast hidden behind the previously-frontmost app's window.
+    // See docs/plans/2026-05-04-001 §"Solution 3" for the full
+    // choreography.
+    setFloatOverState({ kind: "show-idle" });
+
+    // Tell the renderer which mode + snapshot URL to use BEFORE we
+    // make the window visible. The renderer applies both
+    // synchronously on receipt (mode → body[data-mode]; snapshot →
+    // <img> background), so by the first paint we're showing the
+    // frozen-in-time pixels and we're already in the right mode.
+    const modePayload =
+      activeScreenSnapshot !== null
+        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}` }
+        : null;
+    if (!win.isDestroyed() && modePayload !== null) {
+      win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+    }
+    // Order matters: setSimpleFullScreen(true) BEFORE show().
+    //
+    // Without this, `win.show()` paints the renderer's first frame
+    // while Cocoa is still clipping content to the work-area (the
+    // region below the menu bar) — even though the BrowserWindow
+    // bounds cover the full display. The screen snapshot, painted
+    // at body coords (0, 0), then sits 25-or-so pixels below where
+    // it should, with the LIVE menu bar still visible above. ~150ms
+    // later setSimpleFullScreen settles, the menu bar slides out,
+    // the window's content area expands, and the snapshot suddenly
+    // jumps up by the menu-bar height — visible to the user as the
+    // whole screen "lurching."
+    //
+    // First ⌘⇧P after launch happened to look clean because no prior
+    // teardown had toggled setSimpleFullScreen back to false; the
+    // pre-warmed window inherited a permissive style mask. Subsequent
+    // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
+    // had reset it.
+    //
+    // Doing the toggle while the window is hidden lets the style-
+    // mask change settle off-screen; show() then reveals the window
+    // already in its final geometry. Snapshot's menu bar pixels land
+    // exactly where the user expects them, no jump.
+    //
+    // The renderer paints the menu bar / dock area itself via the
+    // screen snapshot, so covering the real menu bar is fine — user
+    // sees a 1-frame-old version of it instead of the live one.
+    // Matches every native Mac capture tool (Cleanshot, Shottr,
+    // SnagIt).
+    enterMenuBarOverlayMode(win);
+    win.show();
+    win.focus();
+    // webContents.focus() in addition to BrowserWindow.focus() —
+    // belt and braces. focus() makes the NSWindow key, but
+    // webContents focus is what governs whether keystrokes route
+    // to the renderer's document.
+    win.webContents.focus();
+    selectorVisible = true;
+    if (windowListPayload !== null) {
+      deliverWindowListPayload(windowListPayload);
+    }
+    setTimeout(() => {
+      if (win.isDestroyed() || pendingResolver !== resolve) return;
+      if (modePayload !== null) {
+        win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+      }
+    }, 50);
+  });
+  acceptingWindowList = false;
+  void windowListPromise;
+  uninstallSelectorGlobalShortcuts();
+  return result;
+}
+
+function prepareWindowListPayload(args: {
+  rawSnapshot: WindowInfo[];
+  targetDisplay: Display;
+  displayCursor: { x: number; y: number };
+  ourPids: Set<number>;
+  selectorWindow: BrowserWindow;
+}): {
+  snapshot: WindowInfo[];
+  previousAppPid: number | null;
+  payload: SelectorWindowListPayload;
+} {
+  const { rawSnapshot, targetDisplay, displayCursor, ourPids, selectorWindow } = args;
+  const displayBounds = targetDisplay.bounds;
+  const snapshot = rawSnapshot.filter(
+    (w) => !isSelectorOverlayWindow(w, displayBounds, ourPids, selectorWindow)
+  );
 
   // Snapshot the previously-frontmost app's pid. We intentionally
   // skip our own pid for restoration so hiding the selector doesn't
   // raise the Library unless the user explicitly opens it.
-  const topNonOurs = rawSnapshot.find((w) => !ourPids.has(w.pid));
-  previousAppPid = topNonOurs?.pid ?? null;
+  const topNonOurs = snapshot.find((w) => !ourPids.has(w.pid));
+  const previousAppPid = topNonOurs?.pid ?? null;
 
   // Step 1: keep windows that overlap the active display. Anything
   // entirely on another monitor is irrelevant to this selector.
-  const onThisDisplay = rawSnapshot.filter((w) => {
+  const onThisDisplay = snapshot.filter((w) => {
     const wx2 = w.bounds.x + w.bounds.width;
     const wy2 = w.bounds.y + w.bounds.height;
     const dx2 = displayBounds.x + displayBounds.width;
@@ -398,6 +559,7 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
 
   log.info("snap candidates", {
     raw: rawSnapshot.length,
+    afterSelectorFilter: snapshot.length,
     onThisDisplay: onThisDisplay.length,
     meaningful: meaningful.length,
     afterVisibilityFilter: localized.length,
@@ -411,15 +573,14 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
       workArea: targetDisplay.workArea,
       scaleFactor: targetDisplay.scaleFactor
     },
-    // The selector window is still hidden at enumeration time. These
-    // bounds are logged before simple-fullscreen so a future "Electron
-    // full-screen candidate" regression is easy to spot in the raw
-    // candidate list.
+    // The list is started before show(), but may resolve after first
+    // paint. Log the selector geometry so future "Electron full-screen
+    // candidate" regressions are easy to correlate with filtered input.
     selectorWindow: {
-      bounds: win.getBounds(),
-      contentBounds: win.getContentBounds(),
-      contentSize: win.getContentSize(),
-      isSimpleFullScreen: win.isSimpleFullScreen()
+      bounds: selectorWindow.getBounds(),
+      contentBounds: selectorWindow.getContentBounds(),
+      contentSize: selectorWindow.getContentSize(),
+      isSimpleFullScreen: selectorWindow.isSimpleFullScreen()
     },
     candidates: localized.map((c) => ({
       z: c.zIndex,
@@ -430,103 +591,34 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
       rawRect: c.rawRect
     }))
   });
-  const windowListPayload = {
-    windows: localized,
-    displayBounds: {
-      width: displayBounds.width,
-      height: displayBounds.height
-    },
-    cursor: displayCursor
-  };
 
-  // Arm Esc + Enter via globalShortcut for the duration of the
-  // selector. macOS sometimes withholds keyboard events from a
-  // newly-shown window until the user clicks to "engage" it — the
-  // renderer's keydown listener exists but the event never reaches
-  // it. globalShortcut bypasses focus entirely; for the brief
-  // duration the selector is up the user has nothing else they'd
-  // want Esc / ↵ doing anyway, since the screen-saver-level overlay
-  // covers everything.
-  installSelectorGlobalShortcuts(win);
-
-  const result = await new Promise<SelectorResult>((resolve) => {
-    pendingResolver = resolve;
-    // Pre-show the float-over UNDER the selector. The float-over is
-    // at floating window level (3); the selector below is at
-    // screen-saver level (1000), so the selector covers the float-
-    // over visually until we hide it. This lets the post-commit
-    // reveal be instantaneous (the toast is already painted at the
-    // right position) and avoids the post-hoc show race that left
-    // the toast hidden behind the previously-frontmost app's window.
-    // See docs/plans/2026-05-04-001 §"Solution 3" for the full
-    // choreography.
-    setFloatOverState({ kind: "show-idle" });
-
-    // Tell the renderer which mode + snapshot URL to use BEFORE we
-    // make the window visible. The renderer applies both
-    // synchronously on receipt (mode → body[data-mode]; snapshot →
-    // <img> background), so by the first paint we're showing the
-    // frozen-in-time pixels and we're already in the right mode.
-    const modePayload =
-      activeScreenSnapshot !== null
-        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}` }
-        : null;
-    if (!win.isDestroyed() && modePayload !== null) {
-      win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
+  return {
+    snapshot,
+    previousAppPid,
+    payload: {
+      windows: localized,
+      displayBounds: {
+        width: displayBounds.width,
+        height: displayBounds.height
+      },
+      cursor: displayCursor
     }
-    // Order matters: setSimpleFullScreen(true) BEFORE show().
-    //
-    // Without this, `win.show()` paints the renderer's first frame
-    // while Cocoa is still clipping content to the work-area (the
-    // region below the menu bar) — even though the BrowserWindow
-    // bounds cover the full display. The screen snapshot, painted
-    // at body coords (0, 0), then sits 25-or-so pixels below where
-    // it should, with the LIVE menu bar still visible above. ~150ms
-    // later setSimpleFullScreen settles, the menu bar slides out,
-    // the window's content area expands, and the snapshot suddenly
-    // jumps up by the menu-bar height — visible to the user as the
-    // whole screen "lurching."
-    //
-    // First ⌘⇧P after launch happened to look clean because no prior
-    // teardown had toggled setSimpleFullScreen back to false; the
-    // pre-warmed window inherited a permissive style mask. Subsequent
-    // shows hit the lurch because hideAllSelectors → leaveMenuBarOverlayMode
-    // had reset it.
-    //
-    // Doing the toggle while the window is hidden lets the style-
-    // mask change settle off-screen; show() then reveals the window
-    // already in its final geometry. Snapshot's menu bar pixels land
-    // exactly where the user expects them, no jump.
-    //
-    // The renderer paints the menu bar / dock area itself via the
-    // screen snapshot, so covering the real menu bar is fine — user
-    // sees a 1-frame-old version of it instead of the live one.
-    // Matches every native Mac capture tool (Cleanshot, Shottr,
-    // SnagIt).
-    enterMenuBarOverlayMode(win);
-    win.show();
-    win.focus();
-    // webContents.focus() in addition to BrowserWindow.focus() —
-    // belt and braces. focus() makes the NSWindow key, but
-    // webContents focus is what governs whether keystrokes route
-    // to the renderer's document.
-    win.webContents.focus();
-    // Send the pre-show window snapshot AFTER show/focus. The
-    // snapshot itself was captured before the selector became
-    // visible, so it cannot include our overlay, but delaying IPC
-    // delivery avoids the pre-warmed renderer missing the message
-    // before its React subscriptions are mounted.
-    win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, windowListPayload);
-    setTimeout(() => {
-      if (win.isDestroyed() || pendingResolver !== resolve) return;
-      if (modePayload !== null) {
-        win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
-      }
-      win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, windowListPayload);
-    }, 50);
-  });
-  uninstallSelectorGlobalShortcuts();
-  return result;
+  };
+}
+
+function isSelectorOverlayWindow(
+  windowInfo: WindowInfo,
+  displayBounds: { x: number; y: number; width: number; height: number },
+  ourPids: Set<number>,
+  selectorWindow: BrowserWindow
+): boolean {
+  if (!ourPids.has(windowInfo.pid)) return false;
+  if (windowInfo.title === SELECTOR_WINDOW_TITLE) return true;
+  if (windowInfo.title !== null && windowInfo.title.trim() !== "") return false;
+  return (
+    boundsApproxEqual(windowInfo.bounds, displayBounds) &&
+    boundsApproxEqual(windowInfo.bounds, selectorWindow.getBounds())
+  );
 }
 
 let shortcutsInstalled = false;
@@ -668,6 +760,7 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // display logical px 1:1.
   const { bounds } = display;
   const window = new BrowserWindow({
+    title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
     y: bounds.y,
     width: bounds.width,
@@ -695,6 +788,7 @@ function createSelectorWindow(display: Display): BrowserWindow {
       additionalArguments: [`--display-id=${display.id}`]
     }
   });
+  window.setTitle(SELECTOR_WINDOW_TITLE);
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");

@@ -147,6 +147,11 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
+
+  useLayoutEffect(() => {
+    document.title = "PwrSnap Region Selector";
+  }, []);
+
   shiftRef.current = shiftHeld;
   rectRef.current = rect;
   interactionRef.current = interaction;

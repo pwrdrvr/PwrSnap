@@ -20,7 +20,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CaptureRecord, FloatOverEvent } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
-import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
 type HostState =
   | { kind: "idle" }
@@ -205,6 +205,8 @@ export function FloatOverHost(): React.ReactElement {
         }}
         srcW={record.width_px}
         srcH={record.height_px}
+        srcBytes={record.byte_size}
+        onDragFile={() => startCaptureDrag(record.id, "high")}
         onDismiss={() => {
           // User dismissed via the X / countdown / Esc-on-toast. Tell
           // main to hide; main flips state HIDDEN and the IPC echo

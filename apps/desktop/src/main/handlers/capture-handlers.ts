@@ -33,14 +33,23 @@ import {
 import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
+import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
-import { putCaptureSource } from "../persistence/source-store";
+import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
+import { listLiveOverlays } from "../persistence/overlays-repo";
+import { renderViaCoordinator } from "../render/coordinator";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
-import { broadcastCapturesChanged } from "../events";
+const PRESET_WIDTHS = {
+  low: 800,
+  med: 1440,
+  high: 0
+} as const;
+
+const DRAG_ICON_WIDTH = 128;
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -199,13 +208,54 @@ export function registerCaptureHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("capture:prepareDrag", async () => {
-    // Phase 1.6 + Phase 2 — needs the render coordinator to land first.
-    return err({
-      kind: "validation",
-      code: "not_implemented",
-      message: "capture:prepareDrag lands with the render pipeline (Phase 1.6+)"
-    });
+  bus.register("capture:prepareDrag", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    try {
+      const targetWidth = targetWidthForPreset(req.preset, record.width_px);
+      const overlays = listLiveOverlays(record.id);
+      const filePath =
+        req.preset === "high" && overlays.length === 0
+          ? effectiveSrcPathFor(record)
+          : (
+              await renderViaCoordinator({
+                captureId: record.id,
+                srcPath: effectiveSrcPathFor(record),
+                imageWidthPx: record.width_px,
+                imageHeightPx: record.height_px,
+                width: targetWidth,
+                format: "png"
+              })
+            ).cachePath;
+      const icon = await renderViaCoordinator({
+        captureId: record.id,
+        srcPath: effectiveSrcPathFor(record),
+        imageWidthPx: record.width_px,
+        imageHeightPx: record.height_px,
+        width: Math.min(DRAG_ICON_WIDTH, record.width_px),
+        format: "png"
+      });
+      return ok({ path: filePath, iconPath: icon.cachePath });
+    } catch (cause) {
+      log.error("prepare drag failed", {
+        captureId: req.captureId,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "prepare_drag_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
   });
 
   // Synthetic ingest path — DEV only. The dev seeder dispatches this
@@ -338,6 +388,11 @@ function findById(
   windowId: number
 ): WindowInfo | null {
   return windows.find((w) => w.windowId === windowId) ?? null;
+}
+
+function targetWidthForPreset(preset: "low" | "med" | "high", sourceWidthPx: number): number {
+  const presetWidth = PRESET_WIDTHS[preset];
+  return presetWidth === 0 ? sourceWidthPx : presetWidth;
 }
 
 async function persistAndBroadcast(

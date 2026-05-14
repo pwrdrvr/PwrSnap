@@ -18,10 +18,11 @@ export type CopyPreset = "low" | "med" | "high";
  *  source capture's actual width × height × byte size — surfaced on
  *  each copy button so the user knows what they're about to paste.
  *  Mirrors the bake-time preset widths in main's clipboard-handlers.ts
- *  (low=800, med=1440, high=source). Bytes is a heuristic: scale
+ *  (low=800, med=1440, high=source). Bytes is an estimate: scale
  *  shrinks linearly with preset width, so byte count shrinks with
- *  scale² (image area). Encoding noise is ignored — the goal is a
- *  rough order-of-magnitude estimate, not an exact figure.
+ *  scale² (image area), then the clipboard target may encode the
+ *  image again. The label deliberately uses "~" so it does not read
+ *  like the exact file size Finder or another app will write.
  *
  *  Originally lived in TrayMenu.tsx; moved here in Phase C.5 of the
  *  library three-state plan so the library's DetailRail can use the
@@ -41,9 +42,9 @@ export function presetMetrics(
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return `~${n} B`;
+  if (n < 1024 * 1024) return `~${Math.round(n / 1024)} KB`;
+  return `~${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export type CopyButtonProps = {
@@ -55,7 +56,7 @@ export type CopyButtonProps = {
   /** Output dimensions string, e.g. "800 × 408". Pre-computed by the
    *  caller against the source capture's actual width/height. */
   dim: string;
-  /** Estimated output bytes, e.g. "36 KB". Same source. */
+  /** Estimated output bytes, e.g. "~36 KB". Same source. */
   bytes: string;
   /** Fired when the user clicks. Caller is responsible for
    *  dispatching `clipboard:copy`; the overlay animation runs

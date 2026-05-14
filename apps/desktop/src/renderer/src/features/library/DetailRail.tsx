@@ -11,7 +11,7 @@ import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics } from "../shared/CopyButton";
 import { AppTag } from "../shared/AppIcons";
-import { dispatch } from "../../lib/pwrsnap";
+import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 
@@ -113,7 +113,7 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
           <div className="psl__copy-eyebrow">
             <span>Copy to clipboard</span>
             <span className="psl__copy-eyebrow-line" />
-            <span className="psl__copy-eyebrow-meta">scaled, not blind</span>
+            <span className="psl__copy-eyebrow-meta">estimated</span>
           </div>
           <div className="psl__copy-row">
             {COPY_PRESETS.map((p) => {
@@ -189,7 +189,18 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
             </>
           ) : (
             <>
-              <button type="button" disabled title="Coming soon">
+              <button
+                type="button"
+                title="Drag PNG file or click to reveal in Finder"
+                draggable
+                onClick={() => {
+                  void dispatch("capture:reveal", { captureId: record.id });
+                }}
+                onDragStart={(event) => {
+                  event.preventDefault();
+                  startCaptureDrag(record.id, "high");
+                }}
+              >
                 <svg
                   width="11"
                   height="11"
@@ -198,9 +209,10 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
                   stroke="currentColor"
                   strokeWidth="2"
                 >
-                  <path d="M12 4v12M6 10l6-6 6 6M4 20h16" />
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
                 </svg>
-                Share
+                File
               </button>
               <button
                 type="button"

@@ -1,17 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { PwrSnapMark } from "../shared/BrandMark";
-import { CopyButton, type CopyPreset } from "../shared/CopyButton";
+import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
-  { id: "low", label: "Low", scale: 0.4, bytes: "182 KB" },
-  { id: "med", label: "Med", scale: 0.7, bytes: "612 KB" },
-  { id: "high", label: "High", scale: 1.0, bytes: "2.4 MB" }
+  { id: "low", label: "Low" },
+  { id: "med", label: "Med" },
+  { id: "high", label: "High" }
 ] as const satisfies ReadonlyArray<{
   id: CopyPreset;
   label: string;
-  scale: number;
-  bytes: string;
 }>;
 
 const VARIANTS = {
@@ -83,9 +81,11 @@ export function FloatOver({
   enhancedSrc,
   srcW = 2880,
   srcH = 1800,
+  srcBytes = 2.4 * 1024 * 1024,
   onDismiss,
   onEdit,
   onCopy,
+  onDragFile,
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
@@ -98,6 +98,7 @@ export function FloatOver({
   enhancedSrc?: string | undefined;
   srcW?: number;
   srcH?: number;
+  srcBytes?: number;
   onDismiss?: () => void;
   onEdit?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
@@ -106,6 +107,8 @@ export function FloatOver({
    *  wired (which was the original bug), the buttons looked
    *  responsive but never actually copied anything. */
   onCopy?: (preset: "low" | "med" | "high") => void;
+  /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
+  onDragFile?: () => void;
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
@@ -207,6 +210,12 @@ export function FloatOver({
     exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };
 
+  const dragFile = (event: React.DragEvent): void => {
+    if (onDragFile === undefined) return;
+    event.preventDefault();
+    onDragFile();
+  };
+
   return (
     <div
       className={[
@@ -253,6 +262,7 @@ export function FloatOver({
           src={visibleSrc}
           alt="capture preview"
           draggable
+          onDragStart={dragFile}
           onLoad={() => {
             if (visibleSrc === src) setSourceLoaded(true);
           }}
@@ -265,7 +275,13 @@ export function FloatOver({
 
         <div className="fo__preview-actions">
           <div className="fo__preview-actions-l">
-            <button className="fo__hover-btn" title="Drag to any app">
+            <button
+              className="fo__hover-btn"
+              title="Drag PNG file"
+              draggable={onDragFile !== undefined}
+              onDragStart={dragFile}
+              disabled={onDragFile === undefined}
+            >
               <FoIcon name="hand" size={11} /> Drag
             </button>
           </div>
@@ -287,15 +303,14 @@ export function FloatOver({
 
       <div className="fo__copy">
         {RES_PRESETS.map((p) => {
-          const w = Math.round(p.scale * srcW);
-          const h = Math.round(p.scale * srcH);
+          const m = presetMetrics(p.id, srcW, srcH, srcBytes);
           return (
             <CopyButton
               key={p.id}
               preset={p.id}
               label={p.label}
-              dim={dimText(w, h)}
-              bytes={p.bytes}
+              dim={m.dim}
+              bytes={m.bytes}
               onCopy={(preset) => onCopy?.(preset)}
             />
           );

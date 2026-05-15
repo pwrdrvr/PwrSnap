@@ -5,7 +5,7 @@ name = "PwrSnap"
 [setup]
 script = '''
 nvm install
-
+corepack enable
 pnpm install
 '''
 
@@ -17,6 +17,6 @@ name = "Dev"
 icon = "run"
 command = '''
 nvm use --silent
-
+corepack enable
 pnpm dev
 '''

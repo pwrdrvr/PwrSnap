@@ -1256,19 +1256,15 @@
 .psl__ai-card-hdr svg { color: var(--accent); }
 .psl__ai-card-hdr small { margin-left: auto; font: 500 9px/1 var(--font-mono); color: var(--text-muted); }
 .psl__ai-card-text {
-  max-height: 128px;
-  overflow-y: auto;
   white-space: pre-wrap;
-  padding-right: 4px;
+  overflow-wrap: anywhere;
   font: 400 12px/1.45 var(--font-sans);
   color: var(--text-secondary);
 }
 .psl__ai-card-text b { color: var(--text-primary); }
 .psl__ai-card-ocr {
-  max-height: 128px;
-  overflow-y: auto;
   white-space: pre-wrap;
-  padding-right: 4px;
+  overflow-wrap: anywhere;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 7px 8px;

@@ -103,9 +103,9 @@ export function AIProvidersPage(): ReactElement {
         />
         <JobRoutingRow
           name="OCR — extract text from screenshots"
-          sub="Currently using macOS Vision (local) — provider option coming soon"
-          provider="System"
-          model="Vision.framework"
+          sub="Runs with the capture enrichment request through Codex"
+          provider="Codex"
+          model="Configured provider"
           dim
         />
       </Card>

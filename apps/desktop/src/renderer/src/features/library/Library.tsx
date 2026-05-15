@@ -128,9 +128,15 @@ type SourceAppRowsState = {
   error: string | null;
 };
 
+type ActiveLibraryFilter =
+  | { kind: "all" }
+  | { kind: "today" }
+  | { kind: "trash" }
+  | { kind: "sourceApp"; appId: string };
+
 export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [selected, setSelected] = useState(initialSelected);
-  const [activeApp, setActiveApp] = useState<string>("all");
+  const [activeFilter, setActiveFilter] = useState<ActiveLibraryFilter>({ kind: "all" });
   const [sourceAppRows, setSourceAppRows] = useState<Record<string, SourceAppRowsState>>(
     {}
   );
@@ -259,18 +265,20 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     [records]
   );
 
-  const isTodayView = activeApp === "today";
-  const isSourceAppView = activeApp !== "all" && activeApp !== "trash" && !isTodayView;
+  const isTodayView = activeFilter.kind === "today";
+  const isTrashView = activeFilter.kind === "trash";
+  const activeSourceAppId = activeFilter.kind === "sourceApp" ? activeFilter.appId : null;
+  const isSourceAppView = activeSourceAppId !== null;
   const sourceAppBundleIds = useMemo<Array<string | null>>(() => {
-    if (!isSourceAppView) return [];
+    if (activeSourceAppId === null) return [];
     const bundles: Array<string | null> = [];
     for (const stat of appStats) {
-      if (mapBundleIdToAppId(stat.bundleId) === activeApp) {
+      if (mapBundleIdToAppId(stat.bundleId) === activeSourceAppId) {
         bundles.push(stat.bundleId);
       }
     }
     return bundles;
-  }, [activeApp, appStats, isSourceAppView]);
+  }, [activeSourceAppId, appStats]);
   const sourceAppBundleKey = useMemo(() => {
     const sourceAppBundleCounts = sourceAppBundleIds.map((bundleId) => {
       const stat = appStats.find((candidate) => candidate.bundleId === bundleId);
@@ -280,13 +288,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [appStats, sourceAppBundleIds]);
 
   useEffect(() => {
-    if (!isSourceAppView) return;
+    if (activeSourceAppId === null) return;
     if (sourceAppBundleIds.length === 0) return;
-    const cached = sourceAppRowsRef.current[activeApp];
+    const cached = sourceAppRowsRef.current[activeSourceAppId];
     if (cached?.bundleKey === sourceAppBundleKey) return;
 
     let cancelled = false;
-    const appKey = activeApp;
+    const appKey = activeSourceAppId;
     const bundleIds = sourceAppBundleIds;
     const bundleKey = sourceAppBundleKey;
     setSourceAppRows((prev) => ({
@@ -351,8 +359,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       cancelled = true;
     };
   }, [
-    activeApp,
-    isSourceAppView,
+    activeSourceAppId,
     sourceAppBundleIds,
     sourceAppBundleKey
   ]);
@@ -360,8 +367,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // Universe of records the current view operates on. Trash is a
   // top-level swap (not a per-app filter) so the per-app filter only
   // applies when viewing live captures.
-  const isTrashView = activeApp === "trash";
-  const sourceAppState = isSourceAppView ? sourceAppRows[activeApp] : undefined;
+  const sourceAppState =
+    activeSourceAppId === null ? undefined : sourceAppRows[activeSourceAppId];
   const universeRecords = isTrashView
     ? trashRecords
     : sourceAppState?.bundleKey === sourceAppBundleKey
@@ -381,11 +388,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
   const visible =
-    activeApp === "all" || isTrashView
+    activeFilter.kind === "all" || isTrashView
       ? fixtureCaptures
       : isTodayView
       ? fixtureCaptures.filter((c) => c.day === "Today")
-      : fixtureCaptures.filter((c) => c.app === activeApp);
+      : activeSourceAppId === null
+      ? fixtureCaptures
+      : fixtureCaptures.filter((c) => c.app === activeSourceAppId);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
   const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
 
@@ -474,15 +483,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       seen.add(app);
       out.push({ app, name: appLabels[app] ?? "Unknown app" });
     }
-    if (activeApp !== "all" && !seen.has(activeApp)) {
+    if (activeSourceAppId !== null && !seen.has(activeSourceAppId)) {
       out.push({
-        app: activeApp,
-        name: appLabels[activeApp] ?? APP_INFO[activeApp]?.name ?? "Unknown app"
+        app: activeSourceAppId,
+        name: appLabels[activeSourceAppId] ?? APP_INFO[activeSourceAppId]?.name ?? "Unknown app"
       });
     }
     out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return out;
-  }, [appCounts, appLabels, activeApp]);
+  }, [appCounts, appLabels, activeSourceAppId]);
 
   // The CaptureRecord for the currently-selected id — passed to
   // <DetailRail> + <Stage> so they can render metadata + L/M/H copy
@@ -496,7 +505,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     );
   }, [records, selectedRecordId, universeRecords]);
 
-  // Records that match the current activeApp filter, mapped from the
+  // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
   // in Focus + Reel — both modes cycle through this set with wrap-
   // around at the edges (per the plan's Phase C.8 contract).
@@ -762,7 +771,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // Two-stage effect so an event that lands BEFORE useLibrary has
   // refetched the new capture still resolves cleanly:
   //   1. Subscribe handler stashes the captureId in `pendingOpenId`
-  //      and resets activeApp to "all" so the capture isn't filtered
+  //      and resets activeFilter to "all" so the capture isn't filtered
   //      out by the current Trash / Today / app-source view.
   //   2. A separate effect watches for that captureId to appear in
   //      records, then dispatches OPEN_FOCUS once. Self-clearing.
@@ -773,7 +782,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       const id = (payload as { captureId?: unknown }).captureId;
       if (typeof id !== "string") return;
       setPendingOpenId(id);
-      setActiveApp("all");
+      setActiveFilter({ kind: "all" });
     });
   }, []);
   useEffect(() => {
@@ -796,7 +805,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     });
   }, [pendingOpenId, records]);
 
-  // Filter-change-while-Focus bail: when activeApp changes and the
+  // Filter-change-while-Focus bail: when the active filter changes and the
   // current selection is no longer in the visible set, the reducer
   // closes Focus and lands the user back in Grid (resolved decision
   // from the plan — filter is a query, query changed, show new
@@ -1282,8 +1291,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           )}
         </div>
         <button
-          className={"psl__nav" + (activeApp === "all" ? " is-active" : "")}
-          onClick={() => setActiveApp("all")}
+          className={"psl__nav" + (activeFilter.kind === "all" ? " is-active" : "")}
+          onClick={() => setActiveFilter({ kind: "all" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1298,7 +1307,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}
-          onClick={() => setActiveApp("today")}
+          onClick={() => setActiveFilter({ kind: "today" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1311,7 +1320,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
         <button
           className={"psl__nav" + (isTrashView ? " is-active" : "")}
-          onClick={() => setActiveApp("trash")}
+          onClick={() => setActiveFilter({ kind: "trash" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1327,8 +1336,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         {visibleApps.map(({ app, name }) => (
           <button
             key={app}
-            className={"psl__nav" + (activeApp === app ? " is-active" : "")}
-            onClick={() => setActiveApp(app)}
+            className={"psl__nav" + (activeSourceAppId === app ? " is-active" : "")}
+            onClick={() => setActiveFilter({ kind: "sourceApp", appId: app })}
           >
             <span className="psl__nav-icon">
               <AppIcon app={app} size={11} name={name} />
@@ -1459,13 +1468,17 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                     <div className="psl__reel-hdr">
                       <span className="psl__reel-title">
                         Timeline ·{" "}
-                        {activeApp === "all"
+                        {activeFilter.kind === "all"
                           ? "all sources"
                           : isTodayView
                           ? "today"
                           : isTrashView
                           ? "trash"
-                          : appLabels[activeApp] ?? APP_INFO[activeApp]?.name ?? "Unknown app"}
+                          : activeSourceAppId === null
+                          ? "all sources"
+                          : appLabels[activeSourceAppId] ??
+                            APP_INFO[activeSourceAppId]?.name ??
+                            "Unknown app"}
                       </span>
                       <span className="psl__reel-hint" aria-hidden="true">
                         scrub <b>⌘[ / ⌘]</b>

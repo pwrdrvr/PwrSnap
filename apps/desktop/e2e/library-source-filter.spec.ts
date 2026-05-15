@@ -348,6 +348,85 @@ test("active source-app filter refetches after capture stats change", async () =
   }
 });
 
+test("top-level filters do not appear as empty source-app rows after leaving Unknown app focus", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-unknown-"));
+    const pngPath = path.join(dir, "fixture.png");
+    await writeFile(pngPath, fixturePngBytes());
+
+    await app.electronApp.evaluate(
+      (_electron, payload: { pngPath: string }) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        bridge.seedCapture({
+          id: "source-filter-unknown-null-bundle",
+          kind: "image",
+          captured_at: new Date().toISOString(),
+          source_app_bundle_id: null,
+          source_app_name: null,
+          src_path: payload.pngPath,
+          width_px: 800,
+          height_px: 600,
+          device_pixel_ratio: 1,
+          byte_size: 70,
+          sha256: "source-filter-unknown-null-bundle"
+        });
+      },
+      { pngPath }
+    );
+
+    await broadcastCapturesChanged(app);
+
+    const window = app.window;
+    await disableAnimations(window);
+    await waitForAppStat(app, null, 1);
+
+    const unknownSourceButton = window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) })
+      .filter({ has: window.locator(".psl__nav-count", { hasText: /^1$/ }) });
+    await expect(unknownSourceButton).toHaveCount(1, { timeout: 30_000 });
+
+    await unknownSourceButton.first().click();
+    await expect(window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']")).toHaveCount(1, {
+      timeout: 10_000
+    });
+
+    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").click();
+    await expect(window.locator(".psl")).toHaveAttribute("data-mode", "focus", {
+      timeout: 10_000
+    });
+
+    await window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Today$/ }) })
+      .click();
+
+    const unknownSourceRows = window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) });
+    await expect(unknownSourceRows).toHaveCount(1);
+    await expect(unknownSourceRows.first().locator(".psl__nav-count")).toHaveText("1");
+  } finally {
+    await app.close();
+  }
+});
+
 function fixturePngBytes(): Buffer {
   return Buffer.from(FIXTURE_PNG_HEX, "hex");
 }
@@ -364,7 +443,7 @@ async function broadcastCapturesChanged(app: Awaited<ReturnType<typeof launchPwr
 
 async function waitForAppStat(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  bundleId: string,
+  bundleId: string | null,
   expectedCount: number
 ): Promise<void> {
   await expect

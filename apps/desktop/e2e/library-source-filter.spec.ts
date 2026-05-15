@@ -68,6 +68,19 @@ const CASES: SourceFilterCase[] = [
     // friendly label from APP_INFO even when every Telegram capture
     // is beyond the first page.
     headVisibleCount: 0
+  },
+  {
+    name: "LINE",
+    bundleId: "jp.naver.line.mac",
+    sourceName: "LINE",
+    sidebarLabelPattern: /^LINE$/,
+    count: 4,
+    targetIndex: 0,
+    seedPrefix: "line",
+    // Regression: deriving from the bundle tail produced "Mac" until
+    // a LINE row entered the loaded head page. The app_stats payload
+    // must carry the captured app name up front.
+    headVisibleCount: 0
   }
 ];
 
@@ -424,111 +437,6 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
       .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) });
     await expect(unknownSourceRows).toHaveCount(1);
     await expect(unknownSourceRows.first().locator(".psl__nav-count")).toHaveText("1");
-  } finally {
-    await app.close();
-  }
-});
-
-test("source-app labels use captured app names before matching rows enter the head page", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-label-"));
-    const pngPath = path.join(dir, "fixture.png");
-    await writeFile(pngPath, fixturePngBytes());
-
-    await app.electronApp.evaluate(
-      (
-        _electron,
-        payload: {
-          headPageSize: number;
-          pngPath: string;
-          primaryBundleId: string;
-          lineBundleId: string;
-          lineCount: number;
-        }
-      ) => {
-        type Bridge = {
-          seedCapture: (input: {
-            id: string;
-            kind: "image" | "video";
-            captured_at: string;
-            source_app_bundle_id: string | null;
-            source_app_name: string | null;
-            src_path: string;
-            width_px: number;
-            height_px: number;
-            device_pixel_ratio: number;
-            byte_size: number;
-            sha256: string;
-          }) => unknown;
-        };
-        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
-        const now = Date.now();
-        for (let i = 0; i < payload.headPageSize; i++) {
-          bridge.seedCapture({
-            id: `source-label-head-${i.toString().padStart(3, "0")}`,
-            kind: "image",
-            captured_at: new Date(now - i * 1000).toISOString(),
-            source_app_bundle_id: payload.primaryBundleId,
-            source_app_name: "Recent Feed",
-            src_path: payload.pngPath,
-            width_px: 800,
-            height_px: 600,
-            device_pixel_ratio: 1,
-            byte_size: 70,
-            sha256: `source-label-head-${i.toString().padStart(3, "0")}`
-          });
-        }
-        for (let i = 0; i < payload.lineCount; i++) {
-          const id = `source-label-line-${i.toString().padStart(3, "0")}`;
-          bridge.seedCapture({
-            id,
-            kind: "image",
-            captured_at: new Date(now - 24 * 60 * 60 * 1000 - i * 1000).toISOString(),
-            source_app_bundle_id: payload.lineBundleId,
-            source_app_name: "LINE",
-            src_path: payload.pngPath,
-            width_px: 800,
-            height_px: 600,
-            device_pixel_ratio: 1,
-            byte_size: 70,
-            sha256: id
-          });
-        }
-      },
-      {
-        headPageSize: HEAD_PAGE_SIZE,
-        pngPath,
-        primaryBundleId: PRIMARY_BUNDLE_ID,
-        lineBundleId: "jp.naver.line.mac",
-        lineCount: 4
-      }
-    );
-
-    await broadcastCapturesChanged(app);
-
-    const window = app.window;
-    await disableAnimations(window);
-    await waitForAppStat(app, "jp.naver.line.mac", 4);
-
-    const lineSourceRows = window
-      .locator("button.psl__nav")
-      .filter({ has: window.locator(".psl__nav-label", { hasText: /^LINE$/ }) });
-    await expect(lineSourceRows).toHaveCount(1, { timeout: 30_000 });
-    await expect(lineSourceRows.first().locator(".psl__nav-count")).toHaveText("4");
-
-    await expect(
-      window
-        .locator("button.psl__nav")
-        .filter({ has: window.locator(".psl__nav-label", { hasText: /^Mac$/ }) })
-    ).toHaveCount(0);
-
-    await window
-      .locator("button.psl__nav")
-      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Today$/ }) })
-      .click();
-    await expect(lineSourceRows).toHaveCount(1);
-    await expect(lineSourceRows.first().locator(".psl__nav-count")).toHaveText("4");
   } finally {
     await app.close();
   }

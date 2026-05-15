@@ -55,6 +55,7 @@ describe("mapBundleIdToAppId — open fallback for unknown apps", () => {
     ["com.microsoft.edgemac", "com.microsoft.edgemac"],
     ["com.apple.ActivityMonitor", "com.apple.activitymonitor"],
     ["com.anthropic.claudefordesktop", "com.anthropic.claudefordesktop"],
+    ["com.github.Electron", "com.github.electron"],
     ["com.openai.codex", "com.openai.codex"],
     ["com.apple.systempreferences", "com.apple.systempreferences"],
     ["com.zeitalabs.jottleai", "com.zeitalabs.jottleai"]

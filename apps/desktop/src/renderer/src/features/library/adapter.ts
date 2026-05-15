@@ -105,8 +105,9 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
  *     not arbitrary substrings — `com.acme.notion-importer` no
  *     longer steals Notion's glyph.
  *   - Allows the legitimate trailing-suffix glueing real bundle ids
- *     use (`slackmacgap`, `edgemac`, `vscodeinsiders`, `desktop`,
- *     `client`, `mac`) so we don't false-negative the curated set.
+ *     use (`slackmacgap`, `edgemac`, `vscodeinsiders`, `githubclient`,
+ *     `desktop`, `client`, `mac`) so we don't false-negative the
+ *     curated set.
  *
  * Order is irrelevant — patterns are pairwise disjoint by anchor +
  * needle. The first match wins regardless.
@@ -119,7 +120,7 @@ const KNOWN_APP_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ["figma",    /(?:^|\.)figma(?:\.desktop)?(?:\.|$)/],
   ["terminal", /(?:^|\.)(?:terminal|ghostty)(?:\.|$)/],
   ["notion",   /(?:^|\.)notion(?:\.|$)/],
-  ["github",   /(?:^|\.)github(?:client|desktop)?(?:\.|$)/],
+  ["github",   /(?:^|\.)github(?:client|desktop)(?:\.|$)/],
   ["linear",   /(?:^|\.)linear(?:\.|$)/],
   ["zoom",     /(?:^|\.)(?:zoom|zoomus)(?:\.|$)/],
   ["preview",  /(?:^|\.)preview(?:\.|$)/],

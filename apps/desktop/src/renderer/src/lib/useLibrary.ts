@@ -63,6 +63,7 @@ function subscribeToStore(listener: () => void): () => void {
 
 let inFlightHead: Promise<void> | null = null;
 let inFlightMore: Promise<void> | null = null;
+let headRefreshQueued = false;
 
 /**
  * Refetch the head page. On `events:captures:changed`, this drops
@@ -71,7 +72,10 @@ let inFlightMore: Promise<void> | null = null;
  * now, refetch-from-top matches the existing behavior.
  */
 async function refetchHead(): Promise<void> {
-  if (inFlightHead !== null) return inFlightHead;
+  if (inFlightHead !== null) {
+    headRefreshQueued = true;
+    return inFlightHead;
+  }
   inFlightHead = (async () => {
     try {
       // includeDeleted: true so the renderer can partition into a live
@@ -104,6 +108,10 @@ async function refetchHead(): Promise<void> {
       });
     } finally {
       inFlightHead = null;
+      if (headRefreshQueued) {
+        headRefreshQueued = false;
+        void refetchHead();
+      }
     }
   })();
   return inFlightHead;
@@ -148,10 +156,17 @@ let subscribed = false;
 function ensureSubscription(): void {
   if (subscribed) return;
   subscribed = true;
-  void refetchHead();
   subscribe(EVENT_CHANNELS.capturesChanged, () => {
     void refetchHead();
   });
+  void refetchHead();
+  // Cover startup-time writes that can land after the first head
+  // request starts but before this renderer has installed its event
+  // subscription. The extra once-only read is cheap and keeps the
+  // sidebar stats from getting stuck on the empty boot snapshot.
+  setTimeout(() => {
+    void refetchHead();
+  }, 100);
 }
 
 export type UseLibraryResult = {

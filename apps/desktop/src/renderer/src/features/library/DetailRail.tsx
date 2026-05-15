@@ -29,6 +29,11 @@ export type DetailRailProps = {
 };
 
 export function DetailRail({ view, record }: DetailRailProps): ReactElement | null {
+  const renderMetrics = usePresetRenderMetrics(
+    record?.id ?? null,
+    record?.overlays_version ?? null
+  );
+
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.
   if (view.kind === "grid") return null;
@@ -37,7 +42,6 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
   const capturedAt = formatTimestamp(record.captured_at);
   const sourceName = record.source_app_name ?? "Unknown app";
   const appId = mapBundleIdToAppId(record.source_app_bundle_id);
-  const renderMetrics = usePresetRenderMetrics(record.id, record.overlays_version);
   const hasExactRenderMetrics = renderMetrics.high?.exact === true;
 
   return (

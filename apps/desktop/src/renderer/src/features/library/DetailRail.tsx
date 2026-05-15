@@ -70,6 +70,14 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
   const hasExactRenderMetrics = renderMetrics.high?.exact === true;
   const acceptedOrSuggestedDescription =
     enrichment?.acceptedDescription ?? enrichment?.suggestedDescription ?? null;
+  const hasAcceptedDescription =
+    enrichment?.acceptedDescription !== null && enrichment?.acceptedDescription !== undefined;
+  const hasSuggestedDescription =
+    enrichment?.suggestedDescription !== null && enrichment?.suggestedDescription !== undefined;
+  const suggestedDescriptionAccepted =
+    hasAcceptedDescription &&
+    hasSuggestedDescription &&
+    enrichment.acceptedDescription === enrichment.suggestedDescription;
   const pendingTags =
     enrichment?.suggestedTags.filter(
       (tag) => tag.id !== undefined && tag.accepted_at === null && tag.rejected_at === null
@@ -158,7 +166,7 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             )}
           </div>
           {enrichment?.ocrText ? (
-            <div className="psl__ai-card-ocr">{enrichment.ocrText.slice(0, 260)}</div>
+            <div className="psl__ai-card-ocr">{enrichment.ocrText}</div>
           ) : null}
           <div className="psl__ai-card-actions">
             <button
@@ -173,15 +181,19 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             <button
               className="psl__chip-btn"
               type="button"
-              disabled={enrichment?.suggestedDescription === null || enrichment?.suggestedDescription === undefined}
+              disabled={!hasSuggestedDescription || suggestedDescriptionAccepted}
               onClick={() => {
                 const description = enrichment?.suggestedDescription;
                 if (description) {
-                  void dispatch("codex:acceptDescription", { captureId: record.id, description });
+                  void dispatch("codex:acceptDescription", { captureId: record.id, description }).then((result) => {
+                    if (result.ok) {
+                      setEnrichment(result.value);
+                    }
+                  });
                 }
               }}
             >
-              Use caption
+              {suggestedDescriptionAccepted ? "Caption used" : "Use caption"}
             </button>
             <button
               className="psl__chip-btn"
@@ -190,7 +202,11 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
               onClick={() => {
                 for (const tag of pendingTags) {
                   if (tag.id !== undefined) {
-                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id });
+                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id }).then((result) => {
+                      if (result.ok) {
+                        setEnrichment(result.value);
+                      }
+                    });
                   }
                 }
               }}

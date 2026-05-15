@@ -1255,12 +1255,20 @@
 .psl__ai-card-hdr { display: flex; align-items: center; gap: 6px; font: 600 11px/1 var(--font-sans); }
 .psl__ai-card-hdr svg { color: var(--accent); }
 .psl__ai-card-hdr small { margin-left: auto; font: 500 9px/1 var(--font-mono); color: var(--text-muted); }
-.psl__ai-card-text { font: 400 12px/1.45 var(--font-sans); color: var(--text-secondary); }
+.psl__ai-card-text {
+  max-height: 128px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  padding-right: 4px;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+}
 .psl__ai-card-text b { color: var(--text-primary); }
 .psl__ai-card-ocr {
-  max-height: 88px;
-  overflow: hidden;
+  max-height: 128px;
+  overflow-y: auto;
   white-space: pre-wrap;
+  padding-right: 4px;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 7px 8px;
@@ -1280,6 +1288,14 @@
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__chip-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.psl__chip-btn:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+.psl__chip-btn:disabled:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
 /* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's

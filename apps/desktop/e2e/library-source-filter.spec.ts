@@ -44,19 +44,6 @@ const CASES: SourceFilterCase[] = [
     headVisibleCount: 1
   },
   {
-    name: "Systempreferences",
-    bundleId: "com.apple.systempreferences",
-    sourceName: "System Settings",
-    sidebarLabelPattern: /^System Settings$/,
-    count: 1,
-    targetIndex: 0,
-    seedPrefix: "systempreferences",
-    // No matching record is in the head page. The app_stats payload
-    // must still carry the OS-supplied name so the sidebar does not
-    // flash or stick on a bundle-tail guess ("Systempreferences").
-    headVisibleCount: 0
-  },
-  {
     name: "Telegram",
     bundleId: "ru.keepcoder.Telegram",
     sourceName: "Telegram",

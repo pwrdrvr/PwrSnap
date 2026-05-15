@@ -6,7 +6,14 @@ const electronMock = vi.hoisted(() => ({
     | ((event: unknown, name: string, req: unknown) => Promise<unknown>)
     | null,
   handle: vi.fn(),
-  removeHandler: vi.fn()
+  on: vi.fn(),
+  removeAllListeners: vi.fn(),
+  removeHandler: vi.fn(),
+  nativeImage: {
+    createFromPath: vi.fn(() => ({
+      isEmpty: () => true
+    }))
+  }
 }));
 
 vi.mock("electron", () => ({
@@ -15,11 +22,18 @@ vi.mock("electron", () => ({
       electronMock.handle(channel, handler);
       electronMock.handler = handler;
     }),
+    on: vi.fn((channel: string, listener: (...args: unknown[]) => void) => {
+      electronMock.on(channel, listener);
+    }),
     removeHandler: vi.fn((channel: string) => {
       electronMock.removeHandler(channel);
       electronMock.handler = null;
+    }),
+    removeAllListeners: vi.fn((channel: string) => {
+      electronMock.removeAllListeners(channel);
     })
-  }
+  },
+  nativeImage: electronMock.nativeImage
 }));
 
 const { bus } = await import("../command-bus");

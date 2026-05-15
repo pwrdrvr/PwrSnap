@@ -10,14 +10,13 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
 import { getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
-import { optimizePngBuffer } from "../image/png-optimize";
 
 const log = getMainLogger("pwrsnap:source-store");
 
@@ -53,9 +52,7 @@ export type StoredSource = {
  */
 export async function putCaptureSource(tempPath: string): Promise<StoredSource> {
   const id = nanoid(16);
-  const sourceBuf = await readFile(tempPath);
-  const optimized = await optimizePngBuffer(sourceBuf);
-  const buf = optimized.buffer;
+  const buf = await readFile(tempPath);
 
   const sha256 = createHash("sha256").update(buf).digest("hex");
   const meta = await sharp(buf).metadata();
@@ -69,30 +66,17 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
   await mkdir(dir, { recursive: true });
   const srcPath = join(dir, `${id}.png`);
 
-  if (optimized.optimized) {
-    await writeFile(srcPath, buf);
-    await rm(tempPath, { force: true });
-  } else {
-    // Same-volume rename — atomic on APFS when both paths are on the
-    // home volume (typical: /tmp ↔ ~/Documents both on /). If /tmp is
-    // on a different volume, fs/promises.rename falls back to a copy
-    // + unlink under the hood, still atomic from the consumer's POV.
-    await rename(tempPath, srcPath);
-  }
+  // Same-volume rename — atomic on APFS when both paths are on the
+  // home volume (typical: /tmp ↔ ~/Documents both on /). If /tmp is
+  // on a different volume, fs/promises.rename falls back to a copy
+  // + unlink under the hood, still atomic from the consumer's POV.
+  await rename(tempPath, srcPath);
 
   // debug-level: this fires once per capture, including 100k× under
   // the dev seeder. Production can re-enable via the logger's level
   // override; a single ⌘⇧P capture is logged elsewhere by the
   // capture handlers' "capture persisted" line at info.
-  log.debug("stored capture source", {
-    id,
-    srcPath,
-    byteSize: buf.length,
-    originalByteSize: optimized.originalBytes,
-    optimizationStrategy: optimized.strategy,
-    widthPx,
-    heightPx
-  });
+  log.debug("stored capture source", { id, srcPath, byteSize: buf.length, widthPx, heightPx });
 
   return {
     id,

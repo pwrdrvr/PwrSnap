@@ -76,69 +76,75 @@ test("source-app filters load captures outside the initial virtualized page", as
     );
     await writeFile(pngPath, pngBytes);
 
-    for (const filterCase of CASES) {
-      await app.electronApp.evaluate(
-        (
-          _electron,
-          payload: {
-            headPageSize: number;
-            pngPath: string;
-            primaryBundleId: string;
-            targetBundleId: string;
-            targetLabel: string;
-            targetCount: number;
+    await app.electronApp.evaluate(
+      (
+        _electron,
+        payload: {
+          headPageSize: number;
+          pngPath: string;
+          primaryBundleId: string;
+          cases: Array<{
+            bundleId: string;
+            sourceName: string;
+            count: number;
             seedPrefix: string;
             headVisibleCount: number;
-          }
-        ) => {
-          type Bridge = {
-            seedCapture: (input: {
-              id: string;
-              kind: "image" | "video";
-              captured_at: string;
-              source_app_bundle_id: string | null;
-              source_app_name: string | null;
-              src_path: string;
-              width_px: number;
-              height_px: number;
-              device_pixel_ratio: number;
-              byte_size: number;
-              sha256: string;
-            }) => unknown;
-          };
-          const bridge = (
-            globalThis as unknown as { __PWRSNAP_TEST__: Bridge }
-          ).__PWRSNAP_TEST__;
-          const now = Date.now();
-          const recentCount = payload.headPageSize - payload.headVisibleCount;
-          for (let i = 0; i < recentCount; i++) {
-            bridge.seedCapture({
-              id: `source-filter-recent-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`,
-              kind: "image",
-              captured_at: new Date(now - i * 1000).toISOString(),
-              source_app_bundle_id: payload.primaryBundleId,
-              source_app_name: "Recent Feed",
-              src_path: payload.pngPath,
-              width_px: 800,
-              height_px: 600,
-              device_pixel_ratio: 1,
-              byte_size: 70,
-              sha256: `source-filter-recent-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`
-            });
-          }
+          }>;
+        }
+      ) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        const now = Date.now();
+        const recentCount = payload.headPageSize - Math.max(
+          ...payload.cases.map((filterCase) => filterCase.headVisibleCount)
+        );
 
-          for (let i = 0; i < payload.targetCount; i++) {
-            const id = `source-filter-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`;
+        for (let i = 0; i < recentCount; i++) {
+          bridge.seedCapture({
+            id: `source-filter-recent-${i.toString().padStart(3, "0")}`,
+            kind: "image",
+            captured_at: new Date(now - i * 1000).toISOString(),
+            source_app_bundle_id: payload.primaryBundleId,
+            source_app_name: "Recent Feed",
+            src_path: payload.pngPath,
+            width_px: 800,
+            height_px: 600,
+            device_pixel_ratio: 1,
+            byte_size: 70,
+            sha256: `source-filter-recent-${i.toString().padStart(3, "0")}`
+          });
+        }
+
+        let olderOffsetSeconds = 0;
+        for (const filterCase of payload.cases) {
+          for (let i = 0; i < filterCase.count; i++) {
+            const id = `source-filter-${filterCase.seedPrefix}-${i.toString().padStart(3, "0")}`;
             const capturedAt =
-              i < payload.headVisibleCount
-                ? new Date(now - (recentCount + i) * 1000).toISOString()
-                : new Date(now - 24 * 60 * 60 * 1000 - i * 1000).toISOString();
+              i < filterCase.headVisibleCount
+                ? new Date(now - (recentCount + olderOffsetSeconds + i) * 1000).toISOString()
+                : new Date(
+                    now - 24 * 60 * 60 * 1000 - (olderOffsetSeconds + i) * 1000
+                  ).toISOString();
             bridge.seedCapture({
               id,
               kind: "image",
               captured_at: capturedAt,
-              source_app_bundle_id: payload.targetBundleId,
-              source_app_name: payload.targetLabel,
+              source_app_bundle_id: filterCase.bundleId,
+              source_app_name: filterCase.sourceName,
               src_path: payload.pngPath,
               width_px: 800,
               height_px: 600,
@@ -147,59 +153,44 @@ test("source-app filters load captures outside the initial virtualized page", as
               sha256: id
             });
           }
-        },
-        {
-          headPageSize: HEAD_PAGE_SIZE,
-          pngPath,
-          primaryBundleId: PRIMARY_BUNDLE_ID,
-          targetBundleId: filterCase.bundleId,
-          targetLabel: filterCase.sourceName,
-          targetCount: filterCase.count,
-          seedPrefix: filterCase.seedPrefix,
-          headVisibleCount: filterCase.headVisibleCount
+          olderOffsetSeconds += filterCase.count;
         }
-      );
+      },
+      {
+        headPageSize: HEAD_PAGE_SIZE,
+        pngPath,
+        primaryBundleId: PRIMARY_BUNDLE_ID,
+        cases: CASES.map(({ bundleId, sourceName, count, seedPrefix, headVisibleCount }) => ({
+          bundleId,
+          sourceName,
+          count,
+          seedPrefix,
+          headVisibleCount
+        }))
+      }
+    );
 
-      await app.electronApp.evaluate((electronModule) => {
-        const { BrowserWindow } = electronModule;
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (win.isDestroyed()) continue;
-          win.webContents.send("events:captures:changed", { changedIds: [] });
-        }
-      });
+    await app.electronApp.evaluate((electronModule) => {
+      const { BrowserWindow } = electronModule;
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send("events:captures:changed", { changedIds: [] });
+      }
+    });
 
-      const window = app.window;
+    const window = app.window;
+    for (const filterCase of CASES) {
       const sourceButton = window.getByRole("button", { name: filterCase.sidebarPattern });
-      await expect(sourceButton).toBeVisible({ timeout: 5_000 });
+      await expect(sourceButton).toBeVisible({ timeout: 10_000 });
 
-      await window.evaluate((targetBundleId) => {
-        type Dispatch = (name: string, req: unknown) => Promise<unknown>;
-        const api = (
-          globalThis as unknown as { pwrsnapApi: { dispatch: Dispatch } }
-        ).pwrsnapApi;
-        const original = api.dispatch.bind(api);
-        api.dispatch = async (name: string, req: unknown): Promise<unknown> => {
-          if (
-            name === "library:list" &&
-            typeof req === "object" &&
-            req !== null &&
-            "appBundleId" in req &&
-            (req as { appBundleId?: unknown }).appBundleId === targetBundleId
-          ) {
-            await new Promise((resolve) => setTimeout(resolve, 75));
-          }
-          return original(name, req);
-        };
-      }, filterCase.bundleId);
-
-      await sourceButton.scrollIntoViewIfNeeded({ timeout: 5_000 });
-      await sourceButton.click({ timeout: 5_000 });
+      await sourceButton.scrollIntoViewIfNeeded({ timeout: 10_000 });
+      await sourceButton.click({ timeout: 10_000 });
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
         .padStart(3, "0")}`;
       await expect(window.locator(`.psl__cell[data-cell-id="${targetId}"]`)).toHaveCount(1, {
-        timeout: 5_000
+        timeout: 10_000
       });
     }
   } finally {

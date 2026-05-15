@@ -104,7 +104,7 @@ export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyBu
     }, COPIED_VISIBLE_MS);
   };
 
-  const handleDragStart = (event: React.DragEvent<HTMLButtonElement>): void => {
+  const handleDragStart = (event: React.DragEvent<HTMLAnchorElement>): void => {
     if (onDrag === undefined) return;
     event.preventDefault();
     onDrag(preset);
@@ -124,31 +124,43 @@ export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyBu
   }, []);
 
   return (
-    <button
-      type="button"
-      className={"fo__copy-btn" + (copied ? " is-copied" : "")}
-      onClick={handleClick}
-      draggable={onDrag !== undefined}
-      onDragStart={handleDragStart}
-    >
-      <div className="fo__copy-btn-row1">
-        <span className="fo__copy-label">{label}</span>
-        <span className="fo__copy-kbd">⌘{KBD_DIGIT[preset]}</span>
-      </div>
-      <div className="fo__copy-meta">
-        <span className="fo__copy-dim">{dim}</span>
-        <span className="fo__copy-bytes">{bytes}</span>
-      </div>
-      {/* Orange overlay — covers button content while `is-copied` is
-          set. position:absolute + inset:0 keeps it inside the button
-          bounds without affecting layout of the row1 / meta children
-          underneath, so the surrounding 3-column grid never reflows.
-          aria-hidden because the ARIA story for click feedback is
-          covered by the live region of the underlying clipboard API,
-          not by visual chrome. */}
-      <span className="fo__copy-overlay" aria-hidden="true">
-        Copied
-      </span>
-    </button>
+    <div className="fo__copy-card">
+      <button
+        type="button"
+        className={"fo__copy-btn" + (copied ? " is-copied" : "")}
+        onClick={handleClick}
+      >
+        <div className="fo__copy-btn-row1">
+          <span className="fo__copy-label">{label}</span>
+          <span className="fo__copy-kbd">⌘{KBD_DIGIT[preset]}</span>
+        </div>
+        <div className="fo__copy-meta">
+          <span className="fo__copy-dim">{dim}</span>
+          <span className="fo__copy-bytes">{bytes}</span>
+        </div>
+        {/* Orange overlay — covers button content while `is-copied` is
+            set. position:absolute + inset:0 keeps it inside the button
+            bounds without affecting layout of the row1 / meta children
+            underneath, so the surrounding 3-column grid never reflows.
+            aria-hidden because the ARIA story for click feedback is
+            covered by the live region of the underlying clipboard API,
+            not by visual chrome. */}
+        <span className="fo__copy-overlay" aria-hidden="true">
+          Copied
+        </span>
+      </button>
+      {onDrag !== undefined ? (
+        <a
+          className="fo__copy-file"
+          draggable
+          href="#"
+          title={`Drag ${label} PNG file`}
+          onClick={(event) => event.preventDefault()}
+          onDragStart={handleDragStart}
+        >
+          file
+        </a>
+      ) : null}
+    </div>
   );
 }

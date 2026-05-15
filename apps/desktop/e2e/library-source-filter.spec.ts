@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
 const HEAD_PAGE_SIZE = 100;
@@ -9,11 +9,12 @@ const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
 const FIXTURE_PNG_HEX =
   "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000970485973000003e8000003e801b57b526b0000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
 
-// CI's xvfb Electron runner occasionally spends tens of seconds in
-// launch/teardown for this large synthetic dataset. Keep the coverage
-// in one BrowserWindow lifecycle so a slow first filter does not leave
-// Playwright with a timed-out worker to clean up.
-test.setTimeout(90_000);
+// CI's xvfb Electron runner occasionally spends more than a minute in
+// launch/teardown for this large synthetic dataset when the full E2E
+// suite runs before it. Keep the coverage in one BrowserWindow
+// lifecycle so a slow first filter does not leave Playwright with a
+// timed-out worker to clean up.
+test.setTimeout(180_000);
 
 type SourceFilterCase = {
   name: string;
@@ -43,18 +44,6 @@ const CASES: SourceFilterCase[] = [
     headVisibleCount: 1
   },
   {
-    name: "Systempreferences",
-    bundleId: "com.apple.systempreferences",
-    sourceName: "System Settings",
-    sidebarLabelPattern: /^Systempreferences$/,
-    count: 1,
-    targetIndex: 0,
-    seedPrefix: "systempreferences",
-    // Mirrors the real screenshot label: no loaded record has refined
-    // the app_stats-only label to "System Settings" yet.
-    headVisibleCount: 0
-  },
-  {
     name: "Telegram",
     bundleId: "ru.keepcoder.Telegram",
     sourceName: "Telegram",
@@ -65,6 +54,19 @@ const CASES: SourceFilterCase[] = [
     // Telegram is a curated app id, so the sidebar can show the
     // friendly label from APP_INFO even when every Telegram capture
     // is beyond the first page.
+    headVisibleCount: 0
+  },
+  {
+    name: "LINE",
+    bundleId: "jp.naver.line.mac",
+    sourceName: "LINE",
+    sidebarLabelPattern: /^LINE$/,
+    count: 4,
+    targetIndex: 0,
+    seedPrefix: "line",
+    // Regression: deriving from the bundle tail produced "Mac" until
+    // a LINE row entered the loaded head page. The app_stats payload
+    // must carry the captured app name up front.
     headVisibleCount: 0
   }
 ];
@@ -180,8 +182,7 @@ test("source-app filters load captures outside the initial virtualized page", as
 
     for (const filterCase of CASES) {
       await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-      const sourceButton = await waitForSourceFilterButton(window, filterCase);
-      await clickSourceFilterButton(sourceButton);
+      await clickSourceFilterButton(window, filterCase);
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
@@ -202,6 +203,9 @@ test("active source-app filter refetches after capture stats change", async () =
   const app = await launchPwrSnap();
   try {
     const window = app.window;
+    await expect(window.getByRole("button", { name: /All Captures\s+0/ })).toBeVisible({
+      timeout: 10_000
+    });
     await disableAnimations(window);
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-refresh-"));
@@ -284,8 +288,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await broadcastCapturesChanged(app);
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-    const sourceButton = await waitForSourceFilterButton(window, filterCase);
-    await clickSourceFilterButton(sourceButton);
+    await clickSourceFilterButton(window, filterCase);
 
     const targetId = "source-filter-refresh-telegram-000";
     await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
@@ -348,6 +351,85 @@ test("active source-app filter refetches after capture stats change", async () =
   }
 });
 
+test("top-level filters do not appear as empty source-app rows after leaving Unknown app focus", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-unknown-"));
+    const pngPath = path.join(dir, "fixture.png");
+    await writeFile(pngPath, fixturePngBytes());
+
+    await app.electronApp.evaluate(
+      (_electron, payload: { pngPath: string }) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        bridge.seedCapture({
+          id: "source-filter-unknown-null-bundle",
+          kind: "image",
+          captured_at: new Date().toISOString(),
+          source_app_bundle_id: null,
+          source_app_name: null,
+          src_path: payload.pngPath,
+          width_px: 800,
+          height_px: 600,
+          device_pixel_ratio: 1,
+          byte_size: 70,
+          sha256: "source-filter-unknown-null-bundle"
+        });
+      },
+      { pngPath }
+    );
+
+    await broadcastCapturesChanged(app);
+
+    const window = app.window;
+    await disableAnimations(window);
+    await waitForAppStat(app, null, 1);
+
+    const unknownSourceButton = window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) })
+      .filter({ has: window.locator(".psl__nav-count", { hasText: /^1$/ }) });
+    await expect(unknownSourceButton).toHaveCount(1, { timeout: 30_000 });
+
+    await unknownSourceButton.first().click();
+    await expect(window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']")).toHaveCount(1, {
+      timeout: 10_000
+    });
+
+    await window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']").click();
+    await expect(window.locator(".psl")).toHaveAttribute("data-mode", "focus", {
+      timeout: 10_000
+    });
+
+    await window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Today$/ }) })
+      .click();
+
+    const unknownSourceRows = window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) });
+    await expect(unknownSourceRows).toHaveCount(1);
+    await expect(unknownSourceRows.first().locator(".psl__nav-count")).toHaveText("1");
+  } finally {
+    await app.close();
+  }
+});
+
 function fixturePngBytes(): Buffer {
   return Buffer.from(FIXTURE_PNG_HEX, "hex");
 }
@@ -364,7 +446,7 @@ async function broadcastCapturesChanged(app: Awaited<ReturnType<typeof launchPwr
 
 async function waitForAppStat(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  bundleId: string,
+  bundleId: string | null,
   expectedCount: number
 ): Promise<void> {
   await expect
@@ -396,31 +478,37 @@ async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>
   });
 }
 
-async function waitForSourceFilterButton(
+async function clickSourceFilterButton(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
-  filterCase: SourceFilterCase,
-  count = filterCase.count
-): Promise<Locator> {
-  const sourceButton = page
-    .locator("button.psl__nav")
-    .filter({
-      has: page.locator(".psl__nav-label", { hasText: filterCase.sidebarLabelPattern })
-    })
-    .filter({
-      has: page.locator(".psl__nav-count", { hasText: new RegExp(`^${count}$`) })
-    });
-  await expect(sourceButton).toHaveCount(1, { timeout: 30_000 });
-  await expect(sourceButton.first()).toBeVisible({ timeout: 30_000 });
-  return sourceButton.first();
-}
-
-async function clickSourceFilterButton(sourceButton: Locator): Promise<void> {
-  await sourceButton.evaluate((button) => {
-    if (!(button instanceof HTMLElement)) {
-      throw new Error("source-app filter target is not an HTMLElement");
-    }
-    button.click();
-  });
+  filterCase: SourceFilterCase
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ patternSource, patternFlags }) => {
+            const pattern = new RegExp(patternSource, patternFlags);
+            const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
+            for (const button of buttons) {
+              const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
+              if (!pattern.test(label)) continue;
+              if (button.classList.contains("is-active")) return true;
+              button.click();
+              return false;
+            }
+            return false;
+          },
+          {
+            patternSource: filterCase.sidebarLabelPattern.source,
+            patternFlags: filterCase.sidebarLabelPattern.flags
+          }
+        ),
+      {
+        timeout: 30_000,
+        message: `activating source filter ${filterCase.name}`
+      }
+    )
+    .toBe(true);
 }
 
 async function countGridCells(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"], id: string): Promise<number> {

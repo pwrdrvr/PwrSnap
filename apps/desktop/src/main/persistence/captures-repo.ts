@@ -314,16 +314,44 @@ function bumpAppStat(bundleId: string | null, delta: number): void {
 }
 
 /**
- * Read the denormalized per-app counts. Returned in the head-page
- * response of `library:list` so the sidebar binds without a separate
- * round-trip. Sorted by count desc so the heaviest bundles appear
- * first in the sidebar.
+ * Read the denormalized per-app counts plus a representative display
+ * name. Returned in the head-page response of `library:list` so the
+ * sidebar binds without a separate round-trip. The display name comes
+ * from the latest live capture in the bucket that has a non-empty
+ * OS-supplied `source_app_name`; this keeps labels correct even when
+ * all rows for the bucket are outside the first keyset page.
  */
 export function getAppStats(): LibraryAppStat[] {
   const db = getDb();
   const rows = db
-    .prepare("SELECT source_app_bundle_id AS bundleId, count FROM app_stats ORDER BY count DESC")
-    .all() as Array<{ bundleId: string | null; count: number }>;
+    .prepare(
+      `WITH latest_names AS (
+         SELECT bundleKey, source_app_name
+         FROM (
+           SELECT
+             COALESCE(source_app_bundle_id, '') AS bundleKey,
+             source_app_name,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(source_app_bundle_id, '')
+               ORDER BY captured_at DESC, id DESC
+             ) AS rn
+           FROM captures
+           WHERE deleted_at IS NULL
+             AND source_app_name IS NOT NULL
+             AND source_app_name != ''
+         )
+         WHERE rn = 1
+       )
+       SELECT
+         s.source_app_bundle_id AS bundleId,
+         s.count AS count,
+         n.source_app_name AS sourceAppName
+       FROM app_stats s
+       LEFT JOIN latest_names n
+         ON n.bundleKey = COALESCE(s.source_app_bundle_id, '')
+       ORDER BY s.count DESC`
+    )
+    .all() as Array<{ bundleId: string | null; count: number; sourceAppName: string | null }>;
   return rows;
 }
 

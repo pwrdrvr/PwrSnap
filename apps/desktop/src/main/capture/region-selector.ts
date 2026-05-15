@@ -15,7 +15,7 @@
 // captured), CSS-only — pure positioning + a 1.5px accent border. NO
 // `backdrop-filter` — single biggest cause of jank over Splashtop.
 
-import { BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, screen, type Display } from "electron";
 import { join } from "node:path";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
@@ -851,7 +851,7 @@ type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: strin
 
 function rendererTarget(displayId: number): RendererTarget {
   const hash = `stage=region&displayId=${displayId}`;
-  if (process.env.ELECTRON_RENDERER_URL !== undefined) {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL !== undefined) {
     return {
       kind: "url",
       url: `${process.env.ELECTRON_RENDERER_URL}#${hash}`

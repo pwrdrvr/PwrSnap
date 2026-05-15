@@ -11,6 +11,13 @@ import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:ipc");
 
+function ipcCancellationKey(name: string, req: unknown): string | undefined {
+  if (name !== "codex:enrich") return undefined;
+  if (typeof req !== "object" || req === null || !("captureId" in req)) return undefined;
+  const captureId = (req as { captureId?: unknown }).captureId;
+  return typeof captureId === "string" ? captureId : undefined;
+}
+
 export function registerIpcDispatcher(): void {
   ipcMain.handle(IPC_CMD, async (_event, name: string, req: unknown) => {
     if (typeof name !== "string" || !bus.isRegistered(name)) {
@@ -22,7 +29,10 @@ export function registerIpcDispatcher(): void {
     }
     // The bus handler signature is typed; renderer untyped → main typed.
     // Validation of `req` shape is the handler's responsibility (Zod schemas).
-    const result = await bus.dispatch(name, req as never, { principal: "ipc" });
+    const result = await bus.dispatch(name, req as never, {
+      principal: "ipc",
+      cancellationKey: ipcCancellationKey(name, req)
+    });
     return result;
   });
 

@@ -141,7 +141,7 @@ sequenceDiagram
 **Dependencies:** None
 
 **Files:**
-- Create: `apps/desktop/src/main/persistence/migrations/0003_ai_enrichment.sql`
+- Create: `apps/desktop/src/main/persistence/migrations/0005_ai_enrichment.sql`
 - Create: `apps/desktop/src/main/persistence/ai-runs-repo.ts`
 - Create: `apps/desktop/src/main/persistence/enrichment-repo.ts`
 - Modify: `packages/shared/src/protocol.ts`

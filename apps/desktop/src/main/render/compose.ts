@@ -30,6 +30,7 @@ import { computeArrowGeometry } from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { getMainLogger } from "../log";
+import { optimizePngBuffer } from "../image/png-optimize";
 import { computeRenderHash } from "./overlay-hash";
 
 const log = getMainLogger("pwrsnap:render");
@@ -173,10 +174,14 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
     withoutEnlargement: true
   });
 
-  const buf =
+  // Do not pass `effort` to Sharp's PNG encoder here: in Sharp, PNG
+  // `effort` implies palette quantization. optimizePngBuffer handles
+  // exact palette output only after proving raw-pixel identity.
+  const encoded =
     req.format === "png"
-      ? await sized.png({ compressionLevel: 6, effort: 4 }).toBuffer()
+      ? await sized.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer()
       : await sized.webp({ lossless: true, effort: 4 }).toBuffer();
+  const buf = req.format === "png" ? (await optimizePngBuffer(encoded)).buffer : encoded;
 
   // Atomic write — tmp + rename so concurrent readers never see a
   // half-written file. PID in the tmp name lets two render workers

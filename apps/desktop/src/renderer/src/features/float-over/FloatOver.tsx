@@ -244,6 +244,9 @@ export function FloatOver({
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
   // no bytes-text swap). See features/shared/CopyButton.tsx.
   const [description, setDescription] = useState(acceptedDescription);
+  const [descriptionOrigin, setDescriptionOrigin] = useState<"accepted" | "manual" | "suggested">(
+    acceptedDescription.trim().length > 0 ? "accepted" : "manual"
+  );
   const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
@@ -266,6 +269,7 @@ export function FloatOver({
   // (With the persistent renderer + state machine added in this same
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewedSuggestionRef = useRef("");
 
   const isPaused =
     hovering ||
@@ -301,8 +305,28 @@ export function FloatOver({
 
   useEffect(() => {
     setDescription(acceptedDescription);
+    setDescriptionOrigin(acceptedDescription.trim().length > 0 ? "accepted" : "manual");
     setTags(acceptedTags);
   }, [acceptedDescription, acceptedTags.join("\0")]);
+
+  useEffect(() => {
+    if (acceptedDescription.trim().length > 0) return;
+    if (suggestedDescription.trim().length === 0) {
+      previewedSuggestionRef.current = "";
+      if (descriptionOrigin === "suggested") {
+        setDescription("");
+        setDescriptionOrigin("manual");
+      }
+      return;
+    }
+
+    const suggestionChanged = previewedSuggestionRef.current !== suggestedDescription;
+    if (descriptionOrigin === "suggested" || (description.trim().length === 0 && suggestionChanged)) {
+      previewedSuggestionRef.current = suggestedDescription;
+      setDescription(suggestedDescription);
+      setDescriptionOrigin("suggested");
+    }
+  }, [acceptedDescription, description, descriptionOrigin, suggestedDescription]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -622,13 +646,20 @@ export function FloatOver({
       {cfg.showAnnotate && (
         <div className="fo__annotate">
           <textarea
-            className="fo__desc"
+            className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
             placeholder="What is this? (a line of context now saves you 20 minutes later)"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              setDescriptionOrigin("manual");
+            }}
             onBlur={() => {
               const trimmed = description.trim();
-              if (trimmed.length > 0 && trimmed !== acceptedDescription) {
+              if (
+                trimmed.length > 0 &&
+                trimmed !== acceptedDescription &&
+                descriptionOrigin !== "suggested"
+              ) {
                 onAcceptDescription?.(trimmed);
               }
             }}
@@ -686,6 +717,7 @@ export function FloatOver({
               className="fo__ai-accept"
               onClick={() => {
                 setDescription(suggestedDescription);
+                setDescriptionOrigin("accepted");
                 setTags(Array.from(new Set([...tags, ...aiSuggestions.slice(0, 2).map((tag) => tag.label)])));
                 onAcceptDescription?.(suggestedDescription);
                 for (const suggestion of aiSuggestions.slice(0, 2)) {

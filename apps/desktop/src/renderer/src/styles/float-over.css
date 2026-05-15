@@ -378,6 +378,11 @@
 }
 .fo__desc::placeholder { color: var(--text-subtle); }
 .fo__desc:focus { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.fo__desc.is-suggested {
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 3.5%, transparent);
+}
 
 .fo__tags {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;

@@ -5,14 +5,23 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { EnrichmentResult, Settings } from "@pwrsnap/shared";
 
 let testDb: Database.Database;
 let tempRoot: string;
 
+const electronMock = vi.hoisted(() => ({
+  sentEvents: [] as Array<{ channel: string; payload: unknown }>,
+  windows: [] as Array<{
+    isDestroyed: () => boolean;
+    webContents: { send: (channel: string, payload: unknown) => void };
+  }>
+}));
+
 vi.mock("electron", () => ({
   BrowserWindow: {
-    getAllWindows: () => []
+    getAllWindows: () => electronMock.windows
   }
 }));
 
@@ -160,6 +169,8 @@ class HangingCodexClient {
 
 describe("Codex handlers", () => {
   beforeEach(async () => {
+    electronMock.sentEvents = [];
+    electronMock.windows = [];
     tempRoot = join(tmpdir(), `pwrsnap-codex-handlers-test-${process.pid}-${Date.now()}`);
     await mkdir(tempRoot, { recursive: true });
     testDb = new Database(":memory:");
@@ -176,6 +187,14 @@ describe("Codex handlers", () => {
   });
 
   test("codex:enrich queues and completes a capture enrichment run", async () => {
+    electronMock.windows.push({
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel, payload) => {
+          electronMock.sentEvents.push({ channel, payload });
+        }
+      }
+    });
     registerCodexHandlers({
       clientFactory: () => new FakeCodexClient() as never,
       settingsReader: async () =>
@@ -199,9 +218,22 @@ describe("Codex handlers", () => {
 
     await waitFor(() => getAiRun(result.value.runId)?.status === "completed");
     const enrichment = getCaptureEnrichment("cap_1");
+    expect(enrichment?.status).toBe("completed");
     expect(enrichment?.ocrText).toBe("Visible text");
     expect(enrichment?.suggestedDescription).toBe("A screenshot with visible text.");
     expect(enrichment?.suggestedTags.map((tag) => tag.label)).toEqual(["text"]);
+
+    const aiRunEvents = electronMock.sentEvents.filter(
+      (event) => event.channel === EVENT_CHANNELS.aiRunUpdated
+    );
+    const completedEvent = [...aiRunEvents].reverse().find((event) => {
+      const payload = event.payload as { run?: { status?: string } | null };
+      return payload.run?.status === "completed";
+    });
+    expect(completedEvent).toBeDefined();
+    expect(
+      (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
+    ).toBe("completed");
   });
 
   test("codex:enrich refuses to run without consent", async () => {

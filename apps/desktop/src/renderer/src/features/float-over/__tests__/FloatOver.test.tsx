@@ -217,6 +217,35 @@ describe("FloatOver Codex suggestions", () => {
     expect(onAcceptDescription).not.toHaveBeenCalled();
   });
 
+  test("does not pause countdown just because a Codex description is previewed", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment(),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
+  });
+
+  test("pauses countdown while Codex is still running", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        status: "running",
+        suggestedDescription: null,
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-thinking")).toBe(true);
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+  });
+
   test("accepts suggested description when the user clicks Use", async () => {
     const onAcceptDescription = vi.fn();
     const el = await renderFloatOver({

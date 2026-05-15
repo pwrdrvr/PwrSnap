@@ -271,13 +271,16 @@ async function runCaptureEnrichment(params: {
     });
 
     const latencyMs = Math.round(performance.now() - startedAt);
-    const enrichment = storeCompletedEnrichment({
+    storeCompletedEnrichment({
       captureId: params.captureId,
       aiRunId: params.runId,
       result: response.result
     });
     const completed = completeAiRun(params.runId, response.result, latencyMs);
-    broadcastAiRunUpdated({ run: completed, enrichment });
+    broadcastAiRunUpdated({
+      run: completed,
+      enrichment: getCaptureEnrichment(params.captureId)
+    });
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
     const isAbort = error instanceof DOMException && error.name === "AbortError";

@@ -271,10 +271,13 @@ export function FloatOver({
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewedSuggestionRef = useRef("");
 
+  const hasUserDescription =
+    description.trim().length > 0 && descriptionOrigin !== "suggested";
   const isPaused =
+    thinking ||
     hovering ||
     nativeDragging ||
-    description.length > 0 ||
+    hasUserDescription ||
     tags.length > initialTags.length ||
     aiAccepted;
 

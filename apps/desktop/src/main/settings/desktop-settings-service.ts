@@ -50,9 +50,17 @@ export function defaultSettings(): Settings {
       consentAcceptedAt: null
     },
     hotkeys: {
-      quickCapture: "CommandOrControl+Shift+P",
-      region: "CommandOrControl+Shift+R",
-      window: "CommandOrControl+Shift+W"
+      // Quick Capture default moved off ⌘⇧P (collides with Print in
+      // browsers + iWork) to ⌘⇧C. Region + Window default to UNBOUND
+      // since Quick Capture's auto mode covers both — power users can
+      // bind them explicitly from Settings → Hotkeys if they want a
+      // dedicated chord. Video Capture is the new entry; the recording
+      // surface isn't built yet, but the binding fires today so the
+      // global-shortcut registration path is exercised end-to-end.
+      quickCapture: "CommandOrControl+Shift+C",
+      region: "",
+      window: "",
+      videoCapture: "CommandOrControl+Shift+V"
     },
     experimental: {
       v2FileFormat: false
@@ -116,7 +124,11 @@ function parseV1(raw: unknown): Settings | null {
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
       region: pickString(hotkeys.region, defaults.hotkeys.region),
-      window: pickString(hotkeys.window, defaults.hotkeys.window)
+      window: pickString(hotkeys.window, defaults.hotkeys.window),
+      // `videoCapture` landed after v1 shipped; older files won't have
+      // it. pickString fills in the current default for that case so
+      // the field is always present in-memory.
+      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture)
     },
     experimental: {
       v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)

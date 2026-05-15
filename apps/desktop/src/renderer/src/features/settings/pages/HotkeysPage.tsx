@@ -1,11 +1,11 @@
-// Hotkeys settings page — read-only display today. Ported from
-// design/src/Settings.jsx `HotkeysPage` (lines 403–476) with the
-// hard-coded bindings swapped for `settings.hotkeys.*` reads, the
-// Edit affordance removed per the Slice D plan, and the footer
-// telling the user editing comes later.
+// Hotkeys settings page. Editable rows for the four globally-
+// registered chords (Quick Capture, Region, Window, Video Capture).
+// Every other row in the page is a "preview" placeholder for a future
+// surface — the in-canvas editor shortcuts, the All Screens chord,
+// etc. — and is intentionally non-interactive.
 
 import type { ReactElement } from "react";
-import { Card, Hk, HkUnset, Row } from "../components";
+import { Card, Hk, HkUnset, HotkeyCapture, Row } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
 /**
@@ -73,11 +73,42 @@ function modifierToGlyph(part: string): string {
   }
 }
 
+/** Defaults the "Reset to defaults" button writes back. These mirror
+ *  the service-side `defaultSettings()` — keep them in lock-step. */
+const HOTKEY_DEFAULTS = {
+  quickCapture: "CommandOrControl+Shift+C",
+  region: "",
+  window: "",
+  videoCapture: "CommandOrControl+Shift+V"
+} as const;
+
 export function HotkeysPage(): ReactElement {
-  // Read-display only — while settings:read is in flight, rows
-  // degrade to HkUnset, so we don't need a loading state here.
-  const { settings } = useSettingsContext();
+  const { settings, patch } = useSettingsContext();
   const hk = settings?.hotkeys ?? null;
+
+  type HotkeyKey = "quickCapture" | "region" | "window" | "videoCapture";
+
+  const writeOne = async (key: HotkeyKey, next: string): Promise<void> => {
+    // Explicit object spread so TypeScript can verify the patch shape
+    // against `Partial<Settings["hotkeys"]>` without falling back to
+    // index-signature inference.
+    const hotkeysPatch: Partial<{
+      quickCapture: string;
+      region: string;
+      window: string;
+      videoCapture: string;
+    }> = {};
+    hotkeysPatch[key] = next;
+    await patch({ hotkeys: hotkeysPatch });
+  };
+
+  const onCommit = (key: HotkeyKey) => (next: string): Promise<void> =>
+    writeOne(key, next);
+  const onUnbind = (key: HotkeyKey) => (): Promise<void> => writeOne(key, "");
+
+  const onResetDefaults = async (): Promise<void> => {
+    await patch({ hotkeys: { ...HOTKEY_DEFAULTS } });
+  };
 
   return (
     <>
@@ -86,9 +117,9 @@ export function HotkeysPage(): ReactElement {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">Hotkeys</h1>
           <p className="pss__main-sub">
-            PwrSnap is keyboard-first. &#x2318;&#x21E7;P is the global &ldquo;smart&rdquo; trigger
-            that fires whatever capture mode is set as Quick Capture; the rest
-            jump straight to a specific mode.
+            PwrSnap is keyboard-first. Quick Capture is the &ldquo;smart&rdquo;
+            trigger — picks region, window, or full-screen based on the cursor.
+            Click any chord below to rebind. Press Escape mid-record to cancel.
           </p>
         </div>
       </div>
@@ -97,23 +128,46 @@ export function HotkeysPage(): ReactElement {
         <Row
           label="Quick Capture"
           sub="The smart trigger. Picks region, window, or full-screen based on the cursor."
-          tag="preview"
+          tag="global"
         >
-          {renderHk(hk?.quickCapture ?? "")}
+          <HotkeyCapture
+            value={hk?.quickCapture ?? ""}
+            onCommit={onCommit("quickCapture")}
+            onUnbind={onUnbind("quickCapture")}
+          />
         </Row>
         <Row
           label="Region"
-          sub="Drag a marquee on any display."
+          sub="Drag a marquee on any display. Unbound by default — Quick Capture covers it."
           tag="global"
         >
-          {renderHk(hk?.region ?? "")}
+          <HotkeyCapture
+            value={hk?.region ?? ""}
+            onCommit={onCommit("region")}
+            onUnbind={onUnbind("region")}
+          />
         </Row>
         <Row
           label="Window"
-          sub="Click a window. &#x2325; to include shadow."
+          sub="Click a window. Unbound by default — Quick Capture covers it."
           tag="global"
         >
-          {renderHk(hk?.window ?? "")}
+          <HotkeyCapture
+            value={hk?.window ?? ""}
+            onCommit={onCommit("window")}
+            onUnbind={onUnbind("window")}
+          />
+        </Row>
+        <Row
+          label="Video Capture"
+          sub="Recording surface ships in a later release; the hotkey is wired so muscle memory carries over."
+          tag="global"
+        >
+          <HotkeyCapture
+            value={hk?.videoCapture ?? ""}
+            onCommit={onCommit("videoCapture")}
+            onUnbind={onUnbind("videoCapture")}
+          />
         </Row>
         <Row
           label="Full Screen"
@@ -183,16 +237,14 @@ export function HotkeysPage(): ReactElement {
       </Card>
 
       <div className="pss__footer">
-        <span className="pss__footer-status">
-          Editing comes in a later release. Hotkeys are immutable in this build.
-        </span>
+        <button
+          type="button"
+          className="pss__footer-reset"
+          onClick={() => void onResetDefaults()}
+        >
+          Reset to defaults
+        </button>
       </div>
     </>
   );
-}
-
-function renderHk(accel: string): ReactElement {
-  const keys = acceleratorToDisplayKeys(accel);
-  if (keys.length === 0) return <HkUnset />;
-  return <Hk keys={keys} />;
 }

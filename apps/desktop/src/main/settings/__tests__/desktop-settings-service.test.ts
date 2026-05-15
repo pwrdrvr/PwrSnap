@@ -86,7 +86,12 @@ describe("DesktopSettingsService.write", () => {
     expect(read.codex.pinnedPath).toBe("/opt/codex");
     // Untouched fields default
     expect(read.ai.enabled).toBe(false);
-    expect(read.hotkeys.quickCapture).toBe("CommandOrControl+Shift+P");
+    expect(read.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
+    // Region / window default UNBOUND now that Quick Capture covers both.
+    expect(read.hotkeys.region).toBe("");
+    expect(read.hotkeys.window).toBe("");
+    // Video Capture is the new entry; default ⌘⇧V.
+    expect(read.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
   });
 
   test("undefined patch fields leave existing values untouched", async () => {
@@ -165,7 +170,33 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.codex.pinnedPath).toBe("/x");
     expect(settings.codex.mode).toBe("pinned");
     expect(settings.ai.enabled).toBe(false); // filled
-    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+P"); // filled
+    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C"); // filled
+    // videoCapture wasn't in the older v1 shape — service fills it.
+    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+  });
+
+  test("v1 shape missing the new `videoCapture` hotkey gets the default filled in", async () => {
+    // Older PwrSnap installs wrote `hotkeys` without `videoCapture`.
+    // parseV1 must fill the gap so the in-memory shape always has
+    // every field — even though the file on disk doesn't yet. The
+    // next write upgrades the file in place.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        hotkeys: {
+          quickCapture: "CommandOrControl+Shift+C",
+          region: "",
+          window: ""
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+    expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
   });
 });
 
@@ -283,6 +314,8 @@ describe("mergeSettings", () => {
     expect(merged.codex.pinnedPath).toBe("/x");
     expect(merged.codex.mode).toBe("auto"); // preserved
     expect(merged.hotkeys.quickCapture).toBe(""); // "" IS a write
-    expect(merged.hotkeys.region).toBe("CommandOrControl+Shift+R"); // preserved
+    // Region defaults to "" (unbound) now; preserved from `current`.
+    expect(merged.hotkeys.region).toBe("");
+    expect(merged.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
   });
 });

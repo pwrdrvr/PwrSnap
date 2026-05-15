@@ -264,6 +264,45 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("empty_secret");
   });
 
+  test("settings:write rejects an unrecognizable hotkey accelerator shape", async () => {
+    // "garbage" has no `+`, no modifier, no recognizable key token —
+    // exactly what the shape regex is meant to catch before it lands
+    // on disk and a future `globalShortcut.register(...)` returns false.
+    const result = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { quickCapture: "garbage" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_hotkey_shape");
+  });
+
+  test("settings:write accepts the empty-string `unbound` sentinel for a hotkey", async () => {
+    // "" is the canonical "unbound" sentinel — the dynamic registrar
+    // skips it. Validation must let it through; the prior failing test
+    // for "garbage" proves the shape regex doesn't fall through to
+    // accept everything.
+    const result = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { region: "" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("settings:write rejects a hotkey value that's a non-string (number)", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { videoCapture: 42 } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_hotkey");
+  });
+
   test("settings:clearSecret rejects unknown secret name", async () => {
     const result = await bus.dispatch(
       "settings:clearSecret",

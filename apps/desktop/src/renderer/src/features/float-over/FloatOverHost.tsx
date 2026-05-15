@@ -67,7 +67,7 @@ export function FloatOverHost(): React.ReactElement {
   // load.
   const copyMetrics = usePresetRenderMetrics(
     state.kind === "loaded" && state.record.kind === "image" ? state.record.id : null,
-    state.kind === "loaded" && state.record.kind === "image" ? state.record.overlays_version : null
+    state.kind === "loaded" && state.record.kind === "image" ? state.record.edits_version : null
   );
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible

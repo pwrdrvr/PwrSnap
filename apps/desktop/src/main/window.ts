@@ -36,13 +36,19 @@ export function getPreloadPath(): string {
   return join(__dirname, "../preload/index.cjs");
 }
 
+function developmentRendererUrl(): string | undefined {
+  if (app.isPackaged) return undefined;
+  return process.env.ELECTRON_RENDERER_URL;
+}
+
 function rendererTarget(stage?: "tray" | "float-over" | "edit" | "settings", extraHash?: string): RendererTarget {
   const baseHash = stage ? `stage=${stage}` : undefined;
   const hash = baseHash !== undefined && extraHash !== undefined
     ? `${baseHash}&${extraHash}`
     : baseHash ?? extraHash;
-  if (process.env.ELECTRON_RENDERER_URL) {
-    const url = process.env.ELECTRON_RENDERER_URL + (hash ? `#${hash}` : "");
+  const devUrl = developmentRendererUrl();
+  if (devUrl !== undefined) {
+    const url = devUrl + (hash ? `#${hash}` : "");
     return { kind: "url", url };
   }
   if (hash !== undefined) {

@@ -11,7 +11,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "build": "electron-vite build",
-    "dev": "node ./scripts/rebuild-native-for-electron.mjs && node ./scripts/build-native.mjs && electron-vite dev",
+    "dev": "node ./scripts/dev.mjs",
     "build:native": "node ./scripts/build-native.mjs",
     "package:dryrun": "node ./scripts/release.mjs --dryrun",
     "package": "node ./scripts/release.mjs --no-publish",

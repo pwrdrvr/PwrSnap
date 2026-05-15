@@ -27,7 +27,10 @@ export default defineConfig({
           name: "desktop-main",
           globals: true,
           environment: "node",
-          include: ["apps/desktop/src/main/**/__tests__/**/*.test.ts"]
+          include: [
+            "apps/desktop/scripts/**/*.test.mjs",
+            "apps/desktop/src/main/**/__tests__/**/*.test.ts"
+          ]
         }
       },
       {

@@ -345,6 +345,90 @@ clipping chain and the entire class of bug disappears.
   switch off the wrapper pattern; it's strictly more robust and
   keeps the tray and float-over symmetrical.
 
+## Settings substrate — every setting + secret goes through one place
+
+**All user-configurable state lives in `DesktopSettingsService` +
+`DesktopSecretStore` and travels over the command bus. Don't open a
+new IPC channel, don't write a sibling JSON file, don't keep a
+plaintext secret on disk.**
+
+Implementation:
+[apps/desktop/src/main/settings/desktop-settings-service.ts](apps/desktop/src/main/settings/desktop-settings-service.ts) +
+[apps/desktop/src/main/settings/desktop-secret-store.ts](apps/desktop/src/main/settings/desktop-secret-store.ts) +
+[apps/desktop/src/main/handlers/settings-handlers.ts](apps/desktop/src/main/handlers/settings-handlers.ts).
+Architecture notes:
+[docs/solutions/2026-05-12-settings-substrate.md](docs/solutions/2026-05-12-settings-substrate.md).
+
+Rules:
+
+- **Single schema in shared.** `Settings` and `SettingsPatch` live in
+  [packages/shared/src/protocol.ts](packages/shared/src/protocol.ts).
+  Renderer + main both import from `@pwrsnap/shared`. **Never
+  re-declare** a Settings shape elsewhere.
+- **Adding a field is a one-line change.** Extend the right nested
+  object (`codex.*`, `ai.*`, `hotkeys.*`, `experimental.*`, etc.), give
+  it a default in `defaultSettings()`, fill it from older files in
+  `parseV1`. **Don't bump `schemaVersion` for additive changes** —
+  bump only when the on-disk shape changes incompatibly. The legacy-
+  shape catalog in the service exists for that case; it must remain
+  ordered newest-first and corruption must quarantine to
+  `pwrsnap-settings.corrupt-<iso>.json` (never silently swallow).
+- **Atomic write.** Service writes through `writeFile(tmp) → rename`.
+  Never `fs.writeFile` to the final path directly — a crash mid-write
+  corrupts the file. Same rule for `pwrsnap-secrets.bin`.
+- **Serialized writes.** `DesktopSettingsService.write()` awaits an
+  internal promise chain so two concurrent renderer patches don't
+  interleave reads. Use the same pattern in `DesktopSecretStore`. The
+  queue uses `.catch(() => undefined).then(task)` so a rejected write
+  doesn't run the next task on the rejection branch.
+- **Broadcast on every write.** Every successful settings or secret
+  write emits `events:settings:changed` with payload
+  `{ settings, secrets: Record<DesktopSettingsSecretName, SecretStatus> }`
+  to every BrowserWindow. The renderer hook reads once on mount, then
+  waits for broadcasts — no polling.
+- **`undefined` ≠ `null` ≠ `""`.** `SettingsPatch` is a deep-Partial.
+  `undefined` / missing key = leave alone. Explicit value (including
+  `false`, `0`, `""`, `null` where the type allows) = write.
+  `exactOptionalPropertyTypes` enforces.
+- **All secrets via `safeStorage`.** Plaintext never crosses the IPC
+  boundary. The renderer only ever sees `SecretStatus = { configured,
+  lastSetAt }`. `DesktopSecretStore.getValue()` is the only plaintext
+  accessor and is main-only — **never register it on the bus.** If
+  `safeStorage.isEncryptionAvailable() === false`, the store throws
+  `SecretUnavailableError`; the handler returns `Result.err` with
+  `kind: "settings", code: "secret_unavailable"`. **Never fall back to
+  plaintext.** A unit test grep-asserts the plaintext never appears in
+  `pwrsnap-secrets.bin`.
+- **Validate at the bus boundary.** Per-verb validators in
+  [apps/desktop/src/main/handlers/settings-validators.ts](apps/desktop/src/main/handlers/settings-validators.ts)
+  reject unknown secret names, oversize values (>64KB), unknown
+  `SettingsPage`, `null` over non-nullable string fields, etc. Add a
+  validator when you add a verb.
+- **Renderer reads via context, not the hook directly.** `useSettings`
+  is called once at the `SettingsApp` root and provided via
+  `SettingsContext`. Pages use `useSettingsContext()`. One subscriber,
+  one initial fetch per window.
+- **Late resolutions are dropped.** `patch / refreshCodex /
+  replaceSecret / clearSecret` each carry a monotonic `seq` ref —
+  a stale dispatch's resolution doesn't clobber a newer call's state.
+  Mirror the pattern if you add a new mutating callback.
+- **Window-to-renderer navigation goes through a typed event channel,
+  never `executeJavaScript`.** Use `EVENT_CHANNELS.settingsNavigate`
+  (or add a new channel) — string interpolation into renderer JS is a
+  sandbox crack.
+- **Codex discovery cache invalidates on `codex.*` writes.** The 30s
+  in-memory snapshot cache must be cleared inside the write task when
+  `patch.codex !== undefined`. Without this, the "Using" badge lies
+  for up to 30s after pinning a path.
+
+What this substrate is **not for**: ephemeral renderer state (sidebar
+expanded/collapsed, last-selected capture id), per-capture metadata
+(belongs in SQLite + overlays), workspace-scoped caches (belongs in a
+per-workspace cache table). When in doubt: if the value should
+survive a relaunch *and* a renderer can change it, it belongs in
+Settings. If a renderer reads it once and discards on close, it
+doesn't.
+
 ## Pull Requests
 
 - Conventional Commit-style PR titles: `type(scope): short description`.

@@ -204,6 +204,9 @@ test("active source-app filter refetches after capture stats change", async () =
   const app = await launchPwrSnap();
   try {
     const window = app.window;
+    await expect(window.getByRole("button", { name: /All Captures\s+0/ })).toBeVisible({
+      timeout: 10_000
+    });
     await disableAnimations(window);
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-refresh-"));

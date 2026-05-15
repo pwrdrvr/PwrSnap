@@ -62,3 +62,9 @@ Thumbs.db
 .worktrees/
 .claude/worktrees/
 .design-canvas.state.json
+
+# Design canvas iteration scraps (intermediate clipboard-paste images)
+design/uploads/
+
+# /ce:review scratch dir — ephemeral review todos, not source
+todos/

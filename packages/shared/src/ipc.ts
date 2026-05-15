@@ -24,6 +24,20 @@ export const EVENT_CHANNELS = {
   recordingState: "events:recording:state",
   settingsChanged: "events:settings:changed",
   /**
+   * Main → renderer navigation signal for the Settings window. Sent by
+   * `settings:open` when the window is already focused and the caller
+   * supplied a `page`. The renderer's `useActivePage` hook subscribes
+   * and flips its hash through the already-validated `setActivePage`.
+   *
+   * This replaces the prior `webContents.executeJavaScript` approach
+   * so the bus contract stays transport-agnostic — HTTP/MCP callers
+   * can't `executeJavaScript`, and string-interpolating untrusted
+   * `req.page` into a JS template would be an injection footgun.
+   *
+   * Payload type: `SettingsNavigateEvent` (below).
+   */
+  settingsNavigate: "events:settings:navigate",
+  /**
    * Drives the float-over renderer's state machine. Lets main own the
    * lifecycle (pre-show under selector, populate-after-commit, sync
    * cancel-without-flicker) without `loadURL` reloads — the renderer
@@ -113,6 +127,37 @@ export type ScrollProbeRequest = {
   durationMs: number;
   /** Pixels to advance the scroll position each RAF tick. */
   pxPerFrame: number;
+};
+
+/**
+ * `events:settings:changed` broadcast payload. Sent to every live
+ * BrowserWindow after a successful `settings:write`, `settings:
+ * replaceSecret`, or `settings:clearSecret`. Renderers replace their
+ * local snapshot on receipt — both the persisted Settings shape and
+ * the masked secret-status map are carried so a single subscribe
+ * suffices for the whole Settings surface.
+ *
+ * Plaintext secret values never appear in this payload (or anywhere
+ * else that crosses the IPC boundary) — only `{ configured, lastSetAt }`
+ * per name.
+ */
+export type SettingsChangedEvent = {
+  settings: import("./protocol").Settings;
+  secrets: Record<
+    import("./protocol").DesktopSettingsSecretName,
+    import("./protocol").SecretStatus
+  >;
+};
+
+/**
+ * `events:settings:navigate` broadcast payload. Sent by main when
+ * `settings:open` is called against an already-focused Settings
+ * window and the caller supplied a `page`. The renderer flips its
+ * hash through `setActivePage`, which re-validates the page id
+ * against the same allowlist `useActivePage` uses for `hashchange`.
+ */
+export type SettingsNavigateEvent = {
+  page: import("./protocol").SettingsPage;
 };
 
 /**

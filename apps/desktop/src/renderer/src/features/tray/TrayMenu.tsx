@@ -287,9 +287,36 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
             <PwrSnapWordmark />
           </span>
         </div>
-        <div className="ps-tray__status">
-          <span className="ps-tray__status-dot" />
-          IDLE · LOCAL
+        <div className="ps-tray__hdr-actions">
+          <button
+            className="ps-tray__hdr-btn"
+            type="button"
+            title="Open Library  (⌘⇧L)"
+            onClick={() => { void dispatch("library:focus", {}); }}
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 5a2 2 0 0 1 2-2h4l1.5 2H18a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
+              <path d="M4 9h16" />
+            </svg>
+            <span className="sr-only">Open Library</span>
+          </button>
+          <button
+            className="ps-tray__hdr-btn"
+            type="button"
+            title="Settings  (⌘,)"
+            onClick={() => { void dispatch("settings:open", {}); }}
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
+            </svg>
+            <span className="sr-only">Open Settings</span>
+          </button>
+          <span className="ps-tray__hdr-sep" aria-hidden="true" />
+          <div className="ps-tray__status">
+            <span className="ps-tray__status-dot" />
+            IDLE
+          </div>
         </div>
       </div>
 

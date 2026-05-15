@@ -157,6 +157,31 @@
 .ps-tray__brand { display: flex; align-items: center; gap: 8px; }
 .ps-tray__brand-name { font: 700 13px/1 var(--font-display); letter-spacing: -0.01em; }
 .ps-tray__brand-name .a { color: var(--accent); }
+.ps-tray__hdr-actions {
+  display: flex; align-items: center; gap: 4px;
+}
+.ps-tray__hdr-btn {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out), background 120ms var(--ease-out), border-color 120ms var(--ease-out);
+}
+.ps-tray__hdr-btn:hover {
+  color: var(--accent-bright);
+  background: var(--bg-panel-hover);
+  border-color: var(--border-subtle);
+}
+.ps-tray__hdr-btn:active { transform: translateY(1px); }
+.ps-tray__hdr-sep {
+  display: inline-block;
+  width: 1px; height: 14px;
+  background: var(--border-subtle);
+  margin: 0 4px;
+}
 .ps-tray__status {
   display: flex; align-items: center; gap: 6px;
   font: 500 10px/1 var(--font-mono);
@@ -1212,6 +1237,20 @@
 .psl__chip-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+/* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's
+   border + hover treatment so the Settings gear sits flush next to
+   Quick Capture without looking like a different control. */
+.psl__icon-btn {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.psl__icon-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.psl__icon-btn:active { transform: translateY(1px); }
 
 .psl__big-cta {
   display: flex; gap: 6px;

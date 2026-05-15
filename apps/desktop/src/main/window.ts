@@ -22,13 +22,21 @@ const log = getMainLogger("pwrsnap:window");
  */
 let libraryWindow: BrowserWindow | null = null;
 
+/**
+ * Module-level reference to the (singleton) Settings window.
+ * Cleared in the `closed` handler. Same rationale as `libraryWindow`:
+ * a single source of truth makes the "open / focus existing" verb
+ * idempotent without scanning every BrowserWindow.
+ */
+let settingsWindow: BrowserWindow | null = null;
+
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
 export function getPreloadPath(): string {
   return join(__dirname, "../preload/index.cjs");
 }
 
-function rendererTarget(stage?: "tray" | "float-over" | "edit", extraHash?: string): RendererTarget {
+function rendererTarget(stage?: "tray" | "float-over" | "edit" | "settings", extraHash?: string): RendererTarget {
   const baseHash = stage ? `stage=${stage}` : undefined;
   const hash = baseHash !== undefined && extraHash !== undefined
     ? `${baseHash}&${extraHash}`
@@ -167,6 +175,72 @@ export function createMainWindow(): BrowserWindow {
   });
   window.webContents.on("unresponsive", () => {
     log.warn("main window renderer unresponsive", { id: window.id });
+  });
+
+  return window;
+}
+
+/**
+ * Return the live singleton Settings window, or null when no Settings
+ * window is currently open. Callers that want to ENSURE the window
+ * exists should use `createSettingsWindow()` (idempotent) instead.
+ */
+export function findSettingsWindow(): BrowserWindow | null {
+  if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
+    return settingsWindow;
+  }
+  return null;
+}
+
+/**
+ * Create the Settings window if one doesn't already exist; otherwise
+ * return the existing singleton. Idempotent — clicking "Open Settings"
+ * five times raises the same window five times rather than spawning
+ * five copies.
+ *
+ * Caller can append `&page=<id>` to the URL hash via `extraHash` if it
+ * wants to deep-link a specific sidebar page; otherwise the renderer
+ * defaults to "ai" via `useActivePage`.
+ *
+ * Note: the Settings window does NOT auto-size to content, so the
+ * `setMinimumSize(0, 0)` rule (see tray / float-over) does not apply
+ * here.
+ */
+export function createSettingsWindow(extraHash?: string): BrowserWindow {
+  if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
+    return settingsWindow;
+  }
+  const window = new BrowserWindow({
+    width: 1040,
+    height: 720,
+    minWidth: 720,
+    minHeight: 480,
+    show: false,
+    title: "PwrSnap Settings",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 20, y: 18 },
+    backgroundColor: "#0a0908",
+    webPreferences: baseWebPreferences
+  });
+  settingsWindow = window;
+
+  loadRenderer(window, rendererTarget("settings", extraHash));
+
+  window.once("ready-to-show", () => {
+    log.info("settings window ready-to-show", { id: window.id });
+    window.show();
+  });
+
+  window.on("close", () => log.info("settings window close event", { id: window.id }));
+  window.on("closed", () => {
+    log.info("settings window closed", { id: window.id });
+    if (settingsWindow === window) settingsWindow = null;
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("settings window renderer crashed", { id: window.id, reason: details.reason });
+  });
+  window.webContents.on("unresponsive", () => {
+    log.warn("settings window renderer unresponsive", { id: window.id });
   });
 
   return window;

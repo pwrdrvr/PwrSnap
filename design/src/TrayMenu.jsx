@@ -103,9 +103,24 @@ function TrayMenu({ activeMode = "region" }) {
           <PsAppIcon app="any" size={14} />
           <span className="ps-tray__brand-name">Pwr<span className="a">Snap</span></span>
         </div>
-        <div className="ps-tray__status">
-          <span className="ps-tray__status-dot" />
-          IDLE · LOCAL
+        <div className="ps-tray__hdr-actions">
+          <button className="ps-tray__hdr-btn" type="button" title="Open Library  (⌘⇧L)">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 5a2 2 0 0 1 2-2h4l1.5 2H18a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/>
+              <path d="M4 9h16"/>
+            </svg>
+          </button>
+          <button className="ps-tray__hdr-btn" type="button" title="Settings  (⌘,)">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/>
+            </svg>
+          </button>
+          <span className="ps-tray__hdr-sep" />
+          <div className="ps-tray__status">
+            <span className="ps-tray__status-dot" />
+            IDLE
+          </div>
         </div>
       </div>
 

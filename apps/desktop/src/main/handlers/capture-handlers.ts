@@ -23,7 +23,14 @@ import { join } from "node:path";
 import { screen } from "electron";
 import sharp from "sharp";
 import { ok, err } from "@pwrsnap/shared";
-import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
+import type {
+  CapturePresetMetric,
+  CaptureRecord,
+  PwrSnapError,
+  Rect,
+  RenderPreset,
+  Result
+} from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
   pickRegion,
@@ -33,14 +40,24 @@ import {
 import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
+import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
-import { putCaptureSource } from "../persistence/source-store";
+import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
+import { renderViaCoordinator } from "../render/coordinator";
+import { prepareRenderedPngAlias } from "../render/file-alias";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
-import { broadcastCapturesChanged } from "../events";
+const PRESET_WIDTHS = {
+  low: 800,
+  med: 1440,
+  high: 0
+} as const;
+
+const DRAG_ICON_WIDTH = 128;
+const COPY_PRESETS = ["low", "med", "high"] as const;
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -199,13 +216,72 @@ export function registerCaptureHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("capture:prepareDrag", async () => {
-    // Phase 1.6 + Phase 2 — needs the render coordinator to land first.
-    return err({
-      kind: "validation",
-      code: "not_implemented",
-      message: "capture:prepareDrag lands with the render pipeline (Phase 1.6+)"
-    });
+  bus.register("capture:prepareDrag", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    try {
+      const presetFile = await renderPresetFile(record, req.preset);
+      const icon = await renderViaCoordinator({
+        captureId: record.id,
+        srcPath: effectiveSrcPathFor(record),
+        imageWidthPx: record.width_px,
+        imageHeightPx: record.height_px,
+        width: Math.min(DRAG_ICON_WIDTH, record.width_px),
+        format: "png"
+      });
+      const dragPath = await prepareRenderedPngAlias(presetFile.path);
+      return ok({ path: dragPath, iconPath: icon.cachePath });
+    } catch (cause) {
+      log.error("prepare drag failed", {
+        captureId: req.captureId,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "prepare_drag_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
+  bus.register("capture:presetMetrics", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    try {
+      const rendered = await Promise.all(
+        COPY_PRESETS.map((preset) => renderPresetFile(record, preset))
+      );
+      return ok({
+        metrics: rendered.map(({ path: _path, ...metric }) => metric)
+      });
+    } catch (cause) {
+      log.error("preset metrics failed", {
+        captureId: req.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "preset_metrics_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
   });
 
   // Synthetic ingest path — DEV only. The dev seeder dispatches this
@@ -338,6 +414,36 @@ function findById(
   windowId: number
 ): WindowInfo | null {
   return windows.find((w) => w.windowId === windowId) ?? null;
+}
+
+function targetWidthForPreset(preset: RenderPreset, sourceWidthPx: number): number {
+  const presetWidth = PRESET_WIDTHS[preset];
+  return presetWidth === 0 ? sourceWidthPx : presetWidth;
+}
+
+async function renderPresetFile(
+  record: CaptureRecord,
+  preset: RenderPreset
+): Promise<CapturePresetMetric & { path: string }> {
+  const targetWidth = targetWidthForPreset(preset, record.width_px);
+  const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
+  const result = await renderViaCoordinator({
+    captureId: record.id,
+    srcPath: effectiveSrcPathFor(record),
+    imageWidthPx: record.width_px,
+    imageHeightPx: record.height_px,
+    width: targetWidth,
+    format: "png"
+  });
+
+  return {
+    preset,
+    path: result.cachePath,
+    widthPx: Math.round(record.width_px * scale),
+    heightPx: Math.round(record.height_px * scale),
+    byteSize: result.byteSize,
+    fromCache: result.fromCache
+  };
 }
 
 async function persistAndBroadcast(

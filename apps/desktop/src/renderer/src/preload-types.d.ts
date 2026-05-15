@@ -5,7 +5,15 @@
 // using `window.pwrsnapApi.dispatch` directly — the helper provides
 // typed Req<C> / Res<C> inference per command name.
 
-import type { CommandName, PerfMarkPayload, Req, Res, PwrSnapError, Result } from "@pwrsnap/shared";
+import type {
+  CommandName,
+  PerfMarkPayload,
+  RenderPreset,
+  Req,
+  Res,
+  PwrSnapError,
+  Result
+} from "@pwrsnap/shared";
 
 export type WindowSnapEntry = {
   windowId: number;
@@ -58,6 +66,7 @@ declare global {
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;
       requestFloatOverResize(payload: { width: number; height: number }): void;
+      startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;
         innerHeight: number;

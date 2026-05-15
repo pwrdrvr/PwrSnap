@@ -10,6 +10,11 @@ import type { CaptureRecord } from "./protocol";
 
 export const IPC_CMD = "cmd" as const;
 
+/** Renderer -> main native file drag bridge. This cannot flow through
+ * ipcRenderer.invoke('cmd') alone because Electron's startDrag needs
+ * the sending WebContents from the drag-start event. */
+export const IPC_CAPTURE_DRAG_START = "capture:drag-start" as const;
+
 export const EVENT_CHANNELS = {
   capturesChanged: "events:captures:changed",
   overlaysChanged: "events:overlays:changed",

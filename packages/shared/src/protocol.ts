@@ -63,6 +63,14 @@ export type LibraryAppStat = { bundleId: string | null; count: number };
 
 export type RenderPreset = "low" | "med" | "high";
 
+export type CapturePresetMetric = {
+  preset: RenderPreset;
+  widthPx: number;
+  heightPx: number;
+  byteSize: number;
+  fromCache: boolean;
+};
+
 export type Settings = {
   /**
    * User-configured Codex CLI binary path. When empty, discovery picks
@@ -142,6 +150,11 @@ export type Commands = {
   "capture:prepareDrag": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string; iconPath: string };
+  };
+  /** Render/resolve the Low/Med/High cache files and return their real file sizes. */
+  "capture:presetMetrics": {
+    req: { captureId: string };
+    res: { metrics: CapturePresetMetric[] };
   };
 
   // ---- library ----

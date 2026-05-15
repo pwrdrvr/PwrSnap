@@ -8,6 +8,7 @@ import type {
   CommandName,
   PerfMarkPayload,
   PwrSnapError,
+  RenderPreset,
   Req,
   Res,
   Result
@@ -64,6 +65,10 @@ export function subscribe(
 ): () => void {
   if (!window.pwrsnapApi) return () => undefined;
   return window.pwrsnapApi.on(channel, handler);
+}
+
+export function startCaptureDrag(captureId: string, preset: RenderPreset = "high"): void {
+  window.pwrsnapApi?.startCaptureDrag({ captureId, preset });
 }
 
 /**

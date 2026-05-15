@@ -1,18 +1,22 @@
 // clipboard:copy command handler. Resolves the capture, renders at
-// the requested preset width, writes a NativeImage PNG to the system
-// clipboard. Stays entirely in the main process — never round-trips
-// the buffer through the renderer (Electron's structured-clone
-// boundary turns multi-MB PNGs into noticeable jank).
+// the requested preset width, writes a rich clipboard payload with
+// both image pixels and a file URL to the rendered PNG. Stays entirely
+// in the main process — never round-trips the buffer through the
+// renderer (Electron's structured-clone boundary turns multi-MB PNGs
+// into noticeable jank).
 //
 // Phase 4 adds a "Codex sensitive-data must complete first" gate; for
 // Phase 1 the write fires immediately on dispatch.
 
 import { clipboard, nativeImage } from "electron";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { renderViaCoordinator } from "../render/coordinator";
+import { prepareRenderedPngAlias } from "../render/file-alias";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:clipboard");
@@ -55,7 +59,13 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      clipboard.writeImage(image);
+      const clipboardPath = await prepareRenderedPngAlias(result.cachePath);
+      const fileUrl = pathToFileURL(clipboardPath).href;
+      clipboard.write({
+        text: fileUrl,
+        bookmark: basename(clipboardPath),
+        image
+      });
       log.info("copied to clipboard", {
         captureId: record.id,
         preset: req.preset,

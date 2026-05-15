@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { PwrSnapMark } from "../shared/BrandMark";
-import { CopyButton, type CopyPreset } from "../shared/CopyButton";
+import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
-  { id: "low", label: "Low", scale: 0.4, bytes: "182 KB" },
-  { id: "med", label: "Med", scale: 0.7, bytes: "612 KB" },
-  { id: "high", label: "High", scale: 1.0, bytes: "2.4 MB" }
+  { id: "low", label: "Low" },
+  { id: "med", label: "Med" },
+  { id: "high", label: "High" }
 ] as const satisfies ReadonlyArray<{
   id: CopyPreset;
   label: string;
-  scale: number;
-  bytes: string;
 }>;
 
 const VARIANTS = {
@@ -83,9 +82,13 @@ export function FloatOver({
   enhancedSrc,
   srcW = 2880,
   srcH = 1800,
+  srcBytes = 2.4 * 1024 * 1024,
+  copyMetrics,
   onDismiss,
   onEdit,
   onCopy,
+  onDragFile,
+  onDragPreset,
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
@@ -98,6 +101,8 @@ export function FloatOver({
   enhancedSrc?: string | undefined;
   srcW?: number;
   srcH?: number;
+  srcBytes?: number;
+  copyMetrics?: PresetMetricMap | undefined;
   onDismiss?: () => void;
   onEdit?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
@@ -106,6 +111,10 @@ export function FloatOver({
    *  wired (which was the original bug), the buttons looked
    *  responsive but never actually copied anything. */
   onCopy?: (preset: "low" | "med" | "high") => void;
+  /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
+  onDragFile?: () => void;
+  /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */
+  onDragPreset?: (preset: "low" | "med" | "high") => void;
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
@@ -121,6 +130,7 @@ export function FloatOver({
   const [description, setDescription] = useState(initialDescription);
   const [tags, setTags] = useState<string[]>(initialTags);
   const [hovering, setHovering] = useState(false);
+  const [nativeDragging, setNativeDragging] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
   const [aiAccepted, setAiAccepted] = useState(false);
@@ -131,6 +141,7 @@ export function FloatOver({
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   // Exit-animation timeout handle. Stored in a ref so we can clear it
   // on unmount — without this, an in-flight `setTimeout(..., 220)` from
   // the previous capture's exit animation would survive a renderer
@@ -142,9 +153,17 @@ export function FloatOver({
 
   const isPaused =
     hovering ||
+    nativeDragging ||
     description.length > 0 ||
     tags.length > initialTags.length ||
     aiAccepted;
+
+  const syncHoverFromPoint = (clientX: number, clientY: number): void => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const target = document.elementFromPoint(clientX, clientY);
+    setHovering(target !== null && root.contains(target));
+  };
 
   useEffect(() => {
     setVisibleSrc(src);
@@ -190,6 +209,56 @@ export function FloatOver({
     };
   }, [isPaused, startCountdown, cfg.autoMs, onDismiss]);
 
+  useEffect(() => {
+    const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
+      setNativeDragging(false);
+      if (event !== undefined) {
+        syncHoverFromPoint(event.clientX, event.clientY);
+      }
+    };
+
+    const handleMouseMove = (event: MouseEvent): void => {
+      syncHoverFromPoint(event.clientX, event.clientY);
+      if (nativeDragging && event.buttons === 0) {
+        setNativeDragging(false);
+      }
+    };
+    const handleMouseOut = (event: MouseEvent): void => {
+      if (event.relatedTarget === null) {
+        setHovering(false);
+        if (nativeDragging && event.buttons === 0) {
+          setNativeDragging(false);
+        }
+      }
+    };
+    const handleBlur = (): void => {
+      setHovering(false);
+      setNativeDragging(false);
+    };
+    const handleKeyUp = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setNativeDragging(false);
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseout", handleMouseOut);
+    window.addEventListener("mouseup", finishNativeDrag);
+    window.addEventListener("dragend", finishNativeDrag);
+    window.addEventListener("drop", finishNativeDrag);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseout", handleMouseOut);
+      window.removeEventListener("mouseup", finishNativeDrag);
+      window.removeEventListener("dragend", finishNativeDrag);
+      window.removeEventListener("drop", finishNativeDrag);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [nativeDragging]);
+
   // Clear any pending exit-animation timer on unmount. Prevents a
   // setTimeout from a previous mount firing onDismiss after the NEW
   // toast has appeared (the "microsecond flash" bug).
@@ -207,8 +276,17 @@ export function FloatOver({
     exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
   };
 
+  const dragFile = (event: React.DragEvent): void => {
+    if (onDragFile === undefined) return;
+    event.preventDefault();
+    setNativeDragging(true);
+    syncHoverFromPoint(event.clientX, event.clientY);
+    onDragFile();
+  };
+
   return (
     <div
+      ref={rootRef}
       className={[
         "fo",
         `fo--variant-${variant}`,
@@ -253,6 +331,7 @@ export function FloatOver({
           src={visibleSrc}
           alt="capture preview"
           draggable
+          onDragStart={dragFile}
           onLoad={() => {
             if (visibleSrc === src) setSourceLoaded(true);
           }}
@@ -265,7 +344,13 @@ export function FloatOver({
 
         <div className="fo__preview-actions">
           <div className="fo__preview-actions-l">
-            <button className="fo__hover-btn" title="Drag to any app">
+            <button
+              className="fo__hover-btn"
+              title="Drag PNG file"
+              draggable={onDragFile !== undefined}
+              onDragStart={dragFile}
+              disabled={onDragFile === undefined}
+            >
               <FoIcon name="hand" size={11} /> Drag
             </button>
           </div>
@@ -287,16 +372,16 @@ export function FloatOver({
 
       <div className="fo__copy">
         {RES_PRESETS.map((p) => {
-          const w = Math.round(p.scale * srcW);
-          const h = Math.round(p.scale * srcH);
+          const m = copyMetrics?.[p.id] ?? presetMetrics(p.id, srcW, srcH, srcBytes);
           return (
             <CopyButton
               key={p.id}
               preset={p.id}
               label={p.label}
-              dim={dimText(w, h)}
-              bytes={p.bytes}
+              dim={m.dim}
+              bytes={m.bytes}
               onCopy={(preset) => onCopy?.(preset)}
+              {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
             />
           );
         })}

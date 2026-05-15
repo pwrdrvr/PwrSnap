@@ -3,8 +3,9 @@
 // name, req)) and we route into bus.dispatch with `principal: 'ipc'`.
 // All commands flow through here; renderers never own privileged paths.
 
-import { ipcMain } from "electron";
-import { IPC_CMD } from "@pwrsnap/shared";
+import { ipcMain, nativeImage } from "electron";
+import { IPC_CAPTURE_DRAG_START, IPC_CMD } from "@pwrsnap/shared";
+import type { RenderPreset } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 
@@ -24,8 +25,57 @@ export function registerIpcDispatcher(): void {
     const result = await bus.dispatch(name, req as never, { principal: "ipc" });
     return result;
   });
+
+  ipcMain.on(IPC_CAPTURE_DRAG_START, (event, req: unknown) => {
+    void (async () => {
+      const parsed = parseDragRequest(req);
+      if (parsed === null) {
+        log.warn("native drag: invalid request");
+        return;
+      }
+
+      const result = await bus.dispatch(
+        "capture:prepareDrag",
+        parsed,
+        { principal: "ipc" }
+      );
+      if (!result.ok) {
+        log.warn("native drag: prepare failed", {
+          code: result.error.code,
+          message: result.error.message
+        });
+        return;
+      }
+      if (event.sender.isDestroyed()) return;
+
+      let icon = nativeImage.createFromPath(result.value.iconPath);
+      if (icon.isEmpty()) {
+        icon = nativeImage.createFromPath(result.value.path);
+      }
+      if (icon.isEmpty()) {
+        log.warn("native drag: empty drag icon", { captureId: parsed.captureId });
+        return;
+      }
+
+      event.sender.startDrag({
+        file: result.value.path,
+        icon
+      });
+    })();
+  });
 }
 
 export function disposeIpcDispatcher(): void {
   ipcMain.removeHandler(IPC_CMD);
+  ipcMain.removeAllListeners(IPC_CAPTURE_DRAG_START);
+}
+
+function parseDragRequest(req: unknown): { captureId: string; preset: RenderPreset } | null {
+  if (typeof req !== "object" || req === null) return null;
+  const value = req as { captureId?: unknown; preset?: unknown };
+  if (typeof value.captureId !== "string" || value.captureId.length === 0) return null;
+  if (value.preset !== "low" && value.preset !== "med" && value.preset !== "high") {
+    return null;
+  }
+  return { captureId: value.captureId, preset: value.preset };
 }

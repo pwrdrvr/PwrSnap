@@ -22,7 +22,8 @@ import { contextBridge, ipcRenderer } from "electron";
 // sandbox: true (which we always run with) doesn't allow arbitrary
 // requires from a preload, so the file would fail silently and
 // pwrsnapApi never reach the renderer.
-import { EVENT_CHANNELS, IPC_CMD } from "@pwrsnap/shared/ipc";
+import { EVENT_CHANNELS, IPC_CAPTURE_DRAG_START, IPC_CMD } from "@pwrsnap/shared/ipc";
+import type { RenderPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 
 // Internal (non-command-bus) channel for the region selector to commit
@@ -177,6 +178,14 @@ const pwrsnapApi = {
    */
   requestFloatOverResize(payload: { width: number; height: number }): void {
     ipcRenderer.send(FLOAT_OVER_RESIZE_CHANNEL, payload);
+  },
+  /**
+   * Renderer -> main native file drag. Main validates the capture id,
+   * prepares the rendered file, and calls WebContents.startDrag using
+   * this sender. Renderer never receives privileged filesystem paths.
+   */
+  startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void {
+    ipcRenderer.send(IPC_CAPTURE_DRAG_START, payload);
   },
   /**
    * Subscribe to forwarded-key events from main. globalShortcut on

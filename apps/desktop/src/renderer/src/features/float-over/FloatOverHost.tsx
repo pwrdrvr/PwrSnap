@@ -20,7 +20,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CaptureRecord, FloatOverEvent } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
-import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
+import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
 type HostState =
   | { kind: "idle" }
@@ -30,6 +31,10 @@ type HostState =
 
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
+  const copyMetrics = usePresetRenderMetrics(
+    state.kind === "loaded" ? state.record.id : null,
+    state.kind === "loaded" ? state.record.overlays_version : null
+  );
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
   // toast. Same pattern as TrayMenu.tsx's `pwrsnap:tray:resize`
@@ -205,6 +210,10 @@ export function FloatOverHost(): React.ReactElement {
         }}
         srcW={record.width_px}
         srcH={record.height_px}
+        srcBytes={record.byte_size}
+        copyMetrics={copyMetrics}
+        onDragFile={() => startCaptureDrag(record.id, "high")}
+        onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         onDismiss={() => {
           // User dismissed via the X / countdown / Esc-on-toast. Tell
           // main to hide; main flips state HIDDEN and the IPC echo

@@ -229,6 +229,7 @@ test.describe("clipboard copy preset widths", () => {
       if (!drag.ok) {
         throw new Error(`capture:prepareDrag failed: ${JSON.stringify(drag)}`);
       }
+      expect(path.basename(drag.value.path)).toBe("image.png");
 
       const bookmark = await readClipboardBookmark(app);
       const clipboardPath = fileURLToPath(bookmark.url);

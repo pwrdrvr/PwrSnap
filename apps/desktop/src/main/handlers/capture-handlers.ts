@@ -46,6 +46,7 @@ import { insertOrFindCapture, getCaptureById } from "../persistence/captures-rep
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
+import { prepareRenderedPngAlias } from "../render/file-alias";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
 
@@ -235,7 +236,8 @@ export function registerCaptureHandlers(): void {
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
         format: "png"
       });
-      return ok({ path: presetFile.path, iconPath: icon.cachePath });
+      const dragPath = await prepareRenderedPngAlias(presetFile.path);
+      return ok({ path: dragPath, iconPath: icon.cachePath });
     } catch (cause) {
       log.error("prepare drag failed", {
         captureId: req.captureId,

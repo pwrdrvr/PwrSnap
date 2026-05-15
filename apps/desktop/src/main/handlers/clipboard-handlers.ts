@@ -9,13 +9,14 @@
 // Phase 1 the write fires immediately on dispatch.
 
 import { clipboard, nativeImage } from "electron";
-import { copyFile, link, mkdir, readFile, rm } from "node:fs/promises";
-import { basename, dirname, join, parse } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
 import { renderViaCoordinator } from "../render/coordinator";
+import { prepareRenderedPngAlias } from "../render/file-alias";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:clipboard");
@@ -58,7 +59,7 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      const clipboardPath = await prepareClipboardImageAlias(result.cachePath);
+      const clipboardPath = await prepareRenderedPngAlias(result.cachePath);
       const fileUrl = pathToFileURL(clipboardPath).href;
       clipboard.write({
         text: fileUrl,
@@ -87,20 +88,4 @@ export function registerClipboardHandlers(): void {
       });
     }
   });
-}
-
-async function prepareClipboardImageAlias(cachePath: string): Promise<string> {
-  const aliasDir = join(dirname(cachePath), "clipboard", parse(cachePath).name);
-  const aliasPath = join(aliasDir, "image.png");
-
-  await mkdir(aliasDir, { recursive: true });
-  await rm(aliasPath, { force: true });
-
-  try {
-    await link(cachePath, aliasPath);
-  } catch {
-    await copyFile(cachePath, aliasPath);
-  }
-
-  return aliasPath;
 }

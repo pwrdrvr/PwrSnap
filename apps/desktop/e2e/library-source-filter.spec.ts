@@ -17,6 +17,7 @@ type SourceFilterCase = {
   name: string;
   bundleId: string;
   sourceName: string;
+  sidebarLabelPattern: RegExp;
   sidebarPattern: RegExp;
   count: number;
   targetIndex: number;
@@ -29,6 +30,7 @@ const CASES: SourceFilterCase[] = [
     name: "Splashtop Business",
     bundleId: "com.splashtop.stb.macosx",
     sourceName: "Splashtop Business",
+    sidebarLabelPattern: /^Splashtop Business$/,
     sidebarPattern: /Splashtop Business\s+47/,
     count: 47,
     targetIndex: 1,
@@ -42,6 +44,7 @@ const CASES: SourceFilterCase[] = [
     name: "Systempreferences",
     bundleId: "com.apple.systempreferences",
     sourceName: "System Settings",
+    sidebarLabelPattern: /^Systempreferences$/,
     sidebarPattern: /Systempreferences\s+1/,
     count: 1,
     targetIndex: 0,
@@ -54,6 +57,7 @@ const CASES: SourceFilterCase[] = [
     name: "Telegram",
     bundleId: "ru.keepcoder.Telegram",
     sourceName: "Telegram",
+    sidebarLabelPattern: /^Telegram$/,
     sidebarPattern: /Telegram\s+4/,
     count: 4,
     targetIndex: 0,
@@ -179,12 +183,11 @@ test("source-app filters load captures outside the initial virtualized page", as
     });
 
     const window = app.window;
+    await disableAnimations(window);
     for (const filterCase of CASES) {
-      const sourceButton = window.getByRole("button", { name: filterCase.sidebarPattern });
-      await expect(sourceButton).toBeVisible({ timeout: 10_000 });
-
-      await sourceButton.scrollIntoViewIfNeeded({ timeout: 10_000 });
-      await sourceButton.click({ timeout: 10_000 });
+      await waitForAppStat(app, filterCase.bundleId, filterCase.count);
+      const sourceButton = await waitForSourceFilterButton(window, filterCase);
+      await sourceButton.click({ timeout: 30_000 });
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
@@ -197,3 +200,228 @@ test("source-app filters load captures outside the initial virtualized page", as
     await app.close();
   }
 });
+
+test("active source-app filter refetches after capture stats change", async () => {
+  const filterCase = CASES.find((candidate) => candidate.seedPrefix === "telegram");
+  if (filterCase === undefined) throw new Error("telegram case missing");
+
+  const app = await launchPwrSnap();
+  try {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-refresh-"));
+    const pngPath = path.join(dir, "fixture.png");
+    const pngBytes = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
+      "hex"
+    );
+    await writeFile(pngPath, pngBytes);
+
+    await app.electronApp.evaluate(
+      (
+        _electron,
+        payload: {
+          headPageSize: number;
+          pngPath: string;
+          primaryBundleId: string;
+          targetBundleId: string;
+          targetLabel: string;
+          targetCount: number;
+          seedPrefix: string;
+        }
+      ) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        const now = Date.now();
+        for (let i = 0; i < payload.headPageSize; i++) {
+          bridge.seedCapture({
+            id: `source-filter-refresh-recent-${i.toString().padStart(3, "0")}`,
+            kind: "image",
+            captured_at: new Date(now - i * 1000).toISOString(),
+            source_app_bundle_id: payload.primaryBundleId,
+            source_app_name: "Recent Feed",
+            src_path: payload.pngPath,
+            width_px: 800,
+            height_px: 600,
+            device_pixel_ratio: 1,
+            byte_size: 70,
+            sha256: `source-filter-refresh-recent-${i.toString().padStart(3, "0")}`
+          });
+        }
+        for (let i = 0; i < payload.targetCount; i++) {
+          const id = `source-filter-refresh-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`;
+          bridge.seedCapture({
+            id,
+            kind: "image",
+            captured_at: new Date(now - 24 * 60 * 60 * 1000 - i * 1000).toISOString(),
+            source_app_bundle_id: payload.targetBundleId,
+            source_app_name: payload.targetLabel,
+            src_path: payload.pngPath,
+            width_px: 800,
+            height_px: 600,
+            device_pixel_ratio: 1,
+            byte_size: 70,
+            sha256: id
+          });
+        }
+      },
+      {
+        headPageSize: HEAD_PAGE_SIZE,
+        pngPath,
+        primaryBundleId: PRIMARY_BUNDLE_ID,
+        targetBundleId: filterCase.bundleId,
+        targetLabel: filterCase.sourceName,
+        targetCount: filterCase.count,
+        seedPrefix: filterCase.seedPrefix
+      }
+    );
+
+    await broadcastCapturesChanged(app);
+
+    const window = app.window;
+    await disableAnimations(window);
+    await waitForAppStat(app, filterCase.bundleId, filterCase.count);
+    const sourceButton = await waitForSourceFilterButton(window, filterCase);
+    await sourceButton.click({ timeout: 30_000 });
+
+    const targetId = "source-filter-refresh-telegram-000";
+    await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
+
+    await app.electronApp.evaluate(
+      (
+        _electron,
+        payload: {
+          pngPath: string;
+          targetBundleId: string;
+          targetLabel: string;
+        }
+      ) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        bridge.seedCapture({
+          id: "source-filter-refresh-telegram-new",
+          kind: "image",
+          captured_at: new Date(Date.now() + 1000).toISOString(),
+          source_app_bundle_id: payload.targetBundleId,
+          source_app_name: payload.targetLabel,
+          src_path: payload.pngPath,
+          width_px: 800,
+          height_px: 600,
+          device_pixel_ratio: 1,
+          byte_size: 70,
+          sha256: "source-filter-refresh-telegram-new"
+        });
+      },
+      {
+        pngPath,
+        targetBundleId: filterCase.bundleId,
+        targetLabel: filterCase.sourceName
+      }
+    );
+
+    await broadcastCapturesChanged(app);
+
+    await waitForAppStat(app, filterCase.bundleId, filterCase.count + 1);
+    await expect
+      .poll(() => countGridCells(window, "source-filter-refresh-telegram-new"), { timeout: 15_000 })
+      .toBe(1);
+    await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
+  } finally {
+    await app.close();
+  }
+});
+
+async function broadcastCapturesChanged(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
+  await app.electronApp.evaluate((electronModule) => {
+    const { BrowserWindow } = electronModule;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send("events:captures:changed", { changedIds: [] });
+    }
+  });
+}
+
+async function waitForAppStat(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  bundleId: string,
+  expectedCount: number
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const result = await app.dispatch("library:list", { limit: 1, includeDeleted: true });
+        if (!result.ok) return -1;
+        return result.value.appStats?.find((stat) => stat.bundleId === bundleId)?.count ?? 0;
+      },
+      {
+        timeout: 15_000,
+        message: `waiting for app_stats ${bundleId}=${expectedCount}`
+      }
+    )
+    .toBe(expectedCount);
+}
+
+async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"]): Promise<void> {
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        animation-delay: 0s !important;
+        animation-duration: 0s !important;
+        scroll-behavior: auto !important;
+        transition-delay: 0s !important;
+        transition-duration: 0s !important;
+      }
+    `
+  });
+}
+
+async function waitForSourceFilterButton(
+  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  filterCase: SourceFilterCase,
+  count = filterCase.count
+) {
+  const sourceButton = page
+    .locator("button.psl__nav")
+    .filter({
+      has: page.locator(".psl__nav-label", { hasText: filterCase.sidebarLabelPattern })
+    })
+    .filter({
+      has: page.locator(".psl__nav-count", { hasText: new RegExp(`^${count}$`) })
+    });
+  await expect(sourceButton).toHaveCount(1, { timeout: 30_000 });
+  await expect(sourceButton.first()).toBeVisible({ timeout: 30_000 });
+  return sourceButton.first();
+}
+
+async function countGridCells(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"], id: string): Promise<number> {
+  return page.evaluate(
+    (targetId) => document.querySelectorAll(`.psl__cell[data-cell-id="${targetId}"]`).length,
+    id
+  );
+}

@@ -325,20 +325,30 @@ export function getAppStats(): LibraryAppStat[] {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT
+      `WITH latest_names AS (
+         SELECT bundleKey, source_app_name
+         FROM (
+           SELECT
+             COALESCE(source_app_bundle_id, '') AS bundleKey,
+             source_app_name,
+             ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(source_app_bundle_id, '')
+               ORDER BY captured_at DESC, id DESC
+             ) AS rn
+           FROM captures
+           WHERE deleted_at IS NULL
+             AND source_app_name IS NOT NULL
+             AND source_app_name != ''
+         )
+         WHERE rn = 1
+       )
+       SELECT
          s.source_app_bundle_id AS bundleId,
          s.count AS count,
-         (
-           SELECT c.source_app_name
-           FROM captures c
-           WHERE c.deleted_at IS NULL
-             AND COALESCE(c.source_app_bundle_id, '') = COALESCE(s.source_app_bundle_id, '')
-             AND c.source_app_name IS NOT NULL
-             AND c.source_app_name != ''
-           ORDER BY c.captured_at DESC, c.id DESC
-           LIMIT 1
-         ) AS sourceAppName
+         n.source_app_name AS sourceAppName
        FROM app_stats s
+       LEFT JOIN latest_names n
+         ON n.bundleKey = COALESCE(s.source_app_bundle_id, '')
        ORDER BY s.count DESC`
     )
     .all() as Array<{ bundleId: string | null; count: number; sourceAppName: string | null }>;

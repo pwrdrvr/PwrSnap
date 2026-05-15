@@ -90,10 +90,15 @@ function sendOpenCaptureWhenReady(
 export function registerLibraryHandlers(): void {
   bus.register("library:list", async (req) => {
     const { rows, nextCursor } = listCaptures(req);
-    // Head-page requests (no cursor) return appStats + totalLive so
-    // the sidebar binds without a separate round-trip. Subsequent
-    // pages omit them to keep the response small.
-    if (req.cursor === undefined) {
+    // Unfiltered head-page requests return appStats + totalLive so the
+    // sidebar binds without a separate round-trip. Filtered source-app
+    // fetches also omit stats; their callers only need rows and would
+    // otherwise pay the global stats query on every filter click.
+    if (
+      req.cursor === undefined &&
+      req.appBundleId === undefined &&
+      req.appBundleIds === undefined
+    ) {
       return ok({
         rows,
         nextCursor,

@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
 const HEAD_PAGE_SIZE = 100;
@@ -182,8 +182,7 @@ test("source-app filters load captures outside the initial virtualized page", as
 
     for (const filterCase of CASES) {
       await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-      const sourceButton = await waitForSourceFilterButton(window, filterCase);
-      await clickSourceFilterButton(sourceButton);
+      await clickSourceFilterButton(window, filterCase);
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
@@ -289,8 +288,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await broadcastCapturesChanged(app);
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-    const sourceButton = await waitForSourceFilterButton(window, filterCase);
-    await clickSourceFilterButton(sourceButton);
+    await clickSourceFilterButton(window, filterCase);
 
     const targetId = "source-filter-refresh-telegram-000";
     await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
@@ -480,26 +478,36 @@ async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>
   });
 }
 
-async function waitForSourceFilterButton(
+async function clickSourceFilterButton(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
   filterCase: SourceFilterCase
-): Promise<Locator> {
-  const sourceButton = page
-    .locator("button.psl__nav")
-    .filter({
-      has: page.locator(".psl__nav-label", { hasText: filterCase.sidebarLabelPattern })
-    });
-  await expect(sourceButton).toHaveCount(1, { timeout: 30_000 });
-  return sourceButton.first();
-}
-
-async function clickSourceFilterButton(sourceButton: Locator): Promise<void> {
-  await sourceButton.evaluate((button) => {
-    if (!(button instanceof HTMLElement)) {
-      throw new Error("source-app filter target is not an HTMLElement");
-    }
-    button.click();
-  });
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ patternSource, patternFlags }) => {
+            const pattern = new RegExp(patternSource, patternFlags);
+            const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
+            for (const button of buttons) {
+              const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
+              if (!pattern.test(label)) continue;
+              button.click();
+              return true;
+            }
+            return false;
+          },
+          {
+            patternSource: filterCase.sidebarLabelPattern.source,
+            patternFlags: filterCase.sidebarLabelPattern.flags
+          }
+        ),
+      {
+        timeout: 30_000,
+        message: `clicking source filter ${filterCase.name}`
+      }
+    )
+    .toBe(true);
 }
 
 async function countGridCells(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"], id: string): Promise<number> {

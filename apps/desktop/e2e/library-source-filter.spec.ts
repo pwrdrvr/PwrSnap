@@ -9,11 +9,12 @@ const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
 const FIXTURE_PNG_HEX =
   "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000970485973000003e8000003e801b57b526b0000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
 
-// CI's xvfb Electron runner occasionally spends tens of seconds in
-// launch/teardown for this large synthetic dataset. Keep the coverage
-// in one BrowserWindow lifecycle so a slow first filter does not leave
-// Playwright with a timed-out worker to clean up.
-test.setTimeout(90_000);
+// CI's xvfb Electron runner occasionally spends more than a minute in
+// launch/teardown for this large synthetic dataset when the full E2E
+// suite runs before it. Keep the coverage in one BrowserWindow
+// lifecycle so a slow first filter does not leave Playwright with a
+// timed-out worker to clean up.
+test.setTimeout(180_000);
 
 type SourceFilterCase = {
   name: string;

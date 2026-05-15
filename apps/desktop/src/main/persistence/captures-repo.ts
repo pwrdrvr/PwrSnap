@@ -146,6 +146,7 @@ export type ListCapturesArgs = {
   cursor?: LibraryCursor | undefined;
   limit?: number | undefined;
   appBundleId?: string | undefined;
+  appBundleIds?: Array<string | null> | undefined;
   includeDeleted?: boolean | undefined;
 };
 
@@ -169,7 +170,30 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
     params.cursor_at = filter.cursor.capturedAt;
     params.cursor_id = filter.cursor.id;
   }
-  if (filter.appBundleId !== undefined) {
+  const appBundleIds =
+    filter.appBundleIds !== undefined
+      ? filter.appBundleIds
+      : filter.appBundleId !== undefined
+      ? [filter.appBundleId]
+      : undefined;
+  if (appBundleIds !== undefined) {
+    const exactBundleClauses: string[] = [];
+    let includesNullBundle = false;
+    for (const [index, bundleId] of appBundleIds.entries()) {
+      if (bundleId === null) {
+        includesNullBundle = true;
+        continue;
+      }
+      const key = `appBundleId${index}`;
+      exactBundleClauses.push(`source_app_bundle_id = @${key}`);
+      params[key] = bundleId;
+    }
+    const bundleWhere = [
+      ...exactBundleClauses,
+      ...(includesNullBundle ? ["source_app_bundle_id IS NULL"] : [])
+    ];
+    where.push(bundleWhere.length > 0 ? `(${bundleWhere.join(" OR ")})` : "0 = 1");
+  } else if (filter.appBundleId !== undefined) {
     where.push("source_app_bundle_id = @appBundleId");
     params.appBundleId = filter.appBundleId;
   }

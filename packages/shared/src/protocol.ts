@@ -39,6 +39,7 @@ export type CaptureFilter = {
   before?: string | undefined;
   limit?: number | undefined;
   appBundleId?: string | undefined;
+  appBundleIds?: Array<string | null> | undefined;
   includeDeleted?: boolean | undefined;
 };
 
@@ -155,6 +156,7 @@ export type Commands = {
       cursor?: LibraryCursor | undefined;
       limit?: number | undefined;
       appBundleId?: string | undefined;
+      appBundleIds?: Array<string | null> | undefined;
       includeDeleted?: boolean | undefined;
     };
     res: {

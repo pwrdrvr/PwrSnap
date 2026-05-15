@@ -36,6 +36,8 @@ const isMac = process.platform === "darwin";
  *     global shortcut would race with the host machine's keymap).
  *   - The tray icon (no Linux tray support in CI; on macOS the tray
  *     would steal focus from the test browser window).
+ *   - The single-instance lock (test launches use isolated userData
+ *     and must be able to run beside a real/dev PwrSnap instance).
  * Everything else — DB, command bus, IPC dispatcher, region selector
  * pre-warm, main window — runs unchanged so the assertions exercise
  * the same code paths a real user hits.
@@ -209,20 +211,22 @@ export function bootstrapApp(): void {
   // alwaysOnTop region-selector windows fighting for clicks. The
   // first instance acquires the lock; subsequent processes find an
   // existing app, focus its main window, and exit immediately.
-  const gotLock = app.requestSingleInstanceLock();
-  if (!gotLock) {
-    app.quit();
-    return;
+  if (!isE2E) {
+    const gotLock = app.requestSingleInstanceLock();
+    if (!gotLock) {
+      app.quit();
+      return;
+    }
+    app.on("second-instance", () => {
+      // Another `pnpm dev` (or another launch of the .app) tried to
+      // start. Raise (or recreate) the library singleton so the user
+      // gets the window they were trying to launch.
+      const main = findMainLibraryWindow() ?? createMainWindow();
+      if (main.isMinimized()) main.restore();
+      if (!main.isVisible()) main.show();
+      main.focus();
+    });
   }
-  app.on("second-instance", () => {
-    // Another `pnpm dev` (or another launch of the .app) tried to
-    // start. Raise (or recreate) the library singleton so the user
-    // gets the window they were trying to launch.
-    const main = findMainLibraryWindow() ?? createMainWindow();
-    if (main.isMinimized()) main.restore();
-    if (!main.isVisible()) main.show();
-    main.focus();
-  });
 
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();

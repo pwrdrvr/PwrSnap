@@ -408,6 +408,7 @@ export function bootstrapApp(): void {
           const size = img.getSize();
           return { width: size.width, height: size.height, isEmpty: false };
         },
+        readClipboardBookmark: () => clipboard.readBookmark(),
         // Clear clipboard before the spec runs so we know any image
         // we read back came from THIS test's dispatch, not a stale
         // earlier paste.

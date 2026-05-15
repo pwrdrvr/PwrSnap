@@ -29,6 +29,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import sharp from "sharp";
 import { launchPwrSnap } from "./fixtures/electron-app";
@@ -144,6 +145,21 @@ async function clearClipboard(
   });
 }
 
+async function readClipboardBookmark(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<{ title: string; url: string }> {
+  return await app.electronApp.evaluate(() => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: {
+          readClipboardBookmark: () => { title: string; url: string };
+        };
+      }
+    ).__PWRSNAP_TEST__;
+    return bridge.readClipboardBookmark();
+  });
+}
+
 test.describe("clipboard copy preset widths", () => {
   test.skip(
     !isMac,
@@ -192,6 +208,35 @@ test.describe("clipboard copy preset widths", () => {
       const img = await readClipboardImage(app);
       expect(img).not.toBeNull();
       expect(img!.isEmpty).toBe(false);
+      expect(img!.width).toBeGreaterThanOrEqual(1438);
+      expect(img!.width).toBeLessThanOrEqual(1442);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("preset='med' also advertises the rendered PNG file URL", async () => {
+    const app = await launchPwrSnap();
+    try {
+      const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
+      const captureId = await seedCapture(app, pngPath, SRC_W, SRC_H, sha256);
+
+      await clearClipboard(app);
+      const result = await app.dispatch("clipboard:copy", { captureId, preset: "med" });
+      expect(result.ok).toBe(true);
+
+      const drag = await app.dispatch("capture:prepareDrag", { captureId, preset: "med" });
+      if (!drag.ok) {
+        throw new Error(`capture:prepareDrag failed: ${JSON.stringify(drag)}`);
+      }
+
+      const bookmark = await readClipboardBookmark(app);
+      expect(bookmark.url).toBeTruthy();
+      expect(fileURLToPath(bookmark.url)).toBe(drag.value.path);
+      expect(bookmark.title).toBe(path.basename(drag.value.path));
+
+      const img = await readClipboardImage(app);
+      expect(img).not.toBeNull();
       expect(img!.width).toBeGreaterThanOrEqual(1438);
       expect(img!.width).toBeLessThanOrEqual(1442);
     } finally {

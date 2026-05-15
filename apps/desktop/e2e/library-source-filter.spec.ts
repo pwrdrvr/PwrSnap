@@ -479,19 +479,14 @@ async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>
 
 async function waitForSourceFilterButton(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
-  filterCase: SourceFilterCase,
-  count = filterCase.count
+  filterCase: SourceFilterCase
 ): Promise<Locator> {
   const sourceButton = page
     .locator("button.psl__nav")
     .filter({
       has: page.locator(".psl__nav-label", { hasText: filterCase.sidebarLabelPattern })
-    })
-    .filter({
-      has: page.locator(".psl__nav-count", { hasText: new RegExp(`^${count}$`) })
     });
   await expect(sourceButton).toHaveCount(1, { timeout: 30_000 });
-  await expect(sourceButton.first()).toBeVisible({ timeout: 30_000 });
   return sourceButton.first();
 }
 

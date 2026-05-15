@@ -256,21 +256,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     }
     return bundles;
   }, [activeApp, appStats, isSourceAppView]);
-  const sourceAppBundleKey = useMemo(
-    () => JSON.stringify(sourceAppBundleIds),
-    [sourceAppBundleIds]
-  );
-
-  const appStatsKey = useMemo(
-    () =>
-      appStats
-        .map((stat) => `${stat.bundleId ?? "<null>"}:${stat.count}`)
-        .join("|"),
-    [appStats]
-  );
-  useEffect(() => {
-    setSourceAppRows({});
-  }, [appStatsKey]);
+  const sourceAppBundleKey = useMemo(() => {
+    const sourceAppBundleCounts = sourceAppBundleIds.map((bundleId) => {
+      const stat = appStats.find((candidate) => candidate.bundleId === bundleId);
+      return [bundleId, stat?.count ?? 0] as const;
+    });
+    return JSON.stringify(sourceAppBundleCounts);
+  }, [appStats, sourceAppBundleIds]);
 
   useEffect(() => {
     if (!isSourceAppView) return;

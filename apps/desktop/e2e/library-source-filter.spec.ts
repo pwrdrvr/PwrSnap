@@ -163,7 +163,8 @@ for (const filterCase of CASES) {
       });
 
       const window = app.window;
-      await expect(window.getByRole("button", { name: filterCase.sidebarPattern })).toBeVisible();
+      const sourceButton = window.getByRole("button", { name: filterCase.sidebarPattern });
+      await expect(sourceButton).toBeVisible({ timeout: 5_000 });
 
       await window.evaluate((targetBundleId) => {
         type Dispatch = (name: string, req: unknown) => Promise<unknown>;
@@ -185,19 +186,15 @@ for (const filterCase of CASES) {
         };
       }, filterCase.bundleId);
 
-      await window.getByRole("button", { name: filterCase.sidebarPattern }).click();
+      await sourceButton.scrollIntoViewIfNeeded({ timeout: 5_000 });
+      await sourceButton.click({ timeout: 5_000 });
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
         .padStart(3, "0")}`;
-      await expect
-        .poll(async () =>
-          window.evaluate(
-            (id) => document.querySelectorAll(`.psl__cell[data-cell-id="${id}"]`).length,
-            targetId
-          )
-        )
-        .toBe(1);
+      await expect(window.locator(`.psl__cell[data-cell-id="${targetId}"]`)).toHaveCount(1, {
+        timeout: 5_000
+      });
     } finally {
       await app.close();
     }

@@ -32,6 +32,73 @@ import type { CommandName, Req, Res, Result, PwrSnapError } from "@pwrsnap/share
 const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
+const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+
+type CloseResult = "closed" | "rejected" | "timeout";
+type ElectronChildProcess = ReturnType<ElectronApplication["process"]>;
+
+async function waitForClose(promise: Promise<void>, timeoutMs: number): Promise<CloseResult> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race<CloseResult>([
+      promise.then(
+        () => "closed",
+        () => "rejected"
+      ),
+      new Promise<"timeout">((resolve) => {
+        timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function hasExited(child: ElectronChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+async function waitForProcessExit(
+  child: ElectronChildProcess,
+  timeoutMs: number
+): Promise<boolean> {
+  if (hasExited(child)) return true;
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race<boolean>([
+      new Promise<true>((resolve) => {
+        child.once("exit", () => resolve(true));
+      }),
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+async function closeElectronApp(app: ElectronApplication): Promise<void> {
+  const child = app.process();
+  try {
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.dock?.hide();
+      electronApp.exit(0);
+    });
+  } catch {
+    // The process may exit before the evaluate call can round-trip.
+  }
+
+  const closePromise = app.close();
+  const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
+  if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
+
+  if (!hasExited(child) && !child.killed) {
+    child.kill("SIGKILL");
+  }
+  await waitForProcessExit(child, 1_000);
+  await waitForClose(closePromise, 1_000);
+}
 
 /**
  * Poll Electron's BrowserWindow list until the library window appears
@@ -176,14 +243,7 @@ export async function launchPwrSnap(
       },
       close: async () => {
         try {
-          await launchedApp.evaluate(({ app }) => {
-            app.dock?.hide();
-          });
-        } catch {
-          // The app may already be gone after a failed assertion.
-        }
-        try {
-          await launchedApp.close();
+          await closeElectronApp(launchedApp);
         } finally {
           await rm(homeRoot, { recursive: true, force: true });
         }
@@ -192,14 +252,7 @@ export async function launchPwrSnap(
   } catch (cause) {
     if (electronApp !== null) {
       try {
-        await electronApp.evaluate(({ app }) => {
-          app.dock?.hide();
-        });
-      } catch {
-        // Ignore cleanup failures; preserve the original launch error.
-      }
-      try {
-        await electronApp.close();
+        await closeElectronApp(electronApp);
       } catch {
         // Ignore cleanup failures; preserve the original launch error.
       }

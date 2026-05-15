@@ -10,6 +10,7 @@
 import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics } from "../shared/CopyButton";
+import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
 import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { mapBundleIdToAppId } from "./adapter";
@@ -36,6 +37,8 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
   const capturedAt = formatTimestamp(record.captured_at);
   const sourceName = record.source_app_name ?? "Unknown app";
   const appId = mapBundleIdToAppId(record.source_app_bundle_id);
+  const renderMetrics = usePresetRenderMetrics(record.id, record.overlays_version);
+  const hasExactRenderMetrics = renderMetrics.high?.exact === true;
 
   return (
     <aside className="psl__right" aria-label="Capture details">
@@ -105,24 +108,23 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
           </div>
         </div>
 
-        {/* L/M/H copy row — three <CopyButton> instances. presetMetrics()
-            shows the user the scaled dimensions + estimated bytes
-            before they click. The user feedback loop (orange "Copied"
-            overlay for 1.2s on click) is owned by CopyButton. */}
+        {/* L/M/H copy row — three <CopyButton> instances. Main resolves
+            the rendered cache files and returns exact byte sizes; the
+            fallback estimate is visible only while that async request
+            is in flight. */}
         <div>
           <div className="psl__copy-eyebrow">
             <span>Copy to clipboard</span>
             <span className="psl__copy-eyebrow-line" />
-            <span className="psl__copy-eyebrow-meta">estimated</span>
+            <span className="psl__copy-eyebrow-meta">
+              {hasExactRenderMetrics ? "actual files" : "rendering files"}
+            </span>
           </div>
           <div className="psl__copy-row">
             {COPY_PRESETS.map((p) => {
-              const m = presetMetrics(
-                p,
-                record.width_px,
-                record.height_px,
-                record.byte_size
-              );
+              const m =
+                renderMetrics[p] ??
+                presetMetrics(p, record.width_px, record.height_px, record.byte_size);
               return (
                 <CopyButton
                   key={p}
@@ -133,6 +135,7 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
                   onCopy={(preset) => {
                     void dispatch("clipboard:copy", { captureId: record.id, preset });
                   }}
+                  onDrag={(preset) => startCaptureDrag(record.id, preset)}
                 />
               );
             })}

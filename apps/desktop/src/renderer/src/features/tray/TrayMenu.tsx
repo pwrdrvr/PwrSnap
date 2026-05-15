@@ -2,8 +2,9 @@ import { useLayoutEffect, useRef } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
-import { cacheUrl, dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "scroll" | "timed";
@@ -191,6 +192,10 @@ function relativeTime(iso: string): string {
 export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { rows } = useLibrary();
   const lastSnap: CaptureRecord | undefined = rows[0];
+  const lastSnapMetrics = usePresetRenderMetrics(
+    lastSnap?.id ?? null,
+    lastSnap?.overlays_version ?? null
+  );
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -368,12 +373,9 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
             </div>
             <div className="ps-tray__last-copy">
               {COPY_PRESETS.map((p) => {
-                const m = presetMetrics(
-                  p.id,
-                  lastSnap.width_px,
-                  lastSnap.height_px,
-                  lastSnap.byte_size
-                );
+                const m =
+                  lastSnapMetrics[p.id] ??
+                  presetMetrics(p.id, lastSnap.width_px, lastSnap.height_px, lastSnap.byte_size);
                 return (
                   <CopyButton
                     key={p.id}
@@ -382,6 +384,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                     dim={m.dim}
                     bytes={m.bytes}
                     onCopy={onCopyLastSnap}
+                    onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
                   />
                 );
               })}
@@ -394,4 +397,3 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     </div>
   );
 }
-

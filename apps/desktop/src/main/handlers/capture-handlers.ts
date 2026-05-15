@@ -23,7 +23,14 @@ import { join } from "node:path";
 import { screen } from "electron";
 import sharp from "sharp";
 import { ok, err } from "@pwrsnap/shared";
-import type { CaptureRecord, PwrSnapError, Rect, Result } from "@pwrsnap/shared";
+import type {
+  CapturePresetMetric,
+  CaptureRecord,
+  PwrSnapError,
+  Rect,
+  RenderPreset,
+  Result
+} from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import {
   pickRegion,
@@ -38,7 +45,6 @@ import { setFloatOverState } from "../float-over";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
-import { listLiveOverlays } from "../persistence/overlays-repo";
 import { renderViaCoordinator } from "../render/coordinator";
 
 const log = getMainLogger("pwrsnap:capture-handlers");
@@ -50,6 +56,7 @@ const PRESET_WIDTHS = {
 } as const;
 
 const DRAG_ICON_WIDTH = 128;
+const COPY_PRESETS = ["low", "med", "high"] as const;
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -219,21 +226,7 @@ export function registerCaptureHandlers(): void {
     }
 
     try {
-      const targetWidth = targetWidthForPreset(req.preset, record.width_px);
-      const overlays = listLiveOverlays(record.id);
-      const filePath =
-        req.preset === "high" && overlays.length === 0
-          ? effectiveSrcPathFor(record)
-          : (
-              await renderViaCoordinator({
-                captureId: record.id,
-                srcPath: effectiveSrcPathFor(record),
-                imageWidthPx: record.width_px,
-                imageHeightPx: record.height_px,
-                width: targetWidth,
-                format: "png"
-              })
-            ).cachePath;
+      const presetFile = await renderPresetFile(record, req.preset);
       const icon = await renderViaCoordinator({
         captureId: record.id,
         srcPath: effectiveSrcPathFor(record),
@@ -242,7 +235,7 @@ export function registerCaptureHandlers(): void {
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
         format: "png"
       });
-      return ok({ path: filePath, iconPath: icon.cachePath });
+      return ok({ path: presetFile.path, iconPath: icon.cachePath });
     } catch (cause) {
       log.error("prepare drag failed", {
         captureId: req.captureId,
@@ -252,6 +245,37 @@ export function registerCaptureHandlers(): void {
       return err({
         kind: "render",
         code: "prepare_drag_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
+  bus.register("capture:presetMetrics", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    try {
+      const rendered = await Promise.all(
+        COPY_PRESETS.map((preset) => renderPresetFile(record, preset))
+      );
+      return ok({
+        metrics: rendered.map(({ path: _path, ...metric }) => metric)
+      });
+    } catch (cause) {
+      log.error("preset metrics failed", {
+        captureId: req.captureId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "preset_metrics_failed",
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });
@@ -390,9 +414,34 @@ function findById(
   return windows.find((w) => w.windowId === windowId) ?? null;
 }
 
-function targetWidthForPreset(preset: "low" | "med" | "high", sourceWidthPx: number): number {
+function targetWidthForPreset(preset: RenderPreset, sourceWidthPx: number): number {
   const presetWidth = PRESET_WIDTHS[preset];
   return presetWidth === 0 ? sourceWidthPx : presetWidth;
+}
+
+async function renderPresetFile(
+  record: CaptureRecord,
+  preset: RenderPreset
+): Promise<CapturePresetMetric & { path: string }> {
+  const targetWidth = targetWidthForPreset(preset, record.width_px);
+  const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
+  const result = await renderViaCoordinator({
+    captureId: record.id,
+    srcPath: effectiveSrcPathFor(record),
+    imageWidthPx: record.width_px,
+    imageHeightPx: record.height_px,
+    width: targetWidth,
+    format: "png"
+  });
+
+  return {
+    preset,
+    path: result.cachePath,
+    widthPx: Math.round(record.width_px * scale),
+    heightPx: Math.round(record.height_px * scale),
+    byteSize: result.byteSize,
+    fromCache: result.fromCache
+  };
 }
 
 async function persistAndBroadcast(

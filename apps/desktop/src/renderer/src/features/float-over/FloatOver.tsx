@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
@@ -82,10 +83,12 @@ export function FloatOver({
   srcW = 2880,
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
+  copyMetrics,
   onDismiss,
   onEdit,
   onCopy,
   onDragFile,
+  onDragPreset,
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
@@ -99,6 +102,7 @@ export function FloatOver({
   srcW?: number;
   srcH?: number;
   srcBytes?: number;
+  copyMetrics?: PresetMetricMap | undefined;
   onDismiss?: () => void;
   onEdit?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
@@ -109,6 +113,8 @@ export function FloatOver({
   onCopy?: (preset: "low" | "med" | "high") => void;
   /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
   onDragFile?: () => void;
+  /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */
+  onDragPreset?: (preset: "low" | "med" | "high") => void;
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
@@ -303,7 +309,7 @@ export function FloatOver({
 
       <div className="fo__copy">
         {RES_PRESETS.map((p) => {
-          const m = presetMetrics(p.id, srcW, srcH, srcBytes);
+          const m = copyMetrics?.[p.id] ?? presetMetrics(p.id, srcW, srcH, srcBytes);
           return (
             <CopyButton
               key={p.id}
@@ -312,6 +318,7 @@ export function FloatOver({
               dim={m.dim}
               bytes={m.bytes}
               onCopy={(preset) => onCopy?.(preset)}
+              {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
             />
           );
         })}

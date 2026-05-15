@@ -4,7 +4,7 @@ name = "PwrSnap"
 
 [setup]
 script = '''
-nvm use --silent
+nvm install
 
 pnpm install
 '''
@@ -15,4 +15,8 @@ script = "rm -rf node_modules"
 [[actions]]
 name = "Dev"
 icon = "run"
-command = "pnpm dev"
+command = '''
+nvm use --silent
+
+pnpm dev
+'''

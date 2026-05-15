@@ -4,6 +4,7 @@ import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
+import { RendererErrorBoundary } from "./RendererErrorBoundary";
 
 type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings";
 
@@ -56,31 +57,35 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
 export function App() {
-  if (STAGE === "tray") {
-    return <TrayMenu activeMode="auto" />;
-  }
-  if (STAGE === "float-over") {
-    return <FloatOverHost />;
-  }
-  if (STAGE === "region") {
-    return <RegionSelector />;
-  }
-  if (STAGE === "settings") {
-    return <SettingsApp />;
-  }
-  if (STAGE === "edit") {
-    if (CAPTURE_ID === null) {
-      return (
-        <div style={{ padding: 24, color: "var(--danger-text)", font: "500 13px var(--font-sans)" }}>
-          Editor opened without a captureId — close this window and try again.
-        </div>
-      );
+  const app = (() => {
+    if (STAGE === "tray") {
+      return <TrayMenu activeMode="auto" />;
     }
-    return <Editor captureId={CAPTURE_ID} />;
-  }
-  return (
-    <div className="app-shell">
-      <Library />
-    </div>
-  );
+    if (STAGE === "float-over") {
+      return <FloatOverHost />;
+    }
+    if (STAGE === "region") {
+      return <RegionSelector />;
+    }
+    if (STAGE === "settings") {
+      return <SettingsApp />;
+    }
+    if (STAGE === "edit") {
+      if (CAPTURE_ID === null) {
+        return (
+          <div style={{ padding: 24, color: "var(--danger-text)", font: "500 13px var(--font-sans)" }}>
+            Editor opened without a captureId — close this window and try again.
+          </div>
+        );
+      }
+      return <Editor captureId={CAPTURE_ID} />;
+    }
+    return (
+      <div className="app-shell">
+        <Library />
+      </div>
+    );
+  })();
+
+  return <RendererErrorBoundary stage={STAGE}>{app}</RendererErrorBoundary>;
 }

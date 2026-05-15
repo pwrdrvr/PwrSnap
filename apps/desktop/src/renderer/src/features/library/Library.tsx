@@ -566,7 +566,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //   • Stack-semantics restore on Focus → Grid (see
   //     `gridReturnScrollTopRef` below).
   const gridScrollRef = useRef<HTMLDivElement | null>(null);
-
   // Saved scrollTop captured the moment Focus opens. Restored on
   // Focus → Grid via the useLayoutEffect below.
   //
@@ -586,6 +585,22 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // know exactly when to put it back, and we don't depend on
   // virtualizer-internal timing.
   const gridReturnScrollTopRef = useRef<number>(0);
+  const activeFilterKey =
+    activeFilter.kind === "sourceApp" ? `sourceApp:${activeFilter.appId}` : activeFilter.kind;
+  useLayoutEffect(() => {
+    gridReturnScrollTopRef.current = 0;
+    const el = gridScrollRef.current;
+    if (el === null) return;
+    el.scrollTop = 0;
+  }, [activeFilterKey]);
+
+  function selectFilter(next: ActiveLibraryFilter): void {
+    gridReturnScrollTopRef.current = 0;
+    viewDispatch({ type: "RESET_FOCUS_RETURN_SCROLL" });
+    const el = gridScrollRef.current;
+    if (el !== null) el.scrollTop = 0;
+    setActiveFilter(next);
+  }
 
   // Scroll probe — Phase 5 of the perf plan. Subscribes to the
   // main-side trigger and runs a RAF dropped-frame counter while
@@ -819,12 +834,16 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // closes Focus and lands the user back in Grid (resolved decision
   // from the plan — filter is a query, query changed, show new
   // result set in Grid form).
+  const prevActiveFilterKeyRef = useRef(activeFilterKey);
   useEffect(() => {
+    const resetReturnScroll = prevActiveFilterKeyRef.current !== activeFilterKey;
+    prevActiveFilterKeyRef.current = activeFilterKey;
     viewDispatch({
       type: "FILTER_CHANGED",
-      visibleIds: visibleRecords.map((r) => r.id)
+      visibleIds: visibleRecords.map((r) => r.id),
+      resetReturnScroll
     });
-  }, [visibleRecords]);
+  }, [activeFilterKey, visibleRecords]);
 
   // Window keydown handler — Esc closes Focus, ←/→ navigate between
   // captures in Focus + Reel. Single listener for the lifetime of
@@ -1052,17 +1071,17 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    * The trigger lives in a ref because we need to fire this animation
    * exactly once per Focus → Grid transition, not on every render.
    */
-  const lastViewKindRef = useRef(view.kind);
+  const lastViewRef = useRef(view);
   const pulseAnchorRef = useRef<string | null>(null);
-  if (lastViewKindRef.current === "focus" && view.kind === "grid") {
-    // Capture the cellId from the view we just left. (We're reading
-    // mid-render, but only setting a ref — no setState, so React is
-    // happy. The previous view's returnAnchor was on the focus state;
-    // we don't have access here, so we use the new view's
-    // selectedRecordId as a proxy — they're the same record.)
+  if (lastViewRef.current.kind === "focus" && view.kind === "grid") {
+    // Capture the cellId + scrollTop from the Focus view we just left.
+    // We're reading mid-render, but only setting refs — no setState, so
+    // React is happy. The new grid view's selectedRecordId matches the
+    // Focus record and drives the pulse target.
     pulseAnchorRef.current = view.selectedRecordId;
+    gridReturnScrollTopRef.current = lastViewRef.current.returnAnchor.scrollTop;
   }
-  lastViewKindRef.current = view.kind;
+  lastViewRef.current = view;
 
   useLayoutEffect(() => {
     if (view.kind !== "grid") return;
@@ -1095,7 +1114,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     // stop after frame 6 regardless.
     const wrap = gridScrollRef.current;
     const savedTop = gridReturnScrollTopRef.current;
-    if (wrap !== null && savedTop > 0) {
+    if (wrap !== null) {
       wrap.scrollTop = savedTop;
       let frame = 0;
       const restamp = (): void => {
@@ -1301,7 +1320,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </div>
         <button
           className={"psl__nav" + (activeFilter.kind === "all" ? " is-active" : "")}
-          onClick={() => setActiveFilter({ kind: "all" })}
+          onClick={() => selectFilter({ kind: "all" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1316,7 +1335,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
         <button
           className={"psl__nav" + (isTodayView ? " is-active" : "")}
-          onClick={() => setActiveFilter({ kind: "today" })}
+          onClick={() => selectFilter({ kind: "today" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1329,7 +1348,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
         <button
           className={"psl__nav" + (isTrashView ? " is-active" : "")}
-          onClick={() => setActiveFilter({ kind: "trash" })}
+          onClick={() => selectFilter({ kind: "trash" })}
         >
           <span className="psl__nav-icon">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -1346,7 +1365,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <button
             key={app}
             className={"psl__nav" + (activeSourceAppId === app ? " is-active" : "")}
-            onClick={() => setActiveFilter({ kind: "sourceApp", appId: app })}
+            onClick={() => selectFilter({ kind: "sourceApp", appId: app })}
           >
             <span className="psl__nav-icon">
               <AppIcon app={app} size={11} name={name} />

@@ -9,8 +9,8 @@
 // Phase 1 the write fires immediately on dispatch.
 
 import { clipboard, nativeImage } from "electron";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { copyFile, link, mkdir, readFile, rm } from "node:fs/promises";
+import { basename, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
@@ -58,10 +58,11 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      const fileUrl = pathToFileURL(result.cachePath).href;
+      const clipboardPath = await prepareClipboardImageAlias(result.cachePath);
+      const fileUrl = pathToFileURL(clipboardPath).href;
       clipboard.write({
         text: fileUrl,
-        bookmark: basename(result.cachePath),
+        bookmark: basename(clipboardPath),
         image
       });
       log.info("copied to clipboard", {
@@ -86,4 +87,20 @@ export function registerClipboardHandlers(): void {
       });
     }
   });
+}
+
+async function prepareClipboardImageAlias(cachePath: string): Promise<string> {
+  const aliasDir = join(dirname(cachePath), "clipboard", parse(cachePath).name);
+  const aliasPath = join(aliasDir, "image.png");
+
+  await mkdir(aliasDir, { recursive: true });
+  await rm(aliasPath, { force: true });
+
+  try {
+    await link(cachePath, aliasPath);
+  } catch {
+    await copyFile(cachePath, aliasPath);
+  }
+
+  return aliasPath;
 }

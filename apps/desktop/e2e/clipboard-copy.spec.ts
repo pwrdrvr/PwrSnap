@@ -26,7 +26,7 @@
 // pixel dimensions when reading back. We only ship to macOS in
 // Phase 1; cross-platform clipboard testing lands when Phase 8 does.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -231,9 +231,11 @@ test.describe("clipboard copy preset widths", () => {
       }
 
       const bookmark = await readClipboardBookmark(app);
+      const clipboardPath = fileURLToPath(bookmark.url);
       expect(bookmark.url).toBeTruthy();
-      expect(fileURLToPath(bookmark.url)).toBe(drag.value.path);
-      expect(bookmark.title).toBe(path.basename(drag.value.path));
+      expect(path.basename(clipboardPath)).toBe("image.png");
+      expect(bookmark.title).toBe("image.png");
+      expect(await readFile(clipboardPath)).toEqual(await readFile(drag.value.path));
 
       const img = await readClipboardImage(app);
       expect(img).not.toBeNull();

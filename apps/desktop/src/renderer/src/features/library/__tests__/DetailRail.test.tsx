@@ -63,8 +63,11 @@ function installFakeApi(initial: CaptureEnrichment): {
   return { dispatch };
 }
 
-async function renderDetailRail(initial: CaptureEnrichment): Promise<HTMLDivElement> {
-  installFakeApi(initial);
+async function renderDetailRail(initial: CaptureEnrichment): Promise<{
+  el: HTMLDivElement;
+  dispatch: ReturnType<typeof vi.fn>;
+}> {
+  const { dispatch } = installFakeApi(initial);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -81,7 +84,7 @@ async function renderDetailRail(initial: CaptureEnrichment): Promise<HTMLDivElem
   await act(async () => {
     await Promise.resolve();
   });
-  return container;
+  return { el: container, dispatch };
 }
 
 async function unmount(): Promise<void> {
@@ -99,7 +102,7 @@ afterEach(async () => {
 
 describe("DetailRail", () => {
   test("accepts the suggested caption and shows accepted state immediately", async () => {
-    const el = await renderDetailRail(enrichment());
+    const { el } = await renderDetailRail(enrichment());
     const button = Array.from(el.querySelectorAll("button")).find(
       (candidate) => candidate.textContent === "Use caption"
     ) as HTMLButtonElement | undefined;
@@ -121,8 +124,36 @@ describe("DetailRail", () => {
 
   test("renders full OCR text instead of a clipped prefix", async () => {
     const fullOcr = `${"line\n".repeat(80)}final visible line`;
-    const el = await renderDetailRail(enrichment({ ocrText: fullOcr }));
+    const { el } = await renderDetailRail(enrichment({ ocrText: fullOcr }));
 
     expect(el.querySelector(".psl__ai-card-ocr")?.textContent).toContain("final visible line");
+  });
+
+  test("apply tags accepts only the visible suggested tags", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({
+        suggestedTags: [
+          { id: "tag_line", label: "line", confidence: 0.95, accepted_at: null, rejected_at: null },
+          { id: "tag_chat", label: "chat", confidence: 0.9, accepted_at: null, rejected_at: null },
+          { id: "tag_bot", label: "bot", confidence: 0.8, accepted_at: null, rejected_at: null },
+          { id: "tag_commands", label: "commands", confidence: 0.7, accepted_at: null, rejected_at: null }
+        ]
+      })
+    );
+    const button = Array.from(el.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Apply tags"
+    ) as HTMLButtonElement | undefined;
+
+    expect(button).toBeDefined();
+    await act(async () => {
+      button?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const acceptedTagIds = dispatch.mock.calls
+      .filter(([name]) => name === "codex:acceptTag")
+      .map(([, req]) => (req as { tagId: string }).tagId);
+    expect(acceptedTagIds).toEqual(["tag_line", "tag_chat"]);
   });
 });

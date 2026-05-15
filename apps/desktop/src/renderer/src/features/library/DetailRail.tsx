@@ -82,6 +82,7 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     enrichment?.suggestedTags.filter(
       (tag) => tag.id !== undefined && tag.accepted_at === null && tag.rejected_at === null
     ) ?? [];
+  const visiblePendingTags = pendingTags.slice(0, 2);
   const acceptedTags = enrichment?.acceptedTags ?? [];
   const codexStatus = enrichment?.status ?? null;
 
@@ -119,14 +120,18 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
                 {tag}
               </span>
             ))}
-            {pendingTags.slice(0, 2).map((tag) => (
+            {visiblePendingTags.map((tag) => (
               <button
                 key={tag.id}
                 className="ps-tag is-suggest"
                 type="button"
                 onClick={() => {
                   if (tag.id !== undefined) {
-                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id });
+                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id }).then((result) => {
+                      if (result.ok) {
+                        setEnrichment(result.value);
+                      }
+                    });
                   }
                 }}
               >
@@ -198,17 +203,20 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             <button
               className="psl__chip-btn"
               type="button"
-              disabled={pendingTags.length === 0}
+              disabled={visiblePendingTags.length === 0}
               onClick={() => {
-                for (const tag of pendingTags) {
-                  if (tag.id !== undefined) {
-                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id }).then((result) => {
-                      if (result.ok) {
-                        setEnrichment(result.value);
-                      }
+                void (async () => {
+                  for (const tag of visiblePendingTags) {
+                    if (tag.id === undefined) continue;
+                    const result = await dispatch("codex:acceptTag", {
+                      captureId: record.id,
+                      tagId: tag.id
                     });
+                    if (result.ok) {
+                      setEnrichment(result.value);
+                    }
                   }
-                }
+                })();
               }}
             >
               Apply tags

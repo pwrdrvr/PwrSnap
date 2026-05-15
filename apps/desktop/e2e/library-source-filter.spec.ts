@@ -492,8 +492,9 @@ async function clickSourceFilterButton(
             for (const button of buttons) {
               const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
               if (!pattern.test(label)) continue;
+              if (button.classList.contains("is-active")) return true;
               button.click();
-              return true;
+              return false;
             }
             return false;
           },
@@ -504,7 +505,7 @@ async function clickSourceFilterButton(
         ),
       {
         timeout: 30_000,
-        message: `clicking source filter ${filterCase.name}`
+        message: `activating source filter ${filterCase.name}`
       }
     )
     .toBe(true);

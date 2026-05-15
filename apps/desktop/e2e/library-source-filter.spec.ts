@@ -7,6 +7,8 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 const HEAD_PAGE_SIZE = 100;
 const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
 
+test.setTimeout(90_000);
+
 type SourceFilterCase = {
   name: string;
   bundleId: string;
@@ -59,18 +61,18 @@ const CASES: SourceFilterCase[] = [
   }
 ];
 
-for (const filterCase of CASES) {
-  test(`source-app filter loads ${filterCase.name} captures outside the initial virtualized page`, async () => {
-    const app = await launchPwrSnap();
-    try {
-      const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-"));
-      const pngPath = path.join(dir, "fixture.png");
-      const pngBytes = Buffer.from(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
-        "hex"
-      );
-      await writeFile(pngPath, pngBytes);
+test("source-app filters load captures outside the initial virtualized page", async () => {
+  const app = await launchPwrSnap();
+  try {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-"));
+    const pngPath = path.join(dir, "fixture.png");
+    const pngBytes = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63000100000005000158d57340000000049454e44ae426082",
+      "hex"
+    );
+    await writeFile(pngPath, pngBytes);
 
+    for (const filterCase of CASES) {
       await app.electronApp.evaluate(
         (
           _electron,
@@ -195,8 +197,8 @@ for (const filterCase of CASES) {
       await expect(window.locator(`.psl__cell[data-cell-id="${targetId}"]`)).toHaveCount(1, {
         timeout: 5_000
       });
-    } finally {
-      await app.close();
     }
-  });
-}
+  } finally {
+    await app.close();
+  }
+});

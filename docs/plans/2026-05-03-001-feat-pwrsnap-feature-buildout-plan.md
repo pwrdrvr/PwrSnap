@@ -82,7 +82,7 @@ Why this beats save-rendered-with-history:
 - **Smart arrows recompute on demand.** Stroke width is a function of source image short-side; if we baked the rendered PNG, every smart-arrow tweak invalidates the cache anyway, so the source-of-truth is already the overlay data.
 - **Search/OCR/AI runs against the source.** Rendered images would lose the sensitive-data blur the moment we ran OCR over the rendered file; running OCR over the source (then composing blurs over the result) keeps the searchable text intact while the user sees the redacted version.
 
-Tradeoff accepted: clipboard copy needs a synchronous render. Use **`sharp`** (libvips bindings — fast, native) in the main process; the largest realistic capture is ~12MP at 2× retina, sharp handles that in <50ms. Cache results in `~/Library/Application Support/PwrSnap/cache/<capture_id>/<width>w.png`. (See on-demand resize work in Phase 7.)
+Tradeoff accepted: clipboard copy needs a synchronous render. Use **`sharp`** (libvips bindings — fast, native) in the main process; the largest realistic capture is ~12MP at 2× retina, sharp handles that in <50ms. Cache results in `~/Library/Application Support/PwrSnap/render-cache/<capture_id>/<width>w.png`. (See on-demand resize work in Phase 7.)
 
 ### Decision 2 — Library layout: reel as time-anchor, main pane swaps mode
 
@@ -459,11 +459,11 @@ db.pragma('foreign_keys = ON');
 
 Migrations as numbered raw `.sql` files in `apps/desktop/src/main/persistence/migrations/`, applied at boot in one transaction (skip umzug/Knex — overkill for single-writer desktop). Filename convention `0001_init.sql`, `0002_add_render_cache.sql`. Never edit an applied migration. ASAR-pack the migrations dir; `__dirname` resolves correctly inside ASAR for `fs.readFileSync`.
 
-DB file: `~/Library/Application Support/PwrSnap/pwrsnap.db`. Source PNGs: `~/Library/Application Support/PwrSnap/captures/<yyyy>/<mm>/<uuid>.png` (immutable, only `source-store.ts` writes). Soft-delete moves the file to `<root>/.trash/<uuid>.png` atomically (same-volume rename); GC `rm -rf` after 14d. Render cache: `~/Library/Application Support/PwrSnap/cache/<capture_id>/<render_inputs_hash>.<format>`.
+DB file: `~/Library/Application Support/PwrSnap/pwrsnap.db`. Source PNGs: `~/Library/Application Support/PwrSnap/captures/<yyyy>/<mm>/<uuid>.png` (immutable, only `source-store.ts` writes). Soft-delete moves the file to `<root>/.trash/<uuid>.png` atomically (same-volume rename); GC `rm -rf` after 14d. Render cache: `~/Library/Application Support/PwrSnap/render-cache/<capture_id>/<render_inputs_hash>.<format>`. Avoid `cache` here because it aliases Chromium's `Cache` directory on default case-insensitive macOS volumes.
 
 **`render_inputs_hash` canonicalization** (in `render/overlay-hash.ts`): SHA-256 over the deterministic JSON of `{ format, target_width, color_profile, crop, applied_overlays_ordered }` where `applied_overlays_ordered` is overlays with `applied_at IS NOT NULL` sorted by `(z_index ASC, id ASC)`, and each overlay's `data` is canonicalized via `safe-stable-stringify`. Property test: shuffling insert order, key order in `data`, irrelevant whitespace must produce the same hash. Lazy: only recomputed when `captures.overlays_version` differs from the cached row's version *and* a cache miss occurs.
 
-**Backup / portability.** `pwrsnap export <dir>` ships in Phase 1: `VACUUM INTO '<dir>/pwrsnap.db'`, hardlink `captures/` and `cache/`, write a manifest with sha256 of the DB. Refuses to export `safeStorage`-encrypted secrets (the encryption key is bound to the user's login keychain, not portable). Pair with `pwrsnap import` in Phase 3 once destinations exist.
+**Backup / portability.** `pwrsnap export <dir>` ships in Phase 1: `VACUUM INTO '<dir>/pwrsnap.db'`, hardlink `captures/` and `render-cache/`, write a manifest with sha256 of the DB. Refuses to export `safeStorage`-encrypted secrets (the encryption key is bound to the user's login keychain, not portable). Pair with `pwrsnap import` in Phase 3 once destinations exist.
 
 ### Smart arrow algorithm (locks down "no crayola box")
 

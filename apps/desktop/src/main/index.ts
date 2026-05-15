@@ -22,6 +22,7 @@ import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
 import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
+import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
@@ -422,6 +423,7 @@ export function bootstrapApp(): void {
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
+    await migrateLegacyRenderCache();
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();

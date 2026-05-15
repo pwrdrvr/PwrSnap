@@ -221,7 +221,7 @@ export function isOverriddenDataRoot(): boolean {
 
 export function getDbPath(): string         { return join(getDataRoot(), "pwrsnap.db"); }
 export function getCapturesRoot(): string   { return join(getDataRoot(), "captures"); }
-export function getCacheRoot(): string      { return join(getDataRoot(), "cache"); }
+export function getCacheRoot(): string      { return join(getDataRoot(), "render-cache"); }
 export function getTrashRoot(): string      { return join(getDataRoot(), ".trash"); }
 export function getPerfRoot(): string       { return join(getDataRoot(), "perf"); }
 
@@ -1064,7 +1064,7 @@ Tasks:
 
 Success criteria:
 - `PWRSNAP_DATA_ROOT=/tmp/pwrsnap-test pnpm dev` puts pwrsnap.db,
-  captures/, cache/, .trash/ all under `/tmp/pwrsnap-test`.
+  captures/, render-cache/, .trash/ all under `/tmp/pwrsnap-test`.
 - `bus.dispatch("capture:ingest", { … })` produces a row identical in
   shape to one produced by the live capture pipeline.
 

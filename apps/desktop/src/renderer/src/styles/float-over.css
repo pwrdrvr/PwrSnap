@@ -218,8 +218,16 @@
   padding: 10px 12px 4px;
 }
 .fo__copy-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+.fo__copy-btn {
   position: relative;
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  height: 60px;
   padding: 8px 9px 7px;
   background: rgba(255,255,255,0.025);
   border: 1px solid rgba(255,255,255,0.07);
@@ -234,22 +242,10 @@
      needing border-radius: inherit on the overlay element. */
   overflow: hidden;
 }
-.fo__copy-card:hover {
+.fo__copy-btn:hover {
   background: rgba(232,116,58,0.08);
   border-color: var(--accent-border);
   transform: translateY(-1px);
-}
-.fo__copy-btn {
-  position: relative;
-  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  padding: 0;
-  min-height: 32px;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  font-family: var(--font-sans);
 }
 /* "Copied" overlay — covers the button content with an orange fill
    for ~1.2s after a successful click. The CopyButton component
@@ -301,30 +297,44 @@
   opacity: 0.7;
 }
 .fo__copy-meta {
-  display: flex; align-items: baseline; justify-content: space-between;
+  display: flex; align-items: flex-start; justify-content: space-between;
   gap: 6px;
+  min-width: 0;
 }
 .fo__copy-dim {
+  display: flex;
+  flex-direction: column;
   font: 600 11px/1 var(--font-mono);
+  min-width: 0;
 }
 .fo__copy-bytes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex: 0 0 auto;
   font: 500 10px/1 var(--font-mono);
   opacity: 0.7;
 }
 .fo__copy-file {
-  align-self: flex-start;
   display: inline-flex;
   align-items: center;
-  min-height: 15px;
-  padding: 1px 0 0;
+  justify-content: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 0 6px;
+  background: rgba(232,116,58,0.07);
+  border: 1px solid rgba(232,116,58,0.22);
+  border-radius: 5px;
   color: var(--accent);
-  font: 700 9px/1 var(--font-mono);
+  font: 700 9px/1 var(--font-sans);
   text-transform: uppercase;
   text-decoration: none;
   cursor: grab;
 }
 .fo__copy-file:hover {
-  text-decoration: underline;
+  background: rgba(232,116,58,0.12);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
 }
 .fo__copy-file:active {
   cursor: grabbing;

@@ -11,6 +11,7 @@
 // twitch when you click.
 
 import { useEffect, useRef, useState } from "react";
+import { FoIcon } from "../float-over/FoIcons";
 
 export type CopyPreset = "low" | "med" | "high";
 
@@ -81,6 +82,8 @@ export type CopyButtonProps = {
   onCopy: (preset: CopyPreset) => void;
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;
+  /** Incremented by parent-owned shortcuts to run the same visual feedback as click. */
+  copyPulse?: number;
 };
 
 const KBD_DIGIT: Record<CopyPreset, string> = { low: "1", med: "2", high: "3" };
@@ -90,18 +93,43 @@ const KBD_DIGIT: Record<CopyPreset, string> = { low: "1", med: "2", high: "3" };
  *  feedback timing feels familiar. */
 const COPIED_VISIBLE_MS = 1200;
 
-export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyButtonProps) {
+function splitDimensionLabel(dim: string): readonly [string, string] {
+  const match = /^(.+?)\s+×\s+(.+)$/.exec(dim);
+  if (match === null) return [dim, ""];
+  return [`${match[1]} ×`, match[2]];
+}
+
+function splitBytesLabel(bytes: string): readonly [string, string] {
+  const match = /^(.+?)\s+([A-Z]+)$/.exec(bytes);
+  if (match === null) return [bytes, ""];
+  return [match[1], match[2]];
+}
+
+export function CopyButton({
+  preset,
+  label,
+  dim,
+  bytes,
+  onCopy,
+  onDrag,
+  copyPulse = 0
+}: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyPulseRef = useRef(copyPulse);
 
-  const handleClick = (): void => {
-    onCopy(preset);
+  const showCopied = (): void => {
     setCopied(true);
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setCopied(false);
       timerRef.current = null;
     }, COPIED_VISIBLE_MS);
+  };
+
+  const handleClick = (): void => {
+    onCopy(preset);
+    showCopied();
   };
 
   const handleDragStart = (event: React.DragEvent<HTMLAnchorElement>): void => {
@@ -123,6 +151,15 @@ export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyBu
     };
   }, []);
 
+  useEffect(() => {
+    if (copyPulse === copyPulseRef.current) return;
+    copyPulseRef.current = copyPulse;
+    showCopied();
+  }, [copyPulse]);
+
+  const [dimLine1, dimLine2] = splitDimensionLabel(dim);
+  const [bytesLine1, bytesLine2] = splitBytesLabel(bytes);
+
   return (
     <div className="fo__copy-card">
       <button
@@ -135,8 +172,14 @@ export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyBu
           <span className="fo__copy-kbd">⌘{KBD_DIGIT[preset]}</span>
         </div>
         <div className="fo__copy-meta">
-          <span className="fo__copy-dim">{dim}</span>
-          <span className="fo__copy-bytes">{bytes}</span>
+          <span className="fo__copy-dim">
+            <span>{dimLine1}</span>
+            {dimLine2.length > 0 ? <span>{dimLine2}</span> : null}
+          </span>
+          <span className="fo__copy-bytes">
+            <span>{bytesLine1}</span>
+            {bytesLine2.length > 0 ? <span>{bytesLine2}</span> : null}
+          </span>
         </div>
         {/* Orange overlay — covers button content while `is-copied` is
             set. position:absolute + inset:0 keeps it inside the button
@@ -155,10 +198,13 @@ export function CopyButton({ preset, label, dim, bytes, onCopy, onDrag }: CopyBu
           draggable
           href="#"
           title={`Drag ${label} PNG file`}
+          aria-label={`Drag ${label} PNG file`}
+          role="button"
           onClick={(event) => event.preventDefault()}
           onDragStart={handleDragStart}
         >
-          file
+          <FoIcon name="hand" size={10} />
+          File
         </a>
       ) : null}
     </div>

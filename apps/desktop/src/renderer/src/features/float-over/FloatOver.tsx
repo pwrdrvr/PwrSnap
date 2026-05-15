@@ -84,6 +84,7 @@ export function FloatOver({
   srcH = 1800,
   srcBytes = 2.4 * 1024 * 1024,
   copyMetrics,
+  copyPulses,
   onDismiss,
   onEdit,
   onCopy,
@@ -103,6 +104,7 @@ export function FloatOver({
   srcH?: number;
   srcBytes?: number;
   copyMetrics?: PresetMetricMap | undefined;
+  copyPulses?: Readonly<Record<CopyPreset, number>> | undefined;
   onDismiss?: () => void;
   onEdit?: () => void;
   /** Fired when the user clicks Low / Med / High in the toast. The
@@ -382,6 +384,7 @@ export function FloatOver({
               bytes={m.bytes}
               onCopy={(preset) => onCopy?.(preset)}
               {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+              copyPulse={copyPulses?.[p.id] ?? 0}
             />
           );
         })}

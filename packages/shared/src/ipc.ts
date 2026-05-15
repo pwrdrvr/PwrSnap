@@ -48,6 +48,14 @@ export const EVENT_CHANNELS = {
    */
   floatOverState: "events:float-over:state",
   /**
+   * Main → float-over renderer: a native/global copy shortcut fired
+   * while the toast was visible. The renderer uses this to play the
+   * same Low / Med / High copied flash that a pointer click would.
+   *
+   * Payload: `{ preset: RenderPreset }`.
+   */
+  floatOverCopyPulse: "events:float-over:copy-pulse",
+  /**
    * Tells a popover renderer (tray or float-over) to re-measure its
    * content and re-post the resize IPC. Sent by main when the
    * webContents `zoom-changed` fires — Electron's ResizeObserver

@@ -7,6 +7,10 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 const HEAD_PAGE_SIZE = 100;
 const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
 
+// CI's xvfb Electron runner occasionally spends tens of seconds in
+// launch/teardown for this large synthetic dataset. Keep the coverage
+// in one BrowserWindow lifecycle so a slow first filter does not leave
+// Playwright with a timed-out worker to clean up.
 test.setTimeout(90_000);
 
 type SourceFilterCase = {

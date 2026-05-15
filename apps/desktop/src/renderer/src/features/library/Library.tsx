@@ -8,7 +8,14 @@ import {
   useRef,
   useState
 } from "react";
-import type { CaptureRecord, ScrollProbeRequest } from "@pwrsnap/shared";
+import type {
+  CaptureRecord,
+  LibraryCursor,
+  PwrSnapError,
+  Res,
+  Result,
+  ScrollProbeRequest
+} from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
@@ -100,9 +107,23 @@ function formatLocalDate(d: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+type SourceAppRowsState = {
+  bundleKey: string;
+  loading: boolean;
+  rows: CaptureRecord[];
+  error: string | null;
+};
+
 export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [selected, setSelected] = useState(initialSelected);
   const [activeApp, setActiveApp] = useState<string>("all");
+  const [sourceAppRows, setSourceAppRows] = useState<Record<string, SourceAppRowsState>>(
+    {}
+  );
+  const sourceAppRowsRef = useRef(sourceAppRows);
+  useEffect(() => {
+    sourceAppRowsRef.current = sourceAppRows;
+  }, [sourceAppRows]);
 
   // Left-bar pin / collapse / hover-peek (PwrAgnt's HoverRevealPanel
   // pattern, mirrored for the left side). Default = pinned. State is
@@ -223,11 +244,124 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     [records]
   );
 
+  const isTodayView = activeApp === "today";
+  const isSourceAppView = activeApp !== "all" && activeApp !== "trash" && !isTodayView;
+  const sourceAppBundleIds = useMemo<Array<string | null>>(() => {
+    if (!isSourceAppView) return [];
+    const bundles: Array<string | null> = [];
+    for (const stat of appStats) {
+      if (mapBundleIdToAppId(stat.bundleId) === activeApp) {
+        bundles.push(stat.bundleId);
+      }
+    }
+    return bundles;
+  }, [activeApp, appStats, isSourceAppView]);
+  const sourceAppBundleKey = useMemo(
+    () => JSON.stringify(sourceAppBundleIds),
+    [sourceAppBundleIds]
+  );
+
+  const appStatsKey = useMemo(
+    () =>
+      appStats
+        .map((stat) => `${stat.bundleId ?? "<null>"}:${stat.count}`)
+        .join("|"),
+    [appStats]
+  );
+  useEffect(() => {
+    setSourceAppRows({});
+  }, [appStatsKey]);
+
+  useEffect(() => {
+    if (!isSourceAppView) return;
+    if (sourceAppBundleIds.length === 0) return;
+    const cached = sourceAppRowsRef.current[activeApp];
+    if (cached?.bundleKey === sourceAppBundleKey) return;
+
+    let cancelled = false;
+    const appKey = activeApp;
+    const bundleIds = sourceAppBundleIds;
+    const bundleKey = sourceAppBundleKey;
+    setSourceAppRows((prev) => ({
+      ...prev,
+      [appKey]: {
+        bundleKey,
+        loading: true,
+        rows: prev[appKey]?.rows ?? [],
+        error: null
+      }
+    }));
+
+    void (async () => {
+      const fetched: CaptureRecord[] = [];
+      let cursor: LibraryCursor | null = null;
+      do {
+        const bundleFilter =
+          bundleIds.length === 1 && bundleIds[0] !== null
+            ? { appBundleId: bundleIds[0] }
+            : { appBundleIds: bundleIds };
+        const result: Result<Res<"library:list">, PwrSnapError> = await dispatch("library:list", {
+          limit: 200,
+          includeDeleted: false,
+          ...bundleFilter,
+          ...(cursor === null ? {} : { cursor })
+        });
+        if (cancelled) return;
+        if (!result.ok) {
+          setSourceAppRows((prev) => ({
+            ...prev,
+            [appKey]: {
+              bundleKey,
+              loading: false,
+              rows: prev[appKey]?.rows ?? [],
+              error: result.error.message
+            }
+          }));
+          return;
+        }
+        fetched.push(...result.value.rows);
+        cursor = result.value.nextCursor;
+      } while (cursor !== null);
+
+      const seen = new Set<string>();
+      const unique = fetched.filter((row) => {
+        if (seen.has(row.id)) return false;
+        seen.add(row.id);
+        return true;
+      });
+      setSourceAppRows((prev) => ({
+        ...prev,
+        [appKey]: {
+          bundleKey,
+          loading: false,
+          rows: unique,
+          error: null
+        }
+      }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeApp,
+    isSourceAppView,
+    sourceAppBundleIds,
+    sourceAppBundleKey
+  ]);
+
   // Universe of records the current view operates on. Trash is a
   // top-level swap (not a per-app filter) so the per-app filter only
   // applies when viewing live captures.
   const isTrashView = activeApp === "trash";
-  const universeRecords = isTrashView ? trashRecords : liveRecords;
+  const sourceAppState = isSourceAppView ? sourceAppRows[activeApp] : undefined;
+  const universeRecords = isTrashView
+    ? trashRecords
+    : sourceAppState?.bundleKey === sourceAppBundleKey
+    ? sourceAppState.rows
+    : liveRecords;
+  const gridHasMore = isSourceAppView ? false : hasMore;
+  const gridIsLoadingMore = isSourceAppView ? sourceAppState?.loading ?? false : isLoadingMore;
 
   const fixtureBacking = useMemo(
     () => new FixtureBackedRecords(universeRecords),
@@ -239,7 +373,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
-  const isTodayView = activeApp === "today";
   const visible =
     activeApp === "all" || isTrashView
       ? fixtureCaptures
@@ -349,8 +482,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // buttons in Focus + Reel modes (Phase C). Null = nothing selected.
   const selectedRecord: CaptureRecord | null = useMemo(() => {
     if (selectedRecordId === null) return null;
-    return records.find((r) => r.id === selectedRecordId) ?? null;
-  }, [records, selectedRecordId]);
+    return (
+      universeRecords.find((r) => r.id === selectedRecordId) ??
+      records.find((r) => r.id === selectedRecordId) ??
+      null
+    );
+  }, [records, selectedRecordId, universeRecords]);
 
   // Records that match the current activeApp filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
@@ -607,8 +744,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     if (selectedRecordId === null) return;
     if (selectedRecord !== null) return;
-    viewDispatch({ type: "FILTER_CHANGED", visibleIds: records.map((r) => r.id) });
-  }, [selectedRecordId, selectedRecord, records]);
+    viewDispatch({ type: "FILTER_CHANGED", visibleIds: universeRecords.map((r) => r.id) });
+  }, [selectedRecordId, selectedRecord, universeRecords]);
 
   // External "open this capture in Focus" trigger. Fired by main when
   // the float-over toast's Edit button (or any future entry point)
@@ -1229,8 +1366,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             appLabels={appLabels}
             onSelectCell={onSelectCell}
             preloadFullRes={preloadFullRes}
-            hasMore={hasMore}
-            isLoadingMore={isLoadingMore}
+            hasMore={gridHasMore}
+            isLoadingMore={gridIsLoadingMore}
             loadMore={loadMore}
             isTrashView={isTrashView}
             trashCapture={trashCapture}
@@ -1854,4 +1991,3 @@ function CellRow({
     </div>
   );
 }
-

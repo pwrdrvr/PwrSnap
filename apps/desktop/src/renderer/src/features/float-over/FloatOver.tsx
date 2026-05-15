@@ -130,6 +130,7 @@ export function FloatOver({
   const [description, setDescription] = useState(initialDescription);
   const [tags, setTags] = useState<string[]>(initialTags);
   const [hovering, setHovering] = useState(false);
+  const [nativeDragging, setNativeDragging] = useState(false);
   const [progress, setProgress] = useState(1);
   const [exiting, setExiting] = useState(false);
   const [aiAccepted, setAiAccepted] = useState(false);
@@ -140,6 +141,7 @@ export function FloatOver({
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   // Exit-animation timeout handle. Stored in a ref so we can clear it
   // on unmount — without this, an in-flight `setTimeout(..., 220)` from
   // the previous capture's exit animation would survive a renderer
@@ -151,9 +153,17 @@ export function FloatOver({
 
   const isPaused =
     hovering ||
+    nativeDragging ||
     description.length > 0 ||
     tags.length > initialTags.length ||
     aiAccepted;
+
+  const syncHoverFromPoint = (clientX: number, clientY: number): void => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const target = document.elementFromPoint(clientX, clientY);
+    setHovering(target !== null && root.contains(target));
+  };
 
   useEffect(() => {
     setVisibleSrc(src);
@@ -199,6 +209,56 @@ export function FloatOver({
     };
   }, [isPaused, startCountdown, cfg.autoMs, onDismiss]);
 
+  useEffect(() => {
+    const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
+      setNativeDragging(false);
+      if (event !== undefined) {
+        syncHoverFromPoint(event.clientX, event.clientY);
+      }
+    };
+
+    const handleMouseMove = (event: MouseEvent): void => {
+      syncHoverFromPoint(event.clientX, event.clientY);
+      if (nativeDragging && event.buttons === 0) {
+        setNativeDragging(false);
+      }
+    };
+    const handleMouseOut = (event: MouseEvent): void => {
+      if (event.relatedTarget === null) {
+        setHovering(false);
+        if (nativeDragging && event.buttons === 0) {
+          setNativeDragging(false);
+        }
+      }
+    };
+    const handleBlur = (): void => {
+      setHovering(false);
+      setNativeDragging(false);
+    };
+    const handleKeyUp = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setNativeDragging(false);
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseout", handleMouseOut);
+    window.addEventListener("mouseup", finishNativeDrag);
+    window.addEventListener("dragend", finishNativeDrag);
+    window.addEventListener("drop", finishNativeDrag);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseout", handleMouseOut);
+      window.removeEventListener("mouseup", finishNativeDrag);
+      window.removeEventListener("dragend", finishNativeDrag);
+      window.removeEventListener("drop", finishNativeDrag);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [nativeDragging]);
+
   // Clear any pending exit-animation timer on unmount. Prevents a
   // setTimeout from a previous mount firing onDismiss after the NEW
   // toast has appeared (the "microsecond flash" bug).
@@ -219,11 +279,14 @@ export function FloatOver({
   const dragFile = (event: React.DragEvent): void => {
     if (onDragFile === undefined) return;
     event.preventDefault();
+    setNativeDragging(true);
+    syncHoverFromPoint(event.clientX, event.clientY);
     onDragFile();
   };
 
   return (
     <div
+      ref={rootRef}
       className={[
         "fo",
         `fo--variant-${variant}`,

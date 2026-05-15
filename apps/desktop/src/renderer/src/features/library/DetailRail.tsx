@@ -9,7 +9,7 @@
 
 import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
-import { CopyButton, presetMetrics } from "../shared/CopyButton";
+import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
 import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
@@ -26,9 +26,10 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
 export type DetailRailProps = {
   readonly view: LibraryView;
   readonly record: CaptureRecord | null;
+  readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
 };
 
-export function DetailRail({ view, record }: DetailRailProps): ReactElement | null {
+export function DetailRail({ view, record, copyPulses }: DetailRailProps): ReactElement | null {
   const renderMetrics = usePresetRenderMetrics(
     record?.id ?? null,
     record?.overlays_version ?? null
@@ -140,6 +141,7 @@ export function DetailRail({ view, record }: DetailRailProps): ReactElement | nu
                     void dispatch("clipboard:copy", { captureId: record.id, preset });
                   }}
                   onDrag={(preset) => startCaptureDrag(record.id, preset)}
+                  copyPulse={copyPulses?.[p] ?? 0}
                 />
               );
             })}

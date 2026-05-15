@@ -18,7 +18,7 @@
 // to FloatOver in this same phase clears the timer on unmount.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { CaptureRecord, FloatOverEvent } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type CaptureRecord, type FloatOverEvent, type RenderPreset } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
@@ -29,8 +29,15 @@ type HostState =
   | { kind: "loaded"; record: CaptureRecord }
   | { kind: "error"; captureId: string; message: string };
 
+const INITIAL_COPY_PULSES: Record<RenderPreset, number> = {
+  low: 0,
+  med: 0,
+  high: 0
+};
+
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
+  const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const copyMetrics = usePresetRenderMetrics(
     state.kind === "loaded" ? state.record.id : null,
     state.kind === "loaded" ? state.record.overlays_version : null
@@ -76,7 +83,7 @@ export function FloatOverHost(): React.ReactElement {
   // `did-finish-load` so the first capture-of-session doesn't miss
   // the IPC.
   useEffect(() => {
-    const unsubscribe = window.pwrsnapApi?.on("events:float-over:state", (payload) => {
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverState, (payload) => {
       const event = payload as FloatOverEvent;
       switch (event.kind) {
         case "show-idle":
@@ -97,6 +104,17 @@ export function FloatOverHost(): React.ReactElement {
           setState({ kind: "idle" });
           return;
       }
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.floatOverCopyPulse, (payload) => {
+      const preset = (payload as { preset?: unknown }).preset;
+      if (preset !== "low" && preset !== "med" && preset !== "high") return;
+      setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
     });
     return () => {
       unsubscribe?.();
@@ -145,6 +163,7 @@ export function FloatOverHost(): React.ReactElement {
       if (state.kind !== "loaded") return;
       event.preventDefault();
       void dispatch("clipboard:copy", { captureId: state.record.id, preset });
+      setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
     }
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -212,6 +231,7 @@ export function FloatOverHost(): React.ReactElement {
         srcH={record.height_px}
         srcBytes={record.byte_size}
         copyMetrics={copyMetrics}
+        copyPulses={copyPulses}
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         onDismiss={() => {

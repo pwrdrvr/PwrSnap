@@ -20,6 +20,7 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/Editor";
 import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
@@ -33,6 +34,19 @@ import { useLibrary } from "../../lib/useLibrary";
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
+
+function copyPresetForShortcutKey(key: string): CopyPreset | null {
+  if (key === "1") return "low";
+  if (key === "2") return "med";
+  if (key === "3") return "high";
+  return null;
+}
+
+const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
+  low: 0,
+  med: 0,
+  high: 0
+};
 
 /**
  * Picks the right thumb representation: real cache-rendered image
@@ -161,6 +175,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // three-state-view-model-plan.md, Phase A. Tests at
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
+  const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
   const {
@@ -802,6 +817,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const viewRef = useRef(view);
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);
+  const selectedRecordRef = useRef(selectedRecord);
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
@@ -811,6 +827,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     nextRecordIdRef.current = nextRecordId;
   }, [nextRecordId]);
+  useEffect(() => {
+    selectedRecordRef.current = selectedRecord;
+  }, [selectedRecord]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       const target = event.target as HTMLElement | null;
@@ -822,6 +841,25 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       const kind = viewRef.current.kind;
       const usingMeta = event.metaKey;
       const usingOtherMod = event.ctrlKey || event.altKey;
+
+      // ⌘1 / ⌘2 / ⌘3 — copy Low / Med / High for the selected capture.
+      // The labels live in DetailRail, so only honor them when the rail
+      // is visible (Focus/Reel) and the Library window has focus.
+      if (
+        usingMeta &&
+        !event.shiftKey &&
+        !usingOtherMod &&
+        (kind === "focus" || kind === "reel")
+      ) {
+        const preset = copyPresetForShortcutKey(event.key);
+        const record = selectedRecordRef.current;
+        if (preset !== null && record !== null) {
+          event.preventDefault();
+          void dispatch("clipboard:copy", { captureId: record.id, preset });
+          setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
+          return;
+        }
+      }
 
       // ⌘[ / ⌘] — Reel-mode scrub aliases for ←/→. Same dispatch,
       // just a second binding so the on-screen "scrub ⌘[ / ⌘]"
@@ -1531,7 +1569,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           focus + reel modes. Lives in the third grid column
           (`grid-template-columns: 220px 1fr 360px` when
           data-mode is focus/reel, collapsed to 0 in grid mode). */}
-      <DetailRail view={view} record={selectedRecord} />
+      <DetailRail view={view} record={selectedRecord} copyPulses={copyPulses} />
 
       <footer className="psl__status">
         <div className="psl__status-l">

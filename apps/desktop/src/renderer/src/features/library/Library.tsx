@@ -438,12 +438,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // so the sidebar is stable on first paint instead of filling in as
   // records stream. For each bundle id:
   //   1. Curated short id wins (so com.tinyspeck.slackmacgap → "Slack").
-  //   2. Otherwise, derive a Title-Case label from the bundle id's
+  //   2. OS-supplied source_app_name from the stats payload wins for
+  //      open/fallback apps (so jp.naver.line.mac → "LINE", not "Mac").
+  //   3. Otherwise, derive a Title-Case label from the bundle id's
   //      tail segment (so com.pwrsnap.synth.air-table → "Air Table").
-  //   3. Loaded records refine the label when an OS-supplied
-  //      `source_app_name` is available — that takes precedence.
+  //   4. Loaded records only fill gaps for legacy/missing stats names.
   const appLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
+    const capturedStatLabels = new Set<string>();
     // Pass 1: derive from app_stats bundle ids alone (stable on load).
     for (const stat of appStats) {
       const appId = mapBundleIdToAppId(stat.bundleId);
@@ -451,16 +453,21 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       const curated = APP_INFO[appId]?.name;
       if (curated !== undefined) {
         labels[appId] = curated;
+      } else if (stat.sourceAppName !== null && stat.sourceAppName.length > 0) {
+        labels[appId] = stat.sourceAppName;
+        capturedStatLabels.add(appId);
       } else if (stat.bundleId !== null) {
         labels[appId] = labelFromBundleId(stat.bundleId);
       } else {
         labels[appId] = "Unknown app";
       }
     }
-    // Pass 2: refine with OS-supplied `source_app_name` once records
-    // stream in (real captures pick up nicer names than slug-derived).
+    // Pass 2: fill with OS-supplied `source_app_name` only when the
+    // stats payload did not already provide a captured name. Otherwise
+    // labels can oscillate as different pages enter the loaded window.
     for (const c of liveFixturesForCounts) {
       if (APP_INFO[c.app]?.name !== undefined) continue; // curated already picked
+      if (capturedStatLabels.has(c.app)) continue;
       if (c.appName === null) continue;
       labels[c.app] = c.appName;
     }

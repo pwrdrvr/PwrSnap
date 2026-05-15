@@ -55,11 +55,16 @@ export type LibraryCursor = { capturedAt: string; id: string };
 /**
  * One bucket of the denormalized app-counts surface. Returned in
  * `library:list`'s head-page response so the sidebar can render
- * counts without a separate round-trip or a `COUNT(*)` over the
- * captures table. `bundleId === null` is the "captures with unknown
- * source app" bucket.
+ * counts and labels without a separate round-trip or a `COUNT(*)` over
+ * the captures table. `bundleId === null` is the "captures with
+ * unknown source app" bucket. `sourceAppName` is the latest non-empty
+ * OS-supplied app name seen for the bucket, if any.
  */
-export type LibraryAppStat = { bundleId: string | null; count: number };
+export type LibraryAppStat = {
+  bundleId: string | null;
+  count: number;
+  sourceAppName: string | null;
+};
 
 export type RenderPreset = "low" | "med" | "high";
 

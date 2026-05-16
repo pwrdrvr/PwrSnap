@@ -197,14 +197,20 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   } = useLibrary();
   const storage = useStorageSnapshot();
   const storageLabel =
-    storage.snapshot === null ? "calculating local storage" : `${formatBytes(storage.snapshot.totalBytes)} local`;
+    storage.snapshot !== null
+      ? `${formatBytes(storage.snapshot.totalBytes)} local`
+      : storage.summary !== null
+        ? `${formatBytes(storage.summary.sourceCaptures.bytes)} snaps`
+        : "calculating storage";
   const [storagePanelOpen, setStoragePanelOpen] = useState(false);
   const storagePanelRef = useRef<HTMLDivElement | null>(null);
   const appCacheBytes =
     (storage.snapshot?.chromiumHttpCache.bytes ?? 0) +
     (storage.snapshot?.chromiumCodeCache.bytes ?? 0);
   const sourceSnapCount =
-    storage.snapshot?.sourceCaptures.captureCount ?? storage.snapshot?.sourceCaptures.fileCount ?? 0;
+    storage.snapshot?.sourceCaptures.captureCount ??
+    storage.summary?.sourceCaptures.captureCount ??
+    0;
   const storageBusy = storage.workingAction !== null;
   const refreshStorage = storage.refresh;
 
@@ -1705,7 +1711,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                     <span>Documents/PwrSnap</span>
                     <small>{sourceSnapCount} snaps</small>
                   </div>
-                  <b>{formatBytes(storage.snapshot?.sourceCaptures.documentsBytes ?? 0)}</b>
+                  <b>
+                    {formatBytes(
+                      storage.snapshot?.sourceCaptures.documentsBytes ??
+                        storage.summary?.sourceCaptures.bytes ??
+                        0
+                    )}
+                  </b>
                 </div>
               </div>
             ) : null}

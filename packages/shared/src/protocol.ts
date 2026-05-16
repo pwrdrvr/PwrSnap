@@ -114,6 +114,14 @@ export type StorageMaintenanceResult = {
 
 export type RenderCacheMaintenanceMode = "trim" | "clear";
 
+export type StorageSummary = {
+  capturedAt: string;
+  sourceCaptures: {
+    bytes: number;
+    captureCount: number;
+  };
+};
+
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
@@ -367,6 +375,7 @@ export type Commands = {
   "editor:open": { req: { captureId: string }; res: void };
 
   // ---- storage ----
+  "storage:summary": { req: Record<string, never>; res: StorageSummary };
   "storage:snapshot": { req: Record<string, never>; res: StorageSnapshot };
   "storage:clearAppCache": { req: Record<string, never>; res: StorageMaintenanceResult };
   "storage:maintainRenderCache": {

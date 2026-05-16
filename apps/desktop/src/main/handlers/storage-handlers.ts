@@ -2,11 +2,28 @@ import { session } from "electron";
 import { ok, err } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import { getStorageSnapshot, maintainRenderCache } from "../storage/accounting";
+import type { RenderCacheMaintenanceMode } from "@pwrsnap/shared";
+import { getStorageSnapshot, getStorageSummary, maintainRenderCache } from "../storage/accounting";
 
 const log = getMainLogger("pwrsnap:storage-handlers");
 
 export function registerStorageHandlers(): void {
+  bus.register("storage:summary", async () => {
+    try {
+      return ok(getStorageSummary());
+    } catch (cause) {
+      log.warn("storage:summary failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "persistence",
+        code: "storage_summary_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
   bus.register("storage:snapshot", async () => {
     try {
       return ok(await getStorageSnapshot());
@@ -53,8 +70,16 @@ export function registerStorageHandlers(): void {
   });
 
   bus.register("storage:maintainRenderCache", async (req) => {
+    const mode = req.mode;
+    if (!isRenderCacheMaintenanceMode(mode)) {
+      return err({
+        kind: "validation",
+        code: "invalid_render_cache_mode",
+        message: "storage:maintainRenderCache mode must be 'trim' or 'clear'"
+      });
+    }
     try {
-      return ok(await maintainRenderCache(req.mode));
+      return ok(await maintainRenderCache(mode));
     } catch (cause) {
       log.warn("storage:maintainRenderCache failed", {
         mode: req.mode,
@@ -68,4 +93,8 @@ export function registerStorageHandlers(): void {
       });
     }
   });
+}
+
+function isRenderCacheMaintenanceMode(value: unknown): value is RenderCacheMaintenanceMode {
+  return value === "trim" || value === "clear";
 }

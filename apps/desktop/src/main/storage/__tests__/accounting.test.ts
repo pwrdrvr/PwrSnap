@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => ({
   capturesRoot: "",
   legacyCapturesRoot: "",
   dbPath: "",
-  captureCount: 0
+  captureCount: 0,
+  sourceBytes: 0
 }));
 
 vi.mock("electron", () => ({
@@ -22,6 +23,10 @@ vi.mock("electron", () => ({
 vi.mock("../../persistence/db", () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
+      get: () =>
+        sql.includes("COUNT(*) AS captureCount")
+          ? { captureCount: mocks.captureCount, bytes: mocks.sourceBytes }
+          : undefined,
       pluck: () => ({
         get: () => (sql.includes("COUNT(*) FROM captures") ? mocks.captureCount : 0)
       })
@@ -47,6 +52,7 @@ beforeEach(async () => {
   vi.resetModules();
   tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-storage-accounting-"));
   mocks.captureCount = 0;
+  mocks.sourceBytes = 0;
   mocks.dataRoot = join(tempRoot, "data");
   mocks.capturesRoot = join(tempRoot, "Documents", "PwrSnap");
   mocks.legacyCapturesRoot = join(mocks.dataRoot, "captures");
@@ -60,6 +66,7 @@ afterEach(async () => {
 describe("getStorageSnapshot", () => {
   test("adds user-visible documents captures to the app-support total in default layout", async () => {
     mocks.captureCount = 1;
+    mocks.sourceBytes = 1024 * 1024;
     await mkdir(mocks.dataRoot, { recursive: true });
     await mkdir(mocks.capturesRoot, { recursive: true });
     await writeFile(join(mocks.dataRoot, "pwrsnap.db"), Buffer.alloc(256 * 1024));
@@ -78,6 +85,7 @@ describe("getStorageSnapshot", () => {
     mocks.capturesRoot = join(mocks.dataRoot, "captures");
     mocks.legacyCapturesRoot = mocks.capturesRoot;
     mocks.captureCount = 1;
+    mocks.sourceBytes = 1024 * 1024;
     await mkdir(mocks.capturesRoot, { recursive: true });
     await writeFile(join(mocks.capturesRoot, "capture-a.png"), Buffer.alloc(1024 * 1024));
 

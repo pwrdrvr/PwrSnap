@@ -1,25 +1,61 @@
 import { useCallback, useEffect, useState } from "react";
-import type { RenderCacheMaintenanceMode, StorageSnapshot } from "@pwrsnap/shared";
+import type {
+  RenderCacheMaintenanceMode,
+  StorageSnapshot,
+  StorageSummary
+} from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
 
+type UseStorageSnapshotOptions = {
+  eagerSnapshot?: boolean;
+};
+
 type UseStorageSnapshotResult = {
+  summary: StorageSummary | null;
   snapshot: StorageSnapshot | null;
   loading: boolean;
   workingAction: "app-cache" | "render-trim" | "render-clear" | null;
   error: string | null;
+  refreshSummary: () => Promise<void>;
   refresh: () => Promise<void>;
   clearAppCache: () => Promise<void>;
   maintainRenderCache: (mode: RenderCacheMaintenanceMode) => Promise<void>;
 };
 
-export function useStorageSnapshot(): UseStorageSnapshotResult {
+function summaryFromSnapshot(snapshot: StorageSnapshot): StorageSummary {
+  return {
+    capturedAt: snapshot.capturedAt,
+    sourceCaptures: {
+      bytes: snapshot.sourceCaptures.bytes,
+      captureCount: snapshot.sourceCaptures.captureCount
+    }
+  };
+}
+
+export function useStorageSnapshot(
+  options: UseStorageSnapshotOptions = {}
+): UseStorageSnapshotResult {
+  const eagerSnapshot = options.eagerSnapshot ?? false;
+  const [summary, setSummary] = useState<StorageSummary | null>(null);
   const [snapshot, setSnapshot] = useState<StorageSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [workingAction, setWorkingAction] = useState<
     UseStorageSnapshotResult["workingAction"]
   >(null);
   const [error, setError] = useState<string | null>(null);
+
+  const refreshSummary = useCallback(async (): Promise<void> => {
+    const result = await dispatch("storage:summary", {});
+    if (!result.ok) {
+      setError(result.error.message);
+      setLoading(false);
+      return;
+    }
+    setSummary(result.value);
+    setError(null);
+    setLoading(false);
+  }, []);
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -30,6 +66,7 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
       return;
     }
     setSnapshot(result.value);
+    setSummary(summaryFromSnapshot(result.value));
     setError(null);
     setLoading(false);
   }, []);
@@ -43,6 +80,7 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
       return;
     }
     setSnapshot(result.value.snapshot);
+    setSummary(summaryFromSnapshot(result.value.snapshot));
     setError(null);
     setWorkingAction(null);
   }, []);
@@ -57,6 +95,7 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
         return;
       }
       setSnapshot(result.value.snapshot);
+      setSummary(summaryFromSnapshot(result.value.snapshot));
       setError(null);
       setWorkingAction(null);
     },
@@ -64,12 +103,30 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
   );
 
   useEffect(() => {
-    void refresh();
-    const unsubscribe = subscribe(EVENT_CHANNELS.capturesChanged, () => {
+    if (eagerSnapshot) {
       void refresh();
+    } else {
+      void refreshSummary();
+    }
+    const unsubscribe = subscribe(EVENT_CHANNELS.capturesChanged, () => {
+      if (eagerSnapshot) {
+        void refresh();
+      } else {
+        void refreshSummary();
+      }
     });
     return unsubscribe;
-  }, [refresh]);
+  }, [eagerSnapshot, refresh, refreshSummary]);
 
-  return { snapshot, loading, workingAction, error, refresh, clearAppCache, maintainRenderCache };
+  return {
+    summary,
+    snapshot,
+    loading,
+    workingAction,
+    error,
+    refreshSummary,
+    refresh,
+    clearAppCache,
+    maintainRenderCache
+  };
 }

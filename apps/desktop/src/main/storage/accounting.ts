@@ -1,7 +1,12 @@
 import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { session } from "electron";
-import type { RenderCacheMaintenanceMode, StorageBucket, StorageSnapshot } from "@pwrsnap/shared";
+import type {
+  RenderCacheMaintenanceMode,
+  StorageBucket,
+  StorageSnapshot,
+  StorageSummary
+} from "@pwrsnap/shared";
 import { getDb } from "../persistence/db";
 import {
   getCacheRoot,
@@ -17,6 +22,14 @@ export const CHROMIUM_DISK_CACHE_LIMIT_BYTES = 128 * 1024 * 1024;
 type SizeResult = StorageBucket;
 
 const EMPTY_SIZE: SizeResult = { bytes: 0, fileCount: 0 };
+
+export function getStorageSummary(): StorageSummary {
+  const sourceCaptures = getLiveSourceCaptureStats();
+  return {
+    capturedAt: new Date().toISOString(),
+    sourceCaptures
+  };
+}
 
 export async function getStorageSnapshot(): Promise<StorageSnapshot> {
   const dataRoot = getDataRoot();
@@ -179,8 +192,24 @@ function getDatabaseStats(): {
 }
 
 function getCaptureCount(): number {
-  return getDb()
-    .prepare("SELECT COUNT(*) FROM captures WHERE deleted_at IS NULL")
-    .pluck()
-    .get() as number;
+  return getLiveSourceCaptureStats().captureCount;
+}
+
+function getLiveSourceCaptureStats(): {
+  bytes: number;
+  captureCount: number;
+} {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         COUNT(*) AS captureCount,
+         COALESCE(SUM(byte_size), 0) AS bytes
+       FROM captures
+       WHERE deleted_at IS NULL`
+    )
+    .get() as { captureCount: number; bytes: number | bigint };
+  return {
+    captureCount: row.captureCount,
+    bytes: Number(row.bytes)
+  };
 }

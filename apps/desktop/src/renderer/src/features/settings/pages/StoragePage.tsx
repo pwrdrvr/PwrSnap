@@ -12,7 +12,7 @@ export function StoragePage(): ReactElement {
     refresh,
     clearAppCache,
     maintainRenderCache
-  } = useStorageSnapshot();
+  } = useStorageSnapshot({ eagerSnapshot: true });
   const total = snapshot?.totalBytes ?? 0;
   const appCacheBytes =
     (snapshot?.chromiumHttpCache.bytes ?? 0) + (snapshot?.chromiumCodeCache.bytes ?? 0);

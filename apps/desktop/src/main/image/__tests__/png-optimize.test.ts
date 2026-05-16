@@ -54,6 +54,29 @@ describe("optimizePngBuffer", () => {
     expect(optimized.uniqueColors).toBeNull();
     await expectRawPixelsToMatch(input, optimized.buffer);
   });
+
+  test("can skip truecolor recompression for already-encoded PNGs", async () => {
+    const raw = Buffer.alloc(64 * 64 * 4);
+    for (let i = 0; i < raw.length; i += 4) {
+      const pixel = i / 4;
+      raw[i] = pixel & 0xff;
+      raw[i + 1] = (pixel >> 4) & 0xff;
+      raw[i + 2] = (pixel >> 8) & 0xff;
+      raw[i + 3] = 255;
+    }
+
+    const input = await sharp(raw, {
+      raw: { width: 64, height: 64, channels: 4 }
+    })
+      .png({ compressionLevel: 9, adaptiveFiltering: true })
+      .toBuffer();
+
+    const optimized = await optimizePngBuffer(input, { recompressTruecolor: false });
+
+    expect(optimized.strategy).toBe("original");
+    expect(optimized.buffer).toBe(input);
+    expect(optimized.uniqueColors).toBeNull();
+  });
 });
 
 async function expectRawPixelsToMatch(left: Buffer, right: Buffer): Promise<void> {

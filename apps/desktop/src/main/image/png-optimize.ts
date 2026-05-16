@@ -16,6 +16,14 @@ export type PngOptimizationResult = {
   uniqueColors: number | null;
 };
 
+export type PngOptimizationOptions = {
+  /**
+   * Set false when the caller already encoded the input with the desired
+   * truecolor PNG settings and only wants the exact-palette win.
+   */
+  recompressTruecolor?: boolean;
+};
+
 const MAX_EXACT_PALETTE_COLORS = 256;
 
 const TRUECOLOR_PNG_OPTIONS = {
@@ -28,17 +36,22 @@ const TRUECOLOR_PNG_OPTIONS = {
  * Palette output is used only when the image has <=256 unique RGBA colors
  * and the encoded candidate survives a raw-pixel equality check.
  */
-export async function optimizePngBuffer(input: Buffer): Promise<PngOptimizationResult> {
+export async function optimizePngBuffer(
+  input: Buffer,
+  options: PngOptimizationOptions = {}
+): Promise<PngOptimizationResult> {
   const raw = await decodeRgba(input);
   const uniqueColors = countUniqueColorsUpTo(raw.data, MAX_EXACT_PALETTE_COLORS + 1);
 
   let best = input;
   let strategy: PngOptimizationResult["strategy"] = "original";
 
-  const truecolor = await encodeTruecolor(raw);
-  if (await isSmallerPixelMatch(truecolor, best, raw)) {
-    best = truecolor;
-    strategy = "truecolor";
+  if (options.recompressTruecolor !== false) {
+    const truecolor = await encodeTruecolor(raw);
+    if (await isSmallerPixelMatch(truecolor, best, raw)) {
+      best = truecolor;
+      strategy = "truecolor";
+    }
   }
 
   if (uniqueColors <= MAX_EXACT_PALETTE_COLORS) {

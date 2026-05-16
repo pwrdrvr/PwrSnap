@@ -34,6 +34,15 @@ const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
 const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
 
+async function removeHomeRoot(homeRoot: string): Promise<void> {
+  await rm(homeRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100
+  });
+}
+
 type CloseResult = "closed" | "rejected" | "timeout";
 type ElectronChildProcess = ReturnType<ElectronApplication["process"]>;
 
@@ -245,7 +254,7 @@ export async function launchPwrSnap(
         try {
           await closeElectronApp(launchedApp);
         } finally {
-          await rm(homeRoot, { recursive: true, force: true });
+          await removeHomeRoot(homeRoot);
         }
       }
     };
@@ -257,7 +266,7 @@ export async function launchPwrSnap(
         // Ignore cleanup failures; preserve the original launch error.
       }
     }
-    await rm(homeRoot, { recursive: true, force: true });
+    await removeHomeRoot(homeRoot);
     throw cause;
   }
 }

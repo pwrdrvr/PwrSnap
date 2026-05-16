@@ -219,8 +219,12 @@ echo \"==test (iterations=$ITERATIONS, pattern='$TEST_PATTERN')==\" >&2
 PASS=0
 FAIL=0
 for i in \$(seq 1 $ITERATIONS); do
-  RESULT=\$(xvfb-run --auto-servernum pnpm exec playwright test -c playwright.config.ts ${TEST_PATTERN:+-g \"$TEST_PATTERN\"} --workers 1 --retries 0 --reporter line 2>&1 | tail -3 | tr -d '\\r')
-  if echo \"\$RESULT\" | grep -q 'passed'; then
+  set +e
+  OUTPUT=\$(CI= xvfb-run --auto-servernum pnpm exec playwright test -c playwright.config.ts ${TEST_PATTERN:+-g \"$TEST_PATTERN\"} --workers 1 --retries 0 --reporter line 2>&1)
+  STATUS=\$?
+  set -e
+  RESULT=\$(printf '%s\\n' \"\$OUTPUT\" | tail -3 | tr -d '\\r')
+  if [ \"\$STATUS\" -eq 0 ]; then
     PASS=\$((PASS+1))
     DURATION=\$(echo \"\$RESULT\" | grep -oE '[0-9.]+s' | tail -1)
     echo \"Run \$i: PASS (\$DURATION)\"
@@ -236,7 +240,10 @@ exit \$([ \$FAIL -eq 0 ] && echo 0 || echo 1)"
 else
   # Full suite, GHA-style.
   INNER+="
-xvfb-run --auto-servernum pnpm run test:desktop-e2e"
+cd /work
+xvfb-run --auto-servernum pnpm run test:desktop-e2e
+STATUS=\$?
+exit \$STATUS"
 fi
 
 docker run "${RUN_ARGS[@]}" "$IMAGE" bash -lc "$INNER"

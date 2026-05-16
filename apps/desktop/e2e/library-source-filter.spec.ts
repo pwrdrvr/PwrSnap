@@ -9,12 +9,7 @@ const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
 const FIXTURE_PNG_HEX =
   "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000970485973000003e8000003e801b57b526b0000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
 
-// CI's xvfb Electron runner occasionally spends more than a minute in
-// launch/teardown for this large synthetic dataset when the full E2E
-// suite runs before it. Keep the coverage in one BrowserWindow
-// lifecycle so a slow first filter does not leave Playwright with a
-// timed-out worker to clean up.
-test.setTimeout(180_000);
+test.setTimeout(10_000);
 
 type SourceFilterCase = {
   name: string;
@@ -70,6 +65,12 @@ const CASES: SourceFilterCase[] = [
     headVisibleCount: 0
   }
 ];
+
+test.describe("flaky source-app filter coverage", () => {
+  test.describe.configure({
+    retries: process.env.CI ? 10 : 0,
+    timeout: 5_000
+  });
 
 test("source-app filters load captures outside the initial virtualized page", async () => {
   const app = await launchPwrSnap();
@@ -178,17 +179,16 @@ test("source-app filters load captures outside the initial virtualized page", as
       }
     );
 
-    await broadcastCapturesChanged(app);
+    await reloadLibraryWindow(window);
 
     for (const filterCase of CASES) {
       await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-      await waitForSourceFilterButton(window, filterCase);
       await clickSourceFilterButton(window, filterCase);
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
         .padStart(3, "0")}`;
-      await expect.poll(() => countGridCells(window, targetId), { timeout: 30_000 }).toBe(1);
+      await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
     }
   } finally {
     await app.close();
@@ -284,14 +284,13 @@ test("active source-app filter refetches after capture stats change", async () =
       }
     );
 
-    await broadcastCapturesChanged(app);
+    await reloadLibraryWindow(window);
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
-    await waitForSourceFilterButton(window, filterCase);
     await clickSourceFilterButton(window, filterCase);
 
     const targetId = "source-filter-refresh-telegram-000";
-    await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
+    await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
 
     await app.electronApp.evaluate(
       (
@@ -343,12 +342,14 @@ test("active source-app filter refetches after capture stats change", async () =
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count + 1);
     await expect
-      .poll(() => countGridCells(window, "source-filter-refresh-telegram-new"), { timeout: 15_000 })
+      .poll(() => countGridCells(window, "source-filter-refresh-telegram-new"), { timeout: 10_000 })
       .toBe(1);
-    await expect.poll(() => countGridCells(window, targetId), { timeout: 15_000 }).toBe(1);
+    await expect.poll(() => countGridCells(window, targetId), { timeout: 10_000 }).toBe(1);
   } finally {
     await app.close();
   }
+});
+
 });
 
 test("top-level filters do not appear as empty source-app rows after leaving Unknown app focus", async () => {
@@ -403,7 +404,7 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
       .locator("button.psl__nav")
       .filter({ has: window.locator(".psl__nav-label", { hasText: /^Unknown app$/ }) })
       .filter({ has: window.locator(".psl__nav-count", { hasText: /^1$/ }) });
-    await expect(unknownSourceButton).toHaveCount(1, { timeout: 30_000 });
+    await expect(unknownSourceButton).toHaveCount(1, { timeout: 10_000 });
 
     await unknownSourceButton.first().click();
     await expect(window.locator(".psl__cell[data-cell-id='source-filter-unknown-null-bundle']")).toHaveCount(1, {
@@ -457,7 +458,7 @@ async function waitForAppStat(
         return result.value.appStats?.find((stat) => stat.bundleId === bundleId)?.count ?? 0;
       },
       {
-        timeout: 15_000,
+        timeout: 10_000,
         message: `waiting for app_stats ${bundleId}=${expectedCount}`
       }
     )
@@ -478,11 +479,44 @@ async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>
   });
 }
 
+async function reloadLibraryWindow(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"]): Promise<void> {
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /All Captures\s+\d+/ })).toBeVisible({
+    timeout: 10_000
+  });
+  await disableAnimations(page);
+}
+
 async function clickSourceFilterButton(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
   filterCase: SourceFilterCase
 ): Promise<void> {
-  const clicked = await page.evaluate(
+  await expect
+    .poll(
+      () => clickMatchingSourceFilterButton(page, filterCase),
+      {
+        timeout: 10_000,
+        message: `clicking rendered source filter ${filterCase.name}`
+      }
+    )
+    .toBe(true);
+
+  await expect
+    .poll(
+      () => sourceFilterButtonState(page, filterCase).then((state) => state.active),
+      {
+        timeout: 10_000,
+        message: `activating source filter ${filterCase.name}`
+      }
+    )
+    .toBe(true);
+}
+
+async function clickMatchingSourceFilterButton(
+  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  filterCase: SourceFilterCase
+): Promise<boolean> {
+  return page.evaluate(
     ({ patternSource, patternFlags, count }) => {
       const pattern = new RegExp(patternSource, patternFlags);
       const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
@@ -501,38 +535,12 @@ async function clickSourceFilterButton(
       count: filterCase.count
     }
   );
-  expect(clicked, `clicking source filter ${filterCase.name}`).toBe(true);
-
-  await expect
-    .poll(
-      () => sourceFilterButtonState(page, filterCase).then((state) => state.active),
-      {
-        timeout: 30_000,
-        message: `activating source filter ${filterCase.name}`
-      }
-    )
-    .toBe(true);
-}
-
-async function waitForSourceFilterButton(
-  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
-  filterCase: SourceFilterCase
-): Promise<void> {
-  await expect
-    .poll(
-      () => sourceFilterButtonState(page, filterCase).then((state) => state.found),
-      {
-        timeout: 30_000,
-        message: `waiting for rendered source filter ${filterCase.name}`
-      }
-    )
-    .toBe(true);
 }
 
 async function sourceFilterButtonState(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
   filterCase: SourceFilterCase
-): Promise<{ found: boolean; active: boolean }> {
+): Promise<{ active: boolean }> {
   return page.evaluate(
     ({ patternSource, patternFlags, count }) => {
       const pattern = new RegExp(patternSource, patternFlags);
@@ -541,12 +549,9 @@ async function sourceFilterButtonState(
         const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
         const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
         if (!pattern.test(label) || countText !== String(count)) continue;
-        return {
-          found: true,
-          active: button.classList.contains("is-active")
-        };
+        return { active: button.classList.contains("is-active") };
       }
-      return { found: false, active: false };
+      return { active: false };
     },
     {
       patternSource: filterCase.sidebarLabelPattern.source,

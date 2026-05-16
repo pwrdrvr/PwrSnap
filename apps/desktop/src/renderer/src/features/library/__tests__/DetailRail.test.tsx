@@ -126,6 +126,7 @@ describe("DetailRail", () => {
     const fullOcr = `${"line\n".repeat(80)}final visible line`;
     const { el } = await renderDetailRail(enrichment({ ocrText: fullOcr }));
 
+    expect(el.querySelector(".psl__ai-card-scroll")).not.toBeNull();
     expect(el.querySelector(".psl__ai-card-ocr")?.textContent).toContain("final visible line");
   });
 

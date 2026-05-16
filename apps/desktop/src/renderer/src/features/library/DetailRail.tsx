@@ -156,23 +156,25 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             Codex caption
             <small>{statusLabel(codexStatus)}</small>
           </div>
-          <div className="psl__ai-card-text">
-            {acceptedOrSuggestedDescription !== null ? (
-              acceptedOrSuggestedDescription
-            ) : codexStatus === "queued" || codexStatus === "running" ? (
-              "Codex is reading this capture."
-            ) : codexStatus === "failed" ? (
-              "Codex could not read this capture."
-            ) : (
-              <>
-                Capture from <b>{sourceName}</b>. Enable AI in Settings to generate OCR,
-                descriptions, and tag suggestions.
-              </>
-            )}
+          <div className="psl__ai-card-scroll">
+            <div className="psl__ai-card-text">
+              {acceptedOrSuggestedDescription !== null ? (
+                acceptedOrSuggestedDescription
+              ) : codexStatus === "queued" || codexStatus === "running" ? (
+                "Codex is reading this capture."
+              ) : codexStatus === "failed" ? (
+                "Codex could not read this capture."
+              ) : (
+                <>
+                  Capture from <b>{sourceName}</b>. Enable AI in Settings to generate OCR,
+                  descriptions, and tag suggestions.
+                </>
+              )}
+            </div>
+            {enrichment?.ocrText ? (
+              <div className="psl__ai-card-ocr">{enrichment.ocrText}</div>
+            ) : null}
           </div>
-          {enrichment?.ocrText ? (
-            <div className="psl__ai-card-ocr">{enrichment.ocrText}</div>
-          ) : null}
           <div className="psl__ai-card-actions">
             <button
               className="psl__chip-btn"

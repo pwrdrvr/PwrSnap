@@ -1,0 +1,77 @@
+# Local repro of the GHA `Desktop E2E` job.
+#
+# GHA runs `xvfb-run --auto-servernum pnpm run test:desktop-e2e` on
+# `ubuntu-latest` (currently noble / 24.04) and skips
+# `playwright install-deps` because Chrome+Firefox ship preinstalled
+# and drag in the GTK/libnss/libgbm/libasound stack Electron needs.
+#
+# We mimic that: noble-based Node 24.14.1 image + the runtime libs
+# Electron needs + xvfb. The repo is bind-mounted at run time, so
+# the image stays generic and fast to rebuild when only the test
+# code changes.
+#
+# Multi-arch: built off `node:24.14.1-noble`, which has linux/amd64
+# AND linux/arm64 variants. On Apple Silicon hosts it runs natively
+# (arm64) — that's slightly faster than GHA's amd64 hardware but
+# the test flake we're reproducing is timing-based, not arch-
+# specific. If a future check wants exact-arch parity, add
+# `--platform linux/amd64` to the docker build/run invocation.
+
+FROM node:24.14-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# xvfb + the Electron/Chromium runtime libs (same set the
+# Playwright base image installs). Note: GHA ubuntu-latest is
+# actually 24.04 noble — bookworm is debian 12 — but for the
+# purpose of reproducing the test-flake (which is timing + IPC,
+# not OS API), bookworm is close enough. The lib names differ
+# (no `-t64` suffix on bookworm because debian hasn't done the
+# 64-bit time_t transition yet).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    xvfb \
+    xauth \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libxshmfence1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    libatspi2.0-0 \
+    libgtk-3-0 \
+    libsecret-1-0 \
+    libdbus-1-3 \
+  && rm -rf /var/lib/apt/lists/*
+
+# corepack ships with node:24; enable so pnpm@10.33.0 from
+# `packageManager` in package.json takes effect.
+RUN corepack enable
+
+# Hermetic install dir: bind the repo at /work, but install into a
+# container-local pnpm store so we don't fight the host's
+# .pnpm-store or arch-specific .node binaries (better-sqlite3 +
+# sharp ship per-platform prebuilt .node files; the host's macOS
+# arm64 .node files would crash inside the container).
+ENV PNPM_HOME=/root/.local/share/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+ENV CI=1
+ENV NODE_ENV=production
+
+WORKDIR /work
+
+# Default to running the Desktop E2E job verbatim. Override via
+# `docker run … <cmd>` for ad-hoc poking (e.g.
+# `xvfb-run pnpm exec playwright test -g "source-app filters"`).
+CMD ["bash", "-lc", "pnpm install --frozen-lockfile=false && xvfb-run --auto-servernum pnpm run test:desktop-e2e"]

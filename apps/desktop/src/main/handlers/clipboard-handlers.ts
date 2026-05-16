@@ -1,12 +1,14 @@
 // Clipboard handlers. Three commands:
 //
 //   • clipboard:copy — v1 + v2: renders the capture at a preset
-//     width, writes a rich clipboard payload (image pixels + file
-//     URL via prepareRenderedPngAlias) so consumers that prefer file
-//     URLs (e.g. Finder, Mail attach) get one and consumers that
-//     prefer image bytes (Slack, Messages) also work. Stays entirely
-//     in the main process — never round-trips the buffer through
-//     the renderer.
+//     width and writes image bytes to the system clipboard. Stays
+//     entirely in the main process — never round-trips the buffer
+//     through the renderer (Electron's structured-clone boundary
+//     turns multi-MB PNGs into noticeable jank). PR #39 removed an
+//     earlier file-URL co-write because some consumers pasted the
+//     plain-text URL instead of the image bytes; native file drag is
+//     the right path for file URLs (see capture-handlers' drag
+//     payload).
 //
 //   • clipboard:copyLayerFragment — v2 only: serializes selected
 //     layers + referenced sources into a private UTI buffer
@@ -36,8 +38,7 @@
 import { clipboard, nativeImage } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { basename, dirname } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname } from "node:path";
 import sharp from "sharp";
 import { nanoid } from "nanoid";
 import {
@@ -58,7 +59,6 @@ import {
   scheduleRepack
 } from "../persistence/bundle-store";
 import { renderViaCoordinator } from "../render/coordinator";
-import { prepareRenderedPngAlias } from "../render/file-alias";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { getCacheSourcePath } from "../persistence/paths";
 import { getMainLogger } from "../log";
@@ -104,18 +104,12 @@ export function registerClipboardHandlers(): void {
           message: "nativeImage decoded to empty buffer"
         });
       }
-      // Rich payload: image bytes + file URL (PR #25). Consumers that
-      // prefer file URLs (Finder, Mail attach) get one via the bookmark;
-      // consumers that prefer image bytes (Slack, Messages) read the
-      // image. `prepareRenderedPngAlias` materializes a clean filename
-      // alongside the cache file so the bookmark text is presentable.
-      const clipboardPath = await prepareRenderedPngAlias(result.cachePath);
-      const fileUrl = pathToFileURL(clipboardPath).href;
-      clipboard.write({
-        text: fileUrl,
-        bookmark: basename(clipboardPath),
-        image
-      });
+      // Image bytes only. PR #25 originally also wrote a file URL via
+      // text+bookmark, but PR #39 reverted that because some consumers
+      // (Cursor, certain web apps) preferred the plain-text URL over
+      // the image. Native file drag (capture-handlers' drag payload)
+      // is the right path for callers that need a file URL.
+      clipboard.write({ image });
       log.info("copied to clipboard", {
         captureId: record.id,
         preset: req.preset,

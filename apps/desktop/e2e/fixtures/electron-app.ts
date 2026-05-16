@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import {
   _electron as electron,
   expect,
+  test,
   type ElectronApplication,
   type Page
 } from "@playwright/test";
@@ -32,30 +33,26 @@ import type { CommandName, Req, Res, Result, PwrSnapError } from "@pwrsnap/share
 const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(fixtureDir, "..", "..");
 const mainEntry = path.resolve(desktopRoot, "out", "main", "index.js");
-const ELECTRON_CLOSE_TIMEOUT_MS = 5_000;
+const ELECTRON_KILL_EXIT_TIMEOUT_MS = 1_000;
 
-type CloseResult = "closed" | "rejected" | "timeout";
 type ElectronChildProcess = ReturnType<ElectronApplication["process"]>;
 
-async function waitForClose(promise: Promise<void>, timeoutMs: number): Promise<CloseResult> {
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race<CloseResult>([
-      promise.then(
-        () => "closed",
-        () => "rejected"
-      ),
-      new Promise<"timeout">((resolve) => {
-        timeout = setTimeout(() => resolve("timeout"), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
-}
+type ActiveLaunch = {
+  child: ElectronChildProcess;
+  homeRoot: string;
+  closed: boolean;
+};
+
+const activeLaunches = new Set<ActiveLaunch>();
 
 function hasExited(child: ElectronChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
+}
+
+function killIfRunning(child: ElectronChildProcess): void {
+  if (!hasExited(child) && !child.killed) {
+    child.kill("SIGKILL");
+  }
 }
 
 async function waitForProcessExit(
@@ -78,27 +75,27 @@ async function waitForProcessExit(
   }
 }
 
-async function closeElectronApp(app: ElectronApplication): Promise<void> {
-  const child = app.process();
-  try {
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.dock?.hide();
-      electronApp.exit(0);
-    });
-  } catch {
-    // The process may exit before the evaluate call can round-trip.
-  }
+async function closeElectronApp(launch: ActiveLaunch): Promise<void> {
+  if (launch.closed) return;
+  launch.closed = true;
+  activeLaunches.delete(launch);
 
-  const closePromise = app.close();
-  const result = await waitForClose(closePromise, ELECTRON_CLOSE_TIMEOUT_MS);
-  if (result === "closed" && (await waitForProcessExit(child, 1_000))) return;
-
-  if (!hasExited(child) && !child.killed) {
-    child.kill("SIGKILL");
-  }
-  await waitForProcessExit(child, 1_000);
-  await waitForClose(closePromise, 1_000);
+  const { child } = launch;
+  killIfRunning(child);
+  await waitForProcessExit(child, ELECTRON_KILL_EXIT_TIMEOUT_MS);
 }
+
+test.afterEach(async () => {
+  await Promise.all(
+    Array.from(activeLaunches, async (launch) => {
+      try {
+        await closeElectronApp(launch);
+      } finally {
+        await rm(launch.homeRoot, { recursive: true, force: true });
+      }
+    })
+  );
+});
 
 /**
  * Poll Electron's BrowserWindow list until the library window appears
@@ -184,6 +181,7 @@ export async function launchPwrSnap(
   }
 
   let electronApp: ElectronApplication | null = null;
+  let activeLaunch: ActiveLaunch | null = null;
   try {
     const launchedApp = await electron.launch({
       args: [mainEntry],
@@ -191,6 +189,13 @@ export async function launchPwrSnap(
       env
     });
     electronApp = launchedApp;
+    activeLaunch = {
+      child: launchedApp.process(),
+      homeRoot,
+      closed: false
+    };
+    activeLaunches.add(activeLaunch);
+    const launch = activeLaunch;
 
     // The main process pre-warms a region-selector BrowserWindow before
     // it opens the library window. firstWindow() races them and may
@@ -243,16 +248,23 @@ export async function launchPwrSnap(
       },
       close: async () => {
         try {
-          await closeElectronApp(launchedApp);
+          await closeElectronApp(launch);
         } finally {
           await rm(homeRoot, { recursive: true, force: true });
         }
       }
     };
   } catch (cause) {
-    if (electronApp !== null) {
+    if (activeLaunch !== null) {
       try {
-        await closeElectronApp(electronApp);
+        await closeElectronApp(activeLaunch);
+      } catch {
+        // Ignore cleanup failures; preserve the original launch error.
+      }
+    } else if (electronApp !== null) {
+      try {
+        killIfRunning(electronApp.process());
+        await waitForProcessExit(electronApp.process(), ELECTRON_KILL_EXIT_TIMEOUT_MS);
       } catch {
         // Ignore cleanup failures; preserve the original launch error.
       }

@@ -90,37 +90,60 @@ export function insertOrFindCapture(input: InsertCapture): {
   isNew: boolean;
 } {
   const db = getDb();
-  return db.transaction(() => {
-    const inserted = db
-      .prepare(
-        `INSERT INTO captures (
-          id, kind, captured_at,
-          source_app_bundle_id, source_app_name, src_path,
-          width_px, height_px, device_pixel_ratio,
-          byte_size, sha256, overlays_version, deleted_at
-        ) VALUES (
-          @id, @kind, @captured_at,
-          @source_app_bundle_id, @source_app_name, @src_path,
-          @width_px, @height_px, @device_pixel_ratio,
-          @byte_size, @sha256, 0, NULL
-        )
-        ON CONFLICT(sha256) DO NOTHING
-        RETURNING *`
-      )
-      .get(input) as CaptureRow | undefined;
+  return db.transaction(() => insertOrFindCaptureInTx(db, input))();
+}
 
-    if (inserted !== undefined) {
-      bumpAppStat(input.source_app_bundle_id, +1);
-      return { record: rowToRecord(inserted), isNew: true };
-    }
-    // Dedup path: a row with this sha256 already exists. Surface it
-    // unchanged; do NOT bump app_stats (the existing row is already
-    // counted).
-    const existing = db
-      .prepare("SELECT * FROM captures WHERE sha256 = ?")
-      .get(input.sha256) as CaptureRow;
-    return { record: rowToRecord(existing), isNew: false };
-  })();
+/**
+ * Bulk variant of `insertOrFindCapture`. Runs every insert inside a
+ * single SQLite transaction so the chain pays ONE commit + fsync
+ * instead of N (better-sqlite3 commits per `db.transaction()`).
+ *
+ * Only used by the E2E test bridge today — the production capture
+ * flow ingests captures one-at-a-time as the user fires them. If a
+ * future feature wants bulk import (e.g. restore from backup), it
+ * should call this directly rather than looping over the single
+ * variant.
+ */
+export function insertOrFindCapturesBatch(
+  inputs: InsertCapture[]
+): Array<{ record: CaptureRecord; isNew: boolean }> {
+  const db = getDb();
+  return db.transaction(() => inputs.map((input) => insertOrFindCaptureInTx(db, input)))();
+}
+
+function insertOrFindCaptureInTx(
+  db: ReturnType<typeof getDb>,
+  input: InsertCapture
+): { record: CaptureRecord; isNew: boolean } {
+  const inserted = db
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at,
+        source_app_bundle_id, source_app_name, src_path,
+        width_px, height_px, device_pixel_ratio,
+        byte_size, sha256, overlays_version, deleted_at
+      ) VALUES (
+        @id, @kind, @captured_at,
+        @source_app_bundle_id, @source_app_name, @src_path,
+        @width_px, @height_px, @device_pixel_ratio,
+        @byte_size, @sha256, 0, NULL
+      )
+      ON CONFLICT(sha256) DO NOTHING
+      RETURNING *`
+    )
+    .get(input) as CaptureRow | undefined;
+
+  if (inserted !== undefined) {
+    bumpAppStat(input.source_app_bundle_id, +1);
+    return { record: rowToRecord(inserted), isNew: true };
+  }
+  // Dedup path: a row with this sha256 already exists. Surface it
+  // unchanged; do NOT bump app_stats (the existing row is already
+  // counted).
+  const existing = db
+    .prepare("SELECT * FROM captures WHERE sha256 = ?")
+    .get(input.sha256) as CaptureRow;
+  return { record: rowToRecord(existing), isNew: false };
 }
 
 export function getCaptureById(id: string): CaptureRecord | null {

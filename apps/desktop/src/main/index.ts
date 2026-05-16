@@ -390,7 +390,9 @@ export function bootstrapApp(): void {
       // helper covers every command without per-command plumbing.
       // Lazy-required so production bundles don't even import this
       // shim's `bus` reference unless the flag is on.
-      const { insertOrFindCapture } = await import("./persistence/captures-repo");
+      const { insertOrFindCapture, insertOrFindCapturesBatch } = await import(
+        "./persistence/captures-repo"
+      );
       const { getDb } = await import("./persistence/db");
       const { setFloatOverState } = await import("./float-over");
       const { showTrayPopoverForE2E, hideTrayPopoverForE2E } = await import("./tray");
@@ -405,6 +407,13 @@ export function bootstrapApp(): void {
         // bundler changes.
         seedCapture: (input: Parameters<typeof insertOrFindCapture>[0]) =>
           insertOrFindCapture(input),
+        // Batch variant — runs all inserts inside one SQLite
+        // transaction so the chain pays one fsync instead of N.
+        // Lets specs seed 100+ captures inside a single
+        // `electronApp.evaluate` without blowing their time budget
+        // on slow CI disks.
+        seedCaptures: (inputs: Parameters<typeof insertOrFindCapture>[0][]) =>
+          insertOrFindCapturesBatch(inputs),
         // Drive the float-over state machine directly. Used by
         // float-over-visibility.spec.ts to assert the toast actually
         // reaches isVisible:true and stays there past the auto-dismiss

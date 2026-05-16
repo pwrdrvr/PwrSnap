@@ -8,6 +8,7 @@
 // What goes into the hash:
 //   • format ("png" | "webp")
 //   • target_width
+//   • encoder_version (bumps when lossless output semantics change)
 //   • applied overlays (rejected_at IS NULL, applied_at IS NOT NULL,
 //     superseded_by IS NULL), sorted by (z_index ASC, id ASC), each
 //     overlay's `data` blob canonicalized.
@@ -26,6 +27,8 @@
 import { createHash } from "node:crypto";
 import stringify from "safe-stable-stringify";
 import type { OverlayRow } from "@pwrsnap/shared";
+
+const RENDER_ENCODER_VERSION = 2;
 
 export type RenderHashInput = {
   /** Output format. */
@@ -60,6 +63,7 @@ export function computeRenderHash(input: RenderHashInput): string {
     d: o.data
   }));
   const canonical = stringify({
+    encoderVersion: RENDER_ENCODER_VERSION,
     format: input.format,
     width: input.width,
     overlays: projected

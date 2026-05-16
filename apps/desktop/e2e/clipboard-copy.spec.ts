@@ -19,6 +19,8 @@
 //   3. preset='high' produces a clipboard image at SOURCE width
 //      (no resize when targetWidth >= source width).
 //   4. The clipboard NativeImage is non-empty (has decoded bytes).
+//   5. The pasteboard does not expose a plain-text file URL that
+//      paste targets can choose instead of image bytes.
 //
 // macOS-only because clipboard image handling differs across
 // platforms; the macOS clipboard supports NativeImage natively
@@ -26,10 +28,9 @@
 // pixel dimensions when reading back. We only ship to macOS in
 // Phase 1; cross-platform clipboard testing lands when Phase 8 does.
 
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import sharp from "sharp";
 import { launchPwrSnap } from "./fixtures/electron-app";
@@ -160,6 +161,34 @@ async function readClipboardBookmark(
   });
 }
 
+async function readClipboardText(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<string> {
+  return await app.electronApp.evaluate(() => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: {
+          readClipboardText: () => string;
+        };
+      }
+    ).__PWRSNAP_TEST__;
+    return bridge.readClipboardText();
+  });
+}
+
+async function readClipboardFormats(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>
+): Promise<string[]> {
+  return await app.electronApp.evaluate(() => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__: {
+          readClipboardFormats: () => string[];
+        };
+      }
+    ).__PWRSNAP_TEST__;
+    return bridge.readClipboardFormats();
+  });
+}
+
 test.describe("clipboard copy preset widths", () => {
   test.skip(
     !isMac,
@@ -215,7 +244,7 @@ test.describe("clipboard copy preset widths", () => {
     }
   });
 
-  test("preset='med' also advertises the rendered PNG file URL", async () => {
+  test("preset='med' advertises image bytes without a plain-text file URL", async () => {
     const app = await launchPwrSnap();
     try {
       const { pngPath, sha256 } = await makeFixturePng(SRC_W, SRC_H);
@@ -231,12 +260,14 @@ test.describe("clipboard copy preset widths", () => {
       }
       expect(path.basename(drag.value.path)).toBe("image.png");
 
+      expect(await readClipboardText(app)).toBe("");
       const bookmark = await readClipboardBookmark(app);
-      const clipboardPath = fileURLToPath(bookmark.url);
-      expect(bookmark.url).toBeTruthy();
-      expect(path.basename(clipboardPath)).toBe("image.png");
-      expect(bookmark.title).toBe("image.png");
-      expect(await readFile(clipboardPath)).toEqual(await readFile(drag.value.path));
+      expect(bookmark.url).toBe("");
+      expect(bookmark.title).toBe("");
+
+      const formats = await readClipboardFormats(app);
+      expect(formats).not.toContain("text/plain");
+      expect(formats).not.toContain("text/uri-list");
 
       const img = await readClipboardImage(app);
       expect(img).not.toBeNull();

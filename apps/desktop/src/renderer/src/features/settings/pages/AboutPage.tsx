@@ -17,6 +17,7 @@ type VersionInfo = {
 export function AboutPage(): ReactElement {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +34,14 @@ export function AboutPage(): ReactElement {
       cancelled = true;
     };
   }, []);
+
+  async function openDocument(kind: "changelog" | "third-party-licenses"): Promise<void> {
+    setDocumentError(null);
+    const result = await dispatch("app:openDocumentWindow", { kind });
+    if (!result.ok) {
+      setDocumentError(result.error.message);
+    }
+  }
 
   return (
     <>
@@ -75,6 +84,40 @@ export function AboutPage(): ReactElement {
           tag="UNLICENSED"
         >
           <span className="pss__opt-primary">UNLICENSED · © 2026 PwrDrvr LLC</span>
+        </Row>
+        <Row
+          label="Third-party notices"
+          sub="Bundled dependency and font notices for this app build."
+          tag="notices"
+        >
+          <button
+            className="pss__top-btn"
+            type="button"
+            onClick={() => {
+              void openDocument("third-party-licenses");
+            }}
+          >
+            Open licenses
+          </button>
+        </Row>
+        {documentError !== null ? (
+          <Row label="Document status" sub="" tag="error">
+            <span className="pss__opt-sub">Failed to open document: {documentError}</span>
+          </Row>
+        ) : null}
+      </Card>
+
+      <Card eyebrow="RELEASE NOTES" title="Changelog">
+        <Row label="Release notes" sub="Bundled changelog for this app build." tag="changelog">
+          <button
+            className="pss__top-btn"
+            type="button"
+            onClick={() => {
+              void openDocument("changelog");
+            }}
+          >
+            Open changelog
+          </button>
         </Row>
       </Card>
 

@@ -1,4 +1,5 @@
 import { Editor } from "./features/editor/Editor";
+import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
@@ -6,7 +7,8 @@ import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 
-type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings";
+type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings" | "document";
+type AppDocumentKind = "changelog" | "third-party-licenses";
 
 function readStage(): Stage {
   const hash = window.location.hash.replace(/^#/, "");
@@ -17,11 +19,22 @@ function readStage(): Stage {
     v === "float-over" ||
     v === "region" ||
     v === "edit" ||
-    v === "settings"
+    v === "settings" ||
+    v === "document"
   ) {
     return v;
   }
   return "library";
+}
+
+function readDocumentKind(): AppDocumentKind | null {
+  const hash = window.location.hash.replace(/^#/, "");
+  const params = new URLSearchParams(hash);
+  const kind = params.get("kind");
+  if (kind === "changelog" || kind === "third-party-licenses") {
+    return kind;
+  }
+  return null;
 }
 
 function readCaptureId(): string | null {
@@ -35,6 +48,7 @@ function readCaptureId(): string | null {
 
 const STAGE = readStage();
 const CAPTURE_ID = readCaptureId();
+const DOCUMENT_KIND = readDocumentKind();
 document.body.dataset.stage = STAGE;
 
 // Distinct document.title per stage. Every PwrSnap window loads
@@ -52,7 +66,11 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   "float-over": "PwrSnap Toast",
   region: "PwrSnap Capture",
   edit: "PwrSnap Editor",
-  settings: "PwrSnap Settings"
+  settings: "PwrSnap Settings",
+  document:
+    DOCUMENT_KIND === "third-party-licenses"
+      ? "PwrSnap Third-party Licenses"
+      : "PwrSnap Changelog"
 };
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
@@ -69,6 +87,9 @@ export function App() {
     }
     if (STAGE === "settings") {
       return <SettingsApp />;
+    }
+    if (STAGE === "document") {
+      return <AppDocumentWindow kind={DOCUMENT_KIND} />;
     }
     if (STAGE === "edit") {
       if (CAPTURE_ID === null) {

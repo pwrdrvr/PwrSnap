@@ -4,6 +4,7 @@
 @import "./float-over.css";
 @import "./region.css";
 @import "./settings.css";
+@import "./documents.css";
 
 * {
   box-sizing: border-box;

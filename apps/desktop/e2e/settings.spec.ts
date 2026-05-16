@@ -114,7 +114,11 @@ test("settings:open with a page deep-links and re-navigates the existing window"
     // the navigate event is async across processes.
     const second = await app.dispatch("settings:open", { page: "hotkeys" });
     expect(second.ok).toBe(true);
-    await expect.poll(() => settingsWindow.url(), { timeout: 10_000 }).toContain(
+    // 30s is generous but the test exits the poll as soon as the URL
+    // updates, so the warm-path cost is unchanged. 10s wasn't enough
+    // headroom on slow Linux CI runners (observed an 11.1s failure on
+    // a cold runner where the same test ran in 1.7s on a warm one).
+    await expect.poll(() => settingsWindow.url(), { timeout: 30_000 }).toContain(
       "page=hotkeys"
     );
 

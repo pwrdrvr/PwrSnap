@@ -4,8 +4,16 @@
 // surface — the in-canvas editor shortcuts, the All Screens chord,
 // etc. — and is intentionally non-interactive.
 
-import type { ReactElement } from "react";
-import { Card, Hk, HkUnset, HotkeyCapture, Row } from "../components";
+import { useMemo, useState, type ReactElement } from "react";
+import {
+  Card,
+  Hk,
+  HkUnset,
+  HotkeyCapture,
+  HotkeyResetModal,
+  Row,
+  type HotkeyChange
+} from "../components";
 import { useSettingsContext } from "../SettingsContext";
 
 /**
@@ -82,11 +90,21 @@ const HOTKEY_DEFAULTS = {
   videoCapture: "CommandOrControl+Shift+V"
 } as const;
 
+type HotkeyKey = "quickCapture" | "region" | "window" | "videoCapture";
+
+/** Human labels for the four editable bindings — used both in the
+ *  in-page rows and in the reset-confirmation modal's diff list. */
+const HOTKEY_LABELS: Record<HotkeyKey, string> = {
+  quickCapture: "Quick Capture",
+  region: "Region",
+  window: "Window",
+  videoCapture: "Video Capture"
+};
+
 export function HotkeysPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const hk = settings?.hotkeys ?? null;
-
-  type HotkeyKey = "quickCapture" | "region" | "window" | "videoCapture";
+  const [confirmingReset, setConfirmingReset] = useState<boolean>(false);
 
   const writeOne = async (key: HotkeyKey, next: string): Promise<void> => {
     // Explicit object spread so TypeScript can verify the patch shape
@@ -106,9 +124,27 @@ export function HotkeysPage(): ReactElement {
     writeOne(key, next);
   const onUnbind = (key: HotkeyKey) => (): Promise<void> => writeOne(key, "");
 
-  const onResetDefaults = async (): Promise<void> => {
+  /** Diff every editable binding against its default. Drives both the
+   *  customization-count badge in the header and the modal's diff list. */
+  const pendingChanges = useMemo<HotkeyChange[]>(() => {
+    if (hk === null) return [];
+    const out: HotkeyChange[] = [];
+    for (const key of Object.keys(HOTKEY_DEFAULTS) as HotkeyKey[]) {
+      const current = hk[key];
+      const next = HOTKEY_DEFAULTS[key];
+      if (current === next) continue;
+      out.push({ key, label: HOTKEY_LABELS[key], current, next });
+    }
+    return out;
+  }, [hk]);
+
+  const onConfirmReset = async (): Promise<void> => {
     await patch({ hotkeys: { ...HOTKEY_DEFAULTS } });
+    setConfirmingReset(false);
   };
+
+  const count = pendingChanges.length;
+  const customizedNoun = count === 1 ? "customization" : "customizations";
 
   return (
     <>
@@ -121,6 +157,21 @@ export function HotkeysPage(): ReactElement {
             trigger — picks region, window, or full-screen based on the cursor.
             Click any chord below to rebind. Press Escape mid-record to cancel.
           </p>
+        </div>
+        <div className="pss__main-actions">
+          {count > 0 ? (
+            <span className="pss__main-count" aria-live="polite">
+              {count} {customizedNoun}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="pss__top-btn"
+            disabled={count === 0}
+            onClick={() => setConfirmingReset(true)}
+          >
+            Reset to defaults
+          </button>
         </div>
       </div>
 
@@ -226,7 +277,7 @@ export function HotkeysPage(): ReactElement {
         </Row>
       </Card>
 
-      <Card eyebrow="EDITOR" title="In-canvas tools (Focus + Float-Over)" collapsed>
+      <Card eyebrow="EDITOR" title="In-canvas tools (Focus + Float-Over)" defaultCollapsed>
         <Row
           label="Select / Crop / Arrow / Rect / Highlight / Text / Blur"
           sub="Single-letter when focus is in the editor canvas."
@@ -236,16 +287,13 @@ export function HotkeysPage(): ReactElement {
         </Row>
       </Card>
 
-      <div className="pss__footer">
-        <span className="pss__footer-status">All changes saved automatically</span>
-        <button
-          type="button"
-          className="pss__top-btn"
-          onClick={() => void onResetDefaults()}
-        >
-          Reset to defaults
-        </button>
-      </div>
+      {confirmingReset ? (
+        <HotkeyResetModal
+          changes={pendingChanges}
+          onCancel={() => setConfirmingReset(false)}
+          onConfirm={onConfirmReset}
+        />
+      ) : null}
     </>
   );
 }

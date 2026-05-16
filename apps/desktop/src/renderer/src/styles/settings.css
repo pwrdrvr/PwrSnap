@@ -241,6 +241,17 @@
   overflow: hidden;
 }
 .pss__card-hdr {
+  /* button-reset — the header is a real <button> so the entire row
+     is a click target (good a11y), then we paint it like a card
+     header. */
+  appearance: none;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -249,6 +260,18 @@
   border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
   user-select: none;
+}
+.pss__card.is-collapsed .pss__card-hdr {
+  border-bottom-color: transparent;
+}
+.pss__card-hdr:hover {
+  background: var(--bg-panel-hover);
+}
+.pss__card-hdr-action {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  margin-right: 8px;
 }
 .pss__card-hdr-l { display: flex; flex-direction: column; gap: 2px; }
 .pss__card-eyebrow {
@@ -886,35 +909,124 @@
 .pss__role-provider svg { color: var(--text-muted); margin-left: auto; }
 .pss__role-provider b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* footer save / cancel buttons — sits at the natural end of the page,
-   not sticky. Sticky-with-gradient (the design's original) overlapped
-   whatever row happened to be at the bottom of the viewport because
-   the gradient only fades, doesn't actually mask. Page is short enough
-   that scrolling-to-find is fine. */
-.pss__footer {
-  padding: 20px 0 8px;
-  margin-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 16px;
+/* Customization-count badge in page-header actions — shows
+   "N customizations" next to the Reset button on Hotkeys (extensible
+   to any page that grows a Reset). */
+.pss__main-count {
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  padding: 5px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  text-transform: uppercase;
+}
+
+/* Disabled state for the page-action button (Reset to defaults goes
+   disabled when there's nothing to reset). */
+.pss__top-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pss__top-btn:disabled:hover {
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
+}
+
+/* ============================================================
+   MODAL — backdrop + centered card. Used by HotkeyResetModal; any
+   future Settings confirmation reuses the same shapes.
+   ============================================================ */
+.pss__modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  padding: 32px;
+  -webkit-app-region: no-drag;
 }
-.pss__footer-status {
+.pss__modal {
+  width: min(520px, 100%);
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.pss__modal-hdr {
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.pss__modal-eyebrow {
+  font: 700 9px/1 var(--font-sans);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.pss__modal-title {
+  margin: 10px 0 0;
+  font: 700 18px/1.25 var(--font-display);
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+.pss__modal-sub {
+  margin: 8px 0 0;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+}
+.pss__modal-body {
   flex: 1;
-  font: 500 11px/1 var(--font-mono);
-  color: var(--text-muted);
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+}
+.pss__modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+
+/* Diff list inside a confirmation modal — one row per pending change. */
+.pss__diff-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__diff-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.pss__diff-label {
+  font: 600 12px/1.3 var(--font-sans);
+  color: var(--text-primary);
+  min-width: 0;
+}
+.pss__diff-chord {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
 }
-.pss__footer-status::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 2px rgba(109, 186, 126, 0.18);
+.pss__diff-arrow {
+  color: var(--text-muted);
+  font: 600 13px/1 var(--font-mono);
 }
 
 /* Slice B placeholder content */

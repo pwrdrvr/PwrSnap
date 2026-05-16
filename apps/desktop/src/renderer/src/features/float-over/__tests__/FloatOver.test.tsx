@@ -229,6 +229,25 @@ describe("FloatOver Codex suggestions", () => {
     expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
   });
 
+  test("does not repeat a previewed Codex description in the AI strip", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment(),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    expect(el.querySelector<HTMLTextAreaElement>(".fo__desc")?.value).toBe(
+      "Dark-mode LINE desktop chat showing PwrAgent command help."
+    );
+    expect(el.querySelector(".fo__ai-text")?.textContent).toBe("Draft caption from Codex.");
+    expect(el.querySelector(".fo__ai-text")?.textContent).not.toContain(
+      "Dark-mode LINE desktop chat showing PwrAgent command help."
+    );
+    expect(el.querySelector(".fo__ai-accept")?.textContent).toBe("Save");
+  });
+
   test("pauses countdown while Codex is still running", async () => {
     const el = await renderFloatOver({
       src: "data:image/png;base64,",

@@ -257,6 +257,8 @@ export function FloatOver({
   const [visibleSrc, setVisibleSrc] = useState(src);
   const [sourceLoaded, setSourceLoaded] = useState(false);
 
+  const isSuggestedDescriptionPreview =
+    descriptionOrigin === "suggested" && suggestedDescription.trim().length > 0;
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
@@ -700,6 +702,8 @@ export function FloatOver({
               </>
             ) : aiFailed ? (
               <>Codex could not read this snap.</>
+            ) : isSuggestedDescriptionPreview ? (
+              <>Draft caption from <b>Codex</b>.</>
             ) : suggestedDescription.length > 0 ? (
               <>
                 Codex thinks: <b>{suggestedDescription}</b>
@@ -729,7 +733,7 @@ export function FloatOver({
                 setAiAccepted(true);
               }}
             >
-              Use
+              {isSuggestedDescriptionPreview ? "Save" : "Use"}
             </button>
           )}
         </div>

@@ -107,6 +107,17 @@ test("settings:open with a page deep-links and re-navigates the existing window"
     const settingsWindow = await waitForSettingsWindow(app);
     expect(settingsWindow.url()).toContain("page=ai");
 
+    // CRITICAL: wait for the renderer's `useActivePage` `useEffect` to
+    // run before dispatching the second open. `waitForSettingsWindow`
+    // returns on `domcontentloaded`, which fires BEFORE React mounts —
+    // and the navigate event has no buffering, so an event sent before
+    // `useActivePage` subscribes is dropped on the floor. We wait for
+    // the AI Providers page title to be in the DOM as proof that React
+    // mounted + routed + the `useActivePage` effect ran.
+    await settingsWindow
+      .locator('h1.pss__main-title:has-text("Backends & credentials")')
+      .waitFor({ timeout: 30_000 });
+
     // Second open with a different page — the window is already
     // there, so main fires `EVENT_CHANNELS.settingsNavigate`. The
     // renderer's `useActivePage` hook calls `setActivePage(hotkeys)`,

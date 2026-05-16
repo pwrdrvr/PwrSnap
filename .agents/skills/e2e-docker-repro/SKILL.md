@@ -21,9 +21,9 @@ Docker harness under [scripts/e2e](../../../scripts/e2e).
 
 3. Prefer a focused repro before a full-suite run. Use the exact Playwright
    title substring from CI when possible.
-4. Use `--platform linux/amd64` when matching GitHub Actions matters. Native
-   Apple Silicon Docker is faster but can surface arm64/GTK artifacts that GHA
-   x86 runners do not.
+4. Start on Docker's native Linux platform. Use `--platform linux/amd64` only
+   when the failure looks architecture-specific or you need exact GHA x86
+   parity; it is much slower on Apple Silicon.
 
 ## Commands
 
@@ -34,7 +34,6 @@ Focused stress run against the current worktree:
 ```bash
 PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
   ./scripts/e2e/run-docker.sh \
-  --platform linux/amd64 \
   --test '<Playwright title or grep pattern>' \
   --iterations 30 \
   --keep-stage
@@ -44,13 +43,13 @@ Full GHA-style Desktop E2E job:
 
 ```bash
 PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
-  ./scripts/e2e/run-docker.sh --platform linux/amd64 --keep-stage
+  ./scripts/e2e/run-docker.sh --keep-stage
 ```
 
 Equivalent root pnpm entrypoint:
 
 ```bash
-pnpm test:desktop-e2e:docker --platform linux/amd64 --keep-stage
+pnpm test:desktop-e2e:docker --keep-stage
 ```
 
 Run a different ref without switching the worktree:
@@ -59,7 +58,6 @@ Run a different ref without switching the worktree:
 git fetch origin
 PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
   ./scripts/e2e/run-docker.sh \
-  --platform linux/amd64 \
   --ref origin/<branch-or-ref> \
   --test '<pattern>' \
   --iterations 30 \
@@ -70,7 +68,7 @@ Drop into the staged container for ad-hoc inspection:
 
 ```bash
 PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
-  ./scripts/e2e/run-docker.sh --platform linux/amd64 --shell
+  ./scripts/e2e/run-docker.sh --shell
 ```
 
 ## Workflow
@@ -112,7 +110,8 @@ PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
 
 - Do not trust output text parsing for pass/fail; use process exit status.
 - Do not compare native arm64 Docker failures to GHA without considering
-  architecture. Use `--platform linux/amd64` for parity.
+  architecture. Retry with `--platform linux/amd64` when the signal appears
+  architecture-specific.
 - Do not delete or overwrite user work while staging; the wrapper rsyncs into
   `PWRSNAP_E2E_STAGE`, not back into the repo.
 - Do not leave debug logs, debug env gates, or preserved-home switches in the

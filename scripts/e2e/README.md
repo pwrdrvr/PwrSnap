@@ -28,7 +28,7 @@ See `./scripts/e2e/run-docker.sh --help` for the full option list.
 You can also invoke the same harness through pnpm from the repository root:
 
 ```bash
-pnpm test:desktop-e2e:docker --platform linux/amd64
+pnpm test:desktop-e2e:docker
 pnpm test:desktop-e2e:docker --test 'source-app filters' --iterations 30
 ```
 
@@ -118,7 +118,8 @@ assertion 'G_IS_OBJECT (object)' failed` errors when PwrSnap
 creates `type: "panel"` BrowserWindows (focus-sink, region
 selectors). The GHA x86 builds don't show those.
 
-If you need a more faithful x86 reproduction:
+Native Docker is the default because it is much faster and usually enough for
+flake hunting. If you need a more faithful x86 reproduction:
 
 ```bash
 # Requires Docker buildx + qemu installed (Docker Desktop ships

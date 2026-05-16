@@ -1,0 +1,4 @@
+interface:
+  display_name: "E2E Docker Repro"
+  short_description: "Reproduce GHA E2E failures in Docker"
+  default_prompt: "Use $e2e-docker-repro to reproduce a GitHub Actions Desktop E2E failure locally with Docker."

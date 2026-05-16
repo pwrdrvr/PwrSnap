@@ -62,6 +62,22 @@ export function __setSettingsServicesForTests(injected: {
   if (injected.secrets !== undefined) secretStore = injected.secrets;
 }
 
+/** Main-side listeners that want to react to settings changes (e.g.
+ *  the dynamic global-shortcut registrar in `index.ts`) subscribe via
+ *  `onSettingsChanged`. Renderer windows still get the
+ *  `events:settings:changed` IPC broadcast; this is an *additional*
+ *  main-only fan-out so we don't need to register a fake BrowserWindow
+ *  shim to receive our own broadcasts. */
+type MainSettingsListener = (settings: Settings) => void | Promise<void>;
+const mainSettingsListeners = new Set<MainSettingsListener>();
+
+export function onSettingsChanged(listener: MainSettingsListener): () => void {
+  mainSettingsListeners.add(listener);
+  return () => {
+    mainSettingsListeners.delete(listener);
+  };
+}
+
 async function broadcastSettingsChanged(
   service: DesktopSettingsService,
   secrets: DesktopSecretStore,
@@ -82,6 +98,22 @@ async function broadcastSettingsChanged(
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.settingsChanged, payload);
   }
+  for (const listener of mainSettingsListeners) {
+    try {
+      await listener(payload.settings);
+    } catch (cause) {
+      log.warn("settings-handlers: main-side listener threw", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+}
+
+/** Test seam: reset main-side listeners between specs that exercise
+ *  settings handlers + register listeners (the global shortcut
+ *  registrar). Production code never touches this. */
+export function __resetMainSettingsListenersForTests(): void {
+  mainSettingsListeners.clear();
 }
 
 function toSettingsError(

@@ -181,12 +181,19 @@ export type Settings = {
     /** ISO-8601; null until the user accepts the AI consent modal. */
     consentAcceptedAt: string | null;
   };
-  /** Phase 1 hotkeys are immutable in code today; this is read-only display.
-   *  Persisted so a future "Edit" gesture has a place to write. */
+  /** Global capture hotkeys. Each field is an Electron accelerator
+   *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
+   *  which signals "unbound" — main skips registration. The Settings →
+   *  Hotkeys page is the only editor; main re-registers on
+   *  `events:settings:changed`. */
   hotkeys: {
     quickCapture: string;
     region: string;
     window: string;
+    /** Video-capture hotkey. The recording surface itself ships later;
+     *  for now main just confirms the binding fires (notification +
+     *  warn log) so the registration plumbing is exercised end-to-end. */
+    videoCapture: string;
   };
   experimental: {
     /** Slot for the upcoming PwrSnap1 file format. Wired but unused. */

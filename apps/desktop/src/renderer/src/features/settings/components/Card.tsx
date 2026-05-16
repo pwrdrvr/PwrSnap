@@ -1,16 +1,15 @@
-// Collapse state is visual-only for v1 — the chevron flips but the
-// header isn't a button. Promote to a real toggle when independent
-// per-card collapse lands.
-
-import type { ReactElement, ReactNode } from "react";
+import { useState, type MouseEvent, type ReactElement, type ReactNode } from "react";
 
 type CardProps = {
   eyebrow: string;
   title: string;
-  collapsed?: boolean;
+  /** Initial collapsed state. The user can toggle from there. */
+  defaultCollapsed?: boolean;
   /** Optional trailing chunk inside the card header (right of the
    *  chevron). The AI Providers Codex card uses this for the
-   *  Refresh button. */
+   *  Refresh button. The header click-to-toggle ignores clicks that
+   *  originate from inside this slot — so the Refresh button stays
+   *  clickable without flipping the card. */
   headerAction?: ReactNode;
   children: ReactNode;
 };
@@ -18,18 +17,35 @@ type CardProps = {
 export function Card({
   eyebrow,
   title,
-  collapsed,
+  defaultCollapsed,
   headerAction,
   children
 }: CardProps): ReactElement {
+  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed === true);
+
+  const onHeaderClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    // Clicks that bubbled up from inside `headerAction` (e.g. the
+    // AI Providers Refresh button) shouldn't toggle the card.
+    const target = event.target as HTMLElement;
+    if (target.closest(".pss__card-hdr-action") !== null) return;
+    setCollapsed((prev) => !prev);
+  };
+
   return (
-    <section className={"pss__card" + (collapsed === true ? " is-collapsed" : "")}>
-      <header className="pss__card-hdr">
+    <section className={"pss__card" + (collapsed ? " is-collapsed" : "")}>
+      <button
+        type="button"
+        className="pss__card-hdr"
+        onClick={onHeaderClick}
+        aria-expanded={!collapsed}
+      >
         <div className="pss__card-hdr-l">
           <span className="pss__card-eyebrow">{eyebrow}</span>
           <span className="pss__card-title">{title}</span>
         </div>
-        {headerAction !== undefined ? headerAction : null}
+        {headerAction !== undefined ? (
+          <span className="pss__card-hdr-action">{headerAction}</span>
+        ) : null}
         <span className="pss__card-chev" aria-hidden="true">
           <svg
             width={14}
@@ -44,7 +60,7 @@ export function Card({
             <path d="m6 9 6 6 6-6" />
           </svg>
         </span>
-      </header>
+      </button>
       <div className="pss__card-body">{children}</div>
     </section>
   );

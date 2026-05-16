@@ -4,6 +4,8 @@ import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
+import { useHotkeys } from "../shared/useHotkeys";
+import { acceleratorToDisplayKeys } from "../settings/pages/HotkeysPage";
 import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 
@@ -12,10 +14,18 @@ type ModeKind = "auto" | "region" | "window" | "full" | "all" | "scroll" | "time
 /** Phase 1 ships `auto` (the Quick Capture button — promoted out of
  *  the grid), `region`, and `window`. The other four modes are stubbed
  *  with `available: false` so the disabled treatment honestly signals
- *  what works today. */
+ *  what works today.
+ *
+ *  Chord glyphs for `region` / `window` come from the live settings
+ *  snapshot (Settings → Hotkeys is editable). When the binding is
+ *  unbound (empty string in settings — the default for those two now
+ *  that Quick Capture covers both), the chip is omitted entirely. The
+ *  preview modes (full / all / scroll / timed) still carry static
+ *  placeholder glyphs because they aren't bound to anything in code. */
 const MODES: Array<{
   id: Exclude<ModeKind, "auto">;
   name: string;
+  /** Static fallback for preview modes that aren't wired to settings. */
   hk: string[];
   available: boolean;
 }> = [
@@ -23,8 +33,8 @@ const MODES: Array<{
   // common modes below. Region top-left because once Quick Capture
   // moves to the prominent button, Region is the highest-frequency
   // explicit-mode choice.
-  { id: "region", name: "Region", hk: ["⌘", "⇧", "R"], available: true },
-  { id: "window", name: "Window", hk: ["⌘", "⇧", "W"], available: true },
+  { id: "region", name: "Region", hk: [], available: true },
+  { id: "window", name: "Window", hk: [], available: true },
   { id: "full", name: "Full Screen", hk: ["⌘", "⇧", "F"], available: false },
   { id: "all", name: "All Screens", hk: ["⌘", "⇧", "A"], available: false },
   { id: "scroll", name: "Scrolling", hk: ["⌘", "⇧", "S"], available: false },
@@ -191,11 +201,25 @@ function relativeTime(iso: string): string {
 
 export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { rows } = useLibrary();
+  const hotkeys = useHotkeys();
   const lastSnap: CaptureRecord | undefined = rows[0];
   const lastSnapMetrics = usePresetRenderMetrics(
     lastSnap?.id ?? null,
     lastSnap?.overlays_version ?? null
   );
+
+  // Pull live chord glyphs for the two wired explicit-mode hotkeys.
+  // Empty array = unbound (default for both today) → the chip is
+  // omitted from the mode tile.
+  const liveHkFor: Record<Exclude<ModeKind, "auto">, string[]> = {
+    region: acceleratorToDisplayKeys(hotkeys.region),
+    window: acceleratorToDisplayKeys(hotkeys.window),
+    full: MODES[2]!.hk,
+    all: MODES[3]!.hk,
+    scroll: MODES[4]!.hk,
+    timed: MODES[5]!.hk
+  };
+  const quickHk = acceleratorToDisplayKeys(hotkeys.quickCapture);
 
   // Measure the popover's natural content height and tell main to
   // setContentSize the BrowserWindow to match. Mirrors the float-
@@ -339,39 +363,42 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           </span>
         </span>
         <span className="ps-tray__quick-hk">
-          <Kbd>⌘</Kbd>
-          <Kbd>⇧</Kbd>
-          <Kbd>P</Kbd>
+          {quickHk.length > 0
+            ? quickHk.map((k, i) => <Kbd key={`${k}-${i}`}>{k}</Kbd>)
+            : null}
         </span>
       </button>
 
       <div className="ps-tray__modes">
-        {MODES.map((m) => (
-          <button
-            key={m.id}
-            className={"ps-mode" + (m.available ? "" : " is-disabled")}
-            type="button"
-            disabled={!m.available}
-            title={m.available ? undefined : "Coming in a later phase"}
-            onClick={(() => {
-              if (m.id === "region") return () => onCapture("region");
-              if (m.id === "window") return () => onCapture("window");
-              return undefined;
-            })()}
-          >
-            <span className="ps-mode__icon">
-              <ModeIcon kind={m.id} />
-            </span>
-            <span className="ps-mode__name">{m.name}</span>
-            <span className="ps-mode__hk">
-              {m.hk.map((k, i) => (
-                <span key={i} className="ps-kbd">
-                  {k}
-                </span>
-              ))}
-            </span>
-          </button>
-        ))}
+        {MODES.map((m) => {
+          const hk = liveHkFor[m.id];
+          return (
+            <button
+              key={m.id}
+              className={"ps-mode" + (m.available ? "" : " is-disabled")}
+              type="button"
+              disabled={!m.available}
+              title={m.available ? undefined : "Coming in a later phase"}
+              onClick={(() => {
+                if (m.id === "region") return () => onCapture("region");
+                if (m.id === "window") return () => onCapture("window");
+                return undefined;
+              })()}
+            >
+              <span className="ps-mode__icon">
+                <ModeIcon kind={m.id} />
+              </span>
+              <span className="ps-mode__name">{m.name}</span>
+              <span className="ps-mode__hk">
+                {hk.map((k, i) => (
+                  <span key={i} className="ps-kbd">
+                    {k}
+                  </span>
+                ))}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {lastSnap !== undefined && (

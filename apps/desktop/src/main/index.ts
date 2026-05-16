@@ -1,4 +1,5 @@
-import { app, dialog, globalShortcut, Menu, shell } from "electron";
+import { app, dialog, globalShortcut, Menu, Notification, shell } from "electron";
+import type { Settings } from "@pwrsnap/shared";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
@@ -14,7 +15,9 @@ import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
-import { registerSettingsHandlers } from "./handlers/settings-handlers";
+import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
+import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import { join } from "node:path";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
@@ -28,8 +31,21 @@ import { createMainWindow, findMainLibraryWindow } from "./window";
 const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
 const APP_WEBSITE = "https://pwrdrvr.com";
-const CAPTURE_SHORTCUT = "CommandOrControl+Shift+P";
+/** Settings (⌘,) stays hardcoded — it isn't exposed in the Hotkeys
+ *  page, and the platform convention is well-established. Quick
+ *  Capture / Region / Window / Video Capture are dynamically
+ *  registered from `settings.hotkeys.*` via `wireHotkeyRegistrations`. */
 const SETTINGS_SHORTCUT = "CommandOrControl+,";
+
+/** The four hotkey kinds we register from `settings.hotkeys.*`. Order
+ *  matters only for log readability. */
+type HotkeyKind = "quickCapture" | "region" | "window" | "videoCapture";
+const HOTKEY_KINDS: readonly HotkeyKind[] = [
+  "quickCapture",
+  "region",
+  "window",
+  "videoCapture"
+];
 const isMac = process.platform === "darwin";
 
 /**
@@ -87,16 +103,96 @@ function installApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function registerCaptureShortcut(): void {
-  // ⌘⇧P → interactive capture. The dispatch routes through the command
-  // bus so a future MCP / HTTP transport reuses the same path.
+/** Map of HotkeyKind → currently-registered accelerator. We hold this
+ *  so we can unregister cleanly when a setting changes (the
+ *  globalShortcut API doesn't track "who registered what"). */
+const registeredHotkeys = new Map<HotkeyKind, string>();
+
+function handlerFor(kind: HotkeyKind): () => void {
   const log = getMainLogger("pwrsnap:shortcut");
-  const ok = globalShortcut.register(CAPTURE_SHORTCUT, () => {
-    void runInteractiveCapture();
-  });
-  if (!ok) {
-    log.warn("failed to register global shortcut", { shortcut: CAPTURE_SHORTCUT });
+  switch (kind) {
+    case "quickCapture":
+      return () => void runInteractiveCapture("auto");
+    case "region":
+      return () => void runInteractiveCapture("region");
+    case "window":
+      return () => void runInteractiveCapture("window");
+    case "videoCapture":
+      return () => {
+        // Recording surface lands later (Phase 6/7). For now confirm
+        // the binding fires end-to-end: a system notification (best-
+        // effort; not every OS / build supports them) plus a warn log
+        // so dev runs see it in the terminal.
+        log.warn("video capture: coming soon (hotkey fired)");
+        try {
+          if (Notification.isSupported()) {
+            new Notification({
+              title: "Video capture is coming soon",
+              body: "The recording surface ships in a later release. Your hotkey is wired up."
+            }).show();
+          }
+        } catch (cause) {
+          log.warn("video-capture notification failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        }
+      };
   }
+}
+
+/** Apply `settings.hotkeys.*` to the live globalShortcut registry.
+ *  Idempotent: rebinds only the kinds whose accelerator changed. Empty
+ *  string is the "unbound" sentinel and skips registration. */
+function applyHotkeys(hotkeys: Settings["hotkeys"]): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  for (const kind of HOTKEY_KINDS) {
+    const next = hotkeys[kind] ?? "";
+    const prev = registeredHotkeys.get(kind) ?? "";
+    if (next === prev) continue;
+    if (prev !== "") {
+      globalShortcut.unregister(prev);
+      registeredHotkeys.delete(kind);
+    }
+    if (next === "") continue;
+    const ok = globalShortcut.register(next, handlerFor(kind));
+    if (!ok) {
+      log.warn("failed to register hotkey (likely taken by another app)", {
+        kind,
+        accelerator: next
+      });
+      continue;
+    }
+    registeredHotkeys.set(kind, next);
+  }
+}
+
+/** Boot-time + on-change hotkey registration. Reads the current
+ *  settings, applies them, and subscribes to main-side change events
+ *  so subsequent edits (Settings → Hotkeys, or external file rewrites
+ *  funneled through `settings:write`) re-bind without a restart. */
+async function wireHotkeyRegistrations(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  // The settings service is a tiny standalone class — load once,
+  // apply current state, then ride the change event for future
+  // updates. We deliberately don't reuse the lazy module-singleton in
+  // `settings-handlers.ts` (it's also fine, but instantiating a
+  // dedicated reader keeps the boot dependency graph one-way:
+  // index.ts depends on settings, not the handlers' internal state).
+  const userData = app.getPath("userData");
+  const service = new DesktopSettingsService({
+    filePath: join(userData, "pwrsnap-settings.json")
+  });
+  try {
+    const settings = await service.read();
+    applyHotkeys(settings.hotkeys);
+  } catch (cause) {
+    log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+  onSettingsChanged((settings) => {
+    applyHotkeys(settings.hotkeys);
+  });
 }
 
 function registerSettingsShortcut(): void {
@@ -142,24 +238,28 @@ async function runExportLibrary(): Promise<void> {
   });
 }
 
-async function runInteractiveCapture(): Promise<void> {
+async function runInteractiveCapture(
+  mode: "auto" | "region" | "window" = "auto"
+): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
-  // ⌘⇧P explicitly uses 'auto' mode — snap to a window if the cursor
-  // is over one, drag for a free rect otherwise. Tray buttons send a
-  // different mode for region-only / window-only flows.
+  // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
+  // window if the cursor is over one, drag for a free rect otherwise.
+  // The Region / Window hotkeys force the selector into pure-rect /
+  // pure-window mode respectively.
   //
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
   // finish and log non-cancellation errors.
   const result = await bus.dispatch(
     "capture:interactive",
-    { mode: "auto" },
+    { mode },
     { principal: "ipc" }
   );
   if (!result.ok && result.error.code !== "cancelled") {
     log.warn("capture:interactive failed", {
       code: result.error.code,
-      message: result.error.message
+      message: result.error.message,
+      mode
     });
   }
 }
@@ -359,8 +459,10 @@ export function bootstrapApp(): void {
       preWarmRegionSelector();
     }
     if (!isE2E) {
-      registerCaptureShortcut();
+      // Settings (⌘,) is fixed; capture/region/window/video are
+      // dynamically registered from settings + rebind on change.
       registerSettingsShortcut();
+      void wireHotkeyRegistrations();
     }
     createMainWindow();
 

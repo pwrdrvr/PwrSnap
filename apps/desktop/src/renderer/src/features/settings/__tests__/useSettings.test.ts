@@ -41,9 +41,10 @@ const baseSettings: Settings = {
   codex: { mode: "auto", pinnedPath: "", profile: "" },
   ai: { enabled: false, consentAcceptedAt: null },
   hotkeys: {
-    quickCapture: "CommandOrControl+Shift+P",
-    region: "CommandOrControl+Shift+R",
-    window: "CommandOrControl+Shift+W"
+    quickCapture: "CommandOrControl+Shift+C",
+    region: "",
+    window: "",
+    videoCapture: "CommandOrControl+Shift+V"
   },
   experimental: { v2FileFormat: false }
 };

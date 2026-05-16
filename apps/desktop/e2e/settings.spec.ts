@@ -19,6 +19,14 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
+// Each test launches its own Electron process. The cold-start of
+// the very first launch on a slow Linux CI runner can chew through
+// most of the default 30s budget before the dispatch even resolves;
+// bump to 60s so the first-in-file test doesn't trip a worker
+// teardown timeout. Subsequent tests still finish in ~1–2s each, so
+// this doesn't actually slow the run on warm hardware.
+test.setTimeout(60_000);
+
 /**
  * Poll Electron's BrowserWindow list for a window whose URL hash
  * carries `stage=settings`. Returns the first matching Playwright
@@ -106,7 +114,7 @@ test("settings:open with a page deep-links and re-navigates the existing window"
     // the navigate event is async across processes.
     const second = await app.dispatch("settings:open", { page: "hotkeys" });
     expect(second.ok).toBe(true);
-    await expect.poll(() => settingsWindow.url(), { timeout: 5_000 }).toContain(
+    await expect.poll(() => settingsWindow.url(), { timeout: 10_000 }).toContain(
       "page=hotkeys"
     );
 

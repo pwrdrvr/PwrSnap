@@ -871,15 +871,32 @@ export function bootstrapApp(): void {
         // bridge surface so specs don't reach into module internals
         // via dynamic imports — those tend to drift across path /
         // bundler changes.
-        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0]) =>
-          insertOrFindCapture(input),
+        // seedCapture accepts the pre-bundle-storage `src_path` field
+        // name as a back-compat alias. Migration 0005 renamed the
+        // column to `legacy_src_path`, but specs pulled from main still
+        // use the old name. Normalize here so specs work unchanged.
+        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }) => {
+          const { src_path: legacyAlias, ...rest } = input;
+          const normalized =
+            legacyAlias !== undefined && rest.legacy_src_path === undefined
+              ? { ...rest, legacy_src_path: legacyAlias }
+              : rest;
+          return insertOrFindCapture(normalized);
+        },
         // Batch variant — runs all inserts inside one SQLite
         // transaction so the chain pays one fsync instead of N.
         // Lets specs seed 100+ captures inside a single
         // `electronApp.evaluate` without blowing their time budget
-        // on slow CI disks.
-        seedCaptures: (inputs: Parameters<typeof insertOrFindCapture>[0][]) =>
-          insertOrFindCapturesBatch(inputs),
+        // on slow CI disks. Same src_path alias applied to each input.
+        seedCaptures: (inputs: Array<Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }>) => {
+          const normalized = inputs.map((input) => {
+            const { src_path: legacyAlias, ...rest } = input;
+            return legacyAlias !== undefined && rest.legacy_src_path === undefined
+              ? { ...rest, legacy_src_path: legacyAlias }
+              : rest;
+          });
+          return insertOrFindCapturesBatch(normalized);
+        },
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the
         // float-over's video asset branch without spawning a real

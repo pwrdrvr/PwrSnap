@@ -27,7 +27,7 @@ import { migrateLegacyCaptureSources } from "./persistence/capture-source-mainte
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
-import { CHROMIUM_DISK_CACHE_LIMIT_BYTES, getStorageSnapshot } from "./storage/accounting";
+import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
 import { createMainWindow, findMainLibraryWindow } from "./window";
@@ -304,29 +304,6 @@ async function runBootGc(): Promise<void> {
   }
 }
 
-function logStorageSnapshotAsync(): void {
-  setTimeout(() => {
-    void getStorageSnapshot()
-      .then((storage) => {
-        log.info("storage snapshot", {
-          totalBytes: storage.totalBytes,
-          sourceCapturesBytes: storage.sourceCaptures.bytes,
-          renderCacheBytes: storage.renderCache.bytes,
-          chromiumHttpCacheBytes: storage.chromiumHttpCache.bytes,
-          chromiumCodeCacheBytes: storage.chromiumCodeCache.bytes,
-          chromiumCacheLimitBytes: storage.chromiumHttpCache.limitBytes,
-          databaseBytes:
-            storage.database.bytes + storage.database.walBytes + storage.database.shmBytes
-        });
-      })
-      .catch((cause: unknown) => {
-        log.warn("storage snapshot failed", {
-          message: cause instanceof Error ? cause.message : String(cause)
-        });
-      });
-  }, 0);
-}
-
 function shouldPreWarmRegionSelector(): boolean {
   return !(isE2E && process.env.PWRSNAP_E2E_SKIP_REGION_PREWARM === "1");
 }
@@ -496,7 +473,6 @@ export function bootstrapApp(): void {
       void wireHotkeyRegistrations();
     }
     createMainWindow();
-    logStorageSnapshotAsync();
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,

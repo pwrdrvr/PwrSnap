@@ -58,6 +58,22 @@ afterEach(async () => {
 });
 
 describe("getStorageSnapshot", () => {
+  test("adds user-visible documents captures to the app-support total in default layout", async () => {
+    mocks.captureCount = 1;
+    await mkdir(mocks.dataRoot, { recursive: true });
+    await mkdir(mocks.capturesRoot, { recursive: true });
+    await writeFile(join(mocks.dataRoot, "pwrsnap.db"), Buffer.alloc(256 * 1024));
+    await writeFile(join(mocks.capturesRoot, "capture-a.png"), Buffer.alloc(1024 * 1024));
+
+    const { getStorageSnapshot } = await import("../accounting");
+    const snapshot = await getStorageSnapshot();
+
+    expect(snapshot.sourceCaptures.captureCount).toBe(1);
+    expect(snapshot.sourceCaptures.documentsBytes).toBeGreaterThan(1024 * 1024);
+    expect(snapshot.totalBytes).toBeGreaterThan(snapshot.sourceCaptures.documentsBytes);
+    expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
+  });
+
   test("does not double-count captures when the active captures root is inside dataRoot", async () => {
     mocks.capturesRoot = join(mocks.dataRoot, "captures");
     mocks.legacyCapturesRoot = mocks.capturesRoot;

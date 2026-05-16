@@ -291,7 +291,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     if (activeSourceAppId === null) return;
     if (sourceAppBundleIds.length === 0) return;
     const cached = sourceAppRowsRef.current[activeSourceAppId];
-    if (cached?.bundleKey === sourceAppBundleKey) return;
+    // A same-key rerun cleans up the in-flight fetch first; restart if
+    // the cached entry is still loading so the source view cannot stick empty.
+    if (cached?.bundleKey === sourceAppBundleKey && !cached.loading) return;
 
     let cancelled = false;
     const appKey = activeSourceAppId;

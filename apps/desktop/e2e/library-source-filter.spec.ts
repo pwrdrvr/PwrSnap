@@ -182,14 +182,13 @@ test("source-app filters load captures outside the initial virtualized page", as
 
     for (const filterCase of CASES) {
       await waitForAppStat(app, filterCase.bundleId, filterCase.count);
+      await waitForSourceFilterButton(window, filterCase);
       await clickSourceFilterButton(window, filterCase);
 
       const targetId = `source-filter-${filterCase.seedPrefix}-${filterCase.targetIndex
         .toString()
         .padStart(3, "0")}`;
-      await expect(window.locator(`.psl__cell[data-cell-id="${targetId}"]`)).toHaveCount(1, {
-        timeout: 10_000
-      });
+      await expect.poll(() => countGridCells(window, targetId), { timeout: 30_000 }).toBe(1);
     }
   } finally {
     await app.close();
@@ -288,6 +287,7 @@ test("active source-app filter refetches after capture stats change", async () =
     await broadcastCapturesChanged(app);
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
+    await waitForSourceFilterButton(window, filterCase);
     await clickSourceFilterButton(window, filterCase);
 
     const targetId = "source-filter-refresh-telegram-000";
@@ -482,33 +482,78 @@ async function clickSourceFilterButton(
   page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
   filterCase: SourceFilterCase
 ): Promise<void> {
+  const clicked = await page.evaluate(
+    ({ patternSource, patternFlags, count }) => {
+      const pattern = new RegExp(patternSource, patternFlags);
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
+      for (const button of buttons) {
+        const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
+        const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
+        if (!pattern.test(label) || countText !== String(count)) continue;
+        button.click();
+        return true;
+      }
+      return false;
+    },
+    {
+      patternSource: filterCase.sidebarLabelPattern.source,
+      patternFlags: filterCase.sidebarLabelPattern.flags,
+      count: filterCase.count
+    }
+  );
+  expect(clicked, `clicking source filter ${filterCase.name}`).toBe(true);
+
   await expect
     .poll(
-      () =>
-        page.evaluate(
-          ({ patternSource, patternFlags }) => {
-            const pattern = new RegExp(patternSource, patternFlags);
-            const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
-            for (const button of buttons) {
-              const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
-              if (!pattern.test(label)) continue;
-              if (button.classList.contains("is-active")) return true;
-              button.click();
-              return false;
-            }
-            return false;
-          },
-          {
-            patternSource: filterCase.sidebarLabelPattern.source,
-            patternFlags: filterCase.sidebarLabelPattern.flags
-          }
-        ),
+      () => sourceFilterButtonState(page, filterCase).then((state) => state.active),
       {
         timeout: 30_000,
         message: `activating source filter ${filterCase.name}`
       }
     )
     .toBe(true);
+}
+
+async function waitForSourceFilterButton(
+  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  filterCase: SourceFilterCase
+): Promise<void> {
+  await expect
+    .poll(
+      () => sourceFilterButtonState(page, filterCase).then((state) => state.found),
+      {
+        timeout: 30_000,
+        message: `waiting for rendered source filter ${filterCase.name}`
+      }
+    )
+    .toBe(true);
+}
+
+async function sourceFilterButtonState(
+  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  filterCase: SourceFilterCase
+): Promise<{ found: boolean; active: boolean }> {
+  return page.evaluate(
+    ({ patternSource, patternFlags, count }) => {
+      const pattern = new RegExp(patternSource, patternFlags);
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button.psl__nav"));
+      for (const button of buttons) {
+        const label = button.querySelector(".psl__nav-label")?.textContent?.trim() ?? "";
+        const countText = button.querySelector(".psl__nav-count")?.textContent?.trim() ?? "";
+        if (!pattern.test(label) || countText !== String(count)) continue;
+        return {
+          found: true,
+          active: button.classList.contains("is-active")
+        };
+      }
+      return { found: false, active: false };
+    },
+    {
+      patternSource: filterCase.sidebarLabelPattern.source,
+      patternFlags: filterCase.sidebarLabelPattern.flags,
+      count: filterCase.count
+    }
+  );
 }
 
 async function countGridCells(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"], id: string): Promise<number> {

@@ -17,6 +17,7 @@
     "test": "vitest run --config vitest.workspace.ts",
     "test:watch": "vitest --config vitest.workspace.ts",
     "test:desktop-e2e": "pnpm --filter @pwrsnap/desktop build && pnpm --filter @pwrsnap/desktop test:e2e",
+    "test:desktop-e2e:docker": "./scripts/e2e/run-docker.sh",
     "release:check": "node ./scripts/check-desktop-release-metadata.mjs"
   },
   "devDependencies": {

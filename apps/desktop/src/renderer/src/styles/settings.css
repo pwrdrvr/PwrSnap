@@ -886,13 +886,16 @@
 .pss__role-provider svg { color: var(--text-muted); margin-left: auto; }
 .pss__role-provider b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* footer save / cancel buttons */
+/* footer save / cancel buttons — sits at the natural end of the page,
+   not sticky. Sticky-with-gradient (the design's original) overlapped
+   whatever row happened to be at the bottom of the viewport because
+   the gradient only fades, doesn't actually mask. Page is short enough
+   that scrolling-to-find is fine. */
 .pss__footer {
-  position: sticky;
-  bottom: 0;
-  background: linear-gradient(180deg, transparent 0%, var(--bg-app) 30%, var(--bg-app) 100%);
-  padding: 24px 0 0;
-  margin-top: 8px;
+  padding: 20px 0 8px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 16px;
   display: flex;
   align-items: center;
   gap: 10px;

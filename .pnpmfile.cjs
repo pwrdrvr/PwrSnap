@@ -73,9 +73,16 @@ function readPackage(pkg) {
 
 // Belt-and-suspenders: even if a git spec somehow slipped past
 // readPackage (e.g., transitive dep introduced via a registry
-// package's manifest at fetch time), the git fetcher itself refuses
-// to run.
-function blockGitFetcher() {
+// package's manifest at fetch time), the corresponding pnpm fetcher
+// itself refuses to run.
+//
+// pnpm's `hooks.fetchers` API treats each entry as a FACTORY function
+// that's called with `({ defaultFetchers })` at fetcher-registry
+// build time; the factory's RETURN VALUE is the actual fetcher pnpm
+// invokes later when a dep needs fetching. So this function takes
+// the factory shape (the arg is ignored — we're not delegating to a
+// default) and returns the throwing fetcher.
+function blockGitFetcher(/* { defaultFetchers } */) {
   return async () => {
     throw new Error(
       "[pwrsnap pnpmfile] Blocked pnpm git dependency fetch. See .pnpmfile.cjs."
@@ -87,7 +94,13 @@ module.exports = {
   hooks: {
     readPackage,
     fetchers: {
-      git: blockGitFetcher()
+      // `git`: direct git URL fetches (`git+ssh://`, `git@`, etc.)
+      // `gitHostedTarball`: pnpm's shortcut for github/gitlab/bitbucket
+      //   URLs and `user/repo` shortcuts — pnpm downloads a tarball of
+      //   the resolved commit instead of cloning. Different fetcher,
+      //   same supply-chain concern.
+      git: blockGitFetcher,
+      gitHostedTarball: blockGitFetcher
     }
   }
 };

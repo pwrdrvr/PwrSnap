@@ -58,13 +58,22 @@ export type LibraryAction =
    *  multi-select / hover-preview features; not dispatched in this
    *  plan but the reducer handles it for completeness. */
   | { readonly type: "SELECT_IN_GRID"; readonly recordId: string }
+  /** A filter button was clicked while Focus may be open. If Focus
+   *  remains open after the filter applies, Esc should return to the
+   *  top of the new filtered grid instead of the pre-filter scroll
+   *  offset captured when Focus opened. */
+  | { readonly type: "RESET_FOCUS_RETURN_SCROLL" }
   /** App filter changed (left rail). Caller passes the ids of records
    *  that survive the new filter. If the current selection is no
    *  longer in the visible set AND we're in Focus or Reel, the
    *  reducer bails to Grid (filter is a query, query changed, show
    *  the new result set in Grid form). Decision: see the plan's
    *  Resolved Decisions item 2. */
-  | { readonly type: "FILTER_CHANGED"; readonly visibleIds: ReadonlyArray<string> };
+  | {
+      readonly type: "FILTER_CHANGED";
+      readonly visibleIds: ReadonlyArray<string>;
+      readonly resetReturnScroll?: boolean;
+    };
 
 export const initialLibraryView: LibraryView = {
   kind: "grid",
@@ -113,6 +122,16 @@ export function libraryReducer(state: LibraryView, action: LibraryAction): Libra
       if (state.kind !== "grid") return state;
       return { ...state, selectedRecordId: action.recordId };
 
+    case "RESET_FOCUS_RETURN_SCROLL":
+      if (state.kind !== "focus") return state;
+      return {
+        ...state,
+        returnAnchor: {
+          ...state.returnAnchor,
+          scrollTop: 0
+        }
+      };
+
     case "FILTER_CHANGED": {
       // If we're in focus or reel and the current selection survives,
       // no transition. If it doesn't, bail to a clean grid state.
@@ -120,7 +139,18 @@ export function libraryReducer(state: LibraryView, action: LibraryAction): Libra
       const stillVisible =
         state.selectedRecordId !== null &&
         action.visibleIds.includes(state.selectedRecordId);
-      if (stillVisible) return state;
+      if (stillVisible) {
+        if (state.kind === "focus" && action.resetReturnScroll === true) {
+          return {
+            ...state,
+            returnAnchor: {
+              ...state.returnAnchor,
+              scrollTop: 0
+            }
+          };
+        }
+        return state;
+      }
       return { kind: "grid", selectedRecordId: null };
     }
   }

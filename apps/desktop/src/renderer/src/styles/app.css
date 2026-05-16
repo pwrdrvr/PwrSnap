@@ -82,3 +82,113 @@ body[data-stage="float-over"] .fo {
 .pwrsnap-wordmark__a {
   color: var(--accent);
 }
+
+.renderer-failure {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: var(--bg-app);
+}
+
+.renderer-failure__panel {
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.34));
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+}
+
+.renderer-failure__eyebrow {
+  color: var(--accent);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.renderer-failure__title {
+  margin: 10px 0 0;
+  color: var(--text-primary);
+  font: 650 17px/1.2 var(--font-sans);
+  letter-spacing: 0;
+}
+
+.renderer-failure__message {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font: 500 12px/1.5 var(--font-sans);
+}
+
+.renderer-failure__details {
+  max-height: 180px;
+  margin: 14px 0 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--danger-text, #e58a8a);
+  font: 500 11px/1.45 var(--font-mono);
+}
+
+.renderer-failure__button,
+.renderer-diagnostics__button {
+  margin-top: 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #120804;
+  cursor: pointer;
+  font: 700 12px/1 var(--font-sans);
+  padding: 9px 12px;
+}
+
+.renderer-diagnostics {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483647;
+  width: min(460px, calc(100vw - 36px));
+  padding: 14px;
+  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.34));
+  border-radius: 8px;
+  background: rgba(18, 14, 12, 0.97);
+  box-shadow: var(--shadow-lg);
+}
+
+.renderer-diagnostics[hidden] {
+  display: none;
+}
+
+.renderer-diagnostics__title {
+  color: var(--danger-text, #e58a8a);
+  font: 700 12px/1.25 var(--font-sans);
+}
+
+.renderer-diagnostics__message {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font: 500 11px/1.45 var(--font-sans);
+}
+
+.renderer-diagnostics__details {
+  max-height: 180px;
+  margin: 10px 0 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text-muted);
+  font: 500 10px/1.45 var(--font-mono);
+}
+
+.renderer-diagnostics__details[hidden] {
+  display: none;
+}

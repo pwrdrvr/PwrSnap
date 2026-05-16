@@ -202,6 +202,25 @@ describe("SELECT_IN_GRID", () => {
   });
 });
 
+describe("RESET_FOCUS_RETURN_SCROLL", () => {
+  test("in focus clears returnAnchor scrollTop", () => {
+    const next = libraryReducer(
+      { kind: "focus", selectedRecordId: "abc", returnAnchor: ANCHOR_A },
+      { type: "RESET_FOCUS_RETURN_SCROLL" }
+    );
+    expect(next).toEqual({
+      kind: "focus",
+      selectedRecordId: "abc",
+      returnAnchor: { ...ANCHOR_A, scrollTop: 0 }
+    });
+  });
+
+  test("outside focus is a no-op", () => {
+    const before: LibraryView = { kind: "grid", selectedRecordId: "abc" };
+    expect(libraryReducer(before, { type: "RESET_FOCUS_RETURN_SCROLL" })).toBe(before);
+  });
+});
+
 describe("FILTER_CHANGED", () => {
   test("in focus, current selection still in visible set → no transition", () => {
     const before: LibraryView = {
@@ -214,6 +233,22 @@ describe("FILTER_CHANGED", () => {
       visibleIds: ["abc", "xyz"]
     });
     expect(next).toBe(before);
+  });
+
+  test("in focus, filter reset clears return scroll when selection survives", () => {
+    const next = libraryReducer(
+      { kind: "focus", selectedRecordId: "abc", returnAnchor: ANCHOR_A },
+      {
+        type: "FILTER_CHANGED",
+        visibleIds: ["abc", "xyz"],
+        resetReturnScroll: true
+      }
+    );
+    expect(next).toEqual({
+      kind: "focus",
+      selectedRecordId: "abc",
+      returnAnchor: { ...ANCHOR_A, scrollTop: 0 }
+    });
   });
 
   test("in focus, current selection NOT in new visible set → bail to grid (selection cleared)", () => {

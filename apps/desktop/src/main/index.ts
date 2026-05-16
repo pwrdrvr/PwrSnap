@@ -200,6 +200,10 @@ async function runBootGc(): Promise<void> {
   }
 }
 
+function shouldPreWarmRegionSelector(): boolean {
+  return !(isE2E && process.env.PWRSNAP_E2E_SKIP_REGION_PREWARM === "1");
+}
+
 export function bootstrapApp(): void {
   initializeMainLogger();
 
@@ -219,6 +223,10 @@ export function bootstrapApp(): void {
       "enable-features",
       "ScreenCaptureKitMac,ScreenCaptureKitMacWindow,ScreenCaptureKitMacScreen,ScreenCaptureKitPickerScreen"
     );
+  }
+  if (isE2E && process.platform === "linux") {
+    app.disableHardwareAcceleration();
+    app.commandLine.appendSwitch("disable-gpu");
   }
 
   // Single-instance lock. Without this, electron-vite hot-reloads
@@ -342,8 +350,14 @@ export function bootstrapApp(): void {
     // Cocoa's next-key-window cascade when the tray popover hides.
     // Without it, Cocoa picks the Library as next-key and raises
     // (un-minimizes) it. See focus-sink.ts for the full rationale.
-    installFocusSink();
-    preWarmRegionSelector();
+    // It is macOS-only by design; Linux/Xvfb does not have Cocoa's
+    // cascade behavior, and hidden panel windows are unstable there.
+    if (process.platform === "darwin") {
+      installFocusSink();
+    }
+    if (shouldPreWarmRegionSelector()) {
+      preWarmRegionSelector();
+    }
     if (!isE2E) {
       registerCaptureShortcut();
       registerSettingsShortcut();

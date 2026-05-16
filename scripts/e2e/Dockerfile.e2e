@@ -74,4 +74,4 @@ WORKDIR /work
 # Default to running the Desktop E2E job verbatim. Override via
 # `docker run … <cmd>` for ad-hoc poking (e.g.
 # `xvfb-run pnpm exec playwright test -g "source-app filters"`).
-CMD ["bash", "-lc", "pnpm install --frozen-lockfile=false && xvfb-run --auto-servernum pnpm run test:desktop-e2e"]
+CMD ["bash", "-lc", "pnpm install --frozen-lockfile=false && xvfb-run --auto-servernum pnpm run test:desktop-e2e; status=$?; exit $status"]

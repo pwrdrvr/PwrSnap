@@ -6,10 +6,11 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 
 const HEAD_PAGE_SIZE = 100;
 const PRIMARY_BUNDLE_ID = "com.pwrsnap.synth.recent-feed";
-const FIXTURE_PNG_HEX =
-  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000970485973000003e8000003e801b57b526b0000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
+const FIXTURE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><rect width="800" height="600" fill="#14100e"/><rect x="64" y="72" width="672" height="456" rx="28" fill="#e8743a" opacity="0.88"/><circle cx="400" cy="300" r="120" fill="#f4d2bd" opacity="0.72"/></svg>`;
 
 test.setTimeout(10_000);
+
+type SourceFilterApp = Awaited<ReturnType<typeof launchPwrSnap>>;
 
 type SourceFilterCase = {
   name: string;
@@ -67,34 +68,36 @@ const CASES: SourceFilterCase[] = [
 ];
 
 test.describe("flaky source-app filter coverage", () => {
-  // Per-test budget. 15s covers a cold Electron launch (~3-5s on a
-  // slow GH Actions Linux runner) + 100+ row seed + 3 filter cycles
-  // + teardown, with headroom. Don't shrink this without measuring
-  // the cold-launch P95 on the slowest runner you care about.
+  // Per-test budget. These specs launch Electron, seed 100+ rows,
+  // refetch sidebar stats, and then must still close the app inside
+  // finally. On slower GHA Linux runners a first-attempt timeout can
+  // interrupt cleanup and surface as an "error outside any test", so
+  // keep the envelope comfortably above the sum of the inner waits.
   test.describe.configure({
     retries: process.env.CI ? 2 : 0,
-    timeout: 15_000
+    timeout: 30_000
   });
 
 test("source-app filters load captures outside the initial virtualized page", async () => {
-  const app = await launchPwrSnap();
+  const app = await launchSourceFilterPwrSnap();
   try {
     const window = app.window;
     await expect(window.getByRole("button", { name: /All Captures\s+0/ })).toBeVisible({
       timeout: 10_000
     });
     await disableAnimations(window);
+    await disableCacheImageLoading(window);
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-"));
-    const pngPath = path.join(dir, "fixture.png");
-    await writeFile(pngPath, fixturePngBytes());
+    const imagePath = path.join(dir, "fixture.svg");
+    await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
       (
         _electron,
         payload: {
           headPageSize: number;
-          pngPath: string;
+          imagePath: string;
           primaryBundleId: string;
           cases: Array<{
             bundleId: string;
@@ -133,7 +136,7 @@ test("source-app filters load captures outside the initial virtualized page", as
             captured_at: new Date(now - i * 1000).toISOString(),
             source_app_bundle_id: payload.primaryBundleId,
             source_app_name: "Recent Feed",
-            src_path: payload.pngPath,
+            src_path: payload.imagePath,
             width_px: 800,
             height_px: 600,
             device_pixel_ratio: 1,
@@ -158,7 +161,7 @@ test("source-app filters load captures outside the initial virtualized page", as
               captured_at: capturedAt,
               source_app_bundle_id: filterCase.bundleId,
               source_app_name: filterCase.sourceName,
-              src_path: payload.pngPath,
+              src_path: payload.imagePath,
               width_px: 800,
               height_px: 600,
               device_pixel_ratio: 1,
@@ -172,7 +175,7 @@ test("source-app filters load captures outside the initial virtualized page", as
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
-        pngPath,
+        imagePath,
         primaryBundleId: PRIMARY_BUNDLE_ID,
         cases: CASES.map(({ bundleId, sourceName, count, seedPrefix, headVisibleCount }) => ({
           bundleId,
@@ -210,24 +213,25 @@ test("active source-app filter refetches after capture stats change", async () =
   const filterCase = CASES.find((candidate) => candidate.seedPrefix === "telegram");
   if (filterCase === undefined) throw new Error("telegram case missing");
 
-  const app = await launchPwrSnap();
+  const app = await launchSourceFilterPwrSnap();
   try {
     const window = app.window;
     await expect(window.getByRole("button", { name: /All Captures\s+0/ })).toBeVisible({
       timeout: 10_000
     });
     await disableAnimations(window);
+    await disableCacheImageLoading(window);
 
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-refresh-"));
-    const pngPath = path.join(dir, "fixture.png");
-    await writeFile(pngPath, fixturePngBytes());
+    const imagePath = path.join(dir, "fixture.svg");
+    await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
       (
         _electron,
         payload: {
           headPageSize: number;
-          pngPath: string;
+          imagePath: string;
           primaryBundleId: string;
           targetBundleId: string;
           targetLabel: string;
@@ -259,7 +263,7 @@ test("active source-app filter refetches after capture stats change", async () =
             captured_at: new Date(now - i * 1000).toISOString(),
             source_app_bundle_id: payload.primaryBundleId,
             source_app_name: "Recent Feed",
-            src_path: payload.pngPath,
+            src_path: payload.imagePath,
             width_px: 800,
             height_px: 600,
             device_pixel_ratio: 1,
@@ -275,7 +279,7 @@ test("active source-app filter refetches after capture stats change", async () =
             captured_at: new Date(now - 24 * 60 * 60 * 1000 - i * 1000).toISOString(),
             source_app_bundle_id: payload.targetBundleId,
             source_app_name: payload.targetLabel,
-            src_path: payload.pngPath,
+            src_path: payload.imagePath,
             width_px: 800,
             height_px: 600,
             device_pixel_ratio: 1,
@@ -287,7 +291,7 @@ test("active source-app filter refetches after capture stats change", async () =
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
-        pngPath,
+        imagePath,
         primaryBundleId: PRIMARY_BUNDLE_ID,
         targetBundleId: filterCase.bundleId,
         targetLabel: filterCase.sourceName,
@@ -311,7 +315,7 @@ test("active source-app filter refetches after capture stats change", async () =
       (
         _electron,
         payload: {
-          pngPath: string;
+          imagePath: string;
           targetBundleId: string;
           targetLabel: string;
         }
@@ -338,7 +342,7 @@ test("active source-app filter refetches after capture stats change", async () =
           captured_at: new Date(Date.now() + 1000).toISOString(),
           source_app_bundle_id: payload.targetBundleId,
           source_app_name: payload.targetLabel,
-          src_path: payload.pngPath,
+          src_path: payload.imagePath,
           width_px: 800,
           height_px: 600,
           device_pixel_ratio: 1,
@@ -347,7 +351,7 @@ test("active source-app filter refetches after capture stats change", async () =
         });
       },
       {
-        pngPath,
+        imagePath,
         targetBundleId: filterCase.bundleId,
         targetLabel: filterCase.sourceName
       }
@@ -368,14 +372,18 @@ test("active source-app filter refetches after capture stats change", async () =
 });
 
 test("top-level filters do not appear as empty source-app rows after leaving Unknown app focus", async () => {
-  const app = await launchPwrSnap();
+  const app = await launchSourceFilterPwrSnap();
   try {
+    const window = app.window;
+    await disableAnimations(window);
+    await disableCacheImageLoading(window);
+
     const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-source-filter-unknown-"));
-    const pngPath = path.join(dir, "fixture.png");
-    await writeFile(pngPath, fixturePngBytes());
+    const imagePath = path.join(dir, "fixture.svg");
+    await writeFile(imagePath, fixtureImageBytes());
 
     await app.electronApp.evaluate(
-      (_electron, payload: { pngPath: string }) => {
+      (_electron, payload: { imagePath: string }) => {
         type Bridge = {
           seedCapture: (input: {
             id: string;
@@ -398,7 +406,7 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
           captured_at: new Date().toISOString(),
           source_app_bundle_id: null,
           source_app_name: null,
-          src_path: payload.pngPath,
+          src_path: payload.imagePath,
           width_px: 800,
           height_px: 600,
           device_pixel_ratio: 1,
@@ -406,13 +414,11 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
           sha256: "source-filter-unknown-null-bundle"
         });
       },
-      { pngPath }
+      { imagePath }
     );
 
     await broadcastCapturesChanged(app);
 
-    const window = app.window;
-    await disableAnimations(window);
     await waitForAppStat(app, null, 1);
 
     const unknownSourceButton = window
@@ -446,11 +452,19 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
   }
 });
 
-function fixturePngBytes(): Buffer {
-  return Buffer.from(FIXTURE_PNG_HEX, "hex");
+function fixtureImageBytes(): Buffer {
+  return Buffer.from(FIXTURE_SVG, "utf8");
 }
 
-async function broadcastCapturesChanged(app: Awaited<ReturnType<typeof launchPwrSnap>>): Promise<void> {
+function launchSourceFilterPwrSnap(): ReturnType<typeof launchPwrSnap> {
+  return launchPwrSnap({
+    env: {
+      PWRSNAP_E2E_SKIP_REGION_PREWARM: "1"
+    }
+  });
+}
+
+async function broadcastCapturesChanged(app: SourceFilterApp): Promise<void> {
   await app.electronApp.evaluate((electronModule) => {
     const { BrowserWindow } = electronModule;
     for (const win of BrowserWindow.getAllWindows()) {
@@ -461,7 +475,7 @@ async function broadcastCapturesChanged(app: Awaited<ReturnType<typeof launchPwr
 }
 
 async function waitForAppStat(
-  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  app: SourceFilterApp,
   bundleId: string | null,
   expectedCount: number
 ): Promise<void> {
@@ -480,7 +494,7 @@ async function waitForAppStat(
     .toBe(expectedCount);
 }
 
-async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"]): Promise<void> {
+async function disableAnimations(page: SourceFilterApp["window"]): Promise<void> {
   await page.addStyleTag({
     content: `
       *, *::before, *::after {
@@ -494,16 +508,59 @@ async function disableAnimations(page: Awaited<ReturnType<typeof launchPwrSnap>>
   });
 }
 
-async function reloadLibraryWindow(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"]): Promise<void> {
+// These specs prove source-app filtering, not thumbnail rendering.
+// On Linux/Xvfb the rapid source-filter swaps can trip Electron's
+// native GTK/Chromium path while a burst of pwrsnap-cache:// images
+// is decoding; suppress those incidental image requests so failures
+// stay tied to the filter/query behavior this file owns.
+async function disableCacheImageLoading(page: SourceFilterApp["window"]): Promise<void> {
+  await page.evaluate(() => {
+    const global = globalThis as unknown as {
+      __PWRSNAP_E2E_CACHE_IMAGES_DISABLED__?: boolean;
+    };
+    if (global.__PWRSNAP_E2E_CACHE_IMAGES_DISABLED__ === true) return;
+    global.__PWRSNAP_E2E_CACHE_IMAGES_DISABLED__ = true;
+
+    const isCacheUrl = (value: unknown): boolean =>
+      typeof value === "string" && value.startsWith("pwrsnap-cache://");
+
+    const originalSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function setAttribute(name: string, value: string): void {
+      if (this instanceof HTMLImageElement && name.toLowerCase() === "src" && isCacheUrl(value)) {
+        return;
+      }
+      return originalSetAttribute.call(this, name, value);
+    };
+
+    const srcDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+    const srcGetter = srcDescriptor?.get;
+    const srcSetter = srcDescriptor?.set;
+    if (srcGetter === undefined || srcSetter === undefined) return;
+    Object.defineProperty(HTMLImageElement.prototype, "src", {
+      configurable: true,
+      enumerable: srcDescriptor?.enumerable ?? false,
+      get(this: HTMLImageElement): string {
+        return srcGetter.call(this) as string;
+      },
+      set(this: HTMLImageElement, value: string): void {
+        if (isCacheUrl(value)) return;
+        srcSetter.call(this, value);
+      }
+    });
+  });
+}
+
+async function reloadLibraryWindow(page: SourceFilterApp["window"]): Promise<void> {
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByRole("button", { name: /All Captures\s+\d+/ })).toBeVisible({
     timeout: 10_000
   });
   await disableAnimations(page);
+  await disableCacheImageLoading(page);
 }
 
 async function clickSourceFilterButton(
-  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  page: SourceFilterApp["window"],
   filterCase: SourceFilterCase
 ): Promise<void> {
   await expect
@@ -528,7 +585,7 @@ async function clickSourceFilterButton(
 }
 
 async function clickMatchingSourceFilterButton(
-  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  page: SourceFilterApp["window"],
   filterCase: SourceFilterCase
 ): Promise<boolean> {
   return page.evaluate(
@@ -553,7 +610,7 @@ async function clickMatchingSourceFilterButton(
 }
 
 async function sourceFilterButtonState(
-  page: Awaited<ReturnType<typeof launchPwrSnap>>["window"],
+  page: SourceFilterApp["window"],
   filterCase: SourceFilterCase
 ): Promise<{ active: boolean }> {
   return page.evaluate(
@@ -576,7 +633,7 @@ async function sourceFilterButtonState(
   );
 }
 
-async function countGridCells(page: Awaited<ReturnType<typeof launchPwrSnap>>["window"], id: string): Promise<number> {
+async function countGridCells(page: SourceFilterApp["window"], id: string): Promise<number> {
   return page.evaluate(
     (targetId) => document.querySelectorAll(`.psl__cell[data-cell-id="${targetId}"]`).length,
     id

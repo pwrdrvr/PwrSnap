@@ -206,9 +206,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const sourceSnapCount =
     storage.snapshot?.sourceCaptures.captureCount ?? storage.snapshot?.sourceCaptures.fileCount ?? 0;
   const storageBusy = storage.workingAction !== null;
+  const refreshStorage = storage.refresh;
 
   useEffect(() => {
     if (!storagePanelOpen) return;
+    void refreshStorage();
     function closeOnOutsidePointer(event: PointerEvent): void {
       const root = storagePanelRef.current;
       if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
@@ -223,7 +225,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       window.removeEventListener("pointerdown", closeOnOutsidePointer);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [storagePanelOpen]);
+  }, [refreshStorage, storagePanelOpen]);
 
   // Phase 5 perf instrumentation. Fires once per Library mount when
   // the grid commits its first row of real data — the seeder reads

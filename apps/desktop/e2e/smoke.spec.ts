@@ -9,6 +9,8 @@
 // launch succeeding.
 
 import { expect, test } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
 test("library window boots and renders the brand mark", async () => {
@@ -33,6 +35,32 @@ test("library storage popover exposes cache controls", async () => {
     await expect(popover.getByText("Render Sizes Cache")).toBeVisible();
     await expect(popover.getByRole("button", { name: "Trim" })).toBeVisible();
     await expect(popover.getByText("Documents/PwrSnap")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("library storage popover refreshes when reopened", async () => {
+  const app = await launchPwrSnap();
+  try {
+    await app.window.locator(".psl__storage-trigger").click();
+    let popover = app.window.getByRole("dialog", { name: "Storage usage" });
+    let renderRow = popover.locator(".psl__storage-row").filter({
+      hasText: "Render Sizes Cache"
+    });
+    await expect(renderRow.getByText("0 B")).toBeVisible();
+    await app.window.keyboard.press("Escape");
+
+    const renderDir = join(app.homeRoot, "render-cache", "capture-a");
+    await mkdir(renderDir, { recursive: true });
+    await writeFile(join(renderDir, "rebuilt.webp"), Buffer.alloc(1024 * 1024));
+
+    await app.window.locator(".psl__storage-trigger").click();
+    popover = app.window.getByRole("dialog", { name: "Storage usage" });
+    renderRow = popover.locator(".psl__storage-row").filter({
+      hasText: "Render Sizes Cache"
+    });
+    await expect(renderRow.getByText("1.0 MB")).toBeVisible();
   } finally {
     await app.close();
   }

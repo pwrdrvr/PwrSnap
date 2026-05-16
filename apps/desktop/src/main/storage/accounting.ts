@@ -1,5 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { session } from "electron";
 import type { RenderCacheMaintenanceMode, StorageBucket, StorageSnapshot } from "@pwrsnap/shared";
 import { getDb } from "../persistence/db";
@@ -21,8 +21,10 @@ const EMPTY_SIZE: SizeResult = { bytes: 0, fileCount: 0 };
 export async function getStorageSnapshot(): Promise<StorageSnapshot> {
   const dataRoot = getDataRoot();
   const dbPath = getDbPath();
-  const documentsCaptures = await sizePath(getCapturesRoot());
-  const appSupportCaptures = getCapturesRoot() === getLegacyCapturesRoot()
+  const capturesRoot = getCapturesRoot();
+  const capturesInsideDataRoot = isPathWithinOrEqual(capturesRoot, dataRoot);
+  const documentsCaptures = await sizePath(capturesRoot);
+  const appSupportCaptures = capturesRoot === getLegacyCapturesRoot()
     ? EMPTY_SIZE
     : await sizePath(getLegacyCapturesRoot());
   const [
@@ -53,6 +55,7 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
   const databaseStats = getDatabaseStats();
   const chromiumGpuCaches = combineBuckets(gpuCache, dawnGraphiteCache, dawnWebGpuCache);
   const knownAppSupportBytes =
+    (capturesInsideDataRoot ? documentsCaptures.bytes : 0) +
     appSupportCaptures.bytes +
     renderCache.bytes +
     chromiumCacheDir.bytes +
@@ -64,7 +67,7 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
 
   return {
     capturedAt: new Date().toISOString(),
-    totalBytes: appSupportTotal.bytes + documentsCaptures.bytes,
+    totalBytes: appSupportTotal.bytes + (capturesInsideDataRoot ? 0 : documentsCaptures.bytes),
     sourceCaptures: {
       bytes: documentsCaptures.bytes + appSupportCaptures.bytes,
       fileCount: documentsCaptures.fileCount + appSupportCaptures.fileCount,
@@ -91,6 +94,7 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
       fileCount: Math.max(
         0,
         appSupportTotal.fileCount -
+          (capturesInsideDataRoot ? documentsCaptures.fileCount : 0) -
           appSupportCaptures.fileCount -
           renderCache.fileCount -
           chromiumCacheDir.fileCount -
@@ -102,6 +106,11 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
       )
     }
   };
+}
+
+function isPathWithinOrEqual(path: string, parent: string): boolean {
+  const relativePath = relative(resolve(parent), resolve(path));
+  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
 export async function maintainRenderCache(

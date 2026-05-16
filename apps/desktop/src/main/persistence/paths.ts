@@ -72,6 +72,10 @@ export function getCapturesRoot(): string {
   return join(app.getPath("documents"), "PwrSnap");
 }
 
+export function getLegacyCapturesRoot(): string {
+  return join(getDataRoot(), "captures");
+}
+
 export function getCacheRoot(): string {
   // Do not use "cache" here. Electron/Chromium owns <userData>/Cache;
   // on macOS's default case-insensitive filesystem, "cache" aliases

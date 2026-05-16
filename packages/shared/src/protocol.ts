@@ -76,6 +76,41 @@ export type CapturePresetMetric = {
   fromCache: boolean;
 };
 
+export type StorageBucket = {
+  bytes: number;
+  fileCount: number;
+};
+
+export type StorageSnapshot = {
+  capturedAt: string;
+  totalBytes: number;
+  sourceCaptures: StorageBucket & {
+    documentsBytes: number;
+    appSupportBytes: number;
+  };
+  renderCache: StorageBucket;
+  chromiumHttpCache: StorageBucket & {
+    reportedBytes: number;
+    limitBytes: number;
+  };
+  chromiumCodeCache: StorageBucket;
+  chromiumGpuCaches: StorageBucket;
+  database: {
+    bytes: number;
+    walBytes: number;
+    shmBytes: number;
+    pageCount: number;
+    pageSize: number;
+    freelistCount: number;
+  };
+  otherAppSupport: StorageBucket;
+};
+
+export type StorageMaintenanceResult = {
+  snapshot: StorageSnapshot;
+  clearedBytes: number;
+};
+
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
@@ -327,6 +362,10 @@ export type Commands = {
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
+
+  // ---- storage ----
+  "storage:snapshot": { req: Record<string, never>; res: StorageSnapshot };
+  "storage:clearChromiumCache": { req: Record<string, never>; res: StorageMaintenanceResult };
 
   // ---- overlays (Phase 2+) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };

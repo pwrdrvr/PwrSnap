@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { app, dialog, globalShortcut, Menu, Notification, shell } from "electron";
 import type { Settings } from "@pwrsnap/shared";
 import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
@@ -16,15 +17,17 @@ import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
+import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
-import { join } from "node:path";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
 import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
+import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
+import { CHROMIUM_DISK_CACHE_LIMIT_BYTES, getStorageSnapshot } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import { disposeTray, installTray } from "./tray";
 import { createMainWindow, findMainLibraryWindow } from "./window";
@@ -329,6 +332,7 @@ export function bootstrapApp(): void {
     app.disableHardwareAcceleration();
     app.commandLine.appendSwitch("disable-gpu");
   }
+  app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 
   // Single-instance lock. Without this, electron-vite hot-reloads
   // and crashed-but-orphaned dev runs accumulate parallel app
@@ -423,7 +427,18 @@ export function bootstrapApp(): void {
     // Open the DB before anything else — cold first-INSERT cost
     // (~40ms) lands here instead of inside ⌘⇧P's <120ms budget.
     await openDatabase();
+    await migrateLegacyCaptureSources();
     await migrateLegacyRenderCache();
+    const storage = await getStorageSnapshot();
+    log.info("storage snapshot", {
+      totalBytes: storage.totalBytes,
+      sourceCapturesBytes: storage.sourceCaptures.bytes,
+      renderCacheBytes: storage.renderCache.bytes,
+      chromiumHttpCacheBytes: storage.chromiumHttpCache.bytes,
+      chromiumCodeCacheBytes: storage.chromiumCodeCache.bytes,
+      chromiumCacheLimitBytes: storage.chromiumHttpCache.limitBytes,
+      databaseBytes: storage.database.bytes + storage.database.walBytes + storage.database.shmBytes
+    });
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();
@@ -433,6 +448,7 @@ export function bootstrapApp(): void {
     registerLibraryHandlers();
     registerOverlaysHandlers();
     registerSettingsHandlers();
+    registerStorageHandlers();
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds
     // tree-shake the entire `dev/seeder` subtree out of the bundle.

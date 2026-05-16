@@ -17,6 +17,7 @@ import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
 import { ExperimentalPage } from "./pages/ExperimentalPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
+import { StoragePage } from "./pages/StoragePage";
 
 // Eyebrow strings for the placeholder pages. Mirrors the design's
 // per-page `pss__main-eyebrow` values so the placeholder reads as the
@@ -53,6 +54,9 @@ export function SettingsApp(): ReactElement {
       break;
     case "experimental":
       page = <ExperimentalPage />;
+      break;
+    case "storage":
+      page = <StoragePage />;
       break;
     default:
       page = <ComingSoon eyebrow={eyebrow} title={item.name} />;

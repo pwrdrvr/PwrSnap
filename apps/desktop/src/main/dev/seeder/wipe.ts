@@ -45,6 +45,7 @@ const SEEDER_OWNED_ENTRIES: ReadonlySet<string> = new Set([
   "pwrsnap.db-wal",
   "captures",
   "cache",
+  "render-cache",
   ".trash",
   "perf",
   ".DS_Store" // macOS leaves these everywhere
@@ -164,7 +165,16 @@ export async function wipeDataRoot(): Promise<void> {
   // Remove standard sub-trees the seeder + app produce. Leave the
   // root directory + sentinel in place; the next seed run rewrites
   // the sentinel via `createSentinel()` to bump mtime.
-  const entries = ["pwrsnap.db", "pwrsnap.db-shm", "pwrsnap.db-wal", "captures", "cache", ".trash", "perf"];
+  const entries = [
+    "pwrsnap.db",
+    "pwrsnap.db-shm",
+    "pwrsnap.db-wal",
+    "captures",
+    "cache",
+    "render-cache",
+    ".trash",
+    "perf"
+  ];
   for (const entry of entries) {
     await rm(join(root, entry), { recursive: true, force: true });
   }

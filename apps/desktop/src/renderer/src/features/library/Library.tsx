@@ -29,7 +29,9 @@ import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
+import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
+import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -193,6 +195,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     totalLive,
     appStats
   } = useLibrary();
+  const storage = useStorageSnapshot();
+  const storageTitle =
+    storage.snapshot === null
+      ? "Storage usage loading"
+      : [
+          `Total local: ${formatBytes(storage.snapshot.totalBytes)}`,
+          `Sources: ${formatBytes(storage.snapshot.sourceCaptures.bytes)}`,
+          `Render cache: ${formatBytes(storage.snapshot.renderCache.bytes)}`,
+          `Chromium HTTP cache: ${formatBytes(storage.snapshot.chromiumHttpCache.bytes)}`,
+          `Chromium code cache: ${formatBytes(storage.snapshot.chromiumCodeCache.bytes)}`
+        ].join("\n");
+  const storageLabel =
+    storage.snapshot === null ? "calculating local storage" : `${formatBytes(storage.snapshot.totalBytes)} local`;
 
   // Phase 5 perf instrumentation. Fires once per Library mount when
   // the grid commits its first row of real data — the seeder reads
@@ -1614,8 +1629,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
       <footer className="psl__status">
         <div className="psl__status-l">
-          <span>
-            <span className="a">●</span> 3.2 GB local
+          <span title={storageTitle}>
+            <span className="a">●</span> {storageLabel}
           </span>
           <span>
             Codex auto-tag <b>on</b>

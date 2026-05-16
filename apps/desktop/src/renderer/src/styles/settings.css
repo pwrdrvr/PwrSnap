@@ -655,6 +655,12 @@
   justify-content: space-between;
   gap: 12px;
 }
+.pss__storage-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
 .pss__storage-bytes {
   font: 700 13px/1 var(--font-mono);
   color: var(--text-primary);

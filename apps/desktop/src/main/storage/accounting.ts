@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { session } from "electron";
-import type { StorageBucket, StorageSnapshot } from "@pwrsnap/shared";
+import type { RenderCacheMaintenanceMode, StorageBucket, StorageSnapshot } from "@pwrsnap/shared";
 import { getDb } from "../persistence/db";
 import {
   getCacheRoot,
@@ -10,6 +10,7 @@ import {
   getDbPath,
   getLegacyCapturesRoot
 } from "../persistence/paths";
+import { clearRenderCache, trimRenderCache } from "../persistence/render-cache-maintenance";
 
 export const CHROMIUM_DISK_CACHE_LIMIT_BYTES = 128 * 1024 * 1024;
 
@@ -67,6 +68,7 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
     sourceCaptures: {
       bytes: documentsCaptures.bytes + appSupportCaptures.bytes,
       fileCount: documentsCaptures.fileCount + appSupportCaptures.fileCount,
+      captureCount: getCaptureCount(),
       documentsBytes: documentsCaptures.bytes,
       appSupportBytes: appSupportCaptures.bytes
     },
@@ -99,6 +101,22 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
           dbShm.fileCount
       )
     }
+  };
+}
+
+export async function maintainRenderCache(
+  mode: RenderCacheMaintenanceMode
+): Promise<{ snapshot: StorageSnapshot; clearedBytes: number }> {
+  const before = await getStorageSnapshot();
+  if (mode === "clear") {
+    await clearRenderCache();
+  } else {
+    await trimRenderCache();
+  }
+  const snapshot = await getStorageSnapshot();
+  return {
+    snapshot,
+    clearedBytes: Math.max(0, before.renderCache.bytes - snapshot.renderCache.bytes)
   };
 }
 
@@ -149,4 +167,11 @@ function getDatabaseStats(): {
   const pageSize = db.pragma("page_size", { simple: true }) as number;
   const freelistCount = db.pragma("freelist_count", { simple: true }) as number;
   return { pageCount, pageSize, freelistCount };
+}
+
+function getCaptureCount(): number {
+  return getDb()
+    .prepare("SELECT COUNT(*) FROM captures WHERE deleted_at IS NULL")
+    .pluck()
+    .get() as number;
 }

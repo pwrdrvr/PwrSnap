@@ -4,8 +4,19 @@ import { formatBytes } from "../../../lib/format-bytes";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 
 export function StoragePage(): ReactElement {
-  const { snapshot, loading, clearing, error, refresh, clearChromiumCache } = useStorageSnapshot();
+  const {
+    snapshot,
+    loading,
+    workingAction,
+    error,
+    refresh,
+    clearAppCache,
+    maintainRenderCache
+  } = useStorageSnapshot();
   const total = snapshot?.totalBytes ?? 0;
+  const appCacheBytes =
+    (snapshot?.chromiumHttpCache.bytes ?? 0) + (snapshot?.chromiumCodeCache.bytes ?? 0);
+  const storageBusy = workingAction !== null;
 
   return (
     <>
@@ -32,7 +43,7 @@ export function StoragePage(): ReactElement {
         ) : null}
         <StorageRow
           label="Source captures"
-          sub={`${snapshot?.sourceCaptures.fileCount ?? 0} files`}
+          sub={`${snapshot?.sourceCaptures.captureCount ?? 0} snaps`}
           bytes={snapshot?.sourceCaptures.bytes ?? 0}
           total={total}
           detail={
@@ -48,35 +59,50 @@ export function StoragePage(): ReactElement {
           sub={`${snapshot?.renderCache.fileCount ?? 0} files`}
           bytes={snapshot?.renderCache.bytes ?? 0}
           total={total}
-          detail="App-owned resized images"
+          detail="Trim keeps the rapid grid and reel sizes; clear removes every derivative."
+          action={
+            <span className="pss__storage-actions">
+              <button
+                className="pss__key-btn"
+                type="button"
+                disabled={storageBusy}
+                onClick={() => void maintainRenderCache("trim")}
+              >
+                {workingAction === "render-trim" ? "Trimming" : "Trim"}
+              </button>
+              <button
+                className="pss__key-btn"
+                type="button"
+                disabled={storageBusy}
+                onClick={() => void maintainRenderCache("clear")}
+              >
+                {workingAction === "render-clear" ? "Clearing" : "Clear"}
+              </button>
+            </span>
+          }
         />
         <StorageRow
-          label="Chromium HTTP cache"
+          label="App cache"
           sub={`limit ${formatBytes(snapshot?.chromiumHttpCache.limitBytes ?? 0)}`}
-          bytes={snapshot?.chromiumHttpCache.bytes ?? 0}
+          bytes={appCacheBytes}
           total={total}
           detail={
             snapshot === null
               ? "—"
-              : `Chromium reports ${formatBytes(snapshot.chromiumHttpCache.reportedBytes)}`
+              : `${formatBytes(snapshot.chromiumHttpCache.bytes)} Chromium cache · ${formatBytes(
+                  snapshot.chromiumCodeCache.bytes
+                )} code cache`
           }
           action={
             <button
               className="pss__key-btn"
               type="button"
-              disabled={clearing}
-              onClick={() => void clearChromiumCache()}
+              disabled={storageBusy}
+              onClick={() => void clearAppCache()}
             >
-              {clearing ? "Clearing" : "Clear"}
+              {workingAction === "app-cache" ? "Clearing" : "Clear"}
             </button>
           }
-        />
-        <StorageRow
-          label="Chromium code cache"
-          sub={`${snapshot?.chromiumCodeCache.fileCount ?? 0} files`}
-          bytes={snapshot?.chromiumCodeCache.bytes ?? 0}
-          total={total}
-          detail="V8 generated-code cache"
         />
         <StorageRow
           label="Database"

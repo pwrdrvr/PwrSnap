@@ -85,6 +85,7 @@ export type StorageSnapshot = {
   capturedAt: string;
   totalBytes: number;
   sourceCaptures: StorageBucket & {
+    captureCount: number;
     documentsBytes: number;
     appSupportBytes: number;
   };
@@ -110,6 +111,8 @@ export type StorageMaintenanceResult = {
   snapshot: StorageSnapshot;
   clearedBytes: number;
 };
+
+export type RenderCacheMaintenanceMode = "trim" | "clear";
 
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
@@ -365,7 +368,11 @@ export type Commands = {
 
   // ---- storage ----
   "storage:snapshot": { req: Record<string, never>; res: StorageSnapshot };
-  "storage:clearChromiumCache": { req: Record<string, never>; res: StorageMaintenanceResult };
+  "storage:clearAppCache": { req: Record<string, never>; res: StorageMaintenanceResult };
+  "storage:maintainRenderCache": {
+    req: { mode: RenderCacheMaintenanceMode };
+    res: StorageMaintenanceResult;
+  };
 
   // ---- overlays (Phase 2+) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };

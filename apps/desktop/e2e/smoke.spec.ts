@@ -23,6 +23,21 @@ test("library window boots and renders the brand mark", async () => {
   }
 });
 
+test("library storage popover exposes cache controls", async () => {
+  const app = await launchPwrSnap();
+  try {
+    await app.window.locator(".psl__storage-trigger").click();
+    const popover = app.window.getByRole("dialog", { name: "Storage usage" });
+    await expect(popover).toBeVisible();
+    await expect(popover.getByText("App Cache")).toBeVisible();
+    await expect(popover.getByText("Render Sizes Cache")).toBeVisible();
+    await expect(popover.getByRole("button", { name: "Trim" })).toBeVisible();
+    await expect(popover.getByText("Documents/PwrSnap")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
 test("library:list returns an empty head page on a fresh HOME", async () => {
   // Exercises the command bus end-to-end through the E2E bridge —
   // proves the dispatcher, the library handler, and the Result envelope

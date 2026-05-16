@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -20,6 +20,10 @@ vi.mock("../db", () => ({
 vi.mock("../paths", () => ({
   getCacheRoot: () => mocks.currentRoot,
   getLegacyCacheRoot: () => mocks.legacyRoot
+}));
+
+vi.mock("../overlays-repo", () => ({
+  listLiveOverlays: () => []
 }));
 
 let tempRoot: string;
@@ -59,5 +63,62 @@ describe("migrateLegacyRenderCache", () => {
     await expect(readFile(join(mocks.legacyRoot, "unknown-dir", "file.webp"), "utf8")).resolves.toBe(
       "unknown"
     );
+  });
+});
+
+describe("render-cache maintenance", () => {
+  test("trim keeps only the current rapid grid and reel derivatives", async () => {
+    mocks.captureRows = [{ id: "capture-a" }];
+    const { computeRenderHash } = await import("../../render/overlay-hash");
+    const keep140 = `${computeRenderHash({
+      format: "webp",
+      width: 140,
+      appliedOverlays: []
+    })}.webp`;
+    const keep400 = `${computeRenderHash({
+      format: "webp",
+      width: 400,
+      appliedOverlays: []
+    })}.webp`;
+
+    await mkdir(join(mocks.currentRoot, "capture-a", "clipboard", "old-hash"), {
+      recursive: true
+    });
+    await mkdir(join(mocks.currentRoot, "capture-b"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "loose.tmp"), "loose");
+    await writeFile(join(mocks.currentRoot, "capture-a", keep140), "keep reel");
+    await writeFile(join(mocks.currentRoot, "capture-a", keep400), "keep grid");
+    await writeFile(join(mocks.currentRoot, "capture-a", "old-800.webp"), "remove");
+    await writeFile(
+      join(mocks.currentRoot, "capture-a", "clipboard", "old-hash", "PwrSnap Render.png"),
+      "remove"
+    );
+    await writeFile(join(mocks.currentRoot, "capture-b", "unknown.webp"), "remove");
+
+    const { trimRenderCache } = await import("../render-cache-maintenance");
+    await trimRenderCache();
+
+    await expect(readFile(join(mocks.currentRoot, "capture-a", keep140), "utf8")).resolves.toBe(
+      "keep reel"
+    );
+    await expect(readFile(join(mocks.currentRoot, "capture-a", keep400), "utf8")).resolves.toBe(
+      "keep grid"
+    );
+    await expect(readFile(join(mocks.currentRoot, "capture-a", "old-800.webp"))).rejects.toThrow();
+    await expect(readFile(join(mocks.currentRoot, "loose.tmp"))).rejects.toThrow();
+    await expect(stat(join(mocks.currentRoot, "capture-b"))).rejects.toThrow();
+    await expect(stat(join(mocks.currentRoot, "capture-a", "clipboard"))).rejects.toThrow();
+  });
+
+  test("clear removes every render derivative and recreates the root", async () => {
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "render");
+
+    const { clearRenderCache } = await import("../render-cache-maintenance");
+    await clearRenderCache();
+
+    await expect(readFile(join(mocks.currentRoot, "capture-a", "hash.webp"))).rejects.toThrow();
+    const rootStats = await stat(mocks.currentRoot);
+    expect(rootStats.isDirectory()).toBe(true);
   });
 });

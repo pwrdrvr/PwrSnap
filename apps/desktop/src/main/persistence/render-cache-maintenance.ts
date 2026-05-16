@@ -3,10 +3,13 @@ import { access, cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getMainLogger } from "../log";
+import { computeRenderHash } from "../render/overlay-hash";
 import { getDb } from "./db";
+import { listLiveOverlays } from "./overlays-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
+const RAPID_RENDER_WIDTHS = [140, 400] as const;
 
 type CaptureIdRow = {
   id: string;
@@ -16,6 +19,87 @@ export type LegacyRenderCacheMigrationResult = {
   movedDirs: number;
   skippedDirs: number;
 };
+
+export async function clearRenderCache(): Promise<void> {
+  await rm(getCacheRoot(), { recursive: true, force: true });
+  await mkdir(getCacheRoot(), { recursive: true });
+}
+
+/**
+ * Keep the derivatives that make Library Grid/Reel scrolling fast and
+ * remove copy/tray/float-over/full-size bakes. Any removed file is
+ * rebuilt on demand through pwrsnap-cache://.
+ */
+export async function trimRenderCache(): Promise<void> {
+  const root = getCacheRoot();
+  await mkdir(root, { recursive: true });
+  const keepByCaptureId = buildRapidRenderCacheKeepSet();
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+
+  for (const entry of entries) {
+    const entryPath = join(root, entry.name);
+    if (!entry.isDirectory()) {
+      await rm(entryPath, { force: true });
+      continue;
+    }
+
+    const keep = keepByCaptureId.get(entry.name) ?? new Set<string>();
+    const hasKeptEntry = await pruneRenderCacheDir(entryPath, keep, "");
+    if (!hasKeptEntry) {
+      await rm(entryPath, { recursive: true, force: true });
+    }
+  }
+}
+
+function buildRapidRenderCacheKeepSet(): Map<string, Set<string>> {
+  const rows = getDb().prepare("SELECT id FROM captures").all() as CaptureIdRow[];
+  const keepByCaptureId = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const overlays = listLiveOverlays(row.id);
+    const keep = new Set<string>();
+    for (const width of RAPID_RENDER_WIDTHS) {
+      const hash = computeRenderHash({
+        format: "webp",
+        width,
+        appliedOverlays: overlays
+      });
+      keep.add(`${hash}.webp`);
+    }
+    keepByCaptureId.set(row.id, keep);
+  }
+  return keepByCaptureId;
+}
+
+async function pruneRenderCacheDir(
+  dir: string,
+  keep: ReadonlySet<string>,
+  relativePrefix: string
+): Promise<boolean> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  let hasKeptEntry = false;
+
+  for (const entry of entries) {
+    const childPath = join(dir, entry.name);
+    const relativePath = relativePrefix === "" ? entry.name : join(relativePrefix, entry.name);
+    if (entry.isDirectory()) {
+      const childHasKeptEntry = await pruneRenderCacheDir(childPath, keep, relativePath);
+      if (childHasKeptEntry) {
+        hasKeptEntry = true;
+      } else {
+        await rm(childPath, { recursive: true, force: true });
+      }
+      continue;
+    }
+
+    if (keep.has(relativePath)) {
+      hasKeptEntry = true;
+    } else {
+      await rm(childPath, { force: true });
+    }
+  }
+
+  return hasKeptEntry;
+}
 
 /**
  * PwrSnap originally used <userData>/cache for render derivatives. On

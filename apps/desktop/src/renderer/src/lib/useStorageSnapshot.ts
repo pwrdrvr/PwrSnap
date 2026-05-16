@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
-import type { StorageSnapshot } from "@pwrsnap/shared";
+import type { RenderCacheMaintenanceMode, StorageSnapshot } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
 
 type UseStorageSnapshotResult = {
   snapshot: StorageSnapshot | null;
   loading: boolean;
-  clearing: boolean;
+  workingAction: "app-cache" | "render-trim" | "render-clear" | null;
   error: string | null;
   refresh: () => Promise<void>;
-  clearChromiumCache: () => Promise<void>;
+  clearAppCache: () => Promise<void>;
+  maintainRenderCache: (mode: RenderCacheMaintenanceMode) => Promise<void>;
 };
 
 export function useStorageSnapshot(): UseStorageSnapshotResult {
   const [snapshot, setSnapshot] = useState<StorageSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
-  const [clearing, setClearing] = useState(false);
+  const [workingAction, setWorkingAction] = useState<
+    UseStorageSnapshotResult["workingAction"]
+  >(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -31,18 +34,34 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
     setLoading(false);
   }, []);
 
-  const clearChromiumCache = useCallback(async (): Promise<void> => {
-    setClearing(true);
-    const result = await dispatch("storage:clearChromiumCache", {});
+  const clearAppCache = useCallback(async (): Promise<void> => {
+    setWorkingAction("app-cache");
+    const result = await dispatch("storage:clearAppCache", {});
     if (!result.ok) {
       setError(result.error.message);
-      setClearing(false);
+      setWorkingAction(null);
       return;
     }
     setSnapshot(result.value.snapshot);
     setError(null);
-    setClearing(false);
+    setWorkingAction(null);
   }, []);
+
+  const maintainRenderCache = useCallback(
+    async (mode: RenderCacheMaintenanceMode): Promise<void> => {
+      setWorkingAction(mode === "trim" ? "render-trim" : "render-clear");
+      const result = await dispatch("storage:maintainRenderCache", { mode });
+      if (!result.ok) {
+        setError(result.error.message);
+        setWorkingAction(null);
+        return;
+      }
+      setSnapshot(result.value.snapshot);
+      setError(null);
+      setWorkingAction(null);
+    },
+    []
+  );
 
   useEffect(() => {
     void refresh();
@@ -52,5 +71,5 @@ export function useStorageSnapshot(): UseStorageSnapshotResult {
     return unsubscribe;
   }, [refresh]);
 
-  return { snapshot, loading, clearing, error, refresh, clearChromiumCache };
+  return { snapshot, loading, workingAction, error, refresh, clearAppCache, maintainRenderCache };
 }

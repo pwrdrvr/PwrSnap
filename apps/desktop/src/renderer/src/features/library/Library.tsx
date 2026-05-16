@@ -196,18 +196,34 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     appStats
   } = useLibrary();
   const storage = useStorageSnapshot();
-  const storageTitle =
-    storage.snapshot === null
-      ? "Storage usage loading"
-      : [
-          `Total local: ${formatBytes(storage.snapshot.totalBytes)}`,
-          `Sources: ${formatBytes(storage.snapshot.sourceCaptures.bytes)}`,
-          `Render cache: ${formatBytes(storage.snapshot.renderCache.bytes)}`,
-          `Chromium HTTP cache: ${formatBytes(storage.snapshot.chromiumHttpCache.bytes)}`,
-          `Chromium code cache: ${formatBytes(storage.snapshot.chromiumCodeCache.bytes)}`
-        ].join("\n");
   const storageLabel =
     storage.snapshot === null ? "calculating local storage" : `${formatBytes(storage.snapshot.totalBytes)} local`;
+  const [storagePanelOpen, setStoragePanelOpen] = useState(false);
+  const storagePanelRef = useRef<HTMLDivElement | null>(null);
+  const appCacheBytes =
+    (storage.snapshot?.chromiumHttpCache.bytes ?? 0) +
+    (storage.snapshot?.chromiumCodeCache.bytes ?? 0);
+  const sourceSnapCount =
+    storage.snapshot?.sourceCaptures.captureCount ?? storage.snapshot?.sourceCaptures.fileCount ?? 0;
+  const storageBusy = storage.workingAction !== null;
+
+  useEffect(() => {
+    if (!storagePanelOpen) return;
+    function closeOnOutsidePointer(event: PointerEvent): void {
+      const root = storagePanelRef.current;
+      if (root !== null && event.target instanceof Node && root.contains(event.target)) return;
+      setStoragePanelOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === "Escape") setStoragePanelOpen(false);
+    }
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [storagePanelOpen]);
 
   // Phase 5 perf instrumentation. Fires once per Library mount when
   // the grid commits its first row of real data — the seeder reads
@@ -1629,9 +1645,69 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
       <footer className="psl__status">
         <div className="psl__status-l">
-          <span title={storageTitle}>
-            <span className="a">●</span> {storageLabel}
-          </span>
+          <div className="psl__storage" ref={storagePanelRef}>
+            <button
+              className="psl__storage-trigger"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={storagePanelOpen}
+              onClick={() => setStoragePanelOpen((open) => !open)}
+            >
+              <span className="a" aria-hidden="true">●</span>
+              <span>{storageLabel}</span>
+            </button>
+            {storagePanelOpen ? (
+              <div className="psl__storage-popover" role="dialog" aria-label="Storage usage">
+                {storage.error !== null ? (
+                  <div className="psl__storage-error">{storage.error}</div>
+                ) : null}
+                <div className="psl__storage-row">
+                  <div>
+                    <span>App Cache</span>
+                    <small>Chromium Cache + Code Cache</small>
+                  </div>
+                  <b>{formatBytes(appCacheBytes)}</b>
+                  <button
+                    type="button"
+                    disabled={storageBusy}
+                    onClick={() => void storage.clearAppCache()}
+                  >
+                    {storage.workingAction === "app-cache" ? "Clearing" : "Clear"}
+                  </button>
+                </div>
+                <div className="psl__storage-row">
+                  <div>
+                    <span>Render Sizes Cache</span>
+                    <small>Rebuilds as thumbnails are needed</small>
+                  </div>
+                  <b>{formatBytes(storage.snapshot?.renderCache.bytes ?? 0)}</b>
+                  <span className="psl__storage-actions">
+                    <button
+                      type="button"
+                      disabled={storageBusy}
+                      onClick={() => void storage.maintainRenderCache("trim")}
+                    >
+                      {storage.workingAction === "render-trim" ? "Trimming" : "Trim"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={storageBusy}
+                      onClick={() => void storage.maintainRenderCache("clear")}
+                    >
+                      {storage.workingAction === "render-clear" ? "Clearing" : "Clear"}
+                    </button>
+                  </span>
+                </div>
+                <div className="psl__storage-row">
+                  <div>
+                    <span>Documents/PwrSnap</span>
+                    <small>{sourceSnapCount} snaps</small>
+                  </div>
+                  <b>{formatBytes(storage.snapshot?.sourceCaptures.documentsBytes ?? 0)}</b>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <span>
             Codex auto-tag <b>on</b>
           </span>

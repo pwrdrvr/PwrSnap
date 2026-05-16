@@ -67,9 +67,13 @@ const CASES: SourceFilterCase[] = [
 ];
 
 test.describe("flaky source-app filter coverage", () => {
+  // Per-test budget. 15s covers a cold Electron launch (~3-5s on a
+  // slow GH Actions Linux runner) + 100+ row seed + 3 filter cycles
+  // + teardown, with headroom. Don't shrink this without measuring
+  // the cold-launch P95 on the slowest runner you care about.
   test.describe.configure({
-    retries: process.env.CI ? 10 : 0,
-    timeout: 5_000
+    retries: process.env.CI ? 2 : 0,
+    timeout: 15_000
   });
 
 test("source-app filters load captures outside the initial virtualized page", async () => {
@@ -101,29 +105,29 @@ test("source-app filters load captures outside the initial virtualized page", as
           }>;
         }
       ) => {
-        type Bridge = {
-          seedCapture: (input: {
-            id: string;
-            kind: "image" | "video";
-            captured_at: string;
-            source_app_bundle_id: string | null;
-            source_app_name: string | null;
-            src_path: string;
-            width_px: number;
-            height_px: number;
-            device_pixel_ratio: number;
-            byte_size: number;
-            sha256: string;
-          }) => unknown;
+        type SeedInput = {
+          id: string;
+          kind: "image" | "video";
+          captured_at: string;
+          source_app_bundle_id: string | null;
+          source_app_name: string | null;
+          src_path: string;
+          width_px: number;
+          height_px: number;
+          device_pixel_ratio: number;
+          byte_size: number;
+          sha256: string;
         };
+        type Bridge = { seedCaptures: (inputs: SeedInput[]) => unknown };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         const now = Date.now();
         const recentCount = payload.headPageSize - Math.max(
           ...payload.cases.map((filterCase) => filterCase.headVisibleCount)
         );
 
+        const inputs: SeedInput[] = [];
         for (let i = 0; i < recentCount; i++) {
-          bridge.seedCapture({
+          inputs.push({
             id: `source-filter-recent-${i.toString().padStart(3, "0")}`,
             kind: "image",
             captured_at: new Date(now - i * 1000).toISOString(),
@@ -148,7 +152,7 @@ test("source-app filters load captures outside the initial virtualized page", as
                 : new Date(
                     now - 24 * 60 * 60 * 1000 - (olderOffsetSeconds + i) * 1000
                   ).toISOString();
-            bridge.seedCapture({
+            inputs.push({
               id,
               kind: "image",
               captured_at: capturedAt,
@@ -164,6 +168,7 @@ test("source-app filters load captures outside the initial virtualized page", as
           }
           olderOffsetSeconds += filterCase.count;
         }
+        bridge.seedCaptures(inputs);
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
@@ -179,7 +184,13 @@ test("source-app filters load captures outside the initial virtualized page", as
       }
     );
 
-    await reloadLibraryWindow(window);
+    // Tell the live renderer the captures changed instead of
+    // reloading the whole window. The reload path destroys the
+    // renderer mid-IPC (we just synchronously inserted 154 rows
+    // via the bridge), which can leave broadcaster handlers
+    // firing against a destroyed webContents and adds 200–1000ms
+    // of cold-render cost the rest of the test doesn't need.
+    await broadcastCapturesChanged(app);
 
     for (const filterCase of CASES) {
       await waitForAppStat(app, filterCase.bundleId, filterCase.count);
@@ -224,25 +235,25 @@ test("active source-app filter refetches after capture stats change", async () =
           seedPrefix: string;
         }
       ) => {
-        type Bridge = {
-          seedCapture: (input: {
-            id: string;
-            kind: "image" | "video";
-            captured_at: string;
-            source_app_bundle_id: string | null;
-            source_app_name: string | null;
-            src_path: string;
-            width_px: number;
-            height_px: number;
-            device_pixel_ratio: number;
-            byte_size: number;
-            sha256: string;
-          }) => unknown;
+        type SeedInput = {
+          id: string;
+          kind: "image" | "video";
+          captured_at: string;
+          source_app_bundle_id: string | null;
+          source_app_name: string | null;
+          src_path: string;
+          width_px: number;
+          height_px: number;
+          device_pixel_ratio: number;
+          byte_size: number;
+          sha256: string;
         };
+        type Bridge = { seedCaptures: (inputs: SeedInput[]) => unknown };
         const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
         const now = Date.now();
+        const inputs: SeedInput[] = [];
         for (let i = 0; i < payload.headPageSize; i++) {
-          bridge.seedCapture({
+          inputs.push({
             id: `source-filter-refresh-recent-${i.toString().padStart(3, "0")}`,
             kind: "image",
             captured_at: new Date(now - i * 1000).toISOString(),
@@ -258,7 +269,7 @@ test("active source-app filter refetches after capture stats change", async () =
         }
         for (let i = 0; i < payload.targetCount; i++) {
           const id = `source-filter-refresh-${payload.seedPrefix}-${i.toString().padStart(3, "0")}`;
-          bridge.seedCapture({
+          inputs.push({
             id,
             kind: "image",
             captured_at: new Date(now - 24 * 60 * 60 * 1000 - i * 1000).toISOString(),
@@ -272,6 +283,7 @@ test("active source-app filter refetches after capture stats change", async () =
             sha256: id
           });
         }
+        bridge.seedCaptures(inputs);
       },
       {
         headPageSize: HEAD_PAGE_SIZE,
@@ -284,7 +296,10 @@ test("active source-app filter refetches after capture stats change", async () =
       }
     );
 
-    await reloadLibraryWindow(window);
+    // Broadcast instead of reload — see the note in the first
+    // test in this file. Removes the renderer destroy-mid-IPC race
+    // and saves a cold-render cycle.
+    await broadcastCapturesChanged(app);
 
     await waitForAppStat(app, filterCase.bundleId, filterCase.count);
     await clickSourceFilterButton(window, filterCase);

@@ -428,6 +428,8 @@ export function bootstrapApp(): void {
           return { width: size.width, height: size.height, isEmpty: false };
         },
         readClipboardBookmark: () => clipboard.readBookmark(),
+        readClipboardText: () => clipboard.readText(),
+        readClipboardFormats: () => clipboard.availableFormats(),
         // Clear clipboard before the spec runs so we know any image
         // we read back came from THIS test's dispatch, not a stale
         // earlier paste.

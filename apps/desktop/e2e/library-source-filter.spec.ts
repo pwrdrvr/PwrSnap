@@ -68,14 +68,13 @@ const CASES: SourceFilterCase[] = [
 ];
 
 test.describe("flaky source-app filter coverage", () => {
-  // Per-test budget. These specs launch Electron, seed 100+ rows,
-  // refetch sidebar stats, and then must still close the app inside
-  // finally. On slower GHA Linux runners a first-attempt timeout can
-  // interrupt cleanup and surface as an "error outside any test", so
-  // keep the envelope comfortably above the sum of the inner waits.
+  // Per-test budget. 15s covers a cold Electron launch, 100+ row seed,
+  // source-filter refetches, and teardown on the slowest CI runner we've
+  // observed. The specs normally finish in ~1-5s; a longer timeout would
+  // hide real hangs in the filter/refetch path.
   test.describe.configure({
     retries: process.env.CI ? 2 : 0,
-    timeout: 30_000
+    timeout: 15_000
   });
 
 test("source-app filters load captures outside the initial virtualized page", async () => {

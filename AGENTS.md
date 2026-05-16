@@ -19,10 +19,12 @@
 - Do not delete or "clean up" files in `docs/brainstorms/`, `docs/plans/`, or
   `docs/solutions/`.
 - To reproduce the Linux GitHub Actions Desktop E2E job locally, prefer
-  `pnpm test:desktop-e2e:docker --platform linux/amd64` from the repo root
-  (or pass `--test '<pattern>' --iterations 30` for flake hunting). This runs
-  the Linux/xvfb subset; macOS-only clipboard, tray, menu-bar, screen-capture,
-  and AppKit windowing specs are expected to be skipped.
+  `pnpm test:desktop-e2e:docker` from the repo root (or pass
+  `--test '<pattern>' --iterations 30` for flake hunting). This runs the
+  Linux/xvfb subset on Docker's native Linux platform; macOS-only clipboard,
+  tray, menu-bar, screen-capture, and AppKit windowing specs are expected to be
+  skipped. Add `--platform linux/amd64` only when investigating
+  architecture-specific GHA parity.
 
 ## Agent Instruction Files
 

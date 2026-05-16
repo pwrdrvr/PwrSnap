@@ -45,11 +45,11 @@
 #                       Otherwise the image is built on first run
 #                       and reused.
 #   --platform <arch>   Pass to `docker build/run --platform`.
-#                       Default: native. Set to `linux/amd64` to
+#                       Default: Docker's native Linux platform.
+#                       Set to `linux/amd64` only when you need to
 #                       emulate GHA's x86 hardware (requires
 #                       Docker buildx + qemu; expect 5-10× slower
-#                       runs but better signal for x86-specific
-#                       flakes).
+#                       runs).
 #   --keep-stage        Don't remove the stage directory after the
 #                       run. Useful for poking at the staged source
 #                       afterward.
@@ -112,7 +112,7 @@ while [[ $# -gt 0 ]]; do
       # Print the leading comment block (everything between `# Usage:`
       # and the first non-`#` line after it) so --help and the file
       # header stay in lock-step automatically.
-      sed -n '/^# Usage:/,/^[^#]/p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '/^# Usage:/,/^[^#]/ { /^[^#]/d; s/^# \{0,1\}//; p; }' "$0"
       exit 0
       ;;
     *)
@@ -153,11 +153,28 @@ if [[ ! -d "$SOURCE" ]]; then
   exit 2
 fi
 
-# Build the image if missing or --build forced. Tag-based existence
-# check; cache layers do the rest.
+# Build the image if missing, --build forced, or the caller requests
+# a platform that does not match the existing tagged image. Docker
+# cache layers do the rest.
 BUILD_ARGS=()
 if [[ -n "$PLATFORM" ]]; then BUILD_ARGS+=(--platform "$PLATFORM"); fi
-if [[ "$FORCE_BUILD" -eq 1 || -z "$(docker images -q "$IMAGE" 2>/dev/null)" ]]; then
+IMAGE_ID="$(docker images -q "$IMAGE" 2>/dev/null || true)"
+IMAGE_PLATFORM_MISMATCH=0
+TARGET_PLATFORM="$PLATFORM"
+if [[ -z "$TARGET_PLATFORM" ]]; then
+  TARGET_PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || true)"
+fi
+if [[ -n "$IMAGE_ID" && -n "$TARGET_PLATFORM" ]]; then
+  IMAGE_OS="$(docker image inspect -f '{{.Os}}' "$IMAGE" 2>/dev/null || true)"
+  IMAGE_ARCH="$(docker image inspect -f '{{.Architecture}}' "$IMAGE" 2>/dev/null || true)"
+  IMAGE_VARIANT="$(docker image inspect -f '{{.Variant}}' "$IMAGE" 2>/dev/null || true)"
+  IMAGE_PLATFORM="$IMAGE_OS/$IMAGE_ARCH"
+  if [[ -n "$IMAGE_VARIANT" ]]; then IMAGE_PLATFORM="$IMAGE_PLATFORM/$IMAGE_VARIANT"; fi
+  if [[ "$TARGET_PLATFORM" != "$IMAGE_PLATFORM" && "$TARGET_PLATFORM" != "$IMAGE_OS/$IMAGE_ARCH" ]]; then
+    IMAGE_PLATFORM_MISMATCH=1
+  fi
+fi
+if [[ "$FORCE_BUILD" -eq 1 || -z "$IMAGE_ID" || "$IMAGE_PLATFORM_MISMATCH" -eq 1 ]]; then
   echo "[run-docker] building $IMAGE" >&2
   docker build "${BUILD_ARGS[@]}" -f "$SCRIPT_DIR/Dockerfile.e2e" -t "$IMAGE" "$REPO_ROOT"
 fi
@@ -203,7 +220,7 @@ fi
 # Build the inner command. Always installs deps + builds first;
 # either runs the test pattern N times in a loop, or runs the full
 # test:desktop-e2e job.
-INNER='set -eu
+INNER='set -euo pipefail
 cd /work
 echo "==install==" >&2
 pnpm install --frozen-lockfile=false 2>&1 | tail -2
@@ -226,12 +243,12 @@ for i in \$(seq 1 $ITERATIONS); do
   RESULT=\$(printf '%s\\n' \"\$OUTPUT\" | tail -3 | tr -d '\\r')
   if [ \"\$STATUS\" -eq 0 ]; then
     PASS=\$((PASS+1))
-    DURATION=\$(echo \"\$RESULT\" | grep -oE '[0-9.]+s' | tail -1)
+    DURATION=\$(printf '%s\\n' \"\$RESULT\" | grep -oE '[0-9.]+s' | tail -1 || true)
     echo \"Run \$i: PASS (\$DURATION)\"
   else
     FAIL=\$((FAIL+1))
     echo \"Run \$i: FAIL\"
-    echo \"\$RESULT\" | head -5
+    printf '%s\\n' \"\$RESULT\" | head -5 || true
   fi
 done
 echo \"\"

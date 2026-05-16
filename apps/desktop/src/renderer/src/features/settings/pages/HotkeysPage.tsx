@@ -237,9 +237,10 @@ export function HotkeysPage(): ReactElement {
       </Card>
 
       <div className="pss__footer">
+        <span className="pss__footer-status">All changes saved automatically</span>
         <button
           type="button"
-          className="pss__footer-reset"
+          className="pss__top-btn"
           onClick={() => void onResetDefaults()}
         >
           Reset to defaults

@@ -25,6 +25,34 @@ test:desktop-e2e`.
 
 See `./scripts/e2e/run-docker.sh --help` for the full option list.
 
+You can also invoke the same harness through pnpm from the repository root:
+
+```bash
+pnpm test:desktop-e2e:docker --platform linux/amd64
+pnpm test:desktop-e2e:docker --test 'source-app filters' --iterations 30
+```
+
+## What this runs
+
+This mirrors the Linux GitHub Actions `Desktop E2E` job, not the complete
+macOS-local E2E surface. The job runs the root `test:desktop-e2e` script under
+`xvfb-run` in a Linux container, so specs that are explicitly macOS-only are
+reported as skipped.
+
+At the time this harness was added, a healthy full Linux run reports 38 tests:
+23 passed and 15 skipped. The skipped tests are intentional:
+
+- 5 clipboard copy tests that exercise macOS pasteboard behavior
+- 4 float-over visibility tests that depend on macOS windowing behavior
+- 1 library focus/scroll restoration test marked macOS-only
+- 1 region capture test that is macOS-only and opt-in
+- 1 menu-bar region selector test marked macOS-only
+- 3 tray sizing tests that depend on macOS tray/popover behavior
+
+Use this harness for GHA/Linux/xvfb parity and flake reproduction. Use native
+macOS E2Es when validating pasteboard, tray, menu-bar, screen-capture, or other
+AppKit-facing behavior.
+
 ## Layout
 
 - `Dockerfile.e2e` — Linux image. Bookworm base, Node 24.14.1

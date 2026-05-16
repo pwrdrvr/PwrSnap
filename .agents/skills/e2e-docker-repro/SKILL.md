@@ -47,6 +47,12 @@ PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
   ./scripts/e2e/run-docker.sh --platform linux/amd64 --keep-stage
 ```
 
+Equivalent root pnpm entrypoint:
+
+```bash
+pnpm test:desktop-e2e:docker --platform linux/amd64 --keep-stage
+```
+
 Run a different ref without switching the worktree:
 
 ```bash
@@ -87,6 +93,9 @@ PWRSNAP_E2E_STAGE=/tmp/pwrsnap-e2e-stage \
 
 ## Interpretation Notes
 
+- A healthy full Linux/GHA-style run only covers the Linux-safe subset. Expect
+  the macOS-only specs to be skipped; the current normal shape is 38 total,
+  23 passed, 15 skipped.
 - `Target page, context or browser has been closed` usually means Electron
   exited or crashed; inspect preceding browser logs for `SIGTRAP`, GLib, DBus,
   or renderer crash output before changing assertions.

@@ -122,11 +122,7 @@ export function useStorageSnapshot(
       void refreshSummary();
     }
     const unsubscribe = subscribe(EVENT_CHANNELS.capturesChanged, () => {
-      if (eagerSnapshot) {
-        void refresh();
-      } else {
-        void refreshSummary();
-      }
+      void refreshSummary();
     });
     return unsubscribe;
   }, [eagerSnapshot, refresh, refreshSummary]);

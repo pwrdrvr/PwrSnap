@@ -20,7 +20,10 @@ import {
 import { clearRenderCache, trimRenderCache } from "../persistence/render-cache-maintenance";
 
 export const CHROMIUM_DISK_CACHE_LIMIT_BYTES = 128 * 1024 * 1024;
-export const STORAGE_SNAPSHOT_CACHE_TTL_MS = 15_000;
+// Full filesystem accounting is intentionally coarse. Hot UI paths use
+// SQLite-backed summaries; exact bucket totals are refreshed on explicit
+// details/maintenance paths.
+export const STORAGE_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 type SizeResult = StorageBucket;
 type StorageSnapshotOptions = {

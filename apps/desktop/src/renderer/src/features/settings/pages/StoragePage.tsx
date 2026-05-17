@@ -5,6 +5,7 @@ import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
 
 export function StoragePage(): ReactElement {
   const {
+    summary,
     snapshot,
     loading,
     workingAction,
@@ -16,6 +17,10 @@ export function StoragePage(): ReactElement {
   const total = snapshot?.totalBytes ?? 0;
   const appCacheBytes =
     (snapshot?.chromiumHttpCache.bytes ?? 0) + (snapshot?.chromiumCodeCache.bytes ?? 0);
+  const sourceCaptureCount =
+    summary?.sourceCaptures.captureCount ?? snapshot?.sourceCaptures.captureCount ?? 0;
+  const sourceCaptureBytes =
+    summary?.sourceCaptures.bytes ?? snapshot?.sourceCaptures.bytes ?? 0;
   const storageBusy = workingAction !== null;
 
   return (
@@ -29,7 +34,11 @@ export function StoragePage(): ReactElement {
           </p>
         </div>
         <div className="pss__main-actions">
-          <button className="pss__top-btn" type="button" onClick={() => void refresh()}>
+          <button
+            className="pss__top-btn"
+            type="button"
+            onClick={() => void refresh({ force: true })}
+          >
             {loading ? "Refreshing" : "Refresh"}
           </button>
         </div>
@@ -43,8 +52,8 @@ export function StoragePage(): ReactElement {
         ) : null}
         <StorageRow
           label="Source captures"
-          sub={`${snapshot?.sourceCaptures.captureCount ?? 0} snaps`}
-          bytes={snapshot?.sourceCaptures.bytes ?? 0}
+          sub={`${sourceCaptureCount} snaps`}
+          bytes={sourceCaptureBytes}
           total={total}
           detail={
             snapshot === null

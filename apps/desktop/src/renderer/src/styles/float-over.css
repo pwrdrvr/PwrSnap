@@ -7,9 +7,9 @@
   height: 100%;
   overflow: hidden;
   background:
-    radial-gradient(1200px 700px at 18% 12%, rgba(232,116,58,0.08) 0%, transparent 55%),
+    radial-gradient(1200px 700px at 18% 12%, rgba(255, 138, 31,0.08) 0%, transparent 55%),
     radial-gradient(900px 600px at 88% 92%, rgba(31,124,255,0.06) 0%, transparent 55%),
-    linear-gradient(140deg, #0a0908 0%, #14110d 50%, #050403 100%);
+    linear-gradient(140deg, #000000 0%, #14110d 50%, #050403 100%);
   font-family: var(--font-sans);
 }
 .fo-desktop::before {
@@ -243,7 +243,7 @@
   overflow: hidden;
 }
 .fo__copy-btn:hover {
-  background: rgba(232,116,58,0.08);
+  background: rgba(255, 138, 31,0.08);
   border-color: var(--accent-border);
   transform: translateY(-1px);
 }
@@ -322,8 +322,8 @@
   gap: 4px;
   min-height: 18px;
   padding: 0 6px;
-  background: rgba(232,116,58,0.07);
-  border: 1px solid rgba(232,116,58,0.22);
+  background: rgba(255, 138, 31,0.07);
+  border: 1px solid rgba(255, 138, 31,0.22);
   border-radius: 5px;
   color: var(--accent);
   font: 700 9px/1 var(--font-sans);
@@ -332,7 +332,7 @@
   cursor: grab;
 }
 .fo__copy-file:hover {
-  background: rgba(232,116,58,0.12);
+  background: rgba(255, 138, 31,0.12);
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
@@ -359,7 +359,7 @@
   min-height: 44px;
 }
 .fo__desc::placeholder { color: var(--text-subtle); }
-.fo__desc:focus { border-color: var(--accent-border); background: rgba(232,116,58,0.04); }
+.fo__desc:focus { border-color: var(--accent-border); background: rgba(255, 138, 31,0.04); }
 
 .fo__tags {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
@@ -388,7 +388,7 @@
 .fo__tag.is-suggest {
   background: transparent;
   border-style: dashed;
-  border-color: rgba(232,116,58,0.32);
+  border-color: rgba(255, 138, 31,0.32);
   color: var(--accent);
   cursor: pointer;
 }
@@ -413,8 +413,8 @@
   display: flex; align-items: center; gap: 8px;
   margin: 0 12px 8px;
   padding: 7px 9px;
-  background: rgba(232,116,58,0.05);
-  border: 1px solid rgba(232,116,58,0.16);
+  background: rgba(255, 138, 31,0.05);
+  border: 1px solid rgba(255, 138, 31,0.16);
   border-radius: 7px;
   font: 500 11px/1.3 var(--font-sans);
   color: var(--text-secondary);
@@ -578,7 +578,7 @@
   height: 100%;
   border-radius: 12px;
   overflow: hidden;
-  background: #0a0908;
+  background: #000000;
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
 }
@@ -594,7 +594,7 @@
   letter-spacing: 0.02em;
   pointer-events: none;
   z-index: 100;
-  box-shadow: 0 4px 12px rgba(232,116,58,0.4);
+  box-shadow: 0 4px 12px rgba(255, 138, 31,0.4);
 }
 .fo-callout::after {
   content: "";

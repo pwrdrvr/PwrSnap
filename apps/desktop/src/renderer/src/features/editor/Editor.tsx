@@ -723,7 +723,7 @@ function ArrowGlyph({
   const headPolygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
   const stroke = geom.strokeFraction;
   const outline = Math.max(stroke * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ff8c4a)" : "var(--accent, #e8743a)";
+  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
   return (
     <g strokeLinecap="round" strokeLinejoin="round">
       <line
@@ -772,7 +772,7 @@ function RectGlyph({
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const strokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
   const outline = Math.max(strokeFraction * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ff8c4a)" : "var(--accent, #e8743a)";
+  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
   return (
     <g>
       <rect
@@ -863,7 +863,7 @@ function TextGlyph({
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const sizePx = size === "large" ? shortSide / 30 : shortSide / 60;
   const fontSize = sizePx / shortSide;
-  const accent = "var(--accent, #e8743a)";
+  const accent = "var(--accent, #ff8a1f)";
   return (
     <g>
       <text
@@ -917,8 +917,8 @@ function TextDraftInput({
     top: `${draft.yn * 100}%`,
     transform: "translateY(-2px)",
     background: "rgba(8,7,6,0.92)",
-    color: "var(--accent-bright, #ff8c4a)",
-    border: "1px solid var(--accent, #e8743a)",
+    color: "var(--accent-bright, #ffa33d)",
+    border: "1px solid var(--accent, #ff8a1f)",
     borderRadius: 4,
     padding: "2px 6px",
     font: "600 13px var(--font-sans, system-ui)",

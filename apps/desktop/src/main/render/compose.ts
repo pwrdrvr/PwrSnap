@@ -310,7 +310,7 @@ function arrowSvg(
   const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
   const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
 
-  const fillColor = data.color === "auto" ? "#e8743a" : data.color;
+  const fillColor = data.color === "auto" ? "#ff8a1f" : data.color;
   // White outline always drawn (per plan §"Smart arrow algorithm"):
   // legibility on busy images. The outline is a slightly thicker
   // pass underneath the accent.
@@ -353,7 +353,7 @@ function rectSvg(
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
   const strokeWidthPx = clamp(shortSidePx / 220, 4, 14);
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
-  const fillColor = data.color === "auto" ? "#e8743a" : data.color;
+  const fillColor = data.color === "auto" ? "#ff8a1f" : data.color;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
@@ -393,7 +393,7 @@ function textSvg(
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
   // Two sizes per the schema: small ≈ 1.7%, large ≈ 3.3% of short-side.
   const fontSizePx = data.size === "large" ? shortSidePx / 30 : shortSidePx / 60;
-  const accent = data.color === "auto" ? "#e8743a" : data.color;
+  const accent = data.color === "auto" ? "#ff8a1f" : data.color;
   // Black halo via paint-order. xml-escape the body so user input
   // can't break out of the SVG.
   const escaped = escapeXml(data.body);

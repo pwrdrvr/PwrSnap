@@ -13,36 +13,36 @@
   --font-mono: "Geist Mono", "SF Mono", "JetBrains Mono", Consolas, monospace;
   --font-display: "Geist", "SF Pro Display", system-ui, sans-serif;
 
-  /* ---------- COLOR — surfaces (warm off-black system) ---------- */
-  --bg-app:            #0a0908;   /* root, slightly warm */
-  --bg-sidebar:        #0e0d0b;   /* nav rail */
-  --bg-panel:          #13110e;   /* primary cards/content panels */
-  --bg-panel-elevated: #1a1714;   /* nested cards, popovers */
-  --bg-panel-hover:    #1f1a15;   /* hover on panels */
-  --bg-row-active:     #2a1810;   /* deep copper-tinted, selected items */
-  --bg-input:          #0d0c0a;   /* input fields */
-  --bg-overlay:        rgba(10, 9, 8, 0.78);  /* modal scrim */
+  /* ---------- COLOR — surfaces (pure-black suite system) ---------- */
+  --bg-app:            #000000;   /* root, pure black per PwrAgent suite */
+  --bg-sidebar:        #050505;   /* nav rail */
+  --bg-panel:          #0a0a0a;   /* primary cards/content panels */
+  --bg-panel-elevated: #101010;   /* nested cards, popovers */
+  --bg-panel-hover:    #14110d;   /* subtle warm cast retained on hover only */
+  --bg-row-active:     #1f1107;   /* tangerine-tinted, selected items (~12% darken of accent on black) */
+  --bg-input:          #080808;   /* input fields */
+  --bg-overlay:        rgba(0, 0, 0, 0.78);  /* modal scrim */
 
   /* ---------- COLOR — borders ---------- */
-  --border-subtle: rgba(247, 243, 235, 0.08);
+  --border-subtle: rgba(247, 243, 235, 0.10);
   --border-default: rgba(247, 243, 235, 0.12);
-  --border-strong: rgba(247, 243, 235, 0.18);
+  --border-strong: rgba(247, 243, 235, 0.20);
 
   /* ---------- COLOR — text ---------- */
-  --text-primary:   #f5efe3;   /* warm bone — never pure white */
-  --text-secondary: #b8b0a4;
-  --text-muted:     #8a8275;
+  --text-primary:   #f7f3eb;   /* warm bone — never pure white */
+  --text-secondary: #b8b0a5;
+  --text-muted:     #8c857a;
   --text-subtle:    #5a544b;
 
-  /* ---------- COLOR — accent (burnt copper) ---------- */
-  --accent:        #e8743a;
-  --accent-strong: #f48a55;
-  --accent-bright: #fda984;
-  --accent-deep:   #9c4d20;
-  --accent-soft:   rgba(232, 116, 58, 0.14);
-  --accent-tint:   rgba(232, 116, 58, 0.06);
-  --accent-border: rgba(232, 116, 58, 0.38);
-  --accent-shadow: rgba(232, 116, 58, 0.30);
+  /* ---------- COLOR — accent (tangerine) ---------- */
+  --accent:        #ff8a1f;
+  --accent-strong: #ffa33d;
+  --accent-bright: #ffb35c;
+  --accent-deep:   #b35f15;
+  --accent-soft:   rgba(255, 138, 31, 0.12);
+  --accent-tint:   rgba(255, 138, 31, 0.06);
+  --accent-border: rgba(255, 138, 31, 0.42);
+  --accent-shadow: rgba(255, 138, 31, 0.34);
 
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
@@ -73,7 +73,7 @@
   --warn-text:     #e8c890;
 
   /* ---------- BUTTON ---------- */
-  --button-text-on-accent: #1a0d05;   /* dark warm-black, used on bright copper fills */
+  --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
   /* ---------- SHADOWS ---------- */
   --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.32);

@@ -121,7 +121,7 @@ export function createMainWindow(): BrowserWindow {
     title: "PwrSnap",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#0a0908",
+    backgroundColor: "#000000",
     webPreferences: baseWebPreferences
   });
   libraryWindow = window;
@@ -228,7 +228,7 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
     title: "PwrSnap Settings",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#0a0908",
+    backgroundColor: "#000000",
     webPreferences: baseWebPreferences
   });
   settingsWindow = window;
@@ -277,7 +277,7 @@ export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
     title: appDocumentTitle(kind),
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#0a0908",
+    backgroundColor: "#000000",
     webPreferences: baseWebPreferences
   });
   appDocumentWindows.set(kind, window);
@@ -517,7 +517,7 @@ export function createEditWindow(captureId: string): BrowserWindow {
     title: "PwrSnap Editor",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#0a0908",
+    backgroundColor: "#000000",
     webPreferences: baseWebPreferences
   });
 

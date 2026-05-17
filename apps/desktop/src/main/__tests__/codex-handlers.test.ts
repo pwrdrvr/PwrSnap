@@ -49,7 +49,8 @@ function testSettings(patch?: Partial<Settings>): Settings {
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+P",
       region: "CommandOrControl+Shift+R",
-      window: "CommandOrControl+Shift+W"
+      window: "CommandOrControl+Shift+W",
+      videoCapture: "CommandOrControl+Shift+V"
     },
     experimental: {
       v2FileFormat: false

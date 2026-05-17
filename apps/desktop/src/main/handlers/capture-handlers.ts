@@ -17,10 +17,10 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { screen } from "electron";
+import { clipboard, screen } from "electron";
 import sharp from "sharp";
 import { ok, err } from "@pwrsnap/shared";
 import type {
@@ -58,6 +58,12 @@ const PRESET_WIDTHS = {
 
 const DRAG_ICON_WIDTH = 128;
 const COPY_PRESETS = ["low", "med", "high"] as const;
+const CLIPBOARD_SOURCE = {
+  bundleId: "com.pwrsnap.clipboard",
+  appName: "Clipboard"
+} as const;
+
+type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -183,6 +189,44 @@ export function registerCaptureHandlers(): void {
       if (previousAppPid !== null) {
         await activateApp(previousAppPid);
       }
+    }
+  });
+
+  bus.register("capture:pasteFromClipboard", async () => {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) {
+      return err({
+        kind: "clipboard",
+        code: "no_image",
+        message: "The clipboard does not currently contain an image."
+      });
+    }
+
+    try {
+      const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
+      const tempPath = join(dir, `${Date.now()}.png`);
+      await writeFile(tempPath, image.toPNG());
+      const persisted = await persistAndBroadcast(tempPath, CLIPBOARD_SOURCE, {
+        devicePixelRatio: 1
+      });
+      if (persisted.ok) {
+        log.info("clipboard image pasted into library", {
+          captureId: persisted.value.id,
+          widthPx: persisted.value.width_px,
+          heightPx: persisted.value.height_px
+        });
+      }
+      return persisted;
+    } catch (cause) {
+      log.error("clipboard paste failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "clipboard",
+        code: "paste_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
     }
   });
 
@@ -448,7 +492,8 @@ async function renderPresetFile(
 
 async function persistAndBroadcast(
   tempPath: string,
-  sourceApp: WindowInfo | null
+  sourceApp: CaptureSource,
+  options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   const stored = await putCaptureSource(tempPath);
   const { record, isNew } = insertOrFindCapture({
@@ -460,7 +505,7 @@ async function persistAndBroadcast(
     src_path: stored.srcPath,
     width_px: stored.widthPx,
     height_px: stored.heightPx,
-    device_pixel_ratio: 2, // Phase 3+ derives from the active display
+    device_pixel_ratio: options.devicePixelRatio ?? 2, // Phase 3+ derives from the active display
     byte_size: stored.byteSize,
     sha256: stored.sha256
   });

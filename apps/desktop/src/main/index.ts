@@ -66,7 +66,24 @@ const isE2E = process.env.PWRSNAP_E2E === "1";
 function installApplicationMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: "appMenu" as const }] : []),
-    { role: "fileMenu" },
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New",
+          submenu: [
+            {
+              label: "Paste from Clipboard",
+              click: () => {
+                void runPasteFromClipboard();
+              }
+            }
+          ]
+        },
+        { type: "separator" },
+        isMac ? { role: "close" as const } : { role: "quit" as const }
+      ]
+    },
     { role: "editMenu" },
     { role: "viewMenu" },
     { role: "windowMenu" },
@@ -101,6 +118,39 @@ function installApplicationMenu(): void {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+async function runPasteFromClipboard(): Promise<void> {
+  const log = getMainLogger("pwrsnap:clipboard");
+  const result = await bus.dispatch(
+    "capture:pasteFromClipboard",
+    {},
+    { principal: "ipc" }
+  );
+  if (!result.ok) {
+    log.warn("paste from clipboard failed", {
+      code: result.error.code,
+      message: result.error.message
+    });
+    void dialog.showMessageBox({
+      type: result.error.code === "no_image" ? "info" : "error",
+      message: result.error.code === "no_image" ? "No image on the clipboard" : "Paste failed",
+      detail: result.error.message
+    });
+    return;
+  }
+  const opened = await bus.dispatch(
+    "library:openInLibrary",
+    { captureId: result.value.id },
+    { principal: "ipc" }
+  );
+  if (!opened.ok) {
+    log.warn("paste succeeded but library open failed", {
+      captureId: result.value.id,
+      code: opened.error.code,
+      message: opened.error.message
+    });
+  }
 }
 
 /** Map of HotkeyKind → currently-registered accelerator. We hold this

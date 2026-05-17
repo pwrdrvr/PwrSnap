@@ -193,3 +193,101 @@ body[data-stage="float-over"] .fo {
 .renderer-diagnostics__details[hidden] {
   display: none;
 }
+
+/* App-update banner.
+ *
+ * Renders inside .app-shell, ABOVE <Library />, so the library content
+ * shifts down by the banner's height while it's visible. Width fills
+ * the window; dismissable per-version. PwrAgnt has the same shape;
+ * tokens map to PwrSnap's warm-near-black palette.
+ */
+.app-update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--accent-border, rgba(232, 116, 58, 0.35));
+  background: linear-gradient(
+    180deg,
+    rgba(232, 116, 58, 0.16),
+    rgba(232, 116, 58, 0.08)
+  );
+  color: var(--text-primary);
+  font: 500 12px/1.4 var(--font-sans);
+}
+
+.app-update-banner__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-update-banner__eyebrow {
+  margin: 0;
+  color: var(--accent, #e8743a);
+  font: 700 10px/1.2 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-update-banner__message {
+  margin: 0;
+  font: 500 12px/1.4 var(--font-sans);
+}
+
+.app-update-banner__error {
+  margin: 4px 0 0;
+  color: var(--danger-text, #e58a8a);
+  font: 500 11px/1.4 var(--font-sans);
+}
+
+.app-update-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.app-update-banner__restart,
+.app-update-banner__dismiss {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: 600 12px/1.2 var(--font-sans);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.app-update-banner__restart {
+  background: var(--accent, #e8743a);
+  color: #1a0f06;
+  border-color: var(--accent, #e8743a);
+}
+
+.app-update-banner__restart:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent) 88%, white);
+}
+
+.app-update-banner__restart:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.app-update-banner__dismiss {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border-subtle, rgba(255, 255, 255, 0.12));
+}
+
+.app-update-banner__dismiss:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.22));
+}
+
+.app-update-banner__dismiss:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

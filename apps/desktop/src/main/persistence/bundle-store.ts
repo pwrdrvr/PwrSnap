@@ -764,7 +764,7 @@ export type PersistCaptureFromTempArgs = {
    * physical display. Surfaces in `CaptureRecord.device_pixel_ratio`
    * for thumbnail / preset-rendering math.
    */
-  devicePixelRatio?: number;
+  devicePixelRatio?: number | undefined;
 };
 
 export type PersistCaptureFromTempResult = {

@@ -381,7 +381,7 @@ export type Commands = {
 
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
-  "storage:snapshot": { req: { force?: boolean }; res: StorageSnapshot };
+  "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };
   "storage:clearAppCache": { req: Record<string, never>; res: StorageMaintenanceResult };
   "storage:maintainRenderCache": {
     req: { mode: RenderCacheMaintenanceMode };

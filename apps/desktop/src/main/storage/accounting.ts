@@ -28,9 +28,11 @@ export const STORAGE_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 type SizeResult = StorageBucket;
 type StorageSnapshotOptions = {
   force?: boolean;
+  audit?: boolean;
 };
 type SnapshotParts = {
   capturedAt: string;
+  audit: boolean;
   dataRoot: string;
   capturesRoot: string;
   capturesInsideDataRoot: boolean;
@@ -58,6 +60,7 @@ type SnapshotParts = {
 const EMPTY_SIZE: SizeResult = { bytes: 0, fileCount: 0 };
 const storageEmitter = new EventEmitter();
 let cachedStorageSnapshot: StorageSnapshot | null = null;
+let cachedStorageSnapshotAudit = false;
 let cachedCompletedAtMs = 0;
 let inFlightStorageScan: Promise<StorageSnapshot> | null = null;
 
@@ -86,24 +89,31 @@ export async function getStorageSnapshot(
   if (inFlightStorageScan !== null) return inFlightStorageScan;
 
   const force = options.force ?? false;
+  const audit = options.audit ?? false;
   const cachedAgeMs = Date.now() - cachedCompletedAtMs;
-  if (!force && cachedStorageSnapshot !== null && cachedAgeMs < STORAGE_SNAPSHOT_CACHE_TTL_MS) {
+  if (
+    !force &&
+    cachedStorageSnapshot !== null &&
+    cachedAgeMs < STORAGE_SNAPSHOT_CACHE_TTL_MS &&
+    (!audit || cachedStorageSnapshotAudit)
+  ) {
     return cachedStorageSnapshot;
   }
 
-  inFlightStorageScan = scanStorageSnapshot().finally(() => {
+  inFlightStorageScan = scanStorageSnapshot({ audit }).finally(() => {
     inFlightStorageScan = null;
   });
   return inFlightStorageScan;
 }
 
-async function scanStorageSnapshot(): Promise<StorageSnapshot> {
+async function scanStorageSnapshot(options: { audit: boolean }): Promise<StorageSnapshot> {
   const dataRoot = getDataRoot();
   const dbPath = getDbPath();
   const capturesRoot = getCapturesRoot();
   const capturesInsideDataRoot = isPathWithinOrEqual(capturesRoot, dataRoot);
   const parts: SnapshotParts = {
     capturedAt: new Date().toISOString(),
+    audit: options.audit,
     dataRoot,
     capturesRoot,
     capturesInsideDataRoot,
@@ -125,31 +135,7 @@ async function scanStorageSnapshot(): Promise<StorageSnapshot> {
       publishStorageSnapshot(buildStorageSnapshot(parts), true);
     },
     async () => {
-      parts.appSupportTotal = await sizePath(dataRoot);
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
       parts.renderCache = await sizePath(getCacheRoot());
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
-      parts.chromiumCacheDir = await sizePath(join(dataRoot, "Cache"));
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
-      parts.chromiumCodeCache = await sizePath(join(dataRoot, "Code Cache"));
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
-      parts.gpuCache = await sizePath(join(dataRoot, "GPUCache"));
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
-      parts.dawnGraphiteCache = await sizePath(join(dataRoot, "DawnGraphiteCache"));
-      publishStorageSnapshot(buildStorageSnapshot(parts), true);
-    },
-    async () => {
-      parts.dawnWebGpuCache = await sizePath(join(dataRoot, "DawnWebGPUCache"));
       publishStorageSnapshot(buildStorageSnapshot(parts), true);
     },
     async () => {
@@ -169,10 +155,39 @@ async function scanStorageSnapshot(): Promise<StorageSnapshot> {
       publishStorageSnapshot(buildStorageSnapshot(parts), true);
     }
   ];
+  if (options.audit) {
+    scanTasks.push(
+      async () => {
+        parts.appSupportTotal = await sizePath(dataRoot);
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      },
+      async () => {
+        parts.chromiumCacheDir = await sizePath(join(dataRoot, "Cache"));
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      },
+      async () => {
+        parts.chromiumCodeCache = await sizePath(join(dataRoot, "Code Cache"));
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      },
+      async () => {
+        parts.gpuCache = await sizePath(join(dataRoot, "GPUCache"));
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      },
+      async () => {
+        parts.dawnGraphiteCache = await sizePath(join(dataRoot, "DawnGraphiteCache"));
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      },
+      async () => {
+        parts.dawnWebGpuCache = await sizePath(join(dataRoot, "DawnWebGPUCache"));
+        publishStorageSnapshot(buildStorageSnapshot(parts), true);
+      }
+    );
+  }
 
   await Promise.all(scanTasks.map((task) => task()));
 
   const snapshot = buildStorageSnapshot(parts);
+  cachedStorageSnapshotAudit = options.audit;
   cachedCompletedAtMs = Date.now();
   publishStorageSnapshot(snapshot, false);
   return snapshot;
@@ -197,11 +212,26 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
   const chromiumReportedBytes = parts.chromiumReportedBytes ?? 0;
   const databaseStats = parts.databaseStats;
   const chromiumGpuCaches = combineBuckets(gpuCache, dawnGraphiteCache, dawnWebGpuCache);
+  const chromiumHttpCache: StorageBucket & { reportedBytes: number; limitBytes: number } = {
+    ...(parts.audit ? chromiumCacheDir : { bytes: chromiumReportedBytes, fileCount: 0 }),
+    reportedBytes: chromiumReportedBytes,
+    limitBytes: CHROMIUM_DISK_CACHE_LIMIT_BYTES
+  };
+  const knownTotalBytes =
+    documentsCaptures.bytes +
+    appSupportCaptures.bytes +
+    renderCache.bytes +
+    chromiumHttpCache.bytes +
+    chromiumCodeCache.bytes +
+    chromiumGpuCaches.bytes +
+    dbFile.bytes +
+    dbWal.bytes +
+    dbShm.bytes;
   const knownAppSupportBytes =
     (parts.capturesInsideDataRoot ? documentsCaptures.bytes : 0) +
     appSupportCaptures.bytes +
     renderCache.bytes +
-    chromiumCacheDir.bytes +
+    chromiumHttpCache.bytes +
     chromiumCodeCache.bytes +
     chromiumGpuCaches.bytes +
     dbFile.bytes +
@@ -210,8 +240,9 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
 
   return {
     capturedAt: parts.capturedAt,
-    totalBytes: appSupportTotal.bytes +
-      (parts.capturesInsideDataRoot ? 0 : documentsCaptures.bytes),
+    totalBytes: parts.audit && parts.appSupportTotal !== undefined
+      ? appSupportTotal.bytes + (parts.capturesInsideDataRoot ? 0 : documentsCaptures.bytes)
+      : knownTotalBytes,
     sourceCaptures: {
       bytes: documentsCaptures.bytes + appSupportCaptures.bytes,
       fileCount: documentsCaptures.fileCount + appSupportCaptures.fileCount,
@@ -220,11 +251,7 @@ function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
       appSupportBytes: appSupportCaptures.bytes
     },
     renderCache,
-    chromiumHttpCache: {
-      ...chromiumCacheDir,
-      reportedBytes: chromiumReportedBytes,
-      limitBytes: CHROMIUM_DISK_CACHE_LIMIT_BYTES
-    },
+    chromiumHttpCache,
     chromiumCodeCache,
     chromiumGpuCaches,
     database: {

@@ -35,7 +35,10 @@ export function registerStorageHandlers(): void {
 
   bus.register("storage:snapshot", async (req) => {
     try {
-      return ok(await getStorageSnapshot({ force: req.force ?? false }));
+      return ok(await getStorageSnapshot({
+        force: req.force ?? false,
+        audit: req.audit ?? false
+      }));
     } catch (cause) {
       log.warn("storage:snapshot failed", {
         message: cause instanceof Error ? cause.message : String(cause)

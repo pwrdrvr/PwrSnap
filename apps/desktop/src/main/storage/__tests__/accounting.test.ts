@@ -123,4 +123,18 @@ describe("getStorageSnapshot", () => {
       unsubscribe();
     }
   });
+
+  test("normal snapshots use Chromium cache API instead of crawling Chromium cache dirs", async () => {
+    await mkdir(join(mocks.dataRoot, "Cache"), { recursive: true });
+    await writeFile(join(mocks.dataRoot, "Cache", "chromium-cache.bin"), Buffer.alloc(1024 * 1024));
+
+    const { getStorageSnapshot } = await import("../accounting");
+    const normal = await getStorageSnapshot({ force: true });
+    const audit = await getStorageSnapshot({ force: true, audit: true });
+
+    expect(normal.chromiumHttpCache.bytes).toBe(0);
+    expect(normal.totalBytes).toBeLessThan(128 * 1024);
+    expect(audit.chromiumHttpCache.bytes).toBeGreaterThan(1024 * 1024);
+    expect(audit.totalBytes).toBeGreaterThan(1024 * 1024);
+  });
 });

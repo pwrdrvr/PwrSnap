@@ -19,7 +19,7 @@ type UseStorageSnapshotResult = {
   workingAction: "app-cache" | "render-trim" | "render-clear" | null;
   error: string | null;
   refreshSummary: () => Promise<void>;
-  refresh: (options?: { force?: boolean }) => Promise<void>;
+  refresh: (options?: { force?: boolean; audit?: boolean }) => Promise<void>;
   clearAppCache: () => Promise<void>;
   maintainRenderCache: (mode: RenderCacheMaintenanceMode) => Promise<void>;
 };
@@ -63,19 +63,25 @@ export function useStorageSnapshot(
     setLoading(false);
   }, []);
 
-  const refresh = useCallback(async (refreshOptions: { force?: boolean } = {}): Promise<void> => {
-    setLoading(true);
-    const req = refreshOptions.force === undefined ? {} : { force: refreshOptions.force };
-    const result = await dispatch("storage:snapshot", req);
-    if (!result.ok) {
-      setError(result.error.message);
+  const refresh = useCallback(
+    async (refreshOptions: { force?: boolean; audit?: boolean } = {}): Promise<void> => {
+      setLoading(true);
+      const req = {
+        ...(refreshOptions.force === undefined ? {} : { force: refreshOptions.force }),
+        ...(refreshOptions.audit === undefined ? {} : { audit: refreshOptions.audit })
+      };
+      const result = await dispatch("storage:snapshot", req);
+      if (!result.ok) {
+        setError(result.error.message);
+        setLoading(false);
+        return;
+      }
+      applySnapshot(result.value);
+      setError(null);
       setLoading(false);
-      return;
-    }
-    applySnapshot(result.value);
-    setError(null);
-    setLoading(false);
-  }, [applySnapshot]);
+    },
+    [applySnapshot]
+  );
 
   const clearAppCache = useCallback(async (): Promise<void> => {
     setWorkingAction("app-cache");

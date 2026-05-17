@@ -37,7 +37,7 @@ export function StoragePage(): ReactElement {
           <button
             className="pss__top-btn"
             type="button"
-            onClick={() => void refresh({ force: true })}
+            onClick={() => void refresh({ force: true, audit: true })}
           >
             {loading ? "Refreshing" : "Refresh"}
           </button>

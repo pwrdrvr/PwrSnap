@@ -20,7 +20,11 @@ import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/librar
 import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
-import { initAppUpdater, setUpdateChannelResolver } from "./auto-updater";
+import {
+  checkForAppUpdatesNow,
+  initAppUpdater,
+  setUpdateChannelResolver
+} from "./auto-updater";
 import { join } from "node:path";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
@@ -149,6 +153,13 @@ function installApplicationMenu(): void {
           }
         },
         {
+          label: "Check for Updates",
+          click: () => {
+            void checkForAppUpdatesNow("menu");
+          }
+        },
+        { type: "separator" },
+        {
           label: "Changelog",
           click: () => {
             void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
@@ -164,6 +175,7 @@ function installApplicationMenu(): void {
             );
           }
         },
+        { type: "separator" },
         {
           label: "Visit Website",
           click: async () => {

@@ -1,17 +1,30 @@
 import type { ReactElement } from "react";
-import { Card, Row, Switch } from "../components";
+import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import type { UpdateChannel } from "@pwrsnap/shared";
+
+const UPDATE_CHANNEL_OPTIONS: readonly SegmentOption<UpdateChannel>[] = [
+  { id: "latest", label: "Stable" },
+  { id: "prerelease", label: "Prerelease" }
+];
 
 export function ExperimentalPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const v2 = settings?.experimental.v2FileFormat ?? false;
+  const channel: UpdateChannel = settings?.updates.channel ?? "latest";
   const ready = settings !== null;
 
-  const onChange = ready
+  const onV2Change = ready
     ? (next: boolean): void => {
         void patch({ experimental: { v2FileFormat: next } });
       }
     : undefined;
+
+  const onChannelChange = ready
+    ? (next: UpdateChannel): void => {
+        void patch({ updates: { channel: next } });
+      }
+    : (): void => {};
 
   return (
     <>
@@ -26,13 +39,27 @@ export function ExperimentalPage(): ReactElement {
         </div>
       </div>
 
+      <Card eyebrow="UPDATES" title="Update channel">
+        <Row
+          label="Release stream"
+          sub='"Stable" tracks the latest signed release. "Prerelease" includes betas and alphas — earlier features, more rough edges. Takes effect on the next update check.'
+          tag={channel}
+        >
+          <SegmentedControl
+            options={UPDATE_CHANNEL_OPTIONS}
+            value={channel}
+            onChange={onChannelChange}
+          />
+        </Row>
+      </Card>
+
       <Card eyebrow="FILE FORMAT" title="File format">
         <Row
           label="PwrSnap1 capture format"
           sub="Build coming in a later release. Toggle persists so you can opt in early."
           tag="experimental"
         >
-          <Switch on={v2} onChange={onChange} />
+          <Switch on={v2} onChange={onV2Change} />
         </Row>
       </Card>
     </>

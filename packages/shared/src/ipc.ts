@@ -24,6 +24,16 @@ export const EVENT_CHANNELS = {
   recordingState: "events:recording:state",
   settingsChanged: "events:settings:changed",
   /**
+   * Main → every BrowserWindow: latest auto-updater status. Drives the
+   * library window's update banner. The payload shape is
+   * `AppUpdateStatus` (see protocol.ts) — discriminated union over
+   * `status: "idle" | "checking" | "no-update" | "available" |
+   * "downloading" | "downloaded" | "error" | "skipped"`. Fired by
+   * apps/desktop/src/main/auto-updater.ts on every electron-updater
+   * event transition.
+   */
+  appUpdateStatus: "events:app-update:status",
+  /**
    * Main → renderer navigation signal for the Settings window. Sent by
    * `settings:open` when the window is already focused and the caller
    * supplied a `page`. The renderer's `useActivePage` hook subscribes

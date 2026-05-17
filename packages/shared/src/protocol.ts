@@ -207,7 +207,19 @@ export type Settings = {
     /** Slot for the upcoming PwrSnap1 file format. Wired but unused. */
     v2FileFormat: boolean;
   };
+  updates: {
+    /** GitHub release stream the auto-updater follows. `"latest"`
+     *  tracks stable releases only; `"prerelease"` also accepts beta /
+     *  alpha tags marked `prerelease: true` on GitHub. Mirrors
+     *  PwrAgnt's `updates.channel`. The auto-updater re-reads this on
+     *  every check, so flipping the toggle takes effect on the next
+     *  hourly poll (or immediately if the user invokes Check for
+     *  Updates from the Help menu). */
+    channel: UpdateChannel;
+  };
 };
+
+export type UpdateChannel = "latest" | "prerelease";
 
 /** Deep-partial patch shape. `undefined` = leave untouched. Each nested
  *  object is independently optional so a renderer can write a single
@@ -217,6 +229,50 @@ export type SettingsPatch = {
   ai?: Partial<Settings["ai"]>;
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
+  updates?: Partial<Settings["updates"]>;
+};
+
+// ---- App update (auto-updater) types ----
+//
+// Mirrors the shape PwrAgnt's apps/desktop/src/shared/app-metadata.ts
+// exports. PwrSnap's auto-updater (apps/desktop/src/main/auto-updater.ts)
+// drives these payloads; the renderer's update banner subscribes to
+// `events:app-update:status` for live updates.
+
+export type AppUpdateCheckResult =
+  | { status: "skipped"; reason: string }
+  | { status: "error"; message: string }
+  | { status: "checking" }
+  | { status: "no-update"; version: string }
+  | { status: "downloaded"; version: string }
+  | { status: "available"; version: string };
+
+export type AppUpdateStatus =
+  | { status: "idle" }
+  | { status: "skipped"; reason: string }
+  | { status: "checking" }
+  | { status: "no-update"; version: string }
+  | { status: "available"; version: string }
+  | { status: "downloading"; version: string; percent?: number }
+  | { status: "downloaded"; version: string }
+  | { status: "error"; message: string };
+
+export type AppUpdateInstallResult =
+  | { status: "restarting" }
+  | { status: "error"; message: string };
+
+export type AppUpdateReleaseInfo = {
+  version?: string;
+  name?: string;
+  url?: string;
+  publishedAt?: string;
+  unavailableReason?: string;
+};
+
+export type AppUpdateReleaseVersions = {
+  latest: AppUpdateReleaseInfo;
+  prerelease: AppUpdateReleaseInfo;
+  fetchedAt: number;
 };
 
 /**
@@ -402,6 +458,23 @@ export type Commands = {
     req: { kind: AppDocumentKind };
     res: void;
   };
+
+  // ---- app updates (electron-updater) ----
+  /** Force an update check now. Returns the immediate result, but the
+   *  real status flow (downloading → downloaded) lands on the
+   *  `events:app-update:status` broadcast. Called by the Help → Check
+   *  for Updates menu item and by the update banner's retry path. */
+  "app:update:check": { req: Record<string, never>; res: AppUpdateCheckResult };
+  /** Snapshot read for renderers that mount mid-flight (so the banner
+   *  doesn't miss the first status event). */
+  "app:update:status": { req: Record<string, never>; res: AppUpdateStatus };
+  /** Restart-into-the-downloaded-update. Only valid when status is
+   *  `downloaded`; otherwise returns an error. */
+  "app:update:install": { req: Record<string, never>; res: AppUpdateInstallResult };
+  /** Latest release versions from the GitHub API (independent of the
+   *  electron-updater channel). Used by Settings → Updates to show the
+   *  candidate version for each channel. */
+  "app:update:releases": { req: Record<string, never>; res: AppUpdateReleaseVersions };
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };

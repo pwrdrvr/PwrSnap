@@ -1,14 +1,27 @@
 // Command-bus handlers for the `app:*` namespace.
 //
-// Currently exposes one verb (`app:version`) used by the Settings →
-// About page. Kept in its own module so any future app-level reads
-// (build channel, signing info, locale) have an obvious home.
+// Exposes:
+//   - app:version             — build/runtime metadata for Settings → About
+//   - app:readDocument        — read a bundled app document (changelog,
+//                               third-party licenses) for in-app viewing
+//   - app:openDocumentWindow  — open the document-viewer BrowserWindow
+//   - app:update:check        — force a fresh electron-updater check
+//   - app:update:status       — snapshot of the current updater state
+//   - app:update:install      — restart-into-the-downloaded-update
+//   - app:update:releases     — GitHub Releases list (independent of the
+//                               updater channel; used by the Updates page)
 
 import { app } from "electron";
 import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
 import { showAppDocumentWindow } from "../window";
+import {
+  checkForAppUpdatesNow,
+  installDownloadedAppUpdate,
+  readAppUpdateReleaseVersions,
+  readAppUpdateStatus
+} from "../auto-updater";
 
 export function registerAppHandlers(): void {
   bus.register("app:version", async () => {
@@ -50,5 +63,17 @@ export function registerAppHandlers(): void {
     }
     showAppDocumentWindow(kind);
     return ok(undefined);
+  });
+  bus.register("app:update:check", async () => {
+    return ok(await checkForAppUpdatesNow("manual"));
+  });
+  bus.register("app:update:status", async () => {
+    return ok(readAppUpdateStatus());
+  });
+  bus.register("app:update:install", async () => {
+    return ok(installDownloadedAppUpdate());
+  });
+  bus.register("app:update:releases", async () => {
+    return ok(await readAppUpdateReleaseVersions());
   });
 }

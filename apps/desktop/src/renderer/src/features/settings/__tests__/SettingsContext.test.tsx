@@ -29,7 +29,8 @@ const baseSettings: Settings = {
     window: "",
     videoCapture: "CommandOrControl+Shift+V"
   },
-  experimental: { v2FileFormat: false }
+  experimental: { v2FileFormat: false },
+  updates: { channel: "latest" }
 };
 
 const baseSecrets = {

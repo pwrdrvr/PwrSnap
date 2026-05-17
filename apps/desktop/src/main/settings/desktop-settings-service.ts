@@ -64,6 +64,12 @@ export function defaultSettings(): Settings {
     },
     experimental: {
       v2FileFormat: false
+    },
+    updates: {
+      // Default to stable. Power users + beta testers flip to
+      // "prerelease" in Settings; auto-updater picks it up on the next
+      // check (hourly, or immediately via Help → Check for Updates).
+      channel: "latest"
     }
   };
 }
@@ -110,6 +116,7 @@ function parseV1(raw: unknown): Settings | null {
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
   const experimental = isRecord(raw.experimental) ? raw.experimental : {};
+  const updates = isRecord(raw.updates) ? raw.updates : {};
   return {
     schemaVersion: 1,
     codex: {
@@ -132,6 +139,12 @@ function parseV1(raw: unknown): Settings | null {
     },
     experimental: {
       v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)
+    },
+    updates: {
+      // `updates.channel` landed after v1 shipped; older files won't
+      // have it. Fall back to the current default ("latest") so the
+      // field is always present in-memory.
+      channel: updates.channel === "prerelease" ? "prerelease" : defaults.updates.channel
     }
   };
 }
@@ -459,7 +472,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeSection(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
-    experimental: mergeSection(current.experimental, patch.experimental)
+    experimental: mergeSection(current.experimental, patch.experimental),
+    updates: mergeSection(current.updates, patch.updates)
   };
 }
 

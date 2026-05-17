@@ -161,24 +161,28 @@
   display: flex; align-items: center; gap: 4px;
 }
 .ps-tray__hdr-btn {
-  width: 22px; height: 22px;
+  /* Bumped from 22×22 + 13px icon → 28×28 + 17px icon for
+     visibility. The previous size + --text-muted color combo was
+     so washed-out at standard tray-popover viewing distance that
+     users were missing the affordance entirely. */
+  width: 28px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: color 120ms var(--ease-out), background 120ms var(--ease-out), border-color 120ms var(--ease-out);
 }
 .ps-tray__hdr-btn:hover {
   color: var(--accent-bright);
   background: var(--bg-panel-hover);
-  border-color: var(--border-subtle);
+  border-color: var(--accent-border);
 }
 .ps-tray__hdr-btn:active { transform: translateY(1px); }
 .ps-tray__hdr-sep {
   display: inline-block;
-  width: 1px; height: 14px;
+  width: 1px; height: 16px;
   background: var(--border-subtle);
   margin: 0 4px;
 }
@@ -348,6 +352,32 @@
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */
 .ps-tray__last-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* Edit overlay — top-right corner of the last-snap preview. Always
+   visible (the tray popover is already focused, so an opacity-on-
+   hover treatment costs discoverability without buying anything). */
+.ps-tray__last-edit {
+  position: absolute;
+  top: 8px; right: 8px;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  background: rgba(10, 9, 8, 0.78);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: color 120ms var(--ease-out), border-color 120ms var(--ease-out), background 120ms var(--ease-out);
+}
+.ps-tray__last-edit:hover {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+  background: var(--bg-row-active);
+}
+.ps-tray__last-edit:active { transform: translateY(1px); }
 .ps-tray__last-copy {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

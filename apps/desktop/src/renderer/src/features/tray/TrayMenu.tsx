@@ -318,7 +318,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
             title="Open Library  (⌘⇧L)"
             onClick={() => { void dispatch("library:focus", {}); }}
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M4 5a2 2 0 0 1 2-2h4l1.5 2H18a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" />
               <path d="M4 9h16" />
             </svg>
@@ -330,7 +330,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
             title="Settings  (⌘,)"
             onClick={() => { void dispatch("settings:open", {}); }}
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
             </svg>
@@ -424,6 +424,24 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                 src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
                 alt="Last snap"
               />
+              {/* Edit button — hands off to the Library window's inline
+                  editor (Focus mode + Stage), same verb the float-over
+                  toast uses for its Edit affordance. The tray popover
+                  auto-hides when the Library takes focus. */}
+              <button
+                className="ps-tray__last-edit"
+                type="button"
+                title="Edit in Library"
+                onClick={() => {
+                  void dispatch("library:openInLibrary", { captureId: lastSnap.id });
+                }}
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+                Edit
+              </button>
             </div>
             <div className="ps-tray__last-copy">
               {COPY_PRESETS.map((p) => {

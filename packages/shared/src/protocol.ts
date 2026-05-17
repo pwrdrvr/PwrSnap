@@ -239,6 +239,13 @@ export type Commands = {
     res: CaptureRecord;
   };
   /**
+   * Read the current system clipboard image, persist it as a library
+   * capture, and return the resulting record. Pixel bytes stay in the
+   * main process; renderers only observe the normal captures-changed
+   * broadcast and can refetch through `library:list`.
+   */
+  "capture:pasteFromClipboard": { req: Record<string, never>; res: CaptureRecord };
+  /**
    * Synthetic ingest path — accepts a temp PNG already on disk and a
    * backdated `capturedAt`, persists via the same source-store +
    * captures-repo chain as `capture:region`. Used by the dev seeder

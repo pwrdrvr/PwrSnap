@@ -17,10 +17,11 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { screen } from "electron";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { clipboard, screen } from "electron";
 import sharp from "sharp";
 import { ok, err } from "@pwrsnap/shared";
 import type {
@@ -58,6 +59,36 @@ const PRESET_WIDTHS = {
 
 const DRAG_ICON_WIDTH = 128;
 const COPY_PRESETS = ["low", "med", "high"] as const;
+const CLIPBOARD_SOURCE = {
+  bundleId: "com.pwrsnap.clipboard",
+  appName: "Clipboard"
+} as const;
+const CLIPBOARD_FILE_URL_FORMATS = [
+  "public.file-url",
+  "public.url",
+  "NSURLPboardType"
+] as const;
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".tif",
+  ".tiff",
+  ".webp"
+]);
+
+type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
+
+export function clipboardHasPasteableImage(): boolean {
+  if (!clipboard.readImage().isEmpty()) return true;
+  const filePath = clipboardImageFilePath();
+  return filePath !== null && looksLikeImageFile(filePath);
+}
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -183,6 +214,42 @@ export function registerCaptureHandlers(): void {
       if (previousAppPid !== null) {
         await activateApp(previousAppPid);
       }
+    }
+  });
+
+  bus.register("capture:pasteFromClipboard", async () => {
+    const clipboardPng = await writeClipboardImageToTempPng();
+    if (!clipboardPng.ok) {
+      return err({
+        kind: "clipboard",
+        code: clipboardPng.code,
+        message: clipboardPng.message,
+        cause: clipboardPng.cause
+      });
+    }
+
+    try {
+      const persisted = await persistAndBroadcast(clipboardPng.tempPath, CLIPBOARD_SOURCE, {
+        devicePixelRatio: 1
+      });
+      if (persisted.ok) {
+        log.info("clipboard image pasted into library", {
+          captureId: persisted.value.id,
+          widthPx: persisted.value.width_px,
+          heightPx: persisted.value.height_px
+        });
+      }
+      return persisted;
+    } catch (cause) {
+      log.error("clipboard paste failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "clipboard",
+        code: "paste_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
     }
   });
 
@@ -320,6 +387,92 @@ export function registerCaptureHandlers(): void {
   }
 }
 
+async function writeClipboardImageToTempPng(): Promise<
+  | { ok: true; tempPath: string }
+  | { ok: false; code: "no_image" | "unsupported_image"; message: string; cause?: unknown }
+> {
+  const image = clipboard.readImage();
+  if (!image.isEmpty()) {
+    const tempPath = await makeClipboardTempPngPath();
+    await writeFile(tempPath, image.toPNG());
+    return { ok: true, tempPath };
+  }
+
+  const filePath = clipboardImageFilePath();
+  if (filePath === null || !looksLikeImageFile(filePath)) {
+    return {
+      ok: false,
+      code: "no_image",
+      message: "The clipboard does not currently contain an image or image file URL."
+    };
+  }
+
+  try {
+    const tempPath = await makeClipboardTempPngPath();
+    await sharp(filePath).png().toFile(tempPath);
+    return { ok: true, tempPath };
+  } catch (cause) {
+    return {
+      ok: false,
+      code: "unsupported_image",
+      message: `Could not decode clipboard image file: ${filePath}`,
+      cause
+    };
+  }
+}
+
+async function makeClipboardTempPngPath(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
+  return join(dir, `${Date.now()}.png`);
+}
+
+function clipboardImageFilePath(): string | null {
+  const candidates: string[] = [];
+  try {
+    const bookmark = clipboard.readBookmark();
+    if (bookmark.url.length > 0) candidates.push(bookmark.url);
+  } catch {
+    // readBookmark is unavailable on some platforms; fall through to
+    // plain text / raw pasteboard formats.
+  }
+
+  for (const format of CLIPBOARD_FILE_URL_FORMATS) {
+    try {
+      const value = clipboard.readBuffer(format).toString("utf8");
+      if (value.length > 0) candidates.push(value);
+    } catch {
+      // Experimental API, format may be absent.
+    }
+  }
+
+  const text = clipboard.readText();
+  if (text.length > 0) candidates.push(text);
+
+  for (const candidate of candidates) {
+    const path = fileUrlCandidateToPath(candidate);
+    if (path !== null) return path;
+  }
+  return null;
+}
+
+function fileUrlCandidateToPath(candidate: string): string | null {
+  const first = candidate
+    .replaceAll("\0", "")
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  if (first === undefined || !first.toLowerCase().startsWith("file://")) return null;
+  try {
+    return fileURLToPath(first);
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeImageFile(filePath: string): boolean {
+  return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
 /**
  * Crop the frozen-screen snapshot at `rect`. The snapshot is in
  * PHYSICAL pixels (logical * display.scaleFactor); `rect` is in
@@ -448,7 +601,8 @@ async function renderPresetFile(
 
 async function persistAndBroadcast(
   tempPath: string,
-  sourceApp: WindowInfo | null
+  sourceApp: CaptureSource,
+  options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
   const stored = await putCaptureSource(tempPath);
   const { record, isNew } = insertOrFindCapture({
@@ -460,7 +614,7 @@ async function persistAndBroadcast(
     src_path: stored.srcPath,
     width_px: stored.widthPx,
     height_px: stored.heightPx,
-    device_pixel_ratio: 2, // Phase 3+ derives from the active display
+    device_pixel_ratio: options.devicePixelRatio ?? 2, // Phase 3+ derives from the active display
     byte_size: stored.byteSize,
     sha256: stored.sha256
   });

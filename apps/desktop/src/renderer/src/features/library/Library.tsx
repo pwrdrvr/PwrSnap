@@ -216,7 +216,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
   useEffect(() => {
     if (!storagePanelOpen) return;
-    void refreshStorage();
+    void refreshStorage({ force: true });
     function closeOnOutsidePointer(event: PointerEvent): void {
       const root = storagePanelRef.current;
       if (root !== null && event.target instanceof Node && root.contains(event.target)) return;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type {
   RenderCacheMaintenanceMode,
   StorageSnapshot,
+  StorageSnapshotUpdate,
   StorageSummary
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -18,7 +19,7 @@ type UseStorageSnapshotResult = {
   workingAction: "app-cache" | "render-trim" | "render-clear" | null;
   error: string | null;
   refreshSummary: () => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: (options?: { force?: boolean }) => Promise<void>;
   clearAppCache: () => Promise<void>;
   maintainRenderCache: (mode: RenderCacheMaintenanceMode) => Promise<void>;
 };
@@ -45,6 +46,11 @@ export function useStorageSnapshot(
   >(null);
   const [error, setError] = useState<string | null>(null);
 
+  const applySnapshot = useCallback((nextSnapshot: StorageSnapshot): void => {
+    setSnapshot(nextSnapshot);
+    setSummary(summaryFromSnapshot(nextSnapshot));
+  }, []);
+
   const refreshSummary = useCallback(async (): Promise<void> => {
     const result = await dispatch("storage:summary", {});
     if (!result.ok) {
@@ -57,19 +63,19 @@ export function useStorageSnapshot(
     setLoading(false);
   }, []);
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (refreshOptions: { force?: boolean } = {}): Promise<void> => {
     setLoading(true);
-    const result = await dispatch("storage:snapshot", {});
+    const req = refreshOptions.force === undefined ? {} : { force: refreshOptions.force };
+    const result = await dispatch("storage:snapshot", req);
     if (!result.ok) {
       setError(result.error.message);
       setLoading(false);
       return;
     }
-    setSnapshot(result.value);
-    setSummary(summaryFromSnapshot(result.value));
+    applySnapshot(result.value);
     setError(null);
     setLoading(false);
-  }, []);
+  }, [applySnapshot]);
 
   const clearAppCache = useCallback(async (): Promise<void> => {
     setWorkingAction("app-cache");
@@ -79,11 +85,10 @@ export function useStorageSnapshot(
       setWorkingAction(null);
       return;
     }
-    setSnapshot(result.value.snapshot);
-    setSummary(summaryFromSnapshot(result.value.snapshot));
+    applySnapshot(result.value.snapshot);
     setError(null);
     setWorkingAction(null);
-  }, []);
+  }, [applySnapshot]);
 
   const maintainRenderCache = useCallback(
     async (mode: RenderCacheMaintenanceMode): Promise<void> => {
@@ -94,13 +99,21 @@ export function useStorageSnapshot(
         setWorkingAction(null);
         return;
       }
-      setSnapshot(result.value.snapshot);
-      setSummary(summaryFromSnapshot(result.value.snapshot));
+      applySnapshot(result.value.snapshot);
       setError(null);
       setWorkingAction(null);
     },
-    []
+    [applySnapshot]
   );
+
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.storageSnapshotUpdated, (payload) => {
+      const update = payload as StorageSnapshotUpdate;
+      applySnapshot(update.snapshot);
+      setError(null);
+      setLoading(update.scanning);
+    });
+  }, [applySnapshot]);
 
   useEffect(() => {
     if (eagerSnapshot) {

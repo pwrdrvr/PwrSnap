@@ -122,6 +122,11 @@ export type StorageSummary = {
   };
 };
 
+export type StorageSnapshotUpdate = {
+  snapshot: StorageSnapshot;
+  scanning: boolean;
+};
+
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
@@ -376,7 +381,7 @@ export type Commands = {
 
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
-  "storage:snapshot": { req: Record<string, never>; res: StorageSnapshot };
+  "storage:snapshot": { req: { force?: boolean }; res: StorageSnapshot };
   "storage:clearAppCache": { req: Record<string, never>; res: StorageMaintenanceResult };
   "storage:maintainRenderCache": {
     req: { mode: RenderCacheMaintenanceMode };

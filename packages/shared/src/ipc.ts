@@ -67,6 +67,15 @@ export const EVENT_CHANNELS = {
    */
   popoverRemeasure: "events:popover:remeasure",
   /**
+   * Main → renderer storage accounting progress. Full scans are
+   * singleton and async; this event lets detailed storage UI update
+   * from cached/partial snapshots while the command that requested the
+   * scan awaits final totals.
+   *
+   * Payload type: `StorageSnapshotUpdate`.
+   */
+  storageSnapshotUpdated: "events:storage:snapshot-updated",
+  /**
    * Tells the Library renderer to navigate to a specific capture and
    * open it in Focus mode. Used by `library:openInLibrary` so the
    * float-over toast's Edit button can hand off into the inline

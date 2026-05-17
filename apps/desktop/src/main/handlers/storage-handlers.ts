@@ -1,13 +1,22 @@
-import { session } from "electron";
+import { BrowserWindow, session } from "electron";
 import { ok, err } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import type { RenderCacheMaintenanceMode } from "@pwrsnap/shared";
-import { getStorageSnapshot, getStorageSummary, maintainRenderCache } from "../storage/accounting";
+import {
+  getStorageSnapshot,
+  getStorageSummary,
+  maintainRenderCache,
+  onStorageSnapshotUpdated
+} from "../storage/accounting";
 
 const log = getMainLogger("pwrsnap:storage-handlers");
+let storageEventsRegistered = false;
 
 export function registerStorageHandlers(): void {
+  registerStorageEventBroadcast();
+
   bus.register("storage:summary", async () => {
     try {
       return ok(getStorageSummary());
@@ -24,9 +33,9 @@ export function registerStorageHandlers(): void {
     }
   });
 
-  bus.register("storage:snapshot", async () => {
+  bus.register("storage:snapshot", async (req) => {
     try {
-      return ok(await getStorageSnapshot());
+      return ok(await getStorageSnapshot({ force: req.force ?? false }));
     } catch (cause) {
       log.warn("storage:snapshot failed", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -42,10 +51,10 @@ export function registerStorageHandlers(): void {
 
   bus.register("storage:clearAppCache", async () => {
     try {
-      const before = await getStorageSnapshot();
+      const before = await getStorageSnapshot({ force: true });
       await session.defaultSession.clearCache();
       await session.defaultSession.clearCodeCaches({ urls: [] });
-      const snapshot = await getStorageSnapshot();
+      const snapshot = await getStorageSnapshot({ force: true });
       return ok({
         snapshot,
         clearedBytes: Math.max(
@@ -97,4 +106,15 @@ export function registerStorageHandlers(): void {
 
 function isRenderCacheMaintenanceMode(value: unknown): value is RenderCacheMaintenanceMode {
   return value === "trim" || value === "clear";
+}
+
+function registerStorageEventBroadcast(): void {
+  if (storageEventsRegistered) return;
+  storageEventsRegistered = true;
+  onStorageSnapshotUpdated((payload) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      win.webContents.send(EVENT_CHANNELS.storageSnapshotUpdated, payload);
+    }
+  });
 }

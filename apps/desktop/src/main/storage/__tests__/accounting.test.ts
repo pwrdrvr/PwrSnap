@@ -97,4 +97,30 @@ describe("getStorageSnapshot", () => {
     expect(snapshot.totalBytes).toBeLessThan(snapshot.sourceCaptures.bytes + 128 * 1024);
     expect(snapshot.otherAppSupport.bytes).toBeLessThan(128 * 1024);
   });
+
+  test("coalesces concurrent full storage scans and publishes progress", async () => {
+    mocks.captureCount = 1;
+    mocks.sourceBytes = 512 * 1024;
+    await mkdir(mocks.dataRoot, { recursive: true });
+    await mkdir(mocks.capturesRoot, { recursive: true });
+    await writeFile(join(mocks.capturesRoot, "capture-a.png"), Buffer.alloc(512 * 1024));
+
+    const updates: Array<{ scanning: boolean }> = [];
+    const { getStorageSnapshot, onStorageSnapshotUpdated } = await import("../accounting");
+    const unsubscribe = onStorageSnapshotUpdated((update) => {
+      updates.push({ scanning: update.scanning });
+    });
+
+    try {
+      const first = getStorageSnapshot({ force: true });
+      const second = getStorageSnapshot({ force: true });
+      const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+
+      expect(firstSnapshot).toBe(secondSnapshot);
+      expect(updates.some((update) => update.scanning)).toBe(true);
+      expect(updates.at(-1)).toEqual({ scanning: false });
+    } finally {
+      unsubscribe();
+    }
+  });
 });

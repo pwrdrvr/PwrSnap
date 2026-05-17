@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { session } from "electron";
@@ -5,6 +6,7 @@ import type {
   RenderCacheMaintenanceMode,
   StorageBucket,
   StorageSnapshot,
+  StorageSnapshotUpdate,
   StorageSummary
 } from "@pwrsnap/shared";
 import { getDb } from "../persistence/db";
@@ -18,10 +20,43 @@ import {
 import { clearRenderCache, trimRenderCache } from "../persistence/render-cache-maintenance";
 
 export const CHROMIUM_DISK_CACHE_LIMIT_BYTES = 128 * 1024 * 1024;
+export const STORAGE_SNAPSHOT_CACHE_TTL_MS = 15_000;
 
 type SizeResult = StorageBucket;
+type StorageSnapshotOptions = {
+  force?: boolean;
+};
+type SnapshotParts = {
+  capturedAt: string;
+  dataRoot: string;
+  capturesRoot: string;
+  capturesInsideDataRoot: boolean;
+  sourceStats: StorageSummary["sourceCaptures"];
+  documentsCaptures?: SizeResult;
+  appSupportCaptures?: SizeResult;
+  appSupportTotal?: SizeResult;
+  renderCache?: SizeResult;
+  chromiumCacheDir?: SizeResult;
+  chromiumCodeCache?: SizeResult;
+  gpuCache?: SizeResult;
+  dawnGraphiteCache?: SizeResult;
+  dawnWebGpuCache?: SizeResult;
+  dbFile?: SizeResult;
+  dbWal?: SizeResult;
+  dbShm?: SizeResult;
+  chromiumReportedBytes?: number;
+  databaseStats: {
+    pageCount: number;
+    pageSize: number;
+    freelistCount: number;
+  };
+};
 
 const EMPTY_SIZE: SizeResult = { bytes: 0, fileCount: 0 };
+const storageEmitter = new EventEmitter();
+let cachedStorageSnapshot: StorageSnapshot | null = null;
+let cachedCompletedAtMs = 0;
+let inFlightStorageScan: Promise<StorageSnapshot> | null = null;
 
 export function getStorageSummary(): StorageSummary {
   const sourceCaptures = getLiveSourceCaptureStats();
@@ -31,44 +66,136 @@ export function getStorageSummary(): StorageSummary {
   };
 }
 
-export async function getStorageSnapshot(): Promise<StorageSnapshot> {
+export function getCachedStorageSnapshot(): StorageSnapshot | null {
+  return cachedStorageSnapshot;
+}
+
+export function onStorageSnapshotUpdated(
+  listener: (update: StorageSnapshotUpdate) => void
+): () => void {
+  storageEmitter.on("snapshot", listener);
+  return () => storageEmitter.off("snapshot", listener);
+}
+
+export async function getStorageSnapshot(
+  options: StorageSnapshotOptions = {}
+): Promise<StorageSnapshot> {
+  if (inFlightStorageScan !== null) return inFlightStorageScan;
+
+  const force = options.force ?? false;
+  const cachedAgeMs = Date.now() - cachedCompletedAtMs;
+  if (!force && cachedStorageSnapshot !== null && cachedAgeMs < STORAGE_SNAPSHOT_CACHE_TTL_MS) {
+    return cachedStorageSnapshot;
+  }
+
+  inFlightStorageScan = scanStorageSnapshot().finally(() => {
+    inFlightStorageScan = null;
+  });
+  return inFlightStorageScan;
+}
+
+async function scanStorageSnapshot(): Promise<StorageSnapshot> {
   const dataRoot = getDataRoot();
   const dbPath = getDbPath();
   const capturesRoot = getCapturesRoot();
   const capturesInsideDataRoot = isPathWithinOrEqual(capturesRoot, dataRoot);
-  const documentsCaptures = await sizePath(capturesRoot);
-  const appSupportCaptures = capturesRoot === getLegacyCapturesRoot()
-    ? EMPTY_SIZE
-    : await sizePath(getLegacyCapturesRoot());
-  const [
-    appSupportTotal,
-    renderCache,
-    chromiumCacheDir,
-    chromiumCodeCache,
-    gpuCache,
-    dawnGraphiteCache,
-    dawnWebGpuCache,
-    dbFile,
-    dbWal,
-    dbShm
-  ] = await Promise.all([
-    sizePath(dataRoot),
-    sizePath(getCacheRoot()),
-    sizePath(join(dataRoot, "Cache")),
-    sizePath(join(dataRoot, "Code Cache")),
-    sizePath(join(dataRoot, "GPUCache")),
-    sizePath(join(dataRoot, "DawnGraphiteCache")),
-    sizePath(join(dataRoot, "DawnWebGPUCache")),
-    sizePath(dbPath),
-    sizePath(`${dbPath}-wal`),
-    sizePath(`${dbPath}-shm`)
-  ]);
+  const parts: SnapshotParts = {
+    capturedAt: new Date().toISOString(),
+    dataRoot,
+    capturesRoot,
+    capturesInsideDataRoot,
+    sourceStats: getLiveSourceCaptureStats(),
+    databaseStats: getDatabaseStats()
+  };
 
-  const chromiumReportedBytes = await session.defaultSession.getCacheSize().catch(() => 0);
-  const databaseStats = getDatabaseStats();
+  publishStorageSnapshot(buildStorageSnapshot(parts), true);
+
+  const scanTasks: Array<() => Promise<void>> = [
+    async () => {
+      parts.documentsCaptures = await sizePath(capturesRoot);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.appSupportCaptures = capturesRoot === getLegacyCapturesRoot()
+        ? EMPTY_SIZE
+        : await sizePath(getLegacyCapturesRoot());
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.appSupportTotal = await sizePath(dataRoot);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.renderCache = await sizePath(getCacheRoot());
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.chromiumCacheDir = await sizePath(join(dataRoot, "Cache"));
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.chromiumCodeCache = await sizePath(join(dataRoot, "Code Cache"));
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.gpuCache = await sizePath(join(dataRoot, "GPUCache"));
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.dawnGraphiteCache = await sizePath(join(dataRoot, "DawnGraphiteCache"));
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.dawnWebGpuCache = await sizePath(join(dataRoot, "DawnWebGPUCache"));
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.dbFile = await sizePath(dbPath);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.dbWal = await sizePath(`${dbPath}-wal`);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.dbShm = await sizePath(`${dbPath}-shm`);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    },
+    async () => {
+      parts.chromiumReportedBytes = await session.defaultSession.getCacheSize().catch(() => 0);
+      publishStorageSnapshot(buildStorageSnapshot(parts), true);
+    }
+  ];
+
+  await Promise.all(scanTasks.map((task) => task()));
+
+  const snapshot = buildStorageSnapshot(parts);
+  cachedCompletedAtMs = Date.now();
+  publishStorageSnapshot(snapshot, false);
+  return snapshot;
+}
+
+function buildStorageSnapshot(parts: SnapshotParts): StorageSnapshot {
+  const documentsCaptures = parts.documentsCaptures ?? {
+    bytes: parts.sourceStats.bytes,
+    fileCount: parts.sourceStats.captureCount
+  };
+  const appSupportCaptures = parts.appSupportCaptures ?? EMPTY_SIZE;
+  const appSupportTotal = parts.appSupportTotal ?? EMPTY_SIZE;
+  const renderCache = parts.renderCache ?? EMPTY_SIZE;
+  const chromiumCacheDir = parts.chromiumCacheDir ?? EMPTY_SIZE;
+  const chromiumCodeCache = parts.chromiumCodeCache ?? EMPTY_SIZE;
+  const gpuCache = parts.gpuCache ?? EMPTY_SIZE;
+  const dawnGraphiteCache = parts.dawnGraphiteCache ?? EMPTY_SIZE;
+  const dawnWebGpuCache = parts.dawnWebGpuCache ?? EMPTY_SIZE;
+  const dbFile = parts.dbFile ?? EMPTY_SIZE;
+  const dbWal = parts.dbWal ?? EMPTY_SIZE;
+  const dbShm = parts.dbShm ?? EMPTY_SIZE;
+  const chromiumReportedBytes = parts.chromiumReportedBytes ?? 0;
+  const databaseStats = parts.databaseStats;
   const chromiumGpuCaches = combineBuckets(gpuCache, dawnGraphiteCache, dawnWebGpuCache);
   const knownAppSupportBytes =
-    (capturesInsideDataRoot ? documentsCaptures.bytes : 0) +
+    (parts.capturesInsideDataRoot ? documentsCaptures.bytes : 0) +
     appSupportCaptures.bytes +
     renderCache.bytes +
     chromiumCacheDir.bytes +
@@ -79,12 +206,13 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
     dbShm.bytes;
 
   return {
-    capturedAt: new Date().toISOString(),
-    totalBytes: appSupportTotal.bytes + (capturesInsideDataRoot ? 0 : documentsCaptures.bytes),
+    capturedAt: parts.capturedAt,
+    totalBytes: appSupportTotal.bytes +
+      (parts.capturesInsideDataRoot ? 0 : documentsCaptures.bytes),
     sourceCaptures: {
       bytes: documentsCaptures.bytes + appSupportCaptures.bytes,
       fileCount: documentsCaptures.fileCount + appSupportCaptures.fileCount,
-      captureCount: getCaptureCount(),
+      captureCount: parts.sourceStats.captureCount,
       documentsBytes: documentsCaptures.bytes,
       appSupportBytes: appSupportCaptures.bytes
     },
@@ -107,7 +235,7 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
       fileCount: Math.max(
         0,
         appSupportTotal.fileCount -
-          (capturesInsideDataRoot ? documentsCaptures.fileCount : 0) -
+          (parts.capturesInsideDataRoot ? documentsCaptures.fileCount : 0) -
           appSupportCaptures.fileCount -
           renderCache.fileCount -
           chromiumCacheDir.fileCount -
@@ -121,6 +249,11 @@ export async function getStorageSnapshot(): Promise<StorageSnapshot> {
   };
 }
 
+function publishStorageSnapshot(snapshot: StorageSnapshot, scanning: boolean): void {
+  cachedStorageSnapshot = snapshot;
+  storageEmitter.emit("snapshot", { snapshot, scanning } satisfies StorageSnapshotUpdate);
+}
+
 function isPathWithinOrEqual(path: string, parent: string): boolean {
   const relativePath = relative(resolve(parent), resolve(path));
   return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
@@ -129,13 +262,13 @@ function isPathWithinOrEqual(path: string, parent: string): boolean {
 export async function maintainRenderCache(
   mode: RenderCacheMaintenanceMode
 ): Promise<{ snapshot: StorageSnapshot; clearedBytes: number }> {
-  const before = await getStorageSnapshot();
+  const before = await getStorageSnapshot({ force: true });
   if (mode === "clear") {
     await clearRenderCache();
   } else {
     await trimRenderCache();
   }
-  const snapshot = await getStorageSnapshot();
+  const snapshot = await getStorageSnapshot({ force: true });
   return {
     snapshot,
     clearedBytes: Math.max(0, before.renderCache.bytes - snapshot.renderCache.bytes)

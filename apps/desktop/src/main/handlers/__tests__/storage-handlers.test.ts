@@ -2,10 +2,19 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
-  maintainRenderCache: vi.fn()
+  maintainRenderCache: vi.fn(),
+  send: vi.fn()
 }));
 
 vi.mock("electron", () => ({
+  BrowserWindow: {
+    getAllWindows: vi.fn(() => [
+      {
+        isDestroyed: () => false,
+        webContents: { send: mocks.send }
+      }
+    ])
+  },
   session: {
     defaultSession: {
       clearCache: vi.fn(async () => undefined),
@@ -44,13 +53,18 @@ vi.mock("../../storage/accounting", () => ({
     capturedAt: new Date(0).toISOString(),
     sourceCaptures: { bytes: 0, captureCount: 0 }
   })),
-  maintainRenderCache: mocks.maintainRenderCache
+  maintainRenderCache: mocks.maintainRenderCache,
+  onStorageSnapshotUpdated: vi.fn((listener: (payload: unknown) => void) => {
+    listener({ snapshot: { capturedAt: new Date(0).toISOString() }, scanning: true });
+    return vi.fn();
+  })
 }));
 
 beforeEach(() => {
   vi.resetModules();
   mocks.handlers.clear();
   mocks.maintainRenderCache.mockReset();
+  mocks.send.mockReset();
 });
 
 describe("storage handlers", () => {

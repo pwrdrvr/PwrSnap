@@ -9,7 +9,10 @@ import { installDevelopmentDockIcon } from "./development-dock-icon";
 // agent-flow / headless path.)
 import { disposeFocusSink, installFocusSink } from "./focus-sink";
 import { registerAppHandlers } from "./handlers/app-handlers";
-import { registerCaptureHandlers } from "./handlers/capture-handlers";
+import {
+  clipboardHasPasteableImage,
+  registerCaptureHandlers
+} from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
@@ -36,6 +39,7 @@ const APP_WEBSITE = "https://pwrdrvr.com";
  *  Capture / Region / Window / Video Capture are dynamically
  *  registered from `settings.hotkeys.*` via `wireHotkeyRegistrations`. */
 const SETTINGS_SHORTCUT = "CommandOrControl+,";
+const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
 
 /** The four hotkey kinds we register from `settings.hotkeys.*`. Order
  *  matters only for log readability. */
@@ -62,6 +66,7 @@ const isMac = process.platform === "darwin";
  * the same code paths a real user hits.
  */
 const isE2E = process.env.PWRSNAP_E2E === "1";
+let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 
 function installApplicationMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -73,7 +78,9 @@ function installApplicationMenu(): void {
           label: "New",
           submenu: [
             {
+              id: PASTE_FROM_CLIPBOARD_MENU_ID,
               label: "Paste from Clipboard",
+              enabled: false,
               click: () => {
                 void runPasteFromClipboard();
               }
@@ -117,7 +124,21 @@ function installApplicationMenu(): void {
     }
   ];
 
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  const menu = Menu.buildFromTemplate(template);
+  pasteFromClipboardMenuItem = menu.getMenuItemById(PASTE_FROM_CLIPBOARD_MENU_ID) ?? null;
+  for (const item of menu.items) {
+    if (item.label !== "File") continue;
+    item.submenu?.on("menu-will-show", refreshPasteFromClipboardMenu);
+    const newItem = item.submenu?.items.find((child) => child.label === "New");
+    newItem?.submenu?.on("menu-will-show", refreshPasteFromClipboardMenu);
+  }
+  refreshPasteFromClipboardMenu();
+  Menu.setApplicationMenu(menu);
+}
+
+function refreshPasteFromClipboardMenu(): void {
+  if (pasteFromClipboardMenuItem === null) return;
+  pasteFromClipboardMenuItem.enabled = clipboardHasPasteableImage();
 }
 
 async function runPasteFromClipboard(): Promise<void> {

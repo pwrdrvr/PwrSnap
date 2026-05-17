@@ -19,7 +19,8 @@
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clipboard, screen } from "electron";
 import sharp from "sharp";
 import { ok, err } from "@pwrsnap/shared";
@@ -62,8 +63,32 @@ const CLIPBOARD_SOURCE = {
   bundleId: "com.pwrsnap.clipboard",
   appName: "Clipboard"
 } as const;
+const CLIPBOARD_FILE_URL_FORMATS = [
+  "public.file-url",
+  "public.url",
+  "NSURLPboardType"
+] as const;
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".tif",
+  ".tiff",
+  ".webp"
+]);
 
 type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
+
+export function clipboardHasPasteableImage(): boolean {
+  if (!clipboard.readImage().isEmpty()) return true;
+  const filePath = clipboardImageFilePath();
+  return filePath !== null && looksLikeImageFile(filePath);
+}
 
 export function registerCaptureHandlers(): void {
   bus.register("capture:region", async (req) => {
@@ -193,20 +218,18 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:pasteFromClipboard", async () => {
-    const image = clipboard.readImage();
-    if (image.isEmpty()) {
+    const clipboardPng = await writeClipboardImageToTempPng();
+    if (!clipboardPng.ok) {
       return err({
         kind: "clipboard",
-        code: "no_image",
-        message: "The clipboard does not currently contain an image."
+        code: clipboardPng.code,
+        message: clipboardPng.message,
+        cause: clipboardPng.cause
       });
     }
 
     try {
-      const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
-      const tempPath = join(dir, `${Date.now()}.png`);
-      await writeFile(tempPath, image.toPNG());
-      const persisted = await persistAndBroadcast(tempPath, CLIPBOARD_SOURCE, {
+      const persisted = await persistAndBroadcast(clipboardPng.tempPath, CLIPBOARD_SOURCE, {
         devicePixelRatio: 1
       });
       if (persisted.ok) {
@@ -362,6 +385,92 @@ export function registerCaptureHandlers(): void {
       }
     });
   }
+}
+
+async function writeClipboardImageToTempPng(): Promise<
+  | { ok: true; tempPath: string }
+  | { ok: false; code: "no_image" | "unsupported_image"; message: string; cause?: unknown }
+> {
+  const image = clipboard.readImage();
+  if (!image.isEmpty()) {
+    const tempPath = await makeClipboardTempPngPath();
+    await writeFile(tempPath, image.toPNG());
+    return { ok: true, tempPath };
+  }
+
+  const filePath = clipboardImageFilePath();
+  if (filePath === null || !looksLikeImageFile(filePath)) {
+    return {
+      ok: false,
+      code: "no_image",
+      message: "The clipboard does not currently contain an image or image file URL."
+    };
+  }
+
+  try {
+    const tempPath = await makeClipboardTempPngPath();
+    await sharp(filePath).png().toFile(tempPath);
+    return { ok: true, tempPath };
+  } catch (cause) {
+    return {
+      ok: false,
+      code: "unsupported_image",
+      message: `Could not decode clipboard image file: ${filePath}`,
+      cause
+    };
+  }
+}
+
+async function makeClipboardTempPngPath(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
+  return join(dir, `${Date.now()}.png`);
+}
+
+function clipboardImageFilePath(): string | null {
+  const candidates: string[] = [];
+  try {
+    const bookmark = clipboard.readBookmark();
+    if (bookmark.url.length > 0) candidates.push(bookmark.url);
+  } catch {
+    // readBookmark is unavailable on some platforms; fall through to
+    // plain text / raw pasteboard formats.
+  }
+
+  for (const format of CLIPBOARD_FILE_URL_FORMATS) {
+    try {
+      const value = clipboard.readBuffer(format).toString("utf8");
+      if (value.length > 0) candidates.push(value);
+    } catch {
+      // Experimental API, format may be absent.
+    }
+  }
+
+  const text = clipboard.readText();
+  if (text.length > 0) candidates.push(text);
+
+  for (const candidate of candidates) {
+    const path = fileUrlCandidateToPath(candidate);
+    if (path !== null) return path;
+  }
+  return null;
+}
+
+function fileUrlCandidateToPath(candidate: string): string | null {
+  const first = candidate
+    .replaceAll("\0", "")
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 0);
+  if (first === undefined || !first.toLowerCase().startsWith("file://")) return null;
+  try {
+    return fileURLToPath(first);
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeImageFile(filePath: string): boolean {
+  return IMAGE_FILE_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
 /**

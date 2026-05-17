@@ -5,6 +5,7 @@ import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
+import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 
@@ -113,6 +114,7 @@ export function App() {
     }
     return (
       <div className="app-shell">
+        <AppUpdateBanner />
         <Library />
       </div>
     );

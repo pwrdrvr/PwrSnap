@@ -100,9 +100,9 @@ mac:
     NSCameraUsageDescription: "PwrSnap uses the camera for presenter video recording."
   target:
     - target: dmg
-      arch: [arm64]
+      arch: [universal]
     - target: zip
-      arch: [arm64]
+      arch: [universal]
 
 dmg:
   background: build/dmg-background.png

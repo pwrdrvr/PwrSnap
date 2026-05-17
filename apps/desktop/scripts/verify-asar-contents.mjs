@@ -84,7 +84,7 @@ export function verifyPackagedResources(appPath) {
 }
 
 export function runCli(args = process.argv.slice(2)) {
-  const appPath = args[0] ?? resolve("release-stage/dist/mac-arm64/PwrSnap.app");
+  const appPath = args[0] ?? resolve("release-stage/dist/mac-universal/PwrSnap.app");
   const asarPath = resolve(appPath, "Contents/Resources/app.asar");
   if (!existsSync(asarPath)) {
     console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);

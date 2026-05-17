@@ -28,6 +28,7 @@ export default defineConfig({
           globals: true,
           environment: "node",
           include: [
+            "scripts/**/*.test.mjs",
             "apps/desktop/scripts/**/*.test.mjs",
             "apps/desktop/src/main/**/__tests__/**/*.test.ts"
           ]

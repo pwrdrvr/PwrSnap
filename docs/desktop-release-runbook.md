@@ -65,19 +65,24 @@ The `Release Desktop (macOS arm64)` workflow on `macos-15` triggers, runs
 `release:check` (tag/version/changelog gate) → typecheck → tests →
 `build:native` → `apps/desktop/scripts/release.mjs` which:
 
-1. Builds main/preload/renderer with electron-vite.
-2. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
+1. Runs `pnpm licenses:check` so stale `THIRD_PARTY_LICENSES` or package
+   license-policy drift stops the release before packaging.
+2. Builds main/preload/renderer with electron-vite.
+3. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
    `apps/desktop/release-stage/`.
-3. Seeds the stage with `out/` + `build/` + `electron-builder.yml`.
-4. Decodes `APPLE_API_KEY_BASE64` from the env to a temp `.p8` file.
-5. Runs `electron-builder --mac --arm64 --publish always` which signs every
+4. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
+   `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
+5. Decodes `APPLE_API_KEY_BASE64` from the env to a temp `.p8` file.
+6. Runs `electron-builder --mac --arm64 --publish always` which signs every
    helper bundle individually, signs the main `.app`, submits to Apple's
    notarization service via `notarytool`, staples the ticket, builds the DMG
    and ZIP, generates `latest-mac.yml`, and uploads everything to a GitHub
    Release on `pwrdrvr/PwrSnap`.
-6. Runs `verify-asar-contents.mjs` against the packaged `.app` — fails the
+7. Runs `verify-asar-contents.mjs` against the packaged `.app` — fails the
    release if forbidden patterns (TS sources, tests, docs, env files,
-   workspace `src/` leaks, screenshots) leaked into `app.asar`.
+   workspace `src/` leaks, screenshots) leaked into `app.asar`, or if
+   `THIRD_PARTY_LICENSES` / `CHANGELOG.md` are missing from
+   `Contents/Resources`.
 
 Cycle time target: ≤ 12 minutes.
 
@@ -124,7 +129,17 @@ ls "$APP/Contents/Frameworks/" | grep -i electron && echo "FAIL: leaked Electron
 
 # Fuses (ASAR integrity must be enabled)
 npx --yes @electron/fuses read --app "$APP"
+
+# User-viewable release documents must ship outside app.asar
+test -f "$APP/Contents/Resources/THIRD_PARTY_LICENSES"
+test -f "$APP/Contents/Resources/CHANGELOG.md"
 ```
+
+After launch, spot-check the document surfaces:
+
+- Help → Changelog opens the bundled changelog.
+- Help → Third-party Licenses opens the bundled notices.
+- Settings → About can open both release notes and third-party notices.
 
 ---
 

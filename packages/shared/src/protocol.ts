@@ -162,6 +162,14 @@ export type CodexTestResult = {
   errorMessage?: string;
 };
 
+export type AppDocumentKind = "changelog" | "third-party-licenses";
+
+export type AppDocument = {
+  kind: AppDocumentKind;
+  title: string;
+  content: string;
+};
+
 export type Settings = {
   /** Bumped when the on-disk shape changes. Readers below the current
    *  version go through the legacy-shape catalog in the service before
@@ -385,6 +393,14 @@ export type Commands = {
       nodeVersion: string;
       chromeVersion: string;
     };
+  };
+  "app:readDocument": {
+    req: { kind: AppDocumentKind };
+    res: AppDocument;
+  };
+  "app:openDocumentWindow": {
+    req: { kind: AppDocumentKind };
+    res: void;
   };
 
   // ---- float-over ----

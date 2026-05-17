@@ -8,22 +8,10 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
-const args = process.argv.slice(2);
-const appPath = args[0]
-  ?? resolve("release-stage/dist/mac-arm64/PwrSnap.app");
-
-const asarPath = resolve(appPath, "Contents/Resources/app.asar");
-if (!existsSync(asarPath)) {
-  console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);
-  process.exit(1);
-}
-
 // @electron/asar is declared as a direct devDependency of @pwrsnap/desktop.
 // pnpm's isolated layout doesn't hoist transitive deps reliably, so we own it
 // directly to guarantee resolution from this script's location.
 const require = createRequire(import.meta.url);
-const asar = require("@electron/asar");
-const listing = asar.listPackage(asarPath, { isPack: false });
 
 // Each rule: [label, regex]. Anything matching → fail.
 const forbidden = [
@@ -44,30 +32,79 @@ const forbidden = [
   ["Project plan/brainstorm", /\/(plans|brainstorms|design)\//],
 ];
 
-const violations = [];
-for (const entry of listing) {
-  for (const [label, pattern] of forbidden) {
-    if (pattern.test(entry)) {
-      violations.push({ label, entry });
-      break;
+const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md"];
+
+export function findForbiddenAsarEntries(listing) {
+  const violations = [];
+  for (const entry of listing) {
+    for (const [label, pattern] of forbidden) {
+      if (pattern.test(entry)) {
+        violations.push({ label, entry });
+        break;
+      }
     }
   }
+  return violations;
 }
 
-if (violations.length > 0) {
+export function findMissingPackagedResources(appPath) {
+  const resourcesPath = resolve(appPath, "Contents/Resources");
+  return requiredResources.filter((file) => !existsSync(resolve(resourcesPath, file)));
+}
+
+function formatForbiddenViolations(violations) {
+  const lines = [];
+  lines.push(`\nverify-asar-contents: ${violations.length} forbidden file(s) in app.asar\n`);
   const grouped = new Map();
   for (const { label, entry } of violations) {
     if (!grouped.has(label)) grouped.set(label, []);
     grouped.get(label).push(entry);
   }
-  console.error(`\nverify-asar-contents: ${violations.length} forbidden file(s) in app.asar\n`);
   for (const [label, entries] of grouped) {
-    console.error(`  [${label}] ${entries.length} match(es):`);
-    for (const e of entries.slice(0, 5)) console.error(`    ${e}`);
-    if (entries.length > 5) console.error(`    … and ${entries.length - 5} more`);
+    lines.push(`  [${label}] ${entries.length} match(es):`);
+    for (const e of entries.slice(0, 5)) lines.push(`    ${e}`);
+    if (entries.length > 5) lines.push(`    ... and ${entries.length - 5} more`);
   }
-  console.error(`\nUpdate apps/desktop/electron-builder.yml \`files:\` exclusions to drop these.`);
-  process.exit(1);
+  lines.push(`\nUpdate apps/desktop/electron-builder.yml \`files:\` exclusions to drop these.`);
+  return lines.join("\n");
 }
 
-console.log(`verify-asar-contents: OK (${listing.length} entries, no forbidden patterns)`);
+export function verifyAsarListing(listing) {
+  const violations = findForbiddenAsarEntries(listing);
+  if (violations.length === 0) return;
+  throw new Error(formatForbiddenViolations(violations));
+}
+
+export function verifyPackagedResources(appPath) {
+  const missingResources = findMissingPackagedResources(appPath);
+  if (missingResources.length === 0) return;
+  throw new Error(
+    `verify-asar-contents: missing packaged resource(s): ${missingResources.join(", ")}`,
+  );
+}
+
+export function runCli(args = process.argv.slice(2)) {
+  const appPath = args[0] ?? resolve("release-stage/dist/mac-arm64/PwrSnap.app");
+  const asarPath = resolve(appPath, "Contents/Resources/app.asar");
+  if (!existsSync(asarPath)) {
+    console.error(`verify-asar-contents: app.asar not found at ${asarPath}`);
+    process.exit(1);
+  }
+
+  const asar = require("@electron/asar");
+  const listing = asar.listPackage(asarPath, { isPack: false });
+
+  try {
+    verifyAsarListing(listing);
+    verifyPackagedResources(appPath);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+
+  console.log(`verify-asar-contents: OK (${listing.length} entries, no forbidden patterns)`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli();
+}

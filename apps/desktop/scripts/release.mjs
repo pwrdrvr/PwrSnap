@@ -40,6 +40,10 @@ const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const stageDir = join(desktopRoot, "release-stage");
 const releaseArch = "arm64";
+const pnpmProjectConfigEnv = {
+  npm_config_global_pnpmfile: "",
+  NPM_CONFIG_GLOBAL_PNPMFILE: ""
+};
 
 const args = process.argv.slice(2);
 const dryrun = args.includes("--dryrun");
@@ -116,17 +120,21 @@ function maybeDecodeCscLink() {
   console.log(`  decoded CSC_LINK -> ${target}`);
 }
 
-// 2. Build native helpers. CI also runs this explicitly as an early,
+// 2. Check license notices before doing expensive release work.
+step("license notices check");
+runChecked("pnpm", ["licenses:check"], { cwd: repoRoot });
+
+// 3. Build native helpers. CI also runs this explicitly as an early,
 // readable failure, but release.mjs must be self-contained for local
 // package/release runs.
 step("build native helpers");
 runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:native"], { cwd: repoRoot });
 
-// 3. Build (electron-vite -> apps/desktop/out/).
+// 4. Build (electron-vite -> apps/desktop/out/).
 step("electron-vite build");
 runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });
 
-// 4. Materialize a self-contained, flat node_modules under stage.
+// 5. Materialize a self-contained, flat node_modules under stage.
 step("pnpm deploy --prod -> release-stage");
 if (existsSync(stageDir)) {
   rmSync(stageDir, { recursive: true, force: true });
@@ -138,7 +146,7 @@ runChecked(
   { cwd: repoRoot }
 );
 
-// 5. Build the staged Electron-native sqlite sidecar. The stage contains only
+// 6. Build the staged Electron-native sqlite sidecar. The stage contains only
 //    production dependencies, so the script gets the packaged Electron version
 //    from electron-builder.yml instead of devDependency resolution.
 step("prepare staged better-sqlite3 Electron sidecar");
@@ -151,7 +159,7 @@ runChecked("node", ["scripts/rebuild-native-for-electron.mjs"], {
   }
 });
 
-// 6. Seed the stage with the build output + electron-builder inputs.
+// 7. Seed the stage with the build output + electron-builder inputs.
 //    pnpm deploy copies the package source tree (including out/ if it
 //    exists) into the stage. Remove stale copies before our controlled
 //    cp to avoid macOS cp -R nesting (cp -R src dst/ creates dst/src/
@@ -169,8 +177,12 @@ for (const dir of ["out", "build"]) {
 run(
   `cp ${join(desktopRoot, "electron-builder.yml")} ${join(stageDir, "electron-builder.yml")}`
 );
+run(`cp ${join(repoRoot, ".npmrc")} ${join(stageDir, ".npmrc")}`);
+for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
+  run(`cp ${join(repoRoot, file)} ${join(stageDir, file)}`);
+}
 
-// 7. electron-builder.
+// 8. electron-builder.
 //    Dryrun mode (preview/dev) builds DMG only — saves ~30s of CI time and
 //    keeps the preview-build artifact uncluttered. Real releases build both
 //    DMG and ZIP because electron-updater requires the ZIP on macOS.
@@ -199,11 +211,11 @@ if (dryrun) {
 }
 builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" : "");
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
-runChecked("npx", cleanedArgs, { cwd: stageDir });
+runChecked("npx", cleanedArgs, { cwd: stageDir, env: pnpmProjectConfigEnv });
 
 const builtApp = join(stageDir, "dist", "mac-arm64", "PwrSnap.app");
 
-// 8. Verify native helper packaging/signing. The helper is a standalone
+// 9. Verify native helper packaging/signing. The helper is a standalone
 //    executable under Contents/Resources, not a Node addon; end-user installs
 //    must get a prebuilt, signed binary.
 step("verify packaged native helpers");
@@ -215,7 +227,7 @@ if (process.platform === "darwin") {
   runChecked("codesign", ["--verify", "--strict", "--verbose=2", windowListHelper]);
 }
 
-// 9. Post-build asar contents check — fails if forbidden files (TS sources,
+// 10. Post-build asar contents check — fails if forbidden files (TS sources,
 //    tests, third-party docs, design docs, screenshots, etc.) leaked into the
 //    bundle. Exclusions are configured in electron-builder.yml; this script
 //    is a belt-and-braces guard against accidental edits to that YAML.

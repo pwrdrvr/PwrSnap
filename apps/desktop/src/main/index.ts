@@ -115,6 +115,22 @@ function installApplicationMenu(): void {
           }
         },
         {
+          label: "Changelog",
+          click: () => {
+            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
+          }
+        },
+        {
+          label: "Third-party Licenses",
+          click: () => {
+            void bus.dispatch(
+              "app:openDocumentWindow",
+              { kind: "third-party-licenses" },
+              { principal: "ipc" }
+            );
+          }
+        },
+        {
           label: "Visit Website",
           click: async () => {
             await shell.openExternal(APP_WEBSITE);

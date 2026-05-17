@@ -52,6 +52,10 @@ files:
 # with PwrSnap-prefixed names so `process.resourcesPath` lookups in
 # main are unambiguous.
 extraResources:
+  - from: "THIRD_PARTY_LICENSES"
+    to: "THIRD_PARTY_LICENSES"
+  - from: "CHANGELOG.md"
+    to: "CHANGELOG.md"
   - from: "build/native/window-list"
     to: "PwrSnapWindowList"
   # Tray template icon (16×16 base + @2x/@3x). Electron's nativeImage

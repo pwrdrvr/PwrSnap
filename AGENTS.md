@@ -443,6 +443,10 @@ doesn't.
 ## Release / Distribution
 
 - Closed-source proprietary. License markings (`UNLICENSED`) are load-bearing.
+- `THIRD_PARTY_LICENSES` is load-bearing release metadata. Do not hand-edit it
+  except through `pnpm licenses:generate`, and do not remove the shipped
+  notices/changelog resources from packaged builds. See
+  [docs/third-party-license-notices.md](docs/third-party-license-notices.md).
 - macOS-first (Phase 1–7); cross-platform deferred to Phase 8.
 - electron-builder config at [apps/desktop/electron-builder.yml](apps/desktop/electron-builder.yml).
   Hardened runtime + notarization wired (notarize off until Apple Developer

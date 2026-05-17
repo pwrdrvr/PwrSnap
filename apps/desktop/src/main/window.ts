@@ -1,5 +1,6 @@
 import { app, BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
+import type { AppDocumentKind } from "@pwrsnap/shared";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
 import { getMainLogger } from "./log";
 
@@ -29,7 +30,9 @@ let libraryWindow: BrowserWindow | null = null;
  * idempotent without scanning every BrowserWindow.
  */
 let settingsWindow: BrowserWindow | null = null;
+const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 
+type RendererStage = "tray" | "float-over" | "edit" | "settings" | "document";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
 export function getPreloadPath(): string {
@@ -41,7 +44,7 @@ function developmentRendererUrl(): string | undefined {
   return process.env.ELECTRON_RENDERER_URL;
 }
 
-function rendererTarget(stage?: "tray" | "float-over" | "edit" | "settings", extraHash?: string): RendererTarget {
+function rendererTarget(stage?: RendererStage, extraHash?: string): RendererTarget {
   const baseHash = stage ? `stage=${stage}` : undefined;
   const hash = baseHash !== undefined && extraHash !== undefined
     ? `${baseHash}&${extraHash}`
@@ -247,6 +250,55 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
   });
   window.webContents.on("unresponsive", () => {
     log.warn("settings window renderer unresponsive", { id: window.id });
+  });
+
+  return window;
+}
+
+function appDocumentTitle(kind: AppDocumentKind): string {
+  return kind === "changelog" ? "PwrSnap Changelog" : "PwrSnap Third-party Licenses";
+}
+
+export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
+  const existing = appDocumentWindows.get(kind);
+  if (existing !== undefined && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    if (!existing.isVisible()) existing.show();
+    existing.focus();
+    return existing;
+  }
+
+  const window = new BrowserWindow({
+    width: 920,
+    height: 760,
+    minWidth: 640,
+    minHeight: 480,
+    show: false,
+    title: appDocumentTitle(kind),
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 20, y: 18 },
+    backgroundColor: "#0a0908",
+    webPreferences: baseWebPreferences
+  });
+  appDocumentWindows.set(kind, window);
+
+  loadRenderer(window, rendererTarget("document", `kind=${kind}`));
+
+  window.once("ready-to-show", () => {
+    log.info("document window ready-to-show", { id: window.id, kind });
+    window.show();
+  });
+
+  window.on("close", () => log.info("document window close event", { id: window.id, kind }));
+  window.on("closed", () => {
+    log.info("document window closed", { id: window.id, kind });
+    if (appDocumentWindows.get(kind) === window) appDocumentWindows.delete(kind);
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    log.warn("document window renderer crashed", { id: window.id, kind, reason: details.reason });
+  });
+  window.webContents.on("unresponsive", () => {
+    log.warn("document window renderer unresponsive", { id: window.id, kind });
   });
 
   return window;

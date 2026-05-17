@@ -22,6 +22,7 @@ import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import { initAppUpdater, setUpdateChannelResolver } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
@@ -332,6 +333,7 @@ async function wireHotkeyRegistrations(): Promise<void> {
   const service = new DesktopSettingsService({
     filePath: join(userData, "pwrsnap-settings.json")
   });
+  let currentChannel: Settings["updates"]["channel"] = "latest";
   try {
     const settings = await service.read();
     applyHotkeys(settings.hotkeys);
@@ -341,16 +343,19 @@ async function wireHotkeyRegistrations(): Promise<void> {
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
+    currentChannel = settings.updates.channel;
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
+  setUpdateChannelResolver(() => currentChannel);
   onSettingsChanged((settings) => {
     applyHotkeys(settings.hotkeys);
     if (settings.general.developerMode !== lastKnownDeveloperMode) {
       installApplicationMenu(settings.general.developerMode);
     }
+    currentChannel = settings.updates.channel;
   });
 }
 
@@ -628,6 +633,14 @@ export function bootstrapApp(): void {
       void wireHotkeyRegistrations();
     }
     createMainWindow();
+    if (!isE2E) {
+      // Auto-update needs the channel resolver wired
+      // (wireHotkeyRegistrations sets it). In production, kicks off
+      // an initial check after the main window has mounted so the
+      // renderer's banner subscription is alive to receive events.
+      // No-op in development (skips gracefully).
+      initAppUpdater();
+    }
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,

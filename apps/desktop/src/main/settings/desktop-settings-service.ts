@@ -74,6 +74,12 @@ export function defaultSettings(): Settings {
       // "system" tracks the OS appearance via the renderer's
       // matchMedia listener. Explicit "dark" / "light" override.
       theme: "system"
+    },
+    updates: {
+      // Default to stable. Power users + beta testers flip to
+      // "prerelease" in Settings; auto-updater picks it up on the next
+      // check (hourly, or immediately via Help → Check for Updates).
+      channel: "latest"
     }
   };
 }
@@ -126,6 +132,7 @@ function parseV1(raw: unknown): Settings | null {
   const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const general = isRecord(raw.general) ? raw.general : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
+  const updates = isRecord(raw.updates) ? raw.updates : {};
   return {
     schemaVersion: 1,
     codex: {
@@ -162,6 +169,12 @@ function parseV1(raw: unknown): Settings | null {
       // in-memory and the next write rewrites the file with the full
       // shape.
       theme: pickAppearanceTheme(appearance.theme, defaults.appearance.theme)
+    },
+    updates: {
+      // `updates.channel` landed after v1 shipped; older files won't
+      // have it. Fall back to the current default ("latest") so the
+      // field is always present in-memory.
+      channel: updates.channel === "prerelease" ? "prerelease" : defaults.updates.channel
     }
   };
 }
@@ -491,7 +504,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
     experimental: mergeSection(current.experimental, patch.experimental),
     general: mergeSection(current.general, patch.general),
-    appearance: mergeSection(current.appearance, patch.appearance)
+    appearance: mergeSection(current.appearance, patch.appearance),
+    updates: mergeSection(current.updates, patch.updates)
   };
 }
 

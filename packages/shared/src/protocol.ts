@@ -207,6 +207,14 @@ export type Settings = {
     /** Slot for the upcoming PwrSnap1 file format. Wired but unused. */
     v2FileFormat: boolean;
   };
+  general: {
+    /** When true, the View menu exposes Reload / Force Reload / Toggle
+     *  Developer Tools. Hidden by default so end-users see the same
+     *  trim native menu as any signed Mac app; power users + bug
+     *  reporters flip it on in Settings. Mirrors PwrAgnt's
+     *  `general.developerMode`. */
+    developerMode: boolean;
+  };
 };
 
 /** Deep-partial patch shape. `undefined` = leave untouched. Each nested
@@ -217,6 +225,7 @@ export type SettingsPatch = {
   ai?: Partial<Settings["ai"]>;
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
+  general?: Partial<Settings["general"]>;
 };
 
 /**

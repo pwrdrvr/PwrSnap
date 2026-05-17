@@ -64,6 +64,9 @@ export function defaultSettings(): Settings {
     },
     experimental: {
       v2FileFormat: false
+    },
+    general: {
+      developerMode: false
     }
   };
 }
@@ -110,6 +113,7 @@ function parseV1(raw: unknown): Settings | null {
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
   const experimental = isRecord(raw.experimental) ? raw.experimental : {};
+  const general = isRecord(raw.general) ? raw.general : {};
   return {
     schemaVersion: 1,
     codex: {
@@ -132,6 +136,12 @@ function parseV1(raw: unknown): Settings | null {
     },
     experimental: {
       v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)
+    },
+    general: {
+      // `general.developerMode` landed after v1 shipped; older files
+      // won't have it. pickBoolean fills in the default (false) so the
+      // field is always present in-memory.
+      developerMode: pickBoolean(general.developerMode, defaults.general.developerMode)
     }
   };
 }
@@ -459,7 +469,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeSection(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
-    experimental: mergeSection(current.experimental, patch.experimental)
+    experimental: mergeSection(current.experimental, patch.experimental),
+    general: mergeSection(current.general, patch.general)
   };
 }
 

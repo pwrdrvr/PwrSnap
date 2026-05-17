@@ -5,11 +5,18 @@ import { useSettingsContext } from "../SettingsContext";
 export function ExperimentalPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const v2 = settings?.experimental.v2FileFormat ?? false;
+  const developerMode = settings?.general.developerMode ?? false;
   const ready = settings !== null;
 
-  const onChange = ready
+  const onV2Change = ready
     ? (next: boolean): void => {
         void patch({ experimental: { v2FileFormat: next } });
+      }
+    : undefined;
+
+  const onDeveloperModeChange = ready
+    ? (next: boolean): void => {
+        void patch({ general: { developerMode: next } });
       }
     : undefined;
 
@@ -26,13 +33,23 @@ export function ExperimentalPage(): ReactElement {
         </div>
       </div>
 
+      <Card eyebrow="DEVELOPER" title="Developer mode">
+        <Row
+          label="Show developer menu items"
+          sub="Expose Reload, Force Reload, and Toggle Developer Tools in the View menu. Useful for filing bug reports or hacking on PwrSnap."
+          tag="developer"
+        >
+          <Switch on={developerMode} onChange={onDeveloperModeChange} />
+        </Row>
+      </Card>
+
       <Card eyebrow="FILE FORMAT" title="File format">
         <Row
           label="PwrSnap1 capture format"
           sub="Build coming in a later release. Toggle persists so you can opt in early."
           tag="experimental"
         >
-          <Switch on={v2} onChange={onChange} />
+          <Switch on={v2} onChange={onV2Change} />
         </Row>
       </Card>
     </>

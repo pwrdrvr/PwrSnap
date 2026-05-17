@@ -68,7 +68,14 @@ const isMac = process.platform === "darwin";
 const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 
-function installApplicationMenu(): void {
+/** Reflects the most recently observed `general.developerMode` value
+ *  so the menu can be re-installed on settings change without re-
+ *  reading the settings file. Defaults to false until the first
+ *  settings read completes. */
+let lastKnownDeveloperMode = false;
+
+function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
+  lastKnownDeveloperMode = developerMode;
   const openSettings = (): void => {
     void bus.dispatch("settings:open", {}, { principal: "ipc" });
   };
@@ -77,6 +84,25 @@ function installApplicationMenu(): void {
     accelerator: SETTINGS_SHORTCUT,
     click: openSettings
   };
+  // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
+  // are gated behind `general.developerMode`. Hidden by default so
+  // end-users see the same trim native menu as any signed Mac app;
+  // power users + bug reporters flip Developer Mode on in Settings.
+  const viewSubmenu: Electron.MenuItemConstructorOptions[] = [
+    ...(developerMode
+      ? [
+          { role: "reload" as const },
+          { role: "forceReload" as const },
+          { role: "toggleDevTools" as const },
+          { type: "separator" as const }
+        ]
+      : []),
+    { role: "resetZoom" as const },
+    { role: "zoomIn" as const },
+    { role: "zoomOut" as const },
+    { type: "separator" as const },
+    { role: "togglefullscreen" as const }
+  ];
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
       ? [
@@ -119,7 +145,7 @@ function installApplicationMenu(): void {
       ]
     },
     { role: "editMenu" },
-    { role: "viewMenu" },
+    { label: "View", submenu: viewSubmenu },
     { role: "windowMenu" },
     {
       label: "Library",
@@ -305,6 +331,12 @@ async function wireHotkeyRegistrations(): Promise<void> {
   try {
     const settings = await service.read();
     applyHotkeys(settings.hotkeys);
+    // Pick up the persisted developer-mode flag and re-install the menu
+    // so the View submenu matches the user's choice from the start of
+    // this session (the early bootstrap call hit the false default).
+    if (settings.general.developerMode !== lastKnownDeveloperMode) {
+      installApplicationMenu(settings.general.developerMode);
+    }
   } catch (cause) {
     log.warn("hotkey wire-up: initial read failed (continuing with no bindings)", {
       message: cause instanceof Error ? cause.message : String(cause)
@@ -312,6 +344,9 @@ async function wireHotkeyRegistrations(): Promise<void> {
   }
   onSettingsChanged((settings) => {
     applyHotkeys(settings.hotkeys);
+    if (settings.general.developerMode !== lastKnownDeveloperMode) {
+      installApplicationMenu(settings.general.developerMode);
+    }
   });
 }
 

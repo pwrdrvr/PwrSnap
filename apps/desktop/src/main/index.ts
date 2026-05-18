@@ -69,8 +69,35 @@ const isE2E = process.env.PWRSNAP_E2E === "1";
 let pasteFromClipboardMenuItem: Electron.MenuItem | null = null;
 
 function installApplicationMenu(): void {
+  const openSettings = (): void => {
+    void bus.dispatch("settings:open", {}, { principal: "ipc" });
+  };
+  const settingsItem: Electron.MenuItemConstructorOptions = {
+    label: "Settings…",
+    accelerator: SETTINGS_SHORTCUT,
+    click: openSettings
+  };
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: "appMenu" as const }] : []),
+    ...(isMac
+      ? [
+          {
+            role: "appMenu" as const,
+            submenu: [
+              { role: "about" as const },
+              { type: "separator" as const },
+              settingsItem,
+              { type: "separator" as const },
+              { role: "services" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const }
+            ]
+          }
+        ]
+      : []),
     {
       label: "File",
       submenu: [
@@ -108,6 +135,12 @@ function installApplicationMenu(): void {
     {
       role: "help",
       submenu: [
+        ...(isMac
+          ? []
+          : [
+              settingsItem,
+              { type: "separator" as const }
+            ]),
         {
           label: `About ${APP_NAME}`,
           click: () => {

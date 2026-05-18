@@ -35,7 +35,16 @@ Read these files before changing release metadata:
   `CHANGELOG.md` release heading must match.
 - Do not create or push the tag until the version and changelog are committed
   and present on the repository default branch.
+- Before pushing a release tag, verify the `apple-signing` GitHub Environment
+  exists on `pwrdrvr/PwrSnap`, requires reviewer approval, is scoped to `v*`
+  release tags, and has the Apple signing/notarization secrets required by
+  the workflow. Apple signing/notarization secrets must NOT exist as
+  repository-level secrets.
 - Do not use GitHub generated release notes as the final notes.
+- Do not create the GitHub Release by hand before the build succeeds. Let
+  electron-builder create or update the release from the signed/notarized CI
+  build, then replace the generated/empty release notes with the changelog
+  entry.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
 - Keep the MIT license intact: do not swap LICENSE for a different SPDX or
@@ -81,7 +90,7 @@ Read these files before changing release metadata:
    pnpm test
    ```
 
-## Commit, Merge, And Tag
+## Commit, Land, And Tag
 
 Commit the version and changelog together. Use a signed commit; this repo's git
 config should already sign commits with SSH.
@@ -91,11 +100,29 @@ git add apps/desktop/package.json CHANGELOG.md
 git commit -m "chore(release): prepare v<version>"
 ```
 
-For this repo, `main` is branch-protected. Push the release metadata commit to a
-short-lived release branch, open a PR, wait for required checks, then **squash
-merge** the PR. Do not use rebase merge for release metadata PRs: GitHub may
-rewrite the commit SHA, which makes it too easy to tag the pre-merge commit
-instead of the actual default-branch release commit.
+Preferred fast path: `main` is protected by a ruleset (`non_fast_forward`,
+`deletion`, required `Lint`/`Build`/`Test`/`Desktop E2E` checks) with
+Repository admin bypass. If the user has Repository admin on `pwrdrvr/PwrSnap`,
+push the signed release metadata commit directly. This avoids running PR CI
+and then running the same gates again from the release tag.
+
+```bash
+git push origin HEAD:main
+git fetch origin main --tags
+git pull --ff-only
+```
+
+Fallback path: if the user does not have admin bypass or the direct push is
+rejected, push the release metadata commit to a short-lived release branch,
+open a PR, wait for required checks, then **squash merge** the PR. Do not use
+rebase merge for release metadata PRs: GitHub may rewrite the commit SHA,
+which makes it too easy to tag the pre-merge commit instead of the actual
+default-branch release commit.
+
+Remember that a GitHub squash merge creates a GitHub-authored commit on
+`main`, not the original locally signed commit. If the user requires the
+release metadata commit on `main` itself to be locally signed, use the
+direct-push path or ask before using the PR fallback.
 
 ```bash
 git switch -c release/v<version>
@@ -110,8 +137,8 @@ git switch main
 git pull --ff-only
 ```
 
-After the squash merge, rerun the metadata gate on `main`, then create exactly
-one tag on the actual default-branch commit.
+After the direct push or squash merge, rerun the metadata gate on `main`,
+then create exactly one tag on the actual default-branch commit.
 
 ```bash
 RELEASE_TAG=v<version> pnpm release:check
@@ -147,8 +174,10 @@ Push the tag after the release metadata is already on `main`:
 git push origin v<version>
 ```
 
-The tag push triggers `Release Desktop (macOS arm64)`. The workflow must pass
-`Check release metadata` before build/sign/notarize/publish starts.
+The tag push triggers `Release Desktop (macOS universal)`. The workflow must
+pass `Check release metadata` in the no-secret `Test and prepare signing input`
+job before the environment-gated `Sign, notarize, publish` job can request
+approval and access Apple signing secrets.
 
 For a manual dispatch, verify the tag already exists on GitHub:
 
@@ -167,6 +196,11 @@ gh run list --workflow release.yml --limit 10
 gh run watch <run-id>
 ```
 
+The `Sign, notarize, publish` job pauses for `apple-signing` Environment
+approval. Treat that pause as expected. Before approving, verify the workflow
+run is for the intended tag, the tag points at the intended default-branch
+commit, and the version/changelog metadata match the tag.
+
 On failure, inspect logs yourself:
 
 ```bash
@@ -181,7 +215,7 @@ gh release download v<version> --dir .local/release/v<version>
 ls .local/release/v<version>
 ```
 
-Expect signed/notarized macOS arm64 assets, including DMG/ZIP files and
+Expect signed/notarized universal macOS assets, including DMG/ZIP files and
 `latest-mac.yml`.
 
 ## Local Fallback

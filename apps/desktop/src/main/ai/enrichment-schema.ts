@@ -74,14 +74,25 @@ export const CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS = readFileSync(
   "utf8"
 ).trimEnd();
 
-export const CAPTURE_ENRICHMENT_PROMPT = [
-  "Capture metadata:",
-  "- Source application name: unknown",
-  "- Source application bundle id: unknown",
-  "- Capture kind: image",
-  "- Dimensions: unknown",
-  "- Captured at: unknown"
-].join("\n");
+export type CaptureEnrichmentPromptMetadata = {
+  sourceAppName: string | null;
+  sourceAppBundleId: string | null;
+  captureKind: "image" | "video";
+  widthPx: number;
+  heightPx: number;
+  capturedAt: string;
+};
+
+export function buildCaptureEnrichmentPrompt(metadata: CaptureEnrichmentPromptMetadata): string {
+  return [
+    "Capture metadata:",
+    `- Source application name: ${metadata.sourceAppName?.trim() || "unknown"}`,
+    `- Source application bundle id: ${metadata.sourceAppBundleId?.trim() || "unknown"}`,
+    `- Capture kind: ${metadata.captureKind}`,
+    `- Dimensions: ${metadata.widthPx} x ${metadata.heightPx} px`,
+    `- Captured at: ${metadata.capturedAt || "unknown"}`
+  ].join("\n");
+}
 
 export function parseCaptureEnrichmentResponse(rawText: string): EnrichmentResult {
   const parsed = JSON.parse(stripJsonFence(rawText)) as unknown;

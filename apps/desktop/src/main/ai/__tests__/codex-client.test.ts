@@ -1,6 +1,9 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { JsonRpcTransport } from "../../codex-app-server/json-rpc";
 import { CodexAppServerClient } from "../codex-client";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 type Envelope = {
   jsonrpc?: string;
@@ -10,6 +13,8 @@ type Envelope = {
   result?: unknown;
   error?: { code: number; message: string };
 };
+
+const tempRoots: string[] = [];
 
 class FakeTransport implements JsonRpcTransport {
   readonly outbound: Envelope[] = [];
@@ -154,7 +159,15 @@ class FakeTransport implements JsonRpcTransport {
 }
 
 describe("CodexAppServerClient", () => {
-  it("starts an ephemeral local-image turn and parses structured output", async () => {
+  afterEach(async () => {
+    await Promise.all(tempRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+  });
+
+  it("starts an ephemeral image turn and parses structured output", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
+    tempRoots.push(tempRoot);
+    const imagePath = join(tempRoot, "capture.jpg");
+    await writeFile(imagePath, Buffer.from([1, 2, 3]));
     const transport = new FakeTransport();
     const client = new CodexAppServerClient({
       command: "/bin/codex",
@@ -162,7 +175,17 @@ describe("CodexAppServerClient", () => {
       turnTimeoutMs: 1000
     });
 
-    const response = await client.enrichCapture({ imagePath: "/tmp/capture.jpg" });
+    const response = await client.enrichCapture({
+      imagePath,
+      metadata: {
+        sourceAppName: "PwrSnap",
+        sourceAppBundleId: "com.pwrdrvr.pwrsnap",
+        captureKind: "image",
+        widthPx: 2880,
+        heightPx: 1920,
+        capturedAt: "2026-05-18T13:30:00.000Z"
+      }
+    });
 
     expect(response.result).toEqual({
       ocrText: "Visible text",
@@ -180,8 +203,11 @@ describe("CodexAppServerClient", () => {
       approvalPolicy: "never",
       baseInstructions: expect.stringContaining("Primary goals, in order:")
     });
-    expect(transport.outbound.find((message) => message.method === "turn/start")?.params).toMatchObject({
-      input: expect.arrayContaining([{ type: "localImage", path: "/tmp/capture.jpg" }])
+    const turnStart = transport.outbound.find((message) => message.method === "turn/start");
+    expect(turnStart?.params).toMatchObject({
+      input: expect.arrayContaining([{ type: "image", url: "data:image/jpeg;base64,AQID" }])
     });
+    expect(JSON.stringify(turnStart?.params)).toContain("Source application name: PwrSnap");
+    expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
   });
 });

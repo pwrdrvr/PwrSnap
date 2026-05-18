@@ -149,6 +149,14 @@ export function registerCodexHandlers(params?: {
       runId: run.id,
       captureId: capture.id,
       sourcePath: capture.src_path,
+      metadata: {
+        sourceAppName: capture.source_app_name,
+        sourceAppBundleId: capture.source_app_bundle_id,
+        captureKind: capture.kind,
+        widthPx: capture.width_px,
+        heightPx: capture.height_px,
+        capturedAt: capture.captured_at
+      },
       command: codexCommand,
       ctx,
       clientFactory
@@ -243,6 +251,14 @@ async function runCaptureEnrichment(params: {
   runId: string;
   captureId: string;
   sourcePath: string;
+  metadata: {
+    sourceAppName: string | null;
+    sourceAppBundleId: string | null;
+    captureKind: "image" | "video";
+    widthPx: number;
+    heightPx: number;
+    capturedAt: string;
+  };
   command: string;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
@@ -267,6 +283,7 @@ async function runCaptureEnrichment(params: {
     client = params.clientFactory(params.command);
     const response = await client.enrichCapture({
       imagePath: prepared.path,
+      metadata: params.metadata,
       abortSignal: abortController.signal
     });
 

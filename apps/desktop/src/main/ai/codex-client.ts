@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type {
   InitializeParams,
   InitializeResponse,
@@ -18,8 +19,9 @@ import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { getMainLogger } from "../log";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
-  CAPTURE_ENRICHMENT_PROMPT,
   CAPTURE_ENRICHMENT_SCHEMA,
+  buildCaptureEnrichmentPrompt,
+  type CaptureEnrichmentPromptMetadata,
   parseCaptureEnrichmentResponse
 } from "./enrichment-schema";
 
@@ -29,6 +31,7 @@ export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
 
 export type CodexCaptureEnrichmentRequest = {
   imagePath: string;
+  metadata: CaptureEnrichmentPromptMetadata;
   abortSignal?: AbortSignal;
 };
 
@@ -99,6 +102,7 @@ export class CodexAppServerClient {
       if (request.abortSignal?.aborted) {
         throw new DOMException("capture enrichment aborted", "AbortError");
       }
+      const imageDataUrl = await imagePathToDataUrl(request.imagePath);
 
       const threadResponse = (await connection.request(
         "thread/start",
@@ -119,12 +123,12 @@ export class CodexAppServerClient {
           input: [
             {
               type: "text",
-              text: CAPTURE_ENRICHMENT_PROMPT,
+              text: buildCaptureEnrichmentPrompt(request.metadata),
               text_elements: []
             },
             {
-              type: "localImage",
-              path: request.imagePath
+              type: "image",
+              url: imageDataUrl
             }
           ],
           effort: "low",
@@ -327,4 +331,9 @@ export class CodexAppServerClient {
     }
     return {};
   }
+}
+
+async function imagePathToDataUrl(imagePath: string): Promise<string> {
+  const image = await readFile(imagePath);
+  return `data:image/jpeg;base64,${image.toString("base64")}`;
 }

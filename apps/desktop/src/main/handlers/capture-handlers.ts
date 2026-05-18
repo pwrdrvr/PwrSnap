@@ -68,6 +68,18 @@ const CLIPBOARD_FILE_URL_FORMATS = [
   "public.url",
   "NSURLPboardType"
 ] as const;
+const CLIPBOARD_IMAGE_FORMAT_NEEDLES = [
+  "avif",
+  "bmp",
+  "gif",
+  "jp2",
+  "jpeg",
+  "jpg",
+  "pict",
+  "png",
+  "tiff",
+  "webp"
+] as const;
 const IMAGE_FILE_EXTENSIONS = new Set([
   ".avif",
   ".bmp",
@@ -86,6 +98,7 @@ type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
 export function clipboardHasPasteableImage(): boolean {
   if (!clipboard.readImage().isEmpty()) return true;
+  if (clipboardImageBufferFormat() !== null) return true;
   const filePath = clipboardImageFilePath();
   return filePath !== null && looksLikeImageFile(filePath);
 }
@@ -398,6 +411,22 @@ async function writeClipboardImageToTempPng(): Promise<
     return { ok: true, tempPath };
   }
 
+  const bufferFormat = clipboardImageBufferFormat();
+  if (bufferFormat !== null) {
+    try {
+      const tempPath = await makeClipboardTempPngPath();
+      await sharp(clipboard.readBuffer(bufferFormat)).png().toFile(tempPath);
+      return { ok: true, tempPath };
+    } catch (cause) {
+      return {
+        ok: false,
+        code: "unsupported_image",
+        message: `Could not decode clipboard image format: ${bufferFormat}`,
+        cause
+      };
+    }
+  }
+
   const filePath = clipboardImageFilePath();
   if (filePath === null || !looksLikeImageFile(filePath)) {
     return {
@@ -424,6 +453,19 @@ async function writeClipboardImageToTempPng(): Promise<
 async function makeClipboardTempPngPath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
   return join(dir, `${Date.now()}.png`);
+}
+
+function clipboardImageBufferFormat(): string | null {
+  for (const format of clipboard.availableFormats()) {
+    if (isClipboardImageBufferFormat(format)) return format;
+  }
+  return null;
+}
+
+function isClipboardImageBufferFormat(format: string): boolean {
+  const lower = format.toLowerCase();
+  if (lower.includes("file-url") || lower.includes("url")) return false;
+  return CLIPBOARD_IMAGE_FORMAT_NEEDLES.some((needle) => lower.includes(needle));
 }
 
 function clipboardImageFilePath(): string | null {

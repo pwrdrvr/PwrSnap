@@ -48,7 +48,7 @@ import {
 } from "../clipboard-image-buffer";
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
-import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
+import { setTrayCountdown } from "../tray";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -679,10 +679,13 @@ async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
     });
   }
   timedDelayInFlight = true;
-  // Dismiss the tray popover up front so it isn't sitting on top of
-  // whatever the user wants to stage. They can reopen it during the
-  // countdown if they want to capture it.
-  hideTrayPopoverIfVisible();
+  // Deliberately NOT dismissing the tray popover here. The user may
+  // have opened it precisely so they could capture it (the design
+  // calls out "the PwrSnap tray menu itself" as a target). We change
+  // nothing on screen — just hold for the countdown, then drop into
+  // the same selector Quick Capture uses. Whatever's on screen at
+  // t=0 (tray, dropdowns, tooltips, half-mid-animation transitions)
+  // is what the selector's snapshot freezes for the picker.
   try {
     for (let remaining = TIMED_CAPTURE_SECONDS; remaining > 0; remaining--) {
       setTrayCountdown(String(remaining));

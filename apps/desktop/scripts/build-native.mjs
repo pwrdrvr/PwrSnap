@@ -51,13 +51,25 @@ const targets = [
   }
 ];
 
+function hasUniversalSlices(path) {
+  const result = spawnSync(
+    "lipo",
+    [path, "-verify_arch", "arm64", "x86_64"],
+    { stdio: "ignore" }
+  );
+  return result.status === 0;
+}
+
 for (const target of targets) {
   const newestSourceMtime = Math.max(
     ...target.sources.map((p) => statSync(p).mtimeMs)
   );
   const outputExists = existsSync(target.output);
+  const requiresUniversal = process.env.PWRSNAP_NATIVE_UNIVERSAL === "1";
   const upToDate =
-    outputExists && statSync(target.output).mtimeMs >= newestSourceMtime;
+    outputExists
+    && statSync(target.output).mtimeMs >= newestSourceMtime
+    && (!requiresUniversal || hasUniversalSlices(target.output));
 
   if (upToDate) {
     console.log(`[build-native] ${target.name} up to date`);

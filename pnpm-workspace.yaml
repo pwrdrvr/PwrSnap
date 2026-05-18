@@ -2,6 +2,17 @@ packages:
   - apps/*
   - packages/*
 minimumReleaseAge: 10080
+# Release builds produce a universal macOS app. Runtime packages like sharp
+# publish CPU-specific optional dependencies, so install both Darwin slices
+# even when the release stage is prepared on a single-architecture runner.
+supportedArchitectures:
+  os:
+    - darwin
+    - current
+  cpu:
+    - x64
+    - arm64
+    - current
 allowBuilds:
   better-sqlite3: true
   electron: true

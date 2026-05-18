@@ -302,7 +302,7 @@ export function FloatOverHost(): React.ReactElement {
     // sharp-based render pipeline, so we skip it for that branch.
     //
     // `edits_version` is the unified rename from `overlays_version`
-    // (see migration 0006_layers.sql) — the cache key picks up
+    // (see migration 0007_layers.sql) — the cache key picks up
     // changes whether they originated as v1 overlays or v2 layers.
     const enhancedPreviewSrc = isVideo
       ? undefined

@@ -355,7 +355,7 @@ class NativeRecorderService implements RecordingService {
       captured_at: new Date().toISOString(),
       source_app_bundle_id: sourceAppBundleId,
       source_app_name: sourceAppName,
-      src_path: stored.srcPath,
+      legacy_src_path: stored.srcPath,
       width_px: rect.w,
       height_px: rect.h,
       device_pixel_ratio: 1,

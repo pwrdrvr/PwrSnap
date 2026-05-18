@@ -78,10 +78,20 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}.${audioTag}.${ext}`
   );
 
+  // Video captures always carry a legacy_src_path (the recorded .mp4
+  // lives at ~/Documents/PwrSnap/<id>.mp4 — the bundle-flow rewire
+  // doesn't touch the video path yet). Null here is a programming
+  // error: the caller fetched a video capture record with no source
+  // file, which the recording-service shouldn't ever produce.
+  if (input.record.legacy_src_path === null) {
+    throw new Error(
+      `recording-exporter: capture ${input.record.id} has no legacy_src_path`
+    );
+  }
   if (input.format === "gif") {
-    await encodeGif(ffmpeg, input.record.src_path, input.range, outputPath);
+    await encodeGif(ffmpeg, input.record.legacy_src_path, input.range, outputPath);
   } else {
-    await encodeMp4(ffmpeg, input.record.src_path, input.video, input.range, input.audio, outputPath);
+    await encodeMp4(ffmpeg, input.record.legacy_src_path, input.video, input.range, input.audio, outputPath);
   }
 
   const sizeInfo = await stat(outputPath);

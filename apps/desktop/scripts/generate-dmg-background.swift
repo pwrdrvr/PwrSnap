@@ -42,9 +42,9 @@ struct Color {
   static let pillBackground = NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
   static let text = NSColor(calibratedRed: 0.969, green: 0.953, blue: 0.922, alpha: 1)
   static let muted = NSColor(calibratedRed: 0.549, green: 0.522, blue: 0.478, alpha: 1)
-  // Brand burnt copper — design system: #e8743a (rgb 232, 116, 58).
-  static let accent = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 1)
-  static let arrowShaft = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 1)
+  // Brand tangerine — design system: #ff8a1f (rgb 255, 138, 31).
+  static let accent = NSColor(calibratedRed: 1.000, green: 0.541, blue: 0.122, alpha: 1)
+  static let arrowShaft = NSColor(calibratedRed: 1.000, green: 0.541, blue: 0.122, alpha: 1)
 }
 
 func renderBackground() -> NSBitmapImageRep {

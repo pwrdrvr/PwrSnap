@@ -27,7 +27,7 @@ body[data-stage="region"] .region-root {
 
 .region-dim {
   position: fixed;
-  background: rgba(8, 7, 6, 0.62);
+  background: rgba(0, 0, 0, 0.62);
 }
 .region-dim--full {
   inset: 0;

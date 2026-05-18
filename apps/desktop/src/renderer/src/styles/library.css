@@ -98,7 +98,7 @@
   position: relative;
   height: 26px;
   padding: 0 14px;
-  background: rgba(8,7,6,0.85);
+  background: rgba(0, 0, 0, 0.85);
   border-bottom: 1px solid rgba(255,255,255,0.05);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -215,7 +215,7 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 1px;
   transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px rgba(255, 138, 31,0.18);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px rgba(255, 138, 31, 0.18);
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
@@ -362,7 +362,7 @@
   display: inline-flex; align-items: center; gap: 5px;
   height: 24px;
   padding: 0 9px 0 7px;
-  background: rgba(10, 9, 8, 0.78);
+  background: rgba(0, 0, 0, 0.78);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
   border-radius: 5px;
@@ -770,7 +770,7 @@
   position: absolute; bottom: 2px; right: 2px;
   width: 12px; height: 12px;
   border-radius: 2px;
-  background: rgba(8,7,6,0.85);
+  background: rgba(0, 0, 0, 0.85);
   border: 1px solid var(--accent-border);
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);
@@ -784,7 +784,7 @@
   display: flex; align-items: center; justify-content: center;
   width: 16px; height: 16px;
   border-radius: 3px;
-  background: rgba(8, 7, 6, 0.78);
+  background: rgba(0, 0, 0, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text-secondary);
   cursor: pointer;
@@ -806,7 +806,7 @@
   position: static;
 }
 .psl__frame-trash--restore:hover {
-  background: var(--accent-soft, rgba(255, 138, 31, 0.18));
+  background: var(--accent-soft, rgba(255, 138, 31, 0.12));
   color: var(--accent-bright, var(--accent));
 }
 
@@ -973,7 +973,7 @@
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   font: 600 9px/1 var(--font-mono);
-  background: rgba(8,7,6,0.85);
+  background: rgba(0, 0, 0, 0.85);
   color: var(--text-secondary);
   padding: 2px 4px;
   border-radius: 3px;
@@ -991,7 +991,7 @@
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
   border-radius: 5px;
-  background: rgba(8, 7, 6, 0.78);
+  background: rgba(0, 0, 0, 0.78);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text-secondary);
   cursor: pointer;
@@ -1018,7 +1018,7 @@
 }
 /* Restore icon: positive accent on hover (the safe action). */
 .psl__cell-trash--restore:hover {
-  background: var(--accent-soft, rgba(255, 138, 31, 0.18));
+  background: var(--accent-soft, rgba(255, 138, 31, 0.12));
   color: var(--accent-bright, var(--accent));
 }
 /* HoverRevealPanel — pin / auto-hide side panel.
@@ -1242,8 +1242,8 @@
 
 .psl__ai-card {
   padding: 11px 12px;
-  border: 1px solid rgba(255, 138, 31,0.18);
-  background: rgba(255, 138, 31,0.04);
+  border: 1px solid rgba(255, 138, 31, 0.18);
+  background: rgba(255, 138, 31, 0.04);
   border-radius: 8px;
   display: flex; flex-direction: column; gap: 8px;
   position: relative;
@@ -1322,7 +1322,7 @@
 .psl__app-dot {
   width: 18px; height: 18px;
   border-radius: 4px;
-  background: rgba(8,7,6,0.85);
+  background: rgba(0, 0, 0, 0.85);
   border: 1px solid var(--accent-border);
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);

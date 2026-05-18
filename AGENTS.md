@@ -35,12 +35,15 @@
 ## Brand and Identity
 
 - Product name is **PwrSnap** — one word, two capitals (`Pwr` + `Snap`),
-  rendered as `Pwr` in primary text + `Snap` in copper accent. Never insert
+  rendered as `Pwr` in primary text + `Snap` in the brand accent. Never insert
   whitespace between the halves; never lowercase the second capital.
 - Company is **PwrDrvr LLC**. License markings are `UNLICENSED` —
   v1.0 is closed-source proprietary.
-- Visual language follows the design system in `design/` — warm near-black
-  surfaces, burnt-copper accent (`#e8743a`), Geist + Geist Mono.
+- Visual language follows the design system in `design/` — pure-black
+  surfaces (`#000000`), tangerine accent (`#ff8a1f`), Geist + Geist Mono.
+  PwrAgent is the system of record for PwrDrvr brand tokens; PwrSnap mirrors
+  its `:root` palette in [design/ds/colors_and_type.css](design/ds/colors_and_type.css)
+  and [apps/desktop/src/renderer/src/styles/tokens.css](apps/desktop/src/renderer/src/styles/tokens.css).
 
 ## Codex App Server is the AI brain
 

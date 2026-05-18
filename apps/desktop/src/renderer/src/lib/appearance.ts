@@ -41,10 +41,17 @@ export function resolveTheme(theme: AppearanceTheme): ResolvedTheme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-/** Set or remove the `data-theme` attribute on `<html>`. Dark = no
- *  attribute (the bare `:root` block paints), light = `data-theme=
- *  "light"`. Keeping the attribute absent for the default theme
- *  keeps the cascade shallow and matches the bootstrap script.
+/** Set or remove the `data-theme` attribute on `<html>` AND flip the
+ *  inline `color-scheme` style. Dark = no attribute (the bare `:root`
+ *  block paints), light = `data-theme="light"`. Keeping the attribute
+ *  absent for the default theme keeps the cascade shallow and matches
+ *  the bootstrap script.
+ *
+ *  Why the inline `color-scheme`: tokens.css declares the property in
+ *  the cascade, but native form controls + scrollbars read it before
+ *  the stylesheet has applied. Setting `style.colorScheme` directly
+ *  guarantees the OS-driven widgets flip in lock-step with our
+ *  attribute, including the gap between bootstrap and CSS load.
  *
  *  Safe to call before React mounts — operates directly on
  *  `document.documentElement`. */
@@ -52,8 +59,10 @@ export function applyResolvedTheme(resolved: ResolvedTheme): void {
   if (typeof document === "undefined") return;
   if (resolved === "light") {
     document.documentElement.setAttribute("data-theme", "light");
+    document.documentElement.style.colorScheme = "light";
   } else {
     document.documentElement.removeAttribute("data-theme");
+    document.documentElement.style.colorScheme = "dark";
   }
 }
 

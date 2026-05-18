@@ -8,3 +8,4 @@ export * from "./overlay-schemas";
 export * from "./result";
 export * from "./ipc";
 export * from "./arrow";
+export * from "./appearance-arg";

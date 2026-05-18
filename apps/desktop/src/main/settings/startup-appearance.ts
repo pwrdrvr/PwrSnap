@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { app, nativeTheme } from "electron";
 import type { AppearanceTheme } from "@pwrsnap/shared";
 import { isAppearanceTheme } from "@pwrsnap/shared";
+import { serializeAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 
 /** Surface color when the user is in dark mode. Matches
  *  `--bg-app` in `apps/desktop/src/renderer/src/styles/tokens.css`
@@ -78,13 +79,6 @@ export function getStartupBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? STARTUP_BG_DARK : STARTUP_BG_LIGHT;
 }
 
-/** Argv prefix the preload parses (`apps/desktop/src/preload/index.ts`)
- *  to recover the persisted theme + expose it on
- *  `window.__pwrsnapAppearance`. The inline bootstrap in
- *  `apps/desktop/src/renderer/index.html` reads from that bridge
- *  before falling back to localStorage. */
-const APPEARANCE_ARG_PREFIX = "--pwrsnap-appearance=";
-
 /**
  * Build the `webPreferences.additionalArguments` payload that pipes
  * the persisted theme through to the preload's appearance bridge.
@@ -98,10 +92,12 @@ const APPEARANCE_ARG_PREFIX = "--pwrsnap-appearance=";
  * runs. The inline bootstrap reads from there in `<head>`, well
  * before any CSS loads.
  *
- * Returned as a single string ready to spread into `webPreferences.
- * additionalArguments: [...getStartupAppearanceArgs()]`.
+ * The wire format lives in `@pwrsnap/shared/appearance-arg` so main +
+ * preload agree on the prefix and envelope without either side
+ * duplicating the literal. Returned as a single-element array ready
+ * to spread into `webPreferences.additionalArguments`.
  */
 export function getStartupAppearanceArgs(): readonly string[] {
   const theme = readPersistedTheme();
-  return [`${APPEARANCE_ARG_PREFIX}${JSON.stringify({ theme })}`];
+  return [serializeAppearanceArg({ theme })];
 }

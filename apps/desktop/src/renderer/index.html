@@ -11,39 +11,40 @@
 
       Runs synchronously before main.tsx loads, before React mounts,
       and before any stylesheet has applied a paint pass. Sets the
-      `data-theme` attribute on <html> from a small localStorage
-      cache so first paint matches the user's persisted theme — no
-      flash-of-wrong-theme on a light-themed cold launch.
+      `data-theme` attribute and `color-scheme` style on <html> so
+      first paint matches the user's persisted theme — no flash-of-
+      wrong-theme on a light-themed cold launch.
 
-      Source of truth lives in Settings (DesktopSettingsService). The
-      renderer hook mirrors every change to localStorage under the
-      same key so this bootstrap stays current across launches. The
-      `pwrsnap.appearance.v1` envelope is { theme: "system"|"dark"|
-      "light" }; mismatched shapes are ignored and we fall back to
-      the default (system → matchMedia at this exact instant).
+      Source of truth, in priority order:
+        1. `window.__pwrsnapAppearance` — populated by the preload
+           from Electron's `additionalArguments`, which main sets at
+           window construction time after a synchronous read of the
+           Settings JSON. Authoritative; available on the very first
+           launch even before localStorage has been seeded.
+        2. localStorage `pwrsnap.appearance.v1` — fallback for paths
+           where the preload bridge isn't loaded (e.g. opening a
+           file:// renderer in a tool that doesn't run our preload).
+           The renderer hook mirrors every theme change here on the
+           way out so this cache stays correct across launches.
+        3. "system" default → matchMedia resolved at this exact
+           instant.
+
+      We set `style.colorScheme` on <html> in addition to the data-
+      theme attribute. tokens.css declares `color-scheme: light` on
+      `:root[data-theme="light"]`, but until the CSS loads, native
+      form controls + scrollbars paint in the default (dark) color-
+      scheme. Inline-styling the property closes that gap so even
+      the first 50ms before CSS arrives renders correctly.
 
       try/catch swallows everything intentionally — if any step
       throws (localStorage disabled, JSON parse error, matchMedia
-      missing) we leave <html> in its default state (dark) and let
-      the React hook reconcile on mount. Better a brief flash than
-      a blank screen.
+      missing, exotic Electron version), we leave <html> in its
+      default (dark) state and the React hook reconciles on mount.
+      Better a brief flash than a blank screen.
     -->
     <script>
       (function () {
         try {
-          // Source of truth, in priority order:
-          //   1. window.__pwrsnapAppearance — populated by preload from
-          //      Electron's `additionalArguments`, which main sets at
-          //      window construction time after a sync read of the
-          //      Settings JSON. Authoritative; available on every
-          //      launch including the first one (no localStorage yet).
-          //   2. localStorage `pwrsnap.appearance.v1` — fallback for
-          //      paths where the preload bridge hasn't loaded.
-          //   3. "system" default → matchMedia.
-          //
-          // Chained this way (additionalArguments first) so a cold
-          // launch in light theme never flashes the dark default in
-          // the gap before the renderer's React hook can reconcile.
           var theme = "system";
           var bridged = window.__pwrsnapAppearance;
           if (bridged && (bridged.theme === "system" || bridged.theme === "dark" || bridged.theme === "light")) {
@@ -65,8 +66,10 @@
           }
           if (resolved === "light") {
             document.documentElement.setAttribute("data-theme", "light");
+            document.documentElement.style.colorScheme = "light";
           } else {
             document.documentElement.removeAttribute("data-theme");
+            document.documentElement.style.colorScheme = "dark";
           }
         } catch (_err) {
           /* fall through — React hook reconciles on mount */

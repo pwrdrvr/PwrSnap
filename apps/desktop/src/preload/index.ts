@@ -25,6 +25,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import { EVENT_CHANNELS, IPC_CAPTURE_DRAG_START, IPC_CMD } from "@pwrsnap/shared/ipc";
 import type { RenderPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
+import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -276,35 +277,11 @@ contextBridge.exposeInMainWorld("pwrsnapApi", pwrsnapApi);
 // On the renderer side, `useAppearanceSync` continues to be the source
 // of truth for in-session state and writes — this bridge is purely for
 // the pre-mount first paint.
-const APPEARANCE_ARG_PREFIX = "--pwrsnap-appearance=";
-
-function readAppearanceFromArgs(): { theme: "system" | "dark" | "light" } | null {
-  // process.argv may include the additionalArgument we passed from
-  // main. We don't validate exhaustively here — the bootstrap also
-  // re-validates the value before applying it. Anything off-spec
-  // falls through and the bootstrap uses its localStorage / matchMedia
-  // fallback path.
-  try {
-    for (const arg of process.argv) {
-      if (!arg.startsWith(APPEARANCE_ARG_PREFIX)) continue;
-      const json = arg.slice(APPEARANCE_ARG_PREFIX.length);
-      const parsed: unknown = JSON.parse(json);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "theme" in parsed &&
-        (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")
-      ) {
-        return { theme: parsed.theme };
-      }
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
-}
-
-const appearance = readAppearanceFromArgs();
-if (appearance !== null) {
-  contextBridge.exposeInMainWorld("__pwrsnapAppearance", appearance);
+//
+// The parser lives in `@pwrsnap/shared/appearance-arg` so it can be
+// unit-tested without spinning up Electron, and so main + preload
+// share the prefix + validation rules from one source of truth.
+const appearanceArg = parseAppearanceArg(process.argv);
+if (appearanceArg !== null) {
+  contextBridge.exposeInMainWorld("__pwrsnapAppearance", appearanceArg);
 }

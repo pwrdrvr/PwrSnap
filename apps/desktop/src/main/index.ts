@@ -22,7 +22,11 @@ import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
-import { initAppUpdater, setUpdateChannelResolver } from "./auto-updater";
+import {
+  checkForAppUpdatesNow,
+  initAppUpdater,
+  setUpdateChannelResolver
+} from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, openDatabase } from "./persistence/db";
@@ -179,6 +183,13 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
           }
         },
         {
+          label: "Check for Updates",
+          click: () => {
+            void checkForAppUpdatesNow("menu");
+          }
+        },
+        { type: "separator" },
+        {
           label: "Changelog",
           click: () => {
             void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
@@ -194,6 +205,7 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
             );
           }
         },
+        { type: "separator" },
         {
           label: "Visit Website",
           click: async () => {

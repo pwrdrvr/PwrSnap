@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.0-beta.1 - 2026-05-18
+
+- Added app updates, update channel settings, and an update-ready banner so
+  dogfood builds can move forward from inside PwrSnap.
+- Added Settings coverage for themes, editable hotkeys, storage cache controls,
+  developer-menu visibility, and app/tray entry points.
+- Added Timed (5s) capture, native file drag, clipboard image paste, cache-path
+  copying, and stronger tray last-snap actions.
+- Improved capture reliability for window selection, source app filtering,
+  capture preview timing, focus handling, and raw image clipboard formats.
+- Improved library scale and polish with 100k-capture seeding, isolated filter
+  state, optimized PNG copies, trash UX, and source-filter test hardening.
+- Shipped MIT community standards, third-party license notices, bundled release
+  documents, universal macOS DMG/ZIP artifacts, the stable `PwrSnap.dmg`
+  download alias, and environment-gated Apple signing secrets.
+
 ## v1.0.0-alpha.3 - 2026-05-06
 
 - Restored the missing tray icon in the packaged desktop app.

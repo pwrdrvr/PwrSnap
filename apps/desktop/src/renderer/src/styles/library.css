@@ -98,7 +98,7 @@
   position: relative;
   height: 26px;
   padding: 0 14px;
-  background: rgba(0, 0, 0, 0.85);
+  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
   border-bottom: 1px solid rgba(255,255,255,0.05);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -231,7 +231,7 @@
    pill instead of the light-on-dark default, so they don't fight
    the button fill for attention. */
 .ps-tray__quick-hk .ps-kbd {
-  background: rgba(0,0,0,0.22);
+  background: color-mix(in srgb, var(--bg-app) 22%, transparent);
   border-color: rgba(0,0,0,0.28);
   color: var(--button-text-on-accent);
   border-bottom-width: 2px;
@@ -360,7 +360,7 @@
   display: inline-flex; align-items: center; gap: 5px;
   height: 24px;
   padding: 0 9px 0 7px;
-  background: rgba(0, 0, 0, 0.78);
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
   border-radius: 5px;
@@ -727,7 +727,7 @@
   border-radius: 3px;
   overflow: hidden;
   background: var(--bg-panel);
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border-subtle);
   cursor: pointer;
   transition: transform 120ms var(--ease-out), border-color 120ms var(--ease-out);
   /* D.3 — skip layout/paint for offscreen frames in a long
@@ -760,7 +760,7 @@
   position: absolute; top: 2px; left: 2px;
   font: 700 8px/1 var(--font-mono);
   color: var(--text-primary);
-  background: rgba(0,0,0,0.6);
+  background: color-mix(in srgb, var(--bg-app) 60%, transparent);
   padding: 1px 3px;
   border-radius: 2px;
 }
@@ -768,7 +768,7 @@
   position: absolute; bottom: 2px; right: 2px;
   width: 12px; height: 12px;
   border-radius: 2px;
-  background: rgba(0, 0, 0, 0.85);
+  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
   border: 1px solid var(--accent-border);
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);
@@ -782,8 +782,8 @@
   display: flex; align-items: center; justify-content: center;
   width: 16px; height: 16px;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
+  border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   cursor: pointer;
   opacity: 0;
@@ -971,7 +971,7 @@
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   font: 600 9px/1 var(--font-mono);
-  background: rgba(0, 0, 0, 0.85);
+  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
   color: var(--text-secondary);
   padding: 2px 4px;
   border-radius: 3px;
@@ -989,8 +989,8 @@
   display: flex; align-items: center; justify-content: center;
   width: 22px; height: 22px;
   border-radius: 5px;
-  background: rgba(0, 0, 0, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
+  border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   cursor: pointer;
   opacity: 0;
@@ -1197,7 +1197,7 @@
   display: flex; gap: 2px;
   padding: 3px;
   background: color-mix(in srgb, var(--bg-panel-hover) 95%, transparent);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 7px;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -1420,7 +1420,7 @@
 .psl__app-dot {
   width: 18px; height: 18px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.85);
+  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
   border: 1px solid var(--accent-border);
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);
@@ -1676,7 +1676,7 @@
   gap: 2px;
   padding: 6px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
@@ -1734,7 +1734,7 @@
   height: 14px;
   font: 700 9px/1 var(--font-mono);
   color: var(--text-muted);
-  background: rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
   border: 1px solid var(--border-subtle);
   border-radius: 3px;
   padding: 0 3px;

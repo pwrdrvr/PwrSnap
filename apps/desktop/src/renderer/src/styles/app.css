@@ -131,7 +131,7 @@ body[data-stage="float-over"] .fo {
   word-break: break-word;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.24);
+  background: color-mix(in srgb, var(--bg-app) 24%, transparent);
   color: var(--danger-text, #e58a8a);
   font: 500 11px/1.45 var(--font-mono);
 }
@@ -185,7 +185,7 @@ body[data-stage="float-over"] .fo {
   word-break: break-word;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.28);
+  background: color-mix(in srgb, var(--bg-app) 28%, transparent);
   color: var(--text-muted);
   font: 500 10px/1.45 var(--font-mono);
 }

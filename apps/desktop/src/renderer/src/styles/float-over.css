@@ -24,7 +24,7 @@
 .fo-menubar {
   position: absolute; top: 0; left: 0; right: 0;
   height: 26px;
-  background: rgba(0, 0, 0, 0.72);
+  background: color-mix(in srgb, var(--bg-app) 72%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -64,7 +64,7 @@
   bottom: 14px; left: 50%; transform: translateX(-50%);
   height: 56px; width: 360px;
   background: color-mix(in srgb, var(--bg-panel-hover) 55%, transparent);
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 14px;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -81,7 +81,7 @@
   background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 14px;
   box-shadow:
     0 24px 64px rgba(0,0,0,0.55),
@@ -163,7 +163,7 @@
   border-radius: 8px;
   overflow: hidden;
   background: #000000;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border-subtle);
   aspect-ratio: 16 / 10;
 }
 /* `contain` so the user recognizes their capture at its true aspect
@@ -174,7 +174,7 @@
   position: absolute; top: 6px; left: 6px;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 6px;
-  background: rgba(0, 0, 0, 0.78);
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
   backdrop-filter: blur(8px);
   border-radius: 4px;
   font: 600 10px/1 var(--font-mono);
@@ -184,7 +184,7 @@
 .fo__preview-size {
   position: absolute; top: 6px; right: 6px;
   padding: 3px 6px;
-  background: rgba(0, 0, 0, 0.78);
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
   backdrop-filter: blur(8px);
   border-radius: 4px;
   font: 500 10px/1 var(--font-mono);
@@ -200,9 +200,9 @@
 .fo__hover-btn {
   height: 24px; padding: 0 8px;
   display: inline-flex; align-items: center; gap: 5px;
-  background: rgba(0, 0, 0, 0.86);
+  background: color-mix(in srgb, var(--bg-app) 86%, transparent);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 5px;
   color: var(--text-primary);
   font: 600 10px/1 var(--font-sans);
@@ -230,7 +230,7 @@
   height: 60px;
   padding: 8px 9px 7px;
   background: rgba(255,255,255,0.025);
-  border: 1px solid rgba(255,255,255,0.07);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   color: var(--text-primary);
   cursor: pointer;
@@ -291,7 +291,7 @@
 .fo__copy-kbd {
   font: 600 9px/1 var(--font-mono);
   padding: 2px 4px;
-  background: rgba(0,0,0,0.32);
+  background: color-mix(in srgb, var(--bg-app) 32%, transparent);
   border-radius: 3px;
   color: inherit;
   opacity: 0.7;
@@ -354,7 +354,7 @@
   width: 100%;
   resize: none;
   background: var(--bg-input);
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 7px;
   padding: 8px 10px;
   color: var(--text-primary);
@@ -382,14 +382,14 @@
   display: inline-flex; align-items: center; justify-content: center;
   width: 12px; height: 12px;
   border-radius: 50%;
-  background: rgba(0,0,0,0.25);
+  background: color-mix(in srgb, var(--bg-app) 25%, transparent);
   cursor: pointer;
   font-size: 10px; line-height: 1;
   color: inherit;
   border: 0;
   padding: 0;
 }
-.fo__tag-x:hover { background: rgba(0,0,0,0.5); }
+.fo__tag-x:hover { background: color-mix(in srgb, var(--bg-app) 50%, transparent); }
 .fo__tag.is-suggest {
   background: transparent;
   border-style: dashed;
@@ -456,7 +456,7 @@
   gap: 8px;
   padding: 8px 10px 10px;
   border-top: 1px solid rgba(255,255,255,0.04);
-  background: rgba(0,0,0,0.18);
+  background: color-mix(in srgb, var(--bg-app) 18%, transparent);
 }
 .fo__dest {
   display: flex; align-items: center; gap: 4px;
@@ -465,7 +465,7 @@
   display: inline-flex; align-items: center; gap: 5px;
   height: 24px; padding: 0 8px;
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--border-subtle);
   border-radius: 5px;
   color: var(--text-secondary);
   font: 600 10px/1 var(--font-sans);
@@ -485,7 +485,7 @@
 .fo__foot-btn {
   height: 24px; padding: 0 8px;
   background: transparent;
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 5px;
   color: var(--text-primary);
   font: 600 10px/1 var(--font-sans);
@@ -555,7 +555,7 @@
 .fo-stack__chip {
   width: 60px; height: 40px;
   border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--border-subtle);
   overflow: hidden;
   background: var(--bg-panel);
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
@@ -568,7 +568,7 @@
 .fo-stack__chip-badge {
   position: absolute; top: 2px; right: 2px;
   font: 700 9px/1 var(--font-mono);
-  background: rgba(0,0,0,0.7);
+  background: color-mix(in srgb, var(--bg-app) 70%, transparent);
   color: var(--text-primary);
   padding: 2px 4px;
   border-radius: 3px;

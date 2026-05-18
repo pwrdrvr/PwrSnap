@@ -88,6 +88,7 @@ export function FloatOver({
   onDismiss,
   onEdit,
   onCopy,
+  onCopyPath,
   onDragFile,
   onDragPreset,
   startCountdown = true,
@@ -113,6 +114,10 @@ export function FloatOver({
    *  wired (which was the original bug), the buttons looked
    *  responsive but never actually copied anything. */
   onCopy?: (preset: "low" | "med" | "high") => void;
+  /** Fired when the user clicks the FILE chip under a preset. Parent
+   *  dispatches `clipboard:copy-path` so the rendered cache file's
+   *  POSIX path lands on the clipboard as text. */
+  onCopyPath?: (preset: "low" | "med" | "high") => void;
   /** Fired from a drag-start gesture to hand a real PNG file to the OS. */
   onDragFile?: () => void;
   /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */
@@ -383,6 +388,7 @@ export function FloatOver({
               dim={m.dim}
               bytes={m.bytes}
               onCopy={(preset) => onCopy?.(preset)}
+              {...(onCopyPath !== undefined ? { onCopyPath } : {})}
               {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
               copyPulse={copyPulses?.[p.id] ?? 0}
             />

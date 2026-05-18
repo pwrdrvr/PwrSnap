@@ -456,6 +456,9 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                     dim={m.dim}
                     bytes={m.bytes}
                     onCopy={onCopyLastSnap}
+                    onCopyPath={(preset) => {
+                      void dispatch("clipboard:copy-path", { captureId: lastSnap.id, preset });
+                    }}
                     onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
                   />
                 );

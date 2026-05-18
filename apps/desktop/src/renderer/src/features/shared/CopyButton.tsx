@@ -82,6 +82,12 @@ export type CopyButtonProps = {
   onCopy: (preset: CopyPreset) => void;
   /** Fired on a drag-start gesture to drag this exact preset as a PNG file. */
   onDrag?: (preset: CopyPreset) => void;
+  /** Fired on a click of the FILE chip. Caller dispatches
+   *  `clipboard:copy-path` so the rendered cache file's POSIX path
+   *  lands on the clipboard as text. Drag still hands off the file
+   *  itself; this is the keyboardless-mouse equivalent for pasting
+   *  the path into a terminal / editor. */
+  onCopyPath?: (preset: CopyPreset) => void;
   /** Incremented by parent-owned shortcuts to run the same visual feedback as click. */
   copyPulse?: number;
 };
@@ -112,10 +118,13 @@ export function CopyButton({
   bytes,
   onCopy,
   onDrag,
+  onCopyPath,
   copyPulse = 0
 }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
+  const [pathCopied, setPathCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyPulseRef = useRef(copyPulse);
 
   const showCopied = (): void => {
@@ -138,6 +147,18 @@ export function CopyButton({
     onDrag(preset);
   };
 
+  const handleFileClick = (event: React.MouseEvent<HTMLAnchorElement>): void => {
+    event.preventDefault();
+    if (onCopyPath === undefined) return;
+    onCopyPath(preset);
+    setPathCopied(true);
+    if (pathTimerRef.current !== null) clearTimeout(pathTimerRef.current);
+    pathTimerRef.current = setTimeout(() => {
+      setPathCopied(false);
+      pathTimerRef.current = null;
+    }, COPIED_VISIBLE_MS);
+  };
+
   // Clear the timer on unmount so a button-overlay timeout doesn't
   // fire after the float-over toast or tray popover hides. Without
   // this, `setCopied(false)` would fire on an unmounted component
@@ -147,6 +168,10 @@ export function CopyButton({
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
+      }
+      if (pathTimerRef.current !== null) {
+        clearTimeout(pathTimerRef.current);
+        pathTimerRef.current = null;
       }
     };
   }, []);
@@ -192,19 +217,27 @@ export function CopyButton({
           Copied
         </span>
       </button>
-      {onDrag !== undefined ? (
+      {onDrag !== undefined || onCopyPath !== undefined ? (
         <a
-          className="fo__copy-file"
-          draggable
+          className={"fo__copy-file" + (pathCopied ? " is-copied" : "")}
+          draggable={onDrag !== undefined}
           href="#"
-          title={`Drag ${label} PNG file`}
-          aria-label={`Drag ${label} PNG file`}
+          title={
+            onCopyPath !== undefined
+              ? `Click to copy ${label} PNG file path · drag for the file itself`
+              : `Drag ${label} PNG file`
+          }
+          aria-label={
+            onCopyPath !== undefined
+              ? `Copy ${label} PNG file path to clipboard, or drag for the file`
+              : `Drag ${label} PNG file`
+          }
           role="button"
-          onClick={(event) => event.preventDefault()}
+          onClick={handleFileClick}
           onDragStart={handleDragStart}
         >
           <FoIcon name="hand" size={10} />
-          File
+          {pathCopied ? "Copied" : "File"}
         </a>
       ) : null}
     </div>

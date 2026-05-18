@@ -140,6 +140,9 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
                   onCopy={(preset) => {
                     void dispatch("clipboard:copy", { captureId: record.id, preset });
                   }}
+                  onCopyPath={(preset) => {
+                    void dispatch("clipboard:copy-path", { captureId: record.id, preset });
+                  }}
                   onDrag={(preset) => startCaptureDrag(record.id, preset)}
                   copyPulse={copyPulses?.[p] ?? 0}
                 />

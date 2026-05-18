@@ -350,6 +350,14 @@ export type Commands = {
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
+  /** Render (or reuse) the cache file at `preset` and write its POSIX
+   *  path as plain text to the system clipboard. The drag affordance
+   *  on the same button hands off the file itself; this one is for
+   *  pasting the path into terminals, editors, or chat. */
+  "clipboard:copy-path": {
+    req: { captureId: string; preset: RenderPreset };
+    res: { path: string };
+  };
 
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };

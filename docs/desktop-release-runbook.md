@@ -38,14 +38,56 @@ release infrastructure plan.
      with the **Developer** role (least privilege that can notarize).
    - Downloaded the `.p8` file (one-time).
    - Stored in 1Password alongside the Key ID and Issuer ID.
-4. **GitHub repository secrets** (for the release CI workflow):
-   - `CSC_LINK` — `.p12` base64-encoded
-   - `CSC_KEY_PASSWORD` — the `.p12` password
-   - `APPLE_API_KEY_BASE64` — `.p8` base64-encoded
-   - `APPLE_API_KEY_ID` — the Key ID
-   - `APPLE_API_ISSUER` — the Issuer ID
-   - `RELEASES_PAT` (optional) — fine-grained PAT scoped to `Contents: Read & Write`
-     on `pwrdrvr/PwrSnap`. Falls back to `GITHUB_TOKEN` if absent.
+4. **GitHub `apple-signing` Environment**.
+   - Create the `apple-signing` environment in `pwrdrvr/PwrSnap`.
+   - Add required reviewers and limit approval to **`huntharo`**.
+   - Limit the environment to protected release refs/tags (deployment
+     branches and tags policy → "Selected" → `v*`) so approval can only
+     release a real version tag.
+   - Store the Apple signing/notarization secrets on this environment, NOT
+     as repository secrets:
+     - `CSC_LINK` — `.p12` base64-encoded
+     - `CSC_KEY_PASSWORD` — the `.p12` password
+     - `APPLE_API_KEY_BASE64` — `.p8` base64-encoded
+     - `APPLE_API_KEY_ID` — the Key ID
+     - `APPLE_API_ISSUER` — the Issuer ID
+   - Optional publish secret, also environment-scoped if used:
+     `RELEASES_PAT` — fine-grained PAT scoped to `Contents: Read & Write` on
+     `pwrdrvr/PwrSnap`. The workflow falls back to `GITHUB_TOKEN` if absent.
+
+   To migrate the existing repo-level secrets into the environment, run
+   from your workstation (the `--env apple-signing` flag is what scopes the
+   secret to the environment):
+
+   ```bash
+   base64 -i ~/Desktop/PwrDrvr-certs/PwrDrvr_DevID_Application.p12 \
+     | tr -d '\n' \
+     | gh secret set CSC_LINK --repo pwrdrvr/PwrSnap --env apple-signing
+
+   base64 -i ~/Desktop/PwrDrvr-certs/AuthKey_6P2U2WMN9U.p8 \
+     | tr -d '\n' \
+     | gh secret set APPLE_API_KEY_BASE64 --repo pwrdrvr/PwrSnap --env apple-signing
+
+   gh secret set CSC_KEY_PASSWORD --repo pwrdrvr/PwrSnap --env apple-signing
+   gh secret set APPLE_API_KEY_ID  --repo pwrdrvr/PwrSnap --env apple-signing
+   gh secret set APPLE_API_ISSUER  --repo pwrdrvr/PwrSnap --env apple-signing
+   ```
+
+   Then delete the repo-level copies so the prepare job (which runs without
+   environment gating) cannot reach them:
+
+   ```bash
+   for s in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 \
+            APPLE_API_KEY_ID APPLE_API_ISSUER; do
+     gh secret delete "$s" --repo pwrdrvr/PwrSnap
+   done
+   ```
+
+5. **GitHub repository secrets**.
+   - Do **not** keep Apple signing/notarization material as repository secrets
+     after the `apple-signing` environment secrets are configured.
+   - Non-release CI secrets (e.g. live smoke-test service keys) may remain at
+     the repo level if their workflows require them.
 
 `APPLE_TEAM_ID` is hardcoded in `.github/workflows/release.yml` to `T44CNHC4UH`
 since it is not a secret.
@@ -62,38 +104,79 @@ pnpm --filter @pwrsnap/desktop version 0.0.1-alpha.1
 git push --follow-tags
 ```
 
-The `Release Desktop (macOS universal)` workflow on `macos-15` triggers, runs
-`release:check` (tag/version/changelog gate) → typecheck → tests →
-`build:native` → `apps/desktop/scripts/release.mjs` which:
+The `Release Desktop (macOS universal)` workflow on `macos-15` runs as two
+separate jobs so Apple signing/notarization secrets are never present on a
+runner that executes untrusted dependency or build code:
+
+1. **`Test and prepare signing input`** — `contents: read`, explicit
+   `id-token: none`, checkout with `persist-credentials: false`, no Apple
+   secrets. Installs dependencies, runs `release:check` (tag/version/
+   changelog gate) → `typecheck` → `test` →
+   `apps/desktop/scripts/release.mjs --prepare-only`. Archives the prepared
+   stage plus the already-resolved `electron-builder` toolchain into the
+   `desktop-release-signing-input` workflow artifact and emits its SHA-256
+   as a job output.
+2. **`Sign, notarize, publish`** — gated by the protected `apple-signing`
+   environment, with `contents: write` and explicit `id-token: none`. Does
+   not check out the repository or run `pnpm install` / postinstall
+   lifecycle scripts. Downloads the prepared artifact, verifies the
+   SHA-256 against the prepare-job output, expands it, and runs
+   `apps/desktop/scripts/release.mjs --sign-stage-only` with the
+   environment-scoped Apple secrets.
+
+The no-secret prepare job:
 
 1. Runs `pnpm licenses:check` so stale `THIRD_PARTY_LICENSES` or package
    license-policy drift stops the release before packaging.
-2. Builds main/preload/renderer with electron-vite.
-3. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
+2. Builds the Swift native helpers (`PwrSnapWindowList`) as a universal
+   binary.
+3. Builds main/preload/renderer with electron-vite.
+4. Runs `pnpm deploy --prod` to materialize a flat `node_modules` tree under
    `apps/desktop/release-stage/`.
-4. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
-   `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
-5. Decodes `APPLE_API_KEY_BASE64` from the env to a temp `.p8` file.
-6. Runs `electron-builder --mac --universal --publish always` which signs
-   every helper bundle individually, signs the main `.app`, submits to Apple's
-   notarization service via `notarytool`, staples the ticket, builds the
-   universal DMG + updater ZIP, generates `latest-mac.yml`, and uploads
-   everything to a GitHub Release on `pwrdrvr/PwrSnap`.
-7. Runs `lipo -verify_arch x86_64 arm64` against the main executable, the
+5. Rebuilds the staged `better-sqlite3` for the packaged Electron ABI
+   (universal) under `electron-native/`.
+6. Seeds the stage with `out/` + `build/` + `electron-builder.yml` +
+   `.npmrc` + `THIRD_PARTY_LICENSES` + `CHANGELOG.md`.
+7. Archives `apps/desktop/release-stage/` plus the resolved
+   `apps/desktop/node_modules` (electron-builder + electron-vite),
+   `apps/desktop/scripts/{release,verify-asar-contents,rebuild-native-for-electron}.mjs`,
+   the root `node_modules`, and the workspace lockfile/config, then uploads
+   them with a SHA-256 digest.
+
+The environment-gated signing job:
+
+1. Verifies the prepared-artifact SHA-256 against the prepare-job output
+   before extracting it.
+2. Decodes `APPLE_API_KEY_BASE64` and `CSC_LINK` (if base64) into temp
+   files (mode 0600) and re-exports `APPLE_API_KEY` / `CSC_LINK` as paths.
+3. Runs `electron-builder --mac --universal --publish always` from the
+   downloaded artifact, by invoking the staged
+   `node_modules/electron-builder/cli.js` directly through `node`. No
+   `pnpm install`, no `npx`, no dependency lifecycle scripts.
+   `electron-builder` signs every helper bundle individually, signs the
+   main `.app`, submits to Apple's notarization service via `notarytool`,
+   staples the ticket, builds the universal DMG + updater ZIP, generates
+   `latest-mac.yml`, and uploads everything to a GitHub Release on
+   `pwrdrvr/PwrSnap`.
+4. Runs `lipo -verify_arch x86_64 arm64` against the main executable, the
    bundled Swift `PwrSnapWindowList` helper, and the `better_sqlite3.node`
    native addon. A single-arch slice slipping through means Intel users
    would launch into an immediate SIGKILL.
-8. Runs `verify-asar-contents.mjs` against the packaged `.app` — fails the
+5. Runs `verify-asar-contents.mjs` against the packaged `.app` — fails the
    release if forbidden patterns (TS sources, tests, docs, env files,
    workspace `src/` leaks, screenshots) leaked into `app.asar`, or if
    `THIRD_PARTY_LICENSES` / `CHANGELOG.md` are missing from
    `Contents/Resources`.
-9. Copies the versioned DMG to `PwrSnap.dmg` and uploads it to the release
+6. Copies the versioned DMG to `PwrSnap.dmg` and uploads it to the release
    as a stable-name alias. Marketing + docs sites link to this URL:
 
    ```text
    https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg
    ```
+
+Do not approve the `apple-signing` environment unless the tag, commit, and
+release metadata are the intended release. Approving the wrong run still
+exposes the Apple secrets to signing-job code.
 
 Cycle time target: ≤ 12 minutes.
 

@@ -339,6 +339,11 @@
 .fo__copy-file:active {
   cursor: grabbing;
 }
+.fo__copy-file.is-copied {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1411;
+}
 
 /* ----- annotation row ----- */
 .fo__annotate {

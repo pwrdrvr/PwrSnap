@@ -227,6 +227,9 @@ export function FloatOverHost(): React.ReactElement {
         onCopy={(preset) => {
           void dispatch("clipboard:copy", { captureId: record.id, preset });
         }}
+        onCopyPath={(preset) => {
+          void dispatch("clipboard:copy-path", { captureId: record.id, preset });
+        }}
         srcW={record.width_px}
         srcH={record.height_px}
         srcBytes={record.byte_size}

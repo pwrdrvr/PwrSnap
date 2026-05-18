@@ -78,4 +78,49 @@ export function registerClipboardHandlers(): void {
       });
     }
   });
+
+  bus.register("clipboard:copy-path", async (req) => {
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    const presetWidth = PRESET_WIDTHS[req.preset];
+    const targetWidth = presetWidth === 0 ? record.width_px : presetWidth;
+
+    try {
+      const result = await renderViaCoordinator({
+        captureId: record.id,
+        srcPath: record.src_path,
+        imageWidthPx: record.width_px,
+        imageHeightPx: record.height_px,
+        width: targetWidth,
+        format: "png"
+      });
+      clipboard.writeText(result.cachePath);
+      log.info("copied path to clipboard", {
+        captureId: record.id,
+        preset: req.preset,
+        targetWidth,
+        fromCache: result.fromCache
+      });
+      return ok({ path: result.cachePath });
+    } catch (cause) {
+      log.error("clipboard copy-path failed", {
+        captureId: record.id,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "clipboard",
+        code: "render_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
 }

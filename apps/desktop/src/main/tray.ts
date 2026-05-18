@@ -255,10 +255,13 @@ export function installTray(): Tray {
           void bus.dispatch("library:focus", {}, { principal: "ipc" });
         }
       },
-      // Settings still pending — landed in Phase 3. Keep it
-      // disabled so the surface signals "coming soon" instead of
-      // looking broken.
-      { label: "Settings…", enabled: false }
+      {
+        label: "Settings…",
+        accelerator: "CommandOrControl+,",
+        click: () => {
+          void bus.dispatch("settings:open", {}, { principal: "ipc" });
+        }
+      }
     ];
     const extras = extraMenuItems.length > 0
       ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]

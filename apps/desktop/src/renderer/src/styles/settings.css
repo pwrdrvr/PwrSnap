@@ -410,7 +410,7 @@
   font: 700 12px/1 var(--font-mono);
 }
 .pss__opt.is-using .pss__opt-icon {
-  background: rgba(255, 138, 31, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-color: var(--accent-border);
   color: var(--accent);
 }

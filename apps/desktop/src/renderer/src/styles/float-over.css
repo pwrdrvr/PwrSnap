@@ -7,7 +7,7 @@
   height: 100%;
   overflow: hidden;
   background:
-    radial-gradient(1200px 700px at 18% 12%, rgba(255, 138, 31, 0.08) 0%, transparent 55%),
+    radial-gradient(1200px 700px at 18% 12%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 55%),
     radial-gradient(900px 600px at 88% 92%, rgba(31,124,255,0.06) 0%, transparent 55%),
     linear-gradient(140deg, #000000 0%, #14110d 50%, #000000 100%);
   font-family: var(--font-sans);
@@ -229,8 +229,17 @@
   display: flex; flex-direction: column; align-items: stretch; gap: 4px;
   height: 60px;
   padding: 8px 9px 7px;
-  background: rgba(255,255,255,0.025);
-  border: 1px solid var(--border-subtle);
+  /* `--bg-panel-elevated` gives the button a 1-step lift over the
+     float-over's `--bg-panel-hover` surface in both palettes. The
+     prior `rgba(255, 255, 255, 0.025)` literal worked as a tiny
+     elevation tint on dark but disappeared into the off-white
+     panel in light. */
+  background: var(--bg-panel-elevated);
+  /* `--border-default` (12% alpha) reads as a clear button edge in
+     both themes; `--border-subtle` (8/10% alpha) was too faint
+     against the elevated surface in light mode — the cards looked
+     borderless and the user pointed out the affordance was missing. */
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   color: var(--text-primary);
   cursor: pointer;
@@ -243,7 +252,11 @@
   overflow: hidden;
 }
 .fo__copy-btn:hover {
-  background: rgba(255, 138, 31, 0.08);
+  /* `--accent-soft` is the themed accent-tinted surface (0.12 alpha
+     of the resolved accent — tangerine on dark, deep tangerine on
+     light). Replacing the hardcoded `color-mix(in srgb, var(--accent) 8%, transparent)`
+     which only matched the dark accent. */
+  background: var(--accent-soft);
   border-color: var(--accent-border);
   transform: translateY(-1px);
 }
@@ -322,8 +335,8 @@
   gap: 4px;
   min-height: 18px;
   padding: 0 6px;
-  background: rgba(255, 138, 31, 0.07);
-  border: 1px solid rgba(255, 138, 31, 0.22);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
   border-radius: 5px;
   color: var(--accent);
   font: 700 9px/1 var(--font-sans);
@@ -332,7 +345,7 @@
   cursor: grab;
 }
 .fo__copy-file:hover {
-  background: rgba(255, 138, 31, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: var(--accent-border);
   color: var(--accent-bright);
 }
@@ -364,7 +377,7 @@
   min-height: 44px;
 }
 .fo__desc::placeholder { color: var(--text-subtle); }
-.fo__desc:focus { border-color: var(--accent-border); background: rgba(255, 138, 31, 0.04); }
+.fo__desc:focus { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 4%, transparent); }
 
 .fo__tags {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
@@ -393,7 +406,7 @@
 .fo__tag.is-suggest {
   background: transparent;
   border-style: dashed;
-  border-color: rgba(255, 138, 31, 0.32);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
   color: var(--accent);
   cursor: pointer;
 }
@@ -418,8 +431,8 @@
   display: flex; align-items: center; gap: 8px;
   margin: 0 12px 8px;
   padding: 7px 9px;
-  background: rgba(255, 138, 31, 0.05);
-  border: 1px solid rgba(255, 138, 31, 0.16);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
   border-radius: 7px;
   font: 500 11px/1.3 var(--font-sans);
   color: var(--text-secondary);
@@ -599,7 +612,7 @@
   letter-spacing: 0.02em;
   pointer-events: none;
   z-index: 100;
-  box-shadow: 0 4px 12px rgba(255, 138, 31, 0.4);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .fo-callout::after {
   content: "";

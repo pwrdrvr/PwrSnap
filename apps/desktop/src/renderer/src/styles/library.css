@@ -213,7 +213,7 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 1px;
   transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px rgba(255, 138, 31, 0.18);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
@@ -1240,8 +1240,8 @@
 
 .psl__ai-card {
   padding: 11px 12px;
-  border: 1px solid rgba(255, 138, 31, 0.18);
-  background: rgba(255, 138, 31, 0.04);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
   border-radius: 8px;
   display: flex; flex-direction: column; gap: 8px;
   position: relative;
@@ -1523,7 +1523,7 @@
   justify-content: center;
   background: radial-gradient(
       ellipse at center,
-      rgba(255, 138, 31, 0.04) 0%,
+      color-mix(in srgb, var(--accent) 4%, transparent) 0%,
       transparent 60%
     ),
     var(--bg-app);

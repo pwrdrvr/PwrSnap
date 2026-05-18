@@ -48,6 +48,7 @@ import {
 } from "../clipboard-image-buffer";
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
+import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -116,6 +117,28 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:interactive", async (req) => {
     const mode = req.mode ?? "auto";
 
+    // Timed mode = "delay 5 s, then open the normal auto picker."
+    // During the countdown the user is free to stage anything that
+    // would otherwise close the moment a selector window stole key
+    // focus — a dropdown, a tooltip, the PwrSnap tray menu itself.
+    // We don't touch the screen, we don't substitute any other
+    // capture path; we just wait, then fall through to the same
+    // `pickRegion({ mode: "auto" })` call Quick Capture uses. The
+    // selector takes its frozen-screen snapshot at show() time, so
+    // whatever is on screen at t=0 (dropdowns and all) is what the
+    // user picks against — region / window / ⇧-full-window all work
+    // exactly as they do in Quick Capture.
+    if (mode === "timed") {
+      const delay = await runTimedDelay();
+      if (!delay.ok) return delay;
+    }
+    const selectorMode = mode === "timed" ? "auto" : mode;
+    // Timed mode leaves PwrSnap chrome alone — the user may have
+    // re-opened the tray menu during the 5 s precisely to capture
+    // it. Every other mode keeps the default behavior of hiding our
+    // own popovers/toasts before snapshotting.
+    const keepPwrSnapChrome = mode === "timed";
+
     // Note (2026-05-04): the prior "hide the library, restore at end"
     // dance is gone. The tray popover is now a non-activating
     // NSPanel (`type: 'panel'` in createTrayWindow), so its show
@@ -124,7 +147,7 @@ export function registerCaptureHandlers(): void {
     // left it through the entire capture flow — visible, minimized,
     // hidden, on another Space — and Cocoa won't touch it.
 
-    const selection = await pickRegion({ mode });
+    const selection = await pickRegion({ mode: selectorMode, keepPwrSnapChrome });
 
     // CANCEL path. The selector window is still up at this point —
     // pickRegion no longer hides itself; the caller owns hideSelector.
@@ -629,6 +652,57 @@ async function renderPresetFile(
     byteSize: result.byteSize,
     fromCache: result.fromCache
   };
+}
+
+/** Total countdown length, in seconds. Matches the "Timed (5s)" label
+ *  in the tray + hotkeys page. */
+const TIMED_CAPTURE_SECONDS = 5;
+
+/** Module-level guard against overlapping timed captures. Clicking the
+ *  tray button a second time while a countdown is running returns an
+ *  error instead of stacking a parallel timer. */
+let timedDelayInFlight = false;
+
+/**
+ * Hold for `TIMED_CAPTURE_SECONDS` while ticking the countdown next to
+ * the menubar tray icon. Returns `ok(undefined)` once the timer
+ * elapses; the caller (`capture:interactive` for `mode === "timed"`)
+ * then drops straight into the normal `pickRegion` path so the user
+ * gets the same auto picker as Quick Capture — only against a screen
+ * that may now have menus / dropdowns / the PwrSnap tray open.
+ *
+ * No window is shown for the countdown; `tray.setTitle` writes text
+ * next to the menubar icon, which doesn't take key focus and so can't
+ * collapse the very UI the user is trying to capture.
+ */
+async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
+  if (timedDelayInFlight) {
+    return err({
+      kind: "capture",
+      code: "timed_in_progress",
+      message: "A timed capture is already counting down."
+    });
+  }
+  timedDelayInFlight = true;
+  // Dismiss the tray popover immediately on click — mirrors how
+  // clicking Region / Window / Quick Capture in the tray naturally
+  // dismisses it (the selector that opens steals focus and the tray
+  // blur-dismisses). For timed mode no selector is coming for 5 s,
+  // so we dismiss explicitly. The user is free to re-open the tray
+  // (or any other transient UI) during the countdown — that's the
+  // entire point of the timer. `keepPwrSnapChrome` on the eventual
+  // pickRegion call preserves whatever they opened.
+  hideTrayPopoverIfVisible();
+  try {
+    for (let remaining = TIMED_CAPTURE_SECONDS; remaining > 0; remaining--) {
+      setTrayCountdown(String(remaining));
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    return ok(undefined);
+  } finally {
+    setTrayCountdown(null);
+    timedDelayInFlight = false;
+  }
 }
 
 async function persistAndBroadcast(

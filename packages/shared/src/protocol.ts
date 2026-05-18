@@ -387,9 +387,17 @@ export type Commands = {
    *   - `window` — pure window picker. Snap-to-window is live; the
    *     drag-to-region path is suppressed; commit always uses the
    *     full-window (occlusion-free) capture path.
+   *   - `timed` — 5-second pre-roll, then the same auto selector as
+   *     Quick Capture (region / window / ⇧-full-window). The countdown
+   *     ticks next to the menubar tray icon so it doesn't pop a window
+   *     that would steal key focus from whatever the user is staging
+   *     (dropdowns, tooltips, the PwrSnap tray menu itself). At t=0
+   *     the selector takes its frozen-screen snapshot, so the staged
+   *     UI is preserved in the picker even though show() inevitably
+   *     takes focus.
    */
   "capture:interactive": {
-    req: { mode?: "auto" | "region" | "window" };
+    req: { mode?: "auto" | "region" | "window" | "timed" };
     res: CaptureRecord;
   };
   /**

@@ -366,3 +366,17 @@ export function showTrayPopoverForE2E(): void {
 export function hideTrayPopoverForE2E(): void {
   hideTrayPopoverIfVisible();
 }
+
+/**
+ * Show a single character/number next to the menubar tray icon — used
+ * by the Timed (5s) capture flow to render the countdown without
+ * popping any window that would steal focus from a menu the user is
+ * staging for the shot. `null` clears the title back to icon-only.
+ *
+ * No-op when the Tray isn't installed (E2E specs that exercise the
+ * popover without a real NSStatusItem).
+ */
+export function setTrayCountdown(text: string | null): void {
+  if (tray === null) return;
+  tray.setTitle(text ?? "");
+}

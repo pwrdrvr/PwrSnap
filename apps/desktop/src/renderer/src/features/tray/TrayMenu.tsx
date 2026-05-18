@@ -38,7 +38,12 @@ const MODES: Array<{
   { id: "full", name: "Full Screen", hk: ["⌘", "⇧", "F"], available: false },
   { id: "all", name: "All Screens", hk: ["⌘", "⇧", "A"], available: false },
   { id: "scroll", name: "Scrolling", hk: ["⌘", "⇧", "S"], available: false },
-  { id: "timed", name: "Timed (5s)", hk: ["⌘", "⇧", "T"], available: false }
+  // Timed (5s) is wired to the tray button only; no global chord yet,
+  // so the kbd glyphs stay empty to match the Region / Window pattern
+  // ("no chord shown when nothing is bound"). The hotkeys settings
+  // page still lists ⌘⇧T as a "preview" placeholder for when a
+  // bindable accelerator lands.
+  { id: "timed", name: "Timed (5s)", hk: [], available: true }
 ];
 
 /** Three preset widths matching the float-over Low/Med/High buttons,
@@ -293,7 +298,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     };
   }, []);
 
-  const onCapture = (mode: "auto" | "region" | "window"): void => {
+  const onCapture = (mode: "auto" | "region" | "window" | "timed"): void => {
     void dispatch("capture:interactive", { mode });
   };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
@@ -382,6 +387,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
               onClick={(() => {
                 if (m.id === "region") return () => onCapture("region");
                 if (m.id === "window") return () => onCapture("window");
+                if (m.id === "timed") return () => onCapture("timed");
                 return undefined;
               })()}
             >

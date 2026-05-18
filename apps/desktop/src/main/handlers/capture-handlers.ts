@@ -38,7 +38,7 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
-import { captureRegion, captureWindow } from "../capture/screencapture";
+import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
 import {
@@ -48,6 +48,7 @@ import {
 } from "../clipboard-image-buffer";
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
+import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
 import { getMainLogger } from "../log";
@@ -115,6 +116,17 @@ export function registerCaptureHandlers(): void {
 
   bus.register("capture:interactive", async (req) => {
     const mode = req.mode ?? "auto";
+
+    // Timed mode skips the region selector entirely: the whole point
+    // is to let the user stage a UI state (open a menu, hover an
+    // element) that would close the moment any window — including
+    // the selector — took key focus. We tick down on the menubar
+    // tray title (text next to the icon; no window is shown so
+    // nothing steals focus), then fire `captureScreen` against
+    // whichever display the cursor happens to sit on at t=0.
+    if (mode === "timed") {
+      return runTimedCapture();
+    }
 
     // Note (2026-05-04): the prior "hide the library, restore at end"
     // dance is gone. The tray popover is now a non-activating
@@ -629,6 +641,76 @@ async function renderPresetFile(
     byteSize: result.byteSize,
     fromCache: result.fromCache
   };
+}
+
+/** Total countdown length, in seconds. Matches the "Timed (5s)" label
+ *  in the tray + hotkeys page. */
+const TIMED_CAPTURE_SECONDS = 5;
+
+/** Module-level guard against overlapping timed captures. Clicking the
+ *  tray button a second time while a countdown is running returns a
+ *  validation error instead of stacking a parallel timer. */
+let timedCaptureInFlight = false;
+
+async function runTimedCapture(): Promise<Result<CaptureRecord, PwrSnapError>> {
+  if (timedCaptureInFlight) {
+    return err({
+      kind: "capture",
+      code: "timed_in_progress",
+      message: "A timed capture is already counting down."
+    });
+  }
+  timedCaptureInFlight = true;
+  // Dismiss the tray popover up front — its window covers part of the
+  // menubar (and the user just clicked through it anyway). The menubar
+  // icon countdown is then the only visible indicator while the user
+  // stages the shot.
+  hideTrayPopoverIfVisible();
+  try {
+    for (let remaining = TIMED_CAPTURE_SECONDS; remaining > 0; remaining--) {
+      setTrayCountdown(String(remaining));
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    setTrayCountdown(null);
+
+    // Sample the cursor display NOW (at fire time) rather than at
+    // click time — mirrors macOS's built-in screenshot timer. The
+    // user may have moved their cursor onto the display they want to
+    // capture during the countdown.
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const captureResult = await captureScreen(display.id);
+    if (!captureResult.ok) {
+      return err({
+        kind: "capture",
+        code: captureResult.reason,
+        message: captureResult.message
+      });
+    }
+
+    // Best-effort source-app: hit-test the cursor against whatever
+    // window-list snapshot is currently cached. The selector usually
+    // populates this; for timed captures we never opened the selector,
+    // so it may be stale or empty — that's fine, both fields tolerate
+    // null. Phase 4+ annotation can backfill.
+    const snapshot = getLastWindowListSnapshot();
+    const sourceApp = resolveSourceApp(
+      { x: cursor.x, y: cursor.y, w: 1, h: 1 },
+      snapshot
+    );
+    const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
+    if (persisted.ok) {
+      setFloatOverState({
+        kind: "show-loaded",
+        captureId: persisted.value.id,
+        record: persisted.value
+      });
+    }
+    return persisted;
+  } finally {
+    setTrayCountdown(null);
+    timedCaptureInFlight = false;
+  }
 }
 
 async function persistAndBroadcast(

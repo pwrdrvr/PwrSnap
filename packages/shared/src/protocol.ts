@@ -387,9 +387,15 @@ export type Commands = {
    *   - `window` — pure window picker. Snap-to-window is live; the
    *     drag-to-region path is suppressed; commit always uses the
    *     full-window (occlusion-free) capture path.
+   *   - `timed` — 5-second delayed full-display capture. No selector
+   *     UI; the menubar tray icon shows a countdown so the user can
+   *     stage a UI state (open a menu, hover an element) that would
+   *     otherwise close on focus loss. At t=0, captures the display
+   *     under the cursor and runs the same persist + float-over path
+   *     as every other capture.
    */
   "capture:interactive": {
-    req: { mode?: "auto" | "region" | "window" };
+    req: { mode?: "auto" | "region" | "window" | "timed" };
     res: CaptureRecord;
   };
   /**

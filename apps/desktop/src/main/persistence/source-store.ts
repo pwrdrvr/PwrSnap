@@ -10,8 +10,8 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
@@ -89,12 +89,68 @@ export async function putCaptureSource(tempPath: string): Promise<StoredSource> 
 }
 
 /**
+ * Take an existing file (a video container the recorder wrote, a copy
+ * of an imported asset, …) and adopt it as a capture source. Image
+ * captures keep going through `putCaptureSource` so the sharp-based
+ * dim probe stays on the screenshot hot path; this variant is for
+ * any source whose dimensions are known upstream (the recorder
+ * reports the recording rect; importers read their own metadata).
+ *
+ * Extension is taken from `tempPath` so the on-disk name reflects
+ * the actual container — `<id>.mp4` for video, `<id>.png` for image
+ * fallback paths. The trash + render-cache machinery reads
+ * `extname(src_path)` to find the right file later; we do NOT
+ * hardcode `.png` anywhere downstream.
+ */
+export async function adoptExistingFileAsSource(tempPath: string): Promise<StoredSource> {
+  const id = nanoid(16);
+  const buf = await readFile(tempPath);
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+
+  // Width/height are video-context-only here. Image dim probing
+  // lives in `putCaptureSource`; for adopted files (video, future
+  // imports) the caller passes the right values when persisting the
+  // metadata row. Returning 0/0 makes any downstream code that
+  // requires real dims fail loud.
+  const byteSize = buf.length;
+  const ext = extname(tempPath).toLowerCase() || ".bin";
+
+  const dir = getCapturesRoot();
+  await mkdir(dir, { recursive: true });
+  const srcPath = join(dir, `${id}${ext}`);
+  await rename(tempPath, srcPath);
+
+  log.debug("adopted source file", { id, srcPath, byteSize, extension: ext });
+
+  return {
+    id,
+    srcPath,
+    sha256,
+    byteSize,
+    widthPx: 0,
+    heightPx: 0
+  };
+}
+
+/**
+ * Probe the size of an existing source file without rehashing it.
+ * Used by the recording service when it already streamed-finalized
+ * a file in place and just needs the stat.
+ */
+export async function statSource(srcPath: string): Promise<{ byteSize: number }> {
+  const s = await stat(srcPath);
+  return { byteSize: s.size };
+}
+
+/**
  * Resolve a capture record's effective on-disk source path. For live
  * records this is just `record.src_path`. For soft-deleted records the
- * file has been renamed into `<userData>/.trash/<id>.png` (the row's
+ * file has been renamed into `<userData>/.trash/<id><ext>` (the row's
  * `src_path` deliberately doesn't update — it remembers where the file
- * came from so Restore can put it back). Use this anywhere that needs
- * to actually open the source file.
+ * came from so Restore can put it back). The extension is whatever the
+ * original source used; PNG for images, MP4 for video, …. Hardcoding
+ * `.png` would lose video sources on trash/restore — `extname(src_path)`
+ * keeps both kinds working through the same code path.
  */
 export function effectiveSrcPathFor(record: {
   id: string;
@@ -102,18 +158,21 @@ export function effectiveSrcPathFor(record: {
   deleted_at: string | null;
 }): string {
   if (record.deleted_at === null) return record.src_path;
-  return join(getTrashRoot(), `${record.id}.png`);
+  return join(getTrashRoot(), `${record.id}${extname(record.src_path)}`);
 }
 
 /**
- * Move a capture's source PNG to <userData>/.trash/<id>.png. Called
- * from `library:delete` after the DB row is soft-deleted. Idempotent —
- * if the file is already in trash, this is a no-op.
+ * Move a capture's source file to `<trashRoot>/<id><ext>`. The
+ * extension is preserved from the live `srcPath` so the trash dir is
+ * a heterogenous mix of `.png` and `.mp4` (and whatever future kinds
+ * the source-store supports). Called from `library:delete` after the
+ * DB row is soft-deleted. Idempotent — if the file is already in
+ * trash, this is a no-op.
  */
 export async function moveSourceToTrash(srcPath: string, captureId: string): Promise<void> {
   const trashRoot = getTrashRoot();
   await mkdir(trashRoot, { recursive: true });
-  const trashPath = join(trashRoot, `${captureId}.png`);
+  const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(srcPath)) {
     log.warn("trash move: source missing, nothing to move", { srcPath, captureId });
     return;
@@ -122,15 +181,15 @@ export async function moveSourceToTrash(srcPath: string, captureId: string): Pro
 }
 
 /**
- * Inverse of moveSourceToTrash: move <userData>/.trash/<id>.png back
- * to its original src_path. Recreates the parent dir defensively —
- * for old rows captured under the previous yyyy/mm layout the dir
- * may have been pruned, and for new rows ~/Documents/PwrSnap/
- * always exists but mkdir(recursive: true) is a no-op when it does.
+ * Inverse of moveSourceToTrash: move `<trashRoot>/<id><ext>` back to
+ * its original src_path. Recreates the parent dir defensively — for
+ * old rows captured under the previous yyyy/mm layout the dir may
+ * have been pruned. The extension comes from `srcPath` so PNG and
+ * MP4 sources both find the matching trash file.
  */
 export async function restoreSourceFromTrash(captureId: string, srcPath: string): Promise<void> {
   const trashRoot = getTrashRoot();
-  const trashPath = join(trashRoot, `${captureId}.png`);
+  const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(trashPath)) {
     log.warn("trash restore: trash file missing", { trashPath, captureId });
     return;
@@ -143,13 +202,39 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
 /**
  * Hard-remove a single trash file by capture id. Used by per-row
  * "delete permanently" from the trash view. Idempotent — missing
- * file is fine.
+ * file is fine. The caller passes the live `srcPath` (extension
+ * source-of-truth); we read its extension to find the trash file.
  */
-export async function purgeOneFromTrash(captureId: string): Promise<void> {
+export async function purgeOneFromTrash(captureId: string, srcPath: string): Promise<void> {
   const trashRoot = getTrashRoot();
-  const trashPath = join(trashRoot, `${captureId}.png`);
+  const trashPath = join(trashRoot, `${captureId}${extname(srcPath)}`);
   if (!existsSync(trashPath)) return;
   await rm(trashPath, { force: true });
+}
+
+/**
+ * Remove every cached derived artifact for a capture. For images
+ * the render-cache directory is `<cacheRoot>/<captureId>/...`; for
+ * videos the export-cache directory is `<cacheRoot>/video/<captureId>/...`.
+ * Best-effort + idempotent — missing dirs are fine. Called from
+ * `library:purge` / `library:purgeAll` AFTER `hardDeleteCapture`
+ * (which removes the DB rows via cascade).
+ *
+ * Without this, every GIF/MP4 export ever produced for a soft-
+ * deleted-then-purged video stays on disk forever, since the
+ * SQL CASCADE only drops the row pointing at the file, not the
+ * file itself.
+ */
+export async function purgeCacheForCapture(captureId: string): Promise<void> {
+  const { join: joinPath } = await import("node:path");
+  const { getCacheRoot } = await import("./paths");
+  const cacheRoot = getCacheRoot();
+  const imageDir = joinPath(cacheRoot, captureId);
+  const videoDir = joinPath(cacheRoot, "video", captureId);
+  await Promise.allSettled([
+    rm(imageDir, { recursive: true, force: true }),
+    rm(videoDir, { recursive: true, force: true })
+  ]);
 }
 
 /**
@@ -160,6 +245,11 @@ export async function purgeOneFromTrash(captureId: string): Promise<void> {
  * Also takes a list of capture IDs the persistence layer reports as
  * expired (deleted_at older than retention) and removes their DB rows;
  * the hard-delete cascades to render_cache.
+ *
+ * Image + video sources share `.trash/`; both `.png` and `.mp4` (and
+ * any future container) may exist. We iterate the directory and match
+ * by basename so the sweep cleans both kinds without knowing what's
+ * what — capture id alone is sufficient.
  */
 export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removedFiles: number }> {
   const trashRoot = getTrashRoot();
@@ -168,11 +258,15 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
   }
 
   const cutoffMs = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const { readdir } = await import("node:fs/promises");
+  const allFiles = await readdir(trashRoot).catch(() => [] as string[]);
+  const expired = new Set(expiredCaptureIds);
   let removed = 0;
 
-  for (const id of expiredCaptureIds) {
-    const trashPath = join(trashRoot, `${id}.png`);
-    if (!existsSync(trashPath)) continue;
+  for (const name of allFiles) {
+    const id = name.replace(/\.[^.]+$/, "");
+    if (!expired.has(id)) continue;
+    const trashPath = join(trashRoot, name);
     try {
       const stat = statSync(trashPath);
       if (stat.mtimeMs < cutoffMs) {
@@ -182,6 +276,7 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
     } catch (err) {
       log.warn("trash sweep failed for capture", {
         captureId: id,
+        trashPath,
         message: err instanceof Error ? err.message : String(err)
       });
     }

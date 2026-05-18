@@ -40,11 +40,26 @@ body {
   overflow: hidden;
 }
 
-/* Tray + float-over windows are frameless transparent panels — let the
-   component's own backdrop paint, not the body. */
+/* Tray + float-over + recording-controller windows are frameless
+   transparent panels — let the component's own backdrop paint, not
+   the body. Without this the BrowserWindow's `transparent: true`
+   surfaces the solid `var(--bg-app)` body color, which made the
+   countdown leader paint over a black wall instead of seeing the
+   recorded surface through a translucent dim. */
 body[data-stage="tray"],
-body[data-stage="float-over"] {
+body[data-stage="float-over"],
+body[data-stage="recording-controller"] {
   background: transparent;
+}
+
+/* Recording controller: the leader / Stop pill paint their own
+   backdrops; `#root` fills the BrowserWindow it's hosted in so the
+   overlay covers the entire rect. */
+body[data-stage="recording-controller"],
+body[data-stage="recording-controller"] #root {
+  background: transparent;
+  width: 100%;
+  height: 100%;
 }
 
 /* Tray window: the popover paints itself. Reset .ps-tray's absolute

@@ -25,6 +25,7 @@ const ALL_PAGE_IDS = [
   "capture",
   "output",
   "annotate",
+  "system-permissions",
   "storage",
   "sources",
   "experimental",
@@ -63,7 +64,12 @@ describe("SETTINGS_CATEGORIES", () => {
     );
 
     expect(byGroup["General"]).toEqual(["startup", "appearance", "hotkeys", "notifications", "ai"]);
-    expect(byGroup["Capture"]).toEqual(["capture", "output", "annotate"]);
+    expect(byGroup["Capture"]).toEqual([
+      "capture",
+      "output",
+      "annotate",
+      "system-permissions"
+    ]);
     expect(byGroup["Library"]).toEqual(["storage", "sources"]);
     expect(byGroup["Advanced"]).toEqual(["experimental", "about"]);
   });

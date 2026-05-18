@@ -19,7 +19,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EVENT_CHANNELS, type CaptureRecord, type FloatOverEvent, type RenderPreset } from "@pwrsnap/shared";
-import { FloatOver } from "./FloatOver";
+import { FloatOver, type FloatOverExportState } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
@@ -38,9 +38,19 @@ const INITIAL_COPY_PULSES: Record<RenderPreset, number> = {
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
+  // Video toast: tracks the latest GIF / MP4 export dispatched from
+  // the toast's two buttons. Surfaced through `asset.exportState` so
+  // the buttons render `Encoding…` / `Saved` / `Failed`. Reset per-
+  // capture by the `key={record.id}` on <FloatOver/> remounting it
+  // when the user takes a new recording.
+  const [videoExportState, setVideoExportState] = useState<FloatOverExportState>({ kind: "idle" });
+  // capture:presetMetrics returns empty for video captures (the
+  // sharp render pipeline is image-only); only request the hook for
+  // image-kind captures so we don't fire a no-op IPC on every video
+  // load.
   const copyMetrics = usePresetRenderMetrics(
-    state.kind === "loaded" ? state.record.id : null,
-    state.kind === "loaded" ? state.record.overlays_version : null
+    state.kind === "loaded" && state.record.kind === "image" ? state.record.id : null,
+    state.kind === "loaded" && state.record.kind === "image" ? state.record.overlays_version : null
   );
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
@@ -88,8 +98,12 @@ export function FloatOverHost(): React.ReactElement {
       switch (event.kind) {
         case "show-idle":
           setState({ kind: "idle" });
+          setVideoExportState({ kind: "idle" });
           return;
         case "show-loaded":
+          // Reset per-capture export state so a new toast doesn't
+          // show a stale "Saved" badge from the previous recording.
+          setVideoExportState({ kind: "idle" });
           if (event.record !== undefined) {
             setState({ kind: "loaded", record: event.record });
           } else {
@@ -102,6 +116,7 @@ export function FloatOverHost(): React.ReactElement {
           // show-idle re-uses a clean React tree (no stale countdown
           // state from the previous LOADED toast).
           setState({ kind: "idle" });
+          setVideoExportState({ kind: "idle" });
           return;
       }
     });
@@ -214,14 +229,79 @@ export function FloatOverHost(): React.ReactElement {
     );
   } else {
     const { record } = state;
+    const isVideo =
+      record.kind === "video" && record.video !== null && record.video !== undefined;
     const previewSrc = captureSrcUrl(record.id);
     // Source PNG paints immediately after capture. Keep the 1440px
     // rendered WebP as a progressive enhancement so cache-miss
-    // compose work cannot leave the visible preview blank.
-    const enhancedPreviewSrc = cacheUrl(record.id, 1440, "webp", record.overlays_version);
+    // compose work cannot leave the visible preview blank. The
+    // enhanced URL is image-only — videos don't go through the
+    // sharp-based render pipeline, so we skip it for that branch.
+    const enhancedPreviewSrc = isVideo
+      ? undefined
+      : cacheUrl(record.id, 1440, "webp", record.overlays_version);
+
+    // Build the asset descriptor — `image` for snaps (existing
+    // behavior unchanged), `video` for recordings (swaps preview
+    // element + Low/Med/High row, keeps everything else).
+    const asset = isVideo
+      ? ({
+          kind: "video",
+          src: previewSrc,
+          durationSec: record.video!.durationSec,
+          hasSystemAudio: record.video!.hasSystemAudio,
+          hasMicrophoneAudio: record.video!.hasMicrophoneAudio,
+          exportState: videoExportState,
+          onExport: (format: "gif" | "mp4") => {
+            setVideoExportState({ kind: "running", format });
+            void dispatch("video:export", {
+              captureId: record.id,
+              format,
+              audio:
+                format === "gif"
+                  ? { includeSystemAudio: false, includeMicrophone: false }
+                  : {
+                      includeSystemAudio: record.video!.hasSystemAudio,
+                      includeMicrophone: record.video!.hasMicrophoneAudio
+                    }
+            }).then((res) => {
+              if (res.ok) {
+                setVideoExportState({ kind: "done", format, path: res.value.path });
+              } else {
+                setVideoExportState({ kind: "error", format, message: res.error.message });
+              }
+            });
+          },
+          onDiscard: () => {
+            // library:delete (soft-delete + trash move) is the only
+            // path that updates app_stats correctly; library:purge
+            // then removes the row + trash file + cached exports
+            // (purgeCacheForCapture in source-store wired into
+            // library-handlers). Two-step sequence preserves the
+            // SQL invariants the captures-repo asserts on boot.
+            void (async () => {
+              await dispatch("library:delete", { id: record.id });
+              await dispatch("library:purge", { id: record.id });
+              await dispatch("float-over:dismiss", {});
+            })();
+          }
+        } as const)
+      : ({
+          kind: "image" as const,
+          src: previewSrc,
+          enhancedSrc: enhancedPreviewSrc,
+          onCopy: (preset: "low" | "med" | "high") =>
+            void dispatch("clipboard:copy", { captureId: record.id, preset }),
+          onCopyPath: (preset: "low" | "med" | "high") =>
+            void dispatch("clipboard:copy-path", { captureId: record.id, preset }),
+          onDragFile: () => startCaptureDrag(record.id, "high"),
+          onDragPreset: (preset: "low" | "med" | "high") => startCaptureDrag(record.id, preset)
+        });
+
     body = (
       <FloatOver
         key={record.id}
+        asset={asset}
         src={previewSrc}
         enhancedSrc={enhancedPreviewSrc}
         onCopy={(preset) => {

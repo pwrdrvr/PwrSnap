@@ -38,7 +38,8 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     items: [
       { id: "capture", name: "Capture defaults" },
       { id: "output", name: "Output & format" },
-      { id: "annotate", name: "Annotate" }
+      { id: "annotate", name: "Annotate" },
+      { id: "system-permissions", name: "System Permissions" }
     ]
   },
   {

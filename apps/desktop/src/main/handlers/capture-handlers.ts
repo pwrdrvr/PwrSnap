@@ -359,6 +359,16 @@ export function registerCaptureHandlers(): void {
       });
     }
 
+    // Video captures don't go through the sharp-based image render
+    // pipeline — the Low / Med / High preset model is image-only.
+    // Return an empty metrics array so the renderer hooks
+    // (`usePresetRenderMetrics`) resolve to a no-op for video rather
+    // than logging "Input file contains unsupported image format"
+    // every time the float-over loads a clip.
+    if (record.kind === "video") {
+      return ok({ metrics: [] });
+    }
+
     try {
       const rendered = await Promise.all(
         COPY_PRESETS.map((preset) => renderPresetFile(record, preset))

@@ -44,12 +44,17 @@ const baseSettings: Settings = {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
     window: "",
-    videoCapture: "CommandOrControl+Shift+V"
+    videoCapture: "CommandOrControl+Alt+C"
   },
   experimental: { v2FileFormat: false },
   general: { developerMode: false },
   appearance: { theme: "system" },
-  updates: { channel: "latest" }
+  updates: { channel: "latest" },
+  recording: {
+    includeSystemAudio: false,
+    includeMicrophone: false,
+    lastRoutedPermissionFingerprint: ""
+  }
 };
 
 const baseSecrets = {

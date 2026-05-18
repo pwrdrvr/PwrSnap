@@ -118,6 +118,11 @@ export function RegionSelector() {
   // not the live screen. Apps starting / stopping during selection
   // can no longer change what's under the cursor.
   const [screenUrl, setScreenUrl] = useState<string | null>(null);
+  // Visual intent: 'video' swaps the rect badge + hint copy so the
+  // user knows commit starts a recording, not a snap. Defaults to
+  // 'snap' for backwards-compat with every call site that doesn't
+  // set the flag (Quick Capture, Region, Window, Timed).
+  const [intent, setIntent] = useState<"snap" | "video">("snap");
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -185,6 +190,7 @@ export function RegionSelector() {
     const unsub = window.pwrsnapApi?.onSelectorMode((payload) => {
       setMode(payload.mode);
       setScreenUrl(payload.screenUrl ?? null);
+      setIntent(payload.intent ?? "snap");
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
       // window-snap rect from the previous session before they move
@@ -929,8 +935,35 @@ export function RegionSelector() {
       {dimsChipPosition !== null && (
         <div
           className="region-dims-chip"
-          style={{ left: dimsChipPosition.left, top: dimsChipPosition.top }}
+          data-intent={intent}
+          style={{
+            left: dimsChipPosition.left,
+            top: dimsChipPosition.top,
+            ...(intent === "video"
+              ? {
+                  background: "rgba(239, 68, 68, 0.95)",
+                  color: "#fff",
+                  borderColor: "rgba(255, 255, 255, 0.25)"
+                }
+              : {})
+          }}
         >
+          {intent === "video" && (
+            <span
+              aria-hidden
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background: "#fff",
+                marginRight: 6,
+                verticalAlign: "middle",
+                animation: "ps-rec-pulse 1.2s ease-in-out infinite"
+              }}
+            />
+          )}
+          {intent === "video" && <strong style={{ marginRight: 6 }}>RECORD</strong>}
           {isSnap && snapTarget.kind === "window" ? (
             <>
               {snapTarget.entry.appName ?? "Window"} · {Math.round(rect.w)} × {Math.round(rect.h)}
@@ -948,12 +981,25 @@ export function RegionSelector() {
       )}
 
       <div className="region-hint">
+        {intent === "video" && (
+          <>
+            <span>
+              <kbd>click / drag</kbd>start recording
+            </span>
+            <span className="region-hint-sep">·</span>
+          </>
+        )}
         {hint}
         <span className="region-hint-sep">·</span>
         <span>
           <kbd>esc</kbd>cancel
         </span>
       </div>
+      <style>{`@keyframes ps-rec-pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.4; }
+        100% { opacity: 1; }
+      }`}</style>
     </div>
   );
 }

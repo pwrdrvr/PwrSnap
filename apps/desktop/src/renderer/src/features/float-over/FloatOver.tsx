@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
 
@@ -23,6 +24,14 @@ type VariantId = keyof typeof VARIANTS;
 
 function dimText(w: number, h: number) {
   return `${w.toLocaleString()} × ${h.toLocaleString()}`;
+}
+
+function fmtDurationLabel(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const mins = Math.floor(seconds / 60);
+  const secs = (seconds - mins * 60).toFixed(1);
+  if (mins === 0) return `${secs}s`;
+  return `${mins}m ${secs}s`;
 }
 
 function FoTags({
@@ -76,8 +85,65 @@ function FoTags({
   );
 }
 
+/** Discriminated asset mode the toast renders.
+ *
+ *  - `image` (default): the existing screenshot flow — `<img>` preview
+ *    with Low / Med / High clipboard buttons, drag-to-file, etc. No
+ *    new behavior; the asset object passes through unchanged.
+ *  - `video`: same chrome (header / scanner / annotate / AI / footer /
+ *    Edit) but the preview element is a native `<video>` and the
+ *    Low / Med / High clipboard row is replaced by GIF / MP4
+ *    full-clip export buttons that hit `video:export`. The toast
+ *    stays cheap because `<video preload="metadata">` only loads
+ *    the moov atom + first frame until the user actually plays.
+ */
+export type FloatOverAsset =
+  | {
+      kind: "image";
+      src: string;
+      enhancedSrc?: string | undefined;
+      onCopy?: (preset: "low" | "med" | "high") => void;
+      onCopyPath?: (preset: "low" | "med" | "high") => void;
+      onDragFile?: () => void;
+      onDragPreset?: (preset: "low" | "med" | "high") => void;
+    }
+  | {
+      kind: "video";
+      /** Source URL the `<video>` element loads. Typically
+       *  `pwrsnap-capture://r/<id>` — the Range-aware custom
+       *  protocol handler streams the requested byte range. */
+      src: string;
+      /** Encoded duration (sec). Surfaced in the preview-size chip
+       *  AND drives the short-clip warning banner (clips under 1.5s
+       *  are usually an accidental Stop press right after Start). */
+      durationSec: number;
+      /** Whether the source recording contains either audio track —
+       *  drives the MP4 button's subtitle copy. */
+      hasSystemAudio: boolean;
+      hasMicrophoneAudio: boolean;
+      /** Fired when the user clicks GIF / MP4. Parent dispatches
+       *  `video:export` and surfaces progress / result. */
+      onExport: (format: "gif" | "mp4") => void;
+      /** Result of the most recent (or in-flight) export. The toast
+       *  reflects this on the button labels so the user can tell what
+       *  finished, what's running, what failed. */
+      exportState?: FloatOverExportState;
+      /** Discard the just-saved recording. Wired by the host to
+       *  `library:delete` + `library:purge` + `float-over:dismiss`
+       *  so the Library row, source file, and any cached exports
+       *  all disappear. Shown as a destructive footer action. */
+      onDiscard?: () => void;
+    };
+
+export type FloatOverExportState =
+  | { kind: "idle" }
+  | { kind: "running"; format: "gif" | "mp4" }
+  | { kind: "done"; format: "gif" | "mp4"; path: string }
+  | { kind: "error"; format: "gif" | "mp4"; message: string };
+
 export function FloatOver({
   variant = "standard",
+  asset,
   src,
   enhancedSrc,
   srcW = 2880,
@@ -99,6 +165,12 @@ export function FloatOver({
   thinking = false
 }: {
   variant?: VariantId;
+  /** Asset descriptor. `image` keeps the existing screenshot toast
+   *  unchanged; `video` swaps the preview + clipboard row for the
+   *  video player + GIF/MP4 export. Optional for backwards-compat —
+   *  call sites that haven't migrated stay on the image flow via
+   *  `src` / `onCopy` / etc. */
+  asset?: FloatOverAsset;
   src: string;
   enhancedSrc?: string | undefined;
   srcW?: number;
@@ -319,8 +391,13 @@ export function FloatOver({
           <PwrSnapMark size={12} />
         </span>
         <div className="fo__hdr-meta">
-          <div className="fo__hdr-title">Snap captured</div>
-          <div className="fo__hdr-sub">{dimText(srcW, srcH)} · just now</div>
+          <div className="fo__hdr-title">
+            {asset?.kind === "video" ? "Recording saved" : "Snap captured"}
+          </div>
+          <div className="fo__hdr-sub">
+            {dimText(srcW, srcH)}
+            {asset?.kind === "video" ? ` · ${fmtDurationLabel(asset.durationSec)}` : " · just now"}
+          </div>
         </div>
         <div className="fo__hdr-actions">
           {/* Auto-dismiss pauses on hover / typing — no need for a
@@ -334,67 +411,171 @@ export function FloatOver({
       </div>
 
       <div className="fo__preview">
-        <img
-          src={visibleSrc}
-          alt="capture preview"
-          draggable
-          onDragStart={dragFile}
-          onLoad={() => {
-            if (visibleSrc === src) setSourceLoaded(true);
-          }}
-        />
+        {asset?.kind === "video" ? (
+          // Video preview — hover-autoplay on top of native
+          // controls. Same component the tray uses for its
+          // "last recording" preview, so the surfaces behave
+          // consistently.
+          <HoverAutoplayVideo src={asset.src} />
+        ) : (
+          <img
+            src={visibleSrc}
+            alt="capture preview"
+            draggable
+            onDragStart={dragFile}
+            onLoad={() => {
+              if (visibleSrc === src) setSourceLoaded(true);
+            }}
+          />
+        )}
         <div className="fo__preview-dim">
           <FoIcon name="ruler" size={10} style={{ color: "var(--accent)" }} />
           <b>{dimText(srcW, srcH)}</b>
         </div>
-        <div className="fo__preview-size">2× retina</div>
-
-        <div className="fo__preview-actions">
-          <div className="fo__preview-actions-l">
-            <button
-              className="fo__hover-btn"
-              title="Drag PNG file"
-              draggable={onDragFile !== undefined}
-              onDragStart={dragFile}
-              disabled={onDragFile === undefined}
-            >
-              <FoIcon name="hand" size={11} /> Drag
-            </button>
-          </div>
-          <div className="fo__preview-actions-r">
-            <button
-              className="fo__hover-btn"
-              title="Open in editor"
-              onClick={() => onEdit?.()}
-              disabled={onEdit === undefined}
-            >
-              <FoIcon name="pen-line" size={11} /> Edit
-            </button>
-            <button className="fo__hover-btn" title="Reveal in library">
-              <FoIcon name="folder-open" size={11} />
-            </button>
-          </div>
+        <div className="fo__preview-size">
+          {asset?.kind === "video" ? fmtDurationLabel(asset.durationSec) : "2× retina"}
         </div>
+
+        {asset?.kind !== "video" && (
+          <div className="fo__preview-actions">
+            <div className="fo__preview-actions-l">
+              <button
+                className="fo__hover-btn"
+                title="Drag PNG file"
+                draggable={onDragFile !== undefined}
+                onDragStart={dragFile}
+                disabled={onDragFile === undefined}
+              >
+                <FoIcon name="hand" size={11} /> Drag
+              </button>
+            </div>
+            <div className="fo__preview-actions-r">
+              <button
+                className="fo__hover-btn"
+                title="Open in editor"
+                onClick={() => onEdit?.()}
+                disabled={onEdit === undefined}
+              >
+                <FoIcon name="pen-line" size={11} /> Edit
+              </button>
+              <button className="fo__hover-btn" title="Reveal in library">
+                <FoIcon name="folder-open" size={11} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="fo__copy">
-        {RES_PRESETS.map((p) => {
-          const m = copyMetrics?.[p.id] ?? presetMetrics(p.id, srcW, srcH, srcBytes);
-          return (
-            <CopyButton
-              key={p.id}
-              preset={p.id}
-              label={p.label}
-              dim={m.dim}
-              bytes={m.bytes}
-              onCopy={(preset) => onCopy?.(preset)}
-              {...(onCopyPath !== undefined ? { onCopyPath } : {})}
-              {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
-              copyPulse={copyPulses?.[p.id] ?? 0}
-            />
-          );
-        })}
-      </div>
+      {/* Short-clip warning — clips under 1.5s are usually an
+          accidental Stop right after the countdown ended. Surfaces a
+          gentle "you sure?" with a one-tap Discard so users can blow
+          the take away without hunting through the Library. Only
+          renders for the video asset; image captures don't have a
+          notion of "too short". */}
+      {asset?.kind === "video" && asset.durationSec < 1.5 && asset.onDiscard !== undefined && (
+        <div
+          data-fo-warning="short-clip"
+          style={{
+            margin: "8px 12px 0",
+            padding: "8px 10px",
+            border: "1px solid rgba(255, 138, 31, 0.5)",
+            background: "rgba(255, 138, 31, 0.08)",
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            font: "500 11px/1.4 var(--font-sans)",
+            color: "var(--text-primary)"
+          }}
+        >
+          <span>
+            Very short ({fmtDurationLabel(asset.durationSec)}). Stop pressed too soon?
+          </span>
+          <button
+            type="button"
+            onClick={() => asset.onDiscard?.()}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 4,
+              border: "1px solid rgba(239, 68, 68, 0.6)",
+              background: "transparent",
+              color: "#ef4444",
+              font: "600 11px/1 var(--font-sans)",
+              cursor: "pointer",
+              whiteSpace: "nowrap"
+            }}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
+      {asset?.kind === "video" ? (
+        // Video export row — sits in the same slot as the image
+        // Low / Med / High copy buttons. Two cards instead of three:
+        // GIF (always silent) + MP4 (carries whatever audio tracks
+        // the source recorded). Same `fo__copy-btn` styling so the
+        // toast feels like the image variant's cousin, not a
+        // different surface. Sub-range selection lives in the
+        // editor; this row is the fast-path full-clip export.
+        <div className="fo__copy" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+          {(["gif", "mp4"] as const).map((format) => {
+            const running =
+              asset.exportState?.kind === "running" && asset.exportState.format === format;
+            const done =
+              asset.exportState?.kind === "done" && asset.exportState.format === format;
+            const errored =
+              asset.exportState?.kind === "error" && asset.exportState.format === format;
+            const subtitle = running
+              ? "Encoding…"
+              : done
+              ? "Saved"
+              : errored
+              ? "Failed — retry"
+              : format === "gif"
+              ? "Silent · share-friendly"
+              : asset.hasSystemAudio || asset.hasMicrophoneAudio
+              ? "Full clip · with audio"
+              : "Full clip · silent";
+            return (
+              <button
+                key={format}
+                type="button"
+                className="fo__copy-btn"
+                onClick={() => asset.onExport(format)}
+                disabled={asset.exportState?.kind === "running"}
+              >
+                <span className="fo__copy-btn-row1">
+                  <span className="fo__copy-label">{format.toUpperCase()}</span>
+                </span>
+                <span className="fo__copy-meta">
+                  <span className="fo__copy-bytes">{subtitle}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="fo__copy">
+          {RES_PRESETS.map((p) => {
+            const m = copyMetrics?.[p.id] ?? presetMetrics(p.id, srcW, srcH, srcBytes);
+            return (
+              <CopyButton
+                key={p.id}
+                preset={p.id}
+                label={p.label}
+                dim={m.dim}
+                bytes={m.bytes}
+                onCopy={(preset) => onCopy?.(preset)}
+                {...(onCopyPath !== undefined ? { onCopyPath } : {})}
+                {...(onDragPreset !== undefined ? { onDrag: onDragPreset } : {})}
+                copyPulse={copyPulses?.[p.id] ?? 0}
+              />
+            );
+          })}
+        </div>
+      )}
 
       {cfg.showAnnotate && (
         <div className="fo__annotate">
@@ -487,6 +668,31 @@ export function FloatOver({
             </div>
           )}
           <div className="fo__foot-actions">
+            {/* Discard — video-only. Confirms before destroying the
+                just-saved Library row + source file + any cached
+                exports. Image captures don't get this (the user
+                wanted a snap, the snap is fine). */}
+            {asset?.kind === "video" && asset.onDiscard !== undefined && (
+              <button
+                className="fo__foot-btn"
+                type="button"
+                title="Discard this recording — Library row + file are removed"
+                onClick={() => {
+                  if (
+                    typeof window !== "undefined" &&
+                    !window.confirm(
+                      "Discard this recording? The clip will be removed from your Library and the source file deleted."
+                    )
+                  ) {
+                    return;
+                  }
+                  asset.onDiscard?.();
+                }}
+                style={{ color: "#ef4444", borderColor: "rgba(239, 68, 68, 0.4)" }}
+              >
+                Discard
+              </button>
+            )}
             <button className="fo__foot-btn" onClick={dismissNow}>
               Dismiss
             </button>

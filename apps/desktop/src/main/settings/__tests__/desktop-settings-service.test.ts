@@ -91,7 +91,7 @@ describe("DesktopSettingsService.write", () => {
     expect(read.hotkeys.region).toBe("");
     expect(read.hotkeys.window).toBe("");
     // Video Capture is the new entry; default ⌘⇧V.
-    expect(read.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+    expect(read.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
   });
 
   test("undefined patch fields leave existing values untouched", async () => {
@@ -172,7 +172,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.ai.enabled).toBe(false); // filled
     expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C"); // filled
     // videoCapture wasn't in the older v1 shape — service fills it.
-    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
   });
 
   test("v1 shape missing the new `videoCapture` hotkey gets the default filled in", async () => {
@@ -195,7 +195,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+    expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
     expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
   });
 });
@@ -316,7 +316,7 @@ describe("mergeSettings", () => {
     expect(merged.hotkeys.quickCapture).toBe(""); // "" IS a write
     // Region defaults to "" (unbound) now; preserved from `current`.
     expect(merged.hotkeys.region).toBe("");
-    expect(merged.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
+    expect(merged.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
   });
 
   test("appearance.theme patch overwrites only the specified field", () => {

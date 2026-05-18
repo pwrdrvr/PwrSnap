@@ -55,6 +55,10 @@ ISC
 - semver@7.7.4 | https://github.com/npm/node-semver
 - wrappy@1.0.2 | https://github.com/npm/wrappy
 
+LGPL-2.1
+~~~~~~~~
+- @ffmpeg-installer/ffmpeg@1.1.0 | https://github.com/kribblo/node-ffmpeg-installer
+
 LGPL-3.0-or-later
 ~~~~~~~~~~~~~~~~~
 - @img/sharp-libvips-darwin-arm64@1.2.4 | https://github.com/lovell/sharp-libvips
@@ -127,6 +131,17 @@ Python-2.0
 
 License Texts
 -------------
+
+@ffmpeg-installer/ffmpeg@1.1.0 (LGPL-2.1)
+-----------------------------------------
+
+Applies to:
+- @ffmpeg-installer/ffmpeg@1.1.0 (LGPL-2.1)
+
+Representative file: @ffmpeg-installer/ffmpeg@1.1.0/package metadata
+
+No license text file was found in the installed package for @ffmpeg-installer/ffmpeg@1.1.0.
+The package declares license: LGPL-2.1.
 
 @fontsource/geist-mono@5.2.7 (OFL-1.1)
 --------------------------------------

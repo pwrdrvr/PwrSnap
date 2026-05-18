@@ -288,10 +288,20 @@ export function preWarmRegionSelector(): void {
  * against.
  */
 export async function pickRegion(
-  opts: { mode?: SelectorMode; keepPwrSnapChrome?: boolean } = {}
+  opts: {
+    mode?: SelectorMode;
+    keepPwrSnapChrome?: boolean;
+    /** Visual intent telegraphed to the renderer. `"video"` swaps
+     *  the "Capture" chip for a "● Recording video" badge and
+     *  changes the hint text so the user knows clicking commits a
+     *  recording, not a snap. No behavioral effect on selection
+     *  itself — both intents return the same rect / window payload. */
+    intent?: "snap" | "video";
+  } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
   const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
+  const intent = opts.intent ?? "snap";
   if (selectorWindows.size === 0) {
     preWarmRegionSelector();
   }
@@ -444,7 +454,7 @@ export async function pickRegion(
     // frozen-in-time pixels and we're already in the right mode.
     const modePayload =
       activeScreenSnapshot !== null
-        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}` }
+        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`, intent }
         : null;
     if (!win.isDestroyed() && modePayload !== null) {
       win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);

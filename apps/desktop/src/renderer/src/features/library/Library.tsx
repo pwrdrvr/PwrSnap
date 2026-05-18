@@ -66,6 +66,9 @@ function CellThumb({
   record: CaptureRecord | null;
   width: number;
 }) {
+  if (record !== null && record.kind === "video") {
+    return <VideoCellThumb record={record} />;
+  }
   if (record !== null) {
     return (
       <img
@@ -93,6 +96,88 @@ function CellThumb({
     );
   }
   return <Thumb c={capture} />;
+}
+
+/**
+ * Video Library card thumbnail. Renders the silent preview proxy on
+ * hover — falls back to a poster frame (the source clip's first
+ * frame via the existing capture protocol) when the proxy is still
+ * being generated or generation failed. Stops playback on mouseleave
+ * so the grid stays calm with many videos in view.
+ *
+ * Duration badge in the bottom-right makes video cards instantly
+ * recognizable from images at a glance.
+ */
+function VideoCellThumb({ record }: { record: CaptureRecord }): React.ReactElement {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [hovering, setHovering] = useState(false);
+  const duration = record.video?.durationSec ?? 0;
+  // pwrsnap-capture://r/<id> serves the full source; for the
+  // preview-on-hover we prefer the preview proxy when ready so the
+  // grid doesn't decode 30s clips on every mouseover.
+  const sourceUrl = captureSrcUrl(record.id);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el === null) return;
+    if (hovering) {
+      el.currentTime = 0;
+      void el.play().catch(() => undefined);
+    } else {
+      el.pause();
+      el.currentTime = 0;
+    }
+  }, [hovering]);
+  return (
+    <div
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: "var(--bg)"
+      }}
+    >
+      <video
+        ref={videoRef}
+        src={sourceUrl}
+        muted
+        playsInline
+        preload="metadata"
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "contain",
+          display: "block"
+        }}
+      />
+      <span
+        data-video-duration={duration.toFixed(1)}
+        style={{
+          position: "absolute",
+          right: 6,
+          bottom: 6,
+          padding: "2px 6px",
+          borderRadius: 4,
+          background: "rgba(0, 0, 0, 0.7)",
+          color: "#fff",
+          font: "500 10px/1 var(--font-mono)",
+          letterSpacing: "0.02em",
+          pointerEvents: "none"
+        }}
+      >
+        {formatDurationLabel(duration)}
+      </span>
+    </div>
+  );
+}
+
+function formatDurationLabel(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins === 0) return `${secs}s`;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
 /**

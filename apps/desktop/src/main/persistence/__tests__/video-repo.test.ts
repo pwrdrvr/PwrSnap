@@ -59,17 +59,17 @@ function insertCaptureRow(
   db.prepare(
     `INSERT INTO captures (
        id, kind, captured_at, source_app_bundle_id, source_app_name,
-       src_path, width_px, height_px, device_pixel_ratio, byte_size,
-       sha256, overlays_version, deleted_at
+       legacy_src_path, width_px, height_px, device_pixel_ratio, byte_size,
+       sha256, edits_version, deleted_at
      ) VALUES (
        @id, @kind, '2026-05-18T12:00:00.000Z', NULL, NULL,
-       @src_path, 1920, 1080, 2.0, 1024,
+       @legacy_src_path, 1920, 1080, 2.0, 1024,
        @sha256, 0, NULL
      )`
   ).run({
     id,
     kind,
-    src_path: `/tmp/captures/${id}.${kind === "video" ? "mp4" : "png"}`,
+    legacy_src_path: `/tmp/captures/${id}.${kind === "video" ? "mp4" : "png"}`,
     sha256: `sha-${id}`
   });
 }

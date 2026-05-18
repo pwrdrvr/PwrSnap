@@ -2,6 +2,7 @@ import { app, BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
 import type { AppDocumentKind } from "@pwrsnap/shared";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
+import { getStartupBackgroundColor } from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:window");
@@ -121,7 +122,7 @@ export function createMainWindow(): BrowserWindow {
     title: "PwrSnap",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
+    backgroundColor: getStartupBackgroundColor(),
     webPreferences: baseWebPreferences
   });
   libraryWindow = window;
@@ -228,7 +229,7 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
     title: "PwrSnap Settings",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
+    backgroundColor: getStartupBackgroundColor(),
     webPreferences: baseWebPreferences
   });
   settingsWindow = window;
@@ -277,7 +278,7 @@ export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
     title: appDocumentTitle(kind),
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
+    backgroundColor: getStartupBackgroundColor(),
     webPreferences: baseWebPreferences
   });
   appDocumentWindows.set(kind, window);
@@ -517,7 +518,7 @@ export function createEditWindow(captureId: string): BrowserWindow {
     title: "PwrSnap Editor",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
+    backgroundColor: getStartupBackgroundColor(),
     webPreferences: baseWebPreferences
   });
 

@@ -13,7 +13,7 @@
 // deeper than two levels). When a third or fourth verb needs the same
 // treatment, revisit.
 
-import { isSettingsPage } from "@pwrsnap/shared";
+import { isAppearanceTheme, isSettingsPage } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
   PwrSnapError,
@@ -259,6 +259,31 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_general_developerMode",
           "settings:write: general.developerMode must be a boolean"
+        )
+      };
+    }
+  }
+
+  if (p.appearance !== undefined) {
+    if (
+      typeof p.appearance !== "object" ||
+      p.appearance === null ||
+      Array.isArray(p.appearance)
+    ) {
+      return {
+        ok: false,
+        error: validationError("invalid_appearance", "settings:write: appearance must be an object")
+      };
+    }
+    const appearance = p.appearance as Record<string, unknown>;
+    // theme: literal union enforced via the shared type guard so the
+    // accepted values track APPEARANCE_THEMES exactly.
+    if (!isUndefined(appearance.theme) && !isAppearanceTheme(appearance.theme)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_appearance_theme",
+          "settings:write: appearance.theme must be \"system\", \"dark\", or \"light\""
         )
       };
     }

@@ -47,7 +47,8 @@ const baseSettings: Settings = {
     videoCapture: "CommandOrControl+Shift+V"
   },
   experimental: { v2FileFormat: false },
-  general: { developerMode: false }
+  general: { developerMode: false },
+  appearance: { theme: "system" }
 };
 
 const baseSecrets = {

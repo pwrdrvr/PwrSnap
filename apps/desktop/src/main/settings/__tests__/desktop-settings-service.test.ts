@@ -318,4 +318,56 @@ describe("mergeSettings", () => {
     expect(merged.hotkeys.region).toBe("");
     expect(merged.hotkeys.videoCapture).toBe("CommandOrControl+Shift+V");
   });
+
+  test("appearance.theme patch overwrites only the specified field", () => {
+    const current = defaultSettings();
+    expect(current.appearance.theme).toBe("system");
+    const merged = mergeSettings(current, { appearance: { theme: "light" } });
+    expect(merged.appearance.theme).toBe("light");
+    // Other sections untouched.
+    expect(merged.codex.mode).toBe(current.codex.mode);
+  });
+});
+
+describe("DesktopSettingsService.appearance defaulting", () => {
+  test("v1 file written before `appearance` landed gets the default filled in", async () => {
+    // Older PwrSnap installs wrote settings without `appearance`. The
+    // in-memory shape must always have it; the next write rewrites
+    // the file with the field present.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.appearance.theme).toBe("system");
+  });
+
+  test("invalid theme value on disk falls back to the default", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        appearance: { theme: "neon" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.appearance.theme).toBe("system");
+  });
+
+  test("write({ appearance: { theme: \"dark\" } }) persists and round-trips", async () => {
+    const svc = makeService();
+    const written = await svc.write({ appearance: { theme: "dark" } });
+    expect(written.appearance.theme).toBe("dark");
+    const reread = await svc.read();
+    expect(reread.appearance.theme).toBe("dark");
+  });
 });

@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppearanceTheme,
   CodexTestResult,
   DesktopCodexCandidateSource as SharedCodexCandidateSource,
   DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
@@ -15,6 +16,7 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
+import { isAppearanceTheme } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
   discoverCodexCommands,
@@ -67,6 +69,11 @@ export function defaultSettings(): Settings {
     },
     general: {
       developerMode: false
+    },
+    appearance: {
+      // "system" tracks the OS appearance via the renderer's
+      // matchMedia listener. Explicit "dark" / "light" override.
+      theme: "system"
     }
   };
 }
@@ -105,6 +112,10 @@ function pickMode(value: unknown): "auto" | "pinned" {
   return value === "pinned" ? "pinned" : "auto";
 }
 
+function pickAppearanceTheme(value: unknown, fallback: AppearanceTheme): AppearanceTheme {
+  return isAppearanceTheme(value) ? value : fallback;
+}
+
 function parseV1(raw: unknown): Settings | null {
   if (!isRecord(raw)) return null;
   if (raw.schemaVersion !== 1) return null;
@@ -114,6 +125,7 @@ function parseV1(raw: unknown): Settings | null {
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
   const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const general = isRecord(raw.general) ? raw.general : {};
+  const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   return {
     schemaVersion: 1,
     codex: {
@@ -142,6 +154,14 @@ function parseV1(raw: unknown): Settings | null {
       // won't have it. pickBoolean fills in the default (false) so the
       // field is always present in-memory.
       developerMode: pickBoolean(general.developerMode, defaults.general.developerMode)
+    },
+    appearance: {
+      // `appearance` landed after v1 shipped; older files won't have
+      // it. pickAppearanceTheme returns the default ("system") for
+      // missing or invalid input so the field is always present
+      // in-memory and the next write rewrites the file with the full
+      // shape.
+      theme: pickAppearanceTheme(appearance.theme, defaults.appearance.theme)
     }
   };
 }
@@ -470,7 +490,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     ai: mergeSection(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
     experimental: mergeSection(current.experimental, patch.experimental),
-    general: mergeSection(current.general, patch.general)
+    general: mergeSection(current.general, patch.general),
+    appearance: mergeSection(current.appearance, patch.appearance)
   };
 }
 

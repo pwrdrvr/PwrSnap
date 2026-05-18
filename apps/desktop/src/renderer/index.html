@@ -6,6 +6,55 @@
     <title>PwrSnap</title>
     <!-- Fonts are self-hosted via @fontsource. No runtime network calls
          on cold start, app works fully offline. See src/styles/fonts.css. -->
+    <!--
+      Pre-React appearance bootstrap.
+
+      Runs synchronously before main.tsx loads, before React mounts,
+      and before any stylesheet has applied a paint pass. Sets the
+      `data-theme` attribute on <html> from a small localStorage
+      cache so first paint matches the user's persisted theme — no
+      flash-of-wrong-theme on a light-themed cold launch.
+
+      Source of truth lives in Settings (DesktopSettingsService). The
+      renderer hook mirrors every change to localStorage under the
+      same key so this bootstrap stays current across launches. The
+      `pwrsnap.appearance.v1` envelope is { theme: "system"|"dark"|
+      "light" }; mismatched shapes are ignored and we fall back to
+      the default (system → matchMedia at this exact instant).
+
+      try/catch swallows everything intentionally — if any step
+      throws (localStorage disabled, JSON parse error, matchMedia
+      missing) we leave <html> in its default state (dark) and let
+      the React hook reconcile on mount. Better a brief flash than
+      a blank screen.
+    -->
+    <script>
+      (function () {
+        try {
+          var KEY = "pwrsnap.appearance.v1";
+          var theme = "system";
+          var raw = window.localStorage.getItem(KEY);
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")) {
+              theme = parsed.theme;
+            }
+          }
+          var resolved = theme;
+          if (resolved === "system") {
+            var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+            resolved = mq && mq.matches ? "light" : "dark";
+          }
+          if (resolved === "light") {
+            document.documentElement.setAttribute("data-theme", "light");
+          } else {
+            document.documentElement.removeAttribute("data-theme");
+          }
+        } catch (_err) {
+          /* fall through — React hook reconciles on mount */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

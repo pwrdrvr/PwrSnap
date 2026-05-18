@@ -131,6 +131,7 @@ export type StorageSnapshotUpdate = {
  *  to deep-link directly to a section. */
 export type SettingsPage =
   | "startup"
+  | "appearance"
   | "hotkeys"
   | "notifications"
   | "ai"
@@ -150,6 +151,7 @@ export type SettingsPage =
  *  without adding the literal here is a type error. */
 export const SETTINGS_PAGES = [
   "startup",
+  "appearance",
   "hotkeys",
   "notifications",
   "ai",
@@ -266,6 +268,33 @@ export type Settings = {
      *  `general.developerMode`. */
     developerMode: boolean;
   };
+  /** Per-user UI appearance. `theme: "system"` (default) tracks the
+   *  OS-level `prefers-color-scheme`; explicit `"dark"` / `"light"`
+   *  pin the renderer regardless of OS. The renderer applies this via
+   *  the `data-theme` attribute on `<html>`. */
+  appearance: {
+    theme: AppearanceTheme;
+  };
+};
+
+/** Theme preference. `"system"` resolves to dark/light via the
+ *  renderer's `matchMedia("(prefers-color-scheme: light)")`. */
+export type AppearanceTheme = "system" | "dark" | "light";
+
+export const APPEARANCE_THEMES = ["system", "dark", "light"] as const satisfies readonly AppearanceTheme[];
+
+export function isAppearanceTheme(value: unknown): value is AppearanceTheme {
+  return (
+    typeof value === "string" &&
+    (APPEARANCE_THEMES as readonly string[]).includes(value)
+  );
+}
+
+/** Default that mirrors `defaultSettings()` in the desktop service.
+ *  Re-exported here so the inline pre-React bootstrap and the renderer
+ *  hook can share a single source of truth. */
+export const DEFAULT_APPEARANCE: Settings["appearance"] = {
+  theme: "system"
 };
 
 /** Deep-partial patch shape. `undefined` = leave untouched. Each nested
@@ -277,6 +306,7 @@ export type SettingsPatch = {
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
   general?: Partial<Settings["general"]>;
+  appearance?: Partial<Settings["appearance"]>;
 };
 
 /**

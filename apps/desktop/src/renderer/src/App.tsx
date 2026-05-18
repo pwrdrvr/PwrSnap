@@ -6,6 +6,7 @@ import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
+import { useAppearanceSync } from "./lib/useAppearance";
 
 type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings" | "document";
 type AppDocumentKind = "changelog" | "third-party-licenses";
@@ -75,6 +76,15 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
 document.title = TITLE_BY_STAGE[STAGE] ?? "PwrSnap";
 
 export function App() {
+  // Wire the appearance / theme system once per BrowserWindow. The
+  // hook keeps `<html data-theme>` in sync with the persisted
+  // Settings.appearance.theme, listens for OS `prefers-color-scheme`
+  // flips while theme === "system", and propagates cross-window
+  // theme changes via the Settings broadcast. Return value is unused
+  // at this level — the Appearance settings page reads from its own
+  // `useSettings` snapshot to render the segmented control.
+  useAppearanceSync();
+
   const app = (() => {
     if (STAGE === "tray") {
       return <TrayMenu activeMode="auto" />;

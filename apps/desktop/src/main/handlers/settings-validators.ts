@@ -238,6 +238,32 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.general !== undefined) {
+    if (
+      typeof p.general !== "object" ||
+      p.general === null ||
+      Array.isArray(p.general)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general",
+          "settings:write: general must be an object"
+        )
+      };
+    }
+    const general = p.general as Record<string, unknown>;
+    if (!isUndefined(general.developerMode) && !isBoolean(general.developerMode)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_general_developerMode",
+          "settings:write: general.developerMode must be a boolean"
+        )
+      };
+    }
+  }
+
   return { ok: true, value: patch as SettingsPatch };
 }
 

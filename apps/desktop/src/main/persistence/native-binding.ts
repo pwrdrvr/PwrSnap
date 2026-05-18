@@ -44,8 +44,13 @@ function isCurrentElectronNativeMetadata(metadataPath: string, betterSqlite3Vers
 
   try {
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    // "universal" is a fat binary containing both arm64 and x64 slices;
+    // accept it on either host arch. Single-arch sidecars must match
+    // the host exactly.
+    const archMatches =
+      metadata.arch === "universal" || metadata.arch === process.arch;
     return (
-      metadata.arch === process.arch &&
+      archMatches &&
       metadata.betterSqlite3Version === betterSqlite3Version &&
       metadata.electronVersion === process.versions.electron
     );

@@ -7,9 +7,10 @@
  * opts into that binding when running inside Electron.
  */
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
@@ -46,22 +47,67 @@ if (existsSync(defaultBinary)) {
 }
 
 try {
-  execSync(
-    `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${electronArch} --tag-prefix=v --strip`,
-    { cwd: betterSqlite3Dir, stdio: "inherit" }
-  );
+  if (electronArch === "universal") {
+    // Universal build: download both arm64 and x64 prebuilds into temp
+    // paths, then `lipo` them into a fat binary at the sidecar
+    // location. Required by the `electron-builder --universal` target,
+    // which itself merges two single-arch .app bundles via
+    // @electron/universal — but the better-sqlite3 native binding has
+    // to already be universal in the staged tree before that runs,
+    // because each per-arch build pulls from the same node_modules.
+    downloadUniversalPrebuild();
+  } else {
+    execSync(
+      `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${electronArch} --tag-prefix=v --strip`,
+      { cwd: betterSqlite3Dir, stdio: "inherit" }
+    );
+    mkdirSync(electronNativeDir, { recursive: true });
+    copyFileSync(defaultBinary, targetBinary);
+  }
 } catch (error) {
   restoreDefaultBinary();
   console.error("Failed to download Electron better-sqlite3 prebuild:", error.message);
   process.exit(1);
 }
 
-mkdirSync(electronNativeDir, { recursive: true });
-copyFileSync(defaultBinary, targetBinary);
 writeFileSync(metadataFile, `${JSON.stringify(expectedMetadata, null, 2)}\n`);
 restoreDefaultBinary();
 
 console.log(`Electron better-sqlite3 binary placed at ${targetBinary}`);
+
+function downloadUniversalPrebuild() {
+  if (process.platform !== "darwin") {
+    throw new Error("universal arch is only supported on darwin (requires lipo)");
+  }
+  const archs = ["arm64", "x64"];
+  const slicePaths = [];
+  for (const arch of archs) {
+    console.log(`  downloading ${arch} prebuild...`);
+    execSync(
+      `${resolvePrebuildInstallCommand()} --runtime=electron --target=${electronVersion} --arch=${arch} --tag-prefix=v --strip`,
+      { cwd: betterSqlite3Dir, stdio: "inherit" }
+    );
+    if (!existsSync(defaultBinary)) {
+      throw new Error(`prebuild-install left no binary at ${defaultBinary} for arch=${arch}`);
+    }
+    const slicePath = join(tmpdir(), `better_sqlite3.${arch}.${process.pid}.node`);
+    copyFileSync(defaultBinary, slicePath);
+    slicePaths.push(slicePath);
+  }
+  mkdirSync(electronNativeDir, { recursive: true });
+  const lipoResult = spawnSync(
+    "lipo",
+    ["-create", ...slicePaths, "-output", targetBinary],
+    { stdio: "inherit" }
+  );
+  for (const slice of slicePaths) {
+    try { unlinkSync(slice); } catch { /* best effort */ }
+  }
+  if (lipoResult.status !== 0) {
+    throw new Error(`lipo -create failed with status ${lipoResult.status}`);
+  }
+  console.log(`  universal binary at ${targetBinary}`);
+}
 
 function isCurrentElectronBinary() {
   if (!existsSync(targetBinary) || !existsSync(metadataFile)) {

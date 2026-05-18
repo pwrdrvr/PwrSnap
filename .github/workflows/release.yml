@@ -1,4 +1,4 @@
-name: Release Desktop (macOS arm64)
+name: Release Desktop (macOS universal)
 
 on:
   push:
@@ -65,6 +65,24 @@ jobs:
           # channel.
           GH_TOKEN: ${{ secrets.RELEASES_PAT || secrets.GITHUB_TOKEN }}
         run: pnpm --filter @pwrsnap/desktop release
+
+      - name: Publish stable-name DMG alias
+        # PwrSnap.dmg is the canonical download URL referenced from
+        # docs.pwrsnap.com and pwrsnap.com — it always points at the
+        # latest release. Copy-and-upload the versioned DMG under the
+        # alias name; --clobber overwrites the prior alias.
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd apps/desktop/release-stage/dist
+          versioned=$(ls PwrSnap-*-universal.dmg | head -n 1)
+          cp "$versioned" PwrSnap.dmg
+          gh release upload "$RELEASE_TAG" \
+            PwrSnap.dmg \
+            --repo pwrdrvr/PwrSnap \
+            --clobber
 
       - name: Upload release artifacts (debug retention)
         uses: actions/upload-artifact@v5

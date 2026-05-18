@@ -65,19 +65,59 @@ for (const target of targets) {
   }
 
   console.log(`[build-native] compiling ${target.name}…`);
-  const result = spawnSync(
-    "swiftc",
-    [
-      "-O", // optimized; binary is small + invoked synchronously on hot paths
-      "-o",
-      target.output,
-      ...target.sources
-    ],
-    { stdio: "inherit" }
-  );
-  if (result.status !== 0) {
-    console.error(`[build-native] ${target.name} compilation failed`);
-    process.exit(result.status ?? 1);
+  // Release-mode universal builds compile twice (one per arch) and
+  // lipo together so end-user installs work on both Apple Silicon and
+  // Intel. Dev/postinstall stays single-arch — universal doubles the
+  // compile time and devs only run the binary on their own host.
+  if (process.env.PWRSNAP_NATIVE_UNIVERSAL === "1") {
+    const slicePaths = [];
+    for (const arch of ["arm64", "x86_64"]) {
+      const slice = `${target.output}.${arch}`;
+      const compile = spawnSync(
+        "swiftc",
+        [
+          "-O",
+          "-target",
+          `${arch}-apple-macos14.0`,
+          "-o",
+          slice,
+          ...target.sources
+        ],
+        { stdio: "inherit" }
+      );
+      if (compile.status !== 0) {
+        console.error(`[build-native] ${target.name} compilation (${arch}) failed`);
+        process.exit(compile.status ?? 1);
+      }
+      slicePaths.push(slice);
+    }
+    const lipo = spawnSync(
+      "lipo",
+      ["-create", ...slicePaths, "-output", target.output],
+      { stdio: "inherit" }
+    );
+    for (const slice of slicePaths) {
+      try { rmSync(slice, { force: true }); } catch { /* best effort */ }
+    }
+    if (lipo.status !== 0) {
+      console.error(`[build-native] ${target.name} lipo failed`);
+      process.exit(lipo.status ?? 1);
+    }
+  } else {
+    const result = spawnSync(
+      "swiftc",
+      [
+        "-O", // optimized; binary is small + invoked synchronously on hot paths
+        "-o",
+        target.output,
+        ...target.sources
+      ],
+      { stdio: "inherit" }
+    );
+    if (result.status !== 0) {
+      console.error(`[build-native] ${target.name} compilation failed`);
+      process.exit(result.status ?? 1);
+    }
   }
 
   // Ad-hoc sign the binary so macOS TCC (Screen Recording, etc.)

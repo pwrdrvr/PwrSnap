@@ -39,7 +39,7 @@ const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
 const stageDir = join(desktopRoot, "release-stage");
-const releaseArch = "arm64";
+const releaseArch = "universal";
 const pnpmProjectConfigEnv = {
   npm_config_global_pnpmfile: "",
   NPM_CONFIG_GLOBAL_PNPMFILE: ""
@@ -126,9 +126,14 @@ runChecked("pnpm", ["licenses:check"], { cwd: repoRoot });
 
 // 3. Build native helpers. CI also runs this explicitly as an early,
 // readable failure, but release.mjs must be self-contained for local
-// package/release runs.
+// package/release runs. PWRSNAP_NATIVE_UNIVERSAL=1 makes build-native
+// produce a fat binary (both arm64 and x86_64 slices) so the helper
+// can run on either arch under the universal `.app`.
 step("build native helpers");
-runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:native"], { cwd: repoRoot });
+runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:native"], {
+  cwd: repoRoot,
+  env: releaseArch === "universal" ? { PWRSNAP_NATIVE_UNIVERSAL: "1" } : {}
+});
 
 // 4. Build (electron-vite -> apps/desktop/out/).
 step("electron-vite build");
@@ -187,7 +192,7 @@ for (const file of ["THIRD_PARTY_LICENSES", "CHANGELOG.md"]) {
 //    keeps the preview-build artifact uncluttered. Real releases build both
 //    DMG and ZIP because electron-updater requires the ZIP on macOS.
 step(
-  `electron-builder --mac${dryrun ? " dmg" : ""} --arm64 (${publish ? "publish" : "no publish"}, ${
+  `electron-builder --mac${dryrun ? " dmg" : ""} --${releaseArch} (${publish ? "publish" : "no publish"}, ${
     dryrun ? "ad-hoc signed" : "signed"
   })`
 );
@@ -213,7 +218,7 @@ builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" :
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");
 runChecked("npx", cleanedArgs, { cwd: stageDir, env: pnpmProjectConfigEnv });
 
-const builtApp = join(stageDir, "dist", "mac-arm64", "PwrSnap.app");
+const builtApp = join(stageDir, "dist", `mac-${releaseArch}`, "PwrSnap.app");
 
 // 9. Verify native helper packaging/signing. The helper is a standalone
 //    executable under Contents/Resources, not a Node addon; end-user installs
@@ -225,6 +230,31 @@ if (!existsSync(windowListHelper)) {
 }
 if (process.platform === "darwin") {
   runChecked("codesign", ["--verify", "--strict", "--verbose=2", windowListHelper]);
+}
+
+// 9. For universal builds, verify both Apple Silicon and Intel slices are
+//    present in the main executable, the bundled Swift helper, and the
+//    better-sqlite3 native addon. A single-arch slice slipping through
+//    means Intel users would launch into an immediate SIGKILL.
+if (releaseArch === "universal" && process.platform === "darwin") {
+  step("verify universal binary slices");
+  const lipoTargets = [
+    join(builtApp, "Contents", "MacOS", "PwrSnap"),
+    windowListHelper,
+    join(
+      builtApp,
+      "Contents",
+      "Resources",
+      "app.asar.unpacked",
+      "node_modules",
+      "better-sqlite3",
+      "electron-native",
+      "better_sqlite3.node"
+    )
+  ];
+  for (const target of lipoTargets) {
+    runChecked("lipo", [target, "-verify_arch", "x86_64", "arm64"]);
+  }
 }
 
 // 10. Post-build asar contents check — fails if forbidden files (TS sources,

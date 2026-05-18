@@ -278,9 +278,20 @@ export function preWarmRegionSelector(): void {
  *   - 'region': pure rect drag, snap candidates suppressed
  *   - 'window': window-picker only, drag suppressed, ⇧-not-required
  *     for full-window capture
+ *
+ * `keepPwrSnapChrome` (default false) — by default the selector hides
+ * PwrSnap's own tray popover + float-over right before snapshotting,
+ * so they don't sit on top of whatever the user is trying to capture.
+ * Timed mode opts IN to leaving them: the whole point of the timer is
+ * to let the user stage transient UI (including the PwrSnap tray
+ * menu itself) and have it preserved in the snapshot they pick
+ * against.
  */
-export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<SelectorResult> {
+export async function pickRegion(
+  opts: { mode?: SelectorMode; keepPwrSnapChrome?: boolean } = {}
+): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
+  const keepPwrSnapChrome = opts.keepPwrSnapChrome ?? false;
   if (selectorWindows.size === 0) {
     preWarmRegionSelector();
   }
@@ -325,9 +336,17 @@ export async function pickRegion(opts: { mode?: SelectorMode } = {}): Promise<Se
   // appear in the frozen background nor become snap candidates. The
   // user's normal PwrSnap windows (Library / Edit) are intentionally
   // left alone: if they're on screen, they're valid capture targets.
-  hideTrayPopoverIfVisible();
-  setFloatOverState({ kind: "cancel" });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  //
+  // Timed mode opts out via `keepPwrSnapChrome` — the user may have
+  // re-opened the tray during the countdown precisely so it appears
+  // in the picker. Skipping the hide also skips the 50 ms compositor
+  // wait, which only mattered as a "let the hide reach the window
+  // server before snapshotting" guard.
+  if (!keepPwrSnapChrome) {
+    hideTrayPopoverIfVisible();
+    setFloatOverState({ kind: "cancel" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 
   const displayBounds = targetDisplay.bounds;
   const displayCursor = {

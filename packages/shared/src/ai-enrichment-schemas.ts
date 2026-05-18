@@ -37,6 +37,8 @@ export type CaptureEnrichment = z.infer<typeof CaptureEnrichmentSchema>;
 export const EnrichmentResultSchema = z.object({
   ocrText: z.string().max(100_000).default(""),
   description: z.string().trim().max(2_000).default(""),
+  filenameStem: z.string().trim().max(120).optional(),
+  textAnchors: z.array(z.string().trim().min(1).max(120)).max(5).optional(),
   tags: z
     .array(
       z.object({

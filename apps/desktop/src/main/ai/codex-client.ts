@@ -17,6 +17,7 @@ import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/js
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { getMainLogger } from "../log";
 import {
+  CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_PROMPT,
   CAPTURE_ENRICHMENT_SCHEMA,
   parseCaptureEnrichmentResponse
@@ -105,8 +106,7 @@ export class CodexAppServerClient {
           ephemeral: true,
           approvalPolicy: "never",
           sandbox: "read-only",
-          baseInstructions:
-            "You are helping PwrSnap enrich a screenshot. Return structured JSON only."
+          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS
         },
         this.requestTimeoutMs
       )) as ThreadStartResponse;

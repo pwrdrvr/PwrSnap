@@ -177,7 +177,8 @@ describe("CodexAppServerClient", () => {
     ]);
     expect(transport.outbound.find((message) => message.method === "thread/start")?.params).toMatchObject({
       ephemeral: true,
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      baseInstructions: expect.stringContaining("Primary goals, in order:")
     });
     expect(transport.outbound.find((message) => message.method === "turn/start")?.params).toMatchObject({
       input: expect.arrayContaining([{ type: "localImage", path: "/tmp/capture.jpg" }])

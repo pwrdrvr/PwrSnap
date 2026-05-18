@@ -19,6 +19,7 @@ import { AppearancePage } from "./pages/AppearancePage";
 import { ExperimentalPage } from "./pages/ExperimentalPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { StoragePage } from "./pages/StoragePage";
+import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
 
 // Eyebrow strings for the placeholder pages. Mirrors the design's
 // per-page `pss__main-eyebrow` values so the placeholder reads as the
@@ -32,6 +33,7 @@ const EYEBROW_BY_PAGE: Record<string, string> = {
   capture: "Capture",
   output: "Capture",
   annotate: "Capture",
+  "system-permissions": "Capture",
   storage: "Library",
   sources: "Library",
   experimental: "Advanced",
@@ -62,6 +64,9 @@ export function SettingsApp(): ReactElement {
       break;
     case "storage":
       page = <StoragePage />;
+      break;
+    case "system-permissions":
+      page = <SystemPermissionsPage />;
       break;
     default:
       page = <ComingSoon eyebrow={eyebrow} title={item.name} />;

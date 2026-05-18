@@ -26,7 +26,7 @@
 // pattern VS Code adopted when it migrated off file:// URLs to
 // `vscode-file://`.
 
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
@@ -102,26 +102,86 @@ const MIME_BY_EXT: Record<string, string> = {
   ".png": "image/png",
   ".webp": "image/webp",
   ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg"
+  ".jpeg": "image/jpeg",
+  // Video sources. ScreenCaptureKit defaults to .mp4 (H.264 + AAC);
+  // the float-over <video> element + native drag-out both rely on
+  // the right Content-Type to render correctly.
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".gif": "image/gif"
 };
 
 function mimeForPath(filePath: string): string {
   return MIME_BY_EXT[extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
-async function fileResponse(filePath: string): Promise<Response> {
-  // net.fetch with file:// URLs is unreliable from inside a
-  // protocol.handle callback (Electron's network stack can refuse the
-  // scheme even when the schemes don't overlap). Read directly with
-  // fs.readFile and construct the Response by hand — no scheme gymnastics,
-  // and Content-Type / Content-Length come from the file itself.
-  const [body, stats] = await Promise.all([readFile(filePath), stat(filePath)]);
-  const arrayBuffer = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
-  return new Response(arrayBuffer, {
+/**
+ * Read a file and produce a Response. Honors HTTP Range requests
+ * (`Range: bytes=START-END`) with 206 Partial Content — required
+ * for HTML5 `<video>` playback over this scheme. Chromium's media
+ * stack issues Range requests as soon as the video element loads;
+ * without 206 + `Content-Range` + `Accept-Ranges` headers the
+ * player either hangs on the loading spinner or refuses to seek.
+ *
+ * Range branch reads ONLY the requested chunk via `fs.open` +
+ * `read(start, length)` — never loads the whole video into memory
+ * even for the long-tail "seek to the end of a 30s clip" case.
+ * Non-Range branch keeps the existing read-the-whole-file fast
+ * path for small assets (PNG thumbnails, screen snapshots).
+ */
+async function fileResponse(filePath: string, request: Request): Promise<Response> {
+  const stats = await stat(filePath);
+  const total = stats.size;
+  const rangeHeader = request.headers.get("range");
+  if (rangeHeader !== null) {
+    const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader.trim());
+    if (match !== null) {
+      const start = Number.parseInt(match[1]!, 10);
+      const endRaw = match[2]!;
+      const end = endRaw.length > 0 ? Number.parseInt(endRaw, 10) : total - 1;
+      if (Number.isFinite(start) && Number.isFinite(end) && start <= end && end < total) {
+        const length = end - start + 1;
+        const fh = await open(filePath, "r");
+        try {
+          const buf = Buffer.alloc(length);
+          await fh.read(buf, 0, length, start);
+          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+          return new Response(ab, {
+            status: 206,
+            headers: {
+              "content-type": mimeForPath(filePath),
+              "content-length": String(length),
+              "content-range": `bytes ${start}-${end}/${total}`,
+              "accept-ranges": "bytes",
+              "cache-control": "no-cache"
+            }
+          });
+        } finally {
+          await fh.close();
+        }
+      }
+      // Unsatisfiable range — RFC 7233 §4.4 says 416 + Content-Range:
+      // bytes */<total>. The video element will retry without Range.
+      return new Response("range not satisfiable", {
+        status: 416,
+        headers: {
+          "content-range": `bytes */${total}`,
+          "accept-ranges": "bytes"
+        }
+      });
+    }
+  }
+  // No Range header (or unparseable) — return the whole file. Still
+  // advertise Accept-Ranges so the media element knows it can ask
+  // for a partial range next.
+  const body = await readFile(filePath);
+  const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
+  return new Response(ab, {
     status: 200,
     headers: {
       "content-type": mimeForPath(filePath),
-      "content-length": String(stats.size),
+      "content-length": String(total),
+      "accept-ranges": "bytes",
       "cache-control": "private, max-age=300"
     }
   });
@@ -143,7 +203,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         log.warn("capture: not found", { captureId });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath);
+      return await fileResponse(filePath, request);
     } catch (cause) {
       log.error("capture handler threw", {
         captureId,
@@ -168,7 +228,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         log.info("screen: not found", { id });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath);
+      return await fileResponse(filePath, request);
     } catch (cause) {
       log.error("screen handler threw", {
         id,
@@ -190,7 +250,7 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         log.warn("cache: not found", { ...parsed });
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath);
+      return await fileResponse(filePath, request);
     } catch (cause) {
       log.error("cache handler threw", {
         ...parsed,

@@ -24,9 +24,13 @@ import {
   Tray,
   type BrowserWindow
 } from "electron";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type RecordingState } from "@pwrsnap/shared";
 import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
+import {
+  isRecordingActive,
+  subscribeToRecordingState
+} from "./recording/recording-state";
 import { createTrayWindow, positionTrayWindow } from "./window";
 
 const log = getMainLogger("pwrsnap:tray");
@@ -232,6 +236,16 @@ export function installTray(): Tray {
   tray.setToolTip("PwrSnap — ⌘⇧P to capture");
   tray.setIgnoreDoubleClickEvents(true);
 
+  // Recording state → tray indicator. While recording, prepend "● " to
+  // the tooltip + tray title so the menubar telegraphs the live state
+  // at a glance (matches OBS / CleanShot conventions). The right-
+  // click menu also flips its top items (read in the `right-click`
+  // handler below from `isRecordingActive()`).
+  subscribeToRecordingState((state) => {
+    if (tray === null) return;
+    applyRecordingStateToTray(tray, state);
+  });
+
   tray.on("click", () => toggleTrayWindow());
   tray.on("right-click", () => {
     // Always dismiss the popover before the context menu appears —
@@ -240,6 +254,27 @@ export function installTray(): Tray {
     if (trayWindow !== null && !trayWindow.isDestroyed() && trayWindow.isVisible()) {
       trayWindow.hide();
     }
+    // Top of menu changes while recording — the user almost certainly
+    // came here to stop, so make Stop the first item and demote the
+    // Capture row. Cancel sits next to Stop so a botched recording
+    // can be aborted without persisting a Library row.
+    const recordingItems: MenuItemConstructorOptions[] = isRecordingActive()
+      ? [
+          {
+            label: "● Recording — Stop",
+            click: () => {
+              void bus.dispatch("recording:stop", {}, { principal: "ipc" });
+            }
+          },
+          {
+            label: "Cancel Recording",
+            click: () => {
+              void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+            }
+          },
+          { type: "separator" }
+        ]
+      : [];
     const baseTemplate: MenuItemConstructorOptions[] = [
       {
         label: "Capture (Auto)…",
@@ -267,6 +302,7 @@ export function installTray(): Tray {
       ? [{ type: "separator" } as MenuItemConstructorOptions, ...extraMenuItems]
       : [];
     const menu = Menu.buildFromTemplate([
+      ...recordingItems,
       ...baseTemplate,
       ...extras,
       { type: "separator" },
@@ -379,4 +415,52 @@ export function hideTrayPopoverForE2E(): void {
 export function setTrayCountdown(text: string | null): void {
   if (tray === null) return;
   tray.setTitle(text ?? "");
+}
+
+/**
+ * Reflect a recording-state transition in the menubar icon. The
+ * tooltip + setTitle text both flip while the recorder is active so
+ * the user sees the live state without having to open the popover.
+ *   - countdown phase → "● 3 / 2 / 1"
+ *   - recording phase → "● REC"
+ *   - finalizing      → "● …"
+ *   - idle/ready/etc. → restore default tooltip + clear title
+ *
+ * Stays in lock-step with the right-click menu's Recording row
+ * (which reads `isRecordingActive()` at popup time) by reacting to
+ * the same `subscribeToRecordingState` stream.
+ */
+function applyRecordingStateToTray(activeTray: Tray, state: RecordingState): void {
+  switch (state.phase) {
+    case "countdown":
+      activeTray.setTitle(`● ${state.secondsRemaining}`);
+      activeTray.setToolTip(`PwrSnap — recording starts in ${state.secondsRemaining}…`);
+      return;
+    case "preflight":
+      activeTray.setTitle("● …");
+      activeTray.setToolTip("PwrSnap — preparing to record");
+      return;
+    case "starting":
+      activeTray.setTitle("● ⋯");
+      activeTray.setToolTip("PwrSnap — starting recorder");
+      return;
+    case "recording":
+      activeTray.setTitle("● REC");
+      activeTray.setToolTip("PwrSnap — recording. Click the tray and choose Stop.");
+      return;
+    case "stopping":
+      activeTray.setTitle("● ⏳");
+      activeTray.setToolTip("PwrSnap — finalizing recording");
+      return;
+    case "processing":
+      activeTray.setTitle("● ⏳");
+      activeTray.setToolTip("PwrSnap — processing recording");
+      return;
+    case "idle":
+    case "ready":
+    case "failed":
+      activeTray.setTitle("");
+      activeTray.setToolTip("PwrSnap — ⌘⇧P to capture");
+      return;
+  }
 }

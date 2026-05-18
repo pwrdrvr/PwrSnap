@@ -22,7 +22,7 @@ const HOTKEY_DEFAULTS = {
   quickCapture: "CommandOrControl+Shift+C",
   region: "",
   window: "",
-  videoCapture: "CommandOrControl+Shift+V"
+  videoCapture: "CommandOrControl+Alt+C"
 } as const;
 
 type HotkeyKey = "quickCapture" | "region" | "window" | "videoCapture";

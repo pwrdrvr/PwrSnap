@@ -43,6 +43,7 @@ import type { CaptureRecord } from "@pwrsnap/shared";
 import { Editor } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
 import { AppTag } from "../shared/AppIcons";
+import { captureSrcUrl } from "../../lib/pwrsnap";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";
 import { mapBundleIdToAppId } from "./adapter";
@@ -246,15 +247,36 @@ function StageBody({
         className="psl__stage-img"
         style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
       >
-        <Editor
-          captureId={captureId}
-          chrome="chromeless"
-          tool={tool}
-          onToolChange={onToolChange}
-        />
+        {record.kind === "video" ? (
+          // Video captures render as a native <video> player. The
+          // overlay editor is image-only (annotation tools operate
+          // on PNG/WebP renders) so we don't mount <Editor> here —
+          // the GIF/MP4 sub-range editor lives in the float-over
+          // and a richer video editor lands in a follow-up.
+          <video
+            src={captureSrcUrl(record.id)}
+            controls
+            playsInline
+            preload="metadata"
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              background: "#000",
+              display: "block"
+            }}
+          />
+        ) : (
+          <Editor
+            captureId={captureId}
+            chrome="chromeless"
+            tool={tool}
+            onToolChange={onToolChange}
+          />
+        )}
       </div>
 
-      <EditToolbar tool={tool} onChange={onToolChange} />
+      {record.kind !== "video" && <EditToolbar tool={tool} onChange={onToolChange} />}
     </>
   );
 }

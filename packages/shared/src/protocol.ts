@@ -33,6 +33,196 @@ export type CaptureRecord = {
    */
   overlays_version: number;
   deleted_at: string | null;
+  /**
+   * Set for `kind === "video"` rows. Carries duration, audio-track
+   * availability, default range, and preview asset path so the
+   * float-over and Library can render without a second round-trip.
+   * Null for images.
+   */
+  video?: VideoCaptureMetadata | null;
+};
+
+/**
+ * Per-capture metadata for video rows. Mirrors the `video_captures`
+ * table (see migration 0005). Stored alongside the source clip so the
+ * full source is preserved even after the user picks a quick-output
+ * subrange — the editor can always recover the original.
+ *
+ * `audio` reports which independent tracks the recorder captured.
+ * MP4 export's audio toggles read from this; missing tracks render
+ * as disabled controls in the float-over.
+ *
+ * Time fields are seconds (float). `defaultRange` matches whatever the
+ * user picked in the float-over scrubber the last time they exported;
+ * fresh recordings start with `{ start: 0, end: durationSec }`.
+ */
+export type VideoCaptureMetadata = {
+  durationSec: number;
+  containerFormat: "mp4" | "mov";
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  defaultRange: VideoRange;
+  /** Relative path under captures/ for the silent hover-preview proxy.
+   *  Null while preview generation is still in flight (or failed). */
+  previewPath: string | null;
+  /** Status of the asynchronous preview-proxy generation job. */
+  previewStatus: "pending" | "ready" | "failed";
+};
+
+/**
+ * Inclusive subrange of a recording. Used both for the persisted
+ * default range and for per-export requests. `end > start`, both in
+ * seconds, both within `[0, durationSec]`. Validated at the bus
+ * boundary — a stored range that drifts past `durationSec` is
+ * normalized down on read so an out-of-date default can't crash
+ * playback after a re-encode.
+ */
+export type VideoRange = {
+  start: number;
+  end: number;
+};
+
+/**
+ * Lifecycle phases the recording service broadcasts over
+ * `EVENT_CHANNELS.recordingState`. The selector listens for
+ * countdown/recording transitions to lower its overlay; the tray
+ * binds Stop UI to `recording`; the Library waits for `ready` to
+ * surface the new capture; the float-over loads on `ready`.
+ *
+ * Carries the optional `captureId` once a row is persisted (`ready`)
+ * and an `error` payload on the `failed` arm.
+ */
+export type RecordingState =
+  | { phase: "idle" }
+  | { phase: "preflight"; sessionId: string; rect: Rect; displayId: number }
+  | {
+      phase: "countdown";
+      sessionId: string;
+      secondsRemaining: number;
+      /** The physical-px rect the recording will cover. Carried during
+       *  countdown so the in-area overlay can position itself
+       *  centered on the recorded surface — the user sees the big
+       *  3 / 2 / 1 over their actual content, not in a corner. */
+      rect: Rect;
+      displayId: number;
+    }
+  /**
+   * The countdown finished but the native recorder hasn't reported
+   * `started` yet. Typically only visible on the very first launch
+   * when ScreenCaptureKit's `SCShareableContent` enumeration is
+   * cold and takes longer than the countdown to resolve. The HUD
+   * shows a "Starting…" indicator so the user knows the system is
+   * working rather than stuck.
+   */
+  | { phase: "starting"; sessionId: string; rect: Rect; displayId: number }
+  | { phase: "recording"; sessionId: string; startedAt: string; rect: Rect; displayId: number }
+  | { phase: "stopping"; sessionId: string }
+  | { phase: "processing"; sessionId: string }
+  | { phase: "ready"; sessionId: string; captureId: string }
+  | { phase: "failed"; sessionId: string; code: string; message: string };
+
+/**
+ * Capabilities the user wanted included in this recording session.
+ * Screen video is always on. Audio fields are independent — degraded
+ * recordings (e.g. mic granted, system audio denied) keep `screen +
+ * microphone: true, systemAudio: false` so MP4 export can still offer
+ * the mic toggle.
+ */
+export type RecordingCapabilities = {
+  systemAudio: boolean;
+  microphone: boolean;
+};
+
+/**
+ * Subject of the recording. `window` seeds a fixed rect from the
+ * selected window's bounds at start-time (does NOT follow the window
+ * if it moves). `region` is whatever pixels pass under the static
+ * rect. `display` is a full screen recording.
+ */
+export type RecordingSubject =
+  | { kind: "region"; rect: Rect; displayId: number }
+  | {
+      kind: "window";
+      windowId: number;
+      rect: Rect;
+      displayId: number;
+      /**
+       * Source app metadata resolved from the window-list helper at
+       * selection time. Optional because callers that don't have it
+       * (older protocol consumers, programmatic recording without a
+       * snap) can omit; recording-service falls back to null on the
+       * capture row. When present, the Library shows the real app
+       * name ("Microsoft Edge") instead of "Unknown App".
+       */
+      appName?: string | null;
+      appBundleId?: string | null;
+    }
+  | { kind: "display"; displayId: number };
+
+/**
+ * Per-permission readiness status. `granted` is the only state where
+ * the corresponding capture path runs without prompting. `denied`
+ * needs a System Settings round-trip. `not-determined` can still
+ * trigger the OS prompt on next attempt. `unavailable` covers macOS
+ * versions / hardware that don't support the capability at all
+ * (e.g. system-audio on a macOS earlier than what ScreenCaptureKit
+ * exposes).
+ */
+export type RecordingPermissionStatus =
+  | "granted"
+  | "denied"
+  | "not-determined"
+  | "restricted"
+  | "unavailable"
+  | "unknown";
+
+/**
+ * Snapshot of all permissions the recording pipeline cares about.
+ * Stable shape — the System Permissions page binds against it
+ * directly, and the recording preflight reuses the same payload to
+ * decide whether to show the in-context permission dialog.
+ *
+ * `screenRecording` is required for any video. The audio fields are
+ * optional capabilities; missing them is a degraded recording, not
+ * a hard block.
+ */
+export type RecordingReadiness = {
+  screenRecording: RecordingPermissionStatus;
+  microphone: RecordingPermissionStatus;
+  systemAudio: RecordingPermissionStatus;
+  /**
+   * Stable hash of the three status values plus the recorder backend
+   * identity. Settings persists the last-routed fingerprint so the
+   * app doesn't nag the user every launch when nothing has changed.
+   */
+  fingerprint: string;
+};
+
+export type RecordingPermission = "screen" | "microphone" | "systemAudio";
+
+/**
+ * GIF or MP4 export request. `range` defaults to the source
+ * `defaultRange` when omitted. `audio` is ignored for GIF (always
+ * silent) and validated against the source's available tracks for
+ * MP4.
+ */
+export type VideoExportRequest = {
+  captureId: string;
+  format: "gif" | "mp4";
+  range?: VideoRange | undefined;
+  audio?: VideoExportAudio | undefined;
+};
+
+export type VideoExportAudio = {
+  includeSystemAudio: boolean;
+  includeMicrophone: boolean;
+};
+
+export type VideoExportResult = {
+  path: string;
+  byteSize: number;
+  durationSec: number;
+  fromCache: boolean;
 };
 
 export type CaptureFilter = {
@@ -140,6 +330,7 @@ export type SettingsPage =
   | "annotate"
   | "storage"
   | "sources"
+  | "system-permissions"
   | "experimental"
   | "about";
 
@@ -160,6 +351,7 @@ export const SETTINGS_PAGES = [
   "annotate",
   "storage",
   "sources",
+  "system-permissions",
   "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
@@ -251,9 +443,12 @@ export type Settings = {
     quickCapture: string;
     region: string;
     window: string;
-    /** Video-capture hotkey. The recording surface itself ships later;
-     *  for now main just confirms the binding fires (notification +
-     *  warn log) so the registration plumbing is exercised end-to-end. */
+    /** Video-capture hotkey. Default `⌘⌥C` (Command+Alt/Option+C),
+     *  deliberately NOT `⌘⇧V` — that chord is "Paste and Match
+     *  Style" in browsers / Slack / Mail / iWork / Notes / etc.
+     *  and globalShortcut.register wins system-wide, so binding
+     *  ⌘⇧V would steal paste-without-formatting from every app
+     *  on the box while PwrSnap is running. */
     videoCapture: string;
   };
   experimental: {
@@ -284,6 +479,25 @@ export type Settings = {
      *  hourly poll (or immediately if the user invokes Check for
      *  Updates from the Help menu). */
     channel: UpdateChannel;
+  };
+  /**
+   * Per-user defaults the recording UI seeds from. Audio toggles
+   * default to OFF — recording the user's microphone or system audio
+   * is a privacy-relevant action and must be an explicit opt-in each
+   * time, but remembering the last choice cuts friction for the
+   * common "I record with mic every time" pattern.
+   */
+  recording: {
+    /** Default toggle for the system-audio MP4 export option. */
+    includeSystemAudio: boolean;
+    /** Default toggle for the microphone MP4 export option. */
+    includeMicrophone: boolean;
+    /** Last permission fingerprint we routed the user to System
+     *  Permissions for. Empty string = never routed. Recomputed at
+     *  startup; if the current fingerprint differs and any permission
+     *  needs attention, we route once and write the new fingerprint
+     *  back so we don't nag on subsequent launches. */
+    lastRoutedPermissionFingerprint: string;
   };
 };
 
@@ -320,6 +534,7 @@ export type SettingsPatch = {
   general?: Partial<Settings["general"]>;
   appearance?: Partial<Settings["appearance"]>;
   updates?: Partial<Settings["updates"]>;
+  recording?: Partial<Settings["recording"]>;
 };
 
 // ---- App update (auto-updater) types ----
@@ -593,6 +808,99 @@ export type Commands = {
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };
+
+  // ---- recording (Phase 5 — Fast Video Capture, issue #64) ----
+  /**
+   * Resolve current screen/microphone/system-audio readiness without
+   * prompting. The System Permissions page reads this on mount; the
+   * recording preflight reuses the same payload to decide whether to
+   * route through the in-context dialog. Cheap — backed by Electron's
+   * `systemPreferences` + a single async ScreenCaptureKit probe.
+   */
+  "permissions:readiness": { req: Record<string, never>; res: RecordingReadiness };
+  /**
+   * Trigger an OS-level permission prompt where one is possible
+   * (microphone). For screen + system-audio the only path is System
+   * Settings → Privacy & Security; the response carries `openedSettings`
+   * so the renderer can show a "Restart PwrSnap after granting" hint.
+   */
+  "permissions:request": {
+    req: { permission: RecordingPermission };
+    res: { status: RecordingPermissionStatus; openedSettings: boolean };
+  };
+  /**
+   * Open System Settings to the right Privacy & Security pane for the
+   * requested permission. Used both from the System Permissions page
+   * (per-row action) and from the recording-time dialog.
+   */
+  "permissions:openSystemSettings": {
+    req: { permission: RecordingPermission };
+    res: void;
+  };
+  /**
+   * Begin a recording session against the given subject (fixed rect or
+   * full display) with the requested audio capabilities. Returns the
+   * session id; lifecycle updates land on `EVENT_CHANNELS.recordingState`.
+   * Concurrent starts are rejected with `code: "already_recording"`.
+   *
+   * The selector calls this after the user picks Video and the in-area
+   * 3-2-1 countdown completes. Headless callers (agents, hotkey) can
+   * pass `countdownSeconds: 0` to skip the countdown.
+   */
+  "recording:start": {
+    req: {
+      subject: RecordingSubject;
+      capabilities: RecordingCapabilities;
+      countdownSeconds?: number | undefined;
+    };
+    res: { sessionId: string };
+  };
+  /**
+   * Stop the active recording. Persists the source clip as a Library
+   * item and broadcasts `phase: "ready"` with the new `captureId`.
+   * Routes the float-over to LOADED via the existing
+   * `events:float-over:state` channel.
+   */
+  "recording:stop": { req: Record<string, never>; res: { captureId: string } };
+  /**
+   * Cancel the active recording. Tears down temp files, broadcasts
+   * `phase: "idle"`, and does NOT persist a Library row. Used by the
+   * Escape key on the in-area control and by the tray's Cancel button.
+   */
+  "recording:cancel": { req: Record<string, never>; res: void };
+  /**
+   * Discard the current session and immediately start a new one
+   * with the same subject + capabilities. Wired to the Restart
+   * button on the recording HUD — saves the user from having to
+   * re-pick the same window/region after a botched take. Returns
+   * the new session id. Fails with `not_recording` if no session
+   * is in flight.
+   */
+  "recording:restart": { req: Record<string, never>; res: { sessionId: string } };
+  /**
+   * Current recording state. Renderers that mount mid-flight (the
+   * Library window opened after a recording started) call this once
+   * on mount to populate before the next broadcast.
+   */
+  "recording:state": { req: Record<string, never>; res: RecordingState };
+  /**
+   * Update the persisted default range for a video capture. The
+   * float-over scrubber calls this when the user picks a subrange.
+   */
+  "video:setDefaultRange": {
+    req: { captureId: string; range: VideoRange };
+    res: void;
+  };
+  /**
+   * Render and return a GIF or MP4 export for the requested range and
+   * audio tracks. Cached against (captureId, range, format, audio
+   * choices) — re-export with the same args returns instantly.
+   * Progress lands on `EVENT_CHANNELS.renderProgress`.
+   */
+  "video:export": {
+    req: VideoExportRequest;
+    res: VideoExportResult;
+  };
 
   // ---- codex (Phase 4+) — declared here so Phase 4 lands without protocol bumps ----
   "codex:annotate": { req: { captureId: string }; res: { runId: string } };

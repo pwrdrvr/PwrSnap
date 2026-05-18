@@ -56,13 +56,21 @@ export function defaultSettings(): Settings {
       // browsers + iWork) to ⌘⇧C. Region + Window default to UNBOUND
       // since Quick Capture's auto mode covers both — power users can
       // bind them explicitly from Settings → Hotkeys if they want a
-      // dedicated chord. Video Capture is the new entry; the recording
-      // surface isn't built yet, but the binding fires today so the
-      // global-shortcut registration path is exercised end-to-end.
+      // dedicated chord.
+      //
+      // Video Capture is ⌘⌥C, not ⌘⇧V. ⌘⇧V is "Paste and Match
+      // Style" in browsers / Slack / Mail / Pages / Notes / Discord
+      // — globalShortcut.register wins system-wide, so claiming
+      // ⌘⇧V would steal that shortcut from every app on the box
+      // while PwrSnap runs. ⌘⌥C is bound by default only to
+      // Finder's "Copy as Pathname" (much rarer power-user
+      // feature) and ties nicely to the existing ⌘⇧C Quick Capture
+      // mnemonic — option + Capture = "alternative capture mode
+      // (video)".
       quickCapture: "CommandOrControl+Shift+C",
       region: "",
       window: "",
-      videoCapture: "CommandOrControl+Shift+V"
+      videoCapture: "CommandOrControl+Alt+C"
     },
     experimental: {
       v2FileFormat: false
@@ -80,6 +88,15 @@ export function defaultSettings(): Settings {
       // "prerelease" in Settings; auto-updater picks it up on the next
       // check (hourly, or immediately via Help → Check for Updates).
       channel: "latest"
+    },
+    recording: {
+      // Audio defaults OFF — recording either source is privacy-
+      // relevant; we'd rather have the user explicitly toggle ON
+      // for their first MP4 export than silently default to "yes
+      // include everything". Once they pick, the choice persists.
+      includeSystemAudio: false,
+      includeMicrophone: false,
+      lastRoutedPermissionFingerprint: ""
     }
   };
 }
@@ -133,6 +150,7 @@ function parseV1(raw: unknown): Settings | null {
   const general = isRecord(raw.general) ? raw.general : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
+  const recording = isRecord(raw.recording) ? raw.recording : {};
   return {
     schemaVersion: 1,
     codex: {
@@ -175,6 +193,18 @@ function parseV1(raw: unknown): Settings | null {
       // have it. Fall back to the current default ("latest") so the
       // field is always present in-memory.
       channel: updates.channel === "prerelease" ? "prerelease" : defaults.updates.channel
+    },
+    recording: {
+      // `recording.*` landed after v1 shipped; older files won't have
+      // it. Defaults to audio OFF + an empty fingerprint so the
+      // startup permission routing fires once after the first launch
+      // on the new build.
+      includeSystemAudio: pickBoolean(recording.includeSystemAudio, defaults.recording.includeSystemAudio),
+      includeMicrophone: pickBoolean(recording.includeMicrophone, defaults.recording.includeMicrophone),
+      lastRoutedPermissionFingerprint: pickString(
+        recording.lastRoutedPermissionFingerprint,
+        defaults.recording.lastRoutedPermissionFingerprint
+      )
     }
   };
 }
@@ -505,7 +535,8 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     experimental: mergeSection(current.experimental, patch.experimental),
     general: mergeSection(current.general, patch.general),
     appearance: mergeSection(current.appearance, patch.appearance),
-    updates: mergeSection(current.updates, patch.updates)
+    updates: mergeSection(current.updates, patch.updates),
+    recording: mergeSection(current.recording, patch.recording)
   };
 }
 

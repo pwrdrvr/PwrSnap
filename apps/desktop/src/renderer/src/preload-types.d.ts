@@ -62,6 +62,7 @@ declare global {
         handler: (payload: {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          intent?: "snap" | "video";
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

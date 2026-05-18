@@ -16,6 +16,7 @@ import {
 } from "../persistence/captures-repo";
 import {
   moveSourceToTrash,
+  purgeCacheForCapture,
   purgeOneFromTrash,
   restoreSourceFromTrash
 } from "../persistence/source-store";
@@ -168,9 +169,22 @@ export function registerLibraryHandlers(): void {
       });
     }
     try {
-      await purgeOneFromTrash(req.id);
+      await purgeOneFromTrash(req.id, record.src_path);
     } catch (cause) {
       log.warn("library:purge: trash file remove failed", {
+        captureId: req.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    // Drop every cached derivative (image render-cache dir AND, for
+    // videos, the GIF/MP4 export-cache dir). SQL CASCADE removes
+    // the DB rows pointing at them, but the files themselves don't
+    // get cleaned up by foreign keys. Best-effort — log + continue
+    // on any rm failure.
+    try {
+      await purgeCacheForCapture(req.id);
+    } catch (cause) {
+      log.warn("library:purge: cache cleanup failed", {
         captureId: req.id,
         message: cause instanceof Error ? cause.message : String(cause)
       });
@@ -184,10 +198,25 @@ export function registerLibraryHandlers(): void {
     const ids = listSoftDeletedIds();
     let removed = 0;
     for (const id of ids) {
+      // Look up the row before we hard-delete so we know which
+      // extension to look for in trash. PNG vs MP4 vs future kinds
+      // all live in the same `.trash/` directory; the basename
+      // alone doesn't tell purgeOneFromTrash which file to remove.
+      const record = getCaptureById(id);
       try {
-        await purgeOneFromTrash(id);
+        if (record !== null) {
+          await purgeOneFromTrash(id, record.src_path);
+        }
       } catch (cause) {
         log.warn("library:purgeAll: trash file remove failed", {
+          captureId: id,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+      try {
+        await purgeCacheForCapture(id);
+      } catch (cause) {
+        log.warn("library:purgeAll: cache cleanup failed", {
           captureId: id,
           message: cause instanceof Error ? cause.message : String(cause)
         });

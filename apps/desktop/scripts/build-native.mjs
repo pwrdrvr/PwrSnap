@@ -48,6 +48,15 @@ const targets = [
     name: "window-list",
     sources: [join(nativeRoot, "window-list", "main.swift")],
     output: join(buildRoot, "window-list")
+  },
+  {
+    // Fast Video Capture (issue #64). ScreenCaptureKit-based fixed-
+    // rect recorder; spoken to over stdin/stdout JSON-RPC by
+    // main/recording/recording-service.ts. ABI-stable forever — no
+    // node-gyp / Electron-rebuild dance per Electron major bump.
+    name: "recorder",
+    sources: [join(nativeRoot, "recorder", "main.swift")],
+    output: join(buildRoot, "recorder")
   }
 ];
 

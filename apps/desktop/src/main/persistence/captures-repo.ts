@@ -21,6 +21,7 @@
 
 import type { CaptureRecord, LibraryAppStat, LibraryCursor } from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 
 type CaptureRow = {
   id: string;
@@ -52,7 +53,11 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
     overlays_version: row.overlays_version,
-    deleted_at: row.deleted_at
+    deleted_at: row.deleted_at,
+    // video metadata is hydrated separately by the read APIs below —
+    // rowToRecord is shared with insert paths where the metadata
+    // doesn't exist yet, so we default to null here.
+    video: null
   };
 }
 
@@ -149,7 +154,12 @@ function insertOrFindCaptureInTx(
 export function getCaptureById(id: string): CaptureRecord | null {
   const db = getDb();
   const row = db.prepare("SELECT * FROM captures WHERE id = ?").get(id) as CaptureRow | undefined;
-  return row ? rowToRecord(row) : null;
+  if (row === undefined) return null;
+  const record = rowToRecord(row);
+  if (record.kind === "video") {
+    record.video = getVideoMetadata(record.id);
+  }
+  return record;
 }
 
 /**
@@ -227,6 +237,20 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
     LIMIT @limit`;
   const rawRows = db.prepare(sql).all(params) as CaptureRow[];
   const rows = rawRows.map(rowToRecord);
+  // Hydrate video metadata in one bulk query rather than N round-
+  // trips. The Library list path goes through here and would otherwise
+  // pay N×(SELECT) on every grid render when video captures appear.
+  const videoIds = rows
+    .filter((r) => r.kind === "video")
+    .map((r) => r.id);
+  if (videoIds.length > 0) {
+    const meta = listVideoMetadata(videoIds);
+    for (const r of rows) {
+      if (r.kind === "video") {
+        r.video = meta.get(r.id) ?? null;
+      }
+    }
+  }
   const last = rows[rows.length - 1];
   const nextCursor: LibraryCursor | null =
     rows.length === limit && last !== undefined

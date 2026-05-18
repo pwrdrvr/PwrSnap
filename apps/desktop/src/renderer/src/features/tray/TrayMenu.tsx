@@ -1,13 +1,28 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
 import { acceleratorToDisplayKeys } from "../settings/pages/hotkeys-display";
-import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
+
+type VideoExportState =
+  | { kind: "idle" }
+  | { kind: "running"; format: "gif" | "mp4" }
+  | { kind: "done"; format: "gif" | "mp4"; path: string }
+  | { kind: "error"; format: "gif" | "mp4"; message: string };
+
+function fmtTrayDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const mins = Math.floor(seconds / 60);
+  const secs = (seconds - mins * 60).toFixed(1);
+  if (mins === 0) return `${secs}s`;
+  return `${mins}m ${secs}s`;
+}
 
 type ModeKind = "auto" | "region" | "window" | "full" | "all" | "scroll" | "timed";
 
@@ -208,10 +223,24 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { rows } = useLibrary();
   const hotkeys = useHotkeys();
   const lastSnap: CaptureRecord | undefined = rows[0];
+  const lastSnapIsVideo = lastSnap?.kind === "video";
+  // Skip the image render-metrics IPC for video captures — the
+  // sharp-based preset pipeline returns nothing for `.mp4`, and the
+  // tray's video branch uses GIF / MP4 export buttons instead of the
+  // Low / Med / High clipboard cards anyway.
   const lastSnapMetrics = usePresetRenderMetrics(
-    lastSnap?.id ?? null,
-    lastSnap?.overlays_version ?? null
+    lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.id : null,
+    lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.overlays_version : null
   );
+  // Tracks the latest GIF / MP4 export the user kicked off from the
+  // tray's video-branch buttons. Surfaces `Encoding…` / `Saved` /
+  // `Failed — retry` on the button subtitle. Resets when `lastSnap`
+  // changes (so a new recording doesn't show a stale "Saved" badge
+  // inherited from the previous one).
+  const [videoExportState, setVideoExportState] = useState<VideoExportState>({ kind: "idle" });
+  useEffect(() => {
+    setVideoExportState({ kind: "idle" });
+  }, [lastSnap?.id]);
 
   // Pull live chord glyphs for the two wired explicit-mode hotkeys.
   // Empty array = unbound (default for both today) → the chip is
@@ -419,17 +448,32 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
           <div className="ps-tray__last">
             <div className="ps-tray__last-hdr">
               <span className="ps-tray__last-eyebrow">
-                Last snap · {relativeTime(lastSnap.captured_at)}
+                {lastSnapIsVideo ? "Last recording" : "Last snap"} · {relativeTime(lastSnap.captured_at)}
               </span>
               <span className="ps-tray__last-meta">
                 {lastSnap.width_px}×{lastSnap.height_px}
+                {lastSnapIsVideo && lastSnap.video !== null && lastSnap.video !== undefined
+                  ? ` · ${fmtTrayDuration(lastSnap.video.durationSec)}`
+                  : ""}
               </span>
             </div>
             <div className="ps-tray__last-preview">
-              <img
-                src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
-                alt="Last snap"
-              />
+              {lastSnapIsVideo ? (
+                /* Video preview — hover-autoplay on top of native
+                   controls (matches the Library card UX). `muted`
+                   is required for `<video>.play()` to succeed
+                   without a prior user gesture; the user can
+                   click the volume control to hear sound. */
+                <HoverAutoplayVideo
+                  key={lastSnap.id}
+                  src={captureSrcUrl(lastSnap.id)}
+                />
+              ) : (
+                <img
+                  src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
+                  alt="Last snap"
+                />
+              )}
               {/* Edit button — hands off to the Library window's inline
                   editor (Focus mode + Stage), same verb the float-over
                   toast uses for its Edit affordance. The tray popover
@@ -449,27 +493,93 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                 Edit
               </button>
             </div>
-            <div className="ps-tray__last-copy">
-              {COPY_PRESETS.map((p) => {
-                const m =
-                  lastSnapMetrics[p.id] ??
-                  presetMetrics(p.id, lastSnap.width_px, lastSnap.height_px, lastSnap.byte_size);
-                return (
-                  <CopyButton
-                    key={p.id}
-                    preset={p.id}
-                    label={p.label}
-                    dim={m.dim}
-                    bytes={m.bytes}
-                    onCopy={onCopyLastSnap}
-                    onCopyPath={(preset) => {
-                      void dispatch("clipboard:copy-path", { captureId: lastSnap.id, preset });
-                    }}
-                    onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
-                  />
-                );
-              })}
-            </div>
+            {lastSnapIsVideo && lastSnap.video !== null && lastSnap.video !== undefined ? (
+              /* Video export row — sits where Low / Med / High lives
+                 for images. Two cards instead of three, GIF + MP4,
+                 same .fo__copy-btn styling reused from the toast so
+                 the tray and float-over feel like siblings. Audio
+                 toggles are absent on purpose: GIF is always silent;
+                 MP4 carries whichever audio tracks the source
+                 recorded. Sub-range selection belongs in the editor. */
+              <div className="ps-tray__last-copy" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                {(["gif", "mp4"] as const).map((format) => {
+                  const running =
+                    videoExportState.kind === "running" && videoExportState.format === format;
+                  const done =
+                    videoExportState.kind === "done" && videoExportState.format === format;
+                  const errored =
+                    videoExportState.kind === "error" && videoExportState.format === format;
+                  const subtitle = running
+                    ? "Encoding…"
+                    : done
+                    ? "Saved"
+                    : errored
+                    ? "Failed — retry"
+                    : format === "gif"
+                    ? "Silent · share-friendly"
+                    : lastSnap.video!.hasSystemAudio || lastSnap.video!.hasMicrophoneAudio
+                    ? "Full clip · with audio"
+                    : "Full clip · silent";
+                  return (
+                    <button
+                      key={format}
+                      type="button"
+                      className="fo__copy-btn"
+                      disabled={videoExportState.kind === "running"}
+                      onClick={() => {
+                        setVideoExportState({ kind: "running", format });
+                        void dispatch("video:export", {
+                          captureId: lastSnap.id,
+                          format,
+                          audio:
+                            format === "gif"
+                              ? { includeSystemAudio: false, includeMicrophone: false }
+                              : {
+                                  includeSystemAudio: lastSnap.video!.hasSystemAudio,
+                                  includeMicrophone: lastSnap.video!.hasMicrophoneAudio
+                                }
+                        }).then((res) => {
+                          if (res.ok) {
+                            setVideoExportState({ kind: "done", format, path: res.value.path });
+                          } else {
+                            setVideoExportState({ kind: "error", format, message: res.error.message });
+                          }
+                        });
+                      }}
+                    >
+                      <span className="fo__copy-btn-row1">
+                        <span className="fo__copy-label">{format.toUpperCase()}</span>
+                      </span>
+                      <span className="fo__copy-meta">
+                        <span className="fo__copy-bytes">{subtitle}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="ps-tray__last-copy">
+                {COPY_PRESETS.map((p) => {
+                  const m =
+                    lastSnapMetrics[p.id] ??
+                    presetMetrics(p.id, lastSnap.width_px, lastSnap.height_px, lastSnap.byte_size);
+                  return (
+                    <CopyButton
+                      key={p.id}
+                      preset={p.id}
+                      label={p.label}
+                      dim={m.dim}
+                      bytes={m.bytes}
+                      onCopy={onCopyLastSnap}
+                      onCopyPath={(preset) => {
+                        void dispatch("clipboard:copy-path", { captureId: lastSnap.id, preset });
+                      }}
+                      onDrag={(preset) => startCaptureDrag(lastSnap.id, preset)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         </>
       )}

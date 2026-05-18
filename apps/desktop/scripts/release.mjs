@@ -220,16 +220,28 @@ runChecked("npx", cleanedArgs, { cwd: stageDir, env: pnpmProjectConfigEnv });
 
 const builtApp = join(stageDir, "dist", `mac-${releaseArch}`, "PwrSnap.app");
 
-// 9. Verify native helper packaging/signing. The helper is a standalone
-//    executable under Contents/Resources, not a Node addon; end-user installs
-//    must get a prebuilt, signed binary.
+// 9. Verify native helper packaging/signing. The helpers are standalone
+//    executables under Contents/Resources, not Node addons; end-user installs
+//    must get prebuilt, signed binaries. Both helpers ship via
+//    `extraResources` in electron-builder.yml; electron-osx-sign walks the
+//    .app at sign time and re-signs every Mach-O it finds, but a missing
+//    or unsigned helper would silently fail at runtime / notarization, so
+//    we verify here.
 step("verify packaged native helpers");
-const windowListHelper = join(builtApp, "Contents", "Resources", "PwrSnapWindowList");
-if (!existsSync(windowListHelper)) {
-  throw new Error(`missing packaged native helper: ${windowListHelper}`);
-}
-if (process.platform === "darwin") {
-  runChecked("codesign", ["--verify", "--strict", "--verbose=2", windowListHelper]);
+const nativeHelpers = [
+  join(builtApp, "Contents", "Resources", "PwrSnapWindowList"),
+  // PwrSnapRecorder — ScreenCaptureKit + AVFoundation recorder for
+  // Fast Video Capture (issue #64). Without a valid Developer ID
+  // signature, notarization rejects the bundle.
+  join(builtApp, "Contents", "Resources", "PwrSnapRecorder")
+];
+for (const helper of nativeHelpers) {
+  if (!existsSync(helper)) {
+    throw new Error(`missing packaged native helper: ${helper}`);
+  }
+  if (process.platform === "darwin") {
+    runChecked("codesign", ["--verify", "--strict", "--verbose=2", helper]);
+  }
 }
 
 // 9. For universal builds, verify both Apple Silicon and Intel slices are
@@ -240,7 +252,7 @@ if (releaseArch === "universal" && process.platform === "darwin") {
   step("verify universal binary slices");
   const lipoTargets = [
     join(builtApp, "Contents", "MacOS", "PwrSnap"),
-    windowListHelper,
+    ...nativeHelpers,
     join(
       builtApp,
       "Contents",

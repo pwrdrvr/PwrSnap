@@ -33,7 +33,13 @@ let libraryWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
 const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 
-type RendererStage = "tray" | "float-over" | "edit" | "settings" | "document";
+type RendererStage =
+  | "tray"
+  | "float-over"
+  | "edit"
+  | "settings"
+  | "document"
+  | "recording-controller";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
 export function getPreloadPath(): string {
@@ -548,5 +554,79 @@ export function createEditWindow(captureId: string): BrowserWindow {
     window.focus();
   });
 
+  return window;
+}
+
+/**
+ * Floating recording-controller HUD (Fast Video Capture, issue #64).
+ * Shown only while the recorder is active — created when state
+ * transitions out of `idle`, destroyed when it returns to `idle` /
+ * `ready` / `failed`. Carries the countdown digits during the
+ * pre-roll, then a Stop + Cancel pair plus a live duration timer.
+ *
+ * Same NSPanel construction model as the float-over toast so it
+ * never steals focus from the app the user is recording. Anchored
+ * top-center of the active display by `recording-controller.ts`
+ * (positioning lives next to the show/hide policy, not here).
+ */
+export function createRecordingControllerWindow(): BrowserWindow {
+  // Tight defaults for the recording phase. The countdown phase
+  // grows to ~220×180; the renderer posts a resize over IPC when it
+  // flips between phases. setMinimumSize(0,0) below lifts the
+  // implicit constructor floor so subsequent setContentSize calls
+  // actually land (see CLAUDE.md "BrowserWindow sizing" note).
+  const width = 280;
+  const height = 60;
+  const window = new BrowserWindow({
+    type: "panel",
+    width,
+    height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    hasShadow: true,
+    webPreferences: themedWebPreferences()
+  });
+  // Required after construction — every popover that resizes via
+  // setContentSize at runtime needs this to lift the implicit min
+  // size (see CLAUDE.md "BrowserWindow sizing" + tray/float-over
+  // notes). Without it, switching from recording-phase to countdown-
+  // phase gets silently clamped at 280×60.
+  window.setMinimumSize(0, 0);
+  window.excludedFromShownWindowsMenu = true;
+  window.setAlwaysOnTop(true, "floating");
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  window.setMenuBarVisibility(false);
+  // Hide this window from EVERY screen capture — our own SCStream,
+  // macOS screencapture, QuickTime, third-party recorders. Maps to
+  // NSWindow.sharingType = .none under the hood.
+  //
+  // Why per-window content protection instead of SCContentFilter PID
+  // exclusion:
+  //   - The PID approach excluded the HUD's renderer process, but
+  //     also broke recording any OTHER PwrSnap window (Library,
+  //     Settings) because Electron may share renderers across
+  //     BrowserWindows — the daemon happily erased the recording
+  //     subject from the captured frame because it shared a PID.
+  //   - PID exclusion also depends on getOSProcessId() returning a
+  //     real PID at filter-build time. If the HUD's renderer was
+  //     still booting, we sent an empty exclude list and the HUD
+  //     painted into the capture.
+  //   - setContentProtection is a per-window flag set BEFORE the
+  //     window ever shows, so there's no race and no "wrong window"
+  //     collateral damage. Also makes the HUD invisible to OTHER
+  //     recorders running alongside us — a property we couldn't get
+  //     from our own filter no matter how clever it was.
+  window.setContentProtection(true);
+  loadRenderer(window, rendererTarget("recording-controller"));
+  window.webContents.setVisualZoomLevelLimits(1, 1);
   return window;
 }

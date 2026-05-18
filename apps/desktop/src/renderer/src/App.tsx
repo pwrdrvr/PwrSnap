@@ -2,6 +2,7 @@ import { Editor } from "./features/editor/Editor";
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
+import { RecordingController } from "./features/recording/RecordingController";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
@@ -9,7 +10,15 @@ import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 
-type Stage = "library" | "float-over" | "tray" | "region" | "edit" | "settings" | "document";
+type Stage =
+  | "library"
+  | "float-over"
+  | "tray"
+  | "region"
+  | "edit"
+  | "settings"
+  | "document"
+  | "recording-controller";
 type AppDocumentKind = "changelog" | "third-party-licenses";
 
 function readStage(): Stage {
@@ -22,7 +31,8 @@ function readStage(): Stage {
     v === "region" ||
     v === "edit" ||
     v === "settings" ||
-    v === "document"
+    v === "document" ||
+    v === "recording-controller"
   ) {
     return v;
   }
@@ -69,6 +79,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   region: "PwrSnap Capture",
   edit: "PwrSnap Editor",
   settings: "PwrSnap Settings",
+  "recording-controller": "PwrSnap Recording",
   document:
     DOCUMENT_KIND === "third-party-licenses"
       ? "PwrSnap Third-party Licenses"
@@ -98,6 +109,9 @@ export function App() {
     }
     if (STAGE === "settings") {
       return <SettingsApp />;
+    }
+    if (STAGE === "recording-controller") {
+      return <RecordingController />;
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;

@@ -319,6 +319,48 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.recording !== undefined) {
+    if (
+      typeof p.recording !== "object" ||
+      p.recording === null ||
+      Array.isArray(p.recording)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording",
+          "settings:write: recording must be an object"
+        )
+      };
+    }
+    const recording = p.recording as Record<string, unknown>;
+    for (const key of ["includeSystemAudio", "includeMicrophone"] as const) {
+      const v = recording[key];
+      if (isUndefined(v)) continue;
+      if (!isBoolean(v)) {
+        return {
+          ok: false,
+          error: validationError(
+            `invalid_recording_${key}`,
+            `settings:write: recording.${key} must be a boolean`
+          )
+        };
+      }
+    }
+    if (
+      !isUndefined(recording.lastRoutedPermissionFingerprint) &&
+      !isString(recording.lastRoutedPermissionFingerprint)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_recording_fingerprint",
+          "settings:write: recording.lastRoutedPermissionFingerprint must be a string"
+        )
+      };
+    }
+  }
+
   return { ok: true, value: patch as SettingsPatch };
 }
 

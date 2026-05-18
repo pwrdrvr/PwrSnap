@@ -21,6 +21,16 @@ export const EVENT_CHANNELS = {
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",
   renderProgress: "events:render:progress",
+  /**
+   * Main → every BrowserWindow: recording-service lifecycle update.
+   * Payload type: `RecordingState`. Discriminated union over
+   * `phase: "idle" | "preflight" | "countdown" | "recording" |
+   *  "stopping" | "processing" | "ready" | "failed"`. Drives the
+   * tray's Stop-Recording row, the selector's countdown overlay,
+   * and the float-over's video-loaded transition. Renderers that
+   * mount mid-flight call `recording:state` once for the snapshot,
+   * then subscribe for subsequent transitions.
+   */
   recordingState: "events:recording:state",
   settingsChanged: "events:settings:changed",
   /**

@@ -1,7 +1,15 @@
 import { join } from "node:path";
 import { app, dialog, globalShortcut, Menu, Notification, shell } from "electron";
-import type { Settings } from "@pwrsnap/shared";
-import { disposeRegionSelector, preWarmRegionSelector } from "./capture/region-selector";
+import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import {
+  disposeRegionSelector,
+  hideSelector,
+  pickRegion,
+  preWarmRegionSelector
+} from "./capture/region-selector";
+import { releaseSnapshot } from "./capture/screen-snapshot";
+import { activateApp, listWindows } from "./capture/window-list";
+import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
 // (showFloatOverForCapture is no longer called from the bootstrap;
@@ -18,6 +26,14 @@ import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
+import { registerRecordingHandlers } from "./handlers/recording-handlers";
+import { installRecordingController } from "./recording/recording-controller";
+import {
+  needsAttention,
+  readRecordingReadiness
+} from "./recording/recording-permissions";
+import { getRecordingService } from "./recording/recording-service";
+import { isRecordingActive } from "./recording/recording-state";
 import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
@@ -281,25 +297,13 @@ function handlerFor(kind: HotkeyKind): () => void {
     case "window":
       return () => void runInteractiveCapture("window");
     case "videoCapture":
-      return () => {
-        // Recording surface lands later (Phase 6/7). For now confirm
-        // the binding fires end-to-end: a system notification (best-
-        // effort; not every OS / build supports them) plus a warn log
-        // so dev runs see it in the terminal.
-        log.warn("video capture: coming soon (hotkey fired)");
-        try {
-          if (Notification.isSupported()) {
-            new Notification({
-              title: "Video capture is coming soon",
-              body: "The recording surface ships in a later release. Your hotkey is wired up."
-            }).show();
-          }
-        } catch (cause) {
-          log.warn("video-capture notification failed", {
-            message: cause instanceof Error ? cause.message : String(cause)
-          });
-        }
-      };
+      // Fast Video Capture (issue #64). Opens the selector in auto
+      // mode; the commit is routed to `recording:start` instead of
+      // `capture:interactive`. The Snap/Video post-selection chooser
+      // ships in a follow-up enhancement — for now this hotkey is
+      // the explicit "record video" entry point and the existing
+      // ⌘⇧C remains the explicit "take a snap" entry point.
+      return () => void runInteractiveRecord();
   }
 }
 
@@ -369,6 +373,42 @@ async function wireHotkeyRegistrations(): Promise<void> {
     }
     currentChannel = settings.updates.channel;
   });
+  // Startup permission-routing decision (Fast Video Capture, issue
+  // #64). Reads the current permission readiness; if any capability
+  // needs attention AND the fingerprint differs from the last one we
+  // routed for, opens Settings to the System Permissions page and
+  // writes the new fingerprint back so a subsequent unchanged launch
+  // doesn't re-nag. On darwin only — the Linux/CI build has no
+  // permission surface to route to.
+  if (process.platform === "darwin") {
+    try {
+      const settings = await service.read();
+      const readiness = readRecordingReadiness();
+      if (
+        needsAttention(readiness) &&
+        readiness.fingerprint !== settings.recording.lastRoutedPermissionFingerprint
+      ) {
+        log.info("routing to System Permissions on startup", {
+          fingerprint: readiness.fingerprint,
+          screenRecording: readiness.screenRecording,
+          microphone: readiness.microphone,
+          systemAudio: readiness.systemAudio
+        });
+        await service.write({
+          recording: { lastRoutedPermissionFingerprint: readiness.fingerprint }
+        });
+        void bus.dispatch(
+          "settings:open",
+          { page: "system-permissions" },
+          { principal: "ipc" }
+        );
+      }
+    } catch (cause) {
+      log.warn("startup permission routing skipped", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
 }
 
 function registerSettingsShortcut(): void {
@@ -437,6 +477,101 @@ async function runInteractiveCapture(
       message: result.error.message,
       mode
     });
+  }
+}
+
+/**
+ * Fast Video Capture entry (issue #64). Opens the selector to pick a
+ * region/window, then routes the commit to `recording:start` instead
+ * of `capture:interactive`. The Snap-vs-Video chooser ships later;
+ * this is the explicit "record" entry point used by the videoCapture
+ * hotkey and the tray's Record button.
+ */
+async function runInteractiveRecord(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  // Pick a rect / window via the existing region selector. We can't
+  // route through capture:interactive (which persists an image on
+  // commit), so we drive the region-selector module directly. On
+  // commit we have the rect + displayId + (optional) snappedWindowId,
+  // exactly the inputs `recording:start` wants.
+  //
+  // Imports are static (see file head). An earlier version used
+  // `await import(...)` here to avoid a perceived circular-dep risk,
+  // but electron-vite's main-process code-splitting paid the load+
+  // parse cost on first invocation — ⌘⇧V's first press took ~5
+  // seconds before the picker appeared (subsequent invocations were
+  // instant because the chunks were cached). Static imports add no
+  // measurable boot cost and remove the cold-press latency.
+  const selection = await pickRegion({
+    mode: "auto",
+    keepPwrSnapChrome: false,
+    intent: "video"
+  });
+  if (!selection.ok) {
+    setFloatOverState({ kind: "cancel" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    hideSelector();
+    if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
+      await activateApp(selection.previousAppPid);
+    }
+    return;
+  }
+  const { screenSnapshotId, previousAppPid } = selection;
+  // CRITICAL: the selector is at screen-saver level and would
+  // otherwise be in the captured pixels for the entire countdown +
+  // first frames of the recording. Drop it BEFORE `recording:start`
+  // (which awaits the 3s countdown before the recorder spawns) so
+  // the captured pixels are the user's actual workspace, not our
+  // orange selector frame. The countdown HUD lives in its own
+  // floating panel at top-center; the in-area overlay (when added)
+  // is also outside the selector's lifecycle.
+  hideSelector();
+  void releaseSnapshot(screenSnapshotId);
+  if (previousAppPid !== null) {
+    await activateApp(previousAppPid);
+  }
+  const settings = await new DesktopSettingsService({
+    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+  }).read();
+  // Honor the user's persisted audio defaults; the in-context
+  // recording dialog (a later enhancement) can override these.
+  const capabilities = {
+    systemAudio: settings.recording.includeSystemAudio,
+    microphone: settings.recording.includeMicrophone
+  };
+  // For window-snapped subjects, look up the app name/bundleId via
+  // the window-list helper so the Library shows "Microsoft Edge"
+  // rather than "Unknown App". The lookup is ~30-50ms — runs in the
+  // pre-countdown window where the user has already committed, so
+  // it adds no perceived latency. If the helper is unavailable or
+  // the window has moved/closed since selection, we fall back to
+  // null fields and the row reads "Unknown App" (same as today).
+  let subject: RecordingSubject;
+  if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
+    const windows = await listWindows();
+    const match = windows.find((w) => w.windowId === selection.snappedWindowId);
+    subject = {
+      kind: "window",
+      windowId: selection.snappedWindowId,
+      rect: selection.rect,
+      displayId: selection.displayId,
+      appName: match?.appName ?? null,
+      appBundleId: match?.bundleId ?? null
+    };
+  } else {
+    subject = {
+      kind: "region",
+      rect: selection.rect,
+      displayId: selection.displayId
+    };
+  }
+  const result = await bus.dispatch(
+    "recording:start",
+    { subject, capabilities, countdownSeconds: 3 },
+    { principal: "ipc" }
+  );
+  if (!result.ok) {
+    log.warn("recording:start failed", { code: result.error.code, message: result.error.message });
   }
 }
 
@@ -609,8 +744,14 @@ export function bootstrapApp(): void {
     registerFloatOverHandlers();
     registerLibraryHandlers();
     registerOverlaysHandlers();
+    registerRecordingHandlers();
     registerSettingsHandlers();
     registerStorageHandlers();
+    // Wire the floating recording HUD so it appears whenever the
+    // recording service is non-idle. Has to be installed AFTER the
+    // BrowserWindow + handler plumbing because the controller creates
+    // a BrowserWindow on the first state transition.
+    installRecordingController();
     // Dev seeder — gated on DEV at static-substitution time + a
     // belt-and-suspenders runtime NODE_ENV check. Production builds
     // tree-shake the entire `dev/seeder` subtree out of the bundle.
@@ -697,6 +838,7 @@ export function bootstrapApp(): void {
       const { insertOrFindCapture, insertOrFindCapturesBatch } = await import(
         "./persistence/captures-repo"
       );
+      const { insertVideoMetadata } = await import("./persistence/video-repo");
       const { getDb } = await import("./persistence/db");
       const { setFloatOverState } = await import("./float-over");
       const { showTrayPopoverForE2E, hideTrayPopoverForE2E } = await import("./tray");
@@ -718,6 +860,12 @@ export function bootstrapApp(): void {
         // on slow CI disks.
         seedCaptures: (inputs: Parameters<typeof insertOrFindCapture>[0][]) =>
           insertOrFindCapturesBatch(inputs),
+        // Insert the video_captures metadata row for a previously-
+        // seeded `kind="video"` capture. Specs use this to drive the
+        // float-over's video asset branch without spawning a real
+        // recording (which would need TCC permission + a Mac).
+        seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
+          insertVideoMetadata(input),
         // Drive the float-over state machine directly. Used by
         // float-over-visibility.spec.ts to assert the toast actually
         // reaches isVisible:true and stays there past the auto-dismiss
@@ -784,7 +932,35 @@ export function bootstrapApp(): void {
     // matches the expected menubar-app lifecycle on every platform.
   });
 
-  app.on("will-quit", () => {
+  // Track whether we've already initiated the recording-cancel
+  // teardown so we don't loop on the will-quit handler firing again
+  // after `app.quit()` is called from inside it.
+  let quitTeardownInFlight = false;
+  app.on("will-quit", (event) => {
+    // Fast Video Capture (issue #64): if a recording is active when
+    // the user hits ⌘Q, cancel it cleanly BEFORE the rest of teardown
+    // runs. Without this the Swift recorder is orphaned (parent dies,
+    // launchd reparents it) and the user's clip is lost AND a stray
+    // PwrSnapRecorder process sits in their process list until it
+    // hits its own write error or the parent-death watchdog reaps it.
+    if (isRecordingActive() && !quitTeardownInFlight) {
+      quitTeardownInFlight = true;
+      event.preventDefault();
+      void getRecordingService()
+        .cancel()
+        .catch((cause) => {
+          getMainLogger("pwrsnap:bootstrap").warn("cancel-on-quit failed", {
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        })
+        .finally(() => {
+          // Retry the quit — the second time around the recording
+          // state is idle so this branch falls through to the
+          // ordinary teardown below.
+          app.quit();
+        });
+      return;
+    }
     globalShortcut.unregisterAll();
     disposeRegionSelector();
     disposeTray();

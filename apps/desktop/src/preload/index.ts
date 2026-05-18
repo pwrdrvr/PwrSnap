@@ -219,6 +219,11 @@ const pwrsnapApi = {
     handler: (payload: {
       mode: "auto" | "region" | "window";
       screenUrl?: string;
+      /** Visual intent: `"video"` triggers the "Recording video"
+       *  badge + alternate hint copy so the user knows commit
+       *  starts a recording instead of taking a snap. Default
+       *  `"snap"` keeps existing visuals unchanged. */
+      intent?: "snap" | "video";
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -226,6 +231,7 @@ const pwrsnapApi = {
         payload as {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
+          intent?: "snap" | "video";
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

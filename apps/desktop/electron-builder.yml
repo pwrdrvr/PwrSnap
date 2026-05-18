@@ -7,6 +7,16 @@ electronVersion: 41.2.1
 asar: true
 asarUnpack:
   - "**/*.node"
+  # Fast Video Capture (issue #64) needs the ffmpeg binary unpacked
+  # from asar. `@ffmpeg-installer/<platform>` ships a static ffmpeg
+  # executable; `child_process.spawn` on a path inside an asar
+  # archive fails (the OS can't exec a virtual filesystem entry),
+  # so every GIF / MP4 export would 100% fail in a packaged build
+  # without this. The wrapper package's resolver
+  # (apps/desktop/src/main/recording/ffmpeg-resolver.ts) reads
+  # `require("@ffmpeg-installer/ffmpeg").path` which points to the
+  # unpacked binary under `app.asar.unpacked/...`.
+  - "**/node_modules/@ffmpeg-installer/**"
 compression: normal
 
 # Files included in the .app bundle. Run via apps/desktop/scripts/release.mjs
@@ -58,6 +68,11 @@ extraResources:
     to: "CHANGELOG.md"
   - from: "build/native/window-list"
     to: "PwrSnapWindowList"
+  # Fast Video Capture helper (issue #64). ScreenCaptureKit-based
+  # fixed-rect recorder spoken to via stdin/stdout JSON-RPC by
+  # apps/desktop/src/main/recording/recording-service.ts.
+  - from: "build/native/recorder"
+    to: "PwrSnapRecorder"
   # Tray template icon (16×16 base + @2x/@3x). Electron's nativeImage
   # auto-loads the @Nx siblings when given the base path, so all three
   # PNGs need to live next to each other under Contents/Resources/.
@@ -98,6 +113,9 @@ mac:
     NSScreenCaptureUsageDescription: "PwrSnap captures your screen for screenshots and screen recording."
     NSMicrophoneUsageDescription: "PwrSnap uses the microphone for voice annotation and presenter audio."
     NSCameraUsageDescription: "PwrSnap uses the camera for presenter video recording."
+    # Audio capture description (Fast Video Capture, issue #64).
+    # macOS uses this when the user opts into system-audio recording.
+    NSAudioCaptureUsageDescription: "PwrSnap records system audio for screen-recording exports when you turn it on."
   target:
     - target: dmg
       arch: [universal]

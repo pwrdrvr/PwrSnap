@@ -33,28 +33,11 @@ const { bus } = await import("../command-bus");
 const { registerCodexHandlers } = await import("../handlers/codex-handlers");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
+const { defaultSettings } = await import("../settings/desktop-settings-service");
 
 function testSettings(patch?: Partial<Settings>): Settings {
   return {
-    schemaVersion: 1,
-    codex: {
-      mode: "auto",
-      pinnedPath: "",
-      profile: ""
-    },
-    ai: {
-      enabled: false,
-      consentAcceptedAt: null
-    },
-    hotkeys: {
-      quickCapture: "CommandOrControl+Shift+P",
-      region: "CommandOrControl+Shift+R",
-      window: "CommandOrControl+Shift+W",
-      videoCapture: "CommandOrControl+Shift+V"
-    },
-    experimental: {
-      v2FileFormat: false
-    },
+    ...defaultSettings(),
     ...patch
   };
 }

@@ -171,10 +171,10 @@ describe("checkPackageLicensePolicy", () => {
 
   function writeExpectedPackages(root, overrides = {}) {
     const expected = {
-      "package.json": "UNLICENSED",
-      "apps/desktop/package.json": "UNLICENSED",
-      "packages/codex-app-server-protocol/package.json": "UNLICENSED",
-      "packages/shared/package.json": "UNLICENSED",
+      "package.json": "MIT",
+      "apps/desktop/package.json": "MIT",
+      "packages/codex-app-server-protocol/package.json": "MIT",
+      "packages/shared/package.json": "MIT",
       "packages/pwrsnap/package.json": "MIT",
       ...overrides,
     };
@@ -183,28 +183,28 @@ describe("checkPackageLicensePolicy", () => {
     }
   }
 
-  test("allows PwrSnap's intended UNLICENSED plus MIT package split", () => {
+  test("allows the all-MIT package layout", () => {
     const root = tempRoot();
     writeExpectedPackages(root);
 
     expect(checkPackageLicensePolicy(root)).toEqual([]);
   });
 
-  test("fails when an internal package drifts away from UNLICENSED", () => {
+  test("fails when an internal package drifts away from MIT", () => {
     const root = tempRoot();
     writeExpectedPackages(root, {
-      "apps/desktop/package.json": "MIT",
+      "apps/desktop/package.json": "UNLICENSED",
     });
 
     expect(checkPackageLicensePolicy(root)).toContain(
-      'apps/desktop/package.json declares license "MIT"; expected "UNLICENSED"',
+      'apps/desktop/package.json declares license "UNLICENSED"; expected "MIT"',
     );
   });
 
   test("fails when a new package is not covered by the policy", () => {
     const root = tempRoot();
     writeExpectedPackages(root);
-    writePackage(root, "packages/new-package/package.json", "UNLICENSED");
+    writePackage(root, "packages/new-package/package.json", "MIT");
 
     expect(checkPackageLicensePolicy(root)).toContain(
       "packages/new-package/package.json is not covered by scripts/check-package-license-policy.mjs; add an explicit expected license",

@@ -1,8 +1,8 @@
 # Third-party license notices
 
-PwrSnap is closed-source proprietary software, but the desktop app bundles
-third-party dependencies and font software whose notices must ship with each
-release. The committed source of truth is the repo-root
+PwrSnap is MIT-licensed (see [LICENSE](../LICENSE)), and the desktop app
+bundles third-party dependencies and font software whose notices must ship
+with each release. The committed source of truth is the repo-root
 `THIRD_PARTY_LICENSES` file.
 
 ## Commands
@@ -47,13 +47,13 @@ separately unless the font/software files are copied into the packaged app.
 
 ## Package license policy
 
-`scripts/check-package-license-policy.mjs` enforces PwrSnap's first-party
-license split:
+`scripts/check-package-license-policy.mjs` enforces that every workspace
+`package.json` declares `"license": "MIT"`:
 
-- root workspace: `UNLICENSED`
-- `apps/desktop`: `UNLICENSED`
-- `packages/shared`: `UNLICENSED`
-- `packages/codex-app-server-protocol`: `UNLICENSED`
+- root workspace: `MIT`
+- `apps/desktop`: `MIT`
+- `packages/shared`: `MIT`
+- `packages/codex-app-server-protocol`: `MIT`
 - `packages/pwrsnap`: `MIT`
 
 If a new package is added, update the policy script explicitly. Do not rely on

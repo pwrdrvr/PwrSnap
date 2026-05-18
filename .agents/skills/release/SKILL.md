@@ -38,7 +38,8 @@ Read these files before changing release metadata:
 - Do not use GitHub generated release notes as the final notes.
 - Do not force-push the default branch or rewrite an existing release tag
   without explicit user approval.
-- Keep v1.0 proprietary licensing intact: do not add OSS license language.
+- Keep the MIT license intact: do not swap LICENSE for a different SPDX or
+  drift any workspace `package.json` away from `"license": "MIT"`.
 
 ## Prepare Release Metadata
 

@@ -643,6 +643,49 @@
   min-width: 48px;
 }
 
+.pss__storage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.pss__storage-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pss__storage-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.pss__storage-bytes {
+  font: 700 13px/1 var(--font-mono);
+  color: var(--text-primary);
+}
+.pss__storage-bar {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.pss__storage-bar span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+}
+.pss__storage-detail {
+  font: 500 11px/1.35 var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* "Test" action card — like the connection test row */
 .pss__test {
   display: flex;

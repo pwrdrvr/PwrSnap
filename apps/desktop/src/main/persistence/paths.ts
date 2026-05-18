@@ -6,7 +6,7 @@
 // Default layout (env unset):
 //   pwrsnap.db                          → <userData>/pwrsnap.db
 //   captures/<id>.png                   → <documents>/PwrSnap/<id>.png
-//   cache/<capture_id>/<hash>.<format>  → <userData>/cache/...
+//   render-cache/<capture_id>/<hash>.<format>  → <userData>/render-cache/...
 //   .trash/<id>.png                     → <userData>/.trash/...
 //
 // Captures land in `~/Documents/PwrSnap/` so users can find them in
@@ -17,7 +17,7 @@
 // Override layout (`PWRSNAP_DATA_ROOT=/some/path`):
 //   pwrsnap.db    → <root>/pwrsnap.db
 //   captures      → <root>/captures
-//   cache         → <root>/cache
+//   render-cache  → <root>/render-cache
 //   .trash        → <root>/.trash
 //   perf          → <root>/perf
 //
@@ -72,7 +72,19 @@ export function getCapturesRoot(): string {
   return join(app.getPath("documents"), "PwrSnap");
 }
 
+export function getLegacyCapturesRoot(): string {
+  return join(getDataRoot(), "captures");
+}
+
 export function getCacheRoot(): string {
+  // Do not use "cache" here. Electron/Chromium owns <userData>/Cache;
+  // on macOS's default case-insensitive filesystem, "cache" aliases
+  // that same directory and mixes PwrSnap render derivatives with the
+  // browser HTTP cache.
+  return join(getDataRoot(), "render-cache");
+}
+
+export function getLegacyCacheRoot(): string {
   return join(getDataRoot(), "cache");
 }
 

@@ -56,26 +56,46 @@ describe("paths.getDataRoot", () => {
 });
 
 describe("paths accessors compose from getDataRoot", () => {
-  test("default layout: DB/cache/trash under userData, captures under documents/PwrSnap", async () => {
-    const { getDbPath, getCapturesRoot, getCacheRoot, getTrashRoot, getPerfRoot } =
+  test("default layout: DB/render-cache/trash under userData, captures under documents/PwrSnap", async () => {
+    const {
+      getDbPath,
+      getCapturesRoot,
+      getLegacyCapturesRoot,
+      getCacheRoot,
+      getLegacyCacheRoot,
+      getTrashRoot,
+      getPerfRoot
+    } =
       await import("../paths");
     const userData = "/tmp/pwrsnap-test-userData";
     const documents = "/tmp/pwrsnap-test-documents";
     expect(getDbPath()).toBe(`${userData}/pwrsnap.db`);
     expect(getCapturesRoot()).toBe(`${documents}/PwrSnap`);
-    expect(getCacheRoot()).toBe(`${userData}/cache`);
+    expect(getLegacyCapturesRoot()).toBe(`${userData}/captures`);
+    expect(getCacheRoot()).toBe(`${userData}/render-cache`);
+    expect(getLegacyCacheRoot()).toBe(`${userData}/cache`);
     expect(getTrashRoot()).toBe(`${userData}/.trash`);
     expect(getPerfRoot()).toBe(`${userData}/perf`);
   });
 
   test("override layout: every accessor reroots under PWRSNAP_DATA_ROOT (single tree)", async () => {
     process.env[ENV_KEY] = "/Volumes/Dev/pwrsnap-perf/100";
-    const { getDbPath, getCapturesRoot, getCacheRoot, getTrashRoot, getPerfRoot } =
+    const {
+      getDbPath,
+      getCapturesRoot,
+      getLegacyCapturesRoot,
+      getCacheRoot,
+      getLegacyCacheRoot,
+      getTrashRoot,
+      getPerfRoot
+    } =
       await import("../paths");
     const root = "/Volumes/Dev/pwrsnap-perf/100";
     expect(getDbPath()).toBe(`${root}/pwrsnap.db`);
     expect(getCapturesRoot()).toBe(`${root}/captures`);
-    expect(getCacheRoot()).toBe(`${root}/cache`);
+    expect(getLegacyCapturesRoot()).toBe(`${root}/captures`);
+    expect(getCacheRoot()).toBe(`${root}/render-cache`);
+    expect(getLegacyCacheRoot()).toBe(`${root}/cache`);
     expect(getTrashRoot()).toBe(`${root}/.trash`);
     expect(getPerfRoot()).toBe(`${root}/perf`);
   });

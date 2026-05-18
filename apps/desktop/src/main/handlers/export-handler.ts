@@ -7,7 +7,7 @@
 //      block readers.
 //   2. Hardlink (same volume, fast, no copy) or copy (cross-volume)
 //      everything under captures/ into <dest>/captures/.
-//   3. Hardlink/copy cache/ similarly so the user's renders survive.
+//   3. Hardlink/copy render-cache/ similarly so the user's renders survive.
 //   4. Write a manifest with sha256 of the snapshot DB + capture
 //      count for verification.
 //
@@ -67,7 +67,7 @@ async function exportLibrary(destDir: string): Promise<{ destDir: string; manife
   }
   db.exec(`VACUUM INTO '${dbDest.replace(/'/g, "''")}'`);
 
-  // 2 + 3. Hardlink captures/ and cache/ recursively.
+  // 2 + 3. Hardlink captures/ and render-cache/ recursively.
   const capturesRoot = getCapturesRoot();
   const cacheRoot = getCacheRoot();
   let captureFileCount = 0;
@@ -76,7 +76,7 @@ async function exportLibrary(destDir: string): Promise<{ destDir: string; manife
     captureFileCount = await mirrorTree(capturesRoot, join(destDir, "captures"));
   }
   if (existsSync(cacheRoot)) {
-    cacheFileCount = await mirrorTree(cacheRoot, join(destDir, "cache"));
+    cacheFileCount = await mirrorTree(cacheRoot, join(destDir, "render-cache"));
   }
 
   // 4. Manifest with sha256 of the snapshot DB.

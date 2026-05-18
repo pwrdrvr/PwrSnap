@@ -76,6 +76,57 @@ export type CapturePresetMetric = {
   fromCache: boolean;
 };
 
+export type StorageBucket = {
+  bytes: number;
+  fileCount: number;
+};
+
+export type StorageSnapshot = {
+  capturedAt: string;
+  totalBytes: number;
+  sourceCaptures: StorageBucket & {
+    captureCount: number;
+    documentsBytes: number;
+    appSupportBytes: number;
+  };
+  renderCache: StorageBucket;
+  chromiumHttpCache: StorageBucket & {
+    reportedBytes: number;
+    limitBytes: number;
+  };
+  chromiumCodeCache: StorageBucket;
+  chromiumGpuCaches: StorageBucket;
+  database: {
+    bytes: number;
+    walBytes: number;
+    shmBytes: number;
+    pageCount: number;
+    pageSize: number;
+    freelistCount: number;
+  };
+  otherAppSupport: StorageBucket;
+};
+
+export type StorageMaintenanceResult = {
+  snapshot: StorageSnapshot;
+  clearedBytes: number;
+};
+
+export type RenderCacheMaintenanceMode = "trim" | "clear";
+
+export type StorageSummary = {
+  capturedAt: string;
+  sourceCaptures: {
+    bytes: number;
+    captureCount: number;
+  };
+};
+
+export type StorageSnapshotUpdate = {
+  snapshot: StorageSnapshot;
+  scanning: boolean;
+};
+
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
@@ -342,6 +393,15 @@ export type Commands = {
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
+
+  // ---- storage ----
+  "storage:summary": { req: Record<string, never>; res: StorageSummary };
+  "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };
+  "storage:clearAppCache": { req: Record<string, never>; res: StorageMaintenanceResult };
+  "storage:maintainRenderCache": {
+    req: { mode: RenderCacheMaintenanceMode };
+    res: StorageMaintenanceResult;
+  };
 
   // ---- overlays (Phase 2+) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };

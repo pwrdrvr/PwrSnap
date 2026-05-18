@@ -5,7 +5,7 @@ import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
-import { acceleratorToDisplayKeys } from "../settings/pages/HotkeysPage";
+import { acceleratorToDisplayKeys } from "../settings/pages/hotkeys-display";
 import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 

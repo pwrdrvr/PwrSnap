@@ -16,7 +16,7 @@
 //   Phase C.3.
 
 import { Fragment, type ReactElement } from "react";
-import { TOOLS, type Tool } from "../editor/Editor";
+import { TOOLS, type Tool } from "../editor/editor-tools";
 
 export type EditToolbarProps = {
   readonly tool: Tool;

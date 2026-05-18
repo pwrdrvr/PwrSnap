@@ -37,8 +37,10 @@
 - Product name is **PwrSnap** — one word, two capitals (`Pwr` + `Snap`),
   rendered as `Pwr` in primary text + `Snap` in the brand accent. Never insert
   whitespace between the halves; never lowercase the second capital.
-- Company is **PwrDrvr LLC**. License markings are `UNLICENSED` —
-  v1.0 is closed-source proprietary.
+- Company is **PwrDrvr LLC**. License is **MIT** (see [LICENSE](LICENSE)) —
+  every `package.json` in the workspace declares `"license": "MIT"`; the
+  policy gate [scripts/check-package-license-policy.mjs](scripts/check-package-license-policy.mjs)
+  fails the build if any package drifts.
 - Visual language follows the design system in `design/` — pure-black
   surfaces (`#000000`), tangerine accent (`#ff8a1f`), Geist + Geist Mono.
   PwrAgent is the system of record for PwrDrvr brand tokens; PwrSnap mirrors
@@ -445,7 +447,10 @@ doesn't.
 
 ## Release / Distribution
 
-- Closed-source proprietary. License markings (`UNLICENSED`) are load-bearing.
+- MIT licensed (see [LICENSE](LICENSE)). Every workspace `package.json`
+  declares `"license": "MIT"`; the policy gate
+  [scripts/check-package-license-policy.mjs](scripts/check-package-license-policy.mjs)
+  fails the build if any package drifts.
 - `THIRD_PARTY_LICENSES` is load-bearing release metadata. Do not hand-edit it
   except through `pnpm licenses:generate`, and do not remove the shipped
   notices/changelog resources from packaged builds. See

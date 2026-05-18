@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const EXPECTED_LICENSES = new Map([
-  ["package.json", "UNLICENSED"],
-  ["apps/desktop/package.json", "UNLICENSED"],
-  ["packages/codex-app-server-protocol/package.json", "UNLICENSED"],
-  ["packages/shared/package.json", "UNLICENSED"],
+  ["package.json", "MIT"],
+  ["apps/desktop/package.json", "MIT"],
+  ["packages/codex-app-server-protocol/package.json", "MIT"],
+  ["packages/shared/package.json", "MIT"],
   ["packages/pwrsnap/package.json", "MIT"],
 ]);
 

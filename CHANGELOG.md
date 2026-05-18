@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.0-beta.2 - 2026-05-18
+
+- Fixed universal macOS release packaging so the prebuilt window-list helper
+  and Sharp's Darwin optional dependencies merge cleanly into the signed app.
+- Tightened the native helper build cache so release builds rebuild the helper
+  whenever a universal binary is required but the cached output is single-arch.
+
 ## v1.0.0-beta.1 - 2026-05-18
 
 - Added app updates, update channel settings, and an update-ready banner so

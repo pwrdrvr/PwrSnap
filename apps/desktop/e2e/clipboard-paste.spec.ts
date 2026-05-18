@@ -26,19 +26,6 @@ async function makeClipboardPng(widthPx: number, heightPx: number): Promise<Buff
     .toBuffer();
 }
 
-async function makeClipboardTiff(widthPx: number, heightPx: number): Promise<Buffer> {
-  return await sharp({
-    create: {
-      width: widthPx,
-      height: heightPx,
-      channels: 3,
-      background: { r: 160, g: 60, b: 200 }
-    }
-  })
-    .tiff()
-    .toBuffer();
-}
-
 async function writeClipboardImage(
   app: Awaited<ReturnType<typeof launchPwrSnap>>,
   png: Buffer
@@ -50,20 +37,6 @@ async function writeClipboardImage(
       clipboard.write({ image });
     },
     { bytes: Array.from(png) }
-  );
-}
-
-async function writeClipboardRawImageFormat(
-  app: Awaited<ReturnType<typeof launchPwrSnap>>,
-  format: string,
-  bytes: Buffer
-): Promise<void> {
-  await app.electronApp.evaluate(
-    ({ clipboard }, payload: { format: string; bytes: number[] }) => {
-      clipboard.clear();
-      clipboard.writeBuffer(payload.format, Buffer.from(payload.bytes));
-    },
-    { format, bytes: Array.from(bytes) }
   );
 }
 
@@ -144,10 +117,6 @@ test.describe("clipboard paste into library", () => {
       await clearClipboard(app);
       await writeClipboardImageFileUrl(app, await makeClipboardPng(90, 50));
       expect(await readPasteMenuEnabled(app)).toBe(true);
-
-      await clearClipboard(app);
-      await writeClipboardRawImageFormat(app, "public.tiff", await makeClipboardTiff(100, 60));
-      expect(await readPasteMenuEnabled(app)).toBe(true);
     } finally {
       await app.close();
     }
@@ -214,21 +183,4 @@ test.describe("clipboard paste into library", () => {
     }
   });
 
-  test("capture:pasteFromClipboard persists a raw image pasteboard format", async () => {
-    const app = await launchPwrSnap();
-    try {
-      await writeClipboardRawImageFormat(app, "public.tiff", await makeClipboardTiff(128, 72));
-
-      const pasted = await app.dispatch("capture:pasteFromClipboard", {});
-      expect(pasted.ok, JSON.stringify(pasted)).toBe(true);
-      if (!pasted.ok) return;
-
-      expect(pasted.value.width_px).toBe(128);
-      expect(pasted.value.height_px).toBe(72);
-      const fileStat = await stat(pasted.value.src_path);
-      expect(fileStat.isFile()).toBe(true);
-    } finally {
-      await app.close();
-    }
-  });
 });

@@ -41,6 +41,11 @@ import {
 import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
+import {
+  clipboardImageBufferFormats,
+  writeFirstDecodableClipboardBufferToPng,
+  type RawClipboardDecodeFailure
+} from "../clipboard-image-buffer";
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
@@ -68,18 +73,6 @@ const CLIPBOARD_FILE_URL_FORMATS = [
   "public.url",
   "NSURLPboardType"
 ] as const;
-const CLIPBOARD_IMAGE_FORMAT_NEEDLES = [
-  "avif",
-  "bmp",
-  "gif",
-  "jp2",
-  "jpeg",
-  "jpg",
-  "pict",
-  "png",
-  "tiff",
-  "webp"
-] as const;
 const IMAGE_FILE_EXTENSIONS = new Set([
   ".avif",
   ".bmp",
@@ -98,7 +91,7 @@ type CaptureSource = Pick<WindowInfo, "bundleId" | "appName"> | null;
 
 export function clipboardHasPasteableImage(): boolean {
   if (!clipboard.readImage().isEmpty()) return true;
-  if (clipboardImageBufferFormat() !== null) return true;
+  if (clipboardImageBufferFormats(clipboard.availableFormats()).length > 0) return true;
   const filePath = clipboardImageFilePath();
   return filePath !== null && looksLikeImageFile(filePath);
 }
@@ -411,24 +404,22 @@ async function writeClipboardImageToTempPng(): Promise<
     return { ok: true, tempPath };
   }
 
-  const bufferFormat = clipboardImageBufferFormat();
-  if (bufferFormat !== null) {
-    try {
-      const tempPath = await makeClipboardTempPngPath();
-      await sharp(clipboard.readBuffer(bufferFormat)).png().toFile(tempPath);
-      return { ok: true, tempPath };
-    } catch (cause) {
-      return {
-        ok: false,
-        code: "unsupported_image",
-        message: `Could not decode clipboard image format: ${bufferFormat}`,
-        cause
-      };
-    }
+  const decodedBuffer = await writeFirstDecodableClipboardBufferToPng({
+    formats: clipboard.availableFormats(),
+    readBuffer: (format) => clipboard.readBuffer(format),
+    makeTempPath: makeClipboardTempPngPath
+  });
+  const decodeFailures: RawClipboardDecodeFailure[] = [];
+  if (decodedBuffer.ok) {
+    return decodedBuffer;
   }
+  decodeFailures.push(...decodedBuffer.failures);
 
   const filePath = clipboardImageFilePath();
   if (filePath === null || !looksLikeImageFile(filePath)) {
+    if (decodeFailures.length > 0) {
+      return unsupportedClipboardImage(decodeFailures);
+    }
     return {
       ok: false,
       code: "no_image",
@@ -441,31 +432,30 @@ async function writeClipboardImageToTempPng(): Promise<
     await sharp(filePath).png().toFile(tempPath);
     return { ok: true, tempPath };
   } catch (cause) {
-    return {
-      ok: false,
-      code: "unsupported_image",
-      message: `Could not decode clipboard image file: ${filePath}`,
-      cause
-    };
+    decodeFailures.push({ source: filePath, cause });
+    return unsupportedClipboardImage(decodeFailures);
   }
+}
+
+function unsupportedClipboardImage(failures: RawClipboardDecodeFailure[]): {
+  ok: false;
+  code: "unsupported_image";
+  message: string;
+  cause: unknown;
+} {
+  return {
+    ok: false,
+    code: "unsupported_image",
+    message: `Could not decode clipboard image formats: ${failures
+      .map((failure) => failure.source)
+      .join(", ")}`,
+    cause: failures
+  };
 }
 
 async function makeClipboardTempPngPath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pwrsnap-clipboard-"));
   return join(dir, `${Date.now()}.png`);
-}
-
-function clipboardImageBufferFormat(): string | null {
-  for (const format of clipboard.availableFormats()) {
-    if (isClipboardImageBufferFormat(format)) return format;
-  }
-  return null;
-}
-
-function isClipboardImageBufferFormat(format: string): boolean {
-  const lower = format.toLowerCase();
-  if (lower.includes("file-url") || lower.includes("url")) return false;
-  return CLIPBOARD_IMAGE_FORMAT_NEEDLES.some((needle) => lower.includes(needle));
 }
 
 function clipboardImageFilePath(): string | null {

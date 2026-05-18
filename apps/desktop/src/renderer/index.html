@@ -31,26 +31,24 @@
     <script>
       (function () {
         try {
-          // The tray popover uses `vibrancy: "popover"`, which renders
-          // the OS-controlled NSPopover material. That material follows
-          // the macOS appearance, NOT <html data-theme> — there's no
-          // way to make the material light while the OS is dark (or
-          // vice versa). When the user pins a PwrSnap theme opposite
-          // to the OS, applying our light/dark tokens to the tray
-          // produces dark-on-dark or light-on-light text against the
-          // material. macOS convention is that menu-bar extras follow
-          // the OS regardless of app preference (CleanShot, Raycast,
-          // Linear all do this) — so the tray ignores the persisted
-          // PwrSnap theme and resolves via matchMedia only. All other
-          // stages (library / settings / float-over / edit / document
-          // / region) paint their own fully-opaque backdrop and can
-          // honor the user's pin.
-          var hash = (window.location.hash || "").replace(/^#/, "");
-          var stage = new URLSearchParams(hash).get("stage");
-          var followOSOnly = stage === "tray";
-
+          // Source of truth, in priority order:
+          //   1. window.__pwrsnapAppearance — populated by preload from
+          //      Electron's `additionalArguments`, which main sets at
+          //      window construction time after a sync read of the
+          //      Settings JSON. Authoritative; available on every
+          //      launch including the first one (no localStorage yet).
+          //   2. localStorage `pwrsnap.appearance.v1` — fallback for
+          //      paths where the preload bridge hasn't loaded.
+          //   3. "system" default → matchMedia.
+          //
+          // Chained this way (additionalArguments first) so a cold
+          // launch in light theme never flashes the dark default in
+          // the gap before the renderer's React hook can reconcile.
           var theme = "system";
-          if (!followOSOnly) {
+          var bridged = window.__pwrsnapAppearance;
+          if (bridged && (bridged.theme === "system" || bridged.theme === "dark" || bridged.theme === "light")) {
+            theme = bridged.theme;
+          } else {
             var KEY = "pwrsnap.appearance.v1";
             var raw = window.localStorage.getItem(KEY);
             if (raw) {

@@ -124,7 +124,7 @@ body[data-stage="region"][data-snap="display"] {
   align-items: center;
   gap: 8px;
   padding: 4px 8px;
-  background: rgba(20, 17, 14, 0.92);
+  background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
   border: 1px solid var(--accent-border);
   border-radius: 6px;
   color: var(--text-primary);
@@ -140,7 +140,7 @@ body[data-stage="region"][data-snap="display"] {
   display: flex;
   gap: 12px;
   padding: 8px 14px;
-  background: rgba(20, 17, 14, 0.92);
+  background: color-mix(in srgb, var(--bg-panel-hover) 92%, transparent);
   border: 1px solid var(--border-default);
   border-radius: 999px;
   color: var(--text-secondary);

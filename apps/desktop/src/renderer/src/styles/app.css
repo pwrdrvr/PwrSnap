@@ -157,7 +157,7 @@ body[data-stage="float-over"] .fo {
   padding: 14px;
   border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.34));
   border-radius: 8px;
-  background: rgba(18, 14, 12, 0.97);
+  background: color-mix(in srgb, var(--bg-panel-hover) 97%, transparent);
   box-shadow: var(--shadow-lg);
 }
 

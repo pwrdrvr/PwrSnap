@@ -77,3 +77,31 @@ export function getStartupBackgroundColor(): string {
   // aligned.
   return nativeTheme.shouldUseDarkColors ? STARTUP_BG_DARK : STARTUP_BG_LIGHT;
 }
+
+/** Argv prefix the preload parses (`apps/desktop/src/preload/index.ts`)
+ *  to recover the persisted theme + expose it on
+ *  `window.__pwrsnapAppearance`. The inline bootstrap in
+ *  `apps/desktop/src/renderer/index.html` reads from that bridge
+ *  before falling back to localStorage. */
+const APPEARANCE_ARG_PREFIX = "--pwrsnap-appearance=";
+
+/**
+ * Build the `webPreferences.additionalArguments` payload that pipes
+ * the persisted theme through to the preload's appearance bridge.
+ *
+ * Without this, a cold launch in light theme has to wait for
+ * `main.tsx` to import the CSS module + run the React hook before
+ * the renderer learns the user's preference — and the gap shows up
+ * as a brief flash of the dark default. Threading the theme through
+ * `additionalArguments` makes the value available synchronously to
+ * the preload, which sets it on `window` before the page script ever
+ * runs. The inline bootstrap reads from there in `<head>`, well
+ * before any CSS loads.
+ *
+ * Returned as a single string ready to spread into `webPreferences.
+ * additionalArguments: [...getStartupAppearanceArgs()]`.
+ */
+export function getStartupAppearanceArgs(): readonly string[] {
+  const theme = readPersistedTheme();
+  return [`${APPEARANCE_ARG_PREFIX}${JSON.stringify({ theme })}`];
+}

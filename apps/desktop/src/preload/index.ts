@@ -262,3 +262,49 @@ const pwrsnapApi = {
 export type PwrsnapApi = typeof pwrsnapApi;
 
 contextBridge.exposeInMainWorld("pwrsnapApi", pwrsnapApi);
+
+// Appearance bridge — synchronous theme delivery for the inline
+// pre-React bootstrap in index.html.
+//
+// Main builds a `--pwrsnap-appearance=<json>` token into the window's
+// `webPreferences.additionalArguments` after a sync read of the
+// persisted theme; we parse it here and surface the result on
+// `window.__pwrsnapAppearance`. The bootstrap reads from there before
+// touching localStorage, so a cold launch in light theme paints light
+// from the very first frame — no flash-of-dark-then-light gap.
+//
+// On the renderer side, `useAppearanceSync` continues to be the source
+// of truth for in-session state and writes — this bridge is purely for
+// the pre-mount first paint.
+const APPEARANCE_ARG_PREFIX = "--pwrsnap-appearance=";
+
+function readAppearanceFromArgs(): { theme: "system" | "dark" | "light" } | null {
+  // process.argv may include the additionalArgument we passed from
+  // main. We don't validate exhaustively here — the bootstrap also
+  // re-validates the value before applying it. Anything off-spec
+  // falls through and the bootstrap uses its localStorage / matchMedia
+  // fallback path.
+  try {
+    for (const arg of process.argv) {
+      if (!arg.startsWith(APPEARANCE_ARG_PREFIX)) continue;
+      const json = arg.slice(APPEARANCE_ARG_PREFIX.length);
+      const parsed: unknown = JSON.parse(json);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "theme" in parsed &&
+        (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")
+      ) {
+        return { theme: parsed.theme };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+const appearance = readAppearanceFromArgs();
+if (appearance !== null) {
+  contextBridge.exposeInMainWorld("__pwrsnapAppearance", appearance);
+}

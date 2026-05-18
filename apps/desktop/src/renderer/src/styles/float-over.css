@@ -63,7 +63,7 @@
   position: absolute;
   bottom: 14px; left: 50%; transform: translateX(-50%);
   height: 56px; width: 360px;
-  background: rgba(20, 17, 14, 0.55);
+  background: color-mix(in srgb, var(--bg-panel-hover) 55%, transparent);
   border: 1px solid rgba(255,255,255,0.06);
   border-radius: 14px;
   backdrop-filter: blur(20px);
@@ -78,7 +78,7 @@
   bottom: 24px;
   right: 24px;
   width: 360px;
-  background: rgba(20, 17, 14, 0.94);
+  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
   backdrop-filter: blur(24px) saturate(1.2);
   -webkit-backdrop-filter: blur(24px) saturate(1.2);
   border: 1px solid rgba(255,255,255,0.08);
@@ -208,7 +208,7 @@
   font: 600 10px/1 var(--font-sans);
   cursor: pointer;
 }
-.fo__hover-btn:hover { background: rgba(40,35,28,0.92); border-color: var(--accent-border); color: var(--accent-bright); }
+.fo__hover-btn:hover { background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent); border-color: var(--accent-border); color: var(--accent-bright); }
 
 /* ----- copy resolution buttons ----- */
 .fo__copy {

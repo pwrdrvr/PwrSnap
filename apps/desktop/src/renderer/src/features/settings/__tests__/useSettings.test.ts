@@ -48,7 +48,8 @@ const baseSettings: Settings = {
   },
   experimental: { v2FileFormat: false },
   general: { developerMode: false },
-  appearance: { theme: "system" }
+  appearance: { theme: "system" },
+  updates: { channel: "latest" }
 };
 
 const baseSecrets = {

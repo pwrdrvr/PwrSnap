@@ -1,11 +1,18 @@
 import type { ReactElement } from "react";
-import { Card, Row, Switch } from "../components";
+import { Card, Row, SegmentedControl, Switch, type SegmentOption } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import type { UpdateChannel } from "@pwrsnap/shared";
+
+const UPDATE_CHANNEL_OPTIONS: readonly SegmentOption<UpdateChannel>[] = [
+  { id: "latest", label: "Stable" },
+  { id: "prerelease", label: "Prerelease" }
+];
 
 export function ExperimentalPage(): ReactElement {
   const { settings, patch } = useSettingsContext();
   const v2 = settings?.experimental.v2FileFormat ?? false;
   const developerMode = settings?.general.developerMode ?? false;
+  const channel: UpdateChannel = settings?.updates.channel ?? "latest";
   const ready = settings !== null;
 
   const onV2Change = ready
@@ -20,6 +27,12 @@ export function ExperimentalPage(): ReactElement {
       }
     : undefined;
 
+  const onChannelChange = ready
+    ? (next: UpdateChannel): void => {
+        void patch({ updates: { channel: next } });
+      }
+    : (): void => {};
+
   return (
     <>
       <div className="pss__main-hdr">
@@ -32,6 +45,20 @@ export function ExperimentalPage(): ReactElement {
           </p>
         </div>
       </div>
+
+      <Card eyebrow="UPDATES" title="Update channel">
+        <Row
+          label="Release stream"
+          sub='"Stable" tracks the latest signed release. "Prerelease" includes betas and alphas — earlier features, more rough edges. Takes effect on the next update check.'
+          tag={channel}
+        >
+          <SegmentedControl
+            options={UPDATE_CHANNEL_OPTIONS}
+            value={channel}
+            onChange={onChannelChange}
+          />
+        </Row>
+      </Card>
 
       <Card eyebrow="DEVELOPER" title="Developer mode">
         <Row

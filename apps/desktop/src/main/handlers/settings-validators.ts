@@ -289,6 +289,36 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.updates !== undefined) {
+    if (
+      typeof p.updates !== "object" ||
+      p.updates === null ||
+      Array.isArray(p.updates)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_updates",
+          "settings:write: updates must be an object"
+        )
+      };
+    }
+    const updates = p.updates as Record<string, unknown>;
+    if (
+      !isUndefined(updates.channel) &&
+      updates.channel !== "latest" &&
+      updates.channel !== "prerelease"
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_updates_channel",
+          "settings:write: updates.channel must be \"latest\" or \"prerelease\""
+        )
+      };
+    }
+  }
+
   return { ok: true, value: patch as SettingsPatch };
 }
 

@@ -65,7 +65,9 @@ export function AppearancePage(): ReactElement {
           <p className="pss__main-sub">
             Choose how PwrSnap windows look. System tracks your macOS
             appearance and flips live when you toggle it; Dark and Light
-            pin the renderer regardless.
+            pin the renderer regardless. The menu-bar tray popover
+            always follows the OS so it matches the system popover
+            material — this preference doesn't apply there.
           </p>
         </div>
       </div>

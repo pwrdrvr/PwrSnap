@@ -31,13 +31,33 @@
     <script>
       (function () {
         try {
-          var KEY = "pwrsnap.appearance.v1";
+          // The tray popover uses `vibrancy: "popover"`, which renders
+          // the OS-controlled NSPopover material. That material follows
+          // the macOS appearance, NOT <html data-theme> — there's no
+          // way to make the material light while the OS is dark (or
+          // vice versa). When the user pins a PwrSnap theme opposite
+          // to the OS, applying our light/dark tokens to the tray
+          // produces dark-on-dark or light-on-light text against the
+          // material. macOS convention is that menu-bar extras follow
+          // the OS regardless of app preference (CleanShot, Raycast,
+          // Linear all do this) — so the tray ignores the persisted
+          // PwrSnap theme and resolves via matchMedia only. All other
+          // stages (library / settings / float-over / edit / document
+          // / region) paint their own fully-opaque backdrop and can
+          // honor the user's pin.
+          var hash = (window.location.hash || "").replace(/^#/, "");
+          var stage = new URLSearchParams(hash).get("stage");
+          var followOSOnly = stage === "tray";
+
           var theme = "system";
-          var raw = window.localStorage.getItem(KEY);
-          if (raw) {
-            var parsed = JSON.parse(raw);
-            if (parsed && (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")) {
-              theme = parsed.theme;
+          if (!followOSOnly) {
+            var KEY = "pwrsnap.appearance.v1";
+            var raw = window.localStorage.getItem(KEY);
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")) {
+                theme = parsed.theme;
+              }
             }
           }
           var resolved = theme;

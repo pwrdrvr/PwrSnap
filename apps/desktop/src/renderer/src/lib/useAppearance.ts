@@ -139,6 +139,17 @@ export function useAppearance(input: UseAppearanceInput): AppearanceController {
   return { theme, resolvedTheme: resolved, setTheme };
 }
 
+/** True when this BrowserWindow is the tray popover stage. The tray
+ *  uses `vibrancy: "popover"` whose NSPopover material is OS-driven
+ *  and ignores `<html data-theme>` — see `useAppearanceSync` for the
+ *  full rationale. Read once at module load from the URL hash; every
+ *  window's hash is stable for the lifetime of the document. */
+function isTrayStage(): boolean {
+  if (typeof window === "undefined") return false;
+  const hash = window.location.hash.replace(/^#/, "");
+  return new URLSearchParams(hash).get("stage") === "tray";
+}
+
 /**
  * Settings-aware wrapper. Call this once at every BrowserWindow's
  * React root (Library, Settings, Tray, Float-over, Region selector,
@@ -155,15 +166,36 @@ export function useAppearance(input: UseAppearanceInput): AppearanceController {
  * to highlight the active option). Surfaces that only care about the
  * applied theme can ignore the return value — the hook's side-effects
  * keep `<html data-theme>` correct on its own.
+ *
+ * Tray exception: the tray popover paints over a `vibrancy: "popover"`
+ * NSPopover material whose appearance is driven by the OS, not by
+ * `<html data-theme>`. Applying the user's pinned PwrSnap theme to
+ * the tray when it disagrees with the OS produces dark-on-dark or
+ * light-on-light text against the material. macOS convention is
+ * that menu-bar extras always follow the OS appearance regardless
+ * of app preference (CleanShot, Raycast, Linear all do this), so
+ * the tray stage short-circuits: ignore the persisted Settings
+ * theme, force `"system"` so the matchMedia listener inside
+ * `useAppearance` follows the OS live.
  */
 export function useAppearanceSync(): AppearanceController {
-  const [settingsTheme, setSettingsTheme] = useState<AppearanceTheme | undefined>(undefined);
+  const tray = isTrayStage();
+  const [settingsTheme, setSettingsTheme] = useState<AppearanceTheme | undefined>(
+    tray ? "system" : undefined
+  );
 
   // Initial load + broadcast subscription. Mirrors the lifecycle in
   // `useSettings.ts` but only tracks the appearance slice — every
   // window pays this subscription cost, so we deliberately keep it
   // narrow rather than wiring the full settings hook everywhere.
+  //
+  // Tray stage skips the subscription entirely: its theme is pinned
+  // to "system" so the user's writes shouldn't propagate to it. The
+  // OS-sync listener inside `useAppearance` keeps it in step with the
+  // popover material as the OS appearance changes.
   useEffect(() => {
+    if (tray) return;
+
     let cancelled = false;
 
     void (async () => {
@@ -187,9 +219,13 @@ export function useAppearanceSync(): AppearanceController {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [tray]);
 
   const writeTheme = useCallback(async (theme: AppearanceTheme): Promise<void> => {
+    // Tray has no UI for theme selection, but defensively short-
+    // circuit anyway so a misuse doesn't try to persist from the
+    // tray's React tree.
+    if (tray) return;
     const result = await dispatch("settings:write", { appearance: { theme } });
     if (!result.ok) {
       // Surface as a thrown error so `useAppearance`'s catch-and-
@@ -197,7 +233,7 @@ export function useAppearanceSync(): AppearanceController {
       // try/await context (if any).
       throw new Error(result.error.message);
     }
-  }, []);
+  }, [tray]);
 
   return useAppearance({ settingsTheme, writeTheme });
 }

@@ -3,7 +3,7 @@
 // so we test the function directly and skip React rendering.
 
 import { describe, expect, test } from "vitest";
-import { acceleratorToDisplayKeys } from "../HotkeysPage";
+import { acceleratorToDisplayKeys } from "../hotkeys-display";
 
 describe("acceleratorToDisplayKeys", () => {
   test("translates the Electron-canonical accelerator forms", () => {

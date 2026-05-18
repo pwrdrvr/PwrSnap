@@ -40,7 +40,8 @@
 
 import type { ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
-import { Editor, type Tool } from "../editor/Editor";
+import { Editor } from "../editor/Editor";
+import type { Tool } from "../editor/editor-tools";
 import { AppTag } from "../shared/AppIcons";
 import { DetailRail } from "./DetailRail";
 import { EditToolbar } from "./EditToolbar";

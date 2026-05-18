@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Hk, HkUnset } from "./Hk";
-import { acceleratorToDisplayKeys } from "../pages/HotkeysPage";
+import { acceleratorToDisplayKeys } from "../pages/hotkeys-display";
 
 export type HotkeyCaptureProps = {
   /** The current accelerator (e.g. `CommandOrControl+Shift+C`). Empty

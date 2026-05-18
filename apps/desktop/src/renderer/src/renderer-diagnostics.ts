@@ -118,4 +118,32 @@ export function installRendererDiagnostics(): void {
 
   import.meta.hot.on("vite:ws:connect", hideOverlay);
   import.meta.hot.on("vite:afterUpdate", hideOverlay);
+
+  // Force a full reload on any HMR invalidation. vite-plugin-react
+  // emits `vite:invalidate` when fast-refresh can't update a module
+  // in place (e.g. a non-component sibling export changed, or an
+  // accept boundary failed). Vite is supposed to propagate the
+  // invalidation up the importer chain and fall back to a full
+  // reload, but in practice the propagation can stop short — leaving
+  // the React tree mounted while module-scoped stores reset to their
+  // initial values. The user sees a window that looks intact but with
+  // empty data, no errors, and no obvious recovery path short of
+  // ⌘R. Converting every invalidation into a guaranteed reload makes
+  // dev behavior match the developer's mental model: save a file, see
+  // the change reflected.
+  //
+  // Debounced 50ms to coalesce multiple invalidations from one save
+  // (vite often emits several in rapid succession when a chain of
+  // siblings invalidates together). Single reload per save burst.
+  let reloadHandle: ReturnType<typeof setTimeout> | null = null;
+  import.meta.hot.on("vite:invalidate", (payload) => {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[pwrsnap-dev] vite:invalidate → forcing full reload",
+      payload.path,
+      payload.message ?? ""
+    );
+    if (reloadHandle !== null) clearTimeout(reloadHandle);
+    reloadHandle = setTimeout(() => window.location.reload(), 50);
+  });
 }

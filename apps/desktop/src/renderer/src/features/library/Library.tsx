@@ -21,7 +21,7 @@ import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/rea
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
-import type { Tool } from "../editor/Editor";
+import type { Tool } from "../editor/editor-tools";
 import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";

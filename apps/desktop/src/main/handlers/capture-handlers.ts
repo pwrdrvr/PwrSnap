@@ -38,7 +38,7 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
-import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
+import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
 import {
@@ -117,16 +117,22 @@ export function registerCaptureHandlers(): void {
   bus.register("capture:interactive", async (req) => {
     const mode = req.mode ?? "auto";
 
-    // Timed mode skips the region selector entirely: the whole point
-    // is to let the user stage a UI state (open a menu, hover an
-    // element) that would close the moment any window — including
-    // the selector — took key focus. We tick down on the menubar
-    // tray title (text next to the icon; no window is shown so
-    // nothing steals focus), then fire `captureScreen` against
-    // whichever display the cursor happens to sit on at t=0.
+    // Timed mode = "delay 5 s, then open the normal auto picker."
+    // During the countdown the user is free to stage anything that
+    // would otherwise close the moment a selector window stole key
+    // focus — a dropdown, a tooltip, the PwrSnap tray menu itself.
+    // We don't touch the screen, we don't substitute any other
+    // capture path; we just wait, then fall through to the same
+    // `pickRegion({ mode: "auto" })` call Quick Capture uses. The
+    // selector takes its frozen-screen snapshot at show() time, so
+    // whatever is on screen at t=0 (dropdowns and all) is what the
+    // user picks against — region / window / ⇧-full-window all work
+    // exactly as they do in Quick Capture.
     if (mode === "timed") {
-      return runTimedCapture();
+      const delay = await runTimedDelay();
+      if (!delay.ok) return delay;
     }
+    const selectorMode = mode === "timed" ? "auto" : mode;
 
     // Note (2026-05-04): the prior "hide the library, restore at end"
     // dance is gone. The tray popover is now a non-activating
@@ -136,7 +142,7 @@ export function registerCaptureHandlers(): void {
     // left it through the entire capture flow — visible, minimized,
     // hidden, on another Space — and Cocoa won't touch it.
 
-    const selection = await pickRegion({ mode });
+    const selection = await pickRegion({ mode: selectorMode });
 
     // CANCEL path. The selector window is still up at this point —
     // pickRegion no longer hides itself; the caller owns hideSelector.
@@ -648,68 +654,44 @@ async function renderPresetFile(
 const TIMED_CAPTURE_SECONDS = 5;
 
 /** Module-level guard against overlapping timed captures. Clicking the
- *  tray button a second time while a countdown is running returns a
- *  validation error instead of stacking a parallel timer. */
-let timedCaptureInFlight = false;
+ *  tray button a second time while a countdown is running returns an
+ *  error instead of stacking a parallel timer. */
+let timedDelayInFlight = false;
 
-async function runTimedCapture(): Promise<Result<CaptureRecord, PwrSnapError>> {
-  if (timedCaptureInFlight) {
+/**
+ * Hold for `TIMED_CAPTURE_SECONDS` while ticking the countdown next to
+ * the menubar tray icon. Returns `ok(undefined)` once the timer
+ * elapses; the caller (`capture:interactive` for `mode === "timed"`)
+ * then drops straight into the normal `pickRegion` path so the user
+ * gets the same auto picker as Quick Capture — only against a screen
+ * that may now have menus / dropdowns / the PwrSnap tray open.
+ *
+ * No window is shown for the countdown; `tray.setTitle` writes text
+ * next to the menubar icon, which doesn't take key focus and so can't
+ * collapse the very UI the user is trying to capture.
+ */
+async function runTimedDelay(): Promise<Result<void, PwrSnapError>> {
+  if (timedDelayInFlight) {
     return err({
       kind: "capture",
       code: "timed_in_progress",
       message: "A timed capture is already counting down."
     });
   }
-  timedCaptureInFlight = true;
-  // Dismiss the tray popover up front — its window covers part of the
-  // menubar (and the user just clicked through it anyway). The menubar
-  // icon countdown is then the only visible indicator while the user
-  // stages the shot.
+  timedDelayInFlight = true;
+  // Dismiss the tray popover up front so it isn't sitting on top of
+  // whatever the user wants to stage. They can reopen it during the
+  // countdown if they want to capture it.
   hideTrayPopoverIfVisible();
   try {
     for (let remaining = TIMED_CAPTURE_SECONDS; remaining > 0; remaining--) {
       setTrayCountdown(String(remaining));
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
-    setTrayCountdown(null);
-
-    // Sample the cursor display NOW (at fire time) rather than at
-    // click time — mirrors macOS's built-in screenshot timer. The
-    // user may have moved their cursor onto the display they want to
-    // capture during the countdown.
-    const cursor = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursor);
-    const captureResult = await captureScreen(display.id);
-    if (!captureResult.ok) {
-      return err({
-        kind: "capture",
-        code: captureResult.reason,
-        message: captureResult.message
-      });
-    }
-
-    // Best-effort source-app: hit-test the cursor against whatever
-    // window-list snapshot is currently cached. The selector usually
-    // populates this; for timed captures we never opened the selector,
-    // so it may be stale or empty — that's fine, both fields tolerate
-    // null. Phase 4+ annotation can backfill.
-    const snapshot = getLastWindowListSnapshot();
-    const sourceApp = resolveSourceApp(
-      { x: cursor.x, y: cursor.y, w: 1, h: 1 },
-      snapshot
-    );
-    const persisted = await persistAndBroadcast(captureResult.tempPath, sourceApp);
-    if (persisted.ok) {
-      setFloatOverState({
-        kind: "show-loaded",
-        captureId: persisted.value.id,
-        record: persisted.value
-      });
-    }
-    return persisted;
+    return ok(undefined);
   } finally {
     setTrayCountdown(null);
-    timedCaptureInFlight = false;
+    timedDelayInFlight = false;
   }
 }
 

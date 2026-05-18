@@ -159,11 +159,23 @@ export function preWarmRegionSelector(): void {
   }
 
   if (!resultListenerAttached) {
-    // Diagnostic listener: renderer pushes its viewport dims here on
-    // mount. Logged in main so we can correlate with display.bounds
-    // + selectorWindow.contentBounds without needing DevTools open.
-    ipcMain.on(SELECTOR_DIAGNOSTICS_CHANNEL, (_event, payload: unknown) => {
-      log.info("renderer viewport", payload);
+    // Diagnostic listener: renderer pushes its viewport dims on every
+    // window-list snapshot. Compacted to one line + deduped per
+    // selector-window so we don't repeat the same dims into the dev
+    // terminal on every snapshot delivery.
+    const lastViewportByWebContents = new Map<number, string>();
+    ipcMain.on(SELECTOR_DIAGNOSTICS_CHANNEL, (event, payload: unknown) => {
+      if (payload === null || typeof payload !== "object") return;
+      const p = payload as {
+        innerWidth?: number;
+        innerHeight?: number;
+        devicePixelRatio?: number;
+      };
+      const summary = `${p.innerWidth}×${p.innerHeight} dpr=${p.devicePixelRatio}`;
+      const wcId = event.sender.id;
+      if (lastViewportByWebContents.get(wcId) === summary) return;
+      lastViewportByWebContents.set(wcId, summary);
+      log.info(`renderer viewport wc=${wcId} ${summary}`);
     });
     ipcMain.on(SELECTOR_RESULT_CHANNEL, (_event, payload: unknown) => {
       // IMPORTANT: this handler does NOT hide the selector windows.
@@ -510,14 +522,25 @@ function prepareWindowListPayload(args: {
     );
   });
 
-  // Step 2: per-app frontmost collapse. Auxiliary panels of OTHER
-  // apps drop out (a Slack inspector panel isn't a snap target when
-  // the main Slack window is what the user wants). PwrSnap's own
-  // Library/Edit windows are kept as normal candidates; capture
-  // chrome has already been hidden before enumeration.
-  const meaningful = onThisDisplay.filter(
-    (w) => w.isFrontmostInApp || ourPids.has(w.pid)
-  );
+  // Step 2: previously a per-app frontmost collapse — kept only the
+  // first window per pid, on the theory that subsequent same-pid
+  // entries were panels / toolbars the user wouldn't mean by "snap
+  // to that app." That heuristic was wrong for any app with multiple
+  // top-level windows (terminals, browsers, Finder, IDEs). The
+  // collapse hid the very window the user was hovering, and the
+  // hit-test fell through to whatever was layered behind it.
+  //
+  // We now keep every window from the prior filter pass. The Swift
+  // helper already drops menu-bar / dock / status items by layer,
+  // invisible windows by alpha, and known system chrome by bundle
+  // id, so what arrives here is broadly legitimate top-level
+  // content. The MIN_AREA_PX gate below removes sub-pixel tracking
+  // strips. Z-order hit-testing in `findWindowAt` returns whichever
+  // window is visually topmost at the cursor; if a panel happens to
+  // be there, snapping to it is correct (it's what the user is
+  // pointing at). Tab in the selector cycles through candidates at
+  // the cursor, which is more useful with all windows present.
+  const meaningful = onThisDisplay;
 
   // No visibility / occlusion filter. Showing a window's outline
   // even when it's mostly obscured matches what every other capture
@@ -557,38 +580,35 @@ function prepareWindowListPayload(args: {
       }
     }));
 
-  log.info("snap candidates", {
-    raw: rawSnapshot.length,
-    afterSelectorFilter: snapshot.length,
-    onThisDisplay: onThisDisplay.length,
-    meaningful: meaningful.length,
-    afterVisibilityFilter: localized.length,
-    ourPids: Array.from(ourPids),
-    // Display the cursor was on when pickRegion fired. Pair this
-    // with the renderer's [viewport] log to see if the renderer's
-    // CSS coord space matches display.bounds 1:1.
+  // Compact summary — one line at info level. The detailed candidate
+  // dump and selector geometry sit at debug level so they're available
+  // for diagnosis (turn on with `electron-log` debug) without flooding
+  // the dev terminal every pickRegion call.
+  const b = targetDisplay.bounds;
+  log.info(
+    `snap candidates display=${targetDisplay.id} bounds=${b.x},${b.y} ${b.width}×${b.height}` +
+      ` raw=${rawSnapshot.length} onDisplay=${onThisDisplay.length}` +
+      ` meaningful=${meaningful.length} kept=${localized.length}`
+  );
+  log.debug("snap candidates detail", {
     display: {
       id: targetDisplay.id,
       bounds: targetDisplay.bounds,
       workArea: targetDisplay.workArea,
       scaleFactor: targetDisplay.scaleFactor
     },
-    // The list is started before show(), but may resolve after first
-    // paint. Log the selector geometry so future "Electron full-screen
-    // candidate" regressions are easy to correlate with filtered input.
     selectorWindow: {
       bounds: selectorWindow.getBounds(),
       contentBounds: selectorWindow.getContentBounds(),
-      contentSize: selectorWindow.getContentSize(),
       isSimpleFullScreen: selectorWindow.isSimpleFullScreen()
     },
+    ourPids: Array.from(ourPids),
     candidates: localized.map((c) => ({
       z: c.zIndex,
       id: c.windowId,
       app: c.appName,
       ours: c.ownedByUs,
-      rect: c.rect,
-      rawRect: c.rawRect
+      rect: c.rect
     }))
   });
 

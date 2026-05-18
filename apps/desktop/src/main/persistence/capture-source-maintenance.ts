@@ -59,6 +59,16 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
 
     try {
       if (!existsSync(row.src_path)) {
+        if (existsSync(nextPath)) {
+          updatePath.run(nextPath, row.id);
+          updatedRows += 1;
+          log.info("legacy capture source migration repaired row", {
+            captureId: row.id,
+            srcPath: row.src_path,
+            nextPath
+          });
+          continue;
+        }
         skippedRows += 1;
         log.warn("legacy capture source missing", { captureId: row.id, srcPath: row.src_path });
         continue;

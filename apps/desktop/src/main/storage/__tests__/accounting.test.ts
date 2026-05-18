@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { StorageSnapshot } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   dataRoot: "",
@@ -136,5 +137,31 @@ describe("getStorageSnapshot", () => {
     expect(normal.totalBytes).toBeLessThan(128 * 1024);
     expect(audit.chromiumHttpCache.bytes).toBeGreaterThan(1024 * 1024);
     expect(audit.totalBytes).toBeGreaterThan(1024 * 1024);
+  });
+
+  test("audit requests do not join an in-flight normal scan", async () => {
+    await mkdir(join(mocks.dataRoot, "Cache"), { recursive: true });
+    await writeFile(join(mocks.dataRoot, "Cache", "chromium-cache.bin"), Buffer.alloc(1024 * 1024));
+
+    const { getStorageSnapshot, onStorageSnapshotUpdated } = await import("../accounting");
+    let auditRequested = false;
+    let auditPromise: Promise<StorageSnapshot> | undefined;
+    const unsubscribe = onStorageSnapshotUpdated((update) => {
+      if (update.scanning && !auditRequested) {
+        auditRequested = true;
+        auditPromise = getStorageSnapshot({ force: true, audit: true });
+      }
+    });
+
+    try {
+      const normal = await getStorageSnapshot({ force: true });
+      if (auditPromise === undefined) throw new Error("audit scan was not requested");
+      const audit = await auditPromise;
+
+      expect(normal.chromiumHttpCache.bytes).toBe(0);
+      expect(audit.chromiumHttpCache.bytes).toBeGreaterThan(1024 * 1024);
+    } finally {
+      unsubscribe();
+    }
   });
 });

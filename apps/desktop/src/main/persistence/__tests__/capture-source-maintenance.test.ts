@@ -76,4 +76,18 @@ describe("migrateLegacyCaptureSources", () => {
       skippedRows: 0
     });
   });
+
+  test("repairs row when a previous run moved the file before updating the DB", async () => {
+    const oldPath = join(mocks.legacyRoot, "2026", "05", "abc.png");
+    const nextPath = join(mocks.currentRoot, "abc.png");
+    await mkdir(mocks.currentRoot, { recursive: true });
+    await writeFile(nextPath, "png");
+    mocks.rows = [{ id: "abc", src_path: oldPath, deleted_at: null }];
+
+    const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
+    const result = await migrateLegacyCaptureSources();
+
+    expect(result).toEqual({ movedFiles: 0, updatedRows: 1, skippedRows: 0 });
+    expect(mocks.updates).toEqual([{ path: nextPath, id: "abc" }]);
+  });
 });

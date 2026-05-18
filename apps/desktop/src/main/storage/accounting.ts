@@ -30,6 +30,10 @@ type StorageSnapshotOptions = {
   force?: boolean;
   audit?: boolean;
 };
+type InFlightStorageScan = {
+  audit: boolean;
+  promise: Promise<StorageSnapshot>;
+};
 type SnapshotParts = {
   capturedAt: string;
   audit: boolean;
@@ -62,7 +66,8 @@ const storageEmitter = new EventEmitter();
 let cachedStorageSnapshot: StorageSnapshot | null = null;
 let cachedStorageSnapshotAudit = false;
 let cachedCompletedAtMs = 0;
-let inFlightStorageScan: Promise<StorageSnapshot> | null = null;
+let inFlightStorageScan: InFlightStorageScan | null = null;
+let queuedAuditStorageScan: Promise<StorageSnapshot> | null = null;
 
 export function getStorageSummary(): StorageSummary {
   const sourceCaptures = getLiveSourceCaptureStats();
@@ -86,10 +91,19 @@ export function onStorageSnapshotUpdated(
 export async function getStorageSnapshot(
   options: StorageSnapshotOptions = {}
 ): Promise<StorageSnapshot> {
-  if (inFlightStorageScan !== null) return inFlightStorageScan;
-
   const force = options.force ?? false;
   const audit = options.audit ?? false;
+  if (inFlightStorageScan !== null) {
+    if (!audit || inFlightStorageScan.audit) return inFlightStorageScan.promise;
+    queuedAuditStorageScan ??= inFlightStorageScan.promise.then(
+      () => getStorageSnapshot({ force: true, audit: true }),
+      () => getStorageSnapshot({ force: true, audit: true })
+    ).finally(() => {
+      queuedAuditStorageScan = null;
+    });
+    return queuedAuditStorageScan;
+  }
+
   const cachedAgeMs = Date.now() - cachedCompletedAtMs;
   if (
     !force &&
@@ -100,10 +114,11 @@ export async function getStorageSnapshot(
     return cachedStorageSnapshot;
   }
 
-  inFlightStorageScan = scanStorageSnapshot({ audit }).finally(() => {
+  const promise = scanStorageSnapshot({ audit }).finally(() => {
     inFlightStorageScan = null;
   });
-  return inFlightStorageScan;
+  inFlightStorageScan = { audit, promise };
+  return promise;
 }
 
 async function scanStorageSnapshot(options: { audit: boolean }): Promise<StorageSnapshot> {

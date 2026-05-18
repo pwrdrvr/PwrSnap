@@ -134,6 +134,84 @@
 }
 
 /* ============================================================
+   LIGHT THEME OVERRIDES — applied when <html data-theme="light">
+   is set by the pre-React bootstrap or the useAppearance hook.
+
+   Tangerine narrows to #c45200 on white for WCAG AA contrast
+   (≥4.5:1 against #ffffff body text), mirroring PwrAgent's
+   suite-wide light palette.  Semantic colors deepen to retain
+   reading contrast on the lifted surfaces. `color-scheme:
+   light` flips native scrollbar + form-control rendering — the
+   one effect CSS variables can't reach.
+   ============================================================ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* ---------- COLOR — surfaces (warm off-white system) ---------- */
+  --bg-app:            #ffffff;
+  --bg-sidebar:        #f7f4ef;
+  --bg-panel:          #fdfcfa;
+  --bg-panel-elevated: #ffffff;
+  --bg-panel-hover:    #f4f0e8;
+  --bg-row-active:     #fff5e9;   /* tangerine-tinted on white */
+  --bg-input:          #ffffff;
+  --bg-overlay:        rgba(0, 0, 0, 0.32);  /* modal scrim — lighter on light */
+
+  /* ---------- COLOR — borders ---------- */
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-default: rgba(0, 0, 0, 0.12);
+  --border-strong: rgba(0, 0, 0, 0.20);
+
+  /* ---------- COLOR — text ---------- */
+  --text-primary:   #1a1612;   /* warm near-black */
+  --text-secondary: #524a40;
+  --text-muted:     #807870;
+  --text-subtle:    rgba(26, 22, 18, 0.42);
+
+  /* ---------- COLOR — accent (deepened tangerine for WCAG on white) ---------- */
+  --accent:        #c45200;
+  --accent-strong: #b34a00;
+  --accent-bright: #d96d00;
+  --accent-deep:   #8a3a00;
+  --accent-soft:   rgba(196, 82, 0, 0.12);
+  --accent-tint:   rgba(196, 82, 0, 0.06);
+  --accent-border: rgba(196, 82, 0, 0.42);
+  --accent-shadow: rgba(196, 82, 0, 0.28);
+
+  /* ---------- COLOR — semantic (deeper for legibility on white) ---------- */
+  --danger:        #b94232;
+  --danger-soft:   rgba(185, 66, 50, 0.12);
+  --danger-border: rgba(185, 66, 50, 0.32);
+  --danger-text:   #8a1f12;
+
+  --success:       #2e7d3c;
+  --success-soft:  rgba(46, 110, 64, 0.12);
+  --success-border:rgba(46, 110, 64, 0.28);
+  --success-text:  #1a5c2e;
+
+  --info:          #3666a5;
+  --info-soft:     rgba(54, 102, 165, 0.12);
+  --info-border:   rgba(54, 102, 165, 0.24);
+  --info-text:     #1a4f8a;
+
+  --warn:          #a86b00;
+  --warn-soft:     rgba(168, 107, 0, 0.12);
+  --warn-border:   rgba(168, 107, 0, 0.28);
+  --warn-text:     #6b4400;
+
+  /* ---------- BUTTON ---------- */
+  --button-text-on-accent: #ffffff;   /* white reads cleanest on the deep tangerine */
+
+  /* ---------- SHADOWS — softer on light surfaces ---------- */
+  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.08);
+  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.12);
+  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.18);
+  --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
+  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* ============================================================
    SEMANTIC TYPE STYLES
    ============================================================ */
 

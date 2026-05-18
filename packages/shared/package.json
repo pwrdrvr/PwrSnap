@@ -11,7 +11,8 @@
     "./protocol": "./src/protocol.ts",
     "./overlay": "./src/overlay-schemas.ts",
     "./result": "./src/result.ts",
-    "./ipc": "./src/ipc.ts"
+    "./ipc": "./src/ipc.ts",
+    "./appearance-arg": "./src/appearance-arg.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -134,7 +134,7 @@
 }
 .editor-toolbar-tools button.is-active {
   border-color: var(--accent);
-  background: rgba(255, 138, 31, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--text-primary);
 }
 .editor-toolbar-tools button:disabled {
@@ -144,7 +144,7 @@
 .editor-tool-key {
   display: inline-block;
   padding: 1px 5px;
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
   border: 1px solid var(--border-default);
   border-radius: 3px;
   color: var(--text-muted);

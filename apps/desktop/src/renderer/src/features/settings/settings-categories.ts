@@ -27,6 +27,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     group: "General",
     items: [
       { id: "startup", name: "Startup & Menu Bar" },
+      { id: "appearance", name: "Appearance" },
       { id: "hotkeys", name: "Hotkeys" },
       { id: "notifications", name: "Notifications" },
       { id: "ai", name: "AI Providers" }

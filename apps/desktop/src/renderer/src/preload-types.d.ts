@@ -78,6 +78,14 @@ declare global {
       }): void;
       perfMark(payload: PerfMarkPayload): void;
     };
+    /** Synchronous pre-React appearance bridge. Populated by the
+     *  preload from `--pwrsnap-appearance=` argv (see
+     *  `apps/desktop/src/preload/index.ts`). Consumed by the inline
+     *  bootstrap script in `apps/desktop/src/renderer/index.html`
+     *  before main.tsx loads. Undefined when the bridge isn't set
+     *  (e.g. an old window opened before the additionalArguments
+     *  pipeline existed) — the bootstrap falls back to localStorage. */
+    __pwrsnapAppearance?: { theme: "system" | "dark" | "light" };
   }
 }
 

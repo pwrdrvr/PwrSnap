@@ -25,6 +25,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import { EVENT_CHANNELS, IPC_CAPTURE_DRAG_START, IPC_CMD } from "@pwrsnap/shared/ipc";
 import type { RenderPreset } from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
+import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 
 // Internal (non-command-bus) channel for the region selector to commit
 // its result back to main. Kept narrow: the preload exposes one
@@ -262,3 +263,25 @@ const pwrsnapApi = {
 export type PwrsnapApi = typeof pwrsnapApi;
 
 contextBridge.exposeInMainWorld("pwrsnapApi", pwrsnapApi);
+
+// Appearance bridge — synchronous theme delivery for the inline
+// pre-React bootstrap in index.html.
+//
+// Main builds a `--pwrsnap-appearance=<json>` token into the window's
+// `webPreferences.additionalArguments` after a sync read of the
+// persisted theme; we parse it here and surface the result on
+// `window.__pwrsnapAppearance`. The bootstrap reads from there before
+// touching localStorage, so a cold launch in light theme paints light
+// from the very first frame — no flash-of-dark-then-light gap.
+//
+// On the renderer side, `useAppearanceSync` continues to be the source
+// of truth for in-session state and writes — this bridge is purely for
+// the pre-mount first paint.
+//
+// The parser lives in `@pwrsnap/shared/appearance-arg` so it can be
+// unit-tested without spinning up Electron, and so main + preload
+// share the prefix + validation rules from one source of truth.
+const appearanceArg = parseAppearanceArg(process.argv);
+if (appearanceArg !== null) {
+  contextBridge.exposeInMainWorld("__pwrsnapAppearance", appearanceArg);
+}

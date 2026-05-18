@@ -18,6 +18,7 @@ import {
 // want.
 const ALL_PAGE_IDS = [
   "startup",
+  "appearance",
   "hotkeys",
   "notifications",
   "ai",
@@ -61,7 +62,7 @@ describe("SETTINGS_CATEGORIES", () => {
       SETTINGS_CATEGORIES.map((c) => [c.group, c.items.map((i) => i.id)])
     );
 
-    expect(byGroup["General"]).toEqual(["startup", "hotkeys", "notifications", "ai"]);
+    expect(byGroup["General"]).toEqual(["startup", "appearance", "hotkeys", "notifications", "ai"]);
     expect(byGroup["Capture"]).toEqual(["capture", "output", "annotate"]);
     expect(byGroup["Library"]).toEqual(["storage", "sources"]);
     expect(byGroup["Advanced"]).toEqual(["experimental", "about"]);

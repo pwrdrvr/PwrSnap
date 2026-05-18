@@ -815,7 +815,7 @@ function TextDraftInput({
     left: `${draft.xn * 100}%`,
     top: `${draft.yn * 100}%`,
     transform: "translateY(-2px)",
-    background: "rgba(0, 0, 0, 0.92)",
+    background: "color-mix(in srgb, var(--bg-app) 92%, transparent)",
     color: "var(--accent-bright, #ffa33d)",
     border: "1px solid var(--accent, #ff8a1f)",
     borderRadius: 4,

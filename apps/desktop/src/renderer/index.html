@@ -6,6 +6,76 @@
     <title>PwrSnap</title>
     <!-- Fonts are self-hosted via @fontsource. No runtime network calls
          on cold start, app works fully offline. See src/styles/fonts.css. -->
+    <!--
+      Pre-React appearance bootstrap.
+
+      Runs synchronously before main.tsx loads, before React mounts,
+      and before any stylesheet has applied a paint pass. Sets the
+      `data-theme` attribute and `color-scheme` style on <html> so
+      first paint matches the user's persisted theme — no flash-of-
+      wrong-theme on a light-themed cold launch.
+
+      Source of truth, in priority order:
+        1. `window.__pwrsnapAppearance` — populated by the preload
+           from Electron's `additionalArguments`, which main sets at
+           window construction time after a synchronous read of the
+           Settings JSON. Authoritative; available on the very first
+           launch even before localStorage has been seeded.
+        2. localStorage `pwrsnap.appearance.v1` — fallback for paths
+           where the preload bridge isn't loaded (e.g. opening a
+           file:// renderer in a tool that doesn't run our preload).
+           The renderer hook mirrors every theme change here on the
+           way out so this cache stays correct across launches.
+        3. "system" default → matchMedia resolved at this exact
+           instant.
+
+      We set `style.colorScheme` on <html> in addition to the data-
+      theme attribute. tokens.css declares `color-scheme: light` on
+      `:root[data-theme="light"]`, but until the CSS loads, native
+      form controls + scrollbars paint in the default (dark) color-
+      scheme. Inline-styling the property closes that gap so even
+      the first 50ms before CSS arrives renders correctly.
+
+      try/catch swallows everything intentionally — if any step
+      throws (localStorage disabled, JSON parse error, matchMedia
+      missing, exotic Electron version), we leave <html> in its
+      default (dark) state and the React hook reconciles on mount.
+      Better a brief flash than a blank screen.
+    -->
+    <script>
+      (function () {
+        try {
+          var theme = "system";
+          var bridged = window.__pwrsnapAppearance;
+          if (bridged && (bridged.theme === "system" || bridged.theme === "dark" || bridged.theme === "light")) {
+            theme = bridged.theme;
+          } else {
+            var KEY = "pwrsnap.appearance.v1";
+            var raw = window.localStorage.getItem(KEY);
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && (parsed.theme === "system" || parsed.theme === "dark" || parsed.theme === "light")) {
+                theme = parsed.theme;
+              }
+            }
+          }
+          var resolved = theme;
+          if (resolved === "system") {
+            var mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+            resolved = mq && mq.matches ? "light" : "dark";
+          }
+          if (resolved === "light") {
+            document.documentElement.setAttribute("data-theme", "light");
+            document.documentElement.style.colorScheme = "light";
+          } else {
+            document.documentElement.removeAttribute("data-theme");
+            document.documentElement.style.colorScheme = "dark";
+          }
+        } catch (_err) {
+          /* fall through — React hook reconciles on mount */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

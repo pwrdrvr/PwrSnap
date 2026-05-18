@@ -2,6 +2,7 @@ import { app, BrowserWindow, screen, type Rectangle } from "electron";
 import { join } from "node:path";
 import type { AppDocumentKind } from "@pwrsnap/shared";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
+import { getStartupAppearanceArgs, getStartupBackgroundColor } from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
 
 const log = getMainLogger("pwrsnap:window");
@@ -82,6 +83,24 @@ const baseWebPreferences = {
   nodeIntegration: false
 } as const;
 
+/** Build a per-window `webPreferences` that carries the persisted
+ *  theme through `additionalArguments`. The preload reads it from
+ *  `process.argv` and surfaces it on `window.__pwrsnapAppearance` so
+ *  the inline bootstrap in `index.html` has a synchronous, main-side
+ *  source of truth for the first paint — no localStorage race, no
+ *  flash-of-wrong-theme on cold launch.
+ *
+ *  Resolved fresh per-window (rather than memoized) so a theme change
+ *  in the Settings page propagates to the next window opened without
+ *  any cache-invalidation plumbing. The read is a small synchronous
+ *  JSON parse, cheap enough that the simpler model wins. */
+function themedWebPreferences(): Electron.WebPreferences {
+  return {
+    ...baseWebPreferences,
+    additionalArguments: [...getStartupAppearanceArgs()]
+  };
+}
+
 function isE2E(): boolean {
   return process.env.PWRSNAP_E2E === "1";
 }
@@ -121,8 +140,8 @@ export function createMainWindow(): BrowserWindow {
     title: "PwrSnap",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
-    webPreferences: baseWebPreferences
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
   });
   libraryWindow = window;
 
@@ -228,8 +247,8 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
     title: "PwrSnap Settings",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
-    webPreferences: baseWebPreferences
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
   });
   settingsWindow = window;
 
@@ -277,8 +296,8 @@ export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
     title: appDocumentTitle(kind),
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
-    webPreferences: baseWebPreferences
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
   });
   appDocumentWindows.set(kind, window);
 
@@ -351,7 +370,7 @@ export function createTrayWindow(): BrowserWindow {
     backgroundColor: "#00000000",
     vibrancy: "popover",
     visualEffectState: "active",
-    webPreferences: baseWebPreferences
+    webPreferences: themedWebPreferences()
   });
   // ⚠️  IMPORTANT — load-bearing for the renderer's resize-to-fit IPC
   // (see wireTrayResizeChannel in tray.ts). When a BrowserWindow is
@@ -447,7 +466,7 @@ export function createFloatOverWindow(): BrowserWindow {
     // outside the BrowserWindow without enlarging the transparent
     // hit-test region around the toast.
     hasShadow: true,
-    webPreferences: baseWebPreferences
+    webPreferences: themedWebPreferences()
   });
   // ⚠️  Same gotcha as createTrayWindow — see that function's comment
   // for the full story. Lifting the implicit minimum size to 0×0
@@ -517,8 +536,8 @@ export function createEditWindow(captureId: string): BrowserWindow {
     title: "PwrSnap Editor",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: "#000000",
-    webPreferences: baseWebPreferences
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
   });
 
   loadRenderer(window, rendererTarget("edit", `captureId=${encodeURIComponent(captureId)}`));

@@ -15,6 +15,7 @@ import { Sidebar } from "./Sidebar";
 import { useActivePage } from "./useActivePage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
+import { AppearancePage } from "./pages/AppearancePage";
 import { ExperimentalPage } from "./pages/ExperimentalPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -24,6 +25,7 @@ import { StoragePage } from "./pages/StoragePage";
 // right kind of page even before the real content lands.
 const EYEBROW_BY_PAGE: Record<string, string> = {
   startup: "General",
+  appearance: "General",
   hotkeys: "General",
   notifications: "General",
   ai: "Providers",
@@ -43,6 +45,9 @@ export function SettingsApp(): ReactElement {
 
   let page: ReactElement;
   switch (active) {
+    case "appearance":
+      page = <AppearancePage />;
+      break;
     case "hotkeys":
       page = <HotkeysPage />;
       break;

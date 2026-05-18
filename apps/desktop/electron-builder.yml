@@ -42,6 +42,7 @@ files:
   - "!**/e2e/**"
   - "!**/playwright.config.*"
   # Markdown / docs from third-party packages and our own workspace packages.
+  # The app-owned prompt exception above is intentional.
   - "!**/*.md"
   - "!**/*.mdx"
   - "!**/docs/**"
@@ -55,6 +56,8 @@ files:
   # Our own workspace package metadata is unused at runtime — vite inlines.
   - "!**/node_modules/@pwrsnap/*/AGENTS.md"
   - "!**/node_modules/@pwrsnap/*/src/**"
+  # App-owned prompt assets are intentionally readable Markdown in app.asar.
+  - "out/main/prompts/**/*.md"
 
 # Native helpers (Swift CLIs that wrap macOS-only system APIs).
 # Compiled by `apps/desktop/scripts/build-native.mjs` into

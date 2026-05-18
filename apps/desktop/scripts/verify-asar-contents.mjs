@@ -32,11 +32,14 @@ const forbidden = [
   ["Project plan/brainstorm", /\/(plans|brainstorms|design)\//],
 ];
 
+const allowedForbiddenEntries = [/^\/out\/main\/prompts\/[^/]+\.md$/];
+
 const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md"];
 
 export function findForbiddenAsarEntries(listing) {
   const violations = [];
   for (const entry of listing) {
+    if (allowedForbiddenEntries.some((pattern) => pattern.test(entry))) continue;
     for (const [label, pattern] of forbidden) {
       if (pattern.test(entry)) {
         violations.push({ label, entry });

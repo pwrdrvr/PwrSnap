@@ -5,28 +5,45 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import type { Plugin } from "vite";
 
 /**
- * Copy SQL migrations alongside the compiled main bundle. better-sqlite3
- * reads them via fs.readFileSync(__dirname/migrations/...) at runtime,
- * which resolves to `out/main/migrations/...` in production and to
- * `apps/desktop/src/main/persistence/migrations/...` during dev (where
- * electron-vite runs from source). Phase 1.3.
+ * Copy main-process fs assets alongside the compiled main bundle. Runtime
+ * code reads these via filesystem paths so prompts stay reviewable as .md and
+ * migrations stay executable as .sql in both dev and packaged builds.
  */
-function copyMigrationsPlugin(): Plugin {
+function copyMainAssetsPlugin(): Plugin {
   return {
-    name: "pwrsnap-copy-migrations",
+    name: "pwrsnap-copy-main-assets",
     writeBundle(options) {
       const out = options.dir;
       if (out === undefined) return;
-      const src = resolve(__dirname, "src/main/persistence/migrations");
-      if (!existsSync(src)) return;
-      const dest = resolve(out, "migrations");
-      mkdirSync(dest, { recursive: true });
-      for (const file of readdirSync(src)) {
-        if (!file.endsWith(".sql")) continue;
-        copyFileSync(resolve(src, file), resolve(dest, file));
-      }
+      copyDirFiles({
+        src: resolve(__dirname, "src/main/persistence/migrations"),
+        dest: resolve(out, "migrations"),
+        extension: ".sql"
+      });
+      copyDirFiles({
+        src: resolve(__dirname, "src/main/ai/prompts"),
+        dest: resolve(out, "prompts"),
+        extension: ".md"
+      });
     }
   };
+}
+
+function copyDirFiles({
+  src,
+  dest,
+  extension
+}: {
+  src: string;
+  dest: string;
+  extension: string;
+}): void {
+  if (!existsSync(src)) return;
+  mkdirSync(dest, { recursive: true });
+  for (const file of readdirSync(src)) {
+    if (!file.endsWith(extension)) continue;
+    copyFileSync(resolve(src, file), resolve(dest, file));
+  }
 }
 
 export default defineConfig(({ command }) => {
@@ -46,7 +63,7 @@ export default defineConfig(({ command }) => {
         externalizeDepsPlugin({
           exclude: ["@pwrsnap/shared", "@pwrsnap/codex-app-server-protocol"]
         }),
-        copyMigrationsPlugin()
+        copyMainAssetsPlugin()
       ],
       build: {
         minify: "esbuild",

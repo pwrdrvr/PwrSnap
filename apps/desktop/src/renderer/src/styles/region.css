@@ -27,7 +27,7 @@ body[data-stage="region"] .region-root {
 
 .region-dim {
   position: fixed;
-  background: rgba(8, 7, 6, 0.62);
+  background: rgba(0, 0, 0, 0.62);
 }
 .region-dim--full {
   inset: 0;
@@ -36,7 +36,7 @@ body[data-stage="region"] .region-root {
 .region-rect {
   position: fixed;
   border: 1.5px solid var(--accent);
-  background: rgba(232, 116, 58, 0.05);
+  background: rgba(255, 138, 31, 0.05);
   pointer-events: none;
 }
 
@@ -45,8 +45,8 @@ body[data-stage="region"] .region-root {
    tell whether they're getting a smart selection or a hand-drawn one. */
 .region-rect--snap-window {
   border-width: 2px;
-  background: rgba(232, 116, 58, 0.1);
-  box-shadow: 0 0 0 1px rgba(232, 116, 58, 0.4) inset;
+  background: rgba(255, 138, 31, 0.1);
+  box-shadow: 0 0 0 1px rgba(255, 138, 31, 0.4) inset;
 }
 
 /* Full-window capture mode (⇧ held over a window snap). The rect
@@ -56,10 +56,10 @@ body[data-stage="region"] .region-root {
    communicate "this captures EVERYTHING in this window, even what
    you can't see right now." */
 body[data-stage="region"][data-full-window="true"] .region-rect--snap-window {
-  background: rgba(232, 116, 58, 0.18);
+  background: rgba(255, 138, 31, 0.18);
   box-shadow:
-    0 0 0 1px rgba(232, 116, 58, 0.6) inset,
-    0 0 24px rgba(232, 116, 58, 0.25);
+    0 0 0 1px rgba(255, 138, 31, 0.6) inset,
+    0 0 24px rgba(255, 138, 31, 0.25);
 }
 
 /* Snap-to-display: dashed border so it reads as "the whole screen"

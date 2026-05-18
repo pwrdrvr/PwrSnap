@@ -1359,7 +1359,15 @@
   gap: 12px;
   padding: 8px;
   border-radius: 6px;
-  background: var(--bg-row);
+  /* `--bg-row` was a typo / never-defined token here — `var()` fell
+     through to `transparent` so rows blended into the popover
+     surface. In dark theme the result happened to look fine; in
+     light theme there's no visual separation between rows and the
+     popover backdrop. `--bg-panel-hover` is the "lifted neutral
+     row" surface that themes correctly in both palettes (warm
+     near-black on dark, warm off-white on light) and gives a clear
+     row-vs-popover distinction. */
+  background: var(--bg-panel-hover);
   border: 1px solid var(--border-subtle);
 }
 .psl__storage-row > div {

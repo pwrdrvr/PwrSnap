@@ -153,7 +153,7 @@
   cursor: pointer;
   transition: all 120ms var(--ease-out);
 }
-.fo__icon-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+.fo__icon-btn:hover { background: color-mix(in srgb, var(--text-primary) 6%, transparent); color: var(--text-primary); }
 .fo__icon-btn.is-pinned { color: var(--accent-bright); background: var(--accent-soft); border-color: var(--accent-border); }
 
 /* ----- preview ----- */
@@ -485,7 +485,7 @@
   cursor: pointer;
   transition: all 120ms var(--ease-out);
 }
-.fo__dest-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+.fo__dest-btn:hover { color: var(--text-primary); background: color-mix(in srgb, var(--text-primary) 4%, transparent); }
 .fo__dest-btn.is-on { color: var(--accent-bright); border-color: var(--accent-border); background: var(--accent-soft); }
 .fo__dest-btn svg { width: 11px; height: 11px; }
 .fo__dest-saved {

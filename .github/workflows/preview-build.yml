@@ -56,7 +56,7 @@ jobs:
         run: pnpm --filter @pwrsnap/desktop package:dryrun
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: PwrSnap-${{ steps.version.outputs.version }}-preview
           path: apps/desktop/release-stage/dist/*.dmg

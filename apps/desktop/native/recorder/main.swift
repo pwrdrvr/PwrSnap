@@ -138,6 +138,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var videoSamplesAppended: Int = 0
     private var audioSamplesReceived: Int = 0
     private var audioSamplesAppended: Int = 0
+    /// SCStream's `.microphone` output (macOS 14+). Unused by today's
+    /// recorder — mic capture runs through AVCaptureSession — but
+    /// counted so a stray sample shows up in the stop() diag totals
+    /// rather than getting swallowed by an `@unknown default`.
+    private var microphoneSamplesReceived: Int = 0
     /// Lifecycle phase observable by the SCStreamDelegate. Without
     /// this, didStopWithError can't tell whether the delegate fired
     /// during the openStream startup window (in which case we want
@@ -516,6 +521,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         switch type {
         case .screen: videoSamplesReceived += 1
         case .audio: audioSamplesReceived += 1
+        case .microphone:
+            // SCStream's microphone output type (macOS 14+) is unused
+            // here — mic capture goes through AVCaptureSession in
+            // setUpMicrophoneCapture(). Counted distinctly so future
+            // mic-via-SCStream work is visible in the diag totals.
+            microphoneSamplesReceived += 1
         @unknown default: break
         }
         guard CMSampleBufferDataIsReady(buf) else { return }
@@ -587,13 +598,19 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if let ai = audioInput, ai.isReadyForMoreMediaData {
                 if ai.append(buf) { audioSamplesAppended += 1 }
             }
+        case .microphone:
+            // Mic samples from SCStream (macOS 14+) are deliberately
+            // ignored — see microphoneSamplesReceived for why. If we
+            // ever consolidate mic capture into SCStream, route the
+            // append here. Until then dropping is correct.
+            break
         @unknown default:
             break
         }
     }
 
     func stop() async {
-        diag("stop() entered videoSamples=\(videoSamplesReceived)/\(videoSamplesAppended) audioSamples=\(audioSamplesReceived)/\(audioSamplesAppended) firstSampleWritten=\(firstSampleWritten)")
+        diag("stop() entered videoSamples=\(videoSamplesReceived)/\(videoSamplesAppended) audioSamples=\(audioSamplesReceived)/\(audioSamplesAppended) microphoneSamples=\(microphoneSamplesReceived) firstSampleWritten=\(firstSampleWritten)")
         guard let s = stream, let writer = assetWriter else {
             diag("stop() guard failed: stream=\(stream != nil) writer=\(assetWriter != nil)")
             return
@@ -698,7 +715,6 @@ if #available(macOS 13.0, *) {
     let handle = FileHandle.standardInput
     handle.waitForDataInBackgroundAndNotify()
     let center = NotificationCenter.default
-    let runLoop = RunLoop.current
     var inboundBuffer = Data()
     var observer: NSObjectProtocol? = nil
     observer = center.addObserver(forName: .NSFileHandleDataAvailable, object: handle, queue: nil) { _ in

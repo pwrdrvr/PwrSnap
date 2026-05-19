@@ -208,7 +208,7 @@ async function seedCapture(
         captured_at: new Date().toISOString(),
         source_app_bundle_id: "com.test.float-over-spec",
         source_app_name: "Float-over Spec",
-        src_path: payload.pngPath,
+        legacy_src_path: payload.pngPath,
         width_px: 1920,
         height_px: 1080,
         device_pixel_ratio: 2,

@@ -136,7 +136,8 @@ test.describe("clipboard paste into library", () => {
       expect(pasted.value.device_pixel_ratio).toBe(1);
       expect(pasted.value.source_app_bundle_id).toBe("com.pwrsnap.clipboard");
       expect(pasted.value.source_app_name).toBe("Clipboard");
-      const fileStat = await stat(pasted.value.src_path);
+      expect(pasted.value.flat_png_path).not.toBeNull();
+      const fileStat = await stat(pasted.value.flat_png_path!);
       expect(fileStat.isFile()).toBe(true);
 
       const listed = await app.dispatch("library:list", { limit: 5 });
@@ -175,8 +176,9 @@ test.describe("clipboard paste into library", () => {
 
       expect(pasted.value.width_px).toBe(96);
       expect(pasted.value.height_px).toBe(54);
-      expect(pasted.value.src_path).not.toBe(pngPath);
-      const fileStat = await stat(pasted.value.src_path);
+      expect(pasted.value.flat_png_path).not.toBe(pngPath);
+      expect(pasted.value.flat_png_path).not.toBeNull();
+      const fileStat = await stat(pasted.value.flat_png_path!);
       expect(fileStat.isFile()).toBe(true);
     } finally {
       await app.close();

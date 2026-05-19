@@ -7,6 +7,7 @@
 // apps/desktop/src/main/command-bus.ts. The renderer + RPC server pick
 // up the new command for free.
 
+import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
@@ -16,7 +17,44 @@ export type CaptureRecord = {
   id: string;
   kind: "image" | "video";
   captured_at: string;
-  src_path: string;
+  /**
+   * Pre-bundle-migration src_path. NULL for captures created after
+   * the bundle migration shipped. Historical record only — never
+   * read by the live read path; the legacy migration consumes this
+   * once when converting old rows to bundle pairs.
+   */
+  legacy_src_path: string | null;
+  /**
+   * Path to the `.pwrsnap` ZIP bundle under ~/Documents/PwrSnap/.
+   * The system of record post-migration. NULL until the legacy
+   * migration walks this row.
+   */
+  bundle_path: string | null;
+  /**
+   * Paired flat composite PNG sibling — the user-shareable image
+   * that double-clicks open in Photos / Quick Look / Slack.
+   * Regenerable from the bundle's composite.png; the doctor
+   * recreates it if missing.
+   */
+  flat_png_path: string | null;
+  /** ISO-8601 timestamp of the most recent bundle re-pack. */
+  bundle_modified_at: string | null;
+  /**
+   * v1 = flat overlays array; v2 = layer tree. Cached projection of
+   * `manifest.bundle_format_version` from the on-disk bundle; the
+   * doctor reconciles this on every reconcile pass so a rename-vs-
+   * UPDATE crash gap doesn't leave the row claiming v1 while the
+   * bundle is v2. Stored value is a hint, not authoritative — read
+   * paths that need to dispatch on format should consult the bundle.
+   */
+  bundle_format_version: number;
+  /**
+   * Convergence checkpoint with the bundle's edit state
+   * (overlays.json for v1; document.json/layers for v2). A re-pack is
+   * owed when `edits_version > bundle_edits_version` (e.g., detected
+   * on boot after a crash mid-debounce).
+   */
+  bundle_edits_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -26,13 +64,19 @@ export type CaptureRecord = {
   source_app_name: string | null;
   /**
    * Monotonic counter, bumped in the same transaction as every
-   * overlay write (see `insertOverlay` / `rejectOverlay` in
-   * persistence/overlays-repo.ts). Renderers append this to the
-   * `pwrsnap-cache://` URL as a cache-buster so Chromium re-fetches
-   * the rendered image after the user edits — without it the
-   * 5-minute browser HTTP cache serves the stale render.
+   * edit write (overlay insert for v1; layer insert for v2 — see
+   * `insertOverlay` / `rejectOverlay` in persistence/overlays-repo.ts
+   * and the future `insertLayer` in persistence/layers-repo.ts).
+   * Renderers append this to the `pwrsnap-cache://` URL as a
+   * cache-buster so Chromium re-fetches the rendered image after
+   * the user edits — without it the 5-minute browser HTTP cache
+   * serves the stale render.
+   *
+   * Renamed from `overlays_version` in migration 0004 to unify v1/v2
+   * convergence semantics. The table being read (overlays vs layers)
+   * is gated by `bundle_format_version`.
    */
-  overlays_version: number;
+  edits_version: number;
   deleted_at: string | null;
   /**
    * Set for `kind === "video"` rows. Carries duration, audio-track
@@ -567,6 +611,26 @@ export type AppUpdateInstallResult =
   | { status: "restarting" }
   | { status: "error"; message: string };
 
+/**
+ * Progress payload for `events:legacy-bundle-migration:progress`. Fired
+ * by the one-shot legacy → v1-bundle wrapper on first boot post-bundle-
+ * format. Library shows an "Upgrading library…" banner while status is
+ * "running"; banner auto-dismisses on "complete".
+ *
+ *   • `total` — rows the runner queued at start. Includes parked
+ *     (exhausted-retry) rows in the count so the user sees a stable
+ *     denominator even across boots that find new attempts.
+ *   • `done` — rows that have either succeeded OR been parked
+ *     (giving up after MAX_ATTEMPTS). Both count toward "done" since
+ *     neither will be retried this run.
+ *   • `failed` — subset of `done` that failed (parked or transient).
+ *     A run with `failed > 0` after `status === "complete"` is worth
+ *     surfacing as a one-time toast.
+ */
+export type LegacyBundleMigrationProgress =
+  | { status: "running"; total: number; done: number; failed: number }
+  | { status: "complete"; total: number; done: number; failed: number };
+
 export type AppUpdateReleaseInfo = {
   version?: string;
   name?: string;
@@ -742,10 +806,36 @@ export type Commands = {
     res: StorageMaintenanceResult;
   };
 
-  // ---- overlays (Phase 2+) ----
+  // ---- overlays (v1 captures only) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
   "overlays:upsert": { req: { captureId: string; overlay: Overlay }; res: OverlayRow };
   "overlays:delete": { req: { id: string }; res: void };
+
+  // ---- layers (v2 captures only) ----
+  /** List the live layer tree for a v2 capture. Flat array; tree is
+   *  built by the consumer via parent_id pointers. Refuses v1
+   *  captures (use overlays:* instead). */
+  "layers:list": { req: { captureId: string }; res: BundleLayerNode[] };
+  /** Insert a layer node. The node carries its own id (nanoid) and
+   *  parent_id. Caller validates the shape; main re-validates via
+   *  the zod discriminated union before persisting. */
+  "layers:upsert": { req: { captureId: string; layer: BundleLayerNode }; res: BundleLayerNode };
+  /** Move a layer to a new parent (or root via newParentId=null).
+   *  Refuses cycles via a recursive-CTE check inside a BEGIN
+   *  IMMEDIATE transaction — safe under concurrent reparents from
+   *  multiple IPC dispatchers. */
+  "layers:reparent": {
+    req: { id: string; newParentId: string | null };
+    res: { status: "ok" | "would_create_cycle" | "not_found" };
+  };
+  /** Atomic UPDATE on z_index. Renderers typically use gap-based
+   *  reordering (1000-step increments) so most reorders touch only
+   *  the moving layer. */
+  "layers:reorder": { req: { id: string; zIndex: number }; res: void };
+  /** Soft-delete a layer. Cascades rejected_at transitively to every
+   *  descendant in one transaction — leaving orphaned-but-live
+   *  children would render undefined behavior. */
+  "layers:delete": { req: { id: string }; res: void };
 
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
@@ -756,6 +846,21 @@ export type Commands = {
   "clipboard:copy-path": {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
+  };
+  /** v2 only: serialize selected layers (or the entire live tree if
+   *  layerIds omitted) into a clipboard payload — private UTI for
+   *  PwrSnap-to-PwrSnap fidelity, standard PNG fallback for everyone
+   *  else (Slack, Messages, Mail). */
+  "clipboard:copyLayerFragment": {
+    req: { captureId: string; layerIds?: string[] };
+    res: { layerCount: number; sourceCount: number; bytes: number };
+  };
+  /** v2 only: paste a previously-copied fragment into the target
+   *  capture. Returns the inserted layer ids so the renderer can
+   *  select / animate them. Refuses on v1 captures. */
+  "clipboard:pasteLayerFragment": {
+    req: { captureId: string; parentId?: string | null };
+    res: { insertedLayerIds: string[]; fallbackUsedPng: boolean };
   };
 
   // ---- settings ----

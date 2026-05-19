@@ -58,17 +58,44 @@ function readPackage(pkg) {
     const deps = pkg[field];
     if (!deps) continue;
     for (const [name, spec] of Object.entries(deps)) {
-      if (isGitSpec(spec)) {
-        throw new Error(
-          `[pwrsnap pnpmfile] Blocked git dependency ${name}@${spec}. ` +
-            `Git specs bypass tarball integrity checks and run arbitrary ` +
-            `lifecycle scripts against arbitrary remotes. If you need this ` +
-            `package, publish a registry tarball or vendor the source.`
-        );
+      if (!isGitSpec(spec)) continue;
+      // Transitive packages' `devDependencies` are never installed by
+      // pnpm — they only matter when the package is being developed
+      // on, not when it's pulled in as a dep. The original intent of
+      // this hook was to block git specs that would actually run
+      // lifecycle scripts, which is the install-time risk; transitive
+      // devDeps are stripped silently so we don't false-positive on
+      // upstream maintainers' tooling choices (e.g. yauzl →
+      // buffer-crc32@0.2.3 has an ancient `tap` devDep tree that
+      // bottoms out in github:iansu/eslint-plugin-node-core).
+      //
+      // The root workspace's devDependencies are still scanned: pnpm
+      // calls readPackage on every package, including our own, so a
+      // git devDep in apps/desktop/package.json or any sibling still
+      // throws below.
+      if (field === "devDependencies" && !isWorkspaceRootPackage(pkg)) {
+        delete deps[name];
+        continue;
       }
+      throw new Error(
+        `[pwrsnap pnpmfile] Blocked git dependency ${name}@${spec}. ` +
+          `Git specs bypass tarball integrity checks and run arbitrary ` +
+          `lifecycle scripts against arbitrary remotes. If you need this ` +
+          `package, publish a registry tarball or vendor the source.`
+      );
     }
   }
   return pkg;
+}
+
+// Workspace packages live under @pwrsnap/* (plus the unscoped root
+// `pwrsnap-workspace`). Transitive packages from the registry never
+// use these names, so a name check is a precise way to tell "is this
+// our own code" without depending on pnpm-internal context this hook
+// doesn't get.
+function isWorkspaceRootPackage(pkg) {
+  if (typeof pkg.name !== "string") return false;
+  return pkg.name.startsWith("@pwrsnap/") || pkg.name === "pwrsnap-workspace";
 }
 
 // Belt-and-suspenders: even if a git spec somehow slipped past

@@ -98,15 +98,15 @@ test("overlays:upsert + list + delete round-trip", async () => {
     // overlays_version on the capture bumped — fetch via the test
     // bridge and verify the editor can rely on it for cache
     // invalidation later.
-    const overlaysVersion = await app.electronApp.evaluate((_electron, id: string) => {
+    const editsVersion = await app.electronApp.evaluate((_electron, id: string) => {
       const bridge = (
         globalThis as unknown as {
-          __PWRSNAP_TEST__: { getOverlaysVersion: (id: string) => number | null };
+          __PWRSNAP_TEST__: { getEditsVersion: (id: string) => number | null };
         }
       ).__PWRSNAP_TEST__;
-      return bridge.getOverlaysVersion(id);
+      return bridge.getEditsVersion(id);
     }, captureId);
-    expect(overlaysVersion ?? 0).toBeGreaterThanOrEqual(1);
+    expect(editsVersion ?? 0).toBeGreaterThanOrEqual(1);
 
     // Reject with garbage payload — validation gate kicks in.
     const garbage = await app.dispatch("overlays:upsert", {
@@ -161,7 +161,7 @@ async function seedCapture(
               captured_at: string;
               source_app_bundle_id: string | null;
               source_app_name: string | null;
-              src_path: string;
+              legacy_src_path: string | null;
               width_px: number;
               height_px: number;
               device_pixel_ratio: number;
@@ -177,7 +177,7 @@ async function seedCapture(
         captured_at: new Date().toISOString(),
         source_app_bundle_id: "com.test.spec",
         source_app_name: "Editor Spec",
-        src_path: payload.pngPath,
+        legacy_src_path: payload.pngPath,
         width_px: 800,
         height_px: 600,
         device_pixel_ratio: 1,

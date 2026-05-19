@@ -230,7 +230,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   // Low / Med / High clipboard cards anyway.
   const lastSnapMetrics = usePresetRenderMetrics(
     lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.id : null,
-    lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.overlays_version : null
+    lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.edits_version : null
   );
   // Tracks the latest GIF / MP4 export the user kicked off from the
   // tray's video-branch buttons. Surfaces `Encoding…` / `Saved` /
@@ -470,7 +470,7 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
                 />
               ) : (
                 <img
-                  src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.overlays_version)}
+                  src={cacheUrl(lastSnap.id, 800, "webp", lastSnap.edits_version)}
                   alt="Last snap"
                 />
               )}

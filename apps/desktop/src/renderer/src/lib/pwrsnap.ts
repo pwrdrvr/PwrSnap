@@ -103,7 +103,7 @@ export function cacheUrl(
   width: number,
   format: "png" | "webp" = "webp",
   /**
-   * Cache-buster — usually `record.overlays_version`. Include it
+   * Cache-buster — usually `record.edits_version`. Include it
    * whenever the URL is rendering a capture that may have been
    * edited; without it, Chromium serves the previously-cached
    * response (`Cache-Control: private, max-age=300` on the

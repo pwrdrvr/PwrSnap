@@ -78,7 +78,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
             captured_at: string;
             source_app_bundle_id: string | null;
             source_app_name: string | null;
-            src_path: string;
+            legacy_src_path: string;
             width_px: number;
             height_px: number;
             device_pixel_ratio: number;
@@ -104,7 +104,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
             captured_at: ts,
             source_app_bundle_id: "com.test.spec",
             source_app_name: "Focus Scroll Spec",
-            src_path: payload.pngPath,
+            legacy_src_path: payload.pngPath,
             width_px: 800,
             height_px: 600,
             device_pixel_ratio: 1,

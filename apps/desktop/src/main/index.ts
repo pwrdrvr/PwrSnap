@@ -27,6 +27,7 @@ import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
+import { registerLayersHandlers } from "./handlers/layers-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
@@ -57,6 +58,8 @@ import {
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
+import { sweepBundleTrash } from "./persistence/bundle-store";
+import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
@@ -624,7 +627,10 @@ async function runBootGc(): Promise<void> {
   const expired = listExpiredTrash(14);
   if (expired.length > 0) {
     log.info("gc: hard-deleting expired captures", { count: expired.length });
-    await sweepTrash(expired);
+    // Sweep both layouts: legacy <id>.png flat trash files, and
+    // bundle-pair <id>/ directories. Both are best-effort; either
+    // one missing for a given id is fine.
+    await Promise.allSettled([sweepTrash(expired), sweepBundleTrash(expired)]);
     gcHardDeleteCaptures(expired);
   }
 }
@@ -766,6 +772,7 @@ export function bootstrapApp(): void {
     registerOverlaysHandlers();
     registerRecordingHandlers();
     registerStorageHandlers();
+    registerLayersHandlers();
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates
@@ -868,15 +875,32 @@ export function bootstrapApp(): void {
         // bridge surface so specs don't reach into module internals
         // via dynamic imports — those tend to drift across path /
         // bundler changes.
-        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0]) =>
-          insertOrFindCapture(input),
+        // seedCapture accepts the pre-bundle-storage `src_path` field
+        // name as a back-compat alias. Migration 0005 renamed the
+        // column to `legacy_src_path`, but specs pulled from main still
+        // use the old name. Normalize here so specs work unchanged.
+        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }) => {
+          const { src_path: legacyAlias, ...rest } = input;
+          const normalized =
+            legacyAlias !== undefined && rest.legacy_src_path === undefined
+              ? { ...rest, legacy_src_path: legacyAlias }
+              : rest;
+          return insertOrFindCapture(normalized);
+        },
         // Batch variant — runs all inserts inside one SQLite
         // transaction so the chain pays one fsync instead of N.
         // Lets specs seed 100+ captures inside a single
         // `electronApp.evaluate` without blowing their time budget
-        // on slow CI disks.
-        seedCaptures: (inputs: Parameters<typeof insertOrFindCapture>[0][]) =>
-          insertOrFindCapturesBatch(inputs),
+        // on slow CI disks. Same src_path alias applied to each input.
+        seedCaptures: (inputs: Array<Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }>) => {
+          const normalized = inputs.map((input) => {
+            const { src_path: legacyAlias, ...rest } = input;
+            return legacyAlias !== undefined && rest.legacy_src_path === undefined
+              ? { ...rest, legacy_src_path: legacyAlias }
+              : rest;
+          });
+          return insertOrFindCapturesBatch(normalized);
+        },
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the
         // float-over's video asset branch without spawning a real
@@ -889,11 +913,11 @@ export function bootstrapApp(): void {
         // window — the main bug class the prior e2e suite missed.
         setFloatOverState: (event: Parameters<typeof setFloatOverState>[0]) =>
           setFloatOverState(event),
-        getOverlaysVersion: (captureId: string) => {
+        getEditsVersion: (captureId: string) => {
           const row = getDb()
-            .prepare("SELECT overlays_version FROM captures WHERE id = ?")
-            .get(captureId) as { overlays_version: number } | undefined;
-          return row?.overlays_version ?? null;
+            .prepare("SELECT edits_version FROM captures WHERE id = ?")
+            .get(captureId) as { edits_version: number } | undefined;
+          return row?.edits_version ?? null;
         },
         // Read the system clipboard's current image. Returns null
         // when the clipboard doesn't currently hold an image. Used by
@@ -945,6 +969,15 @@ export function bootstrapApp(): void {
       log.info("e2e bridge installed");
     }
     void runBootGc();
+    // Legacy-bundle migration runs in the background after window
+    // creation — first launch of the bundle-flow build wraps every
+    // pre-bundle capture into a .pwrsnap. Idempotent re-runs are
+    // free (filtered by `bundle_path IS NULL`).
+    void runLegacyBundleMigration().catch((err: unknown) => {
+      log.warn("legacy-bundle migration failed at boot", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    });
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

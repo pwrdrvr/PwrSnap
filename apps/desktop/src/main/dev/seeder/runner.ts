@@ -626,7 +626,12 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
     // bounding memory regardless of profile size).
     await thumbQueue.enqueue({
       captureId: result.value.record.id,
-      srcPath: result.value.record.src_path,
+      // Perf seeder uses the legacy capture-flow (putCaptureSource +
+      // insertOrFindCapture) — synthesized rows always have
+      // legacy_src_path populated. Bundle-flow captures (live ⌘⇧P)
+      // route through persistCaptureFromTemp and use bundle_path
+      // instead.
+      srcPath: result.value.record.legacy_src_path ?? "",
       widthPx: result.value.record.width_px,
       heightPx: result.value.record.height_px
     });

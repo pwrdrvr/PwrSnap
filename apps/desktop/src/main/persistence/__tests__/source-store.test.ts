@@ -56,10 +56,10 @@ describe("source-store extension generalization", () => {
     expect(existsSync(srcPath)).toBe(false);
     expect(existsSync(join(mocks.trashRoot, "img-1.png"))).toBe(true);
 
-    // effectiveSrcPathFor reads the extension from src_path even for
+    // effectiveSrcPathFor reads the extension from legacy_src_path even for
     // soft-deleted rows; this is what the protocol handler relies on.
     expect(
-      effectiveSrcPathFor({ id: "img-1", src_path: srcPath, deleted_at: "2026-05-18T00:00:00Z" })
+      effectiveSrcPathFor({ id: "img-1", legacy_src_path: srcPath, deleted_at: "2026-05-18T00:00:00Z" })
     ).toBe(join(mocks.trashRoot, "img-1.png"));
 
     await restoreSourceFromTrash("img-1", srcPath);
@@ -79,7 +79,7 @@ describe("source-store extension generalization", () => {
     expect(existsSync(srcPath)).toBe(false);
     expect(existsSync(join(mocks.trashRoot, "vid-1.mp4"))).toBe(true);
     expect(
-      effectiveSrcPathFor({ id: "vid-1", src_path: srcPath, deleted_at: "2026-05-18T00:00:00Z" })
+      effectiveSrcPathFor({ id: "vid-1", legacy_src_path: srcPath, deleted_at: "2026-05-18T00:00:00Z" })
     ).toBe(join(mocks.trashRoot, "vid-1.mp4"));
 
     await restoreSourceFromTrash("vid-1", srcPath);
@@ -87,12 +87,12 @@ describe("source-store extension generalization", () => {
     expect(existsSync(join(mocks.trashRoot, "vid-1.mp4"))).toBe(false);
   });
 
-  test("purgeOneFromTrash uses src_path extension", async () => {
+  test("purgeOneFromTrash uses legacy_src_path extension", async () => {
     const { purgeOneFromTrash } = await import("../source-store");
     const trashPath = join(mocks.trashRoot, "vid-2.mp4");
     await writeFile(trashPath, "trashed");
 
-    // purgeOneFromTrash takes the live src_path so it can read the
+    // purgeOneFromTrash takes the live legacy_src_path so it can read the
     // extension; for a .mp4 source it removes the .mp4 trash file
     // (not a phantom .png).
     await purgeOneFromTrash("vid-2", join(mocks.capturesRoot, "vid-2.mp4"));

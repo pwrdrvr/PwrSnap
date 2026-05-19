@@ -13,7 +13,7 @@ const log = getMainLogger("pwrsnap:capture-source-maintenance");
 
 type LegacyCaptureRow = {
   id: string;
-  src_path: string;
+  legacy_src_path: string;
   deleted_at: string | null;
 };
 
@@ -38,7 +38,7 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
 
   const db = getDb();
   const rows = db
-    .prepare("SELECT id, src_path, deleted_at FROM captures WHERE src_path LIKE ?")
+    .prepare("SELECT id, legacy_src_path, deleted_at FROM captures WHERE legacy_src_path LIKE ?")
     .all(`${legacyRoot}/%`) as LegacyCaptureRow[];
   if (rows.length === 0) return { movedFiles: 0, updatedRows: 0, skippedRows: 0 };
 
@@ -46,7 +46,7 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
   let movedFiles = 0;
   let updatedRows = 0;
   let skippedRows = 0;
-  const updatePath = db.prepare("UPDATE captures SET src_path = ? WHERE id = ?");
+  const updatePath = db.prepare("UPDATE captures SET legacy_src_path = ? WHERE id = ?");
 
   for (const row of rows) {
     const nextPath = join(currentRoot, `${row.id}.png`);
@@ -58,32 +58,32 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
     }
 
     try {
-      if (!existsSync(row.src_path)) {
+      if (!existsSync(row.legacy_src_path)) {
         if (existsSync(nextPath)) {
           updatePath.run(nextPath, row.id);
           updatedRows += 1;
           log.info("legacy capture source migration repaired row", {
             captureId: row.id,
-            srcPath: row.src_path,
+            srcPath: row.legacy_src_path,
             nextPath
           });
           continue;
         }
         skippedRows += 1;
-        log.warn("legacy capture source missing", { captureId: row.id, srcPath: row.src_path });
+        log.warn("legacy capture source missing", { captureId: row.id, srcPath: row.legacy_src_path });
         continue;
       }
       if (existsSync(nextPath)) {
         skippedRows += 1;
         log.warn("legacy capture migration target already exists", {
           captureId: row.id,
-          srcPath: row.src_path,
+          srcPath: row.legacy_src_path,
           nextPath
         });
         continue;
       }
       await mkdir(dirname(nextPath), { recursive: true });
-      await rename(row.src_path, nextPath);
+      await rename(row.legacy_src_path, nextPath);
       updatePath.run(nextPath, row.id);
       movedFiles += 1;
       updatedRows += 1;
@@ -91,7 +91,7 @@ export async function migrateLegacyCaptureSources(): Promise<LegacyCaptureSource
       skippedRows += 1;
       log.warn("legacy capture source migration skipped row", {
         captureId: row.id,
-        srcPath: row.src_path,
+        srcPath: row.legacy_src_path,
         nextPath,
         message: err instanceof Error ? err.message : String(err)
       });

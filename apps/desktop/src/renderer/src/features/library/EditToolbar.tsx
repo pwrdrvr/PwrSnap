@@ -108,12 +108,21 @@ export function EditToolbar({ tool, onChange, captureId }: EditToolbarProps): Re
     setPosition(null);
   }
 
-  // When a custom position is in effect, switch from the CSS-driven
-  // bottom-center anchor to explicit left/top.
+  // When a custom position is in effect, switch from `position:
+  // absolute` (default, positioned-ancestor-relative) to `position:
+  // fixed` (viewport-relative). The drag math uses
+  // `getBoundingClientRect()` which produces viewport-relative coords;
+  // applying those as `left`/`top` under `position: absolute` would
+  // double-offset the toolbar by the Stage wrapper's distance from
+  // the viewport (the sidebar width + any topbar height), making the
+  // toolbar jump away from the cursor at drag-start. Fixed positioning
+  // matches the coordinate space and keeps the grip directly under
+  // the pointer.
   const style: React.CSSProperties =
     position === null
       ? {}
       : {
+          position: "fixed",
           left: position.x,
           top: position.y,
           bottom: "auto",

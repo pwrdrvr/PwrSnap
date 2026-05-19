@@ -37,11 +37,13 @@ describe("computeArrowGeometry", () => {
     expect(geom.strokeWidthPx).toBe(14);
   });
 
-  it("uses the SHORT side, not the long side", () => {
-    // Wide image: short side = 600. 600 / 220 ≈ 2.7 → clamps up to 4.
+  it("image-derived stroke floor uses the SHORT side (the floor, not the cap)", () => {
+    // Wide image with a SHORT arrow: short side = 600 → image-derived
+    // base = 4. The arrow is small (~80px) so the length-derived stroke
+    // (80/250 = 0.32) is below the floor, and the image-derived 4 wins.
     const wide = computeArrowGeometry({
-      from: { x: 0.1, y: 0.1 },
-      to: { x: 0.9, y: 0.9 },
+      from: { x: 0.5, y: 0.5 },
+      to: { x: 0.52, y: 0.5 }, // 80px on a 4000-wide image
       imageWidthPx: 4000,
       imageHeightPx: 600
     });
@@ -126,6 +128,112 @@ describe("computeArrowGeometry", () => {
       ...SQUARE_2K
     });
     expect(geom.strokeFraction).toBeCloseTo(geom.strokeWidthPx / 2000, 6);
+  });
+
+  // ------- Reported pathologies (each is a failing case before fix) -------
+
+  describe("short arrow regression cases", () => {
+    it("baseCenter never lands behind `from` (no inverted head)", () => {
+      // 20px arrow on a 2000px image. Normal head length would be ~32px,
+      // which is longer than the arrow itself — without guarding,
+      // baseCenter ends up at to.x - headLength = behind `from`, and
+      // the head triangle appears to render backwards.
+      const geom = computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.51, y: 0.5 }, // 20px
+        ...SQUARE_2K
+      });
+      const fromXPx = geom.from.x * 2000;
+      const toXPx = geom.to.x * 2000;
+      const baseXPx = geom.baseCenter.x * 2000;
+      // baseCenter must sit between from and to (inclusive on `to`), never
+      // behind `from`. For horizontal arrows that means fromX <= baseX <= toX.
+      expect(baseXPx).toBeGreaterThanOrEqual(fromXPx);
+      expect(baseXPx).toBeLessThanOrEqual(toXPx);
+    });
+
+    it("head triangle fits inside the arrow's bounding span (no head past `to` or behind `from`)", () => {
+      const geom = computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.51, y: 0.5 },
+        ...SQUARE_2K
+      });
+      const fromXPx = geom.from.x * 2000;
+      const toXPx = geom.to.x * 2000;
+      const leftPx = geom.baseLeft.x * 2000;
+      const rightPx = geom.baseRight.x * 2000;
+      // The base corners' projection onto the arrow axis (x) must sit
+      // between from and to. Perpendicular corner offsets are OK; only
+      // the along-axis position is constrained.
+      expect(leftPx).toBeGreaterThanOrEqual(fromXPx - 0.01);
+      expect(leftPx).toBeLessThanOrEqual(toXPx + 0.01);
+      expect(rightPx).toBeGreaterThanOrEqual(fromXPx - 0.01);
+      expect(rightPx).toBeLessThanOrEqual(toXPx + 0.01);
+    });
+
+    it("head remains visible (non-degenerate triangle) for short arrows", () => {
+      const geom = computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.515, y: 0.5 }, // 30px
+        ...SQUARE_2K
+      });
+      // Triangle area must be > 0 — not collapsed to a line or point.
+      const ax = geom.to.x * 2000,
+        ay = geom.to.y * 2000;
+      const bx = geom.baseLeft.x * 2000,
+        by = geom.baseLeft.y * 2000;
+      const cx = geom.baseRight.x * 2000,
+        cy = geom.baseRight.y * 2000;
+      const area = Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2;
+      expect(area).toBeGreaterThan(4); // at least a few square pixels
+    });
+  });
+
+  describe("long arrow stroke scaling", () => {
+    it("stroke scales up for very long arrows on a short-side-small image (no hairline)", () => {
+      // 4000×600 image. Short side = 600 → base stroke clamps to 4px (the
+      // floor). An arrow that traverses 3000px of the image looks like a
+      // hairline at 4px (0.13% of arrow length). The smart algorithm
+      // should scale the stroke up for long arrows.
+      const geom = computeArrowGeometry({
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 }, // 3200px on a 4000-wide image
+        imageWidthPx: 4000,
+        imageHeightPx: 600
+      });
+      // Stroke must be at least ~1% of the arrow length so it doesn't look
+      // hair-thin. 3200 * 0.01 = 32, clamped by STROKE_MAX_PX → expect ≥10px.
+      expect(geom.strokeWidthPx).toBeGreaterThanOrEqual(10);
+    });
+
+    it("stroke is bounded above for monstrous arrows (no crayola)", () => {
+      // Full-image arrow on a 4000×600 image: 3960px. We don't want stroke
+      // to blow past STROKE_MAX_PX.
+      const geom = computeArrowGeometry({
+        from: { x: 0.0, y: 0.5 },
+        to: { x: 1.0, y: 0.5 },
+        imageWidthPx: 4000,
+        imageHeightPx: 600
+      });
+      expect(geom.strokeWidthPx).toBeLessThanOrEqual(20);
+    });
+  });
+
+  describe("head/stroke proportion stability", () => {
+    it("head width never falls below stroke width (head must be visible against the line)", () => {
+      const cases = [
+        { from: { x: 0.5, y: 0.5 }, to: { x: 0.52, y: 0.5 } }, // very short
+        { from: { x: 0.5, y: 0.5 }, to: { x: 0.6, y: 0.5 } }, // medium
+        { from: { x: 0.1, y: 0.5 }, to: { x: 0.9, y: 0.5 } }, // long
+        { from: { x: 0.1, y: 0.1 }, to: { x: 0.9, y: 0.9 } } // diagonal
+      ];
+      for (const c of cases) {
+        const geom = computeArrowGeometry({ ...c, ...SQUARE_2K });
+        expect(geom.headWidthPx, JSON.stringify(c)).toBeGreaterThanOrEqual(
+          geom.strokeWidthPx
+        );
+      }
+    });
   });
 });
 

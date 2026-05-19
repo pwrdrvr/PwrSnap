@@ -65,11 +65,31 @@
 }
 
 .editor-canvas-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  overflow: auto;
+  overflow: hidden; /* zoom container handles its own clip */
+}
+.editor-canvas-wrap.is-pannable {
+  cursor: grab;
+}
+.editor-canvas-wrap.is-panning {
+  cursor: grabbing;
+}
+/* Inline-block so the zoom container is sized by its child (the
+   canvas's aspect-ratio'd box), then the CSS transform on this
+   container scales the whole thing. Without inline-block the
+   container takes the wrap's full size and the transform-origin
+   "center center" can land off-image. */
+.editor-canvas-zoom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  will-change: transform;
 }
 .editor-canvas {
   position: relative;
@@ -174,6 +194,45 @@
 .editor-toolbar-meta button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Zoom indicator chip — bottom-right of the canvas wrap. The percent
+   button doubles as Fit-to-window (⌘0); the 1:1 button is Actual
+   size (⌘1). Always visible (no hover-to-reveal) because the user
+   needs to know the current zoom at a glance. */
+.editor-zoom-chip {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: inline-flex;
+  gap: 0;
+  align-items: stretch;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  overflow: hidden;
+  font: 600 11px/1 var(--font-mono);
+  color: var(--text-secondary);
+  pointer-events: auto;
+  user-select: none;
+  z-index: 10;
+}
+.editor-zoom-chip button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+  min-width: 44px;
+  text-align: center;
+}
+.editor-zoom-chip button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text-primary);
+}
+.editor-zoom-chip button + button {
+  border-left: 1px solid var(--border-default);
 }
 
 .editor-loading,

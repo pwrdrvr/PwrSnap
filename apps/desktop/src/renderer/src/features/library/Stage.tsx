@@ -276,7 +276,9 @@ function StageBody({
         )}
       </div>
 
-      {record.kind !== "video" && <EditToolbar tool={tool} onChange={onToolChange} />}
+      {record.kind !== "video" && (
+        <EditToolbar tool={tool} onChange={onToolChange} captureId={record.id} />
+      )}
     </>
   );
 }

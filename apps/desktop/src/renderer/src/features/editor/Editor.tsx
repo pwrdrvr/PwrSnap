@@ -30,6 +30,8 @@ import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
 import { computeArrowGeometry } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
 import { TOOLS, type Tool } from "./editor-tools";
+import { useZoomPan } from "./useZoomPan";
+import { useUndoRedo } from "./useUndoRedo";
 import "./editor.css";
 
 type LoadState =
@@ -122,7 +124,16 @@ export function Editor({
   );
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+  // True while undo/redo is replaying an op via the IPC. The
+  // events:overlays:changed broadcast will fire and refetch; we
+  // don't want that refetch to re-record a new EditOp.
+  const undoApplyingRef = useRef<boolean>(false);
+  // Hook-owned recorder, populated by EditorLoaded once the record
+  // resolves. persistOverlay needs to call it; the hook lives in the
+  // child so it can depend on the loaded record's id.
+  const recordCreateRef = useRef<((row: OverlayRow) => void) | null>(null);
 
   // refetch accepts a "cancelled" predicate so the caller can opt-out
   // of post-await setState if the component has moved on. Critical for
@@ -298,6 +309,13 @@ export function Editor({
     if (!result.ok) {
       // eslint-disable-next-line no-console
       console.error("overlays:upsert failed", result.error);
+      return;
+    }
+    // Record the create on the undo stack so ⌘Z reverts it.
+    // Suppressed when we ARE the undo/redo replay path
+    // (undoApplyingRef === true).
+    if (!undoApplyingRef.current) {
+      recordCreateRef.current?.(result.value);
     }
     // events:overlays:changed broadcast triggers refetch.
   }
@@ -349,7 +367,130 @@ export function Editor({
     return <div className="editor-error">{state.message}</div>;
   }
 
-  const { record, overlays } = state;
+  return (
+    <EditorLoaded
+      record={state.record}
+      overlays={state.overlays}
+      chrome={chrome}
+      tool={tool}
+      setTool={setTool}
+      draft={draft}
+      setDraft={setDraft}
+      canvasRef={canvasRef}
+      canvasWrapRef={canvasWrapRef}
+      textInputRef={textInputRef}
+      undoApplyingRef={undoApplyingRef}
+      recordCreateRef={recordCreateRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      commitText={commitText}
+    />
+  );
+}
+
+/** Loaded body extracted so the zoom + undo hooks can depend on
+ *  the capture's intrinsic dimensions (and only mount once the
+ *  record has resolved). */
+function EditorLoaded({
+  record,
+  overlays,
+  chrome,
+  tool,
+  setTool,
+  draft,
+  setDraft,
+  canvasRef,
+  canvasWrapRef,
+  textInputRef,
+  undoApplyingRef,
+  recordCreateRef,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  commitText
+}: {
+  record: CaptureRecord;
+  overlays: OverlayRow[];
+  chrome: EditorChrome;
+  tool: Tool;
+  setTool: (t: Tool) => void;
+  draft: Draft | null;
+  setDraft: (d: Draft | null) => void;
+  canvasRef: React.RefObject<HTMLDivElement | null>;
+  canvasWrapRef: React.RefObject<HTMLDivElement | null>;
+  textInputRef: React.RefObject<HTMLInputElement | null>;
+  undoApplyingRef: React.RefObject<boolean>;
+  recordCreateRef: React.RefObject<((row: OverlayRow) => void) | null>;
+  onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
+  commitText: () => Promise<void>;
+}) {
+  const zoom = useZoomPan({
+    devicePixelRatio: record.device_pixel_ratio,
+    imageWidthPx: record.width_px,
+    imageHeightPx: record.height_px,
+    containerRef: canvasRef
+  });
+
+  const undo = useUndoRedo({ captureId: record.id, applyingRef: undoApplyingRef });
+
+  // Bridge: parent's persistOverlay reads recordCreateRef.current
+  // to push onto the undo stack. Sync the hook's recorder into
+  // the parent's ref every render so callbacks aren't stale.
+  useEffect(() => {
+    recordCreateRef.current = undo.recordCreate;
+    return () => {
+      recordCreateRef.current = null;
+    };
+  }, [recordCreateRef, undo.recordCreate]);
+
+  // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable === true
+      ) {
+        return;
+      }
+      if (e.key === "0") {
+        e.preventDefault();
+        zoom.resetToFit();
+      } else if (e.key === "1") {
+        e.preventDefault();
+        zoom.actualSize();
+      } else if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        zoom.zoomIn();
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        zoom.zoomOut();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoom]);
+
+  // Attach the non-passive wheel listener manually — React's
+  // synthetic events go through a passive listener, so
+  // event.preventDefault() inside onWheel from JSX would warn / no-op.
+  useEffect(() => {
+    const el = canvasWrapRef.current;
+    if (el === null) return;
+    const handler = (e: WheelEvent): void => zoom.onWheel(e);
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [zoom, canvasWrapRef]);
+
+  // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
+  // pointer events instead of the canvas's drawing handlers.
+  const wantPan = zoom.state.scale > 1 || zoom.spaceHeld;
+
   return (
     <div
       className={
@@ -369,38 +510,58 @@ export function Editor({
         </header>
       )}
 
-      <div className="editor-canvas-wrap">
-        <div
-          ref={canvasRef}
-          className="editor-canvas"
-          style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          data-tool={tool}
-        >
-          <img
-            src={captureSrcUrl(record.id)}
-            alt={record.source_app_name ?? "Capture"}
-            draggable={false}
-            className="editor-image"
-          />
-          <OverlaySvg
-            overlays={overlays}
-            draft={draft}
-            imageWidthPx={record.width_px}
-            imageHeightPx={record.height_px}
-          />
-          {draft?.kind === "text" && (
-            <TextDraftInput
-              draft={draft}
-              inputRef={textInputRef}
-              onChange={(body) => setDraft({ ...draft, body })}
-              onCommit={() => void commitText()}
-              onCancel={() => setDraft(null)}
+      <div
+        ref={canvasWrapRef}
+        className={
+          "editor-canvas-wrap" +
+          (wantPan ? " is-pannable" : "") +
+          (zoom.isPanning ? " is-panning" : "")
+        }
+        onPointerDown={wantPan ? zoom.onPanPointerDown : undefined}
+        onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
+        onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
+      >
+        <div className="editor-canvas-zoom" style={zoom.transformStyle}>
+          <div
+            ref={canvasRef}
+            className="editor-canvas"
+            style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
+            onPointerDown={wantPan ? undefined : onPointerDown}
+            onPointerMove={wantPan ? undefined : onPointerMove}
+            onPointerUp={wantPan ? undefined : onPointerUp}
+            data-tool={tool}
+          >
+            <img
+              src={captureSrcUrl(record.id)}
+              alt={record.source_app_name ?? "Capture"}
+              draggable={false}
+              className="editor-image"
             />
-          )}
+            <OverlaySvg
+              overlays={overlays}
+              draft={draft}
+              imageWidthPx={record.width_px}
+              imageHeightPx={record.height_px}
+            />
+            {draft?.kind === "text" && (
+              <TextDraftInput
+                draft={draft}
+                inputRef={textInputRef}
+                imageWidthPx={record.width_px}
+                imageHeightPx={record.height_px}
+                canvasRef={canvasRef}
+                onChange={(body) => setDraft({ ...draft, body })}
+                onCommit={() => void commitText()}
+                onCancel={() => setDraft(null)}
+              />
+            )}
+          </div>
         </div>
+        <ZoomChip
+          scale={zoom.state.scale}
+          onReset={zoom.resetToFit}
+          onActualSize={zoom.actualSize}
+        />
       </div>
 
       {chrome !== "chromeless" && (
@@ -408,13 +569,39 @@ export function Editor({
           tool={tool}
           onChange={setTool}
           appliedCount={overlays.length}
-          onClearLast={async () => {
-            const last = overlays[overlays.length - 1];
-            if (last === undefined) return;
-            await dispatch("overlays:delete", { id: last.id });
+          canUndo={undo.canUndo}
+          canRedo={undo.canRedo}
+          onUndo={() => void undo.undo()}
+          onRedo={() => void undo.redo()}
+          onReveal={() => {
+            void dispatch("capture:reveal", { captureId: record.id });
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** Floating zoom indicator + reset buttons. Bottom-right of the
+ *  canvas wrap, only the percent label visible until you hover. */
+function ZoomChip({
+  scale,
+  onReset,
+  onActualSize
+}: {
+  scale: number;
+  onReset: () => void;
+  onActualSize: () => void;
+}) {
+  const pct = Math.round(scale * 100);
+  return (
+    <div className="editor-zoom-chip" role="status" aria-label={`Zoom ${pct}%`}>
+      <button type="button" onClick={onReset} title="Fit to window (⌘0)">
+        {pct}%
+      </button>
+      <button type="button" onClick={onActualSize} title="Actual size (⌘1)">
+        1:1
+      </button>
     </div>
   );
 }
@@ -449,12 +636,20 @@ function EditorToolbar({
   tool,
   onChange,
   appliedCount,
-  onClearLast
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
+  onReveal
 }: {
   tool: Tool;
   onChange: (t: Tool) => void;
   appliedCount: number;
-  onClearLast: () => Promise<void>;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onReveal: () => void;
 }) {
   return (
     <div className="editor-toolbar" role="toolbar" aria-label="Annotation tools">
@@ -473,9 +668,17 @@ function EditorToolbar({
         ))}
       </div>
       <div className="editor-toolbar-meta">
-        <span>{appliedCount} overlay{appliedCount === 1 ? "" : "s"}</span>
-        <button type="button" disabled={appliedCount === 0} onClick={() => void onClearLast()}>
-          Undo last
+        <span>
+          {appliedCount} overlay{appliedCount === 1 ? "" : "s"}
+        </span>
+        <button type="button" disabled={!canUndo} onClick={onUndo} title="Undo (⌘Z)">
+          ↶ Undo
+        </button>
+        <button type="button" disabled={!canRedo} onClick={onRedo} title="Redo (⌘⇧Z)">
+          ↷ Redo
+        </button>
+        <button type="button" onClick={onReveal} title="Reveal in Finder">
+          Reveal
         </button>
       </div>
     </div>
@@ -797,30 +1000,56 @@ function TextGlyph({
 function TextDraftInput({
   draft,
   inputRef,
+  imageWidthPx,
+  imageHeightPx,
+  canvasRef,
   onChange,
   onCommit,
   onCancel
 }: {
   draft: DraftText;
   inputRef: React.RefObject<HTMLInputElement | null>;
+  imageWidthPx: number;
+  imageHeightPx: number;
+  canvasRef: React.RefObject<HTMLDivElement | null>;
   onChange: (body: string) => void;
   onCommit: () => void;
   onCancel: () => void;
 }) {
-  // Inline input positioned at the click point. It overlays the
-  // SVG text glyph (which is invisible until commit). On Enter or
-  // blur, the parent commits via persist; on Escape, cancel.
+  // The committed glyph renders via SVG <text> with fontSize in
+  // viewBox units (0..1), scaled by preserveAspectRatio="none" to the
+  // canvas's CSS height. So the committed text's CSS-px font size is
+  //   canvasHeightCss × (sizePx / shortSidePx)
+  // where sizePx = shortSidePx / 60 for "small". The draft input
+  // historically used a fixed 13px font, producing a visible "jumps
+  // in size" on commit. Match the SVG's effective size and the
+  // baseline so the input is a faithful preview.
+  const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+  const canvasCssHeight = rect?.height ?? 0;
+  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  // "small" is the only size the user can place from the text tool
+  // today — keep this in sync with TextGlyph's `size === "small"`
+  // branch (shortSide / 60).
+  const sizePx = shortSide / 60;
+  // Effective rendered CSS px on the live canvas.
+  const fontPx = canvasCssHeight > 0 ? canvasCssHeight * (sizePx / shortSide) : 13;
   const style: CSSProperties = {
     position: "absolute",
+    // dominantBaseline="hanging" on the committed glyph means the
+    // text's TOP edge aligns with the y point. The input's top edge
+    // should align too — but the input has padding above the text
+    // baseline (we use 1px so the input chrome is minimal). Subtract
+    // the padding so the actual text starts at draft.yn × height.
     left: `${draft.xn * 100}%`,
     top: `${draft.yn * 100}%`,
-    transform: "translateY(-2px)",
+    transform: "translateY(-1px)",
     background: "color-mix(in srgb, var(--bg-app) 92%, transparent)",
     color: "var(--accent-bright, #ffa33d)",
     border: "1px solid var(--accent, #ff8a1f)",
-    borderRadius: 4,
-    padding: "2px 6px",
-    font: "600 13px var(--font-sans, system-ui)",
+    borderRadius: 3,
+    padding: "1px 4px",
+    font: `600 ${fontPx}px var(--font-sans, system-ui)`,
+    lineHeight: 1,
     outline: "none",
     minWidth: 80
   };

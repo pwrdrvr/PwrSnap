@@ -2126,6 +2126,36 @@
   width: 15px;
   height: 15px;
 }
+/* Drag handle at the left edge of the EditToolbar. Visible dot-grid
+   pattern (two vertical columns of three dots). Cursor is grab; the
+   pointer handlers in EditToolbar.tsx switch to grabbing on drag. */
+.psl__et-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 36px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: grab;
+  touch-action: none;
+}
+.psl__et-grip:hover {
+  color: var(--text-secondary);
+}
+.psl__et-grip:active {
+  cursor: grabbing;
+  color: var(--text-primary);
+}
+/* When a custom position is in effect, the toolbar adds is-positioned.
+   Slight shadow bump signals it's been moved (vs the default chrome
+   layer it normally sits on). */
+.psl__edit-toolbar.is-positioned {
+  box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+}
 /* Vertical divider between the Pointer (select/inspect) tool and
    the Arrow/Rect/Highlight/Blur/Text (draw) tools. Subtle so it
    reads as a separator, not a hard cut. */

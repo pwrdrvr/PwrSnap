@@ -56,11 +56,22 @@ type LoadState =
  *                    `tool` / `onToolChange` props. */
 export type EditorChrome = "full" | "embedded" | "chromeless";
 
+/** Reactive snapshot of the editor's zoom state, surfaced to parents
+ *  that render zoom controls outside the editor (Library's floating
+ *  EditToolbar). `null` means the editor has unmounted — clear any
+ *  cached api. */
+export type ZoomApi = {
+  scale: number;
+  resetToFit: () => void;
+  actualSize: () => void;
+} | null;
+
 export function Editor({
   captureId,
   chrome = "full",
   tool: toolProp,
-  onToolChange
+  onToolChange,
+  onZoomChange
 }: {
   captureId: string;
   /** Chrome shape — see `EditorChrome` above. Defaults to `"full"`
@@ -74,6 +85,11 @@ export function Editor({
    *  fall back to internal state. */
   tool?: Tool;
   onToolChange?: (tool: Tool) => void;
+  /** Called whenever the editor's zoom state changes. Library uses
+   *  this to render the zoom indicator in the floating EditToolbar
+   *  (so the indicator doesn't float over the image). Called with
+   *  `null` on unmount so the parent can clear its cached api. */
+  onZoomChange?: (api: ZoomApi) => void;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   // Controlled-or-uncontrolled tool state. When the parent passes
@@ -353,6 +369,7 @@ export function Editor({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       commitText={commitText}
+      onZoomChange={onZoomChange}
     />
   );
 }
@@ -376,7 +393,8 @@ function EditorLoaded({
   onPointerDown,
   onPointerMove,
   onPointerUp,
-  commitText
+  commitText,
+  onZoomChange
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -394,13 +412,32 @@ function EditorLoaded({
   onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
   commitText: () => Promise<void>;
+  onZoomChange: ((api: ZoomApi) => void) | undefined;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
     imageWidthPx: record.width_px,
     imageHeightPx: record.height_px,
-    containerRef: canvasRef
+    wrapRef: canvasWrapRef
   });
+
+  // Surface zoom state to Library (so its floating EditToolbar can
+  // render zoom controls without overlaying the image). Split into
+  // two effects so we don't bounce null/value/null/value on every
+  // zoom tick (the cleanup of a deps-based effect would otherwise
+  // fire `null` between every scale change).
+  useEffect(() => {
+    if (onZoomChange === undefined) return;
+    onZoomChange({
+      scale: zoom.state.scale,
+      resetToFit: zoom.resetToFit,
+      actualSize: zoom.actualSize
+    });
+  }, [onZoomChange, zoom.state.scale, zoom.resetToFit, zoom.actualSize]);
+  useEffect(() => {
+    if (onZoomChange === undefined) return;
+    return () => onZoomChange(null);
+  }, [onZoomChange]);
 
   const undo = useUndoRedo({ captureId: record.id, applyingRef: undoApplyingRef });
 
@@ -489,47 +526,46 @@ function EditorLoaded({
         onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
         onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
       >
-        <div className="editor-canvas-zoom" style={zoom.transformStyle}>
-          <div
-            ref={canvasRef}
-            className="editor-canvas"
-            style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
-            onPointerDown={wantPan ? undefined : onPointerDown}
-            onPointerMove={wantPan ? undefined : onPointerMove}
-            onPointerUp={wantPan ? undefined : onPointerUp}
-            data-tool={tool}
-          >
-            <img
-              src={captureSrcUrl(record.id)}
-              alt={record.source_app_name ?? "Capture"}
-              draggable={false}
-              className="editor-image"
-            />
-            <OverlaySvg
-              overlays={overlays}
+        <div
+          ref={canvasRef}
+          className="editor-canvas"
+          style={
+            // After first paint, useZoomPan returns explicit CSS px
+            // for width/height. Before the wrap measures (rare; only
+            // on the first frame), fall back to aspect-ratio so the
+            // canvas has a sane intrinsic shape.
+            zoom.canvasStyle ?? { aspectRatio: `${record.width_px} / ${record.height_px}` }
+          }
+          onPointerDown={wantPan ? undefined : onPointerDown}
+          onPointerMove={wantPan ? undefined : onPointerMove}
+          onPointerUp={wantPan ? undefined : onPointerUp}
+          data-tool={tool}
+        >
+          <img
+            src={captureSrcUrl(record.id)}
+            alt={record.source_app_name ?? "Capture"}
+            draggable={false}
+            className="editor-image"
+          />
+          <OverlaySvg
+            overlays={overlays}
+            draft={draft}
+            imageWidthPx={record.width_px}
+            imageHeightPx={record.height_px}
+          />
+          {draft?.kind === "text" && (
+            <TextDraftInput
               draft={draft}
+              inputRef={textInputRef}
               imageWidthPx={record.width_px}
               imageHeightPx={record.height_px}
+              canvasRef={canvasRef}
+              onChange={(body) => setDraft({ ...draft, body })}
+              onCommit={() => void commitText()}
+              onCancel={() => setDraft(null)}
             />
-            {draft?.kind === "text" && (
-              <TextDraftInput
-                draft={draft}
-                inputRef={textInputRef}
-                imageWidthPx={record.width_px}
-                imageHeightPx={record.height_px}
-                canvasRef={canvasRef}
-                onChange={(body) => setDraft({ ...draft, body })}
-                onCommit={() => void commitText()}
-                onCancel={() => setDraft(null)}
-              />
-            )}
-          </div>
+          )}
         </div>
-        <ZoomChip
-          scale={zoom.state.scale}
-          onReset={zoom.resetToFit}
-          onActualSize={zoom.actualSize}
-        />
       </div>
 
       {chrome !== "chromeless" && (
@@ -539,6 +575,9 @@ function EditorLoaded({
           appliedCount={overlays.length}
           canUndo={undo.canUndo}
           canRedo={undo.canRedo}
+          zoomPct={Math.round(zoom.state.scale * 100)}
+          onResetZoom={zoom.resetToFit}
+          onActualSize={zoom.actualSize}
           onUndo={() => void undo.undo()}
           onRedo={() => void undo.redo()}
           onReveal={() => {
@@ -546,30 +585,6 @@ function EditorLoaded({
           }}
         />
       )}
-    </div>
-  );
-}
-
-/** Floating zoom indicator + reset buttons. Bottom-right of the
- *  canvas wrap, only the percent label visible until you hover. */
-function ZoomChip({
-  scale,
-  onReset,
-  onActualSize
-}: {
-  scale: number;
-  onReset: () => void;
-  onActualSize: () => void;
-}) {
-  const pct = Math.round(scale * 100);
-  return (
-    <div className="editor-zoom-chip" role="status" aria-label={`Zoom ${pct}%`}>
-      <button type="button" onClick={onReset} title="Fit to window (⌘0)">
-        {pct}%
-      </button>
-      <button type="button" onClick={onActualSize} title="Actual size (⌘1)">
-        1:1
-      </button>
     </div>
   );
 }
@@ -586,6 +601,9 @@ function EditorToolbar({
   appliedCount,
   canUndo,
   canRedo,
+  zoomPct,
+  onResetZoom,
+  onActualSize,
   onUndo,
   onRedo,
   onReveal
@@ -595,6 +613,9 @@ function EditorToolbar({
   appliedCount: number;
   canUndo: boolean;
   canRedo: boolean;
+  zoomPct: number;
+  onResetZoom: () => void;
+  onActualSize: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onReveal: () => void;
@@ -624,6 +645,12 @@ function EditorToolbar({
         </button>
         <button type="button" disabled={!canRedo} onClick={onRedo} title="Redo (⌘⇧Z)">
           ↷ Redo
+        </button>
+        <button type="button" onClick={onResetZoom} title="Fit to window (⌘0)">
+          {zoomPct}%
+        </button>
+        <button type="button" onClick={onActualSize} title="Actual size (⌘1)">
+          1:1
         </button>
         <button type="button" onClick={onReveal} title="Reveal in Finder">
           Reveal

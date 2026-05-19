@@ -1,44 +1,54 @@
-// Zoom + pan state for the Editor canvas. Applied as a CSS transform
-// on the canvas element so the image + SVG overlays + text-draft
-// input all scale together.
+// Zoom + pan state for the Editor canvas — "canvas grows" model.
 //
-// Default: fit-to-window (scale = 1, no pan), matching the pre-existing
-// "image fills the viewport via aspect-ratio + max-width/height" layout.
-// Zooming in lets the user inspect detail; zooming out makes a giant
-// capture's overlays easier to place precisely.
+// Mental model: the canvas element has explicit CSS width/height that
+// scale with the zoom factor. The wrap is `overflow: auto`, so the
+// canvas can be larger than the visible area; the user pans by
+// scrolling the wrap. When the canvas is smaller than the wrap (fit
+// or zoomed out), it's centered via `margin: auto`. This is the
+// standard photo-editor model — Preview.app, Photos, Photoshop. The
+// alternative (transform: scale inside overflow:hidden) keeps the
+// canvas the same DOM size and scales the pixels visually, which
+// nobody else does and which the user explicitly rejected.
+//
+// Default: fit-to-window (scale = 1). At scale=1, the canvas is sized
+// to fit the wrap with object-fit:contain semantics. Larger scales
+// grow the canvas past the wrap; smaller scales shrink it.
 //
 // Pinch-to-zoom on macOS trackpads arrives as `wheel` events with
-// `event.ctrlKey === true` (a Chromium / Cocoa convention — neither
-// the user nor any code actually held ctrl; the OS rewrites the
-// gesture into a synthetic ctrl+wheel). That's the only way the
-// renderer sees a trackpad pinch.
+// `event.ctrlKey === true` (Chromium/Cocoa convention — the OS
+// rewrites the gesture into a synthetic ctrl+wheel). That's the only
+// way the renderer sees a trackpad pinch.
 //
-// Drag-to-pan is enabled when scale > 1. Space+drag pans regardless
-// of the active tool (Photoshop convention) so the user can reposition
-// without leaving Arrow / Rect / etc.
+// Drag-to-pan is enabled when scale > 1 (canvas overflows the wrap)
+// or when Space is held (Photoshop convention).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type ZoomPanState = {
-  scale: number;
-  panX: number;
-  panY: number;
-};
-
-export const FIT_TO_WINDOW: ZoomPanState = { scale: 1, panX: 0, panY: 0 };
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
-const KEYBOARD_STEP = 1.25; // ⌘+ / ⌘- multiplier
-const WHEEL_STEP_BASE = 1.0025; // exponent base for trackpad wheel; ~1% per tick
+const KEYBOARD_STEP = 1.25;
+const WHEEL_STEP_BASE = 1.0025;
+
+export type ZoomPanState = {
+  /** Multiplier on the canvas's fit-to-wrap CSS size. 1 = fit, 2 =
+   *  twice as big as fit, etc. NOT a multiplier on the source image
+   *  pixels — that depends on the wrap's current size. */
+  scale: number;
+};
+
+export const FIT_TO_WINDOW: ZoomPanState = { scale: 1 };
 
 export type UseZoomPanResult = {
   state: ZoomPanState;
-  /** Apply as inline style on the zoom container. Anchored to center. */
-  transformStyle: { transform: string; transformOrigin: string };
+  /** Apply as inline style on the canvas element. `null` when the
+   *  wrap hasn't laid out yet (first paint); caller should render a
+   *  fallback canvas sized by aspect-ratio + max-width/max-height
+   *  until the ResizeObserver fires. */
+  canvasStyle: { width: string; height: string } | null;
   /** Fit-to-window reset (⌘0). */
   resetToFit: () => void;
   /** 1:1 pixel mapping (⌘1). Accounts for devicePixelRatio so a
-   *  Retina capture renders at OS-level 1:1 inside the viewport. */
+   *  Retina capture renders at OS-1:1 inside the viewport. */
   actualSize: () => void;
   /** ⌘+ */
   zoomIn: () => void;
@@ -47,13 +57,15 @@ export type UseZoomPanResult = {
   /** Whether space is held — caller uses this to suppress the active
    *  tool's drag handler and pan instead. */
   spaceHeld: boolean;
-  /** Whether a pan drag is in progress. Caller can show a grabbing cursor. */
+  /** Whether a pan drag is in progress. Caller can show grabbing cursor. */
   isPanning: boolean;
-  /** Wheel handler — attach to the zoom container. Handles both
-   *  pinch (ctrlKey=true) and standard wheel-scroll. */
+  /** Wheel handler — attach to the wrap. Handles pinch (ctrlKey=true)
+   *  or meta+wheel; lets plain wheel-scroll pass through to native
+   *  scrollbar pan. */
   onWheel: (event: WheelEvent) => void;
-  /** Pan handlers — attach to the zoom container when scale > 1 OR
-   *  spaceHeld is true. */
+  /** Pan handlers — attach to the wrap when `scale > 1 || spaceHeld`.
+   *  Drives `wrap.scrollLeft/scrollTop` directly; no React state for
+   *  pan position. */
   onPanPointerDown: (event: React.PointerEvent<HTMLElement>) => void;
   onPanPointerMove: (event: React.PointerEvent<HTMLElement>) => void;
   onPanPointerUp: (event: React.PointerEvent<HTMLElement>) => void;
@@ -63,144 +75,164 @@ export function useZoomPan(opts: {
   /** Multiplier applied to actualSize() output — typically devicePixelRatio
    *  (so Retina captures display at OS-1:1 instead of CSS-1:1). */
   devicePixelRatio?: number;
-  /** Image's intrinsic pixel dimensions, used for actualSize math.
-   *  Without this we can't compute "1 image pixel = 1 screen pixel". */
+  /** Image's intrinsic pixel dimensions. Used for actualSize math
+   *  and for the canvas's intrinsic aspect ratio. */
   imageWidthPx: number;
   imageHeightPx: number;
-  /** Container size in CSS pixels — needed because the image is
-   *  rendered via object-fit:contain at the container's natural size.
-   *  actualSize() solves for scale such that the rendered image equals
-   *  imageWidthPx × imageHeightPx (or × devicePixelRatio for Retina). */
-  containerRef: React.RefObject<HTMLElement | null>;
+  /** The scroll container (canvas-wrap). Pan scrolls this element;
+   *  fit-to-wrap math reads its clientWidth/clientHeight. */
+  wrapRef: React.RefObject<HTMLElement | null>;
 }): UseZoomPanResult {
-  const { devicePixelRatio = 1, imageWidthPx, imageHeightPx, containerRef } = opts;
+  const { devicePixelRatio = 1, imageWidthPx, imageHeightPx, wrapRef } = opts;
   const [state, setState] = useState<ZoomPanState>(FIT_TO_WINDOW);
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
-  const panStart = useRef<{ x: number; y: number; baseX: number; baseY: number } | null>(null);
+  const [fitSize, setFitSize] = useState<{ width: number; height: number } | null>(null);
   // When the user clicks 1:1, we lock into "actual size" mode and
-  // re-compute on window resize (the rendered CSS-px size depends on
-  // the container's current dimensions). Cleared by any other zoom
-  // op so the user can leave 1:1 freely.
+  // re-compute on wrap resize (rendered CSS-px size depends on the
+  // wrap's current dimensions). Cleared by any other zoom op so the
+  // user can leave 1:1 freely.
   const [actualSizeLocked, setActualSizeLocked] = useState(false);
+  const panStart = useRef<{
+    x: number;
+    y: number;
+    baseScrollLeft: number;
+    baseScrollTop: number;
+  } | null>(null);
+
+  const imageAspect = imageWidthPx / imageHeightPx;
+
+  // Compute fit-to-wrap dimensions (object-fit:contain semantics
+  // relative to the wrap's content box).
+  const computeFit = useCallback((): { width: number; height: number } | null => {
+    const wrap = wrapRef.current;
+    if (wrap === null) return null;
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    if (w <= 0 || h <= 0) return null;
+    const wrapAspect = w / h;
+    if (wrapAspect > imageAspect) {
+      return { width: h * imageAspect, height: h };
+    }
+    return { width: w, height: w / imageAspect };
+  }, [wrapRef, imageAspect]);
+
+  // Track wrap size; refresh fit whenever it changes. Also recompute
+  // 1:1 scale when actualSizeLocked, so the canvas stays at one
+  // image-pixel-per-screen-pixel as the wrap grows/shrinks.
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (wrap === null) return;
+    const update = (): void => {
+      const fit = computeFit();
+      if (fit === null) return;
+      setFitSize(fit);
+      if (actualSizeLocked) {
+        const targetScale = imageWidthPx / devicePixelRatio / fit.width;
+        setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+      }
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [wrapRef, computeFit, actualSizeLocked, imageWidthPx, devicePixelRatio]);
 
   const resetToFit = useCallback(() => {
     setActualSizeLocked(false);
     setState(FIT_TO_WINDOW);
   }, []);
 
-  /**
-   * Compute the scale that makes one image pixel equal one CSS pixel
-   * (1:1) at the current container size, accounting for
-   * `devicePixelRatio` so a Retina capture renders at OS-1:1 inside
-   * the viewport. Returns null when the container hasn't laid out
-   * yet (rare; only on first mount before the first paint).
-   */
-  const computeActualSizeScale = useCallback((): number | null => {
-    const container = containerRef.current;
-    if (container === null) return null;
-    const rect = container.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    // Image renders at object-fit:contain inside the container, so
-    // its CSS dimensions are bounded by the container in the limiting
-    // axis.
-    const containerAspect = rect.width / rect.height;
-    const imageAspect = imageWidthPx / imageHeightPx;
-    const renderedCssWidth =
-      containerAspect > imageAspect ? rect.height * imageAspect : rect.width;
-    if (renderedCssWidth <= 0) return null;
-    const targetCssWidth = imageWidthPx / devicePixelRatio;
-    return targetCssWidth / renderedCssWidth;
-  }, [containerRef, imageWidthPx, imageHeightPx, devicePixelRatio]);
-
   const actualSize = useCallback(() => {
-    const target = computeActualSizeScale();
-    if (target === null) return;
+    const fit = computeFit();
+    if (fit === null) return;
+    const targetScale = imageWidthPx / devicePixelRatio / fit.width;
     setActualSizeLocked(true);
-    setState({ scale: clamp(target, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
-  }, [computeActualSizeScale]);
-
-  // Auto-track container resize while actualSizeLocked. Once the user
-  // does any other zoom op, the lock clears (handled at each call
-  // site below).
-  useEffect(() => {
-    if (!actualSizeLocked) return;
-    const container = containerRef.current;
-    if (container === null) return;
-    const ro = new ResizeObserver(() => {
-      const target = computeActualSizeScale();
-      if (target === null) return;
-      setState({ scale: clamp(target, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
-    });
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [actualSizeLocked, containerRef, computeActualSizeScale]);
+    setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+  }, [computeFit, imageWidthPx, devicePixelRatio]);
 
   const zoomIn = useCallback(() => {
     setActualSizeLocked(false);
-    setState((prev) => ({
-      ...prev,
-      scale: clamp(prev.scale * KEYBOARD_STEP, MIN_SCALE, MAX_SCALE)
-    }));
+    setState((prev) => ({ scale: clamp(prev.scale * KEYBOARD_STEP, MIN_SCALE, MAX_SCALE) }));
   }, []);
 
   const zoomOut = useCallback(() => {
     setActualSizeLocked(false);
-    setState((prev) => ({
-      ...prev,
-      scale: clamp(prev.scale / KEYBOARD_STEP, MIN_SCALE, MAX_SCALE)
-    }));
+    setState((prev) => ({ scale: clamp(prev.scale / KEYBOARD_STEP, MIN_SCALE, MAX_SCALE) }));
   }, []);
 
-  const onWheel = useCallback((event: WheelEvent): void => {
-    // macOS pinch arrives as ctrlKey-rewritten wheel deltaY. Standard
-    // wheel-scroll (mouse wheel, two-finger trackpad scroll) is NOT
-    // a zoom — let it bubble to the container's native scroll. Only
-    // intercept when ctrlKey is set (pinch) or when meta+wheel.
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    setActualSizeLocked(false);
+  // Cursor-anchored zoom for pinch/meta+wheel. Math: compute the
+  // cursor's content-fraction on the pre-zoom canvas, then choose a
+  // new scrollLeft/scrollTop so the same fraction lands under the
+  // cursor on the post-zoom canvas.
+  //
+  // When the canvas is SMALLER than the wrap (fit or zoomed out),
+  // margin:auto centers it — `scrollLeft` is meaningless. When the
+  // canvas is LARGER than the wrap, it's pinned to (0,0) of the scroll
+  // area. The transition between the two regimes is handled by the
+  // `canvasOffset` calc below.
+  const onWheel = useCallback(
+    (event: WheelEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      setActualSizeLocked(false);
+      const wrap = wrapRef.current;
+      if (wrap === null) return;
+      const fit = computeFit();
+      if (fit === null) return;
+      const wrapRect = wrap.getBoundingClientRect();
+      const scrollLeftBefore = wrap.scrollLeft;
+      const scrollTopBefore = wrap.scrollTop;
+      const cursorInWrapX = event.clientX - wrapRect.left;
+      const cursorInWrapY = event.clientY - wrapRect.top;
+      setState((prev) => {
+        const factor = WHEEL_STEP_BASE ** -event.deltaY;
+        const targetScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
+        if (targetScale === prev.scale) return prev;
+        const prevCanvasW = fit.width * prev.scale;
+        const prevCanvasH = fit.height * prev.scale;
+        const nextCanvasW = fit.width * targetScale;
+        const nextCanvasH = fit.height * targetScale;
+        // Canvas's offset within the scroll content. When canvas <=
+        // wrap, margin:auto inserts (wrap - canvas) / 2 of slack on
+        // each side. When canvas > wrap, offset is 0.
+        const prevOffsetX = Math.max(0, (wrap.clientWidth - prevCanvasW) / 2);
+        const prevOffsetY = Math.max(0, (wrap.clientHeight - prevCanvasH) / 2);
+        const contentX = scrollLeftBefore + cursorInWrapX;
+        const contentY = scrollTopBefore + cursorInWrapY;
+        const cursorInCanvasX = contentX - prevOffsetX;
+        const cursorInCanvasY = contentY - prevOffsetY;
+        // Fraction in [0,1] of cursor's position over the canvas.
+        // Clamp keeps anchor sane when cursor is in the wrap padding
+        // (outside the canvas) — anchors at nearest edge.
+        const fx = prevCanvasW > 0 ? clamp(cursorInCanvasX / prevCanvasW, 0, 1) : 0.5;
+        const fy = prevCanvasH > 0 ? clamp(cursorInCanvasY / prevCanvasH, 0, 1) : 0.5;
+        const nextOffsetX = Math.max(0, (wrap.clientWidth - nextCanvasW) / 2);
+        const nextOffsetY = Math.max(0, (wrap.clientHeight - nextCanvasH) / 2);
+        const newContentX = nextOffsetX + fx * nextCanvasW;
+        const newContentY = nextOffsetY + fy * nextCanvasH;
+        const newScrollLeft = newContentX - cursorInWrapX;
+        const newScrollTop = newContentY - cursorInWrapY;
+        // Schedule the scroll AFTER React commits the new canvas size
+        // — otherwise `scrollLeft = ...` is clamped to the OLD
+        // scrollWidth and we lose the cursor anchor.
+        queueMicrotask(() => {
+          const el = wrapRef.current;
+          if (el === null) return;
+          el.scrollLeft = newScrollLeft;
+          el.scrollTop = newScrollTop;
+        });
+        return { scale: targetScale };
+      });
+    },
+    [wrapRef, computeFit]
+  );
 
-    // Cursor-anchored zoom: keep the canvas pixel under the cursor in
-    // place by adjusting pan in lock-step with scale. The geometry:
-    //   transform = translate(panX, panY) scale(scale)
-    // applied with transform-origin: center center. The element's
-    // center sits at containerCenter on screen. A point at offset
-    // (vx, vy) from that center, in pre-transform coords, ends up at
-    //   screen = containerCenter + (vx, vy) * scale + (panX, panY)
-    // Solving "the point under the cursor stays under the cursor"
-    // when scale → scale * factor:
-    //   panX' = cursor.x − containerCenter.x − (cursor.x − containerCenter.x − panX) * factor
-    // ...which simplifies to: pan' = cursor.toCenter − (cursor.toCenter − pan) * factor.
-    const container = containerRef.current;
-    setState((prev) => {
-      const factor = WHEEL_STEP_BASE ** -event.deltaY;
-      const targetScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
-      // If the clamp tripped, the effective factor differs from the
-      // requested factor — use the effective one for pan correction
-      // so the cursor anchor stays accurate at the limits.
-      const effectiveFactor = prev.scale === 0 ? 1 : targetScale / prev.scale;
-      if (container === null) {
-        return { ...prev, scale: targetScale };
-      }
-      const rect = container.getBoundingClientRect();
-      const containerCenterX = rect.left + rect.width / 2;
-      const containerCenterY = rect.top + rect.height / 2;
-      const cursorOffsetX = event.clientX - containerCenterX;
-      const cursorOffsetY = event.clientY - containerCenterY;
-      const nextPanX = cursorOffsetX - (cursorOffsetX - prev.panX) * effectiveFactor;
-      const nextPanY = cursorOffsetY - (cursorOffsetY - prev.panY) * effectiveFactor;
-      return { scale: targetScale, panX: nextPanX, panY: nextPanY };
-    });
-  }, [containerRef]);
-
-  // Listen for Space keydown / keyup so the caller can switch to pan
+  // Listen for Space keydown/keyup so the caller can switch to pan
   // mode without changing the active tool.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
       if (e.code !== "Space") return;
-      // Don't grab Space when a text input has focus — the user might
-      // be typing in the text-overlay input or the detail rail.
       const target = e.target as HTMLElement | null;
       if (
         target?.tagName === "INPUT" ||
@@ -229,31 +261,34 @@ export function useZoomPan(opts: {
   const onPanPointerDown = useCallback(
     (event: React.PointerEvent<HTMLElement>): void => {
       if (event.button !== 0) return;
-      // Pan only when zoomed in OR space is held.
       if (state.scale <= 1 && !spaceHeld) return;
+      const wrap = wrapRef.current;
+      if (wrap === null) return;
       event.preventDefault();
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
       setIsPanning(true);
       panStart.current = {
         x: event.clientX,
         y: event.clientY,
-        baseX: state.panX,
-        baseY: state.panY
+        baseScrollLeft: wrap.scrollLeft,
+        baseScrollTop: wrap.scrollTop
       };
     },
-    [state.panX, state.panY, state.scale, spaceHeld]
+    [state.scale, spaceHeld, wrapRef]
   );
 
-  const onPanPointerMove = useCallback((event: React.PointerEvent<HTMLElement>): void => {
-    if (panStart.current === null) return;
-    const dx = event.clientX - panStart.current.x;
-    const dy = event.clientY - panStart.current.y;
-    setState((prev) => ({
-      ...prev,
-      panX: panStart.current!.baseX + dx,
-      panY: panStart.current!.baseY + dy
-    }));
-  }, []);
+  const onPanPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLElement>): void => {
+      if (panStart.current === null) return;
+      const wrap = wrapRef.current;
+      if (wrap === null) return;
+      const dx = event.clientX - panStart.current.x;
+      const dy = event.clientY - panStart.current.y;
+      wrap.scrollLeft = panStart.current.baseScrollLeft - dx;
+      wrap.scrollTop = panStart.current.baseScrollTop - dy;
+    },
+    [wrapRef]
+  );
 
   const onPanPointerUp = useCallback((event: React.PointerEvent<HTMLElement>): void => {
     if (panStart.current === null) return;
@@ -262,14 +297,17 @@ export function useZoomPan(opts: {
     setIsPanning(false);
   }, []);
 
-  const transformStyle = {
-    transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`,
-    transformOrigin: "center center"
-  };
+  const canvasStyle: { width: string; height: string } | null =
+    fitSize === null
+      ? null
+      : {
+          width: `${fitSize.width * state.scale}px`,
+          height: `${fitSize.height * state.scale}px`
+        };
 
   return {
     state,
-    transformStyle,
+    canvasStyle,
     resetToFit,
     actualSize,
     zoomIn,

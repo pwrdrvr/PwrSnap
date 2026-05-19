@@ -25,6 +25,7 @@
 
 import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
 import { TOOLS, type Tool } from "../editor/editor-tools";
+import type { ZoomApi } from "../editor/Editor";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
@@ -36,6 +37,10 @@ export type EditToolbarProps = {
    *  can still render the toolbar before a record selects (rare;
    *  Reset is disabled when undefined). */
   readonly captureId?: string;
+  /** Editor's current zoom snapshot — `null` until the Editor mounts
+   *  and reports its first scale, or after unmount. When null the
+   *  zoom indicator is hidden (no useful state to show). */
+  readonly zoom?: ZoomApi;
 };
 
 /** Module-level position store. Lives across mounts (Stage may
@@ -51,7 +56,8 @@ function clamp(value: number, min: number, max: number): number {
 export function EditToolbar({
   tool,
   onChange,
-  captureId
+  captureId,
+  zoom
 }: EditToolbarProps): ReactElement {
   const [position, setPosition] = useState<{ x: number; y: number } | null>(savedPosition);
   // Two-click confirm state for Reset. `null` = idle; non-null =
@@ -256,7 +262,41 @@ export function EditToolbar({
           }
         }}
       />
+      {zoom !== null && zoom !== undefined && (
+        <>
+          <span className="psl__et-sep" aria-hidden="true" />
+          <ZoomControls zoom={zoom} />
+        </>
+      )}
     </div>
+  );
+}
+
+/** Compact zoom indicator in the floating EditToolbar. Shows the
+ *  current zoom percentage — clicking the percentage resets to
+ *  fit-to-window (⌘0). The 1:1 button locks the canvas at one
+ *  image pixel per screen pixel (⌘1, accounting for DPR). */
+function ZoomControls({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement {
+  const pct = Math.round(zoom.scale * 100);
+  return (
+    <>
+      <button
+        type="button"
+        className="psl__et-btn psl__et-btn--zoom"
+        onClick={zoom.resetToFit}
+        title="Fit to window (⌘0)"
+      >
+        <span>{pct}%</span>
+      </button>
+      <button
+        type="button"
+        className="psl__et-btn psl__et-btn--zoom"
+        onClick={zoom.actualSize}
+        title="Actual size (⌘1)"
+      >
+        <span>1:1</span>
+      </button>
+    </>
   );
 }
 

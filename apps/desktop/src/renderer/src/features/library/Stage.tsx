@@ -38,9 +38,9 @@
 //   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
 //   Phase C.1 (Stage), C.11 (focus management — Library window keydown).
 
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import type { CaptureRecord } from "@pwrsnap/shared";
-import { Editor } from "../editor/Editor";
+import { Editor, type ZoomApi } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
 import { AppTag } from "../shared/AppIcons";
 import { captureSrcUrl } from "../../lib/pwrsnap";
@@ -133,6 +133,13 @@ function StageBody({
 }: StageProps & { onClose: () => void }): ReactElement {
   const captureId = record.id;
   void view; // currently unused; kept in props for future variant logic
+
+  // Zoom state for the floating EditToolbar's indicator. Editor's
+  // useZoomPan owns the truth; it reports changes via the
+  // `onZoomChange` callback. We keep a snapshot in local state so
+  // the EditToolbar re-renders when zoom changes. Cleared to null
+  // when the Editor unmounts (e.g. navigating between captures).
+  const [zoom, setZoom] = useState<ZoomApi>(null);
 
   const sourceName = record.source_app_name ?? "Unknown app";
   const appId = mapBundleIdToAppId(record.source_app_bundle_id);
@@ -272,12 +279,18 @@ function StageBody({
             chrome="chromeless"
             tool={tool}
             onToolChange={onToolChange}
+            onZoomChange={setZoom}
           />
         )}
       </div>
 
       {record.kind !== "video" && (
-        <EditToolbar tool={tool} onChange={onToolChange} captureId={record.id} />
+        <EditToolbar
+          tool={tool}
+          onChange={onToolChange}
+          captureId={record.id}
+          zoom={zoom}
+        />
       )}
     </>
   );

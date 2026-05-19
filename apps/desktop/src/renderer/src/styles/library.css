@@ -1529,6 +1529,40 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
 }
+/* The shared .ps-tag::before bullet adds visual noise inside the
+   tag editor — every chip starts with a small dot that doesn't
+   communicate anything. Hide it within the tag-row context; the
+   colored variants in other parts of the app are unaffected. */
+.psl__tag-row .ps-tag::before { display: none; }
+.psl__tag-accepted {
+  /* Accepted chip = accent-tinted fill so it visually reads as
+     "committed" vs. the dashed suggestion outlines below. */
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  padding-right: 3px;
+}
+.psl__tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-bright);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__tag-remove:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.psl__tag-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .psl__tag-suggest-label {
   background: transparent;
   border: 0;

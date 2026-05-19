@@ -745,6 +745,16 @@ export type Commands = {
     req: { captureId: string; label: string };
     res: CaptureEnrichment;
   };
+  /** Remove a tag from a capture by label. Looks up the `tags` row by
+   *  normalized label and deletes the `capture_tags` join row.
+   *  Idempotent — removing a tag that isn't on the capture is a
+   *  no-op. The tag row itself is left intact so future captures can
+   *  reuse the label (and so the historical tag taxonomy stays
+   *  stable for the Codex bias hint). */
+  "library:removeTag": {
+    req: { captureId: string; label: string };
+    res: CaptureEnrichment;
+  };
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };

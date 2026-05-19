@@ -15,7 +15,7 @@ import {
   restoreCapture,
   softDeleteCapture
 } from "../persistence/captures-repo";
-import { addUserTag } from "../persistence/enrichment-repo";
+import { addUserTag, removeTag } from "../persistence/enrichment-repo";
 import {
   moveSourceToTrash,
   purgeCacheForCapture,
@@ -294,6 +294,33 @@ export function registerLibraryHandlers(): void {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const isNotFound = /not found or deleted/.test(message);
+      return err({
+        kind: "validation",
+        code: isNotFound ? "not_found" : "invalid_request",
+        message
+      });
+    }
+  });
+
+  bus.register("library:removeTag", async (req) => {
+    const parsed = AddUserTagRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    try {
+      const enrichment = removeTag(parsed.data.captureId, parsed.data.label);
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(EVENT_CHANNELS.aiRunUpdated, { run: null, enrichment });
+      }
+      return ok(enrichment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = /not found/.test(message);
       return err({
         kind: "validation",
         code: isNotFound ? "not_found" : "invalid_request",

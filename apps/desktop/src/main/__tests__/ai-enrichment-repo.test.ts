@@ -19,6 +19,7 @@ const {
   getCaptureEnrichment,
   getEnrichmentSummaries,
   getTopUserTags,
+  removeTag,
   setLatestEnrichmentRun,
   storeCompletedEnrichment
 } = await import("../persistence/enrichment-repo");
@@ -307,6 +308,58 @@ describe("AI enrichment repositories", () => {
     testDb.prepare("UPDATE captures SET deleted_at = datetime('now') WHERE id = ?").run("cap_1");
     expect(() => addUserTag("cap_1", "Whatever")).toThrow(/not found or deleted/);
     expect(() => addUserTag("cap_missing", "Whatever")).toThrow(/not found or deleted/);
+  });
+
+  test("removeTag drops a previously-accepted tag and is idempotent on missing labels", () => {
+    addUserTag("cap_1", "deploy");
+    expect(getCaptureEnrichment("cap_1")?.acceptedTags).toEqual(["deploy"]);
+
+    const after = removeTag("cap_1", "deploy");
+    expect(after.acceptedTags).toEqual([]);
+
+    // Idempotent — removing a label the capture doesn't carry is a
+    // no-op, no throw.
+    const stillEmpty = removeTag("cap_1", "deploy");
+    expect(stillEmpty.acceptedTags).toEqual([]);
+
+    // The `tags` row itself should still exist so the label remains
+    // in the user's taxonomy.
+    const tag = testDb
+      .prepare("SELECT id FROM tags WHERE normalized_label = 'deploy'")
+      .get() as { id: string } | undefined;
+    expect(tag).toBeDefined();
+  });
+
+  test("removeTag works for codex-accepted tags too (not just user-typed)", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    const enrichment = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "x",
+        tags: [{ label: "github", confidence: 0.9 }]
+      }
+    });
+    const suggestionId = enrichment.suggestedTags[0]!.id!;
+    acceptSuggestedTag("cap_1", suggestionId);
+    expect(getCaptureEnrichment("cap_1")?.acceptedTags).toEqual(["github"]);
+
+    removeTag("cap_1", "github");
+
+    const after = getCaptureEnrichment("cap_1")!;
+    expect(after.acceptedTags).toEqual([]);
+    // Codex's suggestion row itself stays untouched — the tag was
+    // accepted, then the user undid that accept. New Codex runs
+    // produce their own suggestion rows.
+    expect(
+      after.suggestedTags.find((tag) => tag.id === suggestionId)?.accepted_at
+    ).not.toBeNull();
+  });
+
+  test("removeTag throws when the capture id is missing", () => {
+    expect(() => removeTag("cap_missing", "anything")).toThrow(/not found/);
   });
 
   test("storeCompletedEnrichment with autoAccept promotes suggestions and top tags", () => {

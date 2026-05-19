@@ -64,6 +64,7 @@ function installFakeApi(initial: CaptureEnrichment): {
     if (name === "codex:rejectTag") return { ok: true, value: accepted };
     if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
     if (name === "library:addTag") return { ok: true, value: accepted };
+    if (name === "library:removeTag") return { ok: true, value: accepted };
     if (name === "clipboard:copyText") return { ok: true, value: undefined };
     if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
     return { ok: true, value: undefined };
@@ -207,9 +208,33 @@ describe("DetailRail", () => {
 
     const tagEditor = el.querySelector(".psl__tag-editor");
     const editorTagLabels = Array.from(
-      tagEditor?.querySelectorAll(".ps-tag") ?? []
+      tagEditor?.querySelectorAll(".psl__tag-accepted > span") ?? []
     ).map((node) => node.textContent?.trim());
     expect(editorTagLabels).toEqual(["chat", "pwrsnap", "bot"]);
+  });
+
+  test("× on an accepted tag chip dispatches library:removeTag with the label", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({ acceptedTags: ["chat", "pwrsnap", "github"] })
+    );
+
+    const removeButtons = Array.from(
+      el.querySelectorAll<HTMLButtonElement>(".psl__tag-remove")
+    );
+    expect(removeButtons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "remove chat",
+      "remove pwrsnap",
+      "remove github"
+    ]);
+
+    await act(async () => {
+      removeButtons[2]?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const removeCall = dispatch.mock.calls.find(([name]) => name === "library:removeTag");
+    expect(removeCall?.[1]).toEqual({ captureId: "cap_1", label: "github" });
   });
 
   test("title and description render as editable inputs with the suggested-state class", async () => {

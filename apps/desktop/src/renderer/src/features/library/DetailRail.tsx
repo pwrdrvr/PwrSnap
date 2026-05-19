@@ -570,6 +570,16 @@ function TagEditor({
     [captureId, onEnrichmentUpdate]
   );
 
+  // Remove an already-accepted tag. Server normalizes the label, so
+  // there's no need to track tag ids on the client.
+  const removeTag = useCallback(
+    async (label: string) => {
+      const result = await dispatch("library:removeTag", { captureId, label });
+      if (result.ok) onEnrichmentUpdate(result.value);
+    },
+    [captureId, onEnrichmentUpdate]
+  );
+
   // Free-form tag input — Enter commits via `library:addTag`. The
   // verb normalizes the label, reuses an existing tag row when one
   // matches, and inserts a `capture_tags` row with `source = 'user'`.
@@ -596,8 +606,17 @@ function TagEditor({
       </div>
       <div className="psl__tag-row">
         {acceptedTags.map((tag) => (
-          <span key={`accepted-${tag}`} className="ps-tag is-sm">
-            {tag}
+          <span key={`accepted-${tag}`} className="ps-tag is-sm psl__tag-accepted">
+            <span>{tag}</span>
+            <button
+              type="button"
+              className="psl__tag-remove"
+              onClick={() => void removeTag(tag)}
+              aria-label={`remove ${tag}`}
+              title="Remove tag"
+            >
+              ×
+            </button>
           </span>
         ))}
         {pendingTags.map((tag) => {

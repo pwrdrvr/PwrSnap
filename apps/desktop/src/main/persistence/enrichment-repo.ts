@@ -480,6 +480,51 @@ export function addUserTag(captureId: string, label: string): CaptureEnrichment 
 }
 
 /**
+ * Remove a tag from a capture by label. Looks up the `tags` row by
+ * normalized label and deletes the matching `capture_tags` join row.
+ * Idempotent — removing a label the capture doesn't carry is a no-op.
+ * The `tags` row itself is left intact so the label remains in the
+ * user's taxonomy for future captures (and for Codex's bias hint).
+ *
+ * Doesn't touch `enrichment_tag_suggestions`. Codex suggestion
+ * state lives per-run; rejecting a suggestion that was already
+ * accepted-then-removed would only matter if Codex re-suggested the
+ * same label in the SAME run, which doesn't happen — every enrich
+ * dispatch creates a fresh run with its own suggestion rows. Tag
+ * suggestion rejection stays a separate user gesture
+ * (`codex:rejectTag`) on the pending chips.
+ */
+export function removeTag(captureId: string, label: string): CaptureEnrichment {
+  const trimmed = label.trim();
+  if (trimmed.length === 0) {
+    throw new Error("tag label must not be empty");
+  }
+  const normalized = normalizeTagLabel(trimmed);
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const capture = db
+      .prepare("SELECT id FROM captures WHERE id = ?")
+      .get(captureId) as { id: string } | undefined;
+    if (!capture) {
+      throw new Error(`capture not found: ${captureId}`);
+    }
+    const tagRow = db
+      .prepare("SELECT id FROM tags WHERE kind = 'content' AND normalized_label = ?")
+      .get(normalized) as { id: string } | undefined;
+    if (tagRow === undefined) return;
+
+    db.prepare(
+      `DELETE FROM capture_tags
+       WHERE capture_id = ? AND tag_id = ?`
+    ).run(captureId, tagRow.id);
+  });
+  tx();
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+/**
  * Read the user's most-used content tags, ranked by capture count. The
  * Codex enrichment prompt receives these as a "prefer these labels when
  * meaning is close" bias hint, which keeps the tag taxonomy from

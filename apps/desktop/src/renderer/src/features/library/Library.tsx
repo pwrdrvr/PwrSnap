@@ -2237,11 +2237,6 @@ function CellRow({
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} width={400} />
               <span className="psl__cell-time">{c.time}</span>
-              <span className="psl__cell-app">
-                <span className="psl__app-dot">
-                  <AppIcon app={c.app} size={10} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
-                </span>
-              </span>
               {record !== null &&
                 (isTrashView ? (
                   <span className="psl__cell-actions">

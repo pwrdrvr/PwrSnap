@@ -10,12 +10,12 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
 
-import { getCapturesRoot, getTrashRoot } from "./paths";
+import { getCacheRoot, getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:source-store");
@@ -194,7 +194,6 @@ export async function restoreSourceFromTrash(captureId: string, srcPath: string)
     log.warn("trash restore: trash file missing", { trashPath, captureId });
     return;
   }
-  const { dirname } = await import("node:path");
   await mkdir(dirname(srcPath), { recursive: true });
   await rename(trashPath, srcPath);
 }
@@ -226,11 +225,9 @@ export async function purgeOneFromTrash(captureId: string, srcPath: string): Pro
  * file itself.
  */
 export async function purgeCacheForCapture(captureId: string): Promise<void> {
-  const { join: joinPath } = await import("node:path");
-  const { getCacheRoot } = await import("./paths");
   const cacheRoot = getCacheRoot();
-  const imageDir = joinPath(cacheRoot, captureId);
-  const videoDir = joinPath(cacheRoot, "video", captureId);
+  const imageDir = join(cacheRoot, captureId);
+  const videoDir = join(cacheRoot, "video", captureId);
   await Promise.allSettled([
     rm(imageDir, { recursive: true, force: true }),
     rm(videoDir, { recursive: true, force: true })
@@ -258,7 +255,6 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
   }
 
   const cutoffMs = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  const { readdir } = await import("node:fs/promises");
   const allFiles = await readdir(trashRoot).catch(() => [] as string[]);
   const expired = new Set(expiredCaptureIds);
   let removed = 0;
@@ -295,7 +291,6 @@ export async function sweepTrash(expiredCaptureIds: string[]): Promise<{ removed
  * at app boot to clear anything older than 1 hour.
  */
 export async function sweepStaleTempFiles(): Promise<{ removedFiles: number }> {
-  const { readdir } = await import("node:fs/promises");
   const tmpDir = "/tmp";
   if (!existsSync(tmpDir)) return { removedFiles: 0 };
 

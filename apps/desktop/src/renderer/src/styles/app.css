@@ -111,7 +111,7 @@ body[data-stage="float-over"] .fo {
 .renderer-failure__panel {
   width: min(520px, 100%);
   padding: 18px;
-  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.34));
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
   background: var(--bg-panel);
   box-shadow: var(--shadow-lg);
@@ -147,7 +147,7 @@ body[data-stage="float-over"] .fo {
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   background: color-mix(in srgb, var(--bg-app) 24%, transparent);
-  color: var(--danger-text, #e58a8a);
+  color: var(--danger-text, var(--danger-text));
   font: 500 11px/1.45 var(--font-mono);
 }
 
@@ -157,7 +157,7 @@ body[data-stage="float-over"] .fo {
   border: 1px solid var(--accent-border);
   border-radius: 6px;
   background: var(--accent);
-  color: #120804;
+  color: var(--button-text-on-accent);
   cursor: pointer;
   font: 700 12px/1 var(--font-sans);
   padding: 9px 12px;
@@ -170,7 +170,7 @@ body[data-stage="float-over"] .fo {
   z-index: 2147483647;
   width: min(460px, calc(100vw - 36px));
   padding: 14px;
-  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.34));
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-panel-hover) 97%, transparent);
   box-shadow: var(--shadow-lg);
@@ -181,7 +181,7 @@ body[data-stage="float-over"] .fo {
 }
 
 .renderer-diagnostics__title {
-  color: var(--danger-text, #e58a8a);
+  color: var(--danger-text, var(--danger-text));
   font: 700 12px/1.25 var(--font-sans);
 }
 
@@ -222,11 +222,11 @@ body[data-stage="float-over"] .fo {
   justify-content: space-between;
   gap: 16px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--accent-border, rgba(232, 116, 58, 0.35));
+  border-bottom: 1px solid var(--accent-border);
   background: linear-gradient(
     180deg,
-    rgba(232, 116, 58, 0.16),
-    rgba(232, 116, 58, 0.08)
+    color-mix(in srgb, var(--accent) 16%, transparent),
+    color-mix(in srgb, var(--accent) 8%, transparent)
   );
   color: var(--text-primary);
   font: 500 12px/1.4 var(--font-sans);
@@ -241,7 +241,7 @@ body[data-stage="float-over"] .fo {
 
 .app-update-banner__eyebrow {
   margin: 0;
-  color: var(--accent, #e8743a);
+  color: var(--accent);
   font: 700 10px/1.2 var(--font-sans);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -254,7 +254,7 @@ body[data-stage="float-over"] .fo {
 
 .app-update-banner__error {
   margin: 4px 0 0;
-  color: var(--danger-text, #e58a8a);
+  color: var(--danger-text);
   font: 500 11px/1.4 var(--font-sans);
 }
 
@@ -277,9 +277,9 @@ body[data-stage="float-over"] .fo {
 }
 
 .app-update-banner__restart {
-  background: var(--accent, #e8743a);
-  color: #1a0f06;
-  border-color: var(--accent, #e8743a);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  border-color: var(--accent);
 }
 
 .app-update-banner__restart:hover:not(:disabled) {
@@ -294,12 +294,12 @@ body[data-stage="float-over"] .fo {
 .app-update-banner__dismiss {
   background: transparent;
   color: var(--text-secondary);
-  border-color: var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-color: var(--border-subtle);
 }
 
 .app-update-banner__dismiss:hover:not(:disabled) {
   color: var(--text-primary);
-  border-color: var(--border-strong, rgba(255, 255, 255, 0.22));
+  border-color: var(--border-strong);
 }
 
 .app-update-banner__dismiss:disabled {

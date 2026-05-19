@@ -70,16 +70,20 @@ describe("dark theme :root tokens", () => {
     expect(tokenValue(block, name)).toBe(expected);
   });
 
-  // Accent — tangerine, matches the PwrAgent suite.
+  // Accent — tangerine, matches the PwrAgent suite. The derived
+  // alpha overlays (`-soft`, `-tint`, `-border`, `-shadow`) are
+  // declared as `color-mix(in srgb, var(--accent) X%, transparent)`
+  // so they automatically flip when --accent does — locking them
+  // here as strings catches accidental percent drift.
   it.each([
     ["accent", "#ff8a1f"],
     ["accent-strong", "#ffa33d"],
     ["accent-bright", "#ffb35c"],
     ["accent-deep", "#b35f15"],
-    ["accent-soft", "rgba(255, 138, 31, 0.12)"],
-    ["accent-tint", "rgba(255, 138, 31, 0.06)"],
-    ["accent-border", "rgba(255, 138, 31, 0.42)"],
-    ["accent-shadow", "rgba(255, 138, 31, 0.34)"]
+    ["accent-soft", "color-mix(in srgb, var(--accent) 12%, transparent)"],
+    ["accent-tint", "color-mix(in srgb, var(--accent) 6%, transparent)"],
+    ["accent-border", "color-mix(in srgb, var(--accent) 42%, transparent)"],
+    ["accent-shadow", "color-mix(in srgb, var(--accent) 34%, transparent)"]
   ])("--%s = %s", (name, expected) => {
     expect(tokenValue(block, name)).toBe(expected);
   });
@@ -115,18 +119,30 @@ describe("light theme :root[data-theme=\"light\"] overrides", () => {
     expect(tokenValue(block, name)).toBe(expected);
   });
 
-  // Accent — deepened tangerine for WCAG on white.
+  // Accent — deepened tangerine for WCAG on white. The three
+  // overlays (`-soft`, `-tint`, `-border`) inherit from :root because
+  // they're declared as `color-mix(... var(--accent) ...)` — var()
+  // resolves at use-site, so overriding --accent here is enough.
+  // Only `--accent-shadow` re-declares at 28% (vs dark's 34%) for
+  // a softer cast on white panels.
   it.each([
     ["accent", "#c45200"],
     ["accent-strong", "#b34a00"],
     ["accent-bright", "#d96d00"],
     ["accent-deep", "#8a3a00"],
-    ["accent-soft", "rgba(196, 82, 0, 0.12)"],
-    ["accent-tint", "rgba(196, 82, 0, 0.06)"],
-    ["accent-border", "rgba(196, 82, 0, 0.42)"],
-    ["accent-shadow", "rgba(196, 82, 0, 0.28)"]
+    ["accent-shadow", "color-mix(in srgb, var(--accent) 28%, transparent)"]
   ])("--%s = %s", (name, expected) => {
     expect(tokenValue(block, name)).toBe(expected);
+  });
+
+  it("inherits --accent-soft / -tint / -border from :root via color-mix", () => {
+    // These three are intentionally NOT re-declared in the light
+    // block — color-mix re-resolves them against the overridden
+    // --accent automatically. Lock the absence so a future edit that
+    // adds redundant overrides has to delete them or add them here.
+    expect(block).not.toMatch(/--accent-soft\s*:/);
+    expect(block).not.toMatch(/--accent-tint\s*:/);
+    expect(block).not.toMatch(/--accent-border\s*:/);
   });
 
   it.each([

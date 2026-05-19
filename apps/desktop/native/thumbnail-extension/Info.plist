@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist for the macOS Quick Look Thumbnail Extension that
+  renders Finder + QuickLook thumbnails for `.pwrsnap` bundles.
+
+  The .appex bundle assembled by scripts/build-native.mjs ships at
+  PwrSnap.app/Contents/PlugIns/PwrSnapThumbnailExtension.appex/ and
+  is auto-discovered by Launch Services when the parent app is
+  registered.
+
+  NSExtension dictionary keys:
+    - NSExtensionPointIdentifier: which OS hook this extension
+      attaches to. `com.apple.quicklook.thumbnail` is the modern
+      (macOS 12+) Quick Look thumbnail provider API.
+    - NSExtensionPrincipalClass: name of the Swift class the host
+      framework instantiates per thumbnail request. We use
+      `@objc(ThumbnailProvider)` in main.swift to keep this name
+      stable across Swift module renames.
+    - NSExtensionAttributes.QLSupportedContentTypes: which UTIs this
+      extension claims to thumbnail. Must match the UTI declared by
+      the parent app's electron-builder.yml
+      (`com.pwrdrvr.pwrsnap.bundle`).
+    - NSExtensionAttributes.QLThumbnailMinimumSize: don't bother
+      asking us for tiny thumbnails — Finder falls back to the
+      generic icon below this. Saves XPC roundtrips for icon-view
+      rows the user never expands.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>PwrSnap Thumbnail</string>
+  <key>CFBundleExecutable</key>
+  <string>PwrSnapThumbnailExtension</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.pwrdrvr.pwrsnap.ThumbnailExtension</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>PwrSnap Thumbnail</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.quicklook.thumbnail</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>ThumbnailProvider</string>
+    <key>NSExtensionAttributes</key>
+    <dict>
+      <key>QLSupportedContentTypes</key>
+      <array>
+        <string>com.pwrdrvr.pwrsnap.bundle</string>
+      </array>
+      <key>QLThumbnailMinimumSize</key>
+      <integer>32</integer>
+    </dict>
+  </dict>
+</dict>
+</plist>

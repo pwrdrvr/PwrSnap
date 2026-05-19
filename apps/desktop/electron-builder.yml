@@ -76,6 +76,12 @@ extraResources:
   # apps/desktop/src/main/recording/recording-service.ts.
   - from: "build/native/recorder"
     to: "PwrSnapRecorder"
+  # Diagnostic CLI for the Quick Look Thumbnail Extension. Ships
+  # alongside production so we can reproduce a thumbnail-rendering
+  # failure on a user machine without rebuilding from source.
+  # Standalone Mach-O at Contents/Resources/PwrSnapThumbnailCli.
+  - from: "build/native/pwrsnap-thumbnail-cli"
+    to: "PwrSnapThumbnailCli"
   # Tray template icon (16×16 base + @2x/@3x). Electron's nativeImage
   # auto-loads the @Nx siblings when given the base path, so all three
   # PNGs need to live next to each other under Contents/Resources/.
@@ -86,6 +92,22 @@ extraResources:
     to: "tray-icon-template@2x.png"
   - from: "build/tray-icon-template@3x.png"
     to: "tray-icon-template@3x.png"
+
+# macOS Quick Look Thumbnail Extension. Lives under
+# PwrSnap.app/Contents/PlugIns/ (note the capitalized P-L-U-G-I-N-S —
+# the macOS convention is distinct from generic "plugins"). Launch
+# Services auto-discovers the extension when the parent app is
+# registered, then macOS routes any thumbnail / preview request for
+# `com.pwrdrvr.pwrsnap.bundle`-typed files through it.
+#
+# The `.appex` itself is a directory; electron-builder copies the
+# whole tree. Built by scripts/build-native.mjs which compiles the
+# Swift loadable-bundle, drops in Info.plist, and ad-hoc signs the
+# package. Production builds get re-signed with the Developer ID
+# at notarization time.
+extraFiles:
+  - from: "build/native/PwrSnapThumbnailExtension.appex"
+    to: "PlugIns/PwrSnapThumbnailExtension.appex"
 
 electronFuses:
   runAsNode: false
@@ -139,6 +161,55 @@ mac:
         UTTypeTagSpecification:
           public.mime-type:
             - application/vnd.pwrdrvr.pwrsnap.layer-fragment+json
+      # `.pwrsnap` bundle file type. Declares the on-disk file format
+      # that PwrSnap writes to ~/Documents/PwrSnap/ — a ZIP container
+      # holding manifest.json, overlays.json, source.png, and an
+      # optional composite_thumbnail.jpg. Declaring this UTI does two
+      # things macOS-wide:
+      #
+      #   1. Quick Look's Thumbnail Extension (shipped in
+      #      Contents/PlugIns/PwrSnapThumbnailExtension.appex above)
+      #      hooks itself to this UTI via QLSupportedContentTypes, so
+      #      Finder + the QuickLook API request thumbnails for
+      #      `.pwrsnap` files through OUR provider instead of the
+      #      generic Document icon.
+      #
+      #   2. CFBundleDocumentTypes below registers PwrSnap as the
+      #      default opener — double-clicking a `.pwrsnap` in Finder
+      #      launches PwrSnap with the file path.
+      #
+      # `public.composite-content` is the parent UT for "file that
+      # contains multiple media types" — PDFs, RTF documents,
+      # etc. — which is conceptually what a `.pwrsnap` is (PNG +
+      # JSON metadata). Conforming to it surfaces our type in the
+      # "All Documents" Finder query, helps Spotlight categorize it,
+      # and gives Preview.app / future Quick Look Preview Extension
+      # a sane fallback.
+      - UTTypeIdentifier: com.pwrdrvr.pwrsnap.bundle
+        UTTypeDescription: "PwrSnap Capture Bundle"
+        UTTypeConformsTo:
+          - public.data
+          - public.composite-content
+        UTTypeIconFile: icon.icns
+        UTTypeTagSpecification:
+          public.filename-extension:
+            - pwrsnap
+          public.mime-type:
+            - application/vnd.pwrdrvr.pwrsnap.bundle+zip
+    # Register PwrSnap as the default handler for `.pwrsnap` files.
+    # Double-clicking one in Finder launches the app with the file
+    # path; macOS's "Open With…" menu lists PwrSnap as the primary
+    # choice. The CFBundleTypeRole=Editor signals PwrSnap is the
+    # native authoring environment for these files (not just a
+    # viewer), which puts us at the top of the Open With list and
+    # lets us claim the file type during install.
+    CFBundleDocumentTypes:
+      - CFBundleTypeName: "PwrSnap Capture Bundle"
+        CFBundleTypeRole: Editor
+        CFBundleTypeIconFile: icon.icns
+        LSHandlerRank: Owner
+        LSItemContentTypes:
+          - com.pwrdrvr.pwrsnap.bundle
   target:
     - target: dmg
       arch: [universal]

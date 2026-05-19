@@ -81,7 +81,10 @@ function unregisterCodexHandlers(): void {
     "codex:enrich",
     "codex:enrichment",
     "codex:enrichmentsForCaptures",
+    "codex:acceptTitle",
     "codex:acceptDescription",
+    "codex:acceptFilenameStem",
+    "codex:acceptAllDrafts",
     "codex:acceptTag",
     "codex:rejectTag",
     "codex:runStatus",
@@ -115,6 +118,7 @@ class FakeCodexClient {
       userAgent: "codex-test",
       result: {
         ocrText: "Visible text",
+        title: "",
         description: "A screenshot with visible text.",
         tags: [{ label: "text", confidence: 0.8 }]
       }
@@ -178,6 +182,8 @@ describe("Codex handlers", () => {
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0008_layers.sql"));
     testDb.exec(migration("0009_legacy_bundle_migration_attempts.sql"));
+    testDb.exec(migration("0010_ai_enrichment_title.sql"));
+    testDb.exec(migration("0011_ai_enrichment_filename.sql"));
     await seedCapture();
   });
 
@@ -202,7 +208,8 @@ describe("Codex handlers", () => {
         testSettings({
           ai: {
             enabled: true,
-            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            autoAcceptSuggestions: false
           }
         })
     });
@@ -263,7 +270,8 @@ describe("Codex handlers", () => {
         testSettings({
           ai: {
             enabled: true,
-            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            autoAcceptSuggestions: false
           }
         })
     });
@@ -288,5 +296,67 @@ describe("Codex handlers", () => {
     await waitFor(() => getAiRun(started.value.runId)?.status === "cancelled");
     await waitFor(() => client.aborted);
     expect(client.aborted).toBe(true);
+  });
+
+  test("codex:acceptTitle persists the title and broadcasts enrichment", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () => testSettings()
+    });
+    electronMock.windows.push({
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel, payload) => {
+          electronMock.sentEvents.push({ channel, payload });
+        }
+      }
+    });
+
+    const result = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "User-edited title" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.acceptedTitle).toBe("User-edited title");
+    expect(getCaptureEnrichment("cap_1")?.acceptedTitle).toBe("User-edited title");
+
+    const broadcast = electronMock.sentEvents.find(
+      (event) => event.channel === EVENT_CHANNELS.aiRunUpdated
+    );
+    expect(broadcast).toBeDefined();
+    expect(
+      (broadcast?.payload as { enrichment?: { acceptedTitle?: string | null } | null })
+        .enrichment?.acceptedTitle
+    ).toBe("User-edited title");
+  });
+
+  test("codex:acceptTitle rejects empty and oversize requests", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () => testSettings()
+    });
+
+    const empty = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "   " },
+      { principal: "ipc" }
+    );
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) {
+      expect(empty.error.code).toBe("invalid_request");
+    }
+
+    const tooLong = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "x".repeat(121) },
+      { principal: "ipc" }
+    );
+    expect(tooLong.ok).toBe(false);
+    if (!tooLong.ok) {
+      expect(tooLong.error.code).toBe("invalid_request");
+    }
   });
 });

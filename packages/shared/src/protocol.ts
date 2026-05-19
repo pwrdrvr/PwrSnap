@@ -478,6 +478,12 @@ export type Settings = {
     enabled: boolean;
     /** ISO-8601; null until the user accepts the AI consent modal. */
     consentAcceptedAt: string | null;
+    /** When true, completed Codex enrichments are promoted from
+     *  `suggested_*` to `accepted_*` automatically — the user doesn't
+     *  have to click "Use draft" in the float-over toast. Off by
+     *  default; the float-over surfaces an inline checkbox so users
+     *  can flip the policy without leaving the capture flow. */
+    autoAcceptSuggestions: boolean;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -660,6 +666,7 @@ export type AiRunSnapshot = {
 export type CaptureEnrichmentSummary = {
   captureId: string;
   status: AiRunStatus | null;
+  acceptedTitle: string | null;
   acceptedDescription: string | null;
   acceptedTags: string[];
   suggestedTagCount: number;
@@ -793,6 +800,25 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Add a user-typed tag to a capture. Normalizes the label, creates
+   *  the `tags` row if it doesn't already exist (kind = 'content'),
+   *  and writes a `capture_tags` row with `source = 'user'`.
+   *  Returns the refreshed enrichment so the renderer can render the
+   *  new accepted-tag chip without a follow-up fetch. */
+  "library:addTag": {
+    req: { captureId: string; label: string };
+    res: CaptureEnrichment;
+  };
+  /** Remove a tag from a capture by label. Looks up the `tags` row by
+   *  normalized label and deletes the `capture_tags` join row.
+   *  Idempotent — removing a tag that isn't on the capture is a
+   *  no-op. The tag row itself is left intact so future captures can
+   *  reuse the label (and so the historical tag taxonomy stays
+   *  stable for the Codex bias hint). */
+  "library:removeTag": {
+    req: { captureId: string; label: string };
+    res: CaptureEnrichment;
+  };
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
@@ -847,6 +873,12 @@ export type Commands = {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
   };
+  /** Write arbitrary text to the system clipboard. Used for surfaces
+   *  that need to ship rendered or extracted text (OCR text, AI-derived
+   *  copy, capture summaries) without going through the cache-file
+   *  render pipeline that `clipboard:copy` uses. Routes through main
+   *  so a future redaction or audit hook only needs to plug in once. */
+  "clipboard:copyText": { req: { text: string }; res: void };
   /** v2 only: serialize selected layers (or the entire live tree if
    *  layerIds omitted) into a clipboard payload — private UTI for
    *  PwrSnap-to-PwrSnap fidelity, standard PNG fallback for everyone
@@ -1035,8 +1067,30 @@ export type Commands = {
     req: { captureIds: string[] };
     res: CaptureEnrichmentSummary[];
   };
+  "codex:acceptTitle": {
+    req: { captureId: string; title: string };
+    res: CaptureEnrichment;
+  };
   "codex:acceptDescription": {
     req: { captureId: string; description: string };
+    res: CaptureEnrichment;
+  };
+  "codex:acceptFilenameStem": {
+    req: { captureId: string; filenameStem: string };
+    res: CaptureEnrichment;
+  };
+  /** Bulk accept — applies any subset of `{title, description,
+   *  filenameStem}` in a single DB transaction + a single broadcast.
+   *  Used by the sidebar's prominent "Use draft" button so users get
+   *  one atomic accept instead of three sequential dispatches. Omits
+   *  tags on purpose; those have their own +/× chip workflow. */
+  "codex:acceptAllDrafts": {
+    req: {
+      captureId: string;
+      title?: string;
+      description?: string;
+      filenameStem?: string;
+    };
     res: CaptureEnrichment;
   };
   "codex:acceptTag": {

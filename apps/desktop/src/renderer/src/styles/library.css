@@ -46,10 +46,25 @@
 .ps-tag.is-warn { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-soft); }
 .ps-tag.is-warn::before { background: var(--warn); }
 .ps-tag.is-suggest {
-  border-style: dashed; cursor: pointer;
-  color: var(--text-muted);
+  /* A11Y: 1px dashed `--border-subtle` against `--bg-input` falls
+     well below WCAG 1.4.11's 3:1 non-text-contrast floor — the
+     dashes effectively disappear in light theme. Bump to a
+     visible-but-still-secondary accent presence: stronger accent
+     border (~60% mix), accent-bright text/glyphs, and a very
+     faint accent wash so the chip has shape on cream input bg.
+     Still visually distinct from accepted chips (those use solid
+     border + denser fill). */
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  color: var(--accent-bright);
+  cursor: pointer;
 }
-.ps-tag.is-suggest:hover { color: var(--accent-bright); border-color: var(--accent-border); }
+.ps-tag.is-suggest:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-style: solid;
+  border-color: var(--accent);
+}
 .ps-tag.is-suggest::before { display: none; }
 .ps-tag.is-sm { height: 16px; font-size: 9px; padding: 0 6px; gap: 3px; }
 .ps-tag.is-sm::before { width: 3px; height: 3px; }
@@ -1210,6 +1225,7 @@
   align-items: center;
 }
 .psl__right-tab {
+  position: relative;
   height: 28px; padding: 0 12px;
   background: transparent;
   border: 1px solid transparent;
@@ -1218,11 +1234,24 @@
   color: var(--text-muted);
   font: 600 11px/1 var(--font-sans);
   cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: color 80ms ease;
+}
+.psl__right-tab:hover:not(.is-active) { color: var(--text-secondary); }
+.psl__right-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .psl__right-tab.is-active {
   color: var(--accent-bright);
   background: var(--bg-panel);
   border-color: var(--border-subtle);
+}
+.psl__right-tab-badge {
+  width: 5px; height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  display: inline-block;
 }
 .psl__right-body {
   flex: 1; overflow-y: auto;
@@ -1360,6 +1389,298 @@
 }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+/* Lightweight text-link sibling of `.psl__chip-btn` — used for
+   secondary AI-strip actions like Regenerate where a full chip
+   competes with the primary "Use draft" button. No background, no
+   border, underline on hover for affordance. */
+.psl__chip-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.psl__chip-link:hover { color: var(--accent-bright); text-decoration: underline; }
+.psl__chip-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ----- Detail tab editable fields (Issue #85) ----- */
+
+.psl__detail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.psl__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.psl__field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__field-origin {
+  font: 500 9px/1 var(--font-mono);
+  color: var(--accent);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.psl__field-use {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font: 600 9px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.psl__field-use:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.psl__field-use:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__field-input,
+.psl__field-textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-primary);
+  resize: vertical;
+}
+.psl__field-input { padding: 7px 10px; }
+.psl__field-input--mono { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.01em; }
+.psl__field-input::placeholder,
+.psl__field-textarea::placeholder { color: var(--text-subtle); }
+.psl__field-input:focus,
+.psl__field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.psl__field-input.is-suggested,
+.psl__field-textarea.is-suggested {
+  color: color-mix(in srgb, var(--text-primary) 78%, transparent);
+  font-style: italic;
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-input));
+}
+
+/* Inline draft preview: shown under a field when Codex has a
+   suggestion that diverges from what the user has saved. Replaces
+   the prior bulk "Use draft" pill button so the user can see the
+   alternative text before they click. */
+.psl__draft-preview {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-input));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.psl__draft-preview-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.psl__draft-preview-label {
+  font: 600 10px/1 var(--font-sans);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__draft-preview-use {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__draft-preview-use:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.psl__draft-preview-use:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__draft-preview-text {
+  margin: 0;
+  color: color-mix(in srgb, var(--text-primary) 82%, transparent);
+  font: 400 11px/1.45 var(--font-sans);
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ----- Tag editor ----- */
+
+.psl__tag-editor { display: flex; flex-direction: column; gap: 6px; }
+.psl__tag-editor-eyebrow {
+  display: flex; align-items: center; gap: 6px;
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__tag-editor-suggest-count {
+  font: 500 9px/1 var(--font-mono);
+  color: var(--accent);
+  text-transform: lowercase;
+}
+.psl__tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.psl__tag-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+/* The shared .ps-tag::before bullet adds visual noise inside the
+   tag editor — every chip starts with a small dot that doesn't
+   communicate anything. Hide it within the tag-row context; the
+   colored variants in other parts of the app are unaffected. */
+.psl__tag-row .ps-tag::before { display: none; }
+.psl__tag-accepted {
+  /* Accepted chip = accent-tinted fill so it visually reads as
+     "committed" vs. the dashed suggestion outlines below. */
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  padding-right: 3px;
+}
+.psl__tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-bright);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__tag-remove:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.psl__tag-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__tag-suggest-label {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.psl__tag-suggest-label:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.psl__tag-suggest-x {
+  margin-left: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  /* Inherit from the chip's accent-bright color so the × meets
+     the same A11Y bar as the + label, not the previous muted
+     gray which was sub-3:1 against the accent-tinted chip bg. */
+  color: inherit;
+  opacity: 0.7;
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.psl__tag-suggest-x:hover { opacity: 1; }
+.psl__tag-suggest-x:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  opacity: 1;
+}
+.psl__tag-input {
+  flex: 1;
+  min-width: 80px;
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  font: 500 11px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  outline: none;
+}
+.psl__tag-input::placeholder { color: var(--text-subtle); }
+
+/* ----- OCR tab ----- */
+
+.psl__ocr-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.psl__ocr-tab-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__ocr-tab-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+}
+.psl__ocr-tab-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: 500 11px/1.55 var(--font-mono);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-app) 18%, transparent);
+  max-height: clamp(220px, 50vh, 480px);
+  overflow-y: auto;
+}
+.psl__ocr-tab-empty {
+  padding: 14px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font: 500 11px/1.5 var(--font-sans);
+  text-align: center;
+}
 /* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's
    border + hover treatment so the Settings gear sits flush next to
    Quick Capture without looking like a different control. */

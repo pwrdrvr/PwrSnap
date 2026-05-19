@@ -43,4 +43,5 @@ describe("database migrations", () => {
       db.close();
     }
   });
+
 });

@@ -1,8 +1,15 @@
 // Command-bus handlers for the `library:*` namespace. Phase 1 wires
 // list / byId / delete; Phase 1.9 adds export.
 
-import { BrowserWindow } from "electron";
-import { ok, err, EVENT_CHANNELS } from "@pwrsnap/shared";
+import { BrowserWindow, clipboard } from "electron";
+import {
+  ok,
+  err,
+  EVENT_CHANNELS,
+  AddUserTagRequestSchema,
+  RemoveUserTagRequestSchema
+} from "@pwrsnap/shared";
+import { z } from "zod";
 import { bus } from "../command-bus";
 import {
   getAppStats,
@@ -14,6 +21,7 @@ import {
   restoreCapture,
   softDeleteCapture
 } from "../persistence/captures-repo";
+import { addUserTag, removeTag } from "../persistence/enrichment-repo";
 import {
   moveBundlePairToTrash,
   purgeBundlePairFromTrash,
@@ -301,6 +309,82 @@ export function registerLibraryHandlers(): void {
     }
     const { window: main, justCreated } = bringLibraryForward();
     sendOpenCaptureWhenReady(main, req.captureId, justCreated);
+    return ok(undefined);
+  });
+
+  bus.register("library:addTag", async (req) => {
+    const parsed = AddUserTagRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    try {
+      const enrichment = addUserTag(parsed.data.captureId, parsed.data.label);
+      // Reuse the AI-run broadcast channel — every renderer that cares
+      // about a capture's enrichment (DetailRail, FloatOverHost) already
+      // subscribes here and refreshes from `payload.enrichment`. A new
+      // channel would just be a parallel subscriber on every window for
+      // the same shape.
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(EVENT_CHANNELS.aiRunUpdated, { run: null, enrichment });
+      }
+      return ok(enrichment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = /not found or deleted/.test(message);
+      return err({
+        kind: "validation",
+        code: isNotFound ? "not_found" : "invalid_request",
+        message
+      });
+    }
+  });
+
+  bus.register("library:removeTag", async (req) => {
+    const parsed = RemoveUserTagRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    try {
+      const enrichment = removeTag(parsed.data.captureId, parsed.data.label);
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(EVENT_CHANNELS.aiRunUpdated, { run: null, enrichment });
+      }
+      return ok(enrichment);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isNotFound = /not found/.test(message);
+      return err({
+        kind: "validation",
+        code: isNotFound ? "not_found" : "invalid_request",
+        message
+      });
+    }
+  });
+
+  bus.register("clipboard:copyText", async (req) => {
+    const parsed = z.object({ text: z.string().max(100_000) }).safeParse(req);
+    if (!parsed.success) {
+      return err({
+        kind: "validation",
+        code: "invalid_request",
+        message: parsed.error.message
+      });
+    }
+    // Single chokepoint for plain-text clipboard writes. Surfaces (OCR
+    // copy, AI-derived text) route here instead of calling
+    // `navigator.clipboard.writeText` directly so a future redaction
+    // policy or audit hook only plugs in once.
+    clipboard.writeText(parsed.data.text);
     return ok(undefined);
   });
 

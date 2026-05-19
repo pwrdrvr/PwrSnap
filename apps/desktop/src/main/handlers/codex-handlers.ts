@@ -1,6 +1,9 @@
 import { BrowserWindow } from "electron";
 import {
+  AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
+  AcceptFilenameStemRequestSchema,
+  AcceptTitleRequestSchema,
   AcceptTagRequestSchema,
   EVENT_CHANNELS,
   RejectTagRequestSchema,
@@ -29,10 +32,14 @@ import {
 import { getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor } from "../persistence/source-store";
 import {
+  acceptAllDrafts,
   acceptDescription,
+  acceptFilenameStem,
+  acceptTitle,
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
+  getTopUserTags,
   rejectSuggestedTag,
   setLatestEnrichmentRun,
   storeCompletedEnrichment
@@ -167,9 +174,14 @@ export function registerCodexHandlers(params?: {
         widthPx: capture.width_px,
         heightPx: capture.height_px,
         capturedAt: capture.captured_at,
+        // Bias Codex toward tags the user already curates. 20 is enough
+        // to cover common cases (workflow, content-type, screen-type
+        // facets) without bloating the system prompt for every snap.
+        existingUserTags: getTopUserTags(20),
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
+      settingsReader,
       ctx,
       clientFactory
     });
@@ -184,6 +196,20 @@ export function registerCodexHandlers(params?: {
     return ok(getEnrichmentSummaries(req.captureIds));
   });
 
+  bus.register("codex:acceptTitle", async (req) => {
+    const parsed = AcceptTitleRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return validationError("invalid_request", parsed.error.message);
+    }
+    try {
+      const enrichment = acceptTitle(parsed.data.captureId, parsed.data.title);
+      broadcastAiRunUpdated({ run: null, enrichment });
+      return ok(enrichment);
+    } catch (error) {
+      return mapError(error);
+    }
+  });
+
   bus.register("codex:acceptDescription", async (req) => {
     const parsed = AcceptDescriptionRequestSchema.safeParse(req);
     if (!parsed.success) {
@@ -191,6 +217,37 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptDescription(parsed.data.captureId, parsed.data.description);
+      broadcastAiRunUpdated({ run: null, enrichment });
+      return ok(enrichment);
+    } catch (error) {
+      return mapError(error);
+    }
+  });
+
+  bus.register("codex:acceptFilenameStem", async (req) => {
+    const parsed = AcceptFilenameStemRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return validationError("invalid_request", parsed.error.message);
+    }
+    try {
+      const enrichment = acceptFilenameStem(parsed.data.captureId, parsed.data.filenameStem);
+      broadcastAiRunUpdated({ run: null, enrichment });
+      return ok(enrichment);
+    } catch (error) {
+      return mapError(error);
+    }
+  });
+
+  bus.register("codex:acceptAllDrafts", async (req) => {
+    const parsed = AcceptAllDraftsRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return validationError("invalid_request", parsed.error.message);
+    }
+    try {
+      // Spread `parsed.data` so undefined fields stay undefined rather
+      // than being explicitly enumerated — keeps the repo signature
+      // clean.
+      const enrichment = acceptAllDrafts(parsed.data);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -265,6 +322,13 @@ async function runCaptureEnrichment(params: {
   sourcePath: string;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
+  /**
+   * Re-read just before the result is persisted so a `auto-accept`
+   * toggle the user flipped DURING the run is honored — not the
+   * value captured at enqueue. Reading at completion matches what
+   * the float-over checkbox visibly promises.
+   */
+  settingsReader: SettingsReader;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
 }): Promise<void> {
@@ -318,10 +382,29 @@ async function runCaptureEnrichment(params: {
     });
 
     const latencyMs = Math.round(performance.now() - startedAt);
+    // Read settings at completion (not at enqueue) so the auto-accept
+    // checkbox the user just toggled in the float-over toast wins over
+    // whatever was set when the capture happened. Soft-fail: if the
+    // read errors, fall back to "don't auto-accept" — the user still
+    // sees the suggestion in the toast and can click Use.
+    let autoAccept = false;
+    try {
+      const settings = await params.settingsReader();
+      autoAccept =
+        settings.ai.enabled &&
+        settings.ai.consentAcceptedAt !== null &&
+        settings.ai.autoAcceptSuggestions === true;
+    } catch (error) {
+      log.warn("settings read failed during enrichment completion", {
+        captureId: params.captureId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
     storeCompletedEnrichment({
       captureId: params.captureId,
       aiRunId: params.runId,
-      result: response.result
+      result: response.result,
+      autoAccept
     });
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({

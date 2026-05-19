@@ -38,6 +38,12 @@ describe("CaptureEnrichmentSchema", () => {
       latestRunId: null,
       status: null,
       ocrText: null,
+      suggestedTitle: null,
+      acceptedTitle: null,
+      titleAcceptedAt: null,
+      suggestedFilenameStem: null,
+      acceptedFilenameStem: null,
+      filenameAcceptedAt: null,
       suggestedDescription: null,
       acceptedDescription: null,
       descriptionAcceptedAt: null,
@@ -54,11 +60,68 @@ describe("CaptureEnrichmentSchema", () => {
         latestRunId: null,
         status: null,
         ocrText: null,
+        suggestedTitle: null,
+        acceptedTitle: null,
+        titleAcceptedAt: null,
+      suggestedFilenameStem: null,
+      acceptedFilenameStem: null,
+      filenameAcceptedAt: null,
         suggestedDescription: "x".repeat(2_001),
         acceptedDescription: null,
         descriptionAcceptedAt: null,
         suggestedTags: [],
         acceptedTags: []
+      })
+    ).toThrow();
+  });
+
+  test("rejects overlong titles", () => {
+    expect(() =>
+      CaptureEnrichmentSchema.parse({
+        captureId: "cap_1",
+        latestRunId: null,
+        status: null,
+        ocrText: null,
+        suggestedTitle: "x".repeat(121),
+        acceptedTitle: null,
+        titleAcceptedAt: null,
+      suggestedFilenameStem: null,
+      acceptedFilenameStem: null,
+      filenameAcceptedAt: null,
+        suggestedDescription: null,
+        acceptedDescription: null,
+        descriptionAcceptedAt: null,
+        suggestedTags: [],
+        acceptedTags: []
+      })
+    ).toThrow();
+  });
+});
+
+describe("slugifyFilenameStem (via AcceptFilenameStemRequestSchema)", () => {
+  test("lowercases, collapses runs of non-alphanumeric to '-', strips edges", async () => {
+    const { AcceptFilenameStemRequestSchema, slugifyFilenameStem } = await import(
+      "../ai-enrichment-schemas"
+    );
+
+    expect(slugifyFilenameStem("My Awesome File!")).toBe("my-awesome-file");
+    expect(slugifyFilenameStem("  --hello---world__foo bar  ")).toBe("hello-world-foo-bar");
+    expect(slugifyFilenameStem("UPPER_case-MixED")).toBe("upper-case-mixed");
+
+    // Verb validator runs the slug + then enforces non-empty + ≤120.
+    const parsed = AcceptFilenameStemRequestSchema.parse({
+      captureId: "cap_1",
+      filenameStem: "My Awesome File!"
+    });
+    expect(parsed.filenameStem).toBe("my-awesome-file");
+  });
+
+  test("rejects input that slugifies to empty", async () => {
+    const { AcceptFilenameStemRequestSchema } = await import("../ai-enrichment-schemas");
+    expect(() =>
+      AcceptFilenameStemRequestSchema.parse({
+        captureId: "cap_1",
+        filenameStem: "!!!---___"
       })
     ).toThrow();
   });

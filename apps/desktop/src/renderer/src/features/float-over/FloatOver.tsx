@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
@@ -176,12 +178,16 @@ export function FloatOver({
   onDragFile,
   onDragPreset,
   startCountdown = true,
+  initialTitle = "",
   initialDescription = "",
   initialTags = [],
   enrichment,
   aiEnabled = false,
   aiConsentAccepted = false,
+  autoAcceptSuggestions = false,
   onEnableAi,
+  onSetAutoAccept,
+  onAcceptTitle,
   onAcceptDescription,
   onAcceptTag,
   onRejectTag
@@ -217,12 +223,23 @@ export function FloatOver({
   /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */
   onDragPreset?: (preset: "low" | "med" | "high") => void;
   startCountdown?: boolean;
+  initialTitle?: string;
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
+  /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
+   *  toast renders the checkbox in the "checked" state and trusts
+   *  main to promote `suggested_*` → `accepted_*` on its own at the
+   *  moment the enrichment completes. */
+  autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  /** Persist a flip of the auto-accept toggle. Wired to a
+   *  `settings:write` dispatch in the host so the change survives
+   *  the toast closing and applies to subsequent captures. */
+  onSetAutoAccept?: (next: boolean) => void;
+  onAcceptTitle?: (title: string) => void;
   onAcceptDescription?: (description: string) => void;
   onAcceptTag?: (tagId: string) => void;
   onRejectTag?: (tagId: string) => void;
@@ -230,6 +247,8 @@ export function FloatOver({
   const cfg = VARIANTS[variant];
   const aiStatus = enrichment?.status ?? null;
   const aiNeedsConsent = !aiEnabled || !aiConsentAccepted;
+  const acceptedTitle = enrichment?.acceptedTitle ?? initialTitle;
+  const suggestedTitle = enrichment?.suggestedTitle ?? "";
   const acceptedDescription = enrichment?.acceptedDescription ?? initialDescription;
   const suggestedDescription = enrichment?.suggestedDescription ?? "";
   const acceptedTags = enrichment?.acceptedTags ?? initialTags;
@@ -239,14 +258,41 @@ export function FloatOver({
       .map((tag) => ({ id: tag.id!, label: tag.label })) ?? [];
   const thinking = aiStatus === "queued" || aiStatus === "running";
   const aiFailed = aiStatus === "failed";
+  // Derived "has unaccepted drafts" — replaces the one-shot `aiAccepted`
+  // flag for the Use-button visibility. Necessary because main-side
+  // auto-accept lands acceptedTitle/acceptedDescription without the
+  // user clicking anything; the button must hide in that case too.
+  const titleDraftMatchesAccepted =
+    suggestedTitle.length > 0 && acceptedTitle === suggestedTitle;
+  const descriptionDraftMatchesAccepted =
+    suggestedDescription.length > 0 && acceptedDescription === suggestedDescription;
+  const hasUnacceptedDrafts =
+    (suggestedTitle.length > 0 && !titleDraftMatchesAccepted) ||
+    (suggestedDescription.length > 0 && !descriptionDraftMatchesAccepted);
+  const allDraftsAccepted =
+    (suggestedTitle.length > 0 || suggestedDescription.length > 0) && !hasUnacceptedDrafts;
   // Note: the prior `copiedId` / `initiallyCopied` state is gone — the
   // shared CopyButton component now owns its own copied state and the
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
   // no bytes-text swap). See features/shared/CopyButton.tsx.
-  const [description, setDescription] = useState(acceptedDescription);
-  const [descriptionOrigin, setDescriptionOrigin] = useState<"accepted" | "manual" | "suggested">(
-    acceptedDescription.trim().length > 0 ? "accepted" : "manual"
-  );
+  //
+  // Title / Description provenance is owned by the shared
+  // `useFieldEditor` hook so the float-over and the Library DetailRail
+  // reason about accepted/suggested/manual the same way. The float-
+  // over remounts on capture change (FloatOverHost's `key={record.id}`),
+  // so the captureId-reset branch here only fires for in-place
+  // enrichment updates — same shape as the sidebar.
+  const fieldCaptureId = enrichment?.captureId ?? "fo-pre-capture";
+  const [title, titleOrigin, setTitle, commitTitle] = useFieldEditor({
+    captureId: fieldCaptureId,
+    accepted: acceptedTitle,
+    suggested: suggestedTitle
+  });
+  const [description, descriptionOrigin, setDescription, commitDescription] = useFieldEditor({
+    captureId: fieldCaptureId,
+    accepted: acceptedDescription,
+    suggested: suggestedDescription
+  });
   const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
@@ -271,15 +317,35 @@ export function FloatOver({
   // (With the persistent renderer + state machine added in this same
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previewedSuggestionRef = useRef("");
+
+  // "Awaiting AI" covers the window between mount and the first
+  // aiStatus broadcast — without this, the toast races the codex:enrich
+  // dispatch and the countdown can deplete before Codex even queues
+  // the run. We trust AI is going to show up when consent is granted;
+  // a 3s grace caps the wait so a silent failure (codex never queued)
+  // can't keep the toast pinned forever.
+  const [awaitingAiTimedOut, setAwaitingAiTimedOut] = useState(false);
+  useEffect(() => {
+    if (aiNeedsConsent || aiStatus !== null) {
+      setAwaitingAiTimedOut(false);
+      return undefined;
+    }
+    setAwaitingAiTimedOut(false);
+    const timer = setTimeout(() => setAwaitingAiTimedOut(true), 3000);
+    return () => clearTimeout(timer);
+  }, [aiNeedsConsent, aiStatus]);
+  const awaitingAi = !aiNeedsConsent && aiStatus === null && !awaitingAiTimedOut;
 
   const hasUserDescription =
-    description.trim().length > 0 && descriptionOrigin !== "suggested";
+    description.trim().length > 0 && descriptionOrigin === "manual";
+  const hasUserTitle = title.trim().length > 0 && titleOrigin === "manual";
   const isPaused =
     thinking ||
+    awaitingAi ||
     hovering ||
     nativeDragging ||
     hasUserDescription ||
+    hasUserTitle ||
     tags.length > initialTags.length ||
     aiAccepted;
 
@@ -308,30 +374,13 @@ export function FloatOver({
     };
   }, [sourceLoaded, src, enhancedSrc]);
 
+  // useFieldEditor owns the accepted/suggested sync for title +
+  // description. We still mirror `acceptedTags` into local state so the
+  // user can add typed tags on top without losing them on enrichment
+  // refresh.
   useEffect(() => {
-    setDescription(acceptedDescription);
-    setDescriptionOrigin(acceptedDescription.trim().length > 0 ? "accepted" : "manual");
     setTags(acceptedTags);
-  }, [acceptedDescription, acceptedTags.join("\0")]);
-
-  useEffect(() => {
-    if (acceptedDescription.trim().length > 0) return;
-    if (suggestedDescription.trim().length === 0) {
-      previewedSuggestionRef.current = "";
-      if (descriptionOrigin === "suggested") {
-        setDescription("");
-        setDescriptionOrigin("manual");
-      }
-      return;
-    }
-
-    const suggestionChanged = previewedSuggestionRef.current !== suggestedDescription;
-    if (descriptionOrigin === "suggested" || (description.trim().length === 0 && suggestionChanged)) {
-      previewedSuggestionRef.current = suggestedDescription;
-      setDescription(suggestedDescription);
-      setDescriptionOrigin("suggested");
-    }
-  }, [acceptedDescription, description, descriptionOrigin, suggestedDescription]);
+  }, [acceptedTags.join("\0")]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -650,20 +699,36 @@ export function FloatOver({
 
       {cfg.showAnnotate && (
         <div className="fo__annotate">
+          <input
+            className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
+            type="text"
+            placeholder="Title — short headline"
+            value={title}
+            maxLength={120}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => {
+              const trimmed = title.trim();
+              if (
+                trimmed.length > 0 &&
+                trimmed !== acceptedTitle &&
+                titleOrigin === "manual"
+              ) {
+                onAcceptTitle?.(trimmed);
+              }
+            }}
+          />
           <textarea
             className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
-            placeholder="What is this? (a line of context now saves you 20 minutes later)"
+            placeholder="Description — a sentence or two of context"
             value={description}
-            onChange={(e) => {
-              setDescription(e.target.value);
-              setDescriptionOrigin("manual");
-            }}
+            maxLength={2000}
+            onChange={(e) => setDescription(e.target.value)}
             onBlur={() => {
               const trimmed = description.trim();
               if (
                 trimmed.length > 0 &&
                 trimmed !== acceptedDescription &&
-                descriptionOrigin !== "suggested"
+                descriptionOrigin === "manual"
               ) {
                 onAcceptDescription?.(trimmed);
               }
@@ -687,55 +752,62 @@ export function FloatOver({
       )}
 
       {cfg.showAi && (
-        <div className="fo__ai">
-          <span className="fo__ai-mark">
-            <FoIcon name="sparkles" size={12} />
-          </span>
-          <span className="fo__ai-text">
-            {thinking ? (
-              <>
-                Codex is reading the snap<span className="fo__ai-thinking" />
-              </>
-            ) : aiAccepted ? (
-              <>
-                Description filled from <b>Codex</b>.
-              </>
-            ) : aiFailed ? (
-              <>Codex could not read this snap.</>
-            ) : isSuggestedDescriptionPreview ? (
-              <>Draft caption from <b>Codex</b>.</>
-            ) : suggestedDescription.length > 0 ? (
-              <>
-                Codex thinks: <b>{suggestedDescription}</b>
-              </>
-            ) : aiNeedsConsent ? (
-              <>Enable Codex to read a bounded copy of this snap.</>
-            ) : (
-              <>Codex has no suggestion yet.</>
-            )}
-          </span>
-          {!thinking && suggestedDescription.length === 0 && aiNeedsConsent && (
-            <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
-              Enable
-            </button>
-          )}
-          {!thinking && !aiFailed && !aiAccepted && suggestedDescription.length > 0 && (
-            <button
-              className="fo__ai-accept"
-              onClick={() => {
-                setDescription(suggestedDescription);
-                setDescriptionOrigin("accepted");
-                setTags(Array.from(new Set([...tags, ...aiSuggestions.slice(0, 2).map((tag) => tag.label)])));
-                onAcceptDescription?.(suggestedDescription);
-                for (const suggestion of aiSuggestions.slice(0, 2)) {
-                  onAcceptTag?.(suggestion.id);
-                }
-                setAiAccepted(true);
-              }}
-            >
-              {isSuggestedDescriptionPreview ? "Save" : "Use"}
-            </button>
-          )}
+        <div className="fo__ai-row">
+          <CodexStatusPill
+            status={aiStatus}
+            draftAvailable={
+              suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
+            }
+            accepted={allDraftsAccepted}
+            needsConsent={aiNeedsConsent}
+            action={
+              !thinking && !aiFailed ? (
+                suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                  <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+                    Enable
+                  </button>
+                ) : hasUnacceptedDrafts ? (
+                  <button
+                    className="fo__ai-accept"
+                    onClick={() => {
+                      if (suggestedTitle.length > 0) {
+                        commitTitle(suggestedTitle, "accepted");
+                        onAcceptTitle?.(suggestedTitle);
+                      }
+                      if (suggestedDescription.length > 0) {
+                        commitDescription(suggestedDescription, "accepted");
+                        onAcceptDescription?.(suggestedDescription);
+                      }
+                      setTags(
+                        Array.from(
+                          new Set([
+                            ...tags,
+                            ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
+                          ])
+                        )
+                      );
+                      for (const suggestion of aiSuggestions.slice(0, 2)) {
+                        onAcceptTag?.(suggestion.id);
+                      }
+                      setAiAccepted(true);
+                    }}
+                  >
+                    {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
+                  </button>
+                ) : null
+              ) : null
+            }
+          />
+          {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
+            <label className="fo__auto-accept" title="Apply Codex drafts automatically when ready">
+              <input
+                type="checkbox"
+                checked={autoAcceptSuggestions}
+                onChange={(event) => onSetAutoAccept(event.target.checked)}
+              />
+              <span>Auto-apply Codex drafts</span>
+            </label>
+          ) : null}
         </div>
       )}
 

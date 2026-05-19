@@ -31,6 +31,12 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
     latestRunId: "run_1",
     status: "completed",
     ocrText: "LINE",
+    suggestedTitle: null,
+    acceptedTitle: null,
+    titleAcceptedAt: null,
+    suggestedFilenameStem: null,
+    acceptedFilenameStem: null,
+    filenameAcceptedAt: null,
     suggestedDescription: "Dark-mode LINE desktop chat showing PwrAgent command help.",
     acceptedDescription: null,
     descriptionAcceptedAt: null,
@@ -46,7 +52,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "" },
-  ai: { enabled: false, consentAcceptedAt: null },
+  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -363,8 +369,9 @@ describe("FloatOver Codex suggestions", () => {
     expect(el.querySelector<HTMLTextAreaElement>(".fo__desc")?.value).toBe(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
-    expect(el.querySelector(".fo__ai-text")?.textContent).toBe("Draft caption from Codex.");
-    expect(el.querySelector(".fo__ai-text")?.textContent).not.toContain(
+    // Pill says "Codex drafted a title + description" — it must NOT echo the
+    // description text itself, because the textarea already shows it.
+    expect(el.querySelector(".ps-codex-pill__text")?.textContent).not.toContain(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
     expect(el.querySelector(".fo__ai-accept")?.textContent).toBe("Save");
@@ -405,5 +412,208 @@ describe("FloatOver Codex suggestions", () => {
     expect(onAcceptDescription).toHaveBeenCalledWith(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
+  });
+
+  test("renders the title input above the description and styles drafts as suggested", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: "LINE chat with PwrAgent help" }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    const descTextarea = el.querySelector<HTMLTextAreaElement>(".fo__desc");
+    expect(titleInput).not.toBeNull();
+    expect(titleInput?.value).toBe("LINE chat with PwrAgent help");
+    expect(titleInput?.classList.contains("is-suggested")).toBe(true);
+    // Title sits above description in the DOM order.
+    const annotateChildren = Array.from(
+      el.querySelector(".fo__annotate")?.children ?? []
+    );
+    expect(annotateChildren.indexOf(titleInput as Element)).toBeLessThan(
+      annotateChildren.indexOf(descTextarea as Element)
+    );
+  });
+
+  test("typing into the title and blurring fires onAcceptTitle once", async () => {
+    const onAcceptTitle = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: null }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    expect(titleInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      nativeSetter?.call(titleInput, "Custom user title");
+      titleInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+      // React 17+ delegates to root via `focusout`, not native `blur`.
+      titleInput?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onAcceptTitle).toHaveBeenCalledTimes(1);
+    expect(onAcceptTitle).toHaveBeenCalledWith("Custom user title");
+  });
+
+  test("blurring a suggested-but-untouched title does NOT fire onAcceptTitle", async () => {
+    const onAcceptTitle = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: "Codex draft headline" }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    await act(async () => {
+      titleInput?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onAcceptTitle).not.toHaveBeenCalled();
+  });
+
+  test("Use draft fires both onAcceptTitle and onAcceptDescription", async () => {
+    const onAcceptTitle = vi.fn();
+    const onAcceptDescription = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        suggestedTitle: "Codex headline",
+        suggestedDescription: "Codex body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle,
+      onAcceptDescription
+    });
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".fo__ai-accept")?.click();
+    });
+
+    expect(onAcceptTitle).toHaveBeenCalledWith("Codex headline");
+    expect(onAcceptDescription).toHaveBeenCalledWith("Codex body");
+  });
+
+  test("countdown is paused while AI is expected but no status has arrived", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      // startCountdown undefined → defaults to true, exercising the
+      // actual ticker setup; the paused class is set from `isPaused`.
+      enrichment: null,
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+  });
+
+  test("countdown stays paused after a 'queued' status arrives and resumes on 'completed'", async () => {
+    let el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "queued",
+        suggestedTitle: null,
+        suggestedDescription: null,
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+
+    await unmount();
+    el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "completed",
+        suggestedTitle: "Title",
+        suggestedDescription: "Description body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+    // Drafts are now ready and unaccepted; the countdown should NOT
+    // be pinned just because a Codex draft is in the textarea.
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
+  });
+
+  test("auto-accept checkbox renders when AI is enabled and dispatches onSetAutoAccept", async () => {
+    const onSetAutoAccept = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: null,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      autoAcceptSuggestions: false,
+      onSetAutoAccept
+    });
+
+    const checkbox = el.querySelector<HTMLInputElement>(
+      ".fo__auto-accept input[type='checkbox']"
+    );
+    expect(checkbox).not.toBeNull();
+    expect(checkbox?.checked).toBe(false);
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "checked"
+      )?.set;
+      setter?.call(checkbox, true);
+      checkbox?.dispatchEvent(new Event("click", { bubbles: true }));
+      checkbox?.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onSetAutoAccept).toHaveBeenCalledWith(true);
+  });
+
+  test("auto-accept checkbox is hidden when AI consent is missing", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: null,
+      aiEnabled: false,
+      aiConsentAccepted: false,
+      onSetAutoAccept: vi.fn()
+    });
+
+    expect(el.querySelector(".fo__auto-accept")).toBeNull();
+  });
+
+  test("Use button hides once the suggestion is already accepted (server-side auto-accept)", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        suggestedTitle: "Auto title",
+        acceptedTitle: "Auto title",
+        suggestedDescription: "Auto body",
+        acceptedDescription: "Auto body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      autoAcceptSuggestions: true
+    });
+
+    expect(el.querySelector(".fo__ai-accept")).toBeNull();
   });
 });

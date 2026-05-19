@@ -387,6 +387,18 @@ export function FloatOverHost(): React.ReactElement {
         enrichment={enrichment}
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
+        autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
+        onSetAutoAccept={(next) => {
+          void dispatch("settings:write", {
+            ai: { autoAcceptSuggestions: next }
+          }).then((result) => {
+            if (!result.ok) return;
+            setState((current) => {
+              if (current.kind !== "loaded" || current.record.id !== record.id) return current;
+              return { ...current, settings: result.value };
+            });
+          });
+        }}
         onEnableAi={() => {
           void dispatch("settings:write", {
             ai: {
@@ -401,6 +413,9 @@ export function FloatOverHost(): React.ReactElement {
             });
             void dispatch("codex:enrich", { captureId: record.id });
           });
+        }}
+        onAcceptTitle={(title) => {
+          void dispatch("codex:acceptTitle", { captureId: record.id, title });
         }}
         onAcceptDescription={(description) => {
           void dispatch("codex:acceptDescription", { captureId: record.id, description });

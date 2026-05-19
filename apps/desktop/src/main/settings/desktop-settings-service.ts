@@ -49,7 +49,8 @@ export function defaultSettings(): Settings {
     },
     ai: {
       enabled: false,
-      consentAcceptedAt: null
+      consentAcceptedAt: null,
+      autoAcceptSuggestions: false
     },
     hotkeys: {
       // Quick Capture default moved off ⌘⇧P (collides with Print in
@@ -160,7 +161,11 @@ function parseV1(raw: unknown): Settings | null {
     },
     ai: {
       enabled: pickBoolean(ai.enabled, defaults.ai.enabled),
-      consentAcceptedAt: pickStringOrNull(ai.consentAcceptedAt, defaults.ai.consentAcceptedAt)
+      consentAcceptedAt: pickStringOrNull(ai.consentAcceptedAt, defaults.ai.consentAcceptedAt),
+      autoAcceptSuggestions: pickBoolean(
+        ai.autoAcceptSuggestions,
+        defaults.ai.autoAcceptSuggestions
+      )
     },
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),

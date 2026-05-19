@@ -18,6 +18,13 @@
   changes scope.
 - Do not delete or "clean up" files in `docs/brainstorms/`, `docs/plans/`, or
   `docs/solutions/`.
+- **Never suggest wiping the user's database** (even on a dev machine). The
+  pwrsnap.db at `~/Library/Application Support/PwrSnap/pwrsnap.db` contains
+  real captures the user cares about. If a migration / schema bug bricks
+  startup, the fix is in code — make the migration self-heal, detect drift,
+  add a repair pass — NOT to tell the user `rm pwrsnap.db*`. Same rule for
+  any other persisted state: captures dir, cache dir, settings.json, secrets.
+  Suggesting "blow it away" is a non-starter.
 - To reproduce the Linux GitHub Actions Desktop E2E job locally, prefer
   `pnpm test:desktop-e2e:docker` from the repo root (or pass
   `--test '<pattern>' --iterations 30` for flake hunting). This runs the

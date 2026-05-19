@@ -15,7 +15,12 @@ const record: CaptureRecord = {
   id: "cap_1",
   kind: "image",
   captured_at: "2026-05-15T18:24:00.000Z",
-  src_path: "/tmp/cap_1.png",
+  legacy_src_path: "/tmp/cap_1.png",
+  bundle_path: null,
+  flat_png_path: null,
+  bundle_modified_at: null,
+  bundle_format_version: 1,
+  bundle_edits_version: 0,
   width_px: 2654,
   height_px: 1922,
   device_pixel_ratio: 2,
@@ -23,7 +28,7 @@ const record: CaptureRecord = {
   sha256: "sha_cap_1",
   source_app_bundle_id: "jp.naver.line.mac",
   source_app_name: "LINE",
-  overlays_version: 0,
+  edits_version: 0,
   deleted_at: null
 };
 

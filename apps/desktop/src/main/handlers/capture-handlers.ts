@@ -767,7 +767,11 @@ async function persistAndBroadcast(
     sourceAppName: record.source_app_name
   });
   broadcastCapturesChanged([record.id]);
-  if (isNew) {
+  if (!isDedup) {
+    // PR #30's Codex enrichment fires once per new capture. The
+    // bundle-flow's `persistCaptureFromTemp` returns isDedup=true
+    // when sha256 matches an existing row; `!isDedup` is the
+    // bundle-flow equivalent of the old isNew flag.
     maybeEnqueueCaptureEnrichment(record.id);
   }
   return ok(record);

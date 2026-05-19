@@ -27,6 +27,7 @@ import {
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
 import { getCaptureById } from "../persistence/captures-repo";
+import { effectiveSrcPathFor } from "../persistence/source-store";
 import {
   acceptDescription,
   acceptSuggestedTag,
@@ -158,7 +159,7 @@ export function registerCodexHandlers(params?: {
     void runCaptureEnrichment({
       runId: run.id,
       captureId: capture.id,
-      sourcePath: capture.src_path,
+      sourcePath: effectiveSrcPathFor(capture),
       metadata: {
         sourceAppName: capture.source_app_name,
         sourceAppBundleId: capture.source_app_bundle_id,

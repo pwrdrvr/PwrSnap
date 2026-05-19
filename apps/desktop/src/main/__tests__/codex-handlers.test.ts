@@ -63,9 +63,9 @@ async function seedCapture(id = "cap_1"): Promise<void> {
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, src_path,
+        source_app_bundle_id, source_app_name, legacy_src_path,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, overlays_version, deleted_at
+        byte_size, sha256, edits_version, deleted_at
       ) VALUES (
         @id, 'image', '2026-05-12T12:00:00.000Z',
         NULL, NULL, @sourcePath,
@@ -159,8 +159,24 @@ describe("Codex handlers", () => {
     await mkdir(tempRoot, { recursive: true });
     testDb = new Database(":memory:");
     testDb.pragma("foreign_keys = ON");
+    // Apply every migration in order so the captures table reflects
+    // post-bundle-storage shape (legacy_src_path, edits_version, …).
+    // The migration runner in main does the same — keeping this test
+    // brittle to migration ordering caused real drift before.
     testDb.exec(migration("0001_init.sql"));
+    testDb.exec(migration("0002_overlays.sql"));
+    testDb.exec(migration("0003_perf_app_stats.sql"));
+    testDb.exec(migration("0004_electron_source_app_repair.sql"));
+    testDb.exec(migration("0005_video_captures.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
+    // 0007_bundle_storage recreates `captures` via temp table — needs
+    // foreign_keys=OFF to avoid tripping the render_cache FK during the
+    // table swap, matching the main migration runner's @no-foreign-keys
+    // handling.
+    testDb.pragma("foreign_keys = OFF");
+    testDb.exec(migration("0007_bundle_storage.sql"));
+    testDb.pragma("foreign_keys = ON");
+    testDb.exec(migration("0008_layers.sql"));
     await seedCapture();
   });
 

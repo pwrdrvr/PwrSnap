@@ -189,6 +189,7 @@ describe("CodexAppServerClient", () => {
 
     expect(response.result).toEqual({
       ocrText: "Visible text",
+      title: "",
       description: "A screenshot with visible text.",
       tags: [{ label: "text", confidence: 0.8 }]
     });

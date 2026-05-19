@@ -1,0 +1,144 @@
+/* CodexStatusPill — shared between the float-over toast and the
+   Library Detail rail. The two variants share state colors so that
+   "reading" looks the same on both surfaces. */
+
+.ps-codex-pill {
+  --codex-bg: color-mix(in srgb, var(--accent) 5%, transparent);
+  --codex-border: color-mix(in srgb, var(--accent) 16%, transparent);
+  --codex-fg: var(--text-secondary);
+  --codex-accent: var(--accent);
+  font-family: var(--font-sans);
+  color: var(--codex-fg);
+}
+
+.ps-codex-pill--strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--codex-bg);
+  border: 1px solid var(--codex-border);
+  border-radius: 7px;
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.ps-codex-pill--strip .ps-codex-pill__spark {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--codex-accent);
+  flex-shrink: 0;
+}
+
+.ps-codex-pill--strip .ps-codex-pill__text {
+  flex: 1;
+}
+
+.ps-codex-pill--strip .ps-codex-pill__text b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ps-codex-pill__dots::after {
+  content: "";
+  display: inline-block;
+  width: 0;
+  animation: ps-codex-dots 1.4s steps(4, end) infinite;
+}
+
+@keyframes ps-codex-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
+.ps-codex-pill__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- state tints --- */
+
+.ps-codex-pill.is-running,
+.ps-codex-pill.is-queued {
+  --codex-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+  --codex-border: color-mix(in srgb, var(--accent) 30%, transparent);
+  --codex-fg: var(--text-primary);
+}
+
+.ps-codex-pill.is-ready {
+  --codex-bg: color-mix(in srgb, var(--accent) 6%, transparent);
+  --codex-border: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.ps-codex-pill.is-accepted {
+  --codex-bg: color-mix(in srgb, var(--success, #4ade80) 6%, transparent);
+  --codex-border: color-mix(in srgb, var(--success, #4ade80) 22%, transparent);
+  --codex-accent: var(--success, #4ade80);
+}
+
+.ps-codex-pill.is-failed {
+  --codex-bg: color-mix(in srgb, #ef4444 7%, transparent);
+  --codex-border: color-mix(in srgb, #ef4444 28%, transparent);
+  --codex-accent: #ef4444;
+  --codex-fg: var(--text-primary);
+}
+
+.ps-codex-pill.is-idle {
+  opacity: 0.85;
+}
+
+/* --- inline variant (sidebar header / chip) --- */
+
+.ps-codex-pill--inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  background: var(--codex-bg);
+  border: 1px solid var(--codex-border);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.ps-codex-pill--inline .ps-codex-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--codex-accent);
+  flex-shrink: 0;
+}
+
+.ps-codex-pill--inline.is-running .ps-codex-pill__dot,
+.ps-codex-pill--inline.is-queued .ps-codex-pill__dot {
+  animation: ps-codex-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes ps-codex-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

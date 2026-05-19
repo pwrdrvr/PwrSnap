@@ -49,12 +49,20 @@ function installFakeApi(initial: CaptureEnrichment): {
   dispatch: ReturnType<typeof vi.fn>;
 } {
   const accepted = enrichment({
+    suggestedTitle: initial.suggestedTitle,
+    acceptedTitle: initial.suggestedTitle,
+    titleAcceptedAt: "2026-05-15T18:25:00.000Z",
+    suggestedDescription: initial.suggestedDescription,
     acceptedDescription: initial.suggestedDescription,
     descriptionAcceptedAt: "2026-05-15T18:25:00.000Z"
   });
   const dispatch = vi.fn(async (name: string) => {
     if (name === "codex:enrichment") return { ok: true, value: initial };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
+    if (name === "codex:acceptTitle") return { ok: true, value: accepted };
+    if (name === "codex:acceptTag") return { ok: true, value: accepted };
+    if (name === "codex:rejectTag") return { ok: true, value: accepted };
+    if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
     if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
     return { ok: true, value: undefined };
   });
@@ -104,60 +112,71 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
-  test("accepts the suggested caption and shows accepted state immediately", async () => {
-    const { el } = await renderDetailRail(enrichment());
+  test("Use draft accepts both title and description via codex:accept verbs", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "LINE chat with PwrAgent help",
+        suggestedDescription: "Dark-mode LINE desktop chat showing PwrAgent command help."
+      })
+    );
+
     const button = Array.from(el.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Use caption"
+      (candidate) => candidate.textContent === "Use draft"
     ) as HTMLButtonElement | undefined;
 
     expect(button).toBeDefined();
-    expect(button?.disabled).toBe(false);
 
     await act(async () => {
       button?.click();
       await Promise.resolve();
+      await Promise.resolve();
     });
 
-    const usedButton = Array.from(el.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Caption used"
-    ) as HTMLButtonElement | undefined;
-    expect(usedButton).toBeDefined();
-    expect(usedButton?.disabled).toBe(true);
+    const titleCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTitle");
+    const descCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptDescription");
+    expect(titleCalls[0]?.[1]).toEqual({
+      captureId: "cap_1",
+      title: "LINE chat with PwrAgent help"
+    });
+    expect(descCalls[0]?.[1]).toEqual({
+      captureId: "cap_1",
+      description: "Dark-mode LINE desktop chat showing PwrAgent command help."
+    });
   });
 
-  test("renders full OCR text instead of a clipped prefix", async () => {
+  test("title and description render as editable inputs with the suggested-state class", async () => {
+    const { el } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "Headline draft",
+        suggestedDescription: "Body draft"
+      })
+    );
+
+    const titleInput = el.querySelector<HTMLInputElement>(".psl__field-input");
+    const descriptionInput = el.querySelector<HTMLTextAreaElement>(".psl__field-textarea");
+
+    expect(titleInput?.value).toBe("Headline draft");
+    expect(titleInput?.classList.contains("is-suggested")).toBe(true);
+    expect(descriptionInput?.value).toBe("Body draft");
+    expect(descriptionInput?.classList.contains("is-suggested")).toBe(true);
+  });
+
+  test("OCR tab surfaces the full extracted text, not the Detail tab", async () => {
     const fullOcr = `${"line\n".repeat(80)}final visible line`;
     const { el } = await renderDetailRail(enrichment({ ocrText: fullOcr }));
 
-    expect(el.querySelector(".psl__ai-card-scroll")).not.toBeNull();
-    expect(el.querySelector(".psl__ai-card-ocr")?.textContent).toContain("final visible line");
-  });
+    // Detail tab is the default tab; OCR text must NOT appear there now.
+    expect(el.querySelector(".psl__ocr-tab-body")).toBeNull();
 
-  test("apply tags accepts only the visible suggested tags", async () => {
-    const { el, dispatch } = await renderDetailRail(
-      enrichment({
-        suggestedTags: [
-          { id: "tag_line", label: "line", confidence: 0.95, accepted_at: null, rejected_at: null },
-          { id: "tag_chat", label: "chat", confidence: 0.9, accepted_at: null, rejected_at: null },
-          { id: "tag_bot", label: "bot", confidence: 0.8, accepted_at: null, rejected_at: null },
-          { id: "tag_commands", label: "commands", confidence: 0.7, accepted_at: null, rejected_at: null }
-        ]
-      })
-    );
-    const button = Array.from(el.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Apply tags"
+    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.startsWith("OCR")
     ) as HTMLButtonElement | undefined;
-
-    expect(button).toBeDefined();
+    expect(ocrTab).toBeDefined();
     await act(async () => {
-      button?.click();
-      await Promise.resolve();
+      ocrTab?.click();
       await Promise.resolve();
     });
 
-    const acceptedTagIds = dispatch.mock.calls
-      .filter(([name]) => name === "codex:acceptTag")
-      .map(([, req]) => (req as { tagId: string }).tagId);
-    expect(acceptedTagIds).toEqual(["tag_line", "tag_chat"]);
+    expect(el.querySelector(".psl__ocr-tab-body")?.textContent).toContain("final visible line");
   });
 });

@@ -1167,6 +1167,7 @@
   align-items: center;
 }
 .psl__right-tab {
+  position: relative;
   height: 28px; padding: 0 12px;
   background: transparent;
   border: 1px solid transparent;
@@ -1175,11 +1176,24 @@
   color: var(--text-muted);
   font: 600 11px/1 var(--font-sans);
   cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  transition: color 80ms ease;
+}
+.psl__right-tab:hover:not(.is-active) { color: var(--text-secondary); }
+.psl__right-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .psl__right-tab.is-active {
   color: var(--accent-bright);
   background: var(--bg-panel);
   border-color: var(--border-subtle);
+}
+.psl__right-tab-badge {
+  width: 5px; height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  display: inline-block;
 }
 .psl__right-body {
   flex: 1; overflow-y: auto;
@@ -1317,6 +1331,159 @@
 }
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
+
+/* ----- Detail tab editable fields (Issue #85) ----- */
+
+.psl__detail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.psl__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.psl__field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__field-origin {
+  font: 500 9px/1 var(--font-mono);
+  color: var(--accent);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.psl__field-input,
+.psl__field-textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-primary);
+  resize: vertical;
+}
+.psl__field-input { padding: 7px 10px; }
+.psl__field-input::placeholder,
+.psl__field-textarea::placeholder { color: var(--text-subtle); }
+.psl__field-input:focus,
+.psl__field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.psl__field-input.is-suggested,
+.psl__field-textarea.is-suggested {
+  color: color-mix(in srgb, var(--text-primary) 78%, transparent);
+  font-style: italic;
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-input));
+}
+
+/* ----- Tag editor ----- */
+
+.psl__tag-editor { display: flex; flex-direction: column; gap: 6px; }
+.psl__tag-editor-eyebrow {
+  display: flex; align-items: center; gap: 6px;
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__tag-editor-suggest-count {
+  font: 500 9px/1 var(--font-mono);
+  color: var(--accent);
+  text-transform: lowercase;
+}
+.psl__tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+}
+.psl__tag-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.psl__tag-suggest-label {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.psl__tag-suggest-x {
+  margin-left: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__tag-suggest-x:hover { color: var(--text-primary); }
+.psl__tag-input {
+  flex: 1;
+  min-width: 80px;
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  font: 500 11px/1.2 var(--font-sans);
+  color: var(--text-primary);
+  outline: none;
+}
+.psl__tag-input::placeholder { color: var(--text-subtle); }
+
+/* ----- OCR tab ----- */
+
+.psl__ocr-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.psl__ocr-tab-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__ocr-tab-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+}
+.psl__ocr-tab-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: 500 11px/1.55 var(--font-mono);
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.18);
+  max-height: clamp(220px, 50vh, 480px);
+  overflow-y: auto;
+}
+.psl__ocr-tab-empty {
+  padding: 14px 12px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font: 500 11px/1.5 var(--font-sans);
+  text-align: center;
+}
 /* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's
    border + hover treatment so the Settings gear sits flush next to
    Quick Capture without looking like a different control. */

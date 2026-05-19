@@ -28,16 +28,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { OverlayRow } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 
+/**
+ * EditOps recorded on the undo stack. v1 only has `create` and
+ * `delete` because the overlays IPC is INSERT-only — `overlays:upsert`
+ * always produces a new row id, and there is no `overlays:update`.
+ *
+ * When the editor grows drag-existing-overlay (edit-after-place), an
+ * "edit" will be recorded as TWO independent ops: a `delete` of the
+ * existing row + a `create` of the replacement. Undoing once reverts
+ * the most-recent half (the create), undoing twice reverts the
+ * other half (the delete). That keeps the IPC contract honest — the
+ * hook never has to fabricate an id round-trip.
+ */
 export type EditOp =
   | { kind: "create"; row: OverlayRow }
-  | { kind: "update"; prevRow: OverlayRow; nextRow: OverlayRow }
   | { kind: "delete"; row: OverlayRow };
 
 const MAX_DEPTH = 100;
 
 export type UseUndoRedoResult = {
   recordCreate: (row: OverlayRow) => void;
-  recordUpdate: (prevRow: OverlayRow, nextRow: OverlayRow) => void;
   recordDelete: (row: OverlayRow) => void;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
@@ -92,11 +102,6 @@ export function useUndoRedo(opts: {
     (row: OverlayRow) => push({ kind: "create", row }),
     [push]
   );
-  const recordUpdate = useCallback(
-    (prevRow: OverlayRow, nextRow: OverlayRow) =>
-      push({ kind: "update", prevRow, nextRow }),
-    [push]
-  );
   const recordDelete = useCallback(
     (row: OverlayRow) => push({ kind: "delete", row }),
     [push]
@@ -108,18 +113,11 @@ export function useUndoRedo(opts: {
     await wrapApplying(async () => {
       if (op.kind === "create") {
         await dispatch("overlays:delete", { id: op.row.id });
-      } else if (op.kind === "update") {
-        // Re-upsert with the PRIOR data. The backend's upsert
-        // dedupes by id; the overlay row gets revived with prevRow's
-        // shape.
-        await dispatch("overlays:upsert", {
-          captureId,
-          overlay: op.prevRow.data
-        });
       } else {
-        // op.kind === "delete" — re-create the row with its original
-        // data. id might shift in the round-trip; that's fine for
-        // session-only undo.
+        // Re-create the row with its original data. The new row gets
+        // a fresh id from `insertOverlay` — that's fine for session-
+        // only undo because the user observes via screen-space, not
+        // by id.
         await dispatch("overlays:upsert", {
           captureId,
           overlay: op.row.data
@@ -138,11 +136,6 @@ export function useUndoRedo(opts: {
         await dispatch("overlays:upsert", {
           captureId,
           overlay: op.row.data
-        });
-      } else if (op.kind === "update") {
-        await dispatch("overlays:upsert", {
-          captureId,
-          overlay: op.nextRow.data
         });
       } else {
         await dispatch("overlays:delete", { id: op.row.id });
@@ -184,7 +177,6 @@ export function useUndoRedo(opts: {
 
   return {
     recordCreate,
-    recordUpdate,
     recordDelete,
     undo,
     redo,

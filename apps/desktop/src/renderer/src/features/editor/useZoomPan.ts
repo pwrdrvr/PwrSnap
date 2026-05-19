@@ -78,35 +78,66 @@ export function useZoomPan(opts: {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; baseX: number; baseY: number } | null>(null);
+  // When the user clicks 1:1, we lock into "actual size" mode and
+  // re-compute on window resize (the rendered CSS-px size depends on
+  // the container's current dimensions). Cleared by any other zoom
+  // op so the user can leave 1:1 freely.
+  const [actualSizeLocked, setActualSizeLocked] = useState(false);
 
-  const resetToFit = useCallback(() => setState(FIT_TO_WINDOW), []);
+  const resetToFit = useCallback(() => {
+    setActualSizeLocked(false);
+    setState(FIT_TO_WINDOW);
+  }, []);
 
-  const actualSize = useCallback(() => {
-    // Solve for scale such that scale × renderedImageCSSWidth ===
-    // imageWidthPx × devicePixelRatio (Retina: image CSS px × dpr =
-    // OS device px). renderedImageCSSWidth comes from the container's
-    // current size + aspect-ratio + object-fit:contain.
+  /**
+   * Compute the scale that makes one image pixel equal one CSS pixel
+   * (1:1) at the current container size, accounting for
+   * `devicePixelRatio` so a Retina capture renders at OS-1:1 inside
+   * the viewport. Returns null when the container hasn't laid out
+   * yet (rare; only on first mount before the first paint).
+   */
+  const computeActualSizeScale = useCallback((): number | null => {
     const container = containerRef.current;
-    if (container === null) return;
+    if (container === null) return null;
     const rect = container.getBoundingClientRect();
-    // Image renders at: object-fit:contain inside the container, so
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    // Image renders at object-fit:contain inside the container, so
     // its CSS dimensions are bounded by the container in the limiting
-    // axis. Compute the actual rendered CSS-px width / height:
+    // axis.
     const containerAspect = rect.width / rect.height;
     const imageAspect = imageWidthPx / imageHeightPx;
     const renderedCssWidth =
       containerAspect > imageAspect ? rect.height * imageAspect : rect.width;
-    if (renderedCssWidth <= 0) return;
+    if (renderedCssWidth <= 0) return null;
     const targetCssWidth = imageWidthPx / devicePixelRatio;
-    const targetScale = targetCssWidth / renderedCssWidth;
-    setState({
-      scale: clamp(targetScale, MIN_SCALE, MAX_SCALE),
-      panX: 0,
-      panY: 0
-    });
+    return targetCssWidth / renderedCssWidth;
   }, [containerRef, imageWidthPx, imageHeightPx, devicePixelRatio]);
 
+  const actualSize = useCallback(() => {
+    const target = computeActualSizeScale();
+    if (target === null) return;
+    setActualSizeLocked(true);
+    setState({ scale: clamp(target, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
+  }, [computeActualSizeScale]);
+
+  // Auto-track container resize while actualSizeLocked. Once the user
+  // does any other zoom op, the lock clears (handled at each call
+  // site below).
+  useEffect(() => {
+    if (!actualSizeLocked) return;
+    const container = containerRef.current;
+    if (container === null) return;
+    const ro = new ResizeObserver(() => {
+      const target = computeActualSizeScale();
+      if (target === null) return;
+      setState({ scale: clamp(target, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [actualSizeLocked, containerRef, computeActualSizeScale]);
+
   const zoomIn = useCallback(() => {
+    setActualSizeLocked(false);
     setState((prev) => ({
       ...prev,
       scale: clamp(prev.scale * KEYBOARD_STEP, MIN_SCALE, MAX_SCALE)
@@ -114,6 +145,7 @@ export function useZoomPan(opts: {
   }, []);
 
   const zoomOut = useCallback(() => {
+    setActualSizeLocked(false);
     setState((prev) => ({
       ...prev,
       scale: clamp(prev.scale / KEYBOARD_STEP, MIN_SCALE, MAX_SCALE)
@@ -127,17 +159,40 @@ export function useZoomPan(opts: {
     // intercept when ctrlKey is set (pinch) or when meta+wheel.
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
+    setActualSizeLocked(false);
+
+    // Cursor-anchored zoom: keep the canvas pixel under the cursor in
+    // place by adjusting pan in lock-step with scale. The geometry:
+    //   transform = translate(panX, panY) scale(scale)
+    // applied with transform-origin: center center. The element's
+    // center sits at containerCenter on screen. A point at offset
+    // (vx, vy) from that center, in pre-transform coords, ends up at
+    //   screen = containerCenter + (vx, vy) * scale + (panX, panY)
+    // Solving "the point under the cursor stays under the cursor"
+    // when scale → scale * factor:
+    //   panX' = cursor.x − containerCenter.x − (cursor.x − containerCenter.x − panX) * factor
+    // ...which simplifies to: pan' = cursor.toCenter − (cursor.toCenter − pan) * factor.
+    const container = containerRef.current;
     setState((prev) => {
-      // deltaY is negative when pinching out (zoom in) by Cocoa
-      // convention. Use exponential scaling so each tick is a
-      // multiplicative delta — feels linear in user perception.
       const factor = WHEEL_STEP_BASE ** -event.deltaY;
-      return {
-        ...prev,
-        scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE)
-      };
+      const targetScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
+      // If the clamp tripped, the effective factor differs from the
+      // requested factor — use the effective one for pan correction
+      // so the cursor anchor stays accurate at the limits.
+      const effectiveFactor = prev.scale === 0 ? 1 : targetScale / prev.scale;
+      if (container === null) {
+        return { ...prev, scale: targetScale };
+      }
+      const rect = container.getBoundingClientRect();
+      const containerCenterX = rect.left + rect.width / 2;
+      const containerCenterY = rect.top + rect.height / 2;
+      const cursorOffsetX = event.clientX - containerCenterX;
+      const cursorOffsetY = event.clientY - containerCenterY;
+      const nextPanX = cursorOffsetX - (cursorOffsetX - prev.panX) * effectiveFactor;
+      const nextPanY = cursorOffsetY - (cursorOffsetY - prev.panY) * effectiveFactor;
+      return { scale: targetScale, panX: nextPanX, panY: nextPanY };
     });
-  }, []);
+  }, [containerRef]);
 
   // Listen for Space keydown / keyup so the caller can switch to pan
   // mode without changing the active tool.

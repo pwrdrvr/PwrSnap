@@ -14,6 +14,8 @@ supportedArchitectures:
     - arm64
     - current
 allowBuilds:
+  "@ffmpeg-installer/darwin-arm64": true
+  "@ffmpeg-installer/darwin-x64": true
   better-sqlite3: true
   electron: true
   electron-winstaller: true

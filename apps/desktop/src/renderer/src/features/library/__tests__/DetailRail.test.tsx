@@ -384,6 +384,161 @@ describe("DetailRail", () => {
     expect(copyCall?.[1]).toEqual({ text: "telegram-chat-thread" });
   });
 
+  test("DraftPreview Use button overrides the user's mid-edit manual value", async () => {
+    // Reproduces the user-reported bug: type into the description
+    // (origin becomes "manual"), then click "Use this" on the
+    // DraftPreview block. The Use action should win — the textarea
+    // must flip to the Codex draft, not keep the user's mid-edit
+    // text just because origin was manual.
+    const { el } = await renderDetailRail(
+      enrichment({
+        suggestedDescription: "Codex draft body",
+        acceptedDescription: "User's earlier accepted body",
+        descriptionAcceptedAt: "2026-05-19T18:00:00.000Z"
+      })
+    );
+
+    const textarea = el.querySelector<HTMLTextAreaElement>(".psl__field-textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("User's earlier accepted body");
+
+    // User starts typing — origin flips to "manual".
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )?.set;
+      nativeSetter?.call(textarea, "halfway through editing");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(textarea?.value).toBe("halfway through editing");
+
+    // User notices the Codex draft block below the textarea and
+    // clicks "Use this" — they want the Codex draft, not their
+    // mid-typing text.
+    const previews = Array.from(
+      el.querySelectorAll<HTMLDivElement>(".psl__draft-preview")
+    );
+    const descriptionPreview = previews.find((node) =>
+      node.textContent?.includes("Codex draft body")
+    );
+    expect(descriptionPreview).toBeDefined();
+    const useThis = descriptionPreview?.querySelector<HTMLButtonElement>(
+      ".psl__draft-preview-use"
+    );
+    await act(async () => {
+      useThis?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The textarea must show Codex's draft now, not the user's
+    // half-typed string.
+    expect(textarea?.value).toBe("Codex draft body");
+  });
+
+  test("AI strip shows a prominent Use draft button and a de-emphasized Regenerate link", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "Codex headline",
+        suggestedDescription: "Codex body",
+        suggestedFilenameStem: "codex-stem"
+      })
+    );
+
+    // Bulk Use button is the prominent accent chip on the AI strip.
+    const useBulk = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-btn--accent");
+    expect(useBulk?.textContent).toBe("Use draft");
+
+    // Regenerate is now the text-link sibling, not a full chip.
+    const regen = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-link");
+    expect(regen?.textContent).toBe("Regenerate");
+
+    // Clicking the bulk Use fires all three accept verbs (no tags).
+    await act(async () => {
+      useBulk?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const verbs = dispatch.mock.calls.map(([name]) => name);
+    expect(verbs).toContain("codex:acceptTitle");
+    expect(verbs).toContain("codex:acceptDescription");
+    expect(verbs).toContain("codex:acceptFilenameStem");
+    expect(verbs.filter((n) => n === "codex:acceptTag")).toHaveLength(0);
+  });
+
+  test("Bulk Use draft also overrides mid-edit manual values in all three fields", async () => {
+    const { el } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "Codex headline",
+        acceptedTitle: "old title",
+        titleAcceptedAt: "2026-05-19T18:00:00.000Z",
+        suggestedDescription: "Codex body",
+        acceptedDescription: "old body",
+        descriptionAcceptedAt: "2026-05-19T18:00:00.000Z",
+        suggestedFilenameStem: "codex-stem",
+        acceptedFilenameStem: "old-stem",
+        filenameAcceptedAt: "2026-05-19T18:00:00.000Z"
+      })
+    );
+
+    const titleInput = el.querySelector<HTMLInputElement>(".psl__field-input");
+    const descTextarea = el.querySelector<HTMLTextAreaElement>(".psl__field-textarea");
+    const filenameInput = el.querySelector<HTMLInputElement>(".psl__field-input--mono");
+
+    // User types into all three.
+    const setInputValue = (node: HTMLInputElement | HTMLTextAreaElement | null, value: string): void => {
+      if (node === null) return;
+      const proto =
+        node instanceof HTMLTextAreaElement
+          ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      setter?.call(node, value);
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(async () => {
+      setInputValue(titleInput, "mid-edit title");
+      setInputValue(descTextarea, "mid-edit body");
+      setInputValue(filenameInput, "mid-edit-stem");
+      await Promise.resolve();
+    });
+
+    const bulkUse = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-btn--accent");
+    await act(async () => {
+      bulkUse?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(titleInput?.value).toBe("Codex headline");
+    expect(descTextarea?.value).toBe("Codex body");
+    expect(filenameInput?.value).toBe("codex-stem");
+  });
+
+  test("AI strip hides Use draft once all three text drafts are already accepted", async () => {
+    const { el } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "Codex headline",
+        acceptedTitle: "Codex headline",
+        titleAcceptedAt: "2026-05-19T18:00:00.000Z",
+        suggestedDescription: "Codex body",
+        acceptedDescription: "Codex body",
+        descriptionAcceptedAt: "2026-05-19T18:00:00.000Z",
+        suggestedFilenameStem: "codex-stem",
+        acceptedFilenameStem: "codex-stem",
+        filenameAcceptedAt: "2026-05-19T18:00:00.000Z"
+      })
+    );
+
+    expect(el.querySelector(".ps-codex-pill .psl__chip-btn--accent")).toBeNull();
+    // Regenerate stays available.
+    expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.textContent).toBe("Regenerate");
+  });
+
   test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {
     const { el } = await renderDetailRail(enrichment());
 

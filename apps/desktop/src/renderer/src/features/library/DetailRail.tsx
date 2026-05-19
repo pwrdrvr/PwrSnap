@@ -340,17 +340,18 @@ function DetailTab({
   const acceptedFilenameStem = enrichment?.acceptedFilenameStem ?? "";
   const suggestedFilenameStem = enrichment?.suggestedFilenameStem ?? "";
 
-  const [titleValue, titleOrigin, setTitleEdit] = useFieldEditor({
+  const [titleValue, titleOrigin, setTitleEdit, commitTitle] = useFieldEditor({
     captureId: record.id,
     accepted: acceptedTitle,
     suggested: suggestedTitle
   });
-  const [descriptionValue, descriptionOrigin, setDescriptionEdit] = useFieldEditor({
-    captureId: record.id,
-    accepted: acceptedDescription,
-    suggested: suggestedDescription
-  });
-  const [filenameValue, filenameOrigin, setFilenameEdit] = useFieldEditor({
+  const [descriptionValue, descriptionOrigin, setDescriptionEdit, commitDescription] =
+    useFieldEditor({
+      captureId: record.id,
+      accepted: acceptedDescription,
+      suggested: suggestedDescription
+    });
+  const [filenameValue, filenameOrigin, setFilenameEdit, commitFilename] = useFieldEditor({
     captureId: record.id,
     accepted: acceptedFilenameStem,
     suggested: suggestedFilenameStem
@@ -414,20 +415,31 @@ function DetailTab({
   // Now: each field's drafted text is previewed below the input with
   // an inline "Use" button. Tags continue to live in <TagEditor/>
   // with their own +/× per-suggestion controls.
+  // Per-field Use callbacks both commit() locally AND dispatch the
+  // accept verb. Without the commit, a user mid-edit (origin=manual)
+  // would click Use and only see their typed text — the sync effect
+  // deliberately leaves manual edits alone, so the broadcast that
+  // lands back from the server wouldn't replace the textarea value.
+  // Commit forces a local override so the click feels instant; the
+  // server broadcast that lands moments later is a no-op (same
+  // value + origin).
   const useTitleDraft = useCallback(async () => {
     if (suggestedTitle.trim().length === 0) return;
+    commitTitle(suggestedTitle, "accepted");
     await acceptTitleIfNeeded(suggestedTitle);
-  }, [acceptTitleIfNeeded, suggestedTitle]);
+  }, [acceptTitleIfNeeded, commitTitle, suggestedTitle]);
 
   const useDescriptionDraft = useCallback(async () => {
     if (suggestedDescription.trim().length === 0) return;
+    commitDescription(suggestedDescription, "accepted");
     await acceptDescriptionIfNeeded(suggestedDescription);
-  }, [acceptDescriptionIfNeeded, suggestedDescription]);
+  }, [acceptDescriptionIfNeeded, commitDescription, suggestedDescription]);
 
   const useFilenameDraft = useCallback(async () => {
     if (suggestedFilenameStem.trim().length === 0) return;
+    commitFilename(suggestedFilenameStem, "accepted");
     await acceptFilenameIfNeeded(suggestedFilenameStem);
-  }, [acceptFilenameIfNeeded, suggestedFilenameStem]);
+  }, [acceptFilenameIfNeeded, commitFilename, suggestedFilenameStem]);
 
   const titleDraftDiverged =
     suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle;
@@ -440,6 +452,26 @@ function DetailTab({
   const regenerate = useCallback(() => {
     void dispatch("codex:enrich", { captureId: record.id });
   }, [record.id]);
+
+  // Bulk "Use draft" — the common case where the user wants to take
+  // Codex's title + description + filename in one click. Tags stay
+  // user-driven (their own +/× chip controls) to avoid surprise-
+  // accepts of suggestions the user implicitly ignored.
+  const useAllTextDrafts = useCallback(async () => {
+    if (titleDraftDiverged) await useTitleDraft();
+    if (descriptionDraftDiverged) await useDescriptionDraft();
+    if (filenameDraftDiverged) await useFilenameDraft();
+  }, [
+    descriptionDraftDiverged,
+    filenameDraftDiverged,
+    titleDraftDiverged,
+    useDescriptionDraft,
+    useFilenameDraft,
+    useTitleDraft
+  ]);
+
+  const hasAnyDraft = titleDraftDiverged || descriptionDraftDiverged || filenameDraftDiverged;
+  const codexBusy = codexStatus === "queued" || codexStatus === "running";
 
   return (
     <>
@@ -473,14 +505,34 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         action={
-          <button
-            type="button"
-            className="psl__chip-btn"
-            onClick={regenerate}
-            disabled={codexStatus === "queued" || codexStatus === "running"}
-          >
-            {codexStatus === "queued" || codexStatus === "running" ? "Reading…" : "Regenerate"}
-          </button>
+          <>
+            {/* Prominent bulk Use — the common case. Covers title +
+                description + filename in one click. Tags stay separate
+                (per-chip +/× controls in the TagEditor) so suggestions
+                a user ignored don't sneak in. */}
+            {hasAnyDraft && !codexBusy ? (
+              <button
+                type="button"
+                className="psl__chip-btn psl__chip-btn--accent"
+                onClick={() => void useAllTextDrafts()}
+              >
+                Use draft
+              </button>
+            ) : null}
+            {/* Regenerate de-emphasized — text-link weight. Hidden
+                while Codex is mid-run; the per-pill status already
+                communicates "reading…". */}
+            {!codexBusy ? (
+              <button
+                type="button"
+                className="psl__chip-link"
+                onClick={regenerate}
+                title="Ask Codex for a fresh draft"
+              >
+                Regenerate
+              </button>
+            ) : null}
+          </>
         }
       />
 

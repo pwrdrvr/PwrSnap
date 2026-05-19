@@ -46,10 +46,25 @@
 .ps-tag.is-warn { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-soft); }
 .ps-tag.is-warn::before { background: var(--warn); }
 .ps-tag.is-suggest {
-  border-style: dashed; cursor: pointer;
-  color: var(--text-muted);
+  /* A11Y: 1px dashed `--border-subtle` against `--bg-input` falls
+     well below WCAG 1.4.11's 3:1 non-text-contrast floor — the
+     dashes effectively disappear in light theme. Bump to a
+     visible-but-still-secondary accent presence: stronger accent
+     border (~60% mix), accent-bright text/glyphs, and a very
+     faint accent wash so the chip has shape on cream input bg.
+     Still visually distinct from accepted chips (those use solid
+     border + denser fill). */
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  color: var(--accent-bright);
+  cursor: pointer;
 }
-.ps-tag.is-suggest:hover { color: var(--accent-bright); border-color: var(--accent-border); }
+.ps-tag.is-suggest:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-style: solid;
+  border-color: var(--accent);
+}
 .ps-tag.is-suggest::before { display: none; }
 .ps-tag.is-sm { height: 16px; font-size: 9px; padding: 0 6px; gap: 3px; }
 .ps-tag.is-sm::before { width: 3px; height: 3px; }
@@ -1581,16 +1596,20 @@
   background: transparent;
   border: 0;
   padding: 0 2px;
-  color: var(--text-muted);
-  font: 500 11px/1 var(--font-sans);
+  /* Inherit from the chip's accent-bright color so the × meets
+     the same A11Y bar as the + label, not the previous muted
+     gray which was sub-3:1 against the accent-tinted chip bg. */
+  color: inherit;
+  opacity: 0.7;
+  font: 600 11px/1 var(--font-sans);
   cursor: pointer;
   border-radius: 3px;
 }
-.psl__tag-suggest-x:hover { color: var(--text-primary); }
+.psl__tag-suggest-x:hover { opacity: 1; }
 .psl__tag-suggest-x:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  color: var(--text-primary);
+  opacity: 1;
 }
 .psl__tag-input {
   flex: 1;

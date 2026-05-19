@@ -12,12 +12,16 @@ describe("capture enrichment schema", () => {
 {
   "ocrText": "Invoice\\nTotal $12.00",
   "description": "A receipt window showing a total.",
+  "filenameStem": "receipt-total-window",
+  "textAnchors": ["Invoice", "Total $12.00"],
   "tags": [{ "label": "receipt", "confidence": 0.9 }]
 }
 \`\`\``);
 
     expect(parsed.ocrText).toContain("Invoice");
     expect(parsed.description).toBe("A receipt window showing a total.");
+    expect(parsed.filenameStem).toBe("receipt-total-window");
+    expect(parsed.textAnchors).toEqual(["Invoice", "Total $12.00"]);
     expect(parsed.tags).toEqual([{ label: "receipt", confidence: 0.9 }]);
   });
 
@@ -33,8 +37,17 @@ describe("capture enrichment schema", () => {
     expect(CAPTURE_ENRICHMENT_SCHEMA).toMatchObject({
       type: "object",
       additionalProperties: false,
-      required: ["ocrText", "description", "tags"]
+      required: ["ocrText", "description", "filenameStem", "textAnchors", "tags"]
     });
+  });
+
+  it("keeps strict schema required keys aligned with declared properties", () => {
+    const schema = CAPTURE_ENRICHMENT_SCHEMA as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+
+    expect(new Set(schema.required)).toEqual(new Set(Object.keys(schema.properties)));
   });
 
   it("keeps caption-first guidance in the static base instructions", () => {

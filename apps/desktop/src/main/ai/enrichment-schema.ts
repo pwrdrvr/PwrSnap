@@ -7,7 +7,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export const CAPTURE_ENRICHMENT_SCHEMA: JsonValue = {
   type: "object",
   additionalProperties: false,
-  required: ["ocrText", "description", "tags"],
+  required: ["ocrText", "description", "filenameStem", "textAnchors", "tags"],
   properties: {
     ocrText: {
       type: "string",
@@ -22,7 +22,7 @@ export const CAPTURE_ENRICHMENT_SCHEMA: JsonValue = {
     filenameStem: {
       type: "string",
       description:
-        "Optional lowercase kebab-case export filename stem, without a file extension."
+        "Lowercase kebab-case export filename stem, without a file extension. Empty string if no useful stem can be inferred."
     },
     textAnchors: {
       type: "array",

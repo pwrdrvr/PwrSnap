@@ -160,7 +160,7 @@ describe("Codex handlers", () => {
     testDb = new Database(":memory:");
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0001_init.sql"));
-    testDb.exec(migration("0005_ai_enrichment.sql"));
+    testDb.exec(migration("0006_ai_enrichment.sql"));
     await seedCapture();
   });
 

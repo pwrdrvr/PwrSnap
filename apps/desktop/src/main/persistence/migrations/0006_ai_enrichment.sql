@@ -1,4 +1,4 @@
--- 0005_ai_enrichment — Codex OCR / description / tag suggestions.
+-- 0006_ai_enrichment — Codex OCR / description / tag suggestions.
 --
 -- Stores AI run status separately from accepted user metadata. OCR and
 -- descriptions are sensitive local data: they stay in SQLite, are removed

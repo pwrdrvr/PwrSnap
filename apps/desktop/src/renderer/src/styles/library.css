@@ -1039,21 +1039,16 @@
 }
 /* App-source chip overlay — mirrors .psl__cell-time but bottom-left,
    so each cell shows app + time as two corner pills over the thumb
-   instead of stealing a row of meta below. backdrop-filter + a
-   subtle shadow give the AppTag's copper border enough contrast over
-   busy / light captures (white docs, Figma boards, etc.) without
-   needing to invent a separate variant of the chip itself. */
+   instead of stealing a row of meta below. No backdrop-filter or
+   box-shadow: the AppTag's own background (`--bg-panel-elevated`) is
+   fully opaque + carries a copper border, so it reads cleanly on its
+   own over any thumb. Adding lift would visually mismatch the flat
+   time pill in the opposite corner. */
 .psl__cell-app-overlay {
   position: absolute; bottom: 5px; left: 5px;
-  border-radius: 5px;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: var(--shadow-xs);
 }
-/* The inner chip is already padded + bordered; the overlay wrapper
-   just provides positioning + backdrop. Disable pointer events so a
-   click on the corner of the chip still selects the cell (no dead
-   spot — the chip itself has no onClick). */
+/* The chip has no onClick — pass clicks through to the cell underneath
+   so the rounded corners aren't dead zones for selection. */
 .psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
 /* Hover-only trash affordance on grid cells. Hidden by default, fades
    in on cell hover. Sits in the bottom-right corner — opposite the

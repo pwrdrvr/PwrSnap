@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { app, dialog, globalShortcut, Menu, Notification, shell } from "electron";
+import { app, clipboard, dialog, globalShortcut, Menu, Notification, shell } from "electron";
 import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -45,15 +45,26 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
-import { closeDatabase, openDatabase } from "./persistence/db";
-import { getCaptureById, listExpiredTrash } from "./persistence/captures-repo";
+import { closeDatabase, getDb, openDatabase } from "./persistence/db";
+import {
+  getCaptureById,
+  insertOrFindCapture,
+  insertOrFindCapturesBatch,
+  listExpiredTrash
+} from "./persistence/captures-repo";
+import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
-import { disposeTray, installTray } from "./tray";
+import {
+  disposeTray,
+  hideTrayPopoverForE2E,
+  installTray,
+  showTrayPopoverForE2E
+} from "./tray";
 import { createMainWindow, findMainLibraryWindow } from "./window";
 
 const APP_NAME = "PwrSnap";
@@ -833,16 +844,14 @@ export function bootstrapApp(): void {
       // runs `fn` in the main process; specs reach into the bus via
       // `globalThis.__PWRSNAP_TEST__.dispatch(name, req)` so a single
       // helper covers every command without per-command plumbing.
-      // Lazy-required so production bundles don't even import this
-      // shim's `bus` reference unless the flag is on.
-      const { insertOrFindCapture, insertOrFindCapturesBatch } = await import(
-        "./persistence/captures-repo"
-      );
-      const { insertVideoMetadata } = await import("./persistence/video-repo");
-      const { getDb } = await import("./persistence/db");
-      const { setFloatOverState } = await import("./float-over");
-      const { showTrayPopoverForE2E, hideTrayPopoverForE2E } = await import("./tray");
-      const { clipboard } = await import("electron");
+      // Bridge dependencies are statically imported at the top of the
+      // file — earlier versions used `await import(...)` here for
+      // perceived production-bundle hygiene, but every one of those
+      // modules is already statically imported elsewhere in the main
+      // bundle (tray/float-over/db/captures-repo/electron), so the
+      // dynamic imports created zero chunking benefit and tripped
+      // Vite's "dynamically imported but also statically imported"
+      // warnings on every dev/build run.
       const testBridge = {
         dispatch: <Name extends string>(name: Name, req: unknown) =>
           bus.dispatch(name as never, req as never, { principal: "ipc" }),

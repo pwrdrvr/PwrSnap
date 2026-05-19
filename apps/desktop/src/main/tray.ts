@@ -311,8 +311,43 @@ export function installTray(): Tray {
     tray?.popUpContextMenu(menu);
   });
 
+  // Pre-warm the popover BrowserWindow at boot. Without this, the
+  // first tray click pays the full cost of spawning a Chromium
+  // renderer process, loading the renderer bundle, parsing it, and
+  // waiting for the initial measurement to settle before the
+  // BrowserWindow snaps from its constructor frame (440×440) to the
+  // measured content height. With pre-warm, the window is already
+  // sized + painted (off-screen, hidden) by the time the user clicks
+  // — `toggleTrayWindow` just calls `showInactive()` + `focus()`.
+  //
+  // Cost: one extra Chromium renderer process resident from boot
+  // (~50-100MB). The tray is the most-clicked surface in the menubar
+  // UX, so this trade is worth it. Same-origin process-per-site
+  // sharing means the library + selectors + tray usually share one
+  // renderer process anyway, so the marginal cost is small.
+  //
+  // We deliberately don't `show()` here — the window stays
+  // off-screen + hidden. The renderer's `useLayoutEffect` posts the
+  // initial resize over the IPC channel exactly as it does on a real
+  // click; `wireTrayResizeChannel` sizes the (hidden) window to match.
+  prewarmTrayWindow();
+
   log.info("tray installed", { iconPath });
   return tray;
+}
+
+/**
+ * Off-screen pre-warm of the tray BrowserWindow. Idempotent — safe
+ * to call from `installTray()` AND from the E2E bridge before
+ * `measureTrayFirstPaintForE2E`. The window is created in its hidden
+ * state via `createTrayWindow`, attached to the resize channel, and
+ * left alone — Chromium spawns its renderer, loads the bundle,
+ * paints the first frame, and the resize IPC sizes us correctly,
+ * all before the user's first click.
+ */
+export function prewarmTrayWindow(): BrowserWindow {
+  wireTrayResizeChannel();
+  return ensureTrayWindow();
 }
 
 function toggleTrayWindow(): void {
@@ -401,6 +436,150 @@ export function showTrayPopoverForE2E(): void {
 /** E2E-only: hide the tray popover synchronously (no debounce). */
 export function hideTrayPopoverForE2E(): void {
   hideTrayPopoverIfVisible();
+}
+
+/**
+ * E2E-only: measurement of "tray click → fully-painted popover" for
+ * the perf baseline / regression spec. Two operating modes,
+ * determined by the live tray-window state:
+ *
+ *   - cold: no tray window exists. The bridge creates it, attaches
+ *     event listeners, shows it, waits for the renderer's resize to
+ *     stabilize. Mirrors today's first-click production flow.
+ *   - prewarmed: a tray window already exists, created at boot by
+ *     `prewarmTrayWindow()`. The bridge skips construction and just
+ *     times `show() → paint`. Mirrors the optimized production flow.
+ *
+ * Checkpoint set is the same shape across both modes — fields that
+ * don't apply in `prewarmed` (windowCreated, domReady, etc.) come
+ * back as `null` so spec consumers can print one uniform table.
+ */
+export async function measureTrayFirstPaintForE2E(options: {
+  stableMs?: number;
+  timeoutMs?: number;
+} = {}): Promise<{
+  mode: "cold" | "prewarmed";
+  windowCreated: number | null;
+  domReady: number | null;
+  didFinishLoad: number | null;
+  readyToShow: number | null;
+  isVisible: number | null;
+  firstResize: number | null;
+  stableResize: number | null;
+  finalContentHeight: number | null;
+  resizeCount: number;
+  timedOut: boolean;
+}> {
+  const stableMs = options.stableMs ?? 300;
+  const timeoutMs = options.timeoutMs ?? 10_000;
+
+  const alreadyExists = trayWindow !== null && !trayWindow.isDestroyed();
+  const mode: "cold" | "prewarmed" = alreadyExists ? "prewarmed" : "cold";
+
+  if (alreadyExists && trayWindow!.isVisible()) {
+    throw new Error("measureTrayFirstPaintForE2E: tray window already visible; hide first");
+  }
+
+  const t0 = performance.now();
+  const mark = (): number => Math.round((performance.now() - t0) * 100) / 100;
+
+  // Probe listener for the renderer's resize channel. Observes the
+  // production listener (wireTrayResizeChannel) without interfering.
+  // In the prewarmed case the renderer has already posted its initial
+  // measurement during pre-warm; no new resize is expected unless the
+  // content changes between pre-warm and show.
+  let firstResize: number | null = null;
+  let lastResizeAt = 0;
+  let resizeCount = 0;
+  const probe = (_event: Electron.IpcMainEvent, payload: unknown): void => {
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      typeof (payload as { height: unknown }).height !== "number" ||
+      !Number.isFinite((payload as { height: number }).height)
+    ) {
+      return;
+    }
+    resizeCount += 1;
+    if (firstResize === null) firstResize = mark();
+    lastResizeAt = performance.now();
+  };
+  // Belt-and-suspenders: wire the production channel in case the
+  // bridge runs before installTray() / prewarmTrayWindow() did
+  // (E2E mode skips installTray). Idempotent.
+  wireTrayResizeChannel();
+  ipcMain.on(TRAY_RESIZE_CHANNEL, probe);
+
+  let windowCreated: number | null = null;
+  let domReady: number | null = null;
+  let didFinishLoad: number | null = null;
+  let readyToShow: number | null = null;
+
+  const window = ensureTrayWindow();
+  if (!alreadyExists) {
+    windowCreated = mark();
+    window.webContents.once("dom-ready", () => {
+      domReady = mark();
+    });
+    window.webContents.once("did-finish-load", () => {
+      didFinishLoad = mark();
+    });
+    window.once("ready-to-show", () => {
+      readyToShow = mark();
+    });
+  }
+
+  // Mirror showTrayPopoverForE2E's positioning so apples-to-apples
+  // with tray-sizing.spec.ts.
+  const primary = screen.getPrimaryDisplay();
+  const wa = primary.workArea;
+  window.setPosition(wa.x + 8, wa.y + 8, false);
+  window.showInactive();
+  window.focus();
+
+  let isVisible: number | null = null;
+  const deadline = performance.now() + timeoutMs;
+  const startedAt = performance.now();
+  // In the prewarmed case there's no fresh resize to wait on — the
+  // renderer measured during pre-warm and the window is already at
+  // its content height. Hold long enough for the OS to swap the off-
+  // screen window in and the spec can read back isVisible.
+  const minimumPrewarmedHoldMs = 60;
+  let timedOut = true;
+  while (performance.now() < deadline) {
+    if (isVisible === null && !window.isDestroyed() && window.isVisible()) {
+      isVisible = mark();
+    }
+    if (mode === "prewarmed") {
+      if (isVisible !== null && performance.now() - startedAt >= minimumPrewarmedHoldMs) {
+        timedOut = false;
+        break;
+      }
+    } else if (lastResizeAt > 0 && performance.now() - lastResizeAt >= stableMs) {
+      timedOut = false;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  ipcMain.off(TRAY_RESIZE_CHANNEL, probe);
+
+  const stableResize = lastResizeAt > 0 ? Math.round((lastResizeAt - t0) * 100) / 100 : null;
+  const finalContentHeight = !window.isDestroyed() ? window.getContentSize()[1] : null;
+
+  return {
+    mode,
+    windowCreated,
+    domReady,
+    didFinishLoad,
+    readyToShow,
+    isVisible,
+    firstResize,
+    stableResize,
+    finalContentHeight,
+    resizeCount,
+    timedOut
+  };
 }
 
 /**

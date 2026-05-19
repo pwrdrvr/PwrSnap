@@ -63,6 +63,8 @@ import {
   disposeTray,
   hideTrayPopoverForE2E,
   installTray,
+  measureTrayFirstPaintForE2E,
+  prewarmTrayWindow,
   showTrayPopoverForE2E
 } from "./tray";
 import { createMainWindow, findMainLibraryWindow } from "./window";
@@ -912,7 +914,25 @@ export function bootstrapApp(): void {
         // BrowserWindow + resize-channel plumbing the production
         // path uses; only the icon is bypassed.
         showTrayPopover: () => showTrayPopoverForE2E(),
-        hideTrayPopover: () => hideTrayPopoverForE2E()
+        hideTrayPopover: () => hideTrayPopoverForE2E(),
+        // Performance baseline + regression surface. Returns checkpoint
+        // deltas (ms relative to call) for the user-visible first-paint
+        // path: window construction, dom-ready, did-finish-load,
+        // ready-to-show, isVisible, first/stable renderer-resize IPC.
+        // Auto-detects mode from the live tray-window state — "cold"
+        // when no tray window exists, "prewarmed" when one is already
+        // hidden + sized from boot. Spec consumer: tray-first-paint.spec.ts.
+        measureTrayFirstPaint: (
+          opts?: Parameters<typeof measureTrayFirstPaintForE2E>[0]
+        ) => measureTrayFirstPaintForE2E(opts ?? {}),
+        // E2E only: opt in to the prewarm-at-boot optimization. In
+        // production this is done unconditionally from installTray()
+        // — but E2E skips installTray(), so the bridge has to drive it.
+        // Spec calls this before measure() to test the optimized path,
+        // skips it to test the cold path.
+        prewarmTrayPopover: () => {
+          prewarmTrayWindow();
+        }
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =
         testBridge;

@@ -38,6 +38,9 @@ describe("CaptureEnrichmentSchema", () => {
       latestRunId: null,
       status: null,
       ocrText: null,
+      suggestedTitle: null,
+      acceptedTitle: null,
+      titleAcceptedAt: null,
       suggestedDescription: null,
       acceptedDescription: null,
       descriptionAcceptedAt: null,
@@ -54,7 +57,29 @@ describe("CaptureEnrichmentSchema", () => {
         latestRunId: null,
         status: null,
         ocrText: null,
+        suggestedTitle: null,
+        acceptedTitle: null,
+        titleAcceptedAt: null,
         suggestedDescription: "x".repeat(2_001),
+        acceptedDescription: null,
+        descriptionAcceptedAt: null,
+        suggestedTags: [],
+        acceptedTags: []
+      })
+    ).toThrow();
+  });
+
+  test("rejects overlong titles", () => {
+    expect(() =>
+      CaptureEnrichmentSchema.parse({
+        captureId: "cap_1",
+        latestRunId: null,
+        status: null,
+        ocrText: null,
+        suggestedTitle: "x".repeat(121),
+        acceptedTitle: null,
+        titleAcceptedAt: null,
+        suggestedDescription: null,
         acceptedDescription: null,
         descriptionAcceptedAt: null,
         suggestedTags: [],

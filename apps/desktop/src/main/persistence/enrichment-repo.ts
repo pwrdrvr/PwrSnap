@@ -12,6 +12,9 @@ type EnrichmentRow = {
   latest_ai_run_id: string | null;
   status: CaptureEnrichment["status"];
   ocr_text: string | null;
+  suggested_title: string | null;
+  accepted_title: string | null;
+  title_accepted_at: string | null;
   suggested_description: string | null;
   accepted_description: string | null;
   description_accepted_at: string | null;
@@ -35,6 +38,9 @@ function emptyEnrichment(captureId: string): CaptureEnrichment {
     latestRunId: null,
     status: null,
     ocrText: null,
+    suggestedTitle: null,
+    acceptedTitle: null,
+    titleAcceptedAt: null,
     suggestedDescription: null,
     acceptedDescription: null,
     descriptionAcceptedAt: null,
@@ -82,6 +88,9 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
               capture_enrichments.ocr_text,
+              capture_enrichments.suggested_title,
+              capture_enrichments.accepted_title,
+              capture_enrichments.title_accepted_at,
               capture_enrichments.suggested_description,
               capture_enrichments.accepted_description,
               capture_enrichments.description_accepted_at
@@ -98,6 +107,9 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     latestRunId: row.latest_ai_run_id,
     status: row.status,
     ocrText: row.ocr_text,
+    suggestedTitle: row.suggested_title,
+    acceptedTitle: row.accepted_title,
+    titleAcceptedAt: row.title_accepted_at,
     suggestedDescription: row.suggested_description,
     acceptedDescription: row.accepted_description,
     descriptionAcceptedAt: row.description_accepted_at,
@@ -113,6 +125,7 @@ export function getEnrichmentSummaries(captureIds: string[]): CaptureEnrichmentS
     return {
       captureId,
       status: enrichment?.status ?? null,
+      acceptedTitle: enrichment?.acceptedTitle ?? null,
       acceptedDescription: enrichment?.acceptedDescription ?? null,
       acceptedTags: enrichment?.acceptedTags ?? [],
       suggestedTagCount: enrichment?.suggestedTags.filter((tag) => tag.accepted_at === null && tag.rejected_at === null).length ?? 0
@@ -176,19 +189,21 @@ export function storeCompletedEnrichment(params: {
 
     db.prepare(
       `INSERT INTO capture_enrichments (
-        capture_id, latest_ai_run_id, ocr_text, suggested_description, updated_at
+        capture_id, latest_ai_run_id, ocr_text, suggested_title, suggested_description, updated_at
       ) VALUES (
-        @captureId, @aiRunId, @ocrText, @suggestedDescription, datetime('now')
+        @captureId, @aiRunId, @ocrText, @suggestedTitle, @suggestedDescription, datetime('now')
       )
       ON CONFLICT(capture_id) DO UPDATE SET
         latest_ai_run_id = excluded.latest_ai_run_id,
         ocr_text = excluded.ocr_text,
+        suggested_title = excluded.suggested_title,
         suggested_description = excluded.suggested_description,
         updated_at = datetime('now')`
     ).run({
       captureId: params.captureId,
       aiRunId: params.aiRunId,
       ocrText: parsed.ocrText,
+      suggestedTitle: parsed.title || null,
       suggestedDescription: parsed.description || null
     });
 
@@ -237,6 +252,28 @@ export function acceptDescription(captureId: string, description: string): Captu
       description_accepted_at = excluded.description_accepted_at,
       updated_at = datetime('now')`
   ).run({ captureId, description: trimmed });
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+export function acceptTitle(captureId: string, title: string): CaptureEnrichment {
+  const trimmed = title.trim();
+  if (trimmed.length === 0) {
+    throw new Error("title must not be empty");
+  }
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO capture_enrichments (
+      capture_id, accepted_title, title_accepted_at, updated_at
+    ) VALUES (
+      @captureId, @title, datetime('now'), datetime('now')
+    )
+    ON CONFLICT(capture_id) DO UPDATE SET
+      accepted_title = excluded.accepted_title,
+      title_accepted_at = excluded.title_accepted_at,
+      updated_at = datetime('now')`
+  ).run({ captureId, title: trimmed });
   const enrichment = getCaptureEnrichment(captureId);
   if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
   return enrichment;

@@ -25,6 +25,9 @@ export const CaptureEnrichmentSchema = z.object({
   latestRunId: z.string().nullable(),
   status: AiRunStatusSchema.nullable(),
   ocrText: z.string().max(100_000).nullable(),
+  suggestedTitle: z.string().max(120).nullable(),
+  acceptedTitle: z.string().max(120).nullable(),
+  titleAcceptedAt: z.string().nullable(),
   suggestedDescription: z.string().max(2_000).nullable(),
   acceptedDescription: z.string().max(2_000).nullable(),
   descriptionAcceptedAt: z.string().nullable(),
@@ -36,6 +39,7 @@ export type CaptureEnrichment = z.infer<typeof CaptureEnrichmentSchema>;
 
 export const EnrichmentResultSchema = z.object({
   ocrText: z.string().max(100_000).default(""),
+  title: z.string().trim().max(120).default(""),
   description: z.string().trim().max(2_000).default(""),
   filenameStem: z.string().trim().max(120).optional(),
   textAnchors: z.array(z.string().trim().min(1).max(120)).max(5).optional(),
@@ -55,6 +59,11 @@ export type EnrichmentResult = z.infer<typeof EnrichmentResultSchema>;
 export const AcceptDescriptionRequestSchema = z.object({
   captureId: z.string().min(1),
   description: z.string().trim().min(1).max(2_000)
+});
+
+export const AcceptTitleRequestSchema = z.object({
+  captureId: z.string().min(1),
+  title: z.string().trim().min(1).max(120)
 });
 
 export const AcceptTagRequestSchema = z.object({

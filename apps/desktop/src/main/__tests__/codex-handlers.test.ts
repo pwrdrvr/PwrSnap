@@ -81,6 +81,7 @@ function unregisterCodexHandlers(): void {
     "codex:enrich",
     "codex:enrichment",
     "codex:enrichmentsForCaptures",
+    "codex:acceptTitle",
     "codex:acceptDescription",
     "codex:acceptTag",
     "codex:rejectTag",
@@ -115,6 +116,7 @@ class FakeCodexClient {
       userAgent: "codex-test",
       result: {
         ocrText: "Visible text",
+        title: "",
         description: "A screenshot with visible text.",
         tags: [{ label: "text", confidence: 0.8 }]
       }
@@ -161,6 +163,7 @@ describe("Codex handlers", () => {
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0001_init.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
+    testDb.exec(migration("0007_ai_enrichment_title.sql"));
     await seedCapture();
   });
 

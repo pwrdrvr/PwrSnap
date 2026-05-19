@@ -596,6 +596,7 @@ export type AiRunSnapshot = {
 export type CaptureEnrichmentSummary = {
   captureId: string;
   status: AiRunStatus | null;
+  acceptedTitle: string | null;
   acceptedDescription: string | null;
   acceptedTags: string[];
   suggestedTagCount: number;
@@ -929,6 +930,10 @@ export type Commands = {
   "codex:enrichmentsForCaptures": {
     req: { captureIds: string[] };
     res: CaptureEnrichmentSummary[];
+  };
+  "codex:acceptTitle": {
+    req: { captureId: string; title: string };
+    res: CaptureEnrichment;
   };
   "codex:acceptDescription": {
     req: { captureId: string; description: string };

@@ -1,6 +1,7 @@
 import { BrowserWindow } from "electron";
 import {
   AcceptDescriptionRequestSchema,
+  AcceptTitleRequestSchema,
   AcceptTagRequestSchema,
   EVENT_CHANNELS,
   RejectTagRequestSchema,
@@ -29,6 +30,7 @@ import {
 import { getCaptureById } from "../persistence/captures-repo";
 import {
   acceptDescription,
+  acceptTitle,
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
@@ -181,6 +183,20 @@ export function registerCodexHandlers(params?: {
 
   bus.register("codex:enrichmentsForCaptures", async (req) => {
     return ok(getEnrichmentSummaries(req.captureIds));
+  });
+
+  bus.register("codex:acceptTitle", async (req) => {
+    const parsed = AcceptTitleRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return validationError("invalid_request", parsed.error.message);
+    }
+    try {
+      const enrichment = acceptTitle(parsed.data.captureId, parsed.data.title);
+      broadcastAiRunUpdated({ run: null, enrichment });
+      return ok(enrichment);
+    } catch (error) {
+      return mapError(error);
+    }
   });
 
   bus.register("codex:acceptDescription", async (req) => {

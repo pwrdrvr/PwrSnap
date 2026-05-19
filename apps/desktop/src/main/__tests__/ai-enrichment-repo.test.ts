@@ -13,6 +13,7 @@ const { cancelAiRun, completeAiRun, createAiRun, failAiRun } = await import(
 );
 const {
   acceptDescription,
+  acceptTitle,
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
@@ -48,6 +49,7 @@ describe("AI enrichment repositories", () => {
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0001_init.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
+    testDb.exec(migration("0007_ai_enrichment_title.sql"));
     seedCapture();
   });
 
@@ -62,6 +64,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: run.id,
       result: {
         ocrText: "Build passed",
+        title: "",
         description: "CI dashboard with a successful build",
         tags: [
           { label: "CI", confidence: 0.9 },
@@ -80,7 +83,7 @@ describe("AI enrichment repositories", () => {
     storeCompletedEnrichment({
       captureId: "cap_1",
       aiRunId: run.id,
-      result: { ocrText: "", description: "Original suggestion", tags: [] }
+      result: { ocrText: "", title: "", description: "Original suggestion", tags: [] }
     });
 
     const enrichment = acceptDescription("cap_1", "Edited by user");
@@ -90,6 +93,28 @@ describe("AI enrichment repositories", () => {
     expect(enrichment.descriptionAcceptedAt).not.toBeNull();
   });
 
+  test("stores and accepts a separate title", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "",
+        title: "Codex draft headline",
+        description: "Codex draft description body",
+        tags: []
+      }
+    });
+
+    const enrichment = acceptTitle("cap_1", "User edited headline");
+
+    expect(enrichment.suggestedTitle).toBe("Codex draft headline");
+    expect(enrichment.acceptedTitle).toBe("User edited headline");
+    expect(enrichment.titleAcceptedAt).not.toBeNull();
+    expect(enrichment.suggestedDescription).toBe("Codex draft description body");
+    expect(enrichment.acceptedDescription).toBeNull();
+  });
+
   test("accepts a suggested tag once even when suggested twice", () => {
     const run = createAiRun({ captureId: "cap_1" });
     const first = storeCompletedEnrichment({
@@ -97,6 +122,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: run.id,
       result: {
         ocrText: "",
+        title: "",
         description: "",
         tags: [
           { label: "Deploy", confidence: 0.9 },
@@ -121,7 +147,7 @@ describe("AI enrichment repositories", () => {
       storeCompletedEnrichment({
         captureId: "cap_1",
         aiRunId: run.id,
-        result: { ocrText: "x", description: "x", tags: [] }
+        result: { ocrText: "x", title: "", description: "x", tags: [] }
       })
     ).toThrow(/deleted/);
   });
@@ -156,6 +182,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: newer.id,
       result: {
         ocrText: "new text",
+        title: "",
         description: "Newer suggestion",
         tags: [{ label: "new", confidence: 0.9 }]
       }
@@ -165,6 +192,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: older.id,
       result: {
         ocrText: "old text",
+        title: "",
         description: "Older suggestion",
         tags: [{ label: "old", confidence: 0.9 }]
       }
@@ -185,7 +213,7 @@ describe("AI enrichment repositories", () => {
     const enrichment = storeCompletedEnrichment({
       captureId: "cap_1",
       aiRunId: run.id,
-      result: { ocrText: "late", description: "Late completion", tags: [] }
+      result: { ocrText: "late", title: "", description: "Late completion", tags: [] }
     });
 
     expect(enrichment.latestRunId).toBe(run.id);
@@ -202,6 +230,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: first.id,
       result: {
         ocrText: "",
+        title: "",
         description: "First suggestion",
         tags: [{ label: "stale", confidence: 0.9 }]
       }
@@ -215,6 +244,7 @@ describe("AI enrichment repositories", () => {
       aiRunId: second.id,
       result: {
         ocrText: "",
+        title: "",
         description: "Second suggestion",
         tags: [{ label: "fresh", confidence: 0.8 }]
       }
@@ -229,7 +259,7 @@ describe("AI enrichment repositories", () => {
     const enrichment = storeCompletedEnrichment({
       captureId: "cap_1",
       aiRunId: run.id,
-      result: { ocrText: "secret text", description: "desc", tags: [{ label: "bug", confidence: 1 }] }
+      result: { ocrText: "secret text", title: "", description: "desc", tags: [{ label: "bug", confidence: 1 }] }
     });
     acceptSuggestedTag("cap_1", enrichment.suggestedTags[0]!.id!);
 
@@ -237,6 +267,7 @@ describe("AI enrichment repositories", () => {
       {
         captureId: "cap_1",
         status: "queued",
+        acceptedTitle: null,
         acceptedDescription: null,
         acceptedTags: ["bug"],
         suggestedTagCount: 0
@@ -249,7 +280,7 @@ describe("AI enrichment repositories", () => {
     storeCompletedEnrichment({
       captureId: "cap_1",
       aiRunId: run.id,
-      result: { ocrText: "Build passed", description: "desc", tags: [{ label: "ci", confidence: 1 }] }
+      result: { ocrText: "Build passed", title: "", description: "desc", tags: [{ label: "ci", confidence: 1 }] }
     });
 
     testDb.prepare("DELETE FROM captures WHERE id = ?").run("cap_1");

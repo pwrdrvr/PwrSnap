@@ -24,7 +24,8 @@ import {
   type CaptureRecord,
   type FloatOverEvent,
   type RenderPreset,
-  type Settings
+  type Settings,
+  type SettingsChangedEvent
 } from "@pwrsnap/shared";
 import { FloatOver, type FloatOverExportState } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
@@ -212,7 +213,7 @@ export function FloatOverHost(): React.ReactElement {
 
   useEffect(() => {
     const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.settingsChanged, (payload) => {
-      const settings = payload as Settings;
+      const { settings } = payload as SettingsChangedEvent;
       setState((current) => {
         if (current.kind !== "loaded") return current;
         return { ...current, settings };

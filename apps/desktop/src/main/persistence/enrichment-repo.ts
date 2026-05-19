@@ -43,15 +43,17 @@ function emptyEnrichment(captureId: string): CaptureEnrichment {
   };
 }
 
-function readTagSuggestions(captureId: string): TagSuggestionRow[] {
+function readTagSuggestions(captureId: string, latestRunId: string | null): TagSuggestionRow[] {
+  if (latestRunId === null) return [];
   return getDb()
     .prepare(
       `SELECT id, label, confidence, accepted_at, rejected_at
        FROM enrichment_tag_suggestions
        WHERE capture_id = ?
+         AND ai_run_id = ?
        ORDER BY accepted_at IS NOT NULL DESC, confidence DESC, created_at ASC`
     )
-    .all(captureId) as TagSuggestionRow[];
+    .all(captureId, latestRunId) as TagSuggestionRow[];
 }
 
 function readAcceptedTags(captureId: string): string[] {
@@ -99,7 +101,7 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     suggestedDescription: row.suggested_description,
     acceptedDescription: row.accepted_description,
     descriptionAcceptedAt: row.description_accepted_at,
-    suggestedTags: readTagSuggestions(captureId),
+    suggestedTags: readTagSuggestions(captureId, row.latest_ai_run_id),
     acceptedTags: readAcceptedTags(captureId)
   });
 }
@@ -144,12 +146,32 @@ export function storeCompletedEnrichment(params: {
 }): CaptureEnrichment {
   const parsed = EnrichmentResultSchema.parse(params.result);
   const db = getDb();
-  const tx = db.transaction(() => {
+  const tx = db.transaction((): void => {
     const capture = db
       .prepare("SELECT id FROM captures WHERE id = ? AND deleted_at IS NULL")
       .get(params.captureId) as { id: string } | undefined;
     if (!capture) {
       throw new Error(`capture not found or deleted: ${params.captureId}`);
+    }
+
+    const activeRun = db
+      .prepare(
+        `SELECT capture_enrichments.latest_ai_run_id, ai_runs.status
+         FROM capture_enrichments
+         LEFT JOIN ai_runs ON ai_runs.id = @aiRunId
+         WHERE capture_enrichments.capture_id = @captureId`
+      )
+      .get({ captureId: params.captureId, aiRunId: params.aiRunId }) as
+      | { latest_ai_run_id: string | null; status: string | null }
+      | undefined;
+    if (
+      activeRun !== undefined &&
+      (activeRun.latest_ai_run_id !== params.aiRunId ||
+        activeRun.status === "cancelled" ||
+        activeRun.status === "failed" ||
+        activeRun.status === "completed")
+    ) {
+      return;
     }
 
     db.prepare(
@@ -227,9 +249,16 @@ export function acceptSuggestedTag(captureId: string, tagId: string): CaptureEnr
       .prepare(
         `SELECT id, ai_run_id, label, normalized_label
          FROM enrichment_tag_suggestions
-         WHERE id = ? AND capture_id = ? AND rejected_at IS NULL`
+         WHERE id = ?
+           AND capture_id = ?
+           AND rejected_at IS NULL
+           AND ai_run_id = (
+             SELECT latest_ai_run_id
+             FROM capture_enrichments
+             WHERE capture_id = ?
+           )`
       )
-      .get(tagId, captureId) as
+      .get(tagId, captureId, captureId) as
       | { id: string; ai_run_id: string; label: string; normalized_label: string }
       | undefined;
     if (!suggestion) throw new Error(`tag suggestion not found: ${tagId}`);

@@ -1,12 +1,25 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureEnrichment } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type CaptureEnrichment, type CaptureRecord, type Settings } from "@pwrsnap/shared";
 import { FloatOver, type FloatOverAsset } from "../FloatOver";
+import { FloatOverHost } from "../FloatOverHost";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
     true;
+  (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+    class ResizeObserver {
+      observe(): void {
+        return;
+      }
+      unobserve(): void {
+        return;
+      }
+      disconnect(): void {
+        return;
+      }
+    } as unknown as typeof ResizeObserver;
 });
 
 let container: HTMLDivElement | null = null;
@@ -27,6 +40,76 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
     ],
     acceptedTags: [],
     ...patch
+  };
+}
+
+const baseSettings: Settings = {
+  schemaVersion: 1,
+  codex: { mode: "auto", pinnedPath: "", profile: "" },
+  ai: { enabled: false, consentAcceptedAt: null },
+  hotkeys: {
+    quickCapture: "CommandOrControl+Shift+C",
+    region: "",
+    window: "",
+    videoCapture: "CommandOrControl+Alt+C"
+  },
+  experimental: { v2FileFormat: false },
+  general: { developerMode: false },
+  appearance: { theme: "system" },
+  updates: { channel: "latest" },
+  recording: {
+    includeSystemAudio: false,
+    includeMicrophone: false,
+    lastRoutedPermissionFingerprint: ""
+  }
+};
+
+const imageRecord: CaptureRecord = {
+  id: "cap_1",
+  kind: "image",
+  captured_at: "2026-05-15T18:24:00.000Z",
+  src_path: "/tmp/cap_1.png",
+  width_px: 1200,
+  height_px: 800,
+  device_pixel_ratio: 2,
+  byte_size: 1000,
+  sha256: "sha_cap_1",
+  source_app_bundle_id: "com.example.App",
+  source_app_name: "Example",
+  overlays_version: 0,
+  deleted_at: null,
+  video: null
+};
+
+type EventHandler = (payload: unknown) => void;
+
+function installHostApi(): {
+  pushEvent: (channel: string, payload: unknown) => void;
+} {
+  const subscribers = new Map<string, Set<EventHandler>>();
+  window.pwrsnapApi = {
+    dispatch: vi.fn(async (name: string) => {
+      if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+      return { ok: true, value: undefined };
+    }),
+    on: (channel: string, handler: EventHandler) => {
+      const set = subscribers.get(channel) ?? new Set<EventHandler>();
+      set.add(handler);
+      subscribers.set(channel, set);
+      return () => {
+        set.delete(handler);
+      };
+    },
+    requestFloatOverResize: vi.fn(),
+    startCaptureDrag: vi.fn()
+  } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+  return {
+    pushEvent(channel, payload) {
+      for (const handler of subscribers.get(channel) ?? []) {
+        handler(payload);
+      }
+    }
   };
 }
 
@@ -194,6 +277,40 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__preview video")).toBeNull();
     expect(el.querySelectorAll(".fo__copy > *").length).toBe(3);
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Snap captured");
+  });
+});
+
+describe("FloatOverHost", () => {
+  test("reads settings from settings-change event payload", async () => {
+    const api = installHostApi();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+    expect(container.textContent).toContain("Enable Codex");
+
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.settingsChanged, {
+        settings: {
+          ...baseSettings,
+          ai: { enabled: true, consentAcceptedAt: "2026-05-19T12:00:00.000Z" }
+        },
+        secrets: {}
+      });
+    });
+
+    expect(container.textContent).toContain("Codex has no suggestion yet");
+    expect(container.textContent).not.toContain("Enable Codex");
   });
 });
 

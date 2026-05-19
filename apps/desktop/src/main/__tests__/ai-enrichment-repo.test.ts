@@ -8,7 +8,9 @@ vi.mock("../persistence/db", () => ({
   getDb: () => testDb
 }));
 
-const { createAiRun, failAiRun } = await import("../persistence/ai-runs-repo");
+const { cancelAiRun, completeAiRun, createAiRun, failAiRun } = await import(
+  "../persistence/ai-runs-repo"
+);
 const {
   acceptDescription,
   acceptSuggestedTag,
@@ -141,6 +143,85 @@ describe("AI enrichment repositories", () => {
     expect(enrichment.latestRunId).toBe(run.id);
     expect(enrichment.status).toBe("queued");
     expect(enrichment.ocrText).toBeNull();
+  });
+
+  test("stale completion does not overwrite the latest run result", () => {
+    const older = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", older.id);
+    const newer = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", newer.id);
+
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: newer.id,
+      result: {
+        ocrText: "new text",
+        description: "Newer suggestion",
+        tags: [{ label: "new", confidence: 0.9 }]
+      }
+    });
+    const afterStale = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: older.id,
+      result: {
+        ocrText: "old text",
+        description: "Older suggestion",
+        tags: [{ label: "old", confidence: 0.9 }]
+      }
+    });
+
+    expect(afterStale.latestRunId).toBe(newer.id);
+    expect(afterStale.ocrText).toBe("new text");
+    expect(afterStale.suggestedDescription).toBe("Newer suggestion");
+    expect(afterStale.suggestedTags.map((tag) => tag.label)).toEqual(["new"]);
+  });
+
+  test("cancelled latest run cannot store a late completion", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", run.id);
+    cancelAiRun(run.id);
+    completeAiRun(run.id, { ocrText: "late", description: "late", tags: [] }, 10);
+
+    const enrichment = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: { ocrText: "late", description: "Late completion", tags: [] }
+    });
+
+    expect(enrichment.latestRunId).toBe(run.id);
+    expect(enrichment.status).toBe("cancelled");
+    expect(enrichment.ocrText).toBeNull();
+    expect(enrichment.suggestedDescription).toBeNull();
+  });
+
+  test("only latest run suggestions are presented and accepted", () => {
+    const first = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", first.id);
+    const firstEnrichment = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: first.id,
+      result: {
+        ocrText: "",
+        description: "First suggestion",
+        tags: [{ label: "stale", confidence: 0.9 }]
+      }
+    });
+    const staleTagId = firstEnrichment.suggestedTags[0]!.id!;
+
+    const second = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", second.id);
+    const latest = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: second.id,
+      result: {
+        ocrText: "",
+        description: "Second suggestion",
+        tags: [{ label: "fresh", confidence: 0.8 }]
+      }
+    });
+
+    expect(latest.suggestedTags.map((tag) => tag.label)).toEqual(["fresh"]);
+    expect(() => acceptSuggestedTag("cap_1", staleTagId)).toThrow(/tag suggestion not found/);
   });
 
   test("summaries are batch-friendly and compact", () => {

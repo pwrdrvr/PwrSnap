@@ -91,7 +91,7 @@ export function completeAiRun(
          response_json = @responseJson,
          latency_ms = @latencyMs,
          completed_at = datetime('now')
-     WHERE id = @id`
+     WHERE id = @id AND status IN ('queued', 'running')`
   ).run({ id, responseJson: JSON.stringify(response), latencyMs });
   return getAiRun(id);
 }

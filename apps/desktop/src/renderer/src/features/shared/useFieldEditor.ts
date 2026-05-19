@@ -93,37 +93,32 @@ export function useFieldEditor(input: UseFieldEditorInput): UseFieldEditorResult
   }, [input.captureId]);
 
   // Sync effect: fires when the server-side `accepted` or `suggested`
-  // changes within the same capture. Reads `origin` via ref so user
-  // typing doesn't retrigger it.
+  // changes within the same capture, OR when the captureId-reset above
+  // ran against stale parent state (parent fetches enrichment for the
+  // new capture asynchronously, so the reset's initial snapshot may
+  // carry the previous capture's data until the fetch resolves).
+  //
+  // Reads `origin` via ref so user typing doesn't retrigger it. When
+  // the user is mid-edit (origin === "manual"), we deliberately do
+  // nothing — the typed value wins until they blur or navigate.
+  //
+  // Earlier versions of this effect had three branches that each
+  // covered a specific transition (accepted-arrives, both-empty,
+  // suggestion-arrives), each gated on the prior origin. That's how
+  // the "filename leaks from the previous capture in Reel mode" bug
+  // landed — the `accepted → suggested` and `accepted → empty`
+  // transitions weren't covered, because the gating origin only
+  // matched "suggested" or "empty". Now: if the user isn't actively
+  // editing, mirror whatever the server says, derived the same way
+  // as the initial state.
   useEffect(() => {
-    const currentOrigin = originRef.current;
-    if (input.accepted.length > 0 && currentOrigin !== "manual") {
-      setValue(input.accepted);
-      setOrigin("accepted");
-      originRef.current = "accepted";
-      previewedSuggestionRef.current = input.suggested;
-      return;
-    }
-    if (input.accepted.length === 0 && input.suggested.length === 0) {
-      if (currentOrigin === "suggested") {
-        setValue("");
-        setOrigin("empty");
-        originRef.current = "empty";
-      }
-      previewedSuggestionRef.current = "";
-      return;
-    }
-    if (
-      input.accepted.length === 0 &&
-      input.suggested.length > 0 &&
-      previewedSuggestionRef.current !== input.suggested &&
-      (currentOrigin === "suggested" || currentOrigin === "empty")
-    ) {
-      setValue(input.suggested);
-      setOrigin("suggested");
-      originRef.current = "suggested";
-      previewedSuggestionRef.current = input.suggested;
-    }
+    if (originRef.current === "manual") return;
+    const serverValue = input.accepted.length > 0 ? input.accepted : input.suggested;
+    const serverOrigin = originFromInput(input.accepted, input.suggested);
+    setValue(serverValue);
+    setOrigin(serverOrigin);
+    originRef.current = serverOrigin;
+    previewedSuggestionRef.current = input.suggested;
   }, [input.accepted, input.suggested]);
 
   const handleEdit = useCallback((next: string): void => {

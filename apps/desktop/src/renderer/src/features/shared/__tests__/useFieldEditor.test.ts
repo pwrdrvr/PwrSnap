@@ -176,6 +176,66 @@ describe("useFieldEditor", () => {
     });
   });
 
+  test("accepted-then-suggested transition (stale parent state lands first, fresh data sync) — Reel-mode regression", async () => {
+    // Reproduces the "filename leaks from previous capture" bug: the
+    // parent dispatches `codex:enrichment` for the new captureId
+    // asynchronously, so the captureId-reset effect snapshots the
+    // previous capture's accepted value. Then the fresh data arrives
+    // for the new capture, which has only a suggested value (no
+    // accepted yet). The sync effect must transition from a
+    // stale-accepted state to the fresh suggested.
+    const probe = await mount({
+      captureId: "cap_a",
+      accepted: "cap-a-filename",
+      suggested: "cap-a-filename"
+    });
+    expect(probe.snapshots[probe.snapshots.length - 1]).toEqual({
+      value: "cap-a-filename",
+      origin: "accepted"
+    });
+
+    // Navigation: captureId flips first, parent still has cap_a's
+    // enrichment in state.
+    await probe.rerender({
+      captureId: "cap_b",
+      accepted: "cap-a-filename",
+      suggested: "cap-a-filename"
+    });
+    // Then the fetch resolves with cap_b's enrichment — empty accepted,
+    // fresh suggestion.
+    await probe.rerender({
+      captureId: "cap_b",
+      accepted: "",
+      suggested: "cap-b-filename"
+    });
+    expect(probe.snapshots[probe.snapshots.length - 1]).toEqual({
+      value: "cap-b-filename",
+      origin: "suggested"
+    });
+  });
+
+  test("accepted-then-empty transition resets to empty (no leak when new capture lacks the field)", async () => {
+    const probe = await mount({
+      captureId: "cap_a",
+      accepted: "cap-a-filename",
+      suggested: ""
+    });
+    expect(probe.snapshots[probe.snapshots.length - 1].origin).toBe("accepted");
+
+    // Navigate to a capture where both accepted and suggested are
+    // empty — e.g., a freshly-imported capture with no Codex run.
+    await probe.rerender({
+      captureId: "cap_b",
+      accepted: "cap-a-filename",
+      suggested: ""
+    });
+    await probe.rerender({ captureId: "cap_b", accepted: "", suggested: "" });
+    expect(probe.snapshots[probe.snapshots.length - 1]).toEqual({
+      value: "",
+      origin: "empty"
+    });
+  });
+
   test("commit() flips to accepted optimistically before the server roundtrip", async () => {
     const probe = await mount({
       captureId: "cap_1",

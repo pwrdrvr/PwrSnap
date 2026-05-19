@@ -317,14 +317,16 @@ export function installTray(): Tray {
   // waiting for the initial measurement to settle before the
   // BrowserWindow snaps from its constructor frame (440×440) to the
   // measured content height. With pre-warm, the window is already
-  // sized + painted (off-screen, hidden) by the time the user clicks
-  // — `toggleTrayWindow` just calls `showInactive()` + `focus()`.
+  // sized + measured (off-screen, hidden) by the time the user
+  // clicks — `toggleTrayWindow` just calls `showInactive()` + `focus()`.
   //
-  // Cost: one extra Chromium renderer process resident from boot
-  // (~50-100MB). The tray is the most-clicked surface in the menubar
-  // UX, so this trade is worth it. Same-origin process-per-site
-  // sharing means the library + selectors + tray usually share one
-  // renderer process anyway, so the marginal cost is small.
+  // Cost: the tray BrowserWindow stays resident from boot. Under
+  // Chromium's process-per-site default the tray, library, and
+  // region selectors all load the same file:// origin and share one
+  // renderer process — so the marginal memory cost is the tray
+  // window's display surface, not a separate renderer process. The
+  // tray is the most-clicked surface in the menubar UX; this trade
+  // pays back on the first click and every click after.
   //
   // We deliberately don't `show()` here — the window stays
   // off-screen + hidden. The renderer's `useLayoutEffect` posts the
@@ -341,9 +343,16 @@ export function installTray(): Tray {
  * to call from `installTray()` AND from the E2E bridge before
  * `measureTrayFirstPaintForE2E`. The window is created in its hidden
  * state via `createTrayWindow`, attached to the resize channel, and
- * left alone — Chromium spawns its renderer, loads the bundle,
- * paints the first frame, and the resize IPC sizes us correctly,
- * all before the user's first click.
+ * left alone: Chromium spawns the renderer, loads the bundle, runs
+ * the initial React render + `useLayoutEffect` measurement, and the
+ * `tray:resize` IPC sizes the (hidden) window to its content height
+ * — all before the user's first click. The first user-visible paint
+ * happens at `showInactive()` time on click, but it lands at the
+ * already-correct size, so no resize flicker is visible.
+ *
+ * Returns the window so E2E callers can attach test-only listeners
+ * before the renderer mounts; production callers (just `installTray`)
+ * discard the return value.
  */
 export function prewarmTrayWindow(): BrowserWindow {
   wireTrayResizeChannel();
@@ -518,12 +527,26 @@ export async function measureTrayFirstPaintForE2E(options: {
   const window = ensureTrayWindow();
   if (!alreadyExists) {
     windowCreated = mark();
-    window.webContents.once("dom-ready", () => {
+    // `ensureTrayWindow` calls `createTrayWindow` which calls
+    // `loadRenderer` synchronously — for a same-tick file:// load,
+    // `dom-ready` / `did-finish-load` could fire before we attach
+    // listeners on the next microtask. Check the load state first
+    // and mark immediately if we already missed the event; otherwise
+    // attach the `once` listener as usual.
+    if (window.webContents.isLoadingMainFrame()) {
+      window.webContents.once("dom-ready", () => {
+        domReady = mark();
+      });
+      window.webContents.once("did-finish-load", () => {
+        didFinishLoad = mark();
+      });
+    } else {
+      // Already past load — both events fired during construction.
+      // Best-effort: mark them at the same instant so spec consumers
+      // see a consistent "first paint landed sub-listener-attach" value.
       domReady = mark();
-    });
-    window.webContents.once("did-finish-load", () => {
       didFinishLoad = mark();
-    });
+    }
     window.once("ready-to-show", () => {
       readyToShow = mark();
     });

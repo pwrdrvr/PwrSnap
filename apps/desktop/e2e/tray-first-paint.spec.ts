@@ -190,11 +190,18 @@ test.describe("tray popover first-paint baseline", () => {
   // story), so the measurement isn't meaningful there.
   test.skip(!isMac, "tray popover first-paint measurement is macOS-only");
 
+  // Each scenario carries its expected popover height range so the
+  // hard-floor assertion below can reject the constructor-frame
+  // regression (440×440 stuck) specifically — not just absurdly small
+  // values. The 440 case is what the inline-block measurement
+  // machinery was added to defeat; a regression that re-introduced
+  // it would otherwise paint a popover too short or too tall by ~150
+  // px and still pass a generic `> 100` floor.
   for (const scenario of [
-    { label: "cold | empty library", seed: false, prewarm: false },
-    { label: "cold | 1 seeded capture", seed: true, prewarm: false },
-    { label: "prewarmed | empty library", seed: false, prewarm: true },
-    { label: "prewarmed | 1 seeded capture", seed: true, prewarm: true }
+    { label: "cold | empty library", seed: false, prewarm: false, minHeight: 200, maxHeight: 320 },
+    { label: "cold | 1 seeded capture", seed: true, prewarm: false, minHeight: 420, maxHeight: 560 },
+    { label: "prewarmed | empty library", seed: false, prewarm: true, minHeight: 200, maxHeight: 320 },
+    { label: "prewarmed | 1 seeded capture", seed: true, prewarm: true, minHeight: 420, maxHeight: 560 }
   ] as const) {
     test(`${scenario.label}: first click → painted (×${ITERATIONS} cold launches)`, async () => {
       test.setTimeout(180_000);
@@ -290,11 +297,29 @@ test.describe("tray popover first-paint baseline", () => {
         if (r.mode === "cold" && r.firstResize === null) {
           throw new Error(`run ${i + 1}: cold renderer never posted a resize event`);
         }
-        // Both modes: the popover must end up at a real measured
-        // height, not the constructor frame (440) or the empty default.
-        if (r.finalContentHeight === null || r.finalContentHeight < 100) {
+        // Both modes: the popover must land inside the scenario's
+        // expected height window. Specifically rules out the 440×440
+        // constructor-frame regression (would land at height=440 if
+        // the renderer's resize never took effect) — a plain `> 100`
+        // floor would PASS for that bug, defeating the spec.
+        if (r.finalContentHeight === null) {
+          throw new Error(`run ${i + 1}: tray popover content height is null`);
+        }
+        if (r.finalContentHeight === 440) {
           throw new Error(
-            `run ${i + 1}: tray popover content height suspect (${r.finalContentHeight})`
+            `run ${i + 1}: tray popover stuck at constructor frame 440 — ` +
+              `the renderer's resize IPC didn't size the window (regression of the ` +
+              `setMinimumSize(0,0) + inline-block measurement machinery)`
+          );
+        }
+        if (
+          r.finalContentHeight < scenario.minHeight ||
+          r.finalContentHeight > scenario.maxHeight
+        ) {
+          throw new Error(
+            `run ${i + 1}: tray popover height ${r.finalContentHeight} ` +
+              `outside expected range [${scenario.minHeight}, ${scenario.maxHeight}] ` +
+              `for scenario "${scenario.label}"`
           );
         }
       }

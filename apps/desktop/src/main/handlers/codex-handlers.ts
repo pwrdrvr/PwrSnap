@@ -176,6 +176,7 @@ export function registerCodexHandlers(params?: {
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
+      settingsReader,
       ctx,
       clientFactory
     });
@@ -285,6 +286,13 @@ async function runCaptureEnrichment(params: {
   sourcePath: string;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
+  /**
+   * Re-read just before the result is persisted so a `auto-accept`
+   * toggle the user flipped DURING the run is honored — not the
+   * value captured at enqueue. Reading at completion matches what
+   * the float-over checkbox visibly promises.
+   */
+  settingsReader: SettingsReader;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
 }): Promise<void> {
@@ -338,10 +346,29 @@ async function runCaptureEnrichment(params: {
     });
 
     const latencyMs = Math.round(performance.now() - startedAt);
+    // Read settings at completion (not at enqueue) so the auto-accept
+    // checkbox the user just toggled in the float-over toast wins over
+    // whatever was set when the capture happened. Soft-fail: if the
+    // read errors, fall back to "don't auto-accept" — the user still
+    // sees the suggestion in the toast and can click Use.
+    let autoAccept = false;
+    try {
+      const settings = await params.settingsReader();
+      autoAccept =
+        settings.ai.enabled &&
+        settings.ai.consentAcceptedAt !== null &&
+        settings.ai.autoAcceptSuggestions === true;
+    } catch (error) {
+      log.warn("settings read failed during enrichment completion", {
+        captureId: params.captureId,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
     storeCompletedEnrichment({
       captureId: params.captureId,
       aiRunId: params.runId,
-      result: response.result
+      result: response.result,
+      autoAccept
     });
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({

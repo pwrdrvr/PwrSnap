@@ -434,6 +434,12 @@ export type Settings = {
     enabled: boolean;
     /** ISO-8601; null until the user accepts the AI consent modal. */
     consentAcceptedAt: string | null;
+    /** When true, completed Codex enrichments are promoted from
+     *  `suggested_*` to `accepted_*` automatically — the user doesn't
+     *  have to click "Use draft" in the float-over toast. Off by
+     *  default; the float-over surfaces an inline checkbox so users
+     *  can flip the policy without leaving the capture flow. */
+    autoAcceptSuggestions: boolean;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,

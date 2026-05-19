@@ -309,6 +309,88 @@ describe("AI enrichment repositories", () => {
     expect(() => addUserTag("cap_missing", "Whatever")).toThrow(/not found or deleted/);
   });
 
+  test("storeCompletedEnrichment with autoAccept promotes suggestions and top tags", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    const enrichment = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "Build passed",
+        title: "Deploy succeeded",
+        description: "CI dashboard with a green deploy badge.",
+        tags: [
+          { label: "ci", confidence: 0.95 },
+          { label: "deploy", confidence: 0.9 },
+          { label: "dashboard", confidence: 0.85 }
+        ]
+      },
+      autoAccept: true
+    });
+
+    expect(enrichment.acceptedTitle).toBe("Deploy succeeded");
+    expect(enrichment.acceptedDescription).toBe("CI dashboard with a green deploy badge.");
+    expect(enrichment.titleAcceptedAt).not.toBeNull();
+    expect(enrichment.descriptionAcceptedAt).not.toBeNull();
+    // Top 2 tags promoted; the third stays as a pending suggestion.
+    expect(enrichment.acceptedTags).toEqual(["ci", "deploy"]);
+    expect(
+      enrichment.suggestedTags.filter(
+        (tag) => tag.accepted_at === null && tag.rejected_at === null
+      ).map((tag) => tag.label)
+    ).toEqual(["dashboard"]);
+  });
+
+  test("autoAccept does NOT overwrite an existing accepted_title or accepted_description", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: { ocrText: "", title: "Old draft", description: "Old body", tags: [] }
+    });
+    // User-typed values in between Codex runs.
+    acceptTitle("cap_1", "User-edited title");
+    acceptDescription("cap_1", "User-edited description");
+
+    const newRun = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", newRun.id);
+    const after = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: newRun.id,
+      result: {
+        ocrText: "",
+        title: "Fresh codex headline",
+        description: "Fresh codex body",
+        tags: []
+      },
+      autoAccept: true
+    });
+
+    expect(after.acceptedTitle).toBe("User-edited title");
+    expect(after.acceptedDescription).toBe("User-edited description");
+    expect(after.suggestedTitle).toBe("Fresh codex headline");
+    expect(after.suggestedDescription).toBe("Fresh codex body");
+  });
+
+  test("autoAccept off (default) leaves accepted_* untouched", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    const enrichment = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "",
+        title: "Draft title",
+        description: "Draft body",
+        tags: [{ label: "ci", confidence: 1 }]
+      }
+    });
+
+    expect(enrichment.suggestedTitle).toBe("Draft title");
+    expect(enrichment.suggestedDescription).toBe("Draft body");
+    expect(enrichment.acceptedTitle).toBeNull();
+    expect(enrichment.acceptedDescription).toBeNull();
+    expect(enrichment.acceptedTags).toEqual([]);
+  });
+
   test("getTopUserTags ranks accepted content tags by usage", () => {
     seedCapture("cap_2");
     seedCapture("cap_3");

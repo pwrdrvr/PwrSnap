@@ -166,6 +166,15 @@ export function storeCompletedEnrichment(params: {
   captureId: string;
   aiRunId: string;
   result: EnrichmentResult;
+  /**
+   * When true, the function also promotes the Codex draft into the
+   * accepted fields immediately — title + description + the top 2
+   * tag suggestions — so a user with auto-accept on doesn't need to
+   * click "Use draft" before dismissing the float-over toast. Skipped
+   * for any field that already has an accepted value so we don't
+   * clobber user edits.
+   */
+  autoAccept?: boolean;
 }): CaptureEnrichment {
   const parsed = EnrichmentResultSchema.parse(params.result);
   const db = getDb();
@@ -235,6 +244,91 @@ export function storeCompletedEnrichment(params: {
         normalizedLabel,
         confidence: tag.confidence
       });
+    }
+
+    if (params.autoAccept === true) {
+      // Read what the row looks like AFTER the insert above. We never
+      // overwrite an existing accepted_* — the user may have hit "Use"
+      // (or typed something) before this enrichment landed, and
+      // promoting Codex's suggestion over their value would be a
+      // surprise.
+      const post = db
+        .prepare(
+          `SELECT accepted_title, accepted_description
+           FROM capture_enrichments
+           WHERE capture_id = ?`
+        )
+        .get(params.captureId) as
+        | { accepted_title: string | null; accepted_description: string | null }
+        | undefined;
+
+      const titleValue = (parsed.title ?? "").trim();
+      if (titleValue.length > 0 && (post?.accepted_title ?? null) === null) {
+        db.prepare(
+          `UPDATE capture_enrichments
+           SET accepted_title = @title,
+               title_accepted_at = datetime('now'),
+               updated_at = datetime('now')
+           WHERE capture_id = @captureId`
+        ).run({ captureId: params.captureId, title: titleValue });
+      }
+
+      const descriptionValue = (parsed.description ?? "").trim();
+      if (
+        descriptionValue.length > 0 &&
+        (post?.accepted_description ?? null) === null
+      ) {
+        db.prepare(
+          `UPDATE capture_enrichments
+           SET accepted_description = @description,
+               description_accepted_at = datetime('now'),
+               updated_at = datetime('now')
+           WHERE capture_id = @captureId`
+        ).run({ captureId: params.captureId, description: descriptionValue });
+      }
+
+      // Auto-accept the top 2 suggested tags inserted above. We can't
+      // call `acceptSuggestedTag` from inside the same transaction
+      // (better-sqlite3 doesn't allow re-entrant transactions), so
+      // inline the same writes: ensure a `tags` row, link via
+      // `capture_tags`, mark the suggestion accepted.
+      const topSuggestions = db
+        .prepare(
+          `SELECT id, label, normalized_label
+           FROM enrichment_tag_suggestions
+           WHERE capture_id = ?
+             AND ai_run_id = ?
+             AND accepted_at IS NULL
+             AND rejected_at IS NULL
+           ORDER BY confidence DESC, created_at ASC
+           LIMIT 2`
+        )
+        .all(params.captureId, params.aiRunId) as Array<{
+        id: string;
+        label: string;
+        normalized_label: string;
+      }>;
+      for (const suggestion of topSuggestions) {
+        const existing = db
+          .prepare("SELECT id FROM tags WHERE kind = 'content' AND normalized_label = ?")
+          .get(suggestion.normalized_label) as { id: string } | undefined;
+        const tagRowId = existing?.id ?? nanoid();
+        if (!existing) {
+          db.prepare(
+            `INSERT INTO tags (id, label, normalized_label, kind)
+             VALUES (?, ?, ?, 'content')`
+          ).run(tagRowId, suggestion.label, suggestion.normalized_label);
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO capture_tags (capture_id, tag_id, source, ai_run_id)
+           VALUES (?, ?, 'codex', ?)`
+        ).run(params.captureId, tagRowId, params.aiRunId);
+        db.prepare(
+          `UPDATE enrichment_tag_suggestions
+           SET accepted_at = COALESCE(accepted_at, datetime('now'))
+           WHERE id = ?`
+        ).run(suggestion.id);
+      }
     }
   });
   tx();

@@ -22,7 +22,7 @@ type EventHandler = (payload: unknown) => void;
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "" },
-  ai: { enabled: false, consentAcceptedAt: null },
+  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",

@@ -184,7 +184,9 @@ export function FloatOver({
   enrichment,
   aiEnabled = false,
   aiConsentAccepted = false,
+  autoAcceptSuggestions = false,
   onEnableAi,
+  onSetAutoAccept,
   onAcceptTitle,
   onAcceptDescription,
   onAcceptTag,
@@ -227,7 +229,16 @@ export function FloatOver({
   enrichment?: CaptureEnrichment | null;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
+  /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
+   *  toast renders the checkbox in the "checked" state and trusts
+   *  main to promote `suggested_*` → `accepted_*` on its own at the
+   *  moment the enrichment completes. */
+  autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  /** Persist a flip of the auto-accept toggle. Wired to a
+   *  `settings:write` dispatch in the host so the change survives
+   *  the toast closing and applies to subsequent captures. */
+  onSetAutoAccept?: (next: boolean) => void;
   onAcceptTitle?: (title: string) => void;
   onAcceptDescription?: (description: string) => void;
   onAcceptTag?: (tagId: string) => void;
@@ -247,6 +258,19 @@ export function FloatOver({
       .map((tag) => ({ id: tag.id!, label: tag.label })) ?? [];
   const thinking = aiStatus === "queued" || aiStatus === "running";
   const aiFailed = aiStatus === "failed";
+  // Derived "has unaccepted drafts" — replaces the one-shot `aiAccepted`
+  // flag for the Use-button visibility. Necessary because main-side
+  // auto-accept lands acceptedTitle/acceptedDescription without the
+  // user clicking anything; the button must hide in that case too.
+  const titleDraftMatchesAccepted =
+    suggestedTitle.length > 0 && acceptedTitle === suggestedTitle;
+  const descriptionDraftMatchesAccepted =
+    suggestedDescription.length > 0 && acceptedDescription === suggestedDescription;
+  const hasUnacceptedDrafts =
+    (suggestedTitle.length > 0 && !titleDraftMatchesAccepted) ||
+    (suggestedDescription.length > 0 && !descriptionDraftMatchesAccepted);
+  const allDraftsAccepted =
+    (suggestedTitle.length > 0 || suggestedDescription.length > 0) && !hasUnacceptedDrafts;
   // Note: the prior `copiedId` / `initiallyCopied` state is gone — the
   // shared CopyButton component now owns its own copied state and the
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
@@ -294,11 +318,30 @@ export function FloatOver({
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // "Awaiting AI" covers the window between mount and the first
+  // aiStatus broadcast — without this, the toast races the codex:enrich
+  // dispatch and the countdown can deplete before Codex even queues
+  // the run. We trust AI is going to show up when consent is granted;
+  // a 3s grace caps the wait so a silent failure (codex never queued)
+  // can't keep the toast pinned forever.
+  const [awaitingAiTimedOut, setAwaitingAiTimedOut] = useState(false);
+  useEffect(() => {
+    if (aiNeedsConsent || aiStatus !== null) {
+      setAwaitingAiTimedOut(false);
+      return undefined;
+    }
+    setAwaitingAiTimedOut(false);
+    const timer = setTimeout(() => setAwaitingAiTimedOut(true), 3000);
+    return () => clearTimeout(timer);
+  }, [aiNeedsConsent, aiStatus]);
+  const awaitingAi = !aiNeedsConsent && aiStatus === null && !awaitingAiTimedOut;
+
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin === "manual";
   const hasUserTitle = title.trim().length > 0 && titleOrigin === "manual";
   const isPaused =
     thinking ||
+    awaitingAi ||
     hovering ||
     nativeDragging ||
     hasUserDescription ||
@@ -715,15 +758,15 @@ export function FloatOver({
             draftAvailable={
               suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
             }
-            accepted={aiAccepted}
+            accepted={allDraftsAccepted}
             needsConsent={aiNeedsConsent}
             action={
-              !thinking && !aiFailed && !aiAccepted ? (
+              !thinking && !aiFailed ? (
                 suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
                   <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
                     Enable
                   </button>
-                ) : suggestedTitle.length > 0 || suggestedDescription.length > 0 ? (
+                ) : hasUnacceptedDrafts ? (
                   <button
                     className="fo__ai-accept"
                     onClick={() => {
@@ -755,6 +798,16 @@ export function FloatOver({
               ) : null
             }
           />
+          {!aiNeedsConsent && onSetAutoAccept !== undefined ? (
+            <label className="fo__auto-accept" title="Apply Codex drafts automatically when ready">
+              <input
+                type="checkbox"
+                checked={autoAcceptSuggestions}
+                onChange={(event) => onSetAutoAccept(event.target.checked)}
+              />
+              <span>Auto-apply Codex drafts</span>
+            </label>
+          ) : null}
         </div>
       )}
 

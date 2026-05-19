@@ -383,6 +383,18 @@ export function FloatOverHost(): React.ReactElement {
         enrichment={enrichment}
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
+        autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
+        onSetAutoAccept={(next) => {
+          void dispatch("settings:write", {
+            ai: { autoAcceptSuggestions: next }
+          }).then((result) => {
+            if (!result.ok) return;
+            setState((current) => {
+              if (current.kind !== "loaded" || current.record.id !== record.id) return current;
+              return { ...current, settings: result.value };
+            });
+          });
+        }}
         onEnableAi={() => {
           void dispatch("settings:write", {
             ai: {

@@ -455,7 +455,27 @@
 /* ----- AI suggestion strip (now via shared CodexStatusPill) ----- */
 .fo__ai-row {
   margin: 0 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
+.fo__auto-accept {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-end;
+  padding: 0 2px;
+  font: 500 10px/1.2 var(--font-sans);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.fo__auto-accept input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.fo__auto-accept:hover { color: var(--text-primary); }
 .fo__ai-accept {
   height: 22px; padding: 0 8px;
   background: var(--accent);

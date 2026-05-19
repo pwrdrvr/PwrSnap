@@ -188,7 +188,8 @@ describe("Codex handlers", () => {
         testSettings({
           ai: {
             enabled: true,
-            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            autoAcceptSuggestions: false
           }
         })
     });
@@ -249,7 +250,8 @@ describe("Codex handlers", () => {
         testSettings({
           ai: {
             enabled: true,
-            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            autoAcceptSuggestions: false
           }
         })
     });

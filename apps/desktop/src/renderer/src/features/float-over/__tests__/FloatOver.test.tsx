@@ -49,7 +49,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "" },
-  ai: { enabled: false, consentAcceptedAt: null },
+  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -501,5 +501,111 @@ describe("FloatOver Codex suggestions", () => {
 
     expect(onAcceptTitle).toHaveBeenCalledWith("Codex headline");
     expect(onAcceptDescription).toHaveBeenCalledWith("Codex body");
+  });
+
+  test("countdown is paused while AI is expected but no status has arrived", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      // startCountdown undefined → defaults to true, exercising the
+      // actual ticker setup; the paused class is set from `isPaused`.
+      enrichment: null,
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+  });
+
+  test("countdown stays paused after a 'queued' status arrives and resumes on 'completed'", async () => {
+    let el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "queued",
+        suggestedTitle: null,
+        suggestedDescription: null,
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+
+    await unmount();
+    el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "completed",
+        suggestedTitle: "Title",
+        suggestedDescription: "Description body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+    // Drafts are now ready and unaccepted; the countdown should NOT
+    // be pinned just because a Codex draft is in the textarea.
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
+  });
+
+  test("auto-accept checkbox renders when AI is enabled and dispatches onSetAutoAccept", async () => {
+    const onSetAutoAccept = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: null,
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      autoAcceptSuggestions: false,
+      onSetAutoAccept
+    });
+
+    const checkbox = el.querySelector<HTMLInputElement>(
+      ".fo__auto-accept input[type='checkbox']"
+    );
+    expect(checkbox).not.toBeNull();
+    expect(checkbox?.checked).toBe(false);
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "checked"
+      )?.set;
+      setter?.call(checkbox, true);
+      checkbox?.dispatchEvent(new Event("click", { bubbles: true }));
+      checkbox?.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onSetAutoAccept).toHaveBeenCalledWith(true);
+  });
+
+  test("auto-accept checkbox is hidden when AI consent is missing", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: null,
+      aiEnabled: false,
+      aiConsentAccepted: false,
+      onSetAutoAccept: vi.fn()
+    });
+
+    expect(el.querySelector(".fo__auto-accept")).toBeNull();
+  });
+
+  test("Use button hides once the suggestion is already accepted (server-side auto-accept)", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        suggestedTitle: "Auto title",
+        acceptedTitle: "Auto title",
+        suggestedDescription: "Auto body",
+        acceptedDescription: "Auto body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      autoAcceptSuggestions: true
+    });
+
+    expect(el.querySelector(".fo__ai-accept")).toBeNull();
   });
 });

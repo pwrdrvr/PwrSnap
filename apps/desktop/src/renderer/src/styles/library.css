@@ -2156,6 +2156,16 @@
   box-shadow: 0 20px 56px color-mix(in srgb, var(--shadow-base) 70%, transparent),
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 }
+/* Reset button — armed state turns red+orange to telegraph "next
+   click destroys work." Disarms after 3s if untouched. */
+.psl__et-btn--reset.is-armed {
+  color: var(--danger-text, #ff7a55);
+  border-color: var(--danger-border, #ff7a55);
+  background: color-mix(in srgb, var(--danger-text, #ff7a55) 12%, transparent);
+}
+.psl__et-btn--reset.is-armed:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-text, #ff7a55) 20%, transparent);
+}
 /* Vertical divider between the Pointer (select/inspect) tool and
    the Arrow/Rect/Highlight/Blur/Text (draw) tools. Subtle so it
    reads as a separator, not a hard cut. */

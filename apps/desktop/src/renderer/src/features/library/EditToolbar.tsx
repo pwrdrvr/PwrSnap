@@ -11,8 +11,12 @@
 //     the current app instance (module-level state) — resets to the
 //     default bottom-center on next app launch. Double-click the
 //     grip to snap back to default mid-session.
-//   • Reveal-in-Finder button at the right end. Dispatches
-//     `capture:reveal` for the current capture.
+//   • Reset button at the right end. Two-click confirm pattern (the
+//     button morphs to "Confirm?" for ~3s on first click; second
+//     click within the window wipes every overlay on the capture).
+//     Reveal-in-Finder is intentionally NOT in this toolbar — it's
+//     a file-management action, not an editing tool, and DetailRail's
+//     "File" button already covers it.
 //
 // ⌘Z / ⌘⇧Z undo+redo bindings are wired by the chromeless Editor's
 // useUndoRedo hook (window-level keydown listener) — no visible
@@ -21,16 +25,16 @@
 
 import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
 import { TOOLS, type Tool } from "../editor/editor-tools";
-import { dispatch } from "../../lib/pwrsnap";
+import { dispatch, subscribe } from "../../lib/pwrsnap";
+
+const RESET_CONFIRM_WINDOW_MS = 3_000;
 
 export type EditToolbarProps = {
   readonly tool: Tool;
   readonly onChange: (next: Tool) => void;
-  /** Required for the Reveal button — the floating toolbar always
-   *  knows what capture it's editing because Library passes it
-   *  through. Optional in the type so Stage can still render the
-   *  toolbar before a record selects (rare; the Reveal button is
-   *  disabled when undefined). */
+  /** Required for the Reset button. Optional in the type so Stage
+   *  can still render the toolbar before a record selects (rare;
+   *  Reset is disabled when undefined). */
   readonly captureId?: string;
 };
 
@@ -44,8 +48,53 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function EditToolbar({ tool, onChange, captureId }: EditToolbarProps): ReactElement {
+export function EditToolbar({
+  tool,
+  onChange,
+  captureId
+}: EditToolbarProps): ReactElement {
   const [position, setPosition] = useState<{ x: number; y: number } | null>(savedPosition);
+  // Two-click confirm state for Reset. `null` = idle; non-null =
+  // armed timestamp. Auto-disarms after RESET_CONFIRM_WINDOW_MS so a
+  // stale armed state doesn't bite the user later.
+  const [resetArmedAt, setResetArmedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (resetArmedAt === null) return;
+    const t = setTimeout(() => setResetArmedAt(null), RESET_CONFIRM_WINDOW_MS);
+    return () => clearTimeout(t);
+  }, [resetArmedAt]);
+  // Disarm when the user switches captures — an armed state on
+  // capture A would otherwise confirm against capture B on next click.
+  useEffect(() => {
+    setResetArmedAt(null);
+  }, [captureId]);
+
+  // Self-track the overlay count via overlays:list + the existing
+  // events:overlays:changed broadcast. Editor fetches the same data
+  // separately for rendering; both paths converge on the same view.
+  const [overlayCount, setOverlayCount] = useState(0);
+  useEffect(() => {
+    if (captureId === undefined) {
+      setOverlayCount(0);
+      return undefined;
+    }
+    let cancelled = false;
+    const refetch = async (): Promise<void> => {
+      const result = await dispatch("overlays:list", { captureId });
+      if (cancelled || !result.ok) return;
+      setOverlayCount(result.value.length);
+    };
+    void refetch();
+    const unsubscribe = subscribe("events:overlays:changed", (payload) => {
+      const p = payload as { captureId?: string };
+      if (p.captureId !== undefined && p.captureId !== captureId) return;
+      void refetch();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [captureId]);
   // Persist to module-level on every change so a remount picks up
   // the same position.
   useEffect(() => {
@@ -188,24 +237,66 @@ export function EditToolbar({ tool, onChange, captureId }: EditToolbarProps): Re
         </Fragment>
       ))}
       <span className="psl__et-sep" aria-hidden="true" />
-      <button
-        type="button"
-        className="psl__et-btn"
-        title="Reveal in Finder"
-        disabled={captureId === undefined}
-        onClick={() => {
-          if (captureId !== undefined) {
-            void dispatch("capture:reveal", { captureId });
+      <ResetButton
+        captureId={captureId}
+        overlayCount={overlayCount}
+        armed={resetArmedAt !== null}
+        onArm={() => setResetArmedAt(Date.now())}
+        onConfirm={async () => {
+          if (captureId === undefined) return;
+          setResetArmedAt(null);
+          const list = await dispatch("overlays:list", { captureId });
+          if (!list.ok) return;
+          // Sequentially — the overlays handler updates app_stats /
+          // edits_version per row + broadcasts. Parallel deletes would
+          // race those side-effects.
+          for (const row of list.value) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatch("overlays:delete", { id: row.id });
           }
         }}
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <path d="M3 7l9-4 9 4-9 4-9-4z" />
-          <path d="M3 12l9 4 9-4" />
-          <path d="M3 17l9 4 9-4" />
-        </svg>
-        <span>Reveal</span>
-      </button>
+      />
     </div>
+  );
+}
+
+function ResetButton({
+  captureId,
+  overlayCount,
+  armed,
+  onArm,
+  onConfirm
+}: {
+  captureId: string | undefined;
+  overlayCount: number;
+  armed: boolean;
+  onArm: () => void;
+  onConfirm: () => void;
+}): ReactElement {
+  const disabled = captureId === undefined || overlayCount === 0;
+  return (
+    <button
+      type="button"
+      className={"psl__et-btn psl__et-btn--reset" + (armed ? " is-armed" : "")}
+      title={
+        armed
+          ? "Click again to confirm — removes every overlay"
+          : "Reset to original (remove all overlays)"
+      }
+      disabled={disabled}
+      onClick={() => {
+        if (armed) onConfirm();
+        else onArm();
+      }}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        {/* Counter-clockwise arrow circling back — "undo all the way" */}
+        <path d="M3 12a9 9 0 1 0 3-6.7" />
+        <path d="M3 4v5h5" />
+      </svg>
+      <span>
+        {armed ? `Confirm? · ${overlayCount}` : "Reset"}
+      </span>
+    </button>
   );
 }

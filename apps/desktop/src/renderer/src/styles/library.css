@@ -338,14 +338,20 @@
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   background: var(--bg-input);
-  /* Explicit height instead of aspect-ratio + max-height. The combo
-     of aspect-ratio + max-height produces inconsistent collapse-
-     before-image-load behavior in some Chromium versions, which
-     intermittently reported the wrapper at 0 height during the
-     ResizeObserver's measurement window — leaving the popover
-     short-clipped right after the preview thumb. A fixed height
-     gives a stable layout box regardless of when the image loads. */
-  height: 120px;
+  /* Mirror float-over's preview shape (see .fo__preview in
+     float-over.css). At the tray's 408px usable width, 16:10 lands at
+     ~255px tall — about 2× the previous 120px slot, but the previous
+     slot's 3.4:1 effective box rendered a typical 16:9 capture as a
+     tiny letterboxed stamp. The taller 16:10 box stays well under the
+     popover's 880px height clamp even with a tall header + button
+     grid above.
+     The earlier comment in this rule warned against `aspect-ratio +
+     max-height` — that combo was the actual hazard (Chromium reported
+     0 height during the ResizeObserver's measurement window in some
+     versions). Plain `aspect-ratio` without a height cap is the
+     pattern float-over has shipped with for the entire Phase-1 cycle
+     and behaves consistently. */
+  aspect-ratio: 16 / 10;
 }
 /* `contain` to match the library + float-over thumbnail policy —
    preserve the capture's true aspect ratio. */

@@ -84,6 +84,7 @@ function unregisterCodexHandlers(): void {
     "codex:acceptTitle",
     "codex:acceptDescription",
     "codex:acceptFilenameStem",
+    "codex:acceptAllDrafts",
     "codex:acceptTag",
     "codex:rejectTag",
     "codex:runStatus",

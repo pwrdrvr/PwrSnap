@@ -62,13 +62,17 @@ function installFakeApi(initial: CaptureEnrichment): {
     titleAcceptedAt: "2026-05-15T18:25:00.000Z",
     suggestedDescription: initial.suggestedDescription,
     acceptedDescription: initial.suggestedDescription,
-    descriptionAcceptedAt: "2026-05-15T18:25:00.000Z"
+    descriptionAcceptedAt: "2026-05-15T18:25:00.000Z",
+    suggestedFilenameStem: initial.suggestedFilenameStem,
+    acceptedFilenameStem: initial.suggestedFilenameStem,
+    filenameAcceptedAt: "2026-05-15T18:25:00.000Z"
   });
   const dispatch = vi.fn(async (name: string) => {
     if (name === "codex:enrichment") return { ok: true, value: initial };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
     if (name === "codex:acceptTitle") return { ok: true, value: accepted };
     if (name === "codex:acceptFilenameStem") return { ok: true, value: accepted };
+    if (name === "codex:acceptAllDrafts") return { ok: true, value: accepted };
     if (name === "codex:acceptTag") return { ok: true, value: accepted };
     if (name === "codex:rejectTag") return { ok: true, value: accepted };
     if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
@@ -460,7 +464,8 @@ describe("DetailRail", () => {
     const regen = el.querySelector<HTMLButtonElement>(".ps-codex-pill .psl__chip-link");
     expect(regen?.textContent).toBe("Regenerate");
 
-    // Clicking the bulk Use fires all three accept verbs (no tags).
+    // Clicking the bulk Use fires the atomic accept verb (one call,
+    // not three) and no tag accepts.
     await act(async () => {
       useBulk?.click();
       await Promise.resolve();
@@ -468,11 +473,18 @@ describe("DetailRail", () => {
       await Promise.resolve();
     });
 
-    const verbs = dispatch.mock.calls.map(([name]) => name);
-    expect(verbs).toContain("codex:acceptTitle");
-    expect(verbs).toContain("codex:acceptDescription");
-    expect(verbs).toContain("codex:acceptFilenameStem");
-    expect(verbs.filter((n) => n === "codex:acceptTag")).toHaveLength(0);
+    const acceptAllCalls = dispatch.mock.calls.filter(
+      ([name]) => name === "codex:acceptAllDrafts"
+    );
+    expect(acceptAllCalls).toHaveLength(1);
+    expect(acceptAllCalls[0]?.[1]).toEqual({
+      captureId: "cap_1",
+      title: "Codex headline",
+      description: "Codex body",
+      filenameStem: "codex-stem"
+    });
+    const tagCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTag");
+    expect(tagCalls).toHaveLength(0);
   });
 
   test("Bulk Use draft also overrides mid-edit manual values in all three fields", async () => {
@@ -542,6 +554,70 @@ describe("DetailRail", () => {
     expect(el.querySelector(".ps-codex-pill .psl__chip-btn--accent")).toBeNull();
     // Regenerate stays available.
     expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.textContent).toBe("Regenerate");
+  });
+
+  test("per-field Use rolls back the optimistic commit when the dispatch fails", async () => {
+    // Simulate a server error on codex:acceptTitle — local state
+    // should NOT remain in the optimistically-committed shape.
+    const initial = enrichment({
+      suggestedTitle: "Codex draft headline",
+      acceptedTitle: "Prior accepted headline",
+      titleAcceptedAt: "2026-05-19T18:00:00.000Z"
+    });
+    const dispatch = vi.fn(async (name: string) => {
+      if (name === "codex:enrichment") return { ok: true, value: initial };
+      if (name === "codex:acceptTitle")
+        return {
+          ok: false,
+          error: { kind: "internal", code: "boom", message: "simulated failure" }
+        };
+      if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+      return { ok: true, value: undefined };
+    });
+    (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
+      dispatch,
+      on: () => () => undefined,
+      startCaptureDrag: () => undefined
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          },
+          record
+        })
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const titleInput = container.querySelector<HTMLInputElement>(".psl__field-input");
+    expect(titleInput?.value).toBe("Prior accepted headline");
+
+    // The DraftPreview block shows "Codex draft headline" with a Use
+    // button; click it.
+    const previewUse = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".psl__draft-preview-use")
+    )[0];
+    expect(previewUse).toBeDefined();
+    await act(async () => {
+      previewUse?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Dispatch returned err — rollback should have restored the
+    // prior accepted value. The optimistic flip to "Codex draft
+    // headline" must not be visible after rollback.
+    expect(titleInput?.value).toBe("Prior accepted headline");
   });
 
   test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {

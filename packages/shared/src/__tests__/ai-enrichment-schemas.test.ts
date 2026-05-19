@@ -98,6 +98,35 @@ describe("CaptureEnrichmentSchema", () => {
   });
 });
 
+describe("slugifyFilenameStem (via AcceptFilenameStemRequestSchema)", () => {
+  test("lowercases, collapses runs of non-alphanumeric to '-', strips edges", async () => {
+    const { AcceptFilenameStemRequestSchema, slugifyFilenameStem } = await import(
+      "../ai-enrichment-schemas"
+    );
+
+    expect(slugifyFilenameStem("My Awesome File!")).toBe("my-awesome-file");
+    expect(slugifyFilenameStem("  --hello---world__foo bar  ")).toBe("hello-world-foo-bar");
+    expect(slugifyFilenameStem("UPPER_case-MixED")).toBe("upper-case-mixed");
+
+    // Verb validator runs the slug + then enforces non-empty + ≤120.
+    const parsed = AcceptFilenameStemRequestSchema.parse({
+      captureId: "cap_1",
+      filenameStem: "My Awesome File!"
+    });
+    expect(parsed.filenameStem).toBe("my-awesome-file");
+  });
+
+  test("rejects input that slugifies to empty", async () => {
+    const { AcceptFilenameStemRequestSchema } = await import("../ai-enrichment-schemas");
+    expect(() =>
+      AcceptFilenameStemRequestSchema.parse({
+        captureId: "cap_1",
+        filenameStem: "!!!---___"
+      })
+    ).toThrow();
+  });
+});
+
 describe("normalizeTagLabel", () => {
   test("trims, folds whitespace, and lowercases", () => {
     expect(normalizeTagLabel("  Prod   Deploy  ")).toBe("prod deploy");

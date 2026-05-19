@@ -1,5 +1,6 @@
 import { BrowserWindow } from "electron";
 import {
+  AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
   AcceptFilenameStemRequestSchema,
   AcceptTitleRequestSchema,
@@ -31,6 +32,7 @@ import {
 import { getCaptureById } from "../persistence/captures-repo";
 import { effectiveSrcPathFor } from "../persistence/source-store";
 import {
+  acceptAllDrafts,
   acceptDescription,
   acceptFilenameStem,
   acceptTitle,
@@ -229,6 +231,23 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptFilenameStem(parsed.data.captureId, parsed.data.filenameStem);
+      broadcastAiRunUpdated({ run: null, enrichment });
+      return ok(enrichment);
+    } catch (error) {
+      return mapError(error);
+    }
+  });
+
+  bus.register("codex:acceptAllDrafts", async (req) => {
+    const parsed = AcceptAllDraftsRequestSchema.safeParse(req);
+    if (!parsed.success) {
+      return validationError("invalid_request", parsed.error.message);
+    }
+    try {
+      // Spread `parsed.data` so undefined fields stay undefined rather
+      // than being explicitly enumerated — keeps the repo signature
+      // clean.
+      const enrichment = acceptAllDrafts(parsed.data);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {

@@ -136,63 +136,6 @@ export async function openDatabase(): Promise<Database.Database> {
 }
 
 /**
- * Test-only entry to the migration runner. The production path goes
- * through `openDatabase`, but the migrations.test.ts suite exercises
- * the duplicate-column tolerance against an explicit `Database`
- * instance.
- */
-export function applyMigrationsForTest(db: Database.Database): void {
-  runMigrations(db);
-}
-
-/**
- * Repair `schema_migrations` rows that claim a migration ran when it
- * actually didn't. Happens on dev branches that renumber migrations:
- * a previous branch wrote rows at version N whose CONTENT was
- * different from the version-N migration on the current branch. The
- * runner reads `applied = {N}` and silently skips N, so the schema
- * never gets the changes the current N expects.
- *
- * We detect drift by checking for signature columns on tables we
- * know a migration must have created/altered. If schema is pre-N
- * but applied claims N+, delete the offending markers so N replays
- * cleanly.
- *
- * Narrowly scoped — only checks for shapes we know to be affected
- * by past renumbers. The generic "is this exact migration's effect
- * present?" check isn't trivial in SQL, and over-eager replay is
- * worse than the manual repair this catches.
- */
-function repairKnownSchemaDrift(db: Database.Database): void {
-  const captureCols = new Set(
-    (
-      db.prepare("SELECT name FROM pragma_table_info('captures')").all() as {
-        name: string;
-      }[]
-    ).map((row) => row.name)
-  );
-
-  // 0007_bundle_storage renames `src_path` → `legacy_src_path` (12-step
-  // ALTER TABLE pattern, recreating the table). If the captures table
-  // still carries `src_path` and lacks `legacy_src_path`, the bundle
-  // migration never ran on this DB. 0008 (layers) and 0009 (legacy
-  // attempt counters) build on top of bundle_storage; replay all three.
-  if (captureCols.has("src_path") && !captureCols.has("legacy_src_path")) {
-    log.warn(
-      "schema drift: captures still has pre-0007 shape — replaying bundle migrations"
-    );
-    db.prepare(
-      "DELETE FROM schema_migrations WHERE version IN (7, 8, 9)"
-    ).run();
-    // 0009 adds two columns to captures (legacy_bundle_attempts,
-    // legacy_bundle_last_failed_at). If those were grafted onto the
-    // old captures shape, they'll be dropped by bundle_storage's
-    // table swap and re-added cleanly when 0009 replays. Nothing to
-    // do here.
-  }
-}
-
-/**
  * Apply pending migrations from ./migrations/. Each migration runs in
  * its own transaction; partial failure leaves the schema unchanged.
  */
@@ -201,8 +144,6 @@ function runMigrations(db: Database.Database): void {
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
-
-  repairKnownSchemaDrift(db);
 
   const applied = new Set<number>(
     db
@@ -244,35 +185,6 @@ function runMigrations(db: Database.Database): void {
         insertMigration.run(version);
       });
       tx();
-    } catch (err) {
-      // Forgiving idempotency for `ADD COLUMN`-style migrations: if
-      // every failing statement is a duplicate-column error, the column
-      // already exists and the migration is effectively a no-op. Mark
-      // this version applied and continue.
-      //
-      // Why we need this: feature branches sometimes renumber their
-      // migrations when merging with main. A dev who installed the
-      // pre-renumber branch has `version_X` marked applied, but on the
-      // post-merge branch `version_X` is a different file (main's) and
-      // the file that used to be `version_X` has moved to `version_Y`.
-      // The runner then tries to apply `version_Y` (correctly seeing
-      // it as new), but its `ADD COLUMN` collides with what the old
-      // `version_X` already added. On fresh DBs this never happens.
-      //
-      // We scope the tolerance to duplicate-column errors only —
-      // anything else (table not found, syntax error, FK violation)
-      // re-throws so real migration bugs aren't swallowed.
-      const message = err instanceof Error ? err.message : String(err);
-      if (/duplicate column name/i.test(message)) {
-        log.warn("migration target column already exists, treating as applied", {
-          file,
-          version,
-          message
-        });
-        insertMigration.run(version);
-      } else {
-        throw err;
-      }
     } finally {
       if (needsFkOff) db.pragma("foreign_keys = ON");
     }

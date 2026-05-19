@@ -1079,6 +1079,20 @@ export type Commands = {
     req: { captureId: string; filenameStem: string };
     res: CaptureEnrichment;
   };
+  /** Bulk accept — applies any subset of `{title, description,
+   *  filenameStem}` in a single DB transaction + a single broadcast.
+   *  Used by the sidebar's prominent "Use draft" button so users get
+   *  one atomic accept instead of three sequential dispatches. Omits
+   *  tags on purpose; those have their own +/× chip workflow. */
+  "codex:acceptAllDrafts": {
+    req: {
+      captureId: string;
+      title?: string;
+      description?: string;
+      filenameStem?: string;
+    };
+    res: CaptureEnrichment;
+  };
   "codex:acceptTag": {
     req: { captureId: string; tagId: string };
     res: CaptureEnrichment;

@@ -12,6 +12,7 @@ const { cancelAiRun, completeAiRun, createAiRun, failAiRun } = await import(
   "../persistence/ai-runs-repo"
 );
 const {
+  acceptAllDrafts,
   acceptDescription,
   acceptFilenameStem,
   acceptTitle,
@@ -160,6 +161,45 @@ describe("AI enrichment repositories", () => {
   test("acceptFilenameStem rejects empty input", () => {
     expect(() => acceptFilenameStem("cap_1", "")).toThrow();
     expect(() => acceptFilenameStem("cap_1", "   ")).toThrow();
+  });
+
+  test("acceptAllDrafts writes title + description + filename in a single transaction", () => {
+    const enrichment = acceptAllDrafts({
+      captureId: "cap_1",
+      title: "Bulk title",
+      description: "Bulk description body",
+      filenameStem: "bulk-filename-stem"
+    });
+
+    expect(enrichment.acceptedTitle).toBe("Bulk title");
+    expect(enrichment.acceptedDescription).toBe("Bulk description body");
+    expect(enrichment.acceptedFilenameStem).toBe("bulk-filename-stem");
+    expect(enrichment.titleAcceptedAt).not.toBeNull();
+    expect(enrichment.descriptionAcceptedAt).not.toBeNull();
+    expect(enrichment.filenameAcceptedAt).not.toBeNull();
+  });
+
+  test("acceptAllDrafts ignores fields that are undefined / empty / whitespace-only", () => {
+    acceptAllDrafts({
+      captureId: "cap_1",
+      title: "Set the title",
+      // description left undefined
+      filenameStem: "   " // whitespace-only is skipped
+    });
+    const after = getCaptureEnrichment("cap_1")!;
+    expect(after.acceptedTitle).toBe("Set the title");
+    expect(after.acceptedDescription).toBeNull();
+    expect(after.acceptedFilenameStem).toBeNull();
+  });
+
+  test("acceptAllDrafts preserves prior values for fields not in the request", () => {
+    acceptAllDrafts({ captureId: "cap_1", title: "First title", description: "First body" });
+    acceptAllDrafts({ captureId: "cap_1", filenameStem: "later-filename" });
+
+    const after = getCaptureEnrichment("cap_1")!;
+    expect(after.acceptedTitle).toBe("First title");
+    expect(after.acceptedDescription).toBe("First body");
+    expect(after.acceptedFilenameStem).toBe("later-filename");
   });
 
   test("accepts a suggested tag once even when suggested twice", () => {

@@ -218,6 +218,26 @@ export function storeCompletedEnrichment(params: {
       return;
     }
 
+    // Snapshot the user-accepted state BEFORE the suggested_*
+    // INSERT/UPDATE below. The autoAccept path further down only
+    // promotes a field when its accepted_* was null at this point.
+    // Reading after the INSERT would be defensive against future
+    // refactors that might touch accepted_* in the same statement
+    // — easier to capture once here and pass through.
+    const priorAccepted = db
+      .prepare(
+        `SELECT accepted_title, accepted_description, accepted_filename_stem
+         FROM capture_enrichments
+         WHERE capture_id = ?`
+      )
+      .get(params.captureId) as
+      | {
+          accepted_title: string | null;
+          accepted_description: string | null;
+          accepted_filename_stem: string | null;
+        }
+      | undefined;
+
     db.prepare(
       `INSERT INTO capture_enrichments (
         capture_id, latest_ai_run_id, ocr_text,
@@ -265,27 +285,14 @@ export function storeCompletedEnrichment(params: {
     }
 
     if (params.autoAccept === true) {
-      // Read what the row looks like AFTER the insert above. We never
-      // overwrite an existing accepted_* — the user may have hit "Use"
-      // (or typed something) before this enrichment landed, and
-      // promoting Codex's suggestion over their value would be a
-      // surprise.
-      const post = db
-        .prepare(
-          `SELECT accepted_title, accepted_description, accepted_filename_stem
-           FROM capture_enrichments
-           WHERE capture_id = ?`
-        )
-        .get(params.captureId) as
-        | {
-            accepted_title: string | null;
-            accepted_description: string | null;
-            accepted_filename_stem: string | null;
-          }
-        | undefined;
-
+      // Promote suggested_* → accepted_* for fields whose accepted_*
+      // was null BEFORE this turn ran (snapshot above). We never
+      // overwrite an existing accepted_* — the user may have hit
+      // "Use" (or typed something) before this enrichment landed,
+      // and promoting Codex's suggestion over their value would be
+      // a surprise.
       const titleValue = (parsed.title ?? "").trim();
-      if (titleValue.length > 0 && (post?.accepted_title ?? null) === null) {
+      if (titleValue.length > 0 && (priorAccepted?.accepted_title ?? null) === null) {
         db.prepare(
           `UPDATE capture_enrichments
            SET accepted_title = @title,
@@ -298,7 +305,7 @@ export function storeCompletedEnrichment(params: {
       const descriptionValue = (parsed.description ?? "").trim();
       if (
         descriptionValue.length > 0 &&
-        (post?.accepted_description ?? null) === null
+        (priorAccepted?.accepted_description ?? null) === null
       ) {
         db.prepare(
           `UPDATE capture_enrichments
@@ -312,7 +319,7 @@ export function storeCompletedEnrichment(params: {
       const filenameValue = (parsed.filenameStem ?? "").trim();
       if (
         filenameValue.length > 0 &&
-        (post?.accepted_filename_stem ?? null) === null
+        (priorAccepted?.accepted_filename_stem ?? null) === null
       ) {
         db.prepare(
           `UPDATE capture_enrichments
@@ -438,6 +445,70 @@ export function acceptFilenameStem(captureId: string, filenameStem: string): Cap
   ).run({ captureId, filenameStem: trimmed });
   const enrichment = getCaptureEnrichment(captureId);
   if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+/**
+ * Atomic bulk accept — any subset of {title, description,
+ * filenameStem} is written in a single transaction with a single
+ * `updated_at` timestamp. The sidebar's prominent "Use draft" button
+ * uses this so users don't see partial-accept states (e.g., title
+ * lands but description fails). Empty / whitespace-only values for
+ * any field are skipped.
+ *
+ * No-op fields are silently ignored — passing all-undefined is fine
+ * and returns the current enrichment unchanged.
+ */
+export function acceptAllDrafts(input: {
+  captureId: string;
+  title?: string | undefined;
+  description?: string | undefined;
+  filenameStem?: string | undefined;
+}): CaptureEnrichment {
+  const title = (input.title ?? "").trim();
+  const description = (input.description ?? "").trim();
+  const filenameStem = (input.filenameStem ?? "").trim();
+
+  const db = getDb();
+  const tx = db.transaction((): void => {
+    // Ensure the row exists. Cheaper to do one INSERT OR IGNORE up
+    // front than to write three separate INSERT ON CONFLICT statements.
+    db.prepare(
+      `INSERT OR IGNORE INTO capture_enrichments (capture_id, updated_at)
+       VALUES (?, datetime('now'))`
+    ).run(input.captureId);
+
+    if (title.length > 0) {
+      db.prepare(
+        `UPDATE capture_enrichments
+         SET accepted_title = @title,
+             title_accepted_at = datetime('now'),
+             updated_at = datetime('now')
+         WHERE capture_id = @captureId`
+      ).run({ captureId: input.captureId, title });
+    }
+    if (description.length > 0) {
+      db.prepare(
+        `UPDATE capture_enrichments
+         SET accepted_description = @description,
+             description_accepted_at = datetime('now'),
+             updated_at = datetime('now')
+         WHERE capture_id = @captureId`
+      ).run({ captureId: input.captureId, description });
+    }
+    if (filenameStem.length > 0) {
+      db.prepare(
+        `UPDATE capture_enrichments
+         SET accepted_filename_stem = @filenameStem,
+             filename_accepted_at = datetime('now'),
+             updated_at = datetime('now')
+         WHERE capture_id = @captureId`
+      ).run({ captureId: input.captureId, filenameStem });
+    }
+  });
+  tx();
+  const enrichment = getCaptureEnrichment(input.captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${input.captureId}`);
   return enrichment;
 }
 

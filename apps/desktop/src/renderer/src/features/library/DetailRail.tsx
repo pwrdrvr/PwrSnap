@@ -53,6 +53,13 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
       setEnrichment(null);
       return undefined;
     }
+    // Clear synchronously so child `useFieldEditor` instances snapshot
+    // EMPTY accepted/suggested for the new capture instead of the
+    // previous capture's stale values. The dispatch below repopulates
+    // within ms. Without this clear, navigating between captures in
+    // Reel mode briefly leaked the prior capture's text into the new
+    // capture's inputs.
+    setEnrichment(null);
     let cancelled = false;
     void dispatch("codex:enrichment", { captureId: record.id }).then((result) => {
       if (!cancelled) {
@@ -423,23 +430,73 @@ function DetailTab({
   // Commit forces a local override so the click feels instant; the
   // server broadcast that lands moments later is a no-op (same
   // value + origin).
+  // Per-field Use callbacks: commit() locally (instant feedback even
+  // when origin=manual), dispatch the accept verb, roll back the
+  // commit on failure so the UI doesn't lie about what's persisted.
+  // "Roll back" means setting the field back to the prior server-side
+  // state — if there was an accepted value before, it returns to
+  // "accepted" with that value; otherwise it falls back to the
+  // suggested italic preview. Mid-typing manual text is lost on
+  // failure, but a Use-button dispatch failure is a rare edge case.
   const useTitleDraft = useCallback(async () => {
     if (suggestedTitle.trim().length === 0) return;
     commitTitle(suggestedTitle, "accepted");
-    await acceptTitleIfNeeded(suggestedTitle);
-  }, [acceptTitleIfNeeded, commitTitle, suggestedTitle]);
+    const result = await dispatch("codex:acceptTitle", {
+      captureId: record.id,
+      title: suggestedTitle
+    });
+    if (result.ok) {
+      onEnrichmentUpdate(result.value);
+    } else {
+      commitTitle(acceptedTitle, acceptedTitle.length > 0 ? "accepted" : "suggested");
+    }
+  }, [acceptedTitle, commitTitle, onEnrichmentUpdate, record.id, suggestedTitle]);
 
   const useDescriptionDraft = useCallback(async () => {
     if (suggestedDescription.trim().length === 0) return;
     commitDescription(suggestedDescription, "accepted");
-    await acceptDescriptionIfNeeded(suggestedDescription);
-  }, [acceptDescriptionIfNeeded, commitDescription, suggestedDescription]);
+    const result = await dispatch("codex:acceptDescription", {
+      captureId: record.id,
+      description: suggestedDescription
+    });
+    if (result.ok) {
+      onEnrichmentUpdate(result.value);
+    } else {
+      commitDescription(
+        acceptedDescription,
+        acceptedDescription.length > 0 ? "accepted" : "suggested"
+      );
+    }
+  }, [
+    acceptedDescription,
+    commitDescription,
+    onEnrichmentUpdate,
+    record.id,
+    suggestedDescription
+  ]);
 
   const useFilenameDraft = useCallback(async () => {
     if (suggestedFilenameStem.trim().length === 0) return;
     commitFilename(suggestedFilenameStem, "accepted");
-    await acceptFilenameIfNeeded(suggestedFilenameStem);
-  }, [acceptFilenameIfNeeded, commitFilename, suggestedFilenameStem]);
+    const result = await dispatch("codex:acceptFilenameStem", {
+      captureId: record.id,
+      filenameStem: suggestedFilenameStem
+    });
+    if (result.ok) {
+      onEnrichmentUpdate(result.value);
+    } else {
+      commitFilename(
+        acceptedFilenameStem,
+        acceptedFilenameStem.length > 0 ? "accepted" : "suggested"
+      );
+    }
+  }, [
+    acceptedFilenameStem,
+    commitFilename,
+    onEnrichmentUpdate,
+    record.id,
+    suggestedFilenameStem
+  ]);
 
   const titleDraftDiverged =
     suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle;
@@ -453,21 +510,65 @@ function DetailTab({
     void dispatch("codex:enrich", { captureId: record.id });
   }, [record.id]);
 
-  // Bulk "Use draft" — the common case where the user wants to take
-  // Codex's title + description + filename in one click. Tags stay
-  // user-driven (their own +/× chip controls) to avoid surprise-
-  // accepts of suggestions the user implicitly ignored.
+  // Bulk "Use draft" — applies title + description + filename atomically
+  // in one server transaction via `codex:acceptAllDrafts`. Optimistic
+  // local commits for instant feedback; the server broadcast that
+  // lands moments later is a no-op. Tags stay user-driven (their own
+  // +/× chip controls) to avoid surprise-accepts.
   const useAllTextDrafts = useCallback(async () => {
-    if (titleDraftDiverged) await useTitleDraft();
-    if (descriptionDraftDiverged) await useDescriptionDraft();
-    if (filenameDraftDiverged) await useFilenameDraft();
+    const wantTitle = titleDraftDiverged;
+    const wantDescription = descriptionDraftDiverged;
+    const wantFilename = filenameDraftDiverged;
+    if (!wantTitle && !wantDescription && !wantFilename) return;
+
+    if (wantTitle) commitTitle(suggestedTitle, "accepted");
+    if (wantDescription) commitDescription(suggestedDescription, "accepted");
+    if (wantFilename) commitFilename(suggestedFilenameStem, "accepted");
+
+    const payload: {
+      captureId: string;
+      title?: string;
+      description?: string;
+      filenameStem?: string;
+    } = { captureId: record.id };
+    if (wantTitle) payload.title = suggestedTitle;
+    if (wantDescription) payload.description = suggestedDescription;
+    if (wantFilename) payload.filenameStem = suggestedFilenameStem;
+
+    const result = await dispatch("codex:acceptAllDrafts", payload);
+    if (result.ok) {
+      onEnrichmentUpdate(result.value);
+    } else {
+      // Roll back the optimistic commits so the UI doesn't lie about
+      // what the server accepted. Re-derive origin from the
+      // server-side state we last had.
+      if (wantTitle) commitTitle(acceptedTitle, acceptedTitle.length > 0 ? "accepted" : "suggested");
+      if (wantDescription)
+        commitDescription(
+          acceptedDescription,
+          acceptedDescription.length > 0 ? "accepted" : "suggested"
+        );
+      if (wantFilename)
+        commitFilename(
+          acceptedFilenameStem,
+          acceptedFilenameStem.length > 0 ? "accepted" : "suggested"
+        );
+    }
   }, [
+    acceptedDescription,
+    acceptedFilenameStem,
+    acceptedTitle,
+    commitDescription,
+    commitFilename,
+    commitTitle,
     descriptionDraftDiverged,
     filenameDraftDiverged,
-    titleDraftDiverged,
-    useDescriptionDraft,
-    useFilenameDraft,
-    useTitleDraft
+    onEnrichmentUpdate,
+    record.id,
+    suggestedDescription,
+    suggestedFilenameStem,
+    suggestedTitle,
+    titleDraftDiverged
   ]);
 
   const hasAnyDraft = titleDraftDiverged || descriptionDraftDiverged || filenameDraftDiverged;

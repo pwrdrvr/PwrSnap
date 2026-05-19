@@ -2,7 +2,13 @@
 // list / byId / delete; Phase 1.9 adds export.
 
 import { BrowserWindow, clipboard } from "electron";
-import { ok, err, EVENT_CHANNELS, AddUserTagRequestSchema } from "@pwrsnap/shared";
+import {
+  ok,
+  err,
+  EVENT_CHANNELS,
+  AddUserTagRequestSchema,
+  RemoveUserTagRequestSchema
+} from "@pwrsnap/shared";
 import { z } from "zod";
 import { bus } from "../command-bus";
 import {
@@ -339,7 +345,7 @@ export function registerLibraryHandlers(): void {
   });
 
   bus.register("library:removeTag", async (req) => {
-    const parsed = AddUserTagRequestSchema.safeParse(req);
+    const parsed = RemoveUserTagRequestSchema.safeParse(req);
     if (!parsed.success) {
       return err({
         kind: "validation",

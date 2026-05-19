@@ -177,6 +177,7 @@ describe("Codex handlers", () => {
     testDb.exec(migration("0007_bundle_storage.sql"));
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0008_layers.sql"));
+    testDb.exec(migration("0009_legacy_bundle_migration_attempts.sql"));
     await seedCapture();
   });
 

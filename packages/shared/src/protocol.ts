@@ -611,6 +611,26 @@ export type AppUpdateInstallResult =
   | { status: "restarting" }
   | { status: "error"; message: string };
 
+/**
+ * Progress payload for `events:legacy-bundle-migration:progress`. Fired
+ * by the one-shot legacy → v1-bundle wrapper on first boot post-bundle-
+ * format. Library shows an "Upgrading library…" banner while status is
+ * "running"; banner auto-dismisses on "complete".
+ *
+ *   • `total` — rows the runner queued at start. Includes parked
+ *     (exhausted-retry) rows in the count so the user sees a stable
+ *     denominator even across boots that find new attempts.
+ *   • `done` — rows that have either succeeded OR been parked
+ *     (giving up after MAX_ATTEMPTS). Both count toward "done" since
+ *     neither will be retried this run.
+ *   • `failed` — subset of `done` that failed (parked or transient).
+ *     A run with `failed > 0` after `status === "complete"` is worth
+ *     surfacing as a one-time toast.
+ */
+export type LegacyBundleMigrationProgress =
+  | { status: "running"; total: number; done: number; failed: number }
+  | { status: "complete"; total: number; done: number; failed: number };
+
 export type AppUpdateReleaseInfo = {
   version?: string;
   name?: string;

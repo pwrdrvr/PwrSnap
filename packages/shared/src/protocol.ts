@@ -8,6 +8,7 @@
 // up the new command for free.
 
 import type { Overlay, OverlayRow } from "./overlay-schemas";
+import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -580,6 +581,26 @@ export type AppUpdateReleaseVersions = {
   fetchedAt: number;
 };
 
+export type AiRunSnapshot = {
+  id: string;
+  captureId: string;
+  kind: "enrich";
+  status: AiRunStatus;
+  error: string | null;
+  latencyMs: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+export type CaptureEnrichmentSummary = {
+  captureId: string;
+  status: AiRunStatus | null;
+  acceptedDescription: string | null;
+  acceptedTags: string[];
+  suggestedTagCount: number;
+};
+
 /**
  * Map of every command-bus command. Each entry declares the request
  * shape and the response shape. The handler signature in main/command-bus.ts
@@ -903,6 +924,25 @@ export type Commands = {
   };
 
   // ---- codex (Phase 4+) — declared here so Phase 4 lands without protocol bumps ----
+  "codex:enrich": { req: { captureId: string }; res: { runId: string } };
+  "codex:enrichment": { req: { captureId: string }; res: CaptureEnrichment | null };
+  "codex:enrichmentsForCaptures": {
+    req: { captureIds: string[] };
+    res: CaptureEnrichmentSummary[];
+  };
+  "codex:acceptDescription": {
+    req: { captureId: string; description: string };
+    res: CaptureEnrichment;
+  };
+  "codex:acceptTag": {
+    req: { captureId: string; tagId: string };
+    res: CaptureEnrichment;
+  };
+  "codex:rejectTag": {
+    req: { captureId: string; tagId: string };
+    res: CaptureEnrichment;
+  };
+  "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
   "codex:annotate": { req: { captureId: string }; res: { runId: string } };
   "codex:describe": { req: { captureId: string }; res: { runId: string } };
   "codex:tag": { req: { captureId: string }; res: { runId: string } };

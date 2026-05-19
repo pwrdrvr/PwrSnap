@@ -119,6 +119,10 @@ vi.mock("../../events", () => ({
   broadcastCapturesChanged: vi.fn()
 }));
 
+vi.mock("../../handlers/codex-handlers", () => ({
+  maybeEnqueueCaptureEnrichment: vi.fn()
+}));
+
 vi.mock("../../persistence/captures-repo", () => ({
   insertOrFindCapture: vi.fn(() => ({
     record: { id: "cap-1", kind: "video" },

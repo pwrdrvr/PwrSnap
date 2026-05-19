@@ -5,6 +5,7 @@
 
 export * from "./protocol";
 export * from "./overlay-schemas";
+export * from "./ai-enrichment-schemas";
 export * from "./result";
 export * from "./ipc";
 export * from "./arrow";

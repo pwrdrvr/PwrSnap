@@ -7,8 +7,9 @@
 //   docs/plans/2026-05-05-001-feat-library-three-state-view-model-plan.md
 //   Phase B.2 (shell) + Phase C.5 (body).
 
-import type { ReactElement } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import { useEffect, useState, type ReactElement } from "react";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import type { CaptureEnrichment, CaptureRecord } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
@@ -34,6 +35,29 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     record?.id ?? null,
     record?.overlays_version ?? null
   );
+  const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
+
+  useEffect(() => {
+    if (record === null) {
+      setEnrichment(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void dispatch("codex:enrichment", { captureId: record.id }).then((result) => {
+      if (!cancelled) {
+        setEnrichment(result.ok ? result.value : null);
+      }
+    });
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.aiRunUpdated, (payload) => {
+      const next = (payload as { enrichment?: CaptureEnrichment | null }).enrichment;
+      if (next === undefined || next === null || next.captureId !== record.id) return;
+      setEnrichment(next);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [record?.id]);
 
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.
@@ -44,6 +68,23 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
   const sourceName = record.source_app_name ?? "Unknown app";
   const appId = mapBundleIdToAppId(record.source_app_bundle_id);
   const hasExactRenderMetrics = renderMetrics.high?.exact === true;
+  const acceptedOrSuggestedDescription =
+    enrichment?.acceptedDescription ?? enrichment?.suggestedDescription ?? null;
+  const hasAcceptedDescription =
+    enrichment?.acceptedDescription !== null && enrichment?.acceptedDescription !== undefined;
+  const hasSuggestedDescription =
+    enrichment?.suggestedDescription !== null && enrichment?.suggestedDescription !== undefined;
+  const suggestedDescriptionAccepted =
+    hasAcceptedDescription &&
+    hasSuggestedDescription &&
+    enrichment.acceptedDescription === enrichment.suggestedDescription;
+  const pendingTags =
+    enrichment?.suggestedTags.filter(
+      (tag) => tag.id !== undefined && tag.accepted_at === null && tag.rejected_at === null
+    ) ?? [];
+  const visiblePendingTags = pendingTags.slice(0, 2);
+  const acceptedTags = enrichment?.acceptedTags ?? [];
+  const codexStatus = enrichment?.status ?? null;
 
   return (
     <aside className="psl__right" aria-label="Capture details">
@@ -74,13 +115,32 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
           </div>
           <div className="psl__detail-tags">
             <AppTag app={appId} name={sourceName} />
-            <span className="ps-tag is-suggest">+ codex</span>
+            {acceptedTags.map((tag) => (
+              <span key={tag} className="ps-tag is-sm">
+                {tag}
+              </span>
+            ))}
+            {visiblePendingTags.map((tag) => (
+              <button
+                key={tag.id}
+                className="ps-tag is-suggest"
+                type="button"
+                onClick={() => {
+                  if (tag.id !== undefined) {
+                    void dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id }).then((result) => {
+                      if (result.ok) {
+                        setEnrichment(result.value);
+                      }
+                    });
+                  }
+                }}
+              >
+                + {tag.label}
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* Codex caption stub — Phase 4 wires the real Codex pipeline.
-            For now it's static placeholder text so the layout looks
-            right at scale. */}
         <div className="psl__ai-card">
           <div className="psl__ai-card-hdr">
             <svg
@@ -94,21 +154,74 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
               <path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z" />
             </svg>
             Codex caption
-            <small>haiku-4.5 · 1.4s</small>
+            <small>{statusLabel(codexStatus)}</small>
           </div>
-          <div className="psl__ai-card-text">
-            Capture from <b>{sourceName}</b>. Codex auto-tagging hasn't run yet — connect a Codex
-            instance in Settings &rarr; AI to enable.
+          <div className="psl__ai-card-scroll">
+            <div className="psl__ai-card-text">
+              {acceptedOrSuggestedDescription !== null ? (
+                acceptedOrSuggestedDescription
+              ) : codexStatus === "queued" || codexStatus === "running" ? (
+                "Codex is reading this capture."
+              ) : codexStatus === "failed" ? (
+                "Codex could not read this capture."
+              ) : (
+                <>
+                  Capture from <b>{sourceName}</b>. Enable AI in Settings to generate OCR,
+                  descriptions, and tag suggestions.
+                </>
+              )}
+            </div>
+            {enrichment?.ocrText ? (
+              <div className="psl__ai-card-ocr">{enrichment.ocrText}</div>
+            ) : null}
           </div>
           <div className="psl__ai-card-actions">
-            <button className="psl__chip-btn" type="button" disabled>
+            <button
+              className="psl__chip-btn"
+              type="button"
+              onClick={() => {
+                void dispatch("codex:enrich", { captureId: record.id });
+              }}
+            >
               Regenerate
             </button>
-            <button className="psl__chip-btn" type="button" disabled>
-              Apply tags
+            <button
+              className="psl__chip-btn"
+              type="button"
+              disabled={!hasSuggestedDescription || suggestedDescriptionAccepted}
+              onClick={() => {
+                const description = enrichment?.suggestedDescription;
+                if (description) {
+                  void dispatch("codex:acceptDescription", { captureId: record.id, description }).then((result) => {
+                    if (result.ok) {
+                      setEnrichment(result.value);
+                    }
+                  });
+                }
+              }}
+            >
+              {suggestedDescriptionAccepted ? "Caption used" : "Use caption"}
             </button>
-            <button className="psl__chip-btn" type="button" disabled>
-              Copy as alt-text
+            <button
+              className="psl__chip-btn"
+              type="button"
+              disabled={visiblePendingTags.length === 0}
+              onClick={() => {
+                void (async () => {
+                  for (const tag of visiblePendingTags) {
+                    if (tag.id === undefined) continue;
+                    const result = await dispatch("codex:acceptTag", {
+                      captureId: record.id,
+                      tagId: tag.id
+                    });
+                    if (result.ok) {
+                      setEnrichment(result.value);
+                    }
+                  }
+                })();
+              }}
+            >
+              Apply tags
             </button>
           </div>
         </div>
@@ -270,6 +383,23 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
       </div>
     </aside>
   );
+}
+
+function statusLabel(status: CaptureEnrichment["status"]): string {
+  switch (status) {
+    case "queued":
+      return "queued";
+    case "running":
+      return "reading";
+    case "completed":
+      return "ready";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case null:
+      return "not run";
+  }
 }
 
 function formatTimestamp(iso: string): string {

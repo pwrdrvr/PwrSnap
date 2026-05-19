@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
@@ -39,13 +40,15 @@ function FoTags({
   onAdd,
   onRemove,
   suggestions = [],
-  onAcceptSuggest
+  onAcceptSuggest,
+  onRejectSuggest
 }: {
   tags: string[];
   onAdd: (t: string) => void;
   onRemove: (t: string) => void;
-  suggestions?: string[];
-  onAcceptSuggest: (t: string) => void;
+  suggestions?: Array<{ id: string; label: string }>;
+  onAcceptSuggest: (suggestion: { id: string; label: string }) => void;
+  onRejectSuggest: (suggestion: { id: string; label: string }) => void;
 }) {
   const [draft, setDraft] = useState("");
   return (
@@ -59,11 +62,26 @@ function FoTags({
         </span>
       ))}
       {suggestions
-        .filter((s) => !tags.includes(s))
+        .filter((s) => !tags.includes(s.label))
         .slice(0, 2)
         .map((s) => (
-          <span key={s} className="fo__tag is-suggest" onClick={() => onAcceptSuggest(s)}>
-            + {s}
+          <span key={s.id} className="fo__tag is-suggest">
+            <button
+              type="button"
+              className="fo__tag-suggest-label"
+              onClick={() => onAcceptSuggest(s)}
+              title={`Use ${s.label}`}
+            >
+              + {s.label}
+            </button>
+            <button
+              type="button"
+              className="fo__tag-x"
+              onClick={() => onRejectSuggest(s)}
+              aria-label={`reject ${s.label}`}
+            >
+              ×
+            </button>
           </span>
         ))}
       <input
@@ -160,9 +178,13 @@ export function FloatOver({
   startCountdown = true,
   initialDescription = "",
   initialTags = [],
-  aiSuggestions = ["pwragnt", "ui", "thread-list"],
-  aiDescription = "PwrAgnt thread list with selected resume-menu thread",
-  thinking = false
+  enrichment,
+  aiEnabled = false,
+  aiConsentAccepted = false,
+  onEnableAi,
+  onAcceptDescription,
+  onAcceptTag,
+  onRejectTag
 }: {
   variant?: VariantId;
   /** Asset descriptor. `image` keeps the existing screenshot toast
@@ -197,17 +219,35 @@ export function FloatOver({
   startCountdown?: boolean;
   initialDescription?: string;
   initialTags?: string[];
-  aiSuggestions?: string[];
-  aiDescription?: string;
-  thinking?: boolean;
+  enrichment?: CaptureEnrichment | null;
+  aiEnabled?: boolean;
+  aiConsentAccepted?: boolean;
+  onEnableAi?: () => void;
+  onAcceptDescription?: (description: string) => void;
+  onAcceptTag?: (tagId: string) => void;
+  onRejectTag?: (tagId: string) => void;
 }) {
   const cfg = VARIANTS[variant];
+  const aiStatus = enrichment?.status ?? null;
+  const aiNeedsConsent = !aiEnabled || !aiConsentAccepted;
+  const acceptedDescription = enrichment?.acceptedDescription ?? initialDescription;
+  const suggestedDescription = enrichment?.suggestedDescription ?? "";
+  const acceptedTags = enrichment?.acceptedTags ?? initialTags;
+  const aiSuggestions =
+    enrichment?.suggestedTags
+      .filter((tag) => tag.id !== undefined && tag.accepted_at === null && tag.rejected_at === null)
+      .map((tag) => ({ id: tag.id!, label: tag.label })) ?? [];
+  const thinking = aiStatus === "queued" || aiStatus === "running";
+  const aiFailed = aiStatus === "failed";
   // Note: the prior `copiedId` / `initiallyCopied` state is gone — the
   // shared CopyButton component now owns its own copied state and the
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
   // no bytes-text swap). See features/shared/CopyButton.tsx.
-  const [description, setDescription] = useState(initialDescription);
-  const [tags, setTags] = useState<string[]>(initialTags);
+  const [description, setDescription] = useState(acceptedDescription);
+  const [descriptionOrigin, setDescriptionOrigin] = useState<"accepted" | "manual" | "suggested">(
+    acceptedDescription.trim().length > 0 ? "accepted" : "manual"
+  );
+  const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
   const [progress, setProgress] = useState(1);
@@ -217,6 +257,8 @@ export function FloatOver({
   const [visibleSrc, setVisibleSrc] = useState(src);
   const [sourceLoaded, setSourceLoaded] = useState(false);
 
+  const isSuggestedDescriptionPreview =
+    descriptionOrigin === "suggested" && suggestedDescription.trim().length > 0;
   const startedAt = useRef(Date.now());
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
@@ -229,11 +271,15 @@ export function FloatOver({
   // (With the persistent renderer + state machine added in this same
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previewedSuggestionRef = useRef("");
 
+  const hasUserDescription =
+    description.trim().length > 0 && descriptionOrigin !== "suggested";
   const isPaused =
+    thinking ||
     hovering ||
     nativeDragging ||
-    description.length > 0 ||
+    hasUserDescription ||
     tags.length > initialTags.length ||
     aiAccepted;
 
@@ -261,6 +307,31 @@ export function FloatOver({
       cancelled = true;
     };
   }, [sourceLoaded, src, enhancedSrc]);
+
+  useEffect(() => {
+    setDescription(acceptedDescription);
+    setDescriptionOrigin(acceptedDescription.trim().length > 0 ? "accepted" : "manual");
+    setTags(acceptedTags);
+  }, [acceptedDescription, acceptedTags.join("\0")]);
+
+  useEffect(() => {
+    if (acceptedDescription.trim().length > 0) return;
+    if (suggestedDescription.trim().length === 0) {
+      previewedSuggestionRef.current = "";
+      if (descriptionOrigin === "suggested") {
+        setDescription("");
+        setDescriptionOrigin("manual");
+      }
+      return;
+    }
+
+    const suggestionChanged = previewedSuggestionRef.current !== suggestedDescription;
+    if (descriptionOrigin === "suggested" || (description.trim().length === 0 && suggestionChanged)) {
+      previewedSuggestionRef.current = suggestedDescription;
+      setDescription(suggestedDescription);
+      setDescriptionOrigin("suggested");
+    }
+  }, [acceptedDescription, description, descriptionOrigin, suggestedDescription]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -580,10 +651,23 @@ export function FloatOver({
       {cfg.showAnnotate && (
         <div className="fo__annotate">
           <textarea
-            className="fo__desc"
+            className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
             placeholder="What is this? (a line of context now saves you 20 minutes later)"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              setDescriptionOrigin("manual");
+            }}
+            onBlur={() => {
+              const trimmed = description.trim();
+              if (
+                trimmed.length > 0 &&
+                trimmed !== acceptedDescription &&
+                descriptionOrigin !== "suggested"
+              ) {
+                onAcceptDescription?.(trimmed);
+              }
+            }}
             rows={2}
           />
           <FoTags
@@ -591,7 +675,13 @@ export function FloatOver({
             onAdd={(t) => setTags([...tags, t])}
             onRemove={(t) => setTags(tags.filter((x) => x !== t))}
             suggestions={aiSuggestions}
-            onAcceptSuggest={(s) => setTags([...tags, s])}
+            onAcceptSuggest={(suggestion) => {
+              setTags([...tags, suggestion.label]);
+              onAcceptTag?.(suggestion.id);
+            }}
+            onRejectSuggest={(suggestion) => {
+              onRejectTag?.(suggestion.id);
+            }}
           />
         </div>
       )}
@@ -610,22 +700,40 @@ export function FloatOver({
               <>
                 Description filled from <b>Codex</b>.
               </>
-            ) : (
+            ) : aiFailed ? (
+              <>Codex could not read this snap.</>
+            ) : isSuggestedDescriptionPreview ? (
+              <>Draft caption from <b>Codex</b>.</>
+            ) : suggestedDescription.length > 0 ? (
               <>
-                Codex thinks: <b>{aiDescription}</b>
+                Codex thinks: <b>{suggestedDescription}</b>
               </>
+            ) : aiNeedsConsent ? (
+              <>Enable Codex to read a bounded copy of this snap.</>
+            ) : (
+              <>Codex has no suggestion yet.</>
             )}
           </span>
-          {!thinking && !aiAccepted && (
+          {!thinking && suggestedDescription.length === 0 && aiNeedsConsent && (
+            <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+              Enable
+            </button>
+          )}
+          {!thinking && !aiFailed && !aiAccepted && suggestedDescription.length > 0 && (
             <button
               className="fo__ai-accept"
               onClick={() => {
-                setDescription(aiDescription);
-                setTags(Array.from(new Set([...tags, ...aiSuggestions.slice(0, 2)])));
+                setDescription(suggestedDescription);
+                setDescriptionOrigin("accepted");
+                setTags(Array.from(new Set([...tags, ...aiSuggestions.slice(0, 2).map((tag) => tag.label)])));
+                onAcceptDescription?.(suggestedDescription);
+                for (const suggestion of aiSuggestions.slice(0, 2)) {
+                  onAcceptTag?.(suggestion.id);
+                }
                 setAiAccepted(true);
               }}
             >
-              Use
+              {isSuggestedDescriptionPreview ? "Save" : "Use"}
             </button>
           )}
         </div>

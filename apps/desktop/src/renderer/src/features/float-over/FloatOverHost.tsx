@@ -18,7 +18,15 @@
 // to FloatOver in this same phase clears the timer on unmount.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { EVENT_CHANNELS, type CaptureRecord, type FloatOverEvent, type RenderPreset } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  type CaptureEnrichment,
+  type CaptureRecord,
+  type FloatOverEvent,
+  type RenderPreset,
+  type Settings,
+  type SettingsChangedEvent
+} from "@pwrsnap/shared";
 import { FloatOver, type FloatOverExportState } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
@@ -26,13 +34,22 @@ import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/p
 type HostState =
   | { kind: "idle" }
   | { kind: "loading"; captureId: string }
-  | { kind: "loaded"; record: CaptureRecord }
+  | {
+      kind: "loaded";
+      record: CaptureRecord;
+      enrichment: CaptureEnrichment | null;
+      settings: Settings | null;
+    }
   | { kind: "error"; captureId: string; message: string };
 
 const INITIAL_COPY_PULSES: Record<RenderPreset, number> = {
   low: 0,
   med: 0,
   high: 0
+};
+
+type AiRunUpdatedPayload = {
+  enrichment?: CaptureEnrichment | null;
 };
 
 export function FloatOverHost(): React.ReactElement {
@@ -105,7 +122,12 @@ export function FloatOverHost(): React.ReactElement {
           // show a stale "Saved" badge from the previous recording.
           setVideoExportState({ kind: "idle" });
           if (event.record !== undefined) {
-            setState({ kind: "loaded", record: event.record });
+            setState({
+              kind: "loaded",
+              record: event.record,
+              enrichment: null,
+              settings: null
+            });
           } else {
             setState({ kind: "loading", captureId: event.captureId });
           }
@@ -154,12 +176,53 @@ export function FloatOverHost(): React.ReactElement {
         setState({ kind: "error", captureId, message: `capture not found: ${captureId}` });
         return;
       }
-      setState({ kind: "loaded", record: result.value });
+      const record = result.value;
+      void Promise.all([
+        dispatch("codex:enrichment", { captureId }),
+        dispatch("settings:read", {})
+      ]).then(([enrichmentResult, settingsResult]) => {
+        if (cancelled) return;
+        setState({
+          kind: "loaded",
+          record,
+          enrichment: enrichmentResult.ok ? enrichmentResult.value : null,
+          settings: settingsResult.ok ? settingsResult.value : null
+        });
+      });
     });
     return () => {
       cancelled = true;
     };
   }, [state]);
+
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.aiRunUpdated, (payload) => {
+      const enrichment = (payload as AiRunUpdatedPayload).enrichment;
+      if (enrichment === undefined || enrichment === null) return;
+      setState((current) => {
+        if (current.kind !== "loaded" || current.record.id !== enrichment.captureId) {
+          return current;
+        }
+        return { ...current, enrichment };
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.pwrsnapApi?.on(EVENT_CHANNELS.settingsChanged, (payload) => {
+      const { settings } = payload as SettingsChangedEvent;
+      setState((current) => {
+        if (current.kind !== "loaded") return current;
+        return { ...current, settings };
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
 
   // ⌘1 / ⌘2 / ⌘3 → clipboard:copy. Always-mounted listener — no remount-
   // induced gaps where the keystroke is in flight but the listener has
@@ -228,7 +291,7 @@ export function FloatOverHost(): React.ReactElement {
       </div>
     );
   } else {
-    const { record } = state;
+    const { enrichment, record, settings } = state;
     const isVideo =
       record.kind === "video" && record.video !== null && record.video !== undefined;
     const previewSrc = captureSrcUrl(record.id);
@@ -317,6 +380,33 @@ export function FloatOverHost(): React.ReactElement {
         copyPulses={copyPulses}
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
+        enrichment={enrichment}
+        aiEnabled={settings?.ai.enabled ?? false}
+        aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
+        onEnableAi={() => {
+          void dispatch("settings:write", {
+            ai: {
+              enabled: true,
+              consentAcceptedAt: new Date().toISOString()
+            }
+          }).then((result) => {
+            if (!result.ok) return;
+            setState((current) => {
+              if (current.kind !== "loaded" || current.record.id !== record.id) return current;
+              return { ...current, settings: result.value };
+            });
+            void dispatch("codex:enrich", { captureId: record.id });
+          });
+        }}
+        onAcceptDescription={(description) => {
+          void dispatch("codex:acceptDescription", { captureId: record.id, description });
+        }}
+        onAcceptTag={(tagId) => {
+          void dispatch("codex:acceptTag", { captureId: record.id, tagId });
+        }}
+        onRejectTag={(tagId) => {
+          void dispatch("codex:rejectTag", { captureId: record.id, tagId });
+        }}
         onDismiss={() => {
           // User dismissed via the X / countdown / Esc-on-toast. Tell
           // main to hide; main flips state HIDDEN and the IPC echo

@@ -120,6 +120,7 @@ export function registerLibraryHandlers(): void {
     if (record === null) {
       return err({ kind: "validation", code: "not_found", message: `capture not found: ${req.id}` });
     }
+    bus.cancel(req.id);
     softDeleteCapture(req.id);
     try {
       await moveSourceToTrash(record.src_path, record.id);

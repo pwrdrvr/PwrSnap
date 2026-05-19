@@ -1250,13 +1250,51 @@
   background: color-mix(in srgb, var(--accent) 4%, transparent);
   border-radius: 8px;
   display: flex; flex-direction: column; gap: 8px;
+  max-height: clamp(190px, 38vh, 340px);
+  min-height: 0;
+  overflow: hidden;
   position: relative;
 }
 .psl__ai-card-hdr { display: flex; align-items: center; gap: 6px; font: 600 11px/1 var(--font-sans); }
 .psl__ai-card-hdr svg { color: var(--accent); }
 .psl__ai-card-hdr small { margin-left: auto; font: 500 9px/1 var(--font-mono); color: var(--text-muted); }
-.psl__ai-card-text { font: 400 12px/1.45 var(--font-sans); color: var(--text-secondary); }
+.psl__ai-card-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232,116,58,0.42) rgba(255,255,255,0.06);
+}
+.psl__ai-card-scroll::-webkit-scrollbar { width: 8px; }
+.psl__ai-card-scroll::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.06);
+  border-radius: 999px;
+}
+.psl__ai-card-scroll::-webkit-scrollbar-thumb {
+  background: rgba(232,116,58,0.42);
+  border-radius: 999px;
+}
+.psl__ai-card-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 400 12px/1.45 var(--font-sans);
+  color: var(--text-secondary);
+}
 .psl__ai-card-text b { color: var(--text-primary); }
+.psl__ai-card-ocr {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: 500 10px/1.45 var(--font-mono);
+  color: var(--text-muted);
+  background: rgba(0,0,0,0.18);
+}
 .psl__ai-card-actions { display: flex; gap: 6px; }
 .psl__chip-btn {
   height: 22px; padding: 0 8px;
@@ -1269,6 +1307,14 @@
   display: inline-flex; align-items: center; gap: 4px;
 }
 .psl__chip-btn:hover { color: var(--text-primary); border-color: var(--accent-border); }
+.psl__chip-btn:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+.psl__chip-btn:disabled:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
 .psl__chip-btn--accent { background: var(--accent); border-color: var(--accent); color: var(--button-text-on-accent); }
 .psl__chip-btn--accent:hover { background: var(--accent-strong); color: var(--button-text-on-accent); }
 /* Square icon-only sibling for `.psl__chip-btn`. Matches the chip's

@@ -93,7 +93,12 @@ export function normalizeRepository(repository) {
     .replace(/^git:\/\//, "https://")
     .replace(/^ssh:\/\/git@github\.com\//, "https://github.com/")
     .replace(/^git@github\.com:/, "https://github.com/")
-    .replace(/\.git$/, "");
+    .replace(/\.git$/, "")
+    .replace(/#readme$/i, "");
+}
+
+export function normalizeSourceUrl(source) {
+  return typeof source === "string" ? source.replace(/#readme$/i, "") : source;
 }
 
 export function npmPackageUrl(name) {
@@ -187,12 +192,13 @@ function enrichRecord(record) {
     : declaredLicenseFallbackText(record, packageJson);
   return {
     ...record,
-    source:
+    source: normalizeSourceUrl(
       normalizeRepository(packageJson?.repository) ??
       packageJson?.homepage ??
       record.source ??
       record.homepage ??
       npmPackageUrl(record.name),
+    ),
     licenseFile: licensePath
       ? relative(record.packagePath, licensePath)
       : "package metadata",

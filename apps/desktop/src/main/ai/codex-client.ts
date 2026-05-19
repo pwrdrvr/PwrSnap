@@ -1,0 +1,342 @@
+import { readFile } from "node:fs/promises";
+import type {
+  InitializeParams,
+  InitializeResponse,
+  ResponseItem,
+  ServerNotification,
+  ServerRequest
+} from "@pwrsnap/codex-app-server-protocol";
+import type {
+  DynamicToolCallResponse,
+  ItemCompletedNotification,
+  ThreadStartResponse,
+  TurnCompletedNotification,
+  TurnStartResponse
+} from "@pwrsnap/codex-app-server-protocol/v2";
+import type { EnrichmentResult } from "@pwrsnap/shared";
+import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
+import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
+import { getMainLogger } from "../log";
+import {
+  CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
+  CAPTURE_ENRICHMENT_SCHEMA,
+  buildCaptureEnrichmentPrompt,
+  type CaptureEnrichmentPromptMetadata,
+  parseCaptureEnrichmentResponse
+} from "./enrichment-schema";
+
+const codexClientLog = getMainLogger("pwrsnap:codex-client");
+
+export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
+
+export type CodexCaptureEnrichmentRequest = {
+  imagePaths: readonly string[];
+  metadata: CaptureEnrichmentPromptMetadata;
+  abortSignal?: AbortSignal;
+};
+
+export type CodexCaptureEnrichmentResponse = {
+  result: EnrichmentResult;
+  threadId: string;
+  turnId: string;
+  userAgent: string;
+};
+
+export type CodexAppServerClientOptions = {
+  command: string;
+  requestTimeoutMs?: number;
+  turnTimeoutMs?: number;
+  transportFactory?: CodexClientTransportFactory;
+};
+
+type PendingTurn = {
+  threadId: string;
+  turnId: string;
+  agentMessages: string[];
+  resolve: (value: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+export class CodexAppServerClient {
+  private readonly requestTimeoutMs: number;
+  private readonly turnTimeoutMs: number;
+  private readonly transportFactory: CodexClientTransportFactory;
+  private connection: JsonRpcConnection | null = null;
+  private initializeResponse: InitializeResponse | null = null;
+  private pendingTurn: PendingTurn | null = null;
+
+  constructor(private readonly options: CodexAppServerClientOptions) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 20_000;
+    this.turnTimeoutMs = options.turnTimeoutMs ?? 120_000;
+    this.transportFactory =
+      options.transportFactory ??
+      ((command) => new StdioJsonRpcTransport({ command }));
+  }
+
+  async enrichCapture(
+    request: CodexCaptureEnrichmentRequest
+  ): Promise<CodexCaptureEnrichmentResponse> {
+    const connection = await this.getConnection();
+    const initialized = await this.initialize();
+    let threadId: string | null = null;
+    let turnId: string | null = null;
+    let aborted = false;
+
+    const abortHandler = (): void => {
+      aborted = true;
+      if (threadId && turnId) {
+        void connection
+          .request("turn/interrupt", { threadId, turnId }, this.requestTimeoutMs)
+          .catch((error: unknown) => {
+            codexClientLog.warn("turn interrupt failed", {
+              error: error instanceof Error ? error.message : String(error)
+            });
+          });
+      }
+    };
+
+    request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
+
+    try {
+      if (request.abortSignal?.aborted) {
+        throw new DOMException("capture enrichment aborted", "AbortError");
+      }
+      if (request.imagePaths.length === 0) {
+        throw new Error("capture enrichment requires at least one image input");
+      }
+      const imageDataUrls = await Promise.all(request.imagePaths.map((path) => imagePathToDataUrl(path)));
+
+      const threadResponse = (await connection.request(
+        "thread/start",
+        {
+          ephemeral: true,
+          approvalPolicy: "never",
+          sandbox: "read-only",
+          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS
+        },
+        this.requestTimeoutMs
+      )) as ThreadStartResponse;
+      threadId = threadResponse.thread.id;
+
+      const turnResponse = (await connection.request(
+        "turn/start",
+        {
+          threadId,
+          input: [
+            {
+              type: "text",
+              text: buildCaptureEnrichmentPrompt(request.metadata),
+              text_elements: []
+            },
+            ...imageDataUrls.map((url) => ({
+              type: "image",
+              url
+            }))
+          ],
+          effort: "low",
+          outputSchema: CAPTURE_ENRICHMENT_SCHEMA
+        },
+        this.requestTimeoutMs
+      )) as TurnStartResponse;
+      turnId = turnResponse.turn.id;
+
+      if (request.abortSignal?.aborted || aborted) {
+        throw new DOMException("capture enrichment aborted", "AbortError");
+      }
+
+      const rawText = await this.waitForTurn(threadId, turnId);
+      const result = parseCaptureEnrichmentResponse(rawText);
+      return {
+        result,
+        threadId,
+        turnId,
+        userAgent: initialized.userAgent
+      };
+    } finally {
+      request.abortSignal?.removeEventListener("abort", abortHandler);
+      if (threadId) {
+        await connection
+          .request("thread/archive", { threadId }, this.requestTimeoutMs)
+          .catch((error: unknown) => {
+            codexClientLog.warn("thread archive failed", {
+              threadId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          });
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    const connection = this.connection;
+    this.connection = null;
+    this.initializeResponse = null;
+    if (connection) {
+      await connection.close();
+    }
+  }
+
+  private async initialize(): Promise<InitializeResponse> {
+    if (this.initializeResponse) {
+      return this.initializeResponse;
+    }
+
+    const connection = await this.getConnection();
+    const params: InitializeParams = {
+      clientInfo: {
+        name: "pwrsnap",
+        title: "PwrSnap",
+        version: "1.0.0-alpha.3"
+      },
+      capabilities: {
+        experimentalApi: true
+      }
+    };
+    const response = (await connection.request(
+      "initialize",
+      params,
+      this.requestTimeoutMs
+    )) as InitializeResponse;
+    this.initializeResponse = response;
+    return response;
+  }
+
+  private async getConnection(): Promise<JsonRpcConnection> {
+    if (this.connection) {
+      return this.connection;
+    }
+
+    const connection = new JsonRpcConnection(
+      this.transportFactory(this.options.command),
+      this.requestTimeoutMs,
+      undefined,
+      { logContext: { owner: "capture-enrichment" } }
+    );
+    connection.setNotificationHandler((method, params) => {
+      this.handleNotification(method, params);
+    });
+    connection.setRequestHandler((method, params) => this.handleServerRequest(method, params));
+    await connection.connect();
+    this.connection = connection;
+    return connection;
+  }
+
+  private waitForTurn(threadId: string, turnId: string): Promise<string> {
+    if (this.pendingTurn) {
+      throw new Error("codex capture enrichment already has an active turn");
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTurn = null;
+        reject(new Error("codex capture enrichment timed out"));
+      }, this.turnTimeoutMs);
+      this.pendingTurn = {
+        threadId,
+        turnId,
+        agentMessages: [],
+        resolve,
+        reject,
+        timer
+      };
+    });
+  }
+
+  private handleNotification(method: string, params: unknown): void {
+    if (method === "item/completed") {
+      this.handleItemCompleted(params as ItemCompletedNotification);
+      return;
+    }
+    if (method === "rawResponseItem/completed") {
+      this.handleRawResponseItemCompleted(params as ServerNotification["params"]);
+      return;
+    }
+    if (method === "turn/completed") {
+      this.handleTurnCompleted(params as TurnCompletedNotification);
+    }
+  }
+
+  private handleItemCompleted(params: ItemCompletedNotification): void {
+    const pending = this.pendingTurn;
+    if (!pending || params.threadId !== pending.threadId || params.turnId !== pending.turnId) {
+      return;
+    }
+    if (params.item.type === "agentMessage") {
+      pending.agentMessages.push(params.item.text);
+    }
+  }
+
+  private handleRawResponseItemCompleted(params: ServerNotification["params"]): void {
+    const pending = this.pendingTurn;
+    if (!pending || typeof params !== "object" || params === null) {
+      return;
+    }
+    const maybe = params as { threadId?: unknown; turnId?: unknown; item?: ResponseItem };
+    if (maybe.threadId !== pending.threadId || maybe.turnId !== pending.turnId) {
+      return;
+    }
+    const item = maybe.item;
+    if (item?.type !== "message" || item.role !== "assistant") {
+      return;
+    }
+    const text = item.content
+      .filter((content) => content.type === "output_text")
+      .map((content) => content.text)
+      .join("");
+    if (text) {
+      pending.agentMessages.push(text);
+    }
+  }
+
+  private handleTurnCompleted(params: TurnCompletedNotification): void {
+    const pending = this.pendingTurn;
+    if (!pending || params.threadId !== pending.threadId || params.turn.id !== pending.turnId) {
+      return;
+    }
+
+    clearTimeout(pending.timer);
+    this.pendingTurn = null;
+
+    if (params.turn.status === "failed") {
+      pending.reject(new Error(params.turn.error?.message ?? "codex capture enrichment failed"));
+      return;
+    }
+    if (params.turn.status === "interrupted") {
+      pending.reject(new DOMException("capture enrichment aborted", "AbortError"));
+      return;
+    }
+
+    const rawText = pending.agentMessages.at(-1)?.trim();
+    if (!rawText) {
+      pending.reject(new Error("codex capture enrichment returned no assistant message"));
+      return;
+    }
+    pending.resolve(rawText);
+  }
+
+  private async handleServerRequest(method: string, params: unknown): Promise<unknown> {
+    if (method === "item/tool/call") {
+      return {
+        contentItems: [
+          {
+            type: "inputText",
+            text: "PwrSnap capture enrichment does not expose tools during this background run."
+          }
+        ],
+        success: false
+      } satisfies DynamicToolCallResponse;
+    }
+
+    const maybe = params as ServerRequest["params"];
+    if (maybe !== undefined) {
+      codexClientLog.debug("unhandled codex server request", { method });
+    }
+    return {};
+  }
+}
+
+async function imagePathToDataUrl(imagePath: string): Promise<string> {
+  const image = await readFile(imagePath);
+  return `data:image/jpeg;base64,${image.toString("base64")}`;
+}

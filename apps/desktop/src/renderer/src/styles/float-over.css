@@ -378,6 +378,11 @@
 }
 .fo__desc::placeholder { color: var(--text-subtle); }
 .fo__desc:focus { border-color: var(--accent-border); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.fo__desc.is-suggested {
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 3.5%, transparent);
+}
 
 .fo__tags {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
@@ -408,11 +413,20 @@
   border-style: dashed;
   border-color: color-mix(in srgb, var(--accent) 32%, transparent);
   color: var(--accent);
-  cursor: pointer;
+  padding-right: 4px;
 }
 .fo__tag.is-suggest:hover {
   background: var(--accent-soft);
   border-style: solid;
+}
+.fo__tag-suggest-label {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
 }
 .fo__tag-input {
   flex: 1; min-width: 60px;

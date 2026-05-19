@@ -807,6 +807,17 @@
   color: var(--accent);
 }
 .psl__frame-app svg { width: 8px; height: 8px; }
+/* Same chrome-drop as .psl__app-dot — real squircle stands alone,
+   no copper bezel framing it (which reads as a second icon). */
+.psl__frame-app:has(> .ps-app-icon-img) {
+  border-color: transparent;
+  background: transparent;
+}
+.psl__frame-app > .ps-app-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 /* Hover-only trash affordance on filmstrip frames. Same pattern as
    `.psl__cell-trash` but smaller — frames are 70×56. Sits in the
    top-right opposite the bottom-right app dot. */
@@ -1513,6 +1524,20 @@
   color: var(--accent);
 }
 .psl__app-dot svg { width: 10px; height: 10px; }
+/* Real-bundle icons in the grid-cell corner dot — drop the copper
+   tile chrome so the macOS squircle stands on its own. Same pattern
+   as .ps-app-tag__tile / .psl__nav-icon. Without this the copper-
+   bordered 18×18 dot framing a smaller real icon reads as TWO
+   icons stacked. */
+.psl__app-dot:has(> .ps-app-icon-img) {
+  border-color: transparent;
+  background: transparent;
+}
+.psl__app-dot > .ps-app-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
 
 /* ============================================================

@@ -85,6 +85,7 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
     id: sequence,
     app,
     appName,
+    bundleId: record.source_app_bundle_id,
     n: name,
     tags: [],
     day,

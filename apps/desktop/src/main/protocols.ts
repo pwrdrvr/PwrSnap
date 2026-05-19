@@ -31,7 +31,7 @@ import { extname } from "node:path";
 import { app, protocol } from "electron";
 import { getMainLogger } from "./log";
 import { getSnapshotPath } from "./capture/screen-snapshot";
-import { parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
+import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "./protocols-parse";
 
 const log = getMainLogger("pwrsnap:protocols");
 
@@ -75,6 +75,17 @@ export function registerSchemesAsPrivileged(): void {
         corsEnabled: true,
         stream: true
       }
+    },
+    {
+      scheme: SCHEMES.appIcon,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        bypassCSP: false,
+        corsEnabled: true,
+        stream: true
+      }
     }
   ]);
 }
@@ -96,6 +107,12 @@ export type ProtocolResolver = {
     width: number;
     format: "png" | "webp";
   }): Promise<string | null>;
+  /**
+   * Resolve a bundle id to a cached app-icon PNG. Returns null when
+   * the app isn't installed locally or extraction failed — renderer
+   * gets a 404 and falls back to procedural initials.
+   */
+  appIconPath(bundleId: string): Promise<string | null>;
 };
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -232,6 +249,29 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
     } catch (cause) {
       log.error("screen handler threw", {
         id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return new Response("internal error", { status: 500 });
+    }
+  });
+
+  protocol.handle(SCHEMES.appIcon, async (request) => {
+    const bundleId = parseAppIconBundleId(request.url);
+    if (bundleId === null) {
+      log.warn("app-icon: invalid url", { url: request.url });
+      return new Response("invalid bundle id", { status: 400 });
+    }
+    try {
+      const filePath = await resolver.appIconPath(bundleId);
+      if (filePath === null) {
+        // Not installed locally / extraction missed. Renderer's <img>
+        // onError handler swaps to the procedural fallback — quiet 404.
+        return new Response("not found", { status: 404 });
+      }
+      return await fileResponse(filePath, request);
+    } catch (cause) {
+      log.error("app-icon handler threw", {
+        bundleId,
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return new Response("internal error", { status: 500 });

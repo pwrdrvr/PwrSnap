@@ -90,6 +90,22 @@
 .ps-app-tag.is-sm { height: 18px; font-size: 9px; padding-right: 6px; gap: 4px; }
 .ps-app-tag.is-sm .ps-app-tag__tile { width: 18px; height: 18px; }
 .ps-app-tag.is-sm .ps-app-tag__tile svg { width: 10px; height: 10px; }
+/* Real-bundle full-color icons (extracted from the installed .app
+   via the pwrsnap-app-icon:// protocol). macOS app icons carry their
+   own squircle + bezel — the copper-bordered tile chrome that frames
+   the procedural / hand-drawn glyphs becomes redundant + noisy on
+   top of them. Drop the chrome and let the icon fill the tile. */
+.ps-app-tag__tile:has(> .ps-app-icon-img) {
+  background: transparent;
+  border-right: none;
+  border-radius: 4px;
+  padding: 1px;
+}
+.ps-app-tag__tile > .ps-app-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
 /* ============================================================
    TRAY menubar (host frame for tray dropdown)
@@ -611,6 +627,17 @@
   background: var(--bg-panel-elevated);
 }
 .psl__nav-icon svg { width: 11px; height: 11px; }
+/* Real-bundle icons in the Source App sidebar list — drop tile chrome
+   so the macOS squircle stands on its own (see .ps-app-tag__tile note). */
+.psl__nav-icon:has(> .ps-app-icon-img) {
+  border-color: transparent;
+  background: transparent;
+}
+.psl__nav-icon > .ps-app-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
 .psl__nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .psl__nav-count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); flex-shrink: 0; }
 .psl__nav.is-active .psl__nav-count { color: var(--accent-bright); }

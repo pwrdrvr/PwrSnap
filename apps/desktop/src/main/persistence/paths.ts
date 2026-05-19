@@ -84,6 +84,15 @@ export function getCacheRoot(): string {
   return join(getDataRoot(), "render-cache");
 }
 
+/**
+ * App-bundle icon cache. Shared cross-capture, addressed by bundle id
+ * (one PNG + one JSON sidecar per app). Lifetime is governed by the
+ * installed .app's `Info.plist` mtime — see main/app-icons/.
+ */
+export function getAppIconsRoot(): string {
+  return join(getDataRoot(), "app-icons");
+}
+
 export function getLegacyCacheRoot(): string {
   return join(getDataRoot(), "cache");
 }

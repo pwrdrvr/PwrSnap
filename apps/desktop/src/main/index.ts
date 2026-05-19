@@ -9,6 +9,7 @@ import {
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
 import { activateApp, listWindows } from "./capture/window-list";
+import { getAppIconPath } from "./app-icons/app-icon-cache";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
 import { installDevelopmentDockIcon } from "./development-dock-icon";
@@ -607,6 +608,9 @@ const protocolResolver: ProtocolResolver = {
   },
   async cacheFile(req) {
     return resolveCacheFile(req);
+  },
+  async appIconPath(bundleId) {
+    return getAppIconPath(bundleId);
   }
 };
 

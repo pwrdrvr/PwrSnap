@@ -29,4 +29,18 @@ describe("database migrations", () => {
       db.close();
     }
   });
+
+  test("ai enrichment migration tolerates dev databases that already have old AI tables", () => {
+    const db = new Database(":memory:");
+    try {
+      db.pragma("foreign_keys = ON");
+      for (const file of migrationFiles()) {
+        db.exec(readFileSync(join(migrationsDir, file), "utf8"));
+      }
+
+      db.exec(readFileSync(join(migrationsDir, "0006_ai_enrichment.sql"), "utf8"));
+    } finally {
+      db.close();
+    }
+  });
 });

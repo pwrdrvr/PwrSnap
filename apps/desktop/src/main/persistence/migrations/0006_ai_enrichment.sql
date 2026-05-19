@@ -4,7 +4,7 @@
 -- descriptions are sensitive local data: they stay in SQLite, are removed
 -- by capture cascade, and should never be logged in full.
 
-CREATE TABLE ai_runs (
+CREATE TABLE IF NOT EXISTS ai_runs (
   id                       TEXT NOT NULL PRIMARY KEY,
   capture_id               TEXT NOT NULL,
   kind                     TEXT NOT NULL CHECK (kind IN ('enrich')),
@@ -23,13 +23,13 @@ CREATE TABLE ai_runs (
   FOREIGN KEY (capture_id) REFERENCES captures(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_ai_runs_capture_kind
+CREATE INDEX IF NOT EXISTS idx_ai_runs_capture_kind
   ON ai_runs (capture_id, kind, created_at DESC);
 
-CREATE INDEX idx_ai_runs_status
+CREATE INDEX IF NOT EXISTS idx_ai_runs_status
   ON ai_runs (status, created_at);
 
-CREATE TABLE capture_enrichments (
+CREATE TABLE IF NOT EXISTS capture_enrichments (
   capture_id                TEXT NOT NULL PRIMARY KEY,
   latest_ai_run_id          TEXT,
   ocr_text                  TEXT,
@@ -42,7 +42,7 @@ CREATE TABLE capture_enrichments (
   FOREIGN KEY (latest_ai_run_id) REFERENCES ai_runs(id) ON DELETE SET NULL
 );
 
-CREATE TABLE enrichment_tag_suggestions (
+CREATE TABLE IF NOT EXISTS enrichment_tag_suggestions (
   id                 TEXT NOT NULL PRIMARY KEY,
   capture_id         TEXT NOT NULL,
   ai_run_id          TEXT NOT NULL,
@@ -57,10 +57,10 @@ CREATE TABLE enrichment_tag_suggestions (
   UNIQUE (capture_id, ai_run_id, normalized_label)
 );
 
-CREATE INDEX idx_enrichment_tag_suggestions_capture
+CREATE INDEX IF NOT EXISTS idx_enrichment_tag_suggestions_capture
   ON enrichment_tag_suggestions (capture_id, created_at);
 
-CREATE TABLE tags (
+CREATE TABLE IF NOT EXISTS tags (
   id                 TEXT NOT NULL PRIMARY KEY,
   label              TEXT NOT NULL,
   normalized_label   TEXT NOT NULL,
@@ -69,7 +69,7 @@ CREATE TABLE tags (
   UNIQUE (kind, normalized_label)
 );
 
-CREATE TABLE capture_tags (
+CREATE TABLE IF NOT EXISTS capture_tags (
   capture_id      TEXT NOT NULL,
   tag_id          TEXT NOT NULL,
   source          TEXT NOT NULL CHECK (source IN ('user', 'codex', 'app')),
@@ -81,5 +81,5 @@ CREATE TABLE capture_tags (
   FOREIGN KEY (ai_run_id) REFERENCES ai_runs(id) ON DELETE SET NULL
 );
 
-CREATE INDEX idx_capture_tags_tag
+CREATE INDEX IF NOT EXISTS idx_capture_tags_tag
   ON capture_tags (tag_id, created_at);

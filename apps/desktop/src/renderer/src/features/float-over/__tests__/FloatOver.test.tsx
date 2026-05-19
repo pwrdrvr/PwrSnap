@@ -361,8 +361,9 @@ describe("FloatOver Codex suggestions", () => {
     expect(el.querySelector<HTMLTextAreaElement>(".fo__desc")?.value).toBe(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
-    expect(el.querySelector(".fo__ai-text")?.textContent).toBe("Draft caption from Codex.");
-    expect(el.querySelector(".fo__ai-text")?.textContent).not.toContain(
+    // Pill says "Codex drafted a title + description" — it must NOT echo the
+    // description text itself, because the textarea already shows it.
+    expect(el.querySelector(".ps-codex-pill__text")?.textContent).not.toContain(
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
     expect(el.querySelector(".fo__ai-accept")?.textContent).toBe("Save");

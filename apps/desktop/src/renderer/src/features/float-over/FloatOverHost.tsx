@@ -398,6 +398,9 @@ export function FloatOverHost(): React.ReactElement {
             void dispatch("codex:enrich", { captureId: record.id });
           });
         }}
+        onAcceptTitle={(title) => {
+          void dispatch("codex:acceptTitle", { captureId: record.id, title });
+        }}
         onAcceptDescription={(description) => {
           void dispatch("codex:acceptDescription", { captureId: record.id, description });
         }}

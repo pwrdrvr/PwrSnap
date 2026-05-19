@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
+import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
@@ -176,12 +177,14 @@ export function FloatOver({
   onDragFile,
   onDragPreset,
   startCountdown = true,
+  initialTitle = "",
   initialDescription = "",
   initialTags = [],
   enrichment,
   aiEnabled = false,
   aiConsentAccepted = false,
   onEnableAi,
+  onAcceptTitle,
   onAcceptDescription,
   onAcceptTag,
   onRejectTag
@@ -217,12 +220,14 @@ export function FloatOver({
   /** Fired from a Low / Med / High drag gesture to hand that preset to the OS. */
   onDragPreset?: (preset: "low" | "med" | "high") => void;
   startCountdown?: boolean;
+  initialTitle?: string;
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
   onEnableAi?: () => void;
+  onAcceptTitle?: (title: string) => void;
   onAcceptDescription?: (description: string) => void;
   onAcceptTag?: (tagId: string) => void;
   onRejectTag?: (tagId: string) => void;
@@ -230,6 +235,8 @@ export function FloatOver({
   const cfg = VARIANTS[variant];
   const aiStatus = enrichment?.status ?? null;
   const aiNeedsConsent = !aiEnabled || !aiConsentAccepted;
+  const acceptedTitle = enrichment?.acceptedTitle ?? initialTitle;
+  const suggestedTitle = enrichment?.suggestedTitle ?? "";
   const acceptedDescription = enrichment?.acceptedDescription ?? initialDescription;
   const suggestedDescription = enrichment?.suggestedDescription ?? "";
   const acceptedTags = enrichment?.acceptedTags ?? initialTags;
@@ -243,6 +250,10 @@ export function FloatOver({
   // shared CopyButton component now owns its own copied state and the
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
   // no bytes-text swap). See features/shared/CopyButton.tsx.
+  const [title, setTitle] = useState(acceptedTitle);
+  const [titleOrigin, setTitleOrigin] = useState<"accepted" | "manual" | "suggested">(
+    acceptedTitle.trim().length > 0 ? "accepted" : "manual"
+  );
   const [description, setDescription] = useState(acceptedDescription);
   const [descriptionOrigin, setDescriptionOrigin] = useState<"accepted" | "manual" | "suggested">(
     acceptedDescription.trim().length > 0 ? "accepted" : "manual"
@@ -272,14 +283,17 @@ export function FloatOver({
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewedSuggestionRef = useRef("");
+  const previewedTitleSuggestionRef = useRef("");
 
   const hasUserDescription =
     description.trim().length > 0 && descriptionOrigin !== "suggested";
+  const hasUserTitle = title.trim().length > 0 && titleOrigin !== "suggested";
   const isPaused =
     thinking ||
     hovering ||
     nativeDragging ||
     hasUserDescription ||
+    hasUserTitle ||
     tags.length > initialTags.length ||
     aiAccepted;
 
@@ -311,8 +325,10 @@ export function FloatOver({
   useEffect(() => {
     setDescription(acceptedDescription);
     setDescriptionOrigin(acceptedDescription.trim().length > 0 ? "accepted" : "manual");
+    setTitle(acceptedTitle);
+    setTitleOrigin(acceptedTitle.trim().length > 0 ? "accepted" : "manual");
     setTags(acceptedTags);
-  }, [acceptedDescription, acceptedTags.join("\0")]);
+  }, [acceptedDescription, acceptedTitle, acceptedTags.join("\0")]);
 
   useEffect(() => {
     if (acceptedDescription.trim().length > 0) return;
@@ -332,6 +348,25 @@ export function FloatOver({
       setDescriptionOrigin("suggested");
     }
   }, [acceptedDescription, description, descriptionOrigin, suggestedDescription]);
+
+  useEffect(() => {
+    if (acceptedTitle.trim().length > 0) return;
+    if (suggestedTitle.trim().length === 0) {
+      previewedTitleSuggestionRef.current = "";
+      if (titleOrigin === "suggested") {
+        setTitle("");
+        setTitleOrigin("manual");
+      }
+      return;
+    }
+
+    const suggestionChanged = previewedTitleSuggestionRef.current !== suggestedTitle;
+    if (titleOrigin === "suggested" || (title.trim().length === 0 && suggestionChanged)) {
+      previewedTitleSuggestionRef.current = suggestedTitle;
+      setTitle(suggestedTitle);
+      setTitleOrigin("suggested");
+    }
+  }, [acceptedTitle, title, titleOrigin, suggestedTitle]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -650,10 +685,32 @@ export function FloatOver({
 
       {cfg.showAnnotate && (
         <div className="fo__annotate">
+          <input
+            className={`fo__title${titleOrigin === "suggested" ? " is-suggested" : ""}`}
+            type="text"
+            placeholder="Title — short headline"
+            value={title}
+            maxLength={120}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              setTitleOrigin("manual");
+            }}
+            onBlur={() => {
+              const trimmed = title.trim();
+              if (
+                trimmed.length > 0 &&
+                trimmed !== acceptedTitle &&
+                titleOrigin !== "suggested"
+              ) {
+                onAcceptTitle?.(trimmed);
+              }
+            }}
+          />
           <textarea
             className={`fo__desc${descriptionOrigin === "suggested" ? " is-suggested" : ""}`}
-            placeholder="What is this? (a line of context now saves you 20 minutes later)"
+            placeholder="Description — a sentence or two of context"
             value={description}
+            maxLength={2000}
             onChange={(e) => {
               setDescription(e.target.value);
               setDescriptionOrigin("manual");
@@ -687,55 +744,54 @@ export function FloatOver({
       )}
 
       {cfg.showAi && (
-        <div className="fo__ai">
-          <span className="fo__ai-mark">
-            <FoIcon name="sparkles" size={12} />
-          </span>
-          <span className="fo__ai-text">
-            {thinking ? (
-              <>
-                Codex is reading the snap<span className="fo__ai-thinking" />
-              </>
-            ) : aiAccepted ? (
-              <>
-                Description filled from <b>Codex</b>.
-              </>
-            ) : aiFailed ? (
-              <>Codex could not read this snap.</>
-            ) : isSuggestedDescriptionPreview ? (
-              <>Draft caption from <b>Codex</b>.</>
-            ) : suggestedDescription.length > 0 ? (
-              <>
-                Codex thinks: <b>{suggestedDescription}</b>
-              </>
-            ) : aiNeedsConsent ? (
-              <>Enable Codex to read a bounded copy of this snap.</>
-            ) : (
-              <>Codex has no suggestion yet.</>
-            )}
-          </span>
-          {!thinking && suggestedDescription.length === 0 && aiNeedsConsent && (
-            <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
-              Enable
-            </button>
-          )}
-          {!thinking && !aiFailed && !aiAccepted && suggestedDescription.length > 0 && (
-            <button
-              className="fo__ai-accept"
-              onClick={() => {
-                setDescription(suggestedDescription);
-                setDescriptionOrigin("accepted");
-                setTags(Array.from(new Set([...tags, ...aiSuggestions.slice(0, 2).map((tag) => tag.label)])));
-                onAcceptDescription?.(suggestedDescription);
-                for (const suggestion of aiSuggestions.slice(0, 2)) {
-                  onAcceptTag?.(suggestion.id);
-                }
-                setAiAccepted(true);
-              }}
-            >
-              {isSuggestedDescriptionPreview ? "Save" : "Use"}
-            </button>
-          )}
+        <div className="fo__ai-row">
+          <CodexStatusPill
+            status={aiStatus}
+            draftAvailable={
+              suggestedTitle.trim().length > 0 || suggestedDescription.trim().length > 0
+            }
+            accepted={aiAccepted}
+            needsConsent={aiNeedsConsent}
+            action={
+              !thinking && !aiFailed && !aiAccepted ? (
+                suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                  <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+                    Enable
+                  </button>
+                ) : suggestedTitle.length > 0 || suggestedDescription.length > 0 ? (
+                  <button
+                    className="fo__ai-accept"
+                    onClick={() => {
+                      if (suggestedTitle.length > 0) {
+                        setTitle(suggestedTitle);
+                        setTitleOrigin("accepted");
+                        onAcceptTitle?.(suggestedTitle);
+                      }
+                      if (suggestedDescription.length > 0) {
+                        setDescription(suggestedDescription);
+                        setDescriptionOrigin("accepted");
+                        onAcceptDescription?.(suggestedDescription);
+                      }
+                      setTags(
+                        Array.from(
+                          new Set([
+                            ...tags,
+                            ...aiSuggestions.slice(0, 2).map((tag) => tag.label)
+                          ])
+                        )
+                      );
+                      for (const suggestion of aiSuggestions.slice(0, 2)) {
+                        onAcceptTag?.(suggestion.id);
+                      }
+                      setAiAccepted(true);
+                    }}
+                  >
+                    {isSuggestedDescriptionPreview || titleOrigin === "suggested" ? "Save" : "Use"}
+                  </button>
+                ) : null
+              ) : null
+            }
+          />
         </div>
       )}
 

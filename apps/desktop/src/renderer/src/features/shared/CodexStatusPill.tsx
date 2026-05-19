@@ -22,17 +22,26 @@ export type CodexStatusPillProps = {
   readonly variant?: CodexStatusPillVariant;
   readonly draftAvailable?: boolean;
   readonly accepted?: boolean;
+  readonly needsConsent?: boolean;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
 };
 
-type StatusKind = "idle" | "queued" | "running" | "ready" | "accepted" | "failed";
+type StatusKind =
+  | "idle"
+  | "queued"
+  | "running"
+  | "ready"
+  | "accepted"
+  | "failed"
+  | "needs-consent";
 
 function resolveKind(
   status: AiRunStatus | null,
   draftAvailable: boolean,
-  accepted: boolean
+  accepted: boolean,
+  needsConsent: boolean
 ): StatusKind {
   if (status === "running") return "running";
   if (status === "queued") return "queued";
@@ -40,6 +49,7 @@ function resolveKind(
   if (status === "cancelled") return "idle";
   if (accepted) return "accepted";
   if (draftAvailable && status === "completed") return "ready";
+  if (needsConsent) return "needs-consent";
   return "idle";
 }
 
@@ -63,6 +73,8 @@ function labelFor(kind: StatusKind): ReactNode {
       return <>Description filled from Codex.</>;
     case "failed":
       return <>Codex could not read this snap.</>;
+    case "needs-consent":
+      return <>Enable Codex to read a bounded copy of this snap.</>;
     case "idle":
       return <>Codex has no suggestion yet.</>;
   }
@@ -80,6 +92,8 @@ function shortLabelFor(kind: StatusKind): string {
       return "used";
     case "failed":
       return "failed";
+    case "needs-consent":
+      return "disabled";
     case "idle":
       return "not run";
   }
@@ -90,11 +104,12 @@ export function CodexStatusPill({
   variant = "strip",
   draftAvailable = false,
   accepted = false,
+  needsConsent = false,
   action,
   style,
   className
 }: CodexStatusPillProps): ReactElement {
-  const kind = resolveKind(status, draftAvailable, accepted);
+  const kind = resolveKind(status, draftAvailable, accepted, needsConsent);
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,

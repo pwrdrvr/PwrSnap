@@ -17,6 +17,7 @@ const {
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
+  getTopUserTags,
   setLatestEnrichmentRun,
   storeCompletedEnrichment
 } = await import("../persistence/enrichment-repo");
@@ -273,6 +274,61 @@ describe("AI enrichment repositories", () => {
         suggestedTagCount: 0
       }
     ]);
+  });
+
+  test("getTopUserTags ranks accepted content tags by usage", () => {
+    seedCapture("cap_2");
+    seedCapture("cap_3");
+    const run1 = createAiRun({ captureId: "cap_1" });
+    const run2 = createAiRun({ captureId: "cap_2" });
+    const run3 = createAiRun({ captureId: "cap_3" });
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run1.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "x",
+        tags: [
+          { label: "deploy", confidence: 1 },
+          { label: "ci", confidence: 1 }
+        ]
+      }
+    });
+    storeCompletedEnrichment({
+      captureId: "cap_2",
+      aiRunId: run2.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "x",
+        tags: [
+          { label: "deploy", confidence: 1 },
+          { label: "design-review", confidence: 1 }
+        ]
+      }
+    });
+    storeCompletedEnrichment({
+      captureId: "cap_3",
+      aiRunId: run3.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "x",
+        tags: [{ label: "deploy", confidence: 1 }]
+      }
+    });
+
+    const captureMap: Record<string, string> = { cap_1: run1.id, cap_2: run2.id, cap_3: run3.id };
+    for (const [captureId, runId] of Object.entries(captureMap)) {
+      const enrichment = getCaptureEnrichment(captureId)!;
+      for (const tag of enrichment.suggestedTags) {
+        if (tag.id !== undefined) acceptSuggestedTag(captureId, tag.id);
+      }
+      void runId;
+    }
+
+    expect(getTopUserTags(10)).toEqual(["deploy", "ci", "design-review"]);
   });
 
   test("purging capture cascades enrichment rows", () => {

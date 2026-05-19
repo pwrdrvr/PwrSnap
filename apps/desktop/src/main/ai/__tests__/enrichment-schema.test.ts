@@ -37,7 +37,7 @@ describe("capture enrichment schema", () => {
     expect(CAPTURE_ENRICHMENT_SCHEMA).toMatchObject({
       type: "object",
       additionalProperties: false,
-      required: ["ocrText", "description", "filenameStem", "textAnchors", "tags"]
+      required: ["ocrText", "title", "description", "filenameStem", "textAnchors", "tags"]
     });
   });
 
@@ -81,6 +81,33 @@ describe("capture enrichment schema", () => {
         capturedAt: ""
       })
     ).toContain("Source application name: unknown");
+  });
+
+  it("includes the existing-tags bias hint when the user has tags", () => {
+    const prompt = buildCaptureEnrichmentPrompt({
+      sourceAppName: "Terminal",
+      sourceAppBundleId: "com.apple.Terminal",
+      captureKind: "image",
+      widthPx: 1200,
+      heightPx: 800,
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      existingUserTags: ["deploy", "ci", "build-error"]
+    });
+
+    expect(prompt).toContain("Tags this user already uses: deploy, ci, build-error");
+  });
+
+  it("omits the existing-tags line when no tags are provided", () => {
+    const prompt = buildCaptureEnrichmentPrompt({
+      sourceAppName: "Terminal",
+      sourceAppBundleId: "com.apple.Terminal",
+      captureKind: "image",
+      widthPx: 1200,
+      heightPx: 800,
+      capturedAt: "2026-05-19T12:00:00.000Z"
+    });
+
+    expect(prompt).not.toContain("Tags this user already uses");
   });
 
   it("includes sampled video frame facts in the variable user prompt", () => {

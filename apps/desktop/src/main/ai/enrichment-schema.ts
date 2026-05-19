@@ -7,17 +7,22 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export const CAPTURE_ENRICHMENT_SCHEMA: JsonValue = {
   type: "object",
   additionalProperties: false,
-  required: ["ocrText", "description", "filenameStem", "textAnchors", "tags"],
+  required: ["ocrText", "title", "description", "filenameStem", "textAnchors", "tags"],
   properties: {
     ocrText: {
       type: "string",
       description:
         "Short visible text anchors only. Do not return full OCR. Empty string if text is not essential."
     },
+    title: {
+      type: "string",
+      description:
+        "Short headline (max 120 chars) shown above the capture. Concrete, scannable; no trailing punctuation."
+    },
     description: {
       type: "string",
       description:
-        "One concise caption describing what is visually present and why the capture may be useful later."
+        "One to three sentences describing what is visible and why the capture may be useful later. Feeds the Sizzle-Reel composer."
     },
     filenameStem: {
       type: "string",
@@ -81,6 +86,12 @@ export type CaptureEnrichmentPromptMetadata = {
   widthPx: number;
   heightPx: number;
   capturedAt: string;
+  /** Top user-tags from the local Library, ranked by usage. Codex is
+   *  asked to prefer these exact labels when its own suggestion is
+   *  close in meaning. This biases the suggestion stream toward labels
+   *  the user already curates, which keeps the tag taxonomy from
+   *  fragmenting (e.g., "deploy" vs "deploys" vs "deployment"). */
+  existingUserTags?: ReadonlyArray<string>;
   videoDurationSec?: number | null;
   videoFrameSamples?: ReadonlyArray<{
     positionPct: number;
@@ -97,6 +108,9 @@ export function buildCaptureEnrichmentPrompt(metadata: CaptureEnrichmentPromptMe
     `- Dimensions: ${metadata.widthPx} x ${metadata.heightPx} px`,
     `- Captured at: ${metadata.capturedAt || "unknown"}`
   ];
+  if (metadata.existingUserTags !== undefined && metadata.existingUserTags.length > 0) {
+    lines.push(`- Tags this user already uses: ${metadata.existingUserTags.join(", ")}`);
+  }
   if (metadata.captureKind === "video") {
     lines.push(
       `- Video duration: ${

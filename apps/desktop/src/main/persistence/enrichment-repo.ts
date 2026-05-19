@@ -328,6 +328,33 @@ export function acceptSuggestedTag(captureId: string, tagId: string): CaptureEnr
   return enrichment;
 }
 
+/**
+ * Read the user's most-used content tags, ranked by capture count. The
+ * Codex enrichment prompt receives these as a "prefer these labels when
+ * meaning is close" bias hint, which keeps the tag taxonomy from
+ * fragmenting (e.g., "deploy" / "deploys" / "deployment" all becoming
+ * separate facets).
+ *
+ * Limited to `kind = 'content'` so app-tags (which are populated from
+ * `source_app_name` and aren't user-curated) don't leak into the hint.
+ * Empty result is fine and just means the user hasn't tagged anything
+ * yet — the prompt builder skips the hint line in that case.
+ */
+export function getTopUserTags(limit: number): string[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT tags.label, COUNT(*) AS usage_count
+       FROM capture_tags
+       JOIN tags ON tags.id = capture_tags.tag_id
+       WHERE tags.kind = 'content'
+       GROUP BY tags.id
+       ORDER BY usage_count DESC, tags.label ASC
+       LIMIT ?`
+    )
+    .all(limit) as Array<{ label: string; usage_count: number }>;
+  return rows.map((row) => row.label);
+}
+
 export function rejectSuggestedTag(captureId: string, tagId: string): CaptureEnrichment {
   const db = getDb();
   db.prepare(

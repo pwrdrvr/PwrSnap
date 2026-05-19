@@ -34,6 +34,7 @@ import {
   acceptSuggestedTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
+  getTopUserTags,
   rejectSuggestedTag,
   setLatestEnrichmentRun,
   storeCompletedEnrichment
@@ -168,6 +169,10 @@ export function registerCodexHandlers(params?: {
         widthPx: capture.width_px,
         heightPx: capture.height_px,
         capturedAt: capture.captured_at,
+        // Bias Codex toward tags the user already curates. 20 is enough
+        // to cover common cases (workflow, content-type, screen-type
+        // facets) without bloating the system prompt for every snap.
+        existingUserTags: getTopUserTags(20),
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,

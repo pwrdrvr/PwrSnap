@@ -2237,6 +2237,9 @@ function CellRow({
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} width={400} />
               <span className="psl__cell-time">{c.time}</span>
+              <span className="psl__cell-app-overlay">
+                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
+              </span>
               {record !== null &&
                 (isTrashView ? (
                   <span className="psl__cell-actions">
@@ -2277,16 +2280,6 @@ function CellRow({
                     </svg>
                   </button>
                 ))}
-            </div>
-            <div className="psl__cell-meta">
-              <div className="psl__cell-tags">
-                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
-                {c.tags.slice(0, 1).map((t) => (
-                  <span key={t} className="ps-tag is-sm">
-                    {t}
-                  </span>
-                ))}
-              </div>
             </div>
           </div>
         );

@@ -1029,11 +1029,6 @@
    content honest (a tiny menu-bar region capture should look small,
    not zoomed-and-cropped to fill the cell). */
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.psl__cell-meta {
-  padding: 6px 8px;
-  display: flex; flex-direction: column;
-}
-.psl__cell-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;
   font: 600 9px/1 var(--font-mono);
@@ -1042,6 +1037,24 @@
   padding: 2px 4px;
   border-radius: 3px;
 }
+/* App-source chip overlay — mirrors .psl__cell-time but bottom-left,
+   so each cell shows app + time as two corner pills over the thumb
+   instead of stealing a row of meta below. backdrop-filter + a
+   subtle shadow give the AppTag's copper border enough contrast over
+   busy / light captures (white docs, Figma boards, etc.) without
+   needing to invent a separate variant of the chip itself. */
+.psl__cell-app-overlay {
+  position: absolute; bottom: 5px; left: 5px;
+  border-radius: 5px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+/* The inner chip is already padded + bordered; the overlay wrapper
+   just provides positioning + backdrop. Disable pointer events so a
+   click on the corner of the chip still selects the cell (no dead
+   spot — the chip itself has no onClick). */
+.psl__cell-app-overlay > .ps-app-tag { pointer-events: none; }
 /* Hover-only trash affordance on grid cells. Hidden by default, fades
    in on cell hover. Sits in the bottom-right corner — opposite the
    bottom-left app dot, balanced. stopPropagation in the click handler

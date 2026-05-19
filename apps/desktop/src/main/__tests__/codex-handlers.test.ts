@@ -83,6 +83,7 @@ function unregisterCodexHandlers(): void {
     "codex:enrichmentsForCaptures",
     "codex:acceptTitle",
     "codex:acceptDescription",
+    "codex:acceptFilenameStem",
     "codex:acceptTag",
     "codex:rejectTag",
     "codex:runStatus",
@@ -164,6 +165,7 @@ describe("Codex handlers", () => {
     testDb.exec(migration("0001_init.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
     testDb.exec(migration("0007_ai_enrichment_title.sql"));
+    testDb.exec(migration("0008_ai_enrichment_filename.sql"));
     await seedCapture();
   });
 

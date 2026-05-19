@@ -13,6 +13,7 @@ const { cancelAiRun, completeAiRun, createAiRun, failAiRun } = await import(
 );
 const {
   acceptDescription,
+  acceptFilenameStem,
   acceptTitle,
   acceptSuggestedTag,
   addUserTag,
@@ -53,6 +54,7 @@ describe("AI enrichment repositories", () => {
     testDb.exec(migration("0001_init.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
     testDb.exec(migration("0007_ai_enrichment_title.sql"));
+    testDb.exec(migration("0008_ai_enrichment_filename.sql"));
     seedCapture();
   });
 
@@ -116,6 +118,36 @@ describe("AI enrichment repositories", () => {
     expect(enrichment.titleAcceptedAt).not.toBeNull();
     expect(enrichment.suggestedDescription).toBe("Codex draft description body");
     expect(enrichment.acceptedDescription).toBeNull();
+  });
+
+  test("persists Codex's suggested filename stem and lets the user accept / override it", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "",
+        filenameStem: "telegram-aquarium-chat-thread",
+        tags: []
+      }
+    });
+
+    let enrichment = getCaptureEnrichment("cap_1")!;
+    expect(enrichment.suggestedFilenameStem).toBe("telegram-aquarium-chat-thread");
+    expect(enrichment.acceptedFilenameStem).toBeNull();
+    expect(enrichment.filenameAcceptedAt).toBeNull();
+
+    enrichment = acceptFilenameStem("cap_1", "user-override-name");
+    expect(enrichment.suggestedFilenameStem).toBe("telegram-aquarium-chat-thread");
+    expect(enrichment.acceptedFilenameStem).toBe("user-override-name");
+    expect(enrichment.filenameAcceptedAt).not.toBeNull();
+  });
+
+  test("acceptFilenameStem rejects empty input", () => {
+    expect(() => acceptFilenameStem("cap_1", "")).toThrow();
+    expect(() => acceptFilenameStem("cap_1", "   ")).toThrow();
   });
 
   test("accepts a suggested tag once even when suggested twice", () => {
@@ -362,7 +394,7 @@ describe("AI enrichment repositories", () => {
     expect(() => removeTag("cap_missing", "anything")).toThrow(/not found/);
   });
 
-  test("storeCompletedEnrichment with autoAccept promotes suggestions and top tags", () => {
+  test("storeCompletedEnrichment with autoAccept promotes title + description + filename + top tags", () => {
     const run = createAiRun({ captureId: "cap_1" });
     const enrichment = storeCompletedEnrichment({
       captureId: "cap_1",
@@ -371,6 +403,7 @@ describe("AI enrichment repositories", () => {
         ocrText: "Build passed",
         title: "Deploy succeeded",
         description: "CI dashboard with a green deploy badge.",
+        filenameStem: "ci-deploy-success-dashboard",
         tags: [
           { label: "ci", confidence: 0.95 },
           { label: "deploy", confidence: 0.9 },
@@ -382,8 +415,10 @@ describe("AI enrichment repositories", () => {
 
     expect(enrichment.acceptedTitle).toBe("Deploy succeeded");
     expect(enrichment.acceptedDescription).toBe("CI dashboard with a green deploy badge.");
+    expect(enrichment.acceptedFilenameStem).toBe("ci-deploy-success-dashboard");
     expect(enrichment.titleAcceptedAt).not.toBeNull();
     expect(enrichment.descriptionAcceptedAt).not.toBeNull();
+    expect(enrichment.filenameAcceptedAt).not.toBeNull();
     // Top 2 tags promoted; the third stays as a pending suggestion.
     expect(enrichment.acceptedTags).toEqual(["ci", "deploy"]);
     expect(
@@ -391,6 +426,40 @@ describe("AI enrichment repositories", () => {
         (tag) => tag.accepted_at === null && tag.rejected_at === null
       ).map((tag) => tag.label)
     ).toEqual(["dashboard"]);
+  });
+
+  test("autoAccept does NOT overwrite an existing accepted_filename_stem", () => {
+    const run = createAiRun({ captureId: "cap_1" });
+    storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: run.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "",
+        filenameStem: "old-codex-name",
+        tags: []
+      }
+    });
+    acceptFilenameStem("cap_1", "user-override-name");
+
+    const newRun = createAiRun({ captureId: "cap_1" });
+    setLatestEnrichmentRun("cap_1", newRun.id);
+    const after = storeCompletedEnrichment({
+      captureId: "cap_1",
+      aiRunId: newRun.id,
+      result: {
+        ocrText: "",
+        title: "",
+        description: "",
+        filenameStem: "fresh-codex-name",
+        tags: []
+      },
+      autoAccept: true
+    });
+
+    expect(after.acceptedFilenameStem).toBe("user-override-name");
+    expect(after.suggestedFilenameStem).toBe("fresh-codex-name");
   });
 
   test("autoAccept does NOT overwrite an existing accepted_title or accepted_description", () => {

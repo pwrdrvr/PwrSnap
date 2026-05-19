@@ -31,6 +31,9 @@ export const CaptureEnrichmentSchema = z.object({
   suggestedDescription: z.string().max(2_000).nullable(),
   acceptedDescription: z.string().max(2_000).nullable(),
   descriptionAcceptedAt: z.string().nullable(),
+  suggestedFilenameStem: z.string().max(120).nullable(),
+  acceptedFilenameStem: z.string().max(120).nullable(),
+  filenameAcceptedAt: z.string().nullable(),
   suggestedTags: z.array(SuggestedTagSchema),
   acceptedTags: z.array(z.string().trim().min(1).max(64))
 });
@@ -64,6 +67,11 @@ export const AcceptDescriptionRequestSchema = z.object({
 export const AcceptTitleRequestSchema = z.object({
   captureId: z.string().min(1),
   title: z.string().trim().min(1).max(120)
+});
+
+export const AcceptFilenameStemRequestSchema = z.object({
+  captureId: z.string().min(1),
+  filenameStem: z.string().trim().min(1).max(120)
 });
 
 export const AcceptTagRequestSchema = z.object({

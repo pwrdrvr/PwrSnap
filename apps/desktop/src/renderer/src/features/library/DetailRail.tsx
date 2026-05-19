@@ -337,6 +337,8 @@ function DetailTab({
   const suggestedTitle = enrichment?.suggestedTitle ?? "";
   const acceptedDescription = enrichment?.acceptedDescription ?? "";
   const suggestedDescription = enrichment?.suggestedDescription ?? "";
+  const acceptedFilenameStem = enrichment?.acceptedFilenameStem ?? "";
+  const suggestedFilenameStem = enrichment?.suggestedFilenameStem ?? "";
 
   const [titleValue, titleOrigin, setTitleEdit] = useFieldEditor({
     captureId: record.id,
@@ -347,6 +349,11 @@ function DetailTab({
     captureId: record.id,
     accepted: acceptedDescription,
     suggested: suggestedDescription
+  });
+  const [filenameValue, filenameOrigin, setFilenameEdit] = useFieldEditor({
+    captureId: record.id,
+    accepted: acceptedFilenameStem,
+    suggested: suggestedFilenameStem
   });
 
   const pendingTags =
@@ -383,6 +390,20 @@ function DetailTab({
     [acceptedDescription, onEnrichmentUpdate, record.id]
   );
 
+  const acceptFilenameIfNeeded = useCallback(
+    async (value: string) => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) return;
+      if (trimmed === acceptedFilenameStem) return;
+      const result = await dispatch("codex:acceptFilenameStem", {
+        captureId: record.id,
+        filenameStem: trimmed
+      });
+      if (result.ok) onEnrichmentUpdate(result.value);
+    },
+    [acceptedFilenameStem, onEnrichmentUpdate, record.id]
+  );
+
   // Per-field draft acceptance — the prior bulk "Use draft" button
   // accepted title + description + every pending tag in one click,
   // which surprised users in two ways:
@@ -403,10 +424,18 @@ function DetailTab({
     await acceptDescriptionIfNeeded(suggestedDescription);
   }, [acceptDescriptionIfNeeded, suggestedDescription]);
 
+  const useFilenameDraft = useCallback(async () => {
+    if (suggestedFilenameStem.trim().length === 0) return;
+    await acceptFilenameIfNeeded(suggestedFilenameStem);
+  }, [acceptFilenameIfNeeded, suggestedFilenameStem]);
+
   const titleDraftDiverged =
     suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle;
   const descriptionDraftDiverged =
     suggestedDescription.trim().length > 0 && suggestedDescription !== acceptedDescription;
+  const filenameDraftDiverged =
+    suggestedFilenameStem.trim().length > 0 &&
+    suggestedFilenameStem !== acceptedFilenameStem;
 
   const regenerate = useCallback(() => {
     void dispatch("codex:enrich", { captureId: record.id });
@@ -524,6 +553,55 @@ function DetailTab({
               label="Codex draft"
               text={suggestedDescription}
               onUse={() => void useDescriptionDraft()}
+            />
+          ) : null}
+        </label>
+
+        <label className="psl__field">
+          <span className="psl__field-label">
+            <span>Export filename</span>
+            {filenameOrigin === "suggested" ? (
+              <>
+                <span className="psl__field-origin">draft from Codex</span>
+                <button
+                  type="button"
+                  className="psl__field-use"
+                  onClick={() => void useFilenameDraft()}
+                  title="Save this Codex draft as the export filename"
+                >
+                  Use
+                </button>
+              </>
+            ) : filenameValue.length > 0 ? (
+              <button
+                type="button"
+                className="psl__field-use"
+                onClick={() => {
+                  void dispatch("clipboard:copyText", { text: filenameValue });
+                }}
+                title="Copy the export filename stem to the clipboard"
+              >
+                Copy
+              </button>
+            ) : null}
+          </span>
+          <input
+            className={
+              "psl__field-input psl__field-input--mono" +
+              (filenameOrigin === "suggested" ? " is-suggested" : "")
+            }
+            type="text"
+            value={filenameValue}
+            placeholder="kebab-case stem for File / drag-out exports"
+            maxLength={120}
+            onChange={(event) => setFilenameEdit(event.target.value)}
+            onBlur={() => void acceptFilenameIfNeeded(filenameValue)}
+          />
+          {filenameDraftDiverged && filenameOrigin !== "suggested" ? (
+            <DraftPreview
+              label="Codex draft"
+              text={suggestedFilenameStem}
+              onUse={() => void useFilenameDraft()}
             />
           ) : null}
         </label>

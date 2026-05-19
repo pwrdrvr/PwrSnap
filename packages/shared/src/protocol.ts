@@ -970,6 +970,10 @@ export type Commands = {
     req: { captureId: string; description: string };
     res: CaptureEnrichment;
   };
+  "codex:acceptFilenameStem": {
+    req: { captureId: string; filenameStem: string };
+    res: CaptureEnrichment;
+  };
   "codex:acceptTag": {
     req: { captureId: string; tagId: string };
     res: CaptureEnrichment;

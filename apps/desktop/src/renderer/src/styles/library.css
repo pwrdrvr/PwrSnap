@@ -1448,6 +1448,7 @@
   resize: vertical;
 }
 .psl__field-input { padding: 7px 10px; }
+.psl__field-input--mono { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.01em; }
 .psl__field-input::placeholder,
 .psl__field-textarea::placeholder { color: var(--text-subtle); }
 .psl__field-input:focus,

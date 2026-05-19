@@ -36,6 +36,9 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
     suggestedTitle: null,
     acceptedTitle: null,
     titleAcceptedAt: null,
+    suggestedFilenameStem: null,
+    acceptedFilenameStem: null,
+    filenameAcceptedAt: null,
     suggestedDescription: "Dark-mode LINE desktop chat showing PwrAgent command help.",
     acceptedDescription: null,
     descriptionAcceptedAt: null,
@@ -60,6 +63,7 @@ function installFakeApi(initial: CaptureEnrichment): {
     if (name === "codex:enrichment") return { ok: true, value: initial };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
     if (name === "codex:acceptTitle") return { ok: true, value: accepted };
+    if (name === "codex:acceptFilenameStem") return { ok: true, value: accepted };
     if (name === "codex:acceptTag") return { ok: true, value: accepted };
     if (name === "codex:rejectTag") return { ok: true, value: accepted };
     if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
@@ -318,6 +322,66 @@ describe("DetailRail", () => {
 
     const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copyText");
     expect(copyCall?.[1]).toEqual({ text: "secret contents" });
+  });
+
+  test("Export filename: renders Codex's draft as suggested input + Use promotes via codex:acceptFilenameStem", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({ suggestedFilenameStem: "telegram-aquarium-chat-thread" })
+    );
+
+    const monoInput = el.querySelector<HTMLInputElement>(".psl__field-input--mono");
+    expect(monoInput?.value).toBe("telegram-aquarium-chat-thread");
+    expect(monoInput?.classList.contains("is-suggested")).toBe(true);
+
+    // Three Use buttons total — one per draft field (title +
+    // description + filename). The filename one is the third.
+    const useButtons = Array.from(
+      el.querySelectorAll<HTMLButtonElement>(".psl__field-use")
+    );
+    expect(useButtons.length).toBeGreaterThanOrEqual(1);
+    // Click the filename Use button — the field's label exposes it
+    // next to "Export filename".
+    const filenameLabel = Array.from(el.querySelectorAll(".psl__field-label")).find((node) =>
+      node.textContent?.includes("Export filename")
+    );
+    const useButton = filenameLabel?.querySelector<HTMLButtonElement>(".psl__field-use");
+    expect(useButton).not.toBeNull();
+    await act(async () => {
+      useButton?.click();
+      await Promise.resolve();
+    });
+
+    const filenameCalls = dispatch.mock.calls.filter(
+      ([name]) => name === "codex:acceptFilenameStem"
+    );
+    expect(filenameCalls[0]?.[1]).toEqual({
+      captureId: "cap_1",
+      filenameStem: "telegram-aquarium-chat-thread"
+    });
+  });
+
+  test("Export filename: once accepted, the label exposes a Copy button that routes through clipboard:copyText", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({
+        suggestedFilenameStem: "telegram-chat-thread",
+        acceptedFilenameStem: "telegram-chat-thread",
+        filenameAcceptedAt: "2026-05-19T18:00:00.000Z"
+      })
+    );
+
+    const filenameLabel = Array.from(el.querySelectorAll(".psl__field-label")).find((node) =>
+      node.textContent?.includes("Export filename")
+    );
+    const copyButton = filenameLabel?.querySelector<HTMLButtonElement>(".psl__field-use");
+    expect(copyButton?.textContent).toBe("Copy");
+
+    await act(async () => {
+      copyButton?.click();
+      await Promise.resolve();
+    });
+
+    const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copyText");
+    expect(copyCall?.[1]).toEqual({ text: "telegram-chat-thread" });
   });
 
   test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {

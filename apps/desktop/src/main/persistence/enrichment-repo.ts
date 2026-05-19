@@ -18,6 +18,9 @@ type EnrichmentRow = {
   suggested_description: string | null;
   accepted_description: string | null;
   description_accepted_at: string | null;
+  suggested_filename_stem: string | null;
+  accepted_filename_stem: string | null;
+  filename_accepted_at: string | null;
 };
 
 type TagSuggestionRow = {
@@ -44,6 +47,9 @@ function emptyEnrichment(captureId: string): CaptureEnrichment {
     suggestedDescription: null,
     acceptedDescription: null,
     descriptionAcceptedAt: null,
+    suggestedFilenameStem: null,
+    acceptedFilenameStem: null,
+    filenameAcceptedAt: null,
     suggestedTags: [],
     acceptedTags: []
   };
@@ -93,7 +99,10 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
               capture_enrichments.title_accepted_at,
               capture_enrichments.suggested_description,
               capture_enrichments.accepted_description,
-              capture_enrichments.description_accepted_at
+              capture_enrichments.description_accepted_at,
+              capture_enrichments.suggested_filename_stem,
+              capture_enrichments.accepted_filename_stem,
+              capture_enrichments.filename_accepted_at
        FROM capture_enrichments
        LEFT JOIN ai_runs ON ai_runs.id = capture_enrichments.latest_ai_run_id
        WHERE capture_enrichments.capture_id = ?`
@@ -123,6 +132,9 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     suggestedDescription: row.suggested_description,
     acceptedDescription: row.accepted_description,
     descriptionAcceptedAt: row.description_accepted_at,
+    suggestedFilenameStem: row.suggested_filename_stem,
+    acceptedFilenameStem: row.accepted_filename_stem,
+    filenameAcceptedAt: row.filename_accepted_at,
     suggestedTags: readTagSuggestions(captureId, row.latest_ai_run_id),
     acceptedTags: readAcceptedTags(captureId)
   });
@@ -208,22 +220,28 @@ export function storeCompletedEnrichment(params: {
 
     db.prepare(
       `INSERT INTO capture_enrichments (
-        capture_id, latest_ai_run_id, ocr_text, suggested_title, suggested_description, updated_at
+        capture_id, latest_ai_run_id, ocr_text,
+        suggested_title, suggested_description, suggested_filename_stem,
+        updated_at
       ) VALUES (
-        @captureId, @aiRunId, @ocrText, @suggestedTitle, @suggestedDescription, datetime('now')
+        @captureId, @aiRunId, @ocrText,
+        @suggestedTitle, @suggestedDescription, @suggestedFilenameStem,
+        datetime('now')
       )
       ON CONFLICT(capture_id) DO UPDATE SET
         latest_ai_run_id = excluded.latest_ai_run_id,
         ocr_text = excluded.ocr_text,
         suggested_title = excluded.suggested_title,
         suggested_description = excluded.suggested_description,
+        suggested_filename_stem = excluded.suggested_filename_stem,
         updated_at = datetime('now')`
     ).run({
       captureId: params.captureId,
       aiRunId: params.aiRunId,
       ocrText: parsed.ocrText,
       suggestedTitle: parsed.title || null,
-      suggestedDescription: parsed.description || null
+      suggestedDescription: parsed.description || null,
+      suggestedFilenameStem: (parsed.filenameStem ?? "").trim() || null
     });
 
     const insertTag = db.prepare(
@@ -254,12 +272,16 @@ export function storeCompletedEnrichment(params: {
       // surprise.
       const post = db
         .prepare(
-          `SELECT accepted_title, accepted_description
+          `SELECT accepted_title, accepted_description, accepted_filename_stem
            FROM capture_enrichments
            WHERE capture_id = ?`
         )
         .get(params.captureId) as
-        | { accepted_title: string | null; accepted_description: string | null }
+        | {
+            accepted_title: string | null;
+            accepted_description: string | null;
+            accepted_filename_stem: string | null;
+          }
         | undefined;
 
       const titleValue = (parsed.title ?? "").trim();
@@ -285,6 +307,20 @@ export function storeCompletedEnrichment(params: {
                updated_at = datetime('now')
            WHERE capture_id = @captureId`
         ).run({ captureId: params.captureId, description: descriptionValue });
+      }
+
+      const filenameValue = (parsed.filenameStem ?? "").trim();
+      if (
+        filenameValue.length > 0 &&
+        (post?.accepted_filename_stem ?? null) === null
+      ) {
+        db.prepare(
+          `UPDATE capture_enrichments
+           SET accepted_filename_stem = @filenameStem,
+               filename_accepted_at = datetime('now'),
+               updated_at = datetime('now')
+           WHERE capture_id = @captureId`
+        ).run({ captureId: params.captureId, filenameStem: filenameValue });
       }
 
       // Auto-accept the top 2 suggested tags inserted above. We can't
@@ -378,6 +414,28 @@ export function acceptTitle(captureId: string, title: string): CaptureEnrichment
       title_accepted_at = excluded.title_accepted_at,
       updated_at = datetime('now')`
   ).run({ captureId, title: trimmed });
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+export function acceptFilenameStem(captureId: string, filenameStem: string): CaptureEnrichment {
+  const trimmed = filenameStem.trim();
+  if (trimmed.length === 0) {
+    throw new Error("filename stem must not be empty");
+  }
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO capture_enrichments (
+      capture_id, accepted_filename_stem, filename_accepted_at, updated_at
+    ) VALUES (
+      @captureId, @filenameStem, datetime('now'), datetime('now')
+    )
+    ON CONFLICT(capture_id) DO UPDATE SET
+      accepted_filename_stem = excluded.accepted_filename_stem,
+      filename_accepted_at = excluded.filename_accepted_at,
+      updated_at = datetime('now')`
+  ).run({ captureId, filenameStem: trimmed });
   const enrichment = getCaptureEnrichment(captureId);
   if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
   return enrichment;

@@ -325,26 +325,33 @@ for (const appex of appexTargets) {
     }
   }
 
-  // Sign the BUNDLE (the .appex directory), not the inner binary —
-  // macOS Gatekeeper / TCC walk the bundle envelope, not just the
-  // executable. Ad-hoc identity (`-`) keeps the dev loop friction-
-  // free; electron-builder's mac signing pass re-signs with the
-  // Developer ID at release time.
-  const signResult = spawnSync(
-    "codesign",
-    [
-      "--sign", "-",
-      "--force",
-      "--deep",       // sign nested resources (Info.plist, future helper binaries)
-      "--timestamp=none",
-      appex.output
-    ],
-    { stdio: "inherit" }
-  );
-  if (signResult.status !== 0) {
-    console.error(`[build-native] ${appex.name}.appex ad-hoc signing failed`);
-    process.exit(signResult.status ?? 1);
-  }
+  // INTENTIONALLY NOT SIGNED HERE. The standalone CLI binaries above
+  // get ad-hoc signed because they're used in-place during dev (run
+  // by hand from the Terminal). The .appex is different — it's an
+  // embedded Quick Look extension that only runs when the parent
+  // .app is installed by macOS, and electron-builder's mac signing
+  // pass at package time re-signs the parent app's whole bundle
+  // tree (including this .appex) with the Developer ID.
+  //
+  // Pre-signing with ad-hoc here creates a problem during
+  // `pnpm package`: @electron/universal merges the arm64 and x64
+  // builds, electron-builder then signs the parent .app with
+  // `--deep`, but the re-sign doesn't fully overwrite our pre-
+  // existing ad-hoc CodeResources inside Contents/PlugIns/
+  // PwrSnapThumbnailExtension.appex/Contents/_CodeSignature/. The
+  // final `codesign --verify --deep --strict` step trips on the
+  // mismatched hashes:
+  //
+  //   PwrSnap.app: invalid Info.plist (plist or signature have been modified)
+  //   In subcomponent: .../PlugIns/PwrSnapThumbnailExtension.appex
+  //
+  // Skipping the pre-sign here makes electron-builder the sole
+  // signer for the .appex, eliminating the conflict. For dev
+  // testing of the Thumbnail Extension you need a packaged build
+  // (the .appex isn't picked up by Launch Services until the
+  // parent app is in /Applications anyway) — the standalone CLI
+  // above (pwrsnap-thumbnail-cli) covers the dev-loop need for
+  // ZIP-extraction validation.
 
-  console.log(`[build-native] ${appex.name}.appex → ${appex.output} (ad-hoc signed)`);
+  console.log(`[build-native] ${appex.name}.appex → ${appex.output} (unsigned; electron-builder signs at package time)`);
 }

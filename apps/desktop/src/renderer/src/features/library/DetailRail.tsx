@@ -13,17 +13,12 @@
 // lengthy extracted text). The placeholder "History" tab is gone — when
 // run-history needs surfacing we'll add it back as a real tab.
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactElement
-} from "react";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { CaptureEnrichment, CaptureRecord, SuggestedTag } from "@pwrsnap/shared";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
 import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
@@ -38,8 +33,6 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
 };
 
 type SidebarTab = "detail" | "ocr";
-
-type FieldOrigin = "accepted" | "manual" | "suggested" | "empty";
 
 export type DetailRailProps = {
   readonly view: LibraryView;
@@ -108,19 +101,23 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     <aside className="psl__right" aria-label="Capture details">
       <div className="psl__right-tabs" role="tablist">
         <button
+          id="psl-tab-detail"
           className={"psl__right-tab" + (activeTab === "detail" ? " is-active" : "")}
           type="button"
           role="tab"
           aria-selected={activeTab === "detail"}
+          aria-controls="psl-tabpanel-detail"
           onClick={() => setActiveTab("detail")}
         >
           Detail
         </button>
         <button
+          id="psl-tab-ocr"
           className={"psl__right-tab" + (activeTab === "ocr" ? " is-active" : "")}
           type="button"
           role="tab"
           aria-selected={activeTab === "ocr"}
+          aria-controls="psl-tabpanel-ocr"
           onClick={() => setActiveTab("ocr")}
         >
           OCR
@@ -132,7 +129,12 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
         </button>
       </div>
 
-      <div className="psl__right-body">
+      <div
+        className="psl__right-body"
+        role="tabpanel"
+        id={activeTab === "detail" ? "psl-tabpanel-detail" : "psl-tabpanel-ocr"}
+        aria-labelledby={activeTab === "detail" ? "psl-tab-detail" : "psl-tab-ocr"}
+      >
         {activeTab === "detail" ? (
           <DetailTab
             record={record}
@@ -541,18 +543,18 @@ function TagEditor({
     [captureId, onEnrichmentUpdate]
   );
 
-  // Free-form tag input mirrors the float-over's behavior — Enter
-  // commits, Backspace on empty removes the last accepted tag. Tags
-  // typed here are saved through `codex:acceptDescription`'s sibling
-  // tag verb path; for now the IPC for user-typed tags isn't wired
-  // (it requires a new server-side verb), so the input is staged
-  // locally and surfaces a hint that's clear about the gap rather
-  // than silently dropping the input.
-  // TODO(#85-followup): wire `library:addTag` to persist free-form
-  // user tags.
+  // Free-form tag input — Enter commits via `library:addTag`. The
+  // verb normalizes the label, reuses an existing tag row when one
+  // matches, and inserts a `capture_tags` row with `source = 'user'`.
+  // Idempotent on the server side, so a double-Enter doesn't create
+  // duplicates.
   const submitDraft = (): void => {
-    if (draft.trim().length === 0) return;
+    const label = draft.trim();
+    if (label.length === 0) return;
     setDraft("");
+    void dispatch("library:addTag", { captureId, label }).then((result) => {
+      if (result.ok) onEnrichmentUpdate(result.value);
+    });
   };
 
   return (
@@ -571,13 +573,15 @@ function TagEditor({
             {tag}
           </span>
         ))}
-        {pendingTags.map((tag) =>
-          tag.id !== undefined ? (
-            <span key={`suggest-${tag.id}`} className="ps-tag is-suggest">
+        {pendingTags.map((tag) => {
+          const tagId = tag.id;
+          if (tagId === undefined) return null;
+          return (
+            <span key={`suggest-${tagId}`} className="ps-tag is-suggest">
               <button
                 type="button"
                 className="psl__tag-suggest-label"
-                onClick={() => void acceptTag(tag.id!)}
+                onClick={() => void acceptTag(tagId)}
                 title={`Use ${tag.label}`}
               >
                 + {tag.label}
@@ -585,14 +589,14 @@ function TagEditor({
               <button
                 type="button"
                 className="psl__tag-suggest-x"
-                onClick={() => void rejectTag(tag.id!)}
+                onClick={() => void rejectTag(tagId)}
                 aria-label={`reject ${tag.label}`}
               >
                 ×
               </button>
             </span>
-          ) : null
-        )}
+          );
+        })}
         <input
           className="psl__tag-input"
           type="text"
@@ -623,7 +627,7 @@ function OcrTab({ record, enrichment }: OcrTabProps): ReactElement {
 
   const copyOcrText = (): void => {
     if (ocrText.length === 0) return;
-    void navigator.clipboard.writeText(ocrText);
+    void dispatch("clipboard:copyText", { text: ocrText });
   };
 
   return (
@@ -667,75 +671,6 @@ function OcrTab({ record, enrichment }: OcrTabProps): ReactElement {
       )}
     </div>
   );
-}
-
-// useFieldEditor — local-state mirror of an `accepted` / `suggested`
-// pair, with an origin tag so the UI can style suggested-but-not-yet-
-// accepted text differently from text the user already owns. Mirrors
-// the float-over's descriptionOrigin state machine so both surfaces
-// reason about provenance the same way.
-function useFieldEditor(input: {
-  captureId: string;
-  accepted: string;
-  suggested: string;
-}): [string, FieldOrigin, (next: string) => void] {
-  const initial = input.accepted.length > 0
-    ? input.accepted
-    : input.suggested;
-  const initialOrigin: FieldOrigin =
-    input.accepted.length > 0
-      ? "accepted"
-      : input.suggested.length > 0
-      ? "suggested"
-      : "empty";
-
-  const [value, setValue] = useState<string>(initial);
-  const [origin, setOrigin] = useState<FieldOrigin>(initialOrigin);
-  const previewedSuggestionRef = useRef<string>(input.suggested);
-  const captureRef = useRef<string>(input.captureId);
-
-  useEffect(() => {
-    // Reset when the user navigates to a different capture, or when
-    // the accepted value changes on the server (another window edited
-    // the same snap, or the user just hit "Use draft").
-    if (captureRef.current !== input.captureId) {
-      captureRef.current = input.captureId;
-      const reset = input.accepted.length > 0 ? input.accepted : input.suggested;
-      setValue(reset);
-      setOrigin(
-        input.accepted.length > 0
-          ? "accepted"
-          : input.suggested.length > 0
-          ? "suggested"
-          : "empty"
-      );
-      previewedSuggestionRef.current = input.suggested;
-      return;
-    }
-    if (input.accepted.length > 0 && origin !== "manual") {
-      setValue(input.accepted);
-      setOrigin("accepted");
-      previewedSuggestionRef.current = input.suggested;
-      return;
-    }
-    if (
-      input.accepted.length === 0 &&
-      input.suggested.length > 0 &&
-      previewedSuggestionRef.current !== input.suggested &&
-      (origin === "suggested" || origin === "empty")
-    ) {
-      setValue(input.suggested);
-      setOrigin("suggested");
-      previewedSuggestionRef.current = input.suggested;
-    }
-  }, [input.captureId, input.accepted, input.suggested, origin]);
-
-  const handleEdit = useCallback((next: string): void => {
-    setValue(next);
-    setOrigin(next.trim().length === 0 ? "empty" : "manual");
-  }, []);
-
-  return [value, origin, handleEdit];
 }
 
 function formatTimestamp(iso: string): string {

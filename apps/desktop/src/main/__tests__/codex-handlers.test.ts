@@ -275,4 +275,66 @@ describe("Codex handlers", () => {
     await waitFor(() => client.aborted);
     expect(client.aborted).toBe(true);
   });
+
+  test("codex:acceptTitle persists the title and broadcasts enrichment", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () => testSettings()
+    });
+    electronMock.windows.push({
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel, payload) => {
+          electronMock.sentEvents.push({ channel, payload });
+        }
+      }
+    });
+
+    const result = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "User-edited title" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.acceptedTitle).toBe("User-edited title");
+    expect(getCaptureEnrichment("cap_1")?.acceptedTitle).toBe("User-edited title");
+
+    const broadcast = electronMock.sentEvents.find(
+      (event) => event.channel === EVENT_CHANNELS.aiRunUpdated
+    );
+    expect(broadcast).toBeDefined();
+    expect(
+      (broadcast?.payload as { enrichment?: { acceptedTitle?: string | null } | null })
+        .enrichment?.acceptedTitle
+    ).toBe("User-edited title");
+  });
+
+  test("codex:acceptTitle rejects empty and oversize requests", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () => testSettings()
+    });
+
+    const empty = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "   " },
+      { principal: "ipc" }
+    );
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) {
+      expect(empty.error.code).toBe("invalid_request");
+    }
+
+    const tooLong = await bus.dispatch(
+      "codex:acceptTitle",
+      { captureId: "cap_1", title: "x".repeat(121) },
+      { principal: "ipc" }
+    );
+    expect(tooLong.ok).toBe(false);
+    if (!tooLong.ok) {
+      expect(tooLong.error.code).toBe("invalid_request");
+    }
+  });
 });

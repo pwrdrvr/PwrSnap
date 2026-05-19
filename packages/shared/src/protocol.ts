@@ -730,6 +730,15 @@ export type Commands = {
    * just-captured image into the Library editor.
    */
   "library:openInLibrary": { req: { captureId: string }; res: void };
+  /** Add a user-typed tag to a capture. Normalizes the label, creates
+   *  the `tags` row if it doesn't already exist (kind = 'content'),
+   *  and writes a `capture_tags` row with `source = 'user'`.
+   *  Returns the refreshed enrichment so the renderer can render the
+   *  new accepted-tag chip without a follow-up fetch. */
+  "library:addTag": {
+    req: { captureId: string; label: string };
+    res: CaptureEnrichment;
+  };
   /** Open the Phase 2 editor window for a capture. Each call opens a
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
@@ -758,6 +767,12 @@ export type Commands = {
     req: { captureId: string; preset: RenderPreset };
     res: { path: string };
   };
+  /** Write arbitrary text to the system clipboard. Used for surfaces
+   *  that need to ship rendered or extracted text (OCR text, AI-derived
+   *  copy, capture summaries) without going through the cache-file
+   *  render pipeline that `clipboard:copy` uses. Routes through main
+   *  so a future redaction or audit hook only needs to plug in once. */
+  "clipboard:copyText": { req: { text: string }; res: void };
 
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };

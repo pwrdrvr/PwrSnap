@@ -63,6 +63,8 @@ function installFakeApi(initial: CaptureEnrichment): {
     if (name === "codex:acceptTag") return { ok: true, value: accepted };
     if (name === "codex:rejectTag") return { ok: true, value: accepted };
     if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
+    if (name === "library:addTag") return { ok: true, value: accepted };
+    if (name === "clipboard:copyText") return { ok: true, value: undefined };
     if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
     return { ok: true, value: undefined };
   });
@@ -178,5 +180,65 @@ describe("DetailRail", () => {
     });
 
     expect(el.querySelector(".psl__ocr-tab-body")?.textContent).toContain("final visible line");
+  });
+
+  test("Enter in the tag input dispatches library:addTag with the trimmed label", async () => {
+    const { el, dispatch } = await renderDetailRail(enrichment());
+    const tagInput = el.querySelector<HTMLInputElement>(".psl__tag-input");
+    expect(tagInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      nativeSetter?.call(tagInput, "  triage  ");
+      tagInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      tagInput?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const addTagCall = dispatch.mock.calls.find(([name]) => name === "library:addTag");
+    expect(addTagCall?.[1]).toEqual({ captureId: "cap_1", label: "triage" });
+  });
+
+  test("OCR Copy text routes through clipboard:copyText, not navigator.clipboard", async () => {
+    const { el, dispatch } = await renderDetailRail(enrichment({ ocrText: "secret contents" }));
+
+    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.startsWith("OCR")
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      ocrTab?.click();
+      await Promise.resolve();
+    });
+
+    const copyButton = Array.from(el.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Copy text"
+    ) as HTMLButtonElement | undefined;
+    expect(copyButton).toBeDefined();
+    await act(async () => {
+      copyButton?.click();
+      await Promise.resolve();
+    });
+
+    const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copyText");
+    expect(copyCall?.[1]).toEqual({ text: "secret contents" });
+  });
+
+  test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {
+    const { el } = await renderDetailRail(enrichment());
+
+    const detailTab = el.querySelector("#psl-tab-detail");
+    const ocrTab = el.querySelector("#psl-tab-ocr");
+    expect(detailTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-detail");
+    expect(ocrTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-ocr");
+
+    const panel = el.querySelector('[role="tabpanel"]');
+    expect(panel?.getAttribute("id")).toBe("psl-tabpanel-detail");
+    expect(panel?.getAttribute("aria-labelledby")).toBe("psl-tab-detail");
   });
 });

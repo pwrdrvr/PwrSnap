@@ -100,7 +100,17 @@ export function getCaptureEnrichment(captureId: string): CaptureEnrichment | nul
     )
     .get(captureId) as EnrichmentRow | undefined;
 
-  if (!row) return emptyEnrichment(captureId);
+  // `capture_enrichments` rows are only created when a Codex run is
+  // queued or completed. A capture can also have user-typed tags
+  // (`library:addTag`) without any AI run history — in that case we
+  // still need to surface the tags. Returning `emptyEnrichment` here
+  // would hide them.
+  if (!row) {
+    return CaptureEnrichmentSchema.parse({
+      ...emptyEnrichment(captureId),
+      acceptedTags: readAcceptedTags(captureId)
+    });
+  }
 
   return CaptureEnrichmentSchema.parse({
     captureId: row.capture_id,
@@ -321,6 +331,53 @@ export function acceptSuggestedTag(captureId: string, tagId: string): CaptureEnr
        SET accepted_at = COALESCE(accepted_at, datetime('now'))
        WHERE id = ?`
     ).run(tagId);
+  });
+  tx();
+  const enrichment = getCaptureEnrichment(captureId);
+  if (enrichment === null) throw new Error(`capture not found: ${captureId}`);
+  return enrichment;
+}
+
+/**
+ * Add a user-typed tag to a capture. Normalizes the label, reuses an
+ * existing `tags` row when one matches, and inserts a `capture_tags`
+ * row with `source = 'user'`. Idempotent — re-adding the same tag is
+ * a no-op (the `(capture_id, tag_id)` primary key prevents duplicates).
+ *
+ * Returns the refreshed enrichment so the renderer can re-render with
+ * the new accepted-tag chip without a follow-up fetch.
+ */
+export function addUserTag(captureId: string, label: string): CaptureEnrichment {
+  const trimmed = label.trim();
+  if (trimmed.length === 0) {
+    throw new Error("tag label must not be empty");
+  }
+  const normalized = normalizeTagLabel(trimmed);
+  if (normalized.length === 0) {
+    throw new Error("tag label must contain at least one non-whitespace character");
+  }
+  const db = getDb();
+  const tx = db.transaction(() => {
+    const capture = db
+      .prepare("SELECT id FROM captures WHERE id = ? AND deleted_at IS NULL")
+      .get(captureId) as { id: string } | undefined;
+    if (!capture) {
+      throw new Error(`capture not found or deleted: ${captureId}`);
+    }
+    const existing = db
+      .prepare("SELECT id FROM tags WHERE kind = 'content' AND normalized_label = ?")
+      .get(normalized) as { id: string } | undefined;
+    const tagId = existing?.id ?? nanoid();
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO tags (id, label, normalized_label, kind)
+         VALUES (?, ?, ?, 'content')`
+      ).run(tagId, trimmed, normalized);
+    }
+    db.prepare(
+      `INSERT OR IGNORE INTO capture_tags (capture_id, tag_id, source, ai_run_id)
+       VALUES (?, ?, 'user', NULL)`
+    ).run(captureId, tagId);
   });
   tx();
   const enrichment = getCaptureEnrichment(captureId);

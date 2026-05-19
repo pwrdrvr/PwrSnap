@@ -3,6 +3,7 @@ import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
 import { FoIcon } from "./FoIcons";
@@ -250,14 +251,24 @@ export function FloatOver({
   // shared CopyButton component now owns its own copied state and the
   // visual is the orange "Copied" overlay (no `is-primary` highlight,
   // no bytes-text swap). See features/shared/CopyButton.tsx.
-  const [title, setTitle] = useState(acceptedTitle);
-  const [titleOrigin, setTitleOrigin] = useState<"accepted" | "manual" | "suggested">(
-    acceptedTitle.trim().length > 0 ? "accepted" : "manual"
-  );
-  const [description, setDescription] = useState(acceptedDescription);
-  const [descriptionOrigin, setDescriptionOrigin] = useState<"accepted" | "manual" | "suggested">(
-    acceptedDescription.trim().length > 0 ? "accepted" : "manual"
-  );
+  //
+  // Title / Description provenance is owned by the shared
+  // `useFieldEditor` hook so the float-over and the Library DetailRail
+  // reason about accepted/suggested/manual the same way. The float-
+  // over remounts on capture change (FloatOverHost's `key={record.id}`),
+  // so the captureId-reset branch here only fires for in-place
+  // enrichment updates — same shape as the sidebar.
+  const fieldCaptureId = enrichment?.captureId ?? "fo-pre-capture";
+  const [title, titleOrigin, setTitle, commitTitle] = useFieldEditor({
+    captureId: fieldCaptureId,
+    accepted: acceptedTitle,
+    suggested: suggestedTitle
+  });
+  const [description, descriptionOrigin, setDescription, commitDescription] = useFieldEditor({
+    captureId: fieldCaptureId,
+    accepted: acceptedDescription,
+    suggested: suggestedDescription
+  });
   const [tags, setTags] = useState<string[]>(acceptedTags);
   const [hovering, setHovering] = useState(false);
   const [nativeDragging, setNativeDragging] = useState(false);
@@ -282,12 +293,10 @@ export function FloatOver({
   // (With the persistent renderer + state machine added in this same
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const previewedSuggestionRef = useRef("");
-  const previewedTitleSuggestionRef = useRef("");
 
   const hasUserDescription =
-    description.trim().length > 0 && descriptionOrigin !== "suggested";
-  const hasUserTitle = title.trim().length > 0 && titleOrigin !== "suggested";
+    description.trim().length > 0 && descriptionOrigin === "manual";
+  const hasUserTitle = title.trim().length > 0 && titleOrigin === "manual";
   const isPaused =
     thinking ||
     hovering ||
@@ -322,51 +331,13 @@ export function FloatOver({
     };
   }, [sourceLoaded, src, enhancedSrc]);
 
+  // useFieldEditor owns the accepted/suggested sync for title +
+  // description. We still mirror `acceptedTags` into local state so the
+  // user can add typed tags on top without losing them on enrichment
+  // refresh.
   useEffect(() => {
-    setDescription(acceptedDescription);
-    setDescriptionOrigin(acceptedDescription.trim().length > 0 ? "accepted" : "manual");
-    setTitle(acceptedTitle);
-    setTitleOrigin(acceptedTitle.trim().length > 0 ? "accepted" : "manual");
     setTags(acceptedTags);
-  }, [acceptedDescription, acceptedTitle, acceptedTags.join("\0")]);
-
-  useEffect(() => {
-    if (acceptedDescription.trim().length > 0) return;
-    if (suggestedDescription.trim().length === 0) {
-      previewedSuggestionRef.current = "";
-      if (descriptionOrigin === "suggested") {
-        setDescription("");
-        setDescriptionOrigin("manual");
-      }
-      return;
-    }
-
-    const suggestionChanged = previewedSuggestionRef.current !== suggestedDescription;
-    if (descriptionOrigin === "suggested" || (description.trim().length === 0 && suggestionChanged)) {
-      previewedSuggestionRef.current = suggestedDescription;
-      setDescription(suggestedDescription);
-      setDescriptionOrigin("suggested");
-    }
-  }, [acceptedDescription, description, descriptionOrigin, suggestedDescription]);
-
-  useEffect(() => {
-    if (acceptedTitle.trim().length > 0) return;
-    if (suggestedTitle.trim().length === 0) {
-      previewedTitleSuggestionRef.current = "";
-      if (titleOrigin === "suggested") {
-        setTitle("");
-        setTitleOrigin("manual");
-      }
-      return;
-    }
-
-    const suggestionChanged = previewedTitleSuggestionRef.current !== suggestedTitle;
-    if (titleOrigin === "suggested" || (title.trim().length === 0 && suggestionChanged)) {
-      previewedTitleSuggestionRef.current = suggestedTitle;
-      setTitle(suggestedTitle);
-      setTitleOrigin("suggested");
-    }
-  }, [acceptedTitle, title, titleOrigin, suggestedTitle]);
+  }, [acceptedTags.join("\0")]);
 
   useEffect(() => {
     if (!startCountdown || !cfg.autoMs) return;
@@ -691,16 +662,13 @@ export function FloatOver({
             placeholder="Title — short headline"
             value={title}
             maxLength={120}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              setTitleOrigin("manual");
-            }}
+            onChange={(e) => setTitle(e.target.value)}
             onBlur={() => {
               const trimmed = title.trim();
               if (
                 trimmed.length > 0 &&
                 trimmed !== acceptedTitle &&
-                titleOrigin !== "suggested"
+                titleOrigin === "manual"
               ) {
                 onAcceptTitle?.(trimmed);
               }
@@ -711,16 +679,13 @@ export function FloatOver({
             placeholder="Description — a sentence or two of context"
             value={description}
             maxLength={2000}
-            onChange={(e) => {
-              setDescription(e.target.value);
-              setDescriptionOrigin("manual");
-            }}
+            onChange={(e) => setDescription(e.target.value)}
             onBlur={() => {
               const trimmed = description.trim();
               if (
                 trimmed.length > 0 &&
                 trimmed !== acceptedDescription &&
-                descriptionOrigin !== "suggested"
+                descriptionOrigin === "manual"
               ) {
                 onAcceptDescription?.(trimmed);
               }
@@ -763,13 +728,11 @@ export function FloatOver({
                     className="fo__ai-accept"
                     onClick={() => {
                       if (suggestedTitle.length > 0) {
-                        setTitle(suggestedTitle);
-                        setTitleOrigin("accepted");
+                        commitTitle(suggestedTitle, "accepted");
                         onAcceptTitle?.(suggestedTitle);
                       }
                       if (suggestedDescription.length > 0) {
-                        setDescription(suggestedDescription);
-                        setDescriptionOrigin("accepted");
+                        commitDescription(suggestedDescription, "accepted");
                         onAcceptDescription?.(suggestedDescription);
                       }
                       setTags(

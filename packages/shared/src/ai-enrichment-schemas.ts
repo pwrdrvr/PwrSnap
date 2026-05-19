@@ -76,6 +76,11 @@ export const RejectTagRequestSchema = z.object({
   tagId: z.string().min(1)
 });
 
+export const AddUserTagRequestSchema = z.object({
+  captureId: z.string().min(1),
+  label: z.string().trim().min(1).max(64)
+});
+
 export function normalizeTagLabel(label: string): string {
   return label.trim().replace(/\s+/g, " ").toLowerCase();
 }

@@ -15,6 +15,7 @@ const {
   acceptDescription,
   acceptTitle,
   acceptSuggestedTag,
+  addUserTag,
   getCaptureEnrichment,
   getEnrichmentSummaries,
   getTopUserTags,
@@ -274,6 +275,38 @@ describe("AI enrichment repositories", () => {
         suggestedTagCount: 0
       }
     ]);
+  });
+
+  test("addUserTag persists a free-form user tag and is idempotent", () => {
+    const enrichment = addUserTag("cap_1", "Custom Tag");
+
+    expect(enrichment.acceptedTags).toEqual(["Custom Tag"]);
+
+    // Idempotent — re-adding the same tag doesn't duplicate.
+    const after = addUserTag("cap_1", "  custom tag  ");
+    expect(after.acceptedTags).toEqual(["Custom Tag"]);
+
+    // Source = 'user' (not 'codex') so the bias-hint query
+    // doesn't conflate user-typed tags with codex-suggested ones.
+    const row = testDb
+      .prepare(
+        `SELECT capture_tags.source FROM capture_tags
+         JOIN tags ON tags.id = capture_tags.tag_id
+         WHERE capture_tags.capture_id = ? AND tags.normalized_label = ?`
+      )
+      .get("cap_1", "custom tag") as { source: string } | undefined;
+    expect(row?.source).toBe("user");
+  });
+
+  test("addUserTag throws on empty / whitespace-only labels", () => {
+    expect(() => addUserTag("cap_1", "")).toThrow();
+    expect(() => addUserTag("cap_1", "   ")).toThrow();
+  });
+
+  test("addUserTag throws when the capture is deleted or missing", () => {
+    testDb.prepare("UPDATE captures SET deleted_at = datetime('now') WHERE id = ?").run("cap_1");
+    expect(() => addUserTag("cap_1", "Whatever")).toThrow(/not found or deleted/);
+    expect(() => addUserTag("cap_missing", "Whatever")).toThrow(/not found or deleted/);
   });
 
   test("getTopUserTags ranks accepted content tags by usage", () => {

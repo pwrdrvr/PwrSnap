@@ -405,4 +405,101 @@ describe("FloatOver Codex suggestions", () => {
       "Dark-mode LINE desktop chat showing PwrAgent command help."
     );
   });
+
+  test("renders the title input above the description and styles drafts as suggested", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: "LINE chat with PwrAgent help" }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    const descTextarea = el.querySelector<HTMLTextAreaElement>(".fo__desc");
+    expect(titleInput).not.toBeNull();
+    expect(titleInput?.value).toBe("LINE chat with PwrAgent help");
+    expect(titleInput?.classList.contains("is-suggested")).toBe(true);
+    // Title sits above description in the DOM order.
+    const annotateChildren = Array.from(
+      el.querySelector(".fo__annotate")?.children ?? []
+    );
+    expect(annotateChildren.indexOf(titleInput as Element)).toBeLessThan(
+      annotateChildren.indexOf(descTextarea as Element)
+    );
+  });
+
+  test("typing into the title and blurring fires onAcceptTitle once", async () => {
+    const onAcceptTitle = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: null }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    expect(titleInput).not.toBeNull();
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      nativeSetter?.call(titleInput, "Custom user title");
+      titleInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+      // React 17+ delegates to root via `focusout`, not native `blur`.
+      titleInput?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onAcceptTitle).toHaveBeenCalledTimes(1);
+    expect(onAcceptTitle).toHaveBeenCalledWith("Custom user title");
+  });
+
+  test("blurring a suggested-but-untouched title does NOT fire onAcceptTitle", async () => {
+    const onAcceptTitle = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({ suggestedTitle: "Codex draft headline" }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle
+    });
+
+    const titleInput = el.querySelector<HTMLInputElement>(".fo__title");
+    await act(async () => {
+      titleInput?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onAcceptTitle).not.toHaveBeenCalled();
+  });
+
+  test("Use draft fires both onAcceptTitle and onAcceptDescription", async () => {
+    const onAcceptTitle = vi.fn();
+    const onAcceptDescription = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      enrichment: enrichment({
+        suggestedTitle: "Codex headline",
+        suggestedDescription: "Codex body"
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      onAcceptTitle,
+      onAcceptDescription
+    });
+
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>(".fo__ai-accept")?.click();
+    });
+
+    expect(onAcceptTitle).toHaveBeenCalledWith("Codex headline");
+    expect(onAcceptDescription).toHaveBeenCalledWith("Codex body");
+  });
 });

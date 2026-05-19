@@ -1423,6 +1423,11 @@
   font: inherit;
   color: inherit;
   cursor: pointer;
+  border-radius: 3px;
+}
+.psl__tag-suggest-label:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .psl__tag-suggest-x {
   margin-left: 4px;
@@ -1432,8 +1437,14 @@
   color: var(--text-muted);
   font: 500 11px/1 var(--font-sans);
   cursor: pointer;
+  border-radius: 3px;
 }
 .psl__tag-suggest-x:hover { color: var(--text-primary); }
+.psl__tag-suggest-x:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--text-primary);
+}
 .psl__tag-input {
   flex: 1;
   min-width: 80px;

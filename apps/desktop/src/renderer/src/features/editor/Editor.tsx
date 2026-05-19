@@ -528,12 +528,22 @@ function EditorLoaded({
       >
         <div
           ref={canvasRef}
-          className="editor-canvas"
+          className={
+            "editor-canvas" +
+            // Until useZoomPan's layout effect measures the wrap and
+            // emits explicit CSS px for the canvas, `.is-pre-measured`
+            // applies max-width/max-height:100% as a safety net so the
+            // canvas can't size up to the <img>'s intrinsic
+            // dimensions (which would force scrollbars on the wrap
+            // and start the resize feedback loop).
+            (zoom.canvasStyle === null ? " is-pre-measured" : "")
+          }
           style={
-            // After first paint, useZoomPan returns explicit CSS px
+            // After first layout, useZoomPan returns explicit CSS px
             // for width/height. Before the wrap measures (rare; only
-            // on the first frame), fall back to aspect-ratio so the
-            // canvas has a sane intrinsic shape.
+            // on the first frame between commit and useLayoutEffect),
+            // fall back to aspect-ratio so the canvas has a sane
+            // intrinsic shape.
             zoom.canvasStyle ?? { aspectRatio: `${record.width_px} / ${record.height_px}` }
           }
           onPointerDown={wantPan ? undefined : onPointerDown}

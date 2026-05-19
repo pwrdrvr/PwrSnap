@@ -22,7 +22,7 @@
 // Drag-to-pan is enabled when scale > 1 (canvas overflows the wrap)
 // or when Space is held (Photoshop convention).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
@@ -104,11 +104,27 @@ export function useZoomPan(opts: {
 
   // Compute fit-to-wrap dimensions (object-fit:contain semantics
   // relative to the wrap's content box).
+  //
+  // Subtract the wrap's CSS padding from clientWidth/clientHeight —
+  // `clientWidth` INCLUDES padding, but the canvas has to fit inside
+  // the padding box. Without this, the canvas was computed slightly
+  // larger than the content area, triggering scrollbars, whose
+  // appearance shrunk clientHeight/clientWidth, which made fit
+  // re-compute smaller, which made scrollbars disappear, which made
+  // fit larger again — the rocket-launching-away oscillation.
+  //
+  // Also subtract a 1-px safety margin to prevent sub-pixel rounding
+  // from pushing the canvas just barely over the content edge.
+  // Combined with `scrollbar-gutter: stable` on the wrap (CSS), this
+  // eliminates the feedback loop entirely.
   const computeFit = useCallback((): { width: number; height: number } | null => {
     const wrap = wrapRef.current;
     if (wrap === null) return null;
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight;
+    const cs = getComputedStyle(wrap);
+    const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const w = Math.max(0, wrap.clientWidth - padX - 1);
+    const h = Math.max(0, wrap.clientHeight - padY - 1);
     if (w <= 0 || h <= 0) return null;
     const wrapAspect = w / h;
     if (wrapAspect > imageAspect) {
@@ -120,16 +136,43 @@ export function useZoomPan(opts: {
   // Track wrap size; refresh fit whenever it changes. Also recompute
   // 1:1 scale when actualSizeLocked, so the canvas stays at one
   // image-pixel-per-screen-pixel as the wrap grows/shrinks.
-  useEffect(() => {
+  //
+  // `useLayoutEffect` (not `useEffect`) for two reasons:
+  //   1. The initial fit must be computed BEFORE the browser paints,
+  //      otherwise the canvas paints once with the pre-measurement
+  //      fallback (aspect-ratio + max-width:100%), then immediately
+  //      again with explicit dimensions — visible flash.
+  //   2. The async ResizeObserver fire that would normally land the
+  //      initial measurement can race the rest of the layout chain,
+  //      occasionally seeing transient mid-layout dimensions that
+  //      kick off the resize feedback loop. Synchronous read inside
+  //      the layout effect avoids that.
+  useLayoutEffect(() => {
     const wrap = wrapRef.current;
     if (wrap === null) return;
     const update = (): void => {
       const fit = computeFit();
       if (fit === null) return;
-      setFitSize(fit);
+      // Avoid churn: only commit a fit change when the dimensions
+      // shift by more than 0.5px. Sub-pixel jitter from scrollbar
+      // appearance/layout reflow used to thrash React state every
+      // frame.
+      setFitSize((prev) => {
+        if (
+          prev !== null &&
+          Math.abs(prev.width - fit.width) < 0.5 &&
+          Math.abs(prev.height - fit.height) < 0.5
+        ) {
+          return prev;
+        }
+        return fit;
+      });
       if (actualSizeLocked) {
         const targetScale = imageWidthPx / devicePixelRatio / fit.width;
-        setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+        setState((prev) => {
+          const next = clamp(targetScale, MIN_SCALE, MAX_SCALE);
+          return Math.abs(prev.scale - next) < 0.001 ? prev : { scale: next };
+        });
       }
     };
     update();

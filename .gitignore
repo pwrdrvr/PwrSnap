@@ -61,6 +61,7 @@ Thumbs.db
 .local/
 .worktrees/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 .design-canvas.state.json
 
 # Design canvas iteration scraps (intermediate clipboard-paste images)

@@ -42,10 +42,17 @@
   --accent-strong: #ffa33d;
   --accent-bright: #ffb35c;
   --accent-deep:   #b35f15;
-  --accent-soft:   rgba(255, 138, 31, 0.12);
-  --accent-tint:   rgba(255, 138, 31, 0.06);
-  --accent-border: rgba(255, 138, 31, 0.42);
-  --accent-shadow: rgba(255, 138, 31, 0.34);
+  /* Derived alpha overlays of `--accent`. Defined as color-mix so a
+     future theme that overrides `--accent` automatically gets the
+     matching soft / tint / border / shadow values. Previous shape
+     was a hard-coded `rgba(255, 138, 31, X)` literal here AND a
+     separate `rgba(196, 82, 0, X)` override in the light block;
+     both reduced to "X% of accent" once we trust color-mix to do
+     the math at paint time. */
+  --accent-soft:   color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-tint:   color-mix(in srgb, var(--accent) 6%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
+  --accent-shadow: color-mix(in srgb, var(--accent) 34%, transparent);
 
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
@@ -79,12 +86,31 @@
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
   /* ---------- SHADOWS ---------- */
-  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.32);
-  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.30);
-  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.36);
-  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.42);
+  /* `--shadow-base` is the pure black every drop-shadow derives from
+     via color-mix. Stays `#000000` in both themes — drop shadows
+     under light surfaces still want black, just at lower alpha (the
+     per-step percent does the heavy lifting).
+
+     `--surface-highlight` is the matching color for the 1px inset
+     top-edge highlight on elevated surfaces. Stays `#ffffff` in both
+     themes — the highlight semantic is "lit from above," and that
+     reads as bright in both dark (subtle white at 4%) and light
+     (strong white at 60%) modes. Earlier shape pointed this at
+     `var(--text-primary)`, which silently inverted in light theme
+     (warm near-black highlight = a darker top edge, the opposite of
+     elevation) — kept harmless only because the light block
+     overrode `--shadow-inset` directly. Defining the base as white
+     in both themes lets any new rule consume `var(--surface-
+     highlight)` and get the right semantic without a theme-specific
+     override. */
+  --shadow-base:        #000000;
+  --surface-highlight:  #ffffff;
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 32%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 36%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 42%, transparent);
   --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
@@ -173,10 +199,12 @@
   --accent-strong: #b34a00;
   --accent-bright: #d96d00;
   --accent-deep:   #8a3a00;
-  --accent-soft:   rgba(196, 82, 0, 0.12);
-  --accent-tint:   rgba(196, 82, 0, 0.06);
-  --accent-border: rgba(196, 82, 0, 0.42);
-  --accent-shadow: rgba(196, 82, 0, 0.28);
+  /* Light theme's --accent-shadow at the matching 28% (slightly
+     lighter than dark's 34% so the cast doesn't read as a heavy
+     ring on white panels). The other three derivatives inherit
+     from :root by deriving off `--accent` — color-mix re-evaluates
+     here because `--accent` was overridden above. */
+  --accent-shadow: color-mix(in srgb, var(--accent) 28%, transparent);
 
   /* ---------- COLOR — semantic (deeper for legibility on white) ---------- */
   --danger:        #b94232;
@@ -202,13 +230,21 @@
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #ffffff;   /* white reads cleanest on the deep tangerine */
 
-  /* ---------- SHADOWS — softer on light surfaces ---------- */
-  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.08);
-  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.12);
-  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.18);
-  --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  /* ---------- SHADOWS — softer on light surfaces ----------
+     Same color-mix shape as the dark block — both themes derive
+     drop shadows from `--shadow-base` (#000) and the inset
+     highlight from `--surface-highlight` (#fff). Only the
+     percentages differ: smaller drop-shadow alphas on light so
+     the cast doesn't read as industrial, larger inset-highlight
+     alpha so the top edge of an elevated panel pops against the
+     off-white surround. `--shadow-glow` inherits from :root
+     because its `--accent-border` / `--accent-shadow` references
+     already theme via color-mix on `--accent`. */
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 6%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 8%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 12%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 18%, transparent);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 60%, transparent);
 }
 
 /* ============================================================

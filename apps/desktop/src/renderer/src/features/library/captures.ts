@@ -11,6 +11,11 @@ export type Capture = {
    *  no hand-drawn glyph for `app`. Null for the demo fixtures and
    *  any record that came in without a `source_app_name`. */
   appName: string | null;
+  /** Real CFBundleIdentifier of the source app, when captured.
+   *  Lets `<AppIcon>` resolve the full-color icon extracted from the
+   *  installed .app via the `pwrsnap-app-icon://` protocol. Null for
+   *  demo fixtures and any record that came in without a bundle id. */
+  bundleId: string | null;
   n: string;
   tags: string[];
   day: string;
@@ -90,6 +95,7 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
     id: i + 1,
     ...c,
     appName: null,
+    bundleId: null,
     day: day.day,
     date: day.date,
     time: day.times[slot] ?? "9:00",

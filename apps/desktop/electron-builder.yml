@@ -107,9 +107,9 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   # These files are intentionally identical in both temp app trees before
   # @electron/universal merges them. The Swift helper is prebuilt universal;
-  # Sharp's optional dependency directories are arch-named and each final app
-  # needs both Darwin CPU payloads available at runtime.
-  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*}"
+  # Sharp and ffmpeg optional dependency directories are arch-named and each
+  # final app needs both Darwin CPU payloads available at runtime.
+  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,app.asar.unpacked/node_modules/{@img/{sharp-darwin-*,sharp-libvips-darwin-*},@ffmpeg-installer/darwin-*}/**/*}"
   helperBundleId: com.pwrdrvr.pwrsnap.helper
   helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
   helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU

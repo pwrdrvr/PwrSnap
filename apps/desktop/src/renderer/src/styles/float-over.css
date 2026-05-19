@@ -8,16 +8,16 @@
   overflow: hidden;
   background:
     radial-gradient(1200px 700px at 18% 12%, color-mix(in srgb, var(--accent) 8%, transparent) 0%, transparent 55%),
-    radial-gradient(900px 600px at 88% 92%, rgba(31,124,255,0.06) 0%, transparent 55%),
-    linear-gradient(140deg, #000000 0%, #14110d 50%, #000000 100%);
+    radial-gradient(900px 600px at 88% 92%, color-mix(in srgb, var(--brand-blue) 6%, transparent) 0%, transparent 55%),
+    linear-gradient(140deg, var(--bg-app) 0%, var(--bg-panel-hover) 50%, var(--bg-app) 100%);
   font-family: var(--font-sans);
 }
 .fo-desktop::before {
   content: "";
   position: absolute; inset: 0;
   background-image:
-    linear-gradient(rgba(255,255,255,0.012) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.012) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px);
   background-size: 36px 36px;
   pointer-events: none;
 }
@@ -27,7 +27,7 @@
   background: color-mix(in srgb, var(--bg-app) 72%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255,255,255,0.04);
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 14px;
   font: 500 12px/1 var(--font-sans);
@@ -44,7 +44,7 @@
 .fo-menubar__pwr-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--success);
-  box-shadow: 0 0 0 2px rgba(109,186,126,0.18);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
 }
 
 /* fake window underneath toast, for spatial context */
@@ -53,7 +53,7 @@
   border-radius: 10px;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
-  box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-base) 50%, transparent);
   overflow: hidden;
 }
 .fo-window img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0.82; }
@@ -84,9 +84,9 @@
   border: 1px solid var(--border-subtle);
   border-radius: 14px;
   box-shadow:
-    0 24px 64px rgba(0,0,0,0.55),
-    0 0 0 1px rgba(0,0,0,0.4),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+    0 24px 64px color-mix(in srgb, var(--shadow-base) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shadow-base) 40%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
   color: var(--text-primary);
   font-family: var(--font-sans);
   z-index: 50;
@@ -162,7 +162,7 @@
   margin: 0 12px;
   border-radius: 8px;
   overflow: hidden;
-  background: #000000;
+  background: var(--bg-app);
   border: 1px solid var(--border-subtle);
   aspect-ratio: 16 / 10;
 }
@@ -231,7 +231,7 @@
   padding: 8px 9px 7px;
   /* `--bg-panel-elevated` gives the button a 1-step lift over the
      float-over's `--bg-panel-hover` surface in both palettes. The
-     prior `rgba(255, 255, 255, 0.025)` literal worked as a tiny
+     prior `color-mix(in srgb, var(--surface-highlight) 2%, transparent)` literal worked as a tiny
      elevation tint on dark but disappeared into the off-white
      panel in light. */
   background: var(--bg-panel-elevated);
@@ -355,7 +355,7 @@
 .fo__copy-file.is-copied {
   background: var(--accent);
   border-color: var(--accent);
-  color: #1a1411;
+  color: var(--button-text-on-accent);
 }
 
 /* ----- annotation row ----- */
@@ -494,7 +494,7 @@
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px;
   padding: 8px 10px 10px;
-  border-top: 1px solid rgba(255,255,255,0.04);
+  border-top: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
   background: color-mix(in srgb, var(--bg-app) 18%, transparent);
 }
 .fo__dest {
@@ -597,7 +597,7 @@
   border: 1px solid var(--border-subtle);
   overflow: hidden;
   background: var(--bg-panel);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
   position: relative;
   cursor: pointer;
   transition: transform 140ms var(--ease-out);
@@ -622,7 +622,7 @@
   height: 100%;
   border-radius: 12px;
   overflow: hidden;
-  background: #000000;
+  background: var(--bg-app);
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
 }

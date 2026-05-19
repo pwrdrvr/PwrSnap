@@ -451,6 +451,97 @@ test("top-level filters do not appear as empty source-app rows after leaving Unk
   }
 });
 
+const isMac = process.platform === "darwin";
+
+test("Source-app sidebar row renders the real bundle icon for an installed app (Finder)", async () => {
+  // Bundle-icon resolution goes through the Swift helper +
+  // NSWorkspace.urlForApplication(...). Both are macOS-only and
+  // require the helper binary the postinstall step compiles.
+  test.skip(!isMac, "app-icon extraction is macOS-only");
+
+  // Finder is present on every macOS Playwright runner — guaranteed
+  // to resolve via NSWorkspace and produce a real PNG. Using a
+  // synthetic bundle id would 404 and fall back to the procedural
+  // glyph, defeating the assertion.
+  const FINDER_BUNDLE_ID = "com.apple.finder";
+
+  const app = await launchSourceFilterPwrSnap();
+  try {
+    const window = app.window;
+    await disableAnimations(window);
+    await disableCacheImageLoading(window);
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-app-icon-e2e-"));
+    const imagePath = path.join(dir, "fixture.svg");
+    await writeFile(imagePath, fixtureImageBytes());
+
+    await app.electronApp.evaluate(
+      (_electron, payload: { imagePath: string; bundleId: string }) => {
+        type Bridge = {
+          seedCapture: (input: {
+            id: string;
+            kind: "image" | "video";
+            captured_at: string;
+            source_app_bundle_id: string | null;
+            source_app_name: string | null;
+            src_path: string;
+            width_px: number;
+            height_px: number;
+            device_pixel_ratio: number;
+            byte_size: number;
+            sha256: string;
+          }) => unknown;
+        };
+        const bridge = (globalThis as unknown as { __PWRSNAP_TEST__: Bridge }).__PWRSNAP_TEST__;
+        bridge.seedCapture({
+          id: "app-icon-real-finder",
+          kind: "image",
+          captured_at: new Date().toISOString(),
+          source_app_bundle_id: payload.bundleId,
+          source_app_name: "Finder",
+          src_path: payload.imagePath,
+          width_px: 800,
+          height_px: 600,
+          device_pixel_ratio: 1,
+          byte_size: 70,
+          sha256: "app-icon-real-finder"
+        });
+      },
+      { imagePath, bundleId: FINDER_BUNDLE_ID }
+    );
+
+    await broadcastCapturesChanged(app);
+    await waitForAppStat(app, FINDER_BUNDLE_ID, 1);
+
+    // The sidebar Source App row for Finder should:
+    //   1. Exist and show the count.
+    //   2. Contain an <img class="ps-app-icon-img"> — the real-icon
+    //      path — NOT a procedural <svg>.
+    //   3. The img must have loaded successfully (naturalWidth > 0).
+    const finderRow = window
+      .locator("button.psl__nav")
+      .filter({ has: window.locator(".psl__nav-label", { hasText: /^Finder$/ }) });
+    await expect(finderRow).toHaveCount(1, { timeout: 10_000 });
+
+    const finderIconImg = finderRow.first().locator(".psl__nav-icon img.ps-app-icon-img");
+    await expect(finderIconImg).toHaveCount(1, { timeout: 10_000 });
+
+    // Wait for the protocol handler to extract + serve the PNG. The
+    // <img> reports naturalWidth > 0 only after Chromium successfully
+    // decoded the response body — if the protocol 404'd or the helper
+    // failed, this stays at 0 and we'd know the integration broke.
+    await expect
+      .poll(
+        async () =>
+          finderIconImg.evaluate((el) => (el as HTMLImageElement).naturalWidth),
+        { timeout: 5_000 }
+      )
+      .toBeGreaterThan(0);
+  } finally {
+    await app.close();
+  }
+});
+
 function fixtureImageBytes(): Buffer {
   return Buffer.from(FIXTURE_SVG, "utf8");
 }

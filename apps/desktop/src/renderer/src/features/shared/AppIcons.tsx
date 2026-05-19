@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 // AppId is the renderer's app key. For known apps it's a curated
 // short id (`"slack"`, `"vscode"`, …); for unknown apps it's the
@@ -244,24 +244,77 @@ function ProceduralIcon({ size, label }: { size: number; label: string }): React
   );
 }
 
+/** Bundle ids appear in the wild as `com.apple.Terminal`,
+ *  `com.tinyspeck.slackmacgap`, `com.openai.codex`. We allow letters,
+ *  digits, dot, underscore, dash — the same alphabet the Swift helper
+ *  and protocol parser accept. Anything else can't possibly resolve
+ *  to a real bundle, so we skip the network round-trip entirely. */
+function isResolvableBundleId(bundleId: string | undefined): bundleId is string {
+  if (bundleId === undefined) return false;
+  if (bundleId.length === 0 || bundleId.length > 256) return false;
+  return /^[A-Za-z0-9._-]+$/.test(bundleId);
+}
+
+function FallbackGlyph({
+  app,
+  size,
+  name
+}: {
+  app: AppId;
+  size: number;
+  name: string | undefined;
+}): ReactElement {
+  const known = (KNOWN_APP_ICONS as Record<string, (s: number) => ReactElement>)[app];
+  if (known !== undefined) return known(size);
+  return <ProceduralIcon size={size} label={initialsFor(name, app)} />;
+}
+
 export function AppIcon({
   app,
   size = 11,
-  name
+  name,
+  bundleId
 }: {
   app: AppId;
   size?: number;
   /** Captured user-facing app name. Used for procedural-icon initials
    *  when `app` doesn't have a hand-drawn glyph. */
-  name?: string;
+  name?: string | undefined;
+  /** Real CFBundleIdentifier of the source app, when known. Triggers
+   *  the full-color extract-from-installed-.app path via the
+   *  `pwrsnap-app-icon://` protocol. Falls back to the procedural /
+   *  hand-drawn glyph below on miss (app not installed locally,
+   *  helper error, etc.). */
+  bundleId?: string | undefined;
 }): ReactElement {
-  // Cast for the lookup: `satisfies Record<KnownAppId, …>` on the
-  // dict definition gives us literal-level typo protection at write
-  // time; the cast here just opens the dict for a runtime string
-  // key (the open-set fallback).
-  const known = (KNOWN_APP_ICONS as Record<string, (s: number) => ReactElement>)[app];
-  if (known !== undefined) return known(size);
-  return <ProceduralIcon size={size} label={initialsFor(name, app)} />;
+  const [imageFailed, setImageFailed] = useState(false);
+
+  if (isResolvableBundleId(bundleId) && !imageFailed) {
+    // Real bundle icons get a small density bump over the hand-drawn
+    // glyph size — macOS app icons carry their own rounded shape and
+    // bezel, so 11px in an 18px tile feels lost. The CSS rule below
+    // (`.psl__nav-icon:has(> .ps-app-icon-img)`) also drops the
+    // copper tile chrome so the icon stands on its own. Cap at 22 to
+    // keep AppTag's tight 18×18 tile happy when this is invoked at
+    // size=10.
+    const renderSize = Math.min(22, Math.max(size + 5, 14));
+    return (
+      <img
+        className="ps-app-icon-img"
+        src={`pwrsnap-app-icon://r/${bundleId}`}
+        width={renderSize}
+        height={renderSize}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+        onError={() => setImageFailed(true)}
+        style={{ display: "block", objectFit: "contain" }}
+      />
+    );
+  }
+
+  return <FallbackGlyph app={app} size={size} name={name} />;
 }
 
 type AppTagSize = "sm" | "md" | "lg";
@@ -269,18 +322,20 @@ type AppTagSize = "sm" | "md" | "lg";
 export function AppTag({
   app,
   name,
-  size = "md"
+  size = "md",
+  bundleId
 }: {
   app: AppId;
   name: string;
   size?: AppTagSize;
+  bundleId?: string | undefined;
 }) {
   const cls = "ps-app-tag" + (size === "sm" ? " is-sm" : size === "lg" ? " is-lg" : "");
   const iconSize = size === "sm" ? 10 : size === "lg" ? 13 : 11;
   return (
     <span className={cls} title={`Captured from ${name}`}>
       <span className="ps-app-tag__tile">
-        <AppIcon app={app} size={iconSize} name={name} />
+        <AppIcon app={app} size={iconSize} name={name} bundleId={bundleId} />
       </span>
       <span className="ps-app-tag__name">{name}</span>
     </span>

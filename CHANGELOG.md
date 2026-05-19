@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.0-beta.3 - 2026-05-19
+
+- Added fast video capture support, including the native recorder pipeline,
+  ffmpeg runtime packaging, video persistence, and playback/export surfaces.
+- Added Codex-powered capture enrichment so new snaps can get generated
+  titles, descriptions, suggested tags, and sensitive-content review metadata.
+- Improved tray responsiveness by pre-warming the popover at boot and polished
+  the last-snap preview aspect ratio to match the float-over surface.
+- Cleaned up desktop build noise by silencing Swift recorder warnings,
+  removing redundant main-process dynamic imports, and allowing the ffmpeg
+  installer postinstall script needed for release packaging.
+- Updated the release workflow artifact actions to versions that run on the
+  Node.js 24 action runtime.
+
 ## v1.0.0-beta.2 - 2026-05-18
 
 - Fixed universal macOS release packaging so the prebuilt window-list helper

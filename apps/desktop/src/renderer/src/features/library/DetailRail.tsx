@@ -426,7 +426,11 @@ function DetailTab({
           <span>{capturedAt}</span>
         </div>
         <div className="psl__detail-tags">
-          <AppTag app={appId} name={sourceName} />
+          <AppTag
+            app={appId}
+            name={sourceName}
+            bundleId={record.source_app_bundle_id ?? undefined}
+          />
           {acceptedTags.map((tag) => (
             <span key={tag} className="ps-tag is-sm">
               {tag}

@@ -78,7 +78,7 @@
   cursor: crosshair;
   border-radius: 6px;
   overflow: hidden;
-  box-shadow: 0 0 0 1px var(--border-default), 0 12px 40px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 1px var(--border-default), 0 12px 40px color-mix(in srgb, var(--shadow-base) 30%, transparent);
 }
 /* Pointer tool: default arrow cursor — the user is "viewing", not
    drawing. Other tools keep the crosshair. */

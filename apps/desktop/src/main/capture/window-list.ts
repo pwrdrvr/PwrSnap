@@ -126,6 +126,55 @@ export async function captureWindowImage(
 }
 
 /**
+ * Resolve `bundleId` to its installed .app via NSWorkspace, extract
+ * its icon at `size`×`size`, and write a PNG to `outputPath`. Returns
+ * the resolved `.app` POSIX path on success — the caller can stat the
+ * bundle's `Info.plist` mtime to invalidate cached extracts when the
+ * app updates.
+ *
+ * Returns `{ ok: false }` on:
+ *   - native helper missing (Linux/Windows or dev pre-build)
+ *   - bundle id not installed locally (exit 3)
+ *   - icon render / encode failure (exit 4)
+ *
+ * Callers should treat all failures uniformly — emit no icon and let
+ * the renderer fall back to procedural initials.
+ */
+export async function extractAppIcon(
+  bundleId: string,
+  outputPath: string,
+  size: number
+): Promise<{ ok: true; appPath: string } | { ok: false; message: string }> {
+  const helper = resolveHelperPath();
+  if (helper === null) {
+    return { ok: false, message: "native helper not available" };
+  }
+  if (bundleId.length === 0 || !/^[A-Za-z0-9._-]+$/.test(bundleId)) {
+    return { ok: false, message: `invalid bundleId: ${bundleId}` };
+  }
+  try {
+    const { stdout } = await execFileAsync(
+      helper,
+      ["--extract-app-icon", bundleId, outputPath, String(size)],
+      { timeout: 5_000, maxBuffer: 4 * 1024 }
+    );
+    const appPath = stdout.toString().trim();
+    if (appPath.length === 0) {
+      return { ok: false, message: "helper returned empty app path" };
+    }
+    return { ok: true, appPath };
+  } catch (cause) {
+    const stderr = (cause as { stderr?: Buffer | string }).stderr;
+    const stderrStr =
+      typeof stderr === "string" ? stderr : stderr?.toString() ?? "";
+    return {
+      ok: false,
+      message: stderrStr || (cause instanceof Error ? cause.message : String(cause))
+    };
+  }
+}
+
+/**
  * Activate (bring to front) the running application identified by
  * `pid`. Used by the region selector to restore the previously-
  * frontmost app after a cancel or commit, without resorting to

@@ -290,6 +290,84 @@ if args.count >= 4 && args[1] == "--capture-window" {
     exit(99)
 }
 
+// `--extract-app-icon <bundleId> <output.png> [size]` — resolve a
+// bundle id to its installed .app via NSWorkspace, ask the workspace
+// for the app's icon (the same NSImage Finder/Dock uses), render it
+// to PNG at `size`×`size` (default 1024), and write to `output.png`.
+//
+// On success, prints the resolved .app POSIX path to stdout — the
+// caller stats its Info.plist to decide whether to invalidate its
+// cache on subsequent extracts.
+//
+// Why NSWorkspace.icon(forFile:) instead of reading .icns manually:
+//   - Handles document-icon fallbacks, badges (Beta releases), and
+//     custom Finder-set icons that the bundle's .icns doesn't carry.
+//   - Asks the OS for the best representation at the requested size,
+//     so a 1024px request hits the high-res Retina layer, while a
+//     32px request avoids needless downscale work.
+//
+// Exit codes:
+//   0 — success (icon written)
+//   2 — bad args
+//   3 — bundle id not installed locally
+//   4 — icon render / PNG encode failure
+if args.count >= 4 && args[1] == "--extract-app-icon" {
+    let bundleId = args[2]
+    let outputPath = args[3]
+    let size: Int = args.count >= 5 ? (Int(args[4]) ?? 1024) : 1024
+    let clampedSize = max(16, min(2048, size))
+
+    guard let appUrl = NSWorkspace.shared.urlForApplication(
+        withBundleIdentifier: bundleId
+    ) else {
+        FileHandle.standardError.write(
+            "no installed app for bundle id \(bundleId)\n".data(using: .utf8) ?? Data()
+        )
+        exit(3)
+    }
+
+    // NSWorkspace.icon(forFile:) returns an NSImage with multiple
+    // representations. We request a CGImage at the desired size and
+    // let AppKit pick the best rep — high-res for Retina-scale, low
+    // for small sidebar uses.
+    let nsImage = NSWorkspace.shared.icon(forFile: appUrl.path)
+    let targetSize = NSSize(width: clampedSize, height: clampedSize)
+    nsImage.size = targetSize
+
+    var rect = NSRect(origin: .zero, size: targetSize)
+    guard let cgImage = nsImage.cgImage(
+        forProposedRect: &rect,
+        context: nil,
+        hints: nil
+    ) else {
+        FileHandle.standardError.write(
+            "icon -> cgImage failed for \(bundleId)\n".data(using: .utf8) ?? Data()
+        )
+        exit(4)
+    }
+
+    let outUrl = URL(fileURLWithPath: outputPath)
+    let pngType = UTType.png.identifier as CFString
+    guard let dest = CGImageDestinationCreateWithURL(outUrl as CFURL, pngType, 1, nil) else {
+        FileHandle.standardError.write(
+            "CGImageDestinationCreateWithURL failed\n".data(using: .utf8) ?? Data()
+        )
+        exit(4)
+    }
+    CGImageDestinationAddImage(dest, cgImage, nil)
+    if !CGImageDestinationFinalize(dest) {
+        FileHandle.standardError.write(
+            "CGImageDestinationFinalize failed\n".data(using: .utf8) ?? Data()
+        )
+        exit(4)
+    }
+
+    // stdout = resolved .app path; caller stats Info.plist to know
+    // when to invalidate.
+    FileHandle.standardOutput.write(appUrl.path.data(using: .utf8) ?? Data())
+    exit(0)
+}
+
 let encoder = JSONEncoder()
 encoder.outputFormatting = []
 let data = try encoder.encode(collectWindows())

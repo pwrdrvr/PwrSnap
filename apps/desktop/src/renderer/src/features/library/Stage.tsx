@@ -149,7 +149,7 @@ function StageBody({
   return (
     <>
       <div className="psl__stage-meta">
-        <AppTag app={appId} name={sourceName} size="sm" />
+        <AppTag app={appId} name={sourceName} size="sm" bundleId={record.source_app_bundle_id ?? undefined} />
         <span>
           · {capturedDate} {capturedTime}
         </span>

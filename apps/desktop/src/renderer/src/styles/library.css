@@ -2248,3 +2248,11 @@
     outline-color: transparent;
   }
 }
+
+/* Spinner for the LegacyMigrationBanner. One-shot use during first-
+   boot library upgrade; defined here so any future banner can reuse. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

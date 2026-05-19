@@ -84,8 +84,10 @@ export type UpsertOverlay = {
  * renderer (no IPC during drag). Returns the inserted row, validated
  * back through the schema.
  *
- * Bumps `captures.overlays_version` in the same transaction so a
+ * Bumps `captures.edits_version` in the same transaction so a
  * concurrent Phase 2 render coordinator notices the cache is stale.
+ * Renamed from `overlays_version` in migration 0004 to unify v1
+ * (overlays) and v2 (layers) convergence semantics.
  */
 export function insertOverlay(input: UpsertOverlay): OverlayRow {
   const now = new Date().toISOString();
@@ -114,7 +116,7 @@ export function insertOverlay(input: UpsertOverlay): OverlayRow {
       now
     );
     db.prepare<[string]>(
-      `UPDATE captures SET overlays_version = overlays_version + 1 WHERE id = ?`
+      `UPDATE captures SET edits_version = edits_version + 1 WHERE id = ?`
     ).run(input.captureId);
   });
   tx();
@@ -149,7 +151,7 @@ export function rejectOverlay(id: string): string | null {
       `UPDATE overlays SET rejected_at = ? WHERE id = ?`
     ).run(now, id);
     db.prepare<[string]>(
-      `UPDATE captures SET overlays_version = overlays_version + 1 WHERE id = ?`
+      `UPDATE captures SET edits_version = edits_version + 1 WHERE id = ?`
     ).run(row.capture_id);
   });
   tx();

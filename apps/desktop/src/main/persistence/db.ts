@@ -171,11 +171,23 @@ function runMigrations(db: Database.Database): void {
 
     log.info("applying migration", { file, version });
     const sql = readFileSync(join(migrationsDir, file), "utf8");
-    const tx = db.transaction(() => {
-      db.exec(sql);
-      insertMigration.run(version);
-    });
-    tx();
+
+    // SQLite's "12-step ALTER TABLE" pattern (recreating a table to
+    // change a column constraint) requires foreign_keys=OFF, and that
+    // pragma is silently ignored inside a transaction. Migrations that
+    // need it opt in via a `-- @no-foreign-keys` marker on the first
+    // line. See sqlite.org/lang_altertable.html.
+    const needsFkOff = sql.startsWith("-- @no-foreign-keys");
+    if (needsFkOff) db.pragma("foreign_keys = OFF");
+    try {
+      const tx = db.transaction(() => {
+        db.exec(sql);
+        insertMigration.run(version);
+      });
+      tx();
+    } finally {
+      if (needsFkOff) db.pragma("foreign_keys = ON");
+    }
   }
 }
 

@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   currentRoot: "",
   legacyRoot: "",
   overridden: false,
-  rows: [] as Array<{ id: string; src_path: string; deleted_at: string | null }>,
+  rows: [] as Array<{ id: string; legacy_src_path: string; deleted_at: string | null }>,
   updates: [] as Array<{ path: string; id: string }>
 }));
 
@@ -55,7 +55,7 @@ describe("migrateLegacyCaptureSources", () => {
     const oldPath = join(mocks.legacyRoot, "2026", "05", "abc.png");
     await mkdir(join(mocks.legacyRoot, "2026", "05"), { recursive: true });
     await writeFile(oldPath, "png");
-    mocks.rows = [{ id: "abc", src_path: oldPath, deleted_at: null }];
+    mocks.rows = [{ id: "abc", legacy_src_path: oldPath, deleted_at: null }];
 
     const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
     const result = await migrateLegacyCaptureSources();
@@ -82,7 +82,7 @@ describe("migrateLegacyCaptureSources", () => {
     const nextPath = join(mocks.currentRoot, "abc.png");
     await mkdir(mocks.currentRoot, { recursive: true });
     await writeFile(nextPath, "png");
-    mocks.rows = [{ id: "abc", src_path: oldPath, deleted_at: null }];
+    mocks.rows = [{ id: "abc", legacy_src_path: oldPath, deleted_at: null }];
 
     const { migrateLegacyCaptureSources } = await import("../capture-source-maintenance");
     const result = await migrateLegacyCaptureSources();

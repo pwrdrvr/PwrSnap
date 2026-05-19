@@ -283,6 +283,12 @@ async function buildCompositeLayers(
  * may apply a default 96 DPI multiplier and emit a 1.33× bigger
  * raster.
  */
+/**
+ * Internal SVG rasterize helper. Exposed via `rasterizeSvgForV2`
+ * (re-exported below) so the v2 tree-walking compositor in
+ * compose-tree-vector.ts can reuse the same pixel-accurate
+ * raw-RGBA produce-composite-layer discipline.
+ */
 async function rasterize(svg: string, width: number, height: number): Promise<sharp.OverlayOptions> {
   const raw = await sharp(Buffer.from(svg), { density: 72 })
     .resize(width, height, { fit: "fill" })
@@ -470,3 +476,16 @@ async function blurLayer(
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
+
+// ── v2 reuse exports ────────────────────────────────────────────────
+// The v2 tree-walking compositor (render/compose-tree.ts) reuses
+// v1's SVG-rasterize discipline for arrow / rect / text / highlight /
+// step shapes — the wire format is identical (VectorLayer.shape is
+// the same Overlay discriminated union as OverlayRow.data). Exporting
+// the helpers under explicit names keeps the v2 import surface small
+// and the v1 internals private to this module.
+export const rasterizeSvgForV2 = rasterize;
+export const arrowSvgForV2 = arrowSvg;
+export const rectSvgForV2 = rectSvg;
+export const highlightSvgForV2 = highlightSvg;
+export const textSvgForV2 = textSvg;

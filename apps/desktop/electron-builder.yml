@@ -124,6 +124,21 @@ mac:
     # Audio capture description (Fast Video Capture, issue #64).
     # macOS uses this when the user opts into system-audio recording.
     NSAudioCaptureUsageDescription: "PwrSnap records system audio for screen-recording exports when you turn it on."
+    NSDocumentsFolderUsageDescription: "Save your screenshots in Documents so you can find them in Finder and sync them via iCloud."
+    # Private UTI carrying PwrSnap layer-fragment payloads on the macOS
+    # pasteboard. Pasting between two PwrSnap instances preserves layer
+    # transforms, effects, and masks losslessly; non-PwrSnap consumers
+    # see the co-written PNG fallback. Receiving paste handler enforces
+    # five defense layers (size cap, count cap, zod, sha256 verify,
+    # sharp decode-probe) — see packages/shared/src/clipboard-layer-fragment.ts.
+    UTExportedTypeDeclarations:
+      - UTTypeIdentifier: com.pwrdrvr.pwrsnap.layer-fragment
+        UTTypeDescription: "PwrSnap Layer Fragment"
+        UTTypeConformsTo:
+          - public.data
+        UTTypeTagSpecification:
+          public.mime-type:
+            - application/vnd.pwrdrvr.pwrsnap.layer-fragment+json
   target:
     - target: dmg
       arch: [universal]

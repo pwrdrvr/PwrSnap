@@ -12,6 +12,7 @@
 // "cancelled" caller. The savings come from coalescing, not skipping.
 
 import { compose, type RenderRequest, type RenderResult } from "./compose";
+import { composeV2 } from "./compose-tree";
 import { getCaptureById } from "../persistence/captures-repo";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { effectiveSrcPathFor } from "../persistence/source-store";
@@ -75,6 +76,21 @@ export async function resolveCacheFile(req: {
 }): Promise<string | null> {
   const record = getCaptureById(req.captureId);
   if (record === null) return null;
+
+  // v2 captures route through composeV2 (tree-walking compositor with
+  // sample-below contextual effects). v1 captures + legacy-only rows
+  // continue through compose() unchanged.
+  if (record.bundle_format_version >= 2 && record.bundle_path !== null) {
+    const v2Result = await composeV2({
+      captureId: req.captureId,
+      bundlePath: record.bundle_path,
+      canvasWidthPx: record.width_px,
+      canvasHeightPx: record.height_px,
+      width: req.width,
+      format: req.format
+    });
+    return v2Result.cachePath;
+  }
 
   const result = await renderViaCoordinator({
     captureId: req.captureId,

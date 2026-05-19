@@ -4,8 +4,12 @@
 // Two URL schemes:
 //
 //   pwrsnap-capture://r/<capture-id>
-//     Resolves to the source PNG at captures.src_path. Used for
-//     full-fidelity inspect / edit display.
+//     Resolves to the source PNG. For pre-bundle captures this is
+//     captures.legacy_src_path; for bundle captures the resolver
+//     extracts source.png from the bundle into a per-capture cache
+//     under <userData>/cache/<id>/source.png (added with the
+//     bundle-flow rewire). Used for full-fidelity inspect / edit
+//     display.
 //
 //   pwrsnap-cache://r/<capture-id>/<width>w.<format>
 //     Resolves through the render pipeline at the requested width. Hit

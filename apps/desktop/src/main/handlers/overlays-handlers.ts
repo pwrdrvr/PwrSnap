@@ -16,6 +16,8 @@ import { ok, err, EVENT_CHANNELS, Overlay as OverlaySchema } from "@pwrsnap/shar
 import { nanoid } from "nanoid";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
+import { scheduleRepack } from "../persistence/bundle-store";
+import { getCaptureById } from "../persistence/captures-repo";
 import {
   insertOverlay,
   listLiveOverlays,
@@ -28,16 +30,35 @@ function broadcastOverlaysChanged(captureId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.overlaysChanged, { captureId });
-    // Captures-changed too — the captures row's `overlays_version`
+    // Captures-changed too — the captures row's `edits_version`
     // was bumped in the same transaction as the overlay write, and
     // the Library's `useLibrary` hook subscribes to captures:changed
     // (not overlays:changed). Without this re-broadcast, the
-    // library renders stale `overlays_version` → cacheUrl produces
+    // library renders stale `edits_version` → cacheUrl produces
     // the same URL as before the edit → Chromium serves the
     // pre-edit cached PNG. Sending both events keeps every
     // subscriber honest.
     win.webContents.send(EVENT_CHANNELS.capturesChanged, { changedIds: [captureId] });
   }
+}
+
+/**
+ * Refuse `overlays:*` IPC dispatch on v2 captures — they use the
+ * `layers:*` namespace. Defense-in-depth guard from the data-integrity
+ * review: without it, an `overlays_version` (now `edits_version`) bump
+ * on a v2 row would advance the convergence counter on a row whose
+ * bundle has no overlays.json, triggering doomed re-packs on next boot.
+ */
+function refuseIfV2Capture(captureId: string): { kind: "validation"; code: "v2_capture_use_layers_ipc"; message: string } | null {
+  const record = getCaptureById(captureId);
+  if (record !== null && record.bundle_format_version >= 2) {
+    return {
+      kind: "validation",
+      code: "v2_capture_use_layers_ipc",
+      message: `capture ${captureId} is a v2 bundle; use layers:* IPC instead of overlays:*`
+    };
+  }
+  return null;
 }
 
 export function registerOverlaysHandlers(): void {
@@ -46,6 +67,13 @@ export function registerOverlaysHandlers(): void {
   });
 
   bus.register("overlays:upsert", async (req) => {
+    // v2 guard: refuse if this capture is a layer-tree bundle. v2
+    // captures use `layers:*` instead. Without this, an overlay row
+    // inserted on a v2 row would bump edits_version on a capture
+    // whose bundle has no overlays.json, triggering doomed re-packs.
+    const v2Refusal = refuseIfV2Capture(req.captureId);
+    if (v2Refusal !== null) return err(v2Refusal);
+
     // Validate the blob before it touches the DB. The IPC envelope
     // already typechecks the request shape, but the `Overlay` field
     // is `unknown`-equivalent over the wire — re-parse here so a
@@ -70,14 +98,19 @@ export function registerOverlaysHandlers(): void {
       kind: parseResult.data.kind
     });
     broadcastOverlaysChanged(req.captureId);
+    scheduleRepack(req.captureId);
     return ok(row);
   });
 
   bus.register("overlays:delete", async (req) => {
+    // Look up the overlay's capture first, then v2-guard. rejectOverlay
+    // also returns the capture id, but we need to refuse BEFORE the
+    // write to leave v2 state untouched on a misdirected call.
     const captureId = rejectOverlay(req.id);
     log.info("overlay rejected", { id: req.id, captureId });
     if (captureId !== null) {
       broadcastOverlaysChanged(captureId);
+      scheduleRepack(captureId);
     }
     return ok(undefined);
   });

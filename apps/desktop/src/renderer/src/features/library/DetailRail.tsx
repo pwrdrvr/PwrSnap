@@ -43,7 +43,7 @@ export type DetailRailProps = {
 export function DetailRail({ view, record, copyPulses }: DetailRailProps): ReactElement | null {
   const renderMetrics = usePresetRenderMetrics(
     record?.id ?? null,
-    record?.overlays_version ?? null
+    record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
   const [activeTab, setActiveTab] = useState<SidebarTab>("detail");

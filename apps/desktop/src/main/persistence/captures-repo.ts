@@ -29,13 +29,18 @@ type CaptureRow = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
-  src_path: string;
+  legacy_src_path: string | null;
+  bundle_path: string | null;
+  flat_png_path: string | null;
+  bundle_modified_at: string | null;
+  bundle_format_version: number;
+  bundle_edits_version: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
   byte_size: number;
   sha256: string;
-  overlays_version: number;
+  edits_version: number;
   deleted_at: string | null;
 };
 
@@ -44,7 +49,12 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     id: row.id,
     kind: row.kind,
     captured_at: row.captured_at,
-    src_path: row.src_path,
+    legacy_src_path: row.legacy_src_path,
+    bundle_path: row.bundle_path,
+    flat_png_path: row.flat_png_path,
+    bundle_modified_at: row.bundle_modified_at,
+    bundle_format_version: row.bundle_format_version,
+    bundle_edits_version: row.bundle_edits_version,
     width_px: row.width_px,
     height_px: row.height_px,
     device_pixel_ratio: row.device_pixel_ratio,
@@ -52,7 +62,7 @@ function rowToRecord(row: CaptureRow): CaptureRecord {
     sha256: row.sha256,
     source_app_bundle_id: row.source_app_bundle_id,
     source_app_name: row.source_app_name,
-    overlays_version: row.overlays_version,
+    edits_version: row.edits_version,
     deleted_at: row.deleted_at,
     // video metadata is hydrated separately by the read APIs below —
     // rowToRecord is shared with insert paths where the metadata
@@ -67,7 +77,27 @@ export type InsertCapture = {
   captured_at: string;
   source_app_bundle_id: string | null;
   source_app_name: string | null;
-  src_path: string;
+  /**
+   * Pre-bundle-migration source path. New captures (post-bundle-flow
+   * rewire) pass `null` here and populate `bundle_path` instead. The
+   * legacy migration walks rows where this is non-null and bundle_path
+   * is null.
+   */
+  legacy_src_path: string | null;
+  /**
+   * Bundle pair paths. Optional for the legacy-data path (which uses
+   * `legacy_src_path` only); required for new bundle-flow captures.
+   */
+  bundle_path?: string | null;
+  flat_png_path?: string | null;
+  bundle_modified_at?: string | null;
+  /**
+   * v1 = 1 (default; new captures created before v2 write path landed);
+   * v2 = 2 (captures written via persistCaptureFromTempV2). Cached
+   * projection; doctor reconciles from manifest at read time.
+   */
+  bundle_format_version?: number;
+  bundle_edits_version?: number;
   width_px: number;
   height_px: number;
   device_pixel_ratio: number;
@@ -78,8 +108,9 @@ export type InsertCapture = {
 /**
  * Insert a new capture row. If a row with the same `sha256` already
  * exists (UNIQUE constraint), returns the existing record instead —
- * dedup by content hash. Source PNG should already be persisted via
- * `source-store.put()` before this is called.
+ * dedup by content hash. The bundle / paired-PNG / legacy source files
+ * should already be on disk before this is called; bundle_path /
+ * flat_png_path / legacy_src_path columns point at them.
  *
  * Implementation: `INSERT … ON CONFLICT(sha256) DO NOTHING RETURNING *`
  * collapses the existing-row check + insert into a single round trip.
@@ -120,23 +151,38 @@ function insertOrFindCaptureInTx(
   db: ReturnType<typeof getDb>,
   input: InsertCapture
 ): { record: CaptureRecord; isNew: boolean } {
+  // Bundle columns are optional on InsertCapture (legacy-data path uses
+  // legacy_src_path only). Normalize undefined → null/0 before binding
+  // so the prepared statement always sees a value for every @-param.
+  const params = {
+    ...input,
+    bundle_path: input.bundle_path ?? null,
+    flat_png_path: input.flat_png_path ?? null,
+    bundle_modified_at: input.bundle_modified_at ?? null,
+    bundle_format_version: input.bundle_format_version ?? 1,
+    bundle_edits_version: input.bundle_edits_version ?? 0
+  };
   const inserted = db
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, src_path,
+        source_app_bundle_id, source_app_name, legacy_src_path,
+        bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, overlays_version, deleted_at
+        byte_size, sha256, edits_version, deleted_at
       ) VALUES (
         @id, @kind, @captured_at,
-        @source_app_bundle_id, @source_app_name, @src_path,
+        @source_app_bundle_id, @source_app_name, @legacy_src_path,
+        @bundle_path, @flat_png_path, @bundle_modified_at,
+        @bundle_format_version, @bundle_edits_version,
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )
       ON CONFLICT(sha256) DO NOTHING
       RETURNING *`
     )
-    .get(input) as CaptureRow | undefined;
+    .get(params) as CaptureRow | undefined;
 
   if (inserted !== undefined) {
     bumpAppStat(input.source_app_bundle_id, +1);
@@ -149,6 +195,47 @@ function insertOrFindCaptureInTx(
     .prepare("SELECT * FROM captures WHERE sha256 = ?")
     .get(input.sha256) as CaptureRow;
   return { record: rowToRecord(existing), isNew: false };
+}
+
+/**
+ * Look up a capture by sha256. Used by the bundle-flow capture
+ * orchestrator to dedup BEFORE packing a bundle: identical pixels
+ * produce one bundle, not two. The existing `sha256 UNIQUE`
+ * constraint is the safety net; this lookup is the optimization
+ * that avoids wasted pack/write work.
+ */
+export function findCaptureBySha256(sha256: string): CaptureRecord | null {
+  const db = getDb();
+  const row = db.prepare("SELECT * FROM captures WHERE sha256 = ?").get(sha256) as
+    | CaptureRow
+    | undefined;
+  return row ? rowToRecord(row) : null;
+}
+
+/**
+ * Update bundle convergence columns after a successful re-pack.
+ * Called from `bundle-store.runRepack` once the new bundle has been
+ * written; this advances `bundle_edits_version` to match the row's
+ * `edits_version` at pack time. The doctor's mid-debounce recovery
+ * rule (`edits_version > bundle_edits_version` means re-pack owed)
+ * reads these columns to decide whether to re-pack on boot.
+ *
+ * Renamed from updateCaptureBundleAfterRepack's earlier signature in
+ * migration 0004 — `bundle_overlays_version` → `bundle_edits_version`.
+ * Same semantics work for both v1 (overlays) and v2 (layers); the
+ * table being read is gated by `bundle_format_version`.
+ */
+export function updateCaptureBundleAfterRepack(
+  captureId: string,
+  fields: { bundle_modified_at: string; bundle_edits_version: number }
+): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE captures
+     SET bundle_modified_at = @bundle_modified_at,
+         bundle_edits_version = @bundle_edits_version
+     WHERE id = @id`
+  ).run({ id: captureId, ...fields });
 }
 
 export function getCaptureById(id: string): CaptureRecord | null {
@@ -261,9 +348,14 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
 
 /**
  * Soft-delete: set `deleted_at` to now and decrement `app_stats` for
- * the row's bundle. Caller (`source-store.moveSourceToTrash`) handles
- * the file move. Wrapped in db.transaction() so the invariant cannot
- * drift on partial failure.
+ * the row's bundle. Caller (`source-store.moveSourceToTrash` or the
+ * bundle-pair trash path) handles the file move. Wrapped in
+ * db.transaction() so the invariant cannot drift on partial failure.
+ *
+ * Atomic ordering: DB write first, then file move — on crash, the file
+ * is reachable via the record's path columns (legacy_src_path for
+ * pre-bundle captures; bundle_path / flat_png_path for bundle captures)
+ * but the row is soft-deleted, so library queries skip it.
  *
  * Idempotent: a second call on an already-deleted row is a no-op
  * (the WHERE deleted_at IS NULL clause filters it).
@@ -284,9 +376,10 @@ export function softDeleteCapture(id: string): void {
  * Inverse of softDeleteCapture: clear deleted_at so the row reappears
  * in live library queries, and re-increment the app_stats bucket.
  * Caller is responsible for moving the trash file back to its
- * original src_path. Wrapped in db.transaction() so the
- * SUM(app_stats.count) == COUNT(live captures) invariant cannot drift
- * on partial failure.
+ * original location (legacy_src_path for pre-bundle captures;
+ * bundle_path / flat_png_path for bundle captures). Wrapped in
+ * db.transaction() so the SUM(app_stats.count) == COUNT(live captures)
+ * invariant cannot drift on partial failure.
  */
 export function restoreCapture(id: string): void {
   const db = getDb();

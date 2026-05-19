@@ -87,6 +87,17 @@ export const EVENT_CHANNELS = {
    */
   popoverRemeasure: "events:popover:remeasure",
   /**
+   * Main → renderer one-shot legacy-bundle migration progress. Fired by
+   * `runLegacyBundleMigration` once when the run starts (with total),
+   * then throttled per N rows, then once at completion. Drives the
+   * library window's "Upgrading library…" banner. Payload type:
+   * `LegacyBundleMigrationProgress` (see protocol.ts).
+   *
+   * A run with `total === 0` (no rows needed migration) is silently
+   * skipped — no events fire, no banner shows.
+   */
+  legacyBundleMigrationProgress: "events:legacy-bundle-migration:progress",
+  /**
    * Main → renderer storage accounting progress. Full scans are
    * singleton and async; this event lets detailed storage UI update
    * from cached/partial snapshots while the command that requested the

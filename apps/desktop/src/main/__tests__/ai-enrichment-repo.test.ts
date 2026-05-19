@@ -30,13 +30,16 @@ function migration(name: string): string {
 }
 
 function seedCapture(id = "cap_1"): void {
+  // Post 0007_bundle_storage shape — `src_path` is renamed to
+  // `legacy_src_path`, `overlays_version` is replaced by
+  // `edits_version`. Matches the codex-handlers test fixture.
   testDb
     .prepare(
       `INSERT INTO captures (
         id, kind, captured_at,
-        source_app_bundle_id, source_app_name, src_path,
+        source_app_bundle_id, source_app_name, legacy_src_path,
         width_px, height_px, device_pixel_ratio,
-        byte_size, sha256, overlays_version, deleted_at
+        byte_size, sha256, edits_version, deleted_at
       ) VALUES (
         @id, 'image', '2026-05-12T12:00:00.000Z',
         NULL, NULL, '/tmp/capture.png',
@@ -53,8 +56,17 @@ describe("AI enrichment repositories", () => {
     testDb.pragma("foreign_keys = ON");
     testDb.exec(migration("0001_init.sql"));
     testDb.exec(migration("0006_ai_enrichment.sql"));
-    testDb.exec(migration("0007_ai_enrichment_title.sql"));
-    testDb.exec(migration("0008_ai_enrichment_filename.sql"));
+    // 0007/0008/0009 (bundle storage + layers) restructure the
+    // captures table. The ai-enrichment repo tests don't touch that
+    // surface, but newer migrations build on it — apply them so
+    // the test DB matches main-runtime shape, then layer ours on top.
+    testDb.pragma("foreign_keys = OFF");
+    testDb.exec(migration("0007_bundle_storage.sql"));
+    testDb.pragma("foreign_keys = ON");
+    testDb.exec(migration("0008_layers.sql"));
+    testDb.exec(migration("0009_legacy_bundle_migration_attempts.sql"));
+    testDb.exec(migration("0010_ai_enrichment_title.sql"));
+    testDb.exec(migration("0011_ai_enrichment_filename.sql"));
     seedCapture();
   });
 

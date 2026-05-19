@@ -50,8 +50,10 @@ import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
-import { insertOrFindCapture, getCaptureById } from "../persistence/captures-repo";
+import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
+import { persistCaptureFromTemp, persistCaptureFromTempV2 } from "../persistence/bundle-store";
+import { isV2WriteEnabled } from "../feature-flags";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
@@ -309,7 +311,18 @@ export function registerCaptureHandlers(): void {
       });
     }
     const { shell } = await import("electron");
-    shell.showItemInFolder(record.src_path);
+    // After the bundle-flow rewire, this prefers `flat_png_path` (the
+    // user-shareable composite). Until then, legacy_src_path is the only
+    // file we know about for pre-migration captures.
+    const revealPath = record.flat_png_path ?? record.legacy_src_path;
+    if (revealPath === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture ${req.captureId} has no on-disk path to reveal`
+      });
+    }
+    shell.showItemInFolder(revealPath);
     return ok(undefined);
   });
 
@@ -406,7 +419,7 @@ export function registerCaptureHandlers(): void {
           captured_at: req.capturedAt,
           source_app_bundle_id: req.sourceAppBundleId,
           source_app_name: req.sourceAppName,
-          src_path: stored.srcPath,
+          legacy_src_path: stored.srcPath,
           width_px: req.widthPxHint ?? stored.widthPx,
           height_px: req.heightPxHint ?? stored.heightPx,
           device_pixel_ratio: req.devicePixelRatio ?? 2,
@@ -721,28 +734,44 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  const stored = await putCaptureSource(tempPath);
-  const { record, isNew } = insertOrFindCapture({
-    id: stored.id,
-    kind: "image",
-    captured_at: new Date().toISOString(),
-    source_app_bundle_id: sourceApp?.bundleId ?? null,
-    source_app_name: sourceApp?.appName ?? null,
-    src_path: stored.srcPath,
-    width_px: stored.widthPx,
-    height_px: stored.heightPx,
-    device_pixel_ratio: options.devicePixelRatio ?? 2, // Phase 3+ derives from the active display
-    byte_size: stored.byteSize,
-    sha256: stored.sha256
-  });
+  // v2 layer-tree bundle is opt-in via PWRSNAP_BUNDLE_V2=1 (see
+  // feature-flags.ts). Default path writes a v1 bundle so the
+  // existing overlays:* IPC keeps working — the editor's only
+  // annotation surface today. The read path in coordinator.ts
+  // handles both formats transparently, so existing v2 captures
+  // (written before this gate landed, or by users with the flag on)
+  // render correctly regardless of where the flag sits now.
+  //
+  // devicePixelRatio threads through both write paths so PR #48's
+  // clipboard-paste flow (which passes 1, since pasted bytes aren't
+  // from a physical display) doesn't get hardcoded to 2.
+  const persistArgs = {
+    tempPath,
+    sourceApp:
+      sourceApp === null
+        ? null
+        : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
+    devicePixelRatio: options.devicePixelRatio
+  };
+
+  const { record, isDedup } = isV2WriteEnabled()
+    ? await persistCaptureFromTempV2(persistArgs)
+    : await persistCaptureFromTemp(persistArgs);
+
+
   log.info("capture persisted", {
     captureId: record.id,
-    isNew,
+    isDedup,
+    bundleFormatVersion: record.bundle_format_version,
     sourceAppBundleId: record.source_app_bundle_id,
     sourceAppName: record.source_app_name
   });
   broadcastCapturesChanged([record.id]);
-  if (isNew) {
+  if (!isDedup) {
+    // PR #30's Codex enrichment fires once per new capture. The
+    // bundle-flow's `persistCaptureFromTemp` returns isDedup=true
+    // when sha256 matches an existing row; `!isDedup` is the
+    // bundle-flow equivalent of the old isNew flag.
     maybeEnqueueCaptureEnrichment(record.id);
   }
   return ok(record);

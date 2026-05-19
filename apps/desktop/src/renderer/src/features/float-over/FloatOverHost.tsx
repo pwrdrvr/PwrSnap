@@ -67,7 +67,7 @@ export function FloatOverHost(): React.ReactElement {
   // load.
   const copyMetrics = usePresetRenderMetrics(
     state.kind === "loaded" && state.record.kind === "image" ? state.record.id : null,
-    state.kind === "loaded" && state.record.kind === "image" ? state.record.overlays_version : null
+    state.kind === "loaded" && state.record.kind === "image" ? state.record.edits_version : null
   );
 
   // ResizeObserver → main: shrink the BrowserWindow to fit the visible
@@ -300,9 +300,13 @@ export function FloatOverHost(): React.ReactElement {
     // compose work cannot leave the visible preview blank. The
     // enhanced URL is image-only — videos don't go through the
     // sharp-based render pipeline, so we skip it for that branch.
+    //
+    // `edits_version` is the unified rename from `overlays_version`
+    // (see migration 0008_layers.sql) — the cache key picks up
+    // changes whether they originated as v1 overlays or v2 layers.
     const enhancedPreviewSrc = isVideo
       ? undefined
-      : cacheUrl(record.id, 1440, "webp", record.overlays_version);
+      : cacheUrl(record.id, 1440, "webp", record.edits_version);
 
     // Build the asset descriptor — `image` for snaps (existing
     // behavior unchanged), `video` for recordings (swaps preview

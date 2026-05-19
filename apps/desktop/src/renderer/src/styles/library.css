@@ -99,7 +99,7 @@
   height: 26px;
   padding: 0 14px;
   background: color-mix(in srgb, var(--bg-app) 85%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--shadow-inset-base) 5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-highlight) 5%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   display: flex; align-items: center; justify-content: space-between;
@@ -213,7 +213,7 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 1px;
   transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 8%, transparent) inset, 0 1px 8px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--surface-highlight) 8%, transparent) inset, 0 1px 8px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
@@ -1267,11 +1267,11 @@
   padding-right: 4px;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent) 42%, transparent) color-mix(in srgb, var(--shadow-inset-base) 6%, transparent);
+  scrollbar-color: color-mix(in srgb, var(--accent) 42%, transparent) color-mix(in srgb, var(--surface-highlight) 6%, transparent);
 }
 .psl__ai-card-scroll::-webkit-scrollbar { width: 8px; }
 .psl__ai-card-scroll::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--shadow-inset-base) 6%, transparent);
+  background: color-mix(in srgb, var(--surface-highlight) 6%, transparent);
   border-radius: 999px;
 }
 .psl__ai-card-scroll::-webkit-scrollbar-thumb {
@@ -1741,7 +1741,7 @@
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
   box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
   z-index: 4;
 }
 .psl__et-btn {

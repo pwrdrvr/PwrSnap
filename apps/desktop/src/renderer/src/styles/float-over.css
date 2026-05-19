@@ -16,8 +16,8 @@
   content: "";
   position: absolute; inset: 0;
   background-image:
-    linear-gradient(color-mix(in srgb, var(--shadow-inset-base) 1%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--shadow-inset-base) 1%, transparent) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--surface-highlight) 1%, transparent) 1px, transparent 1px);
   background-size: 36px 36px;
   pointer-events: none;
 }
@@ -27,7 +27,7 @@
   background: color-mix(in srgb, var(--bg-app) 72%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 14px;
   font: 500 12px/1 var(--font-sans);
@@ -86,7 +86,7 @@
   box-shadow:
     0 24px 64px color-mix(in srgb, var(--shadow-base) 55%, transparent),
     0 0 0 1px color-mix(in srgb, var(--shadow-base) 40%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 5%, transparent);
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 5%, transparent);
   color: var(--text-primary);
   font-family: var(--font-sans);
   z-index: 50;
@@ -231,7 +231,7 @@
   padding: 8px 9px 7px;
   /* `--bg-panel-elevated` gives the button a 1-step lift over the
      float-over's `--bg-panel-hover` surface in both palettes. The
-     prior `color-mix(in srgb, var(--shadow-inset-base) 2%, transparent)` literal worked as a tiny
+     prior `color-mix(in srgb, var(--surface-highlight) 2%, transparent)` literal worked as a tiny
      elevation tint on dark but disappeared into the off-white
      panel in light. */
   background: var(--bg-panel-elevated);
@@ -482,7 +482,7 @@
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px;
   padding: 8px 10px 10px;
-  border-top: 1px solid color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--surface-highlight) 4%, transparent);
   background: color-mix(in srgb, var(--bg-app) 18%, transparent);
 }
 .fo__dest {

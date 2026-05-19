@@ -86,23 +86,31 @@
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
   /* ---------- SHADOWS ---------- */
-  /* `--shadow-base` is the pure black that every drop-shadow rgba in
-     the renderer derives from via color-mix. Stays #000000 in both
-     themes — drop shadows under light surfaces still want black,
-     just at lower alpha (the existing rules pick a smaller percent).
-     `--shadow-inset-base` is the matching highlight color for the
-     1px inset top edge; flips to white-bone on dark and stays subtle
-     on light. Defining both means the lint can flag any new
-     `box-shadow: ... rgba(...)` and we can convert via color-mix on
-     these bases. */
-  --shadow-base:       #000000;
-  --shadow-inset-base: var(--text-primary);
+  /* `--shadow-base` is the pure black every drop-shadow derives from
+     via color-mix. Stays `#000000` in both themes — drop shadows
+     under light surfaces still want black, just at lower alpha (the
+     per-step percent does the heavy lifting).
+
+     `--surface-highlight` is the matching color for the 1px inset
+     top-edge highlight on elevated surfaces. Stays `#ffffff` in both
+     themes — the highlight semantic is "lit from above," and that
+     reads as bright in both dark (subtle white at 4%) and light
+     (strong white at 60%) modes. Earlier shape pointed this at
+     `var(--text-primary)`, which silently inverted in light theme
+     (warm near-black highlight = a darker top edge, the opposite of
+     elevation) — kept harmless only because the light block
+     overrode `--shadow-inset` directly. Defining the base as white
+     in both themes lets any new rule consume `var(--surface-
+     highlight)` and get the right semantic without a theme-specific
+     override. */
+  --shadow-base:        #000000;
+  --surface-highlight:  #ffffff;
   --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 32%, transparent);
   --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 30%, transparent);
   --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 36%, transparent);
   --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 42%, transparent);
   --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
 
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
@@ -222,13 +230,21 @@
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #ffffff;   /* white reads cleanest on the deep tangerine */
 
-  /* ---------- SHADOWS — softer on light surfaces ---------- */
-  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.08);
-  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.12);
-  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.18);
-  --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  /* ---------- SHADOWS — softer on light surfaces ----------
+     Same color-mix shape as the dark block — both themes derive
+     drop shadows from `--shadow-base` (#000) and the inset
+     highlight from `--surface-highlight` (#fff). Only the
+     percentages differ: smaller drop-shadow alphas on light so
+     the cast doesn't read as industrial, larger inset-highlight
+     alpha so the top edge of an elevated panel pops against the
+     off-white surround. `--shadow-glow` inherits from :root
+     because its `--accent-border` / `--accent-shadow` references
+     already theme via color-mix on `--accent`. */
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 6%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 8%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 12%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 18%, transparent);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 60%, transparent);
 }
 
 /* ============================================================

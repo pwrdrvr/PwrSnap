@@ -176,7 +176,7 @@ describe("CodexAppServerClient", () => {
     });
 
     const response = await client.enrichCapture({
-      imagePath,
+      imagePaths: [imagePath],
       metadata: {
         sourceAppName: "PwrSnap",
         sourceAppBundleId: "com.pwrdrvr.pwrsnap",
@@ -209,5 +209,52 @@ describe("CodexAppServerClient", () => {
     });
     expect(JSON.stringify(turnStart?.params)).toContain("Source application name: PwrSnap");
     expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
+  });
+
+  it("sends each sampled video frame as a separate image input", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
+    tempRoots.push(tempRoot);
+    const frame1 = join(tempRoot, "frame-1.jpg");
+    const frame2 = join(tempRoot, "frame-2.jpg");
+    const frame3 = join(tempRoot, "frame-3.jpg");
+    await writeFile(frame1, Buffer.from([1]));
+    await writeFile(frame2, Buffer.from([2]));
+    await writeFile(frame3, Buffer.from([3]));
+    const transport = new FakeTransport();
+    const client = new CodexAppServerClient({
+      command: "/bin/codex",
+      transportFactory: () => transport,
+      turnTimeoutMs: 1000
+    });
+
+    await client.enrichCapture({
+      imagePaths: [frame1, frame2, frame3],
+      metadata: {
+        sourceAppName: "PwrSnap",
+        sourceAppBundleId: "com.pwrdrvr.pwrsnap",
+        captureKind: "video",
+        widthPx: 2880,
+        heightPx: 1920,
+        capturedAt: "2026-05-18T13:30:00.000Z",
+        videoDurationSec: 10,
+        videoFrameSamples: [
+          { positionPct: 15, timestampSec: 1.5 },
+          { positionPct: 50, timestampSec: 5 },
+          { positionPct: 85, timestampSec: 8.5 }
+        ]
+      }
+    });
+
+    const turnStart = transport.outbound.find((message) => message.method === "turn/start");
+    expect(turnStart?.params).toMatchObject({
+      input: expect.arrayContaining([
+        { type: "image", url: "data:image/jpeg;base64,AQ==" },
+        { type: "image", url: "data:image/jpeg;base64,Ag==" },
+        { type: "image", url: "data:image/jpeg;base64,Aw==" }
+      ])
+    });
+    expect(JSON.stringify(turnStart?.params)).toContain(
+      "Provided video frame samples: 15% at 1.500s, 50% at 5.000s, 85% at 8.500s"
+    );
   });
 });

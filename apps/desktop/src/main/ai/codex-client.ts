@@ -30,7 +30,7 @@ const codexClientLog = getMainLogger("pwrsnap:codex-client");
 export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
 
 export type CodexCaptureEnrichmentRequest = {
-  imagePath: string;
+  imagePaths: readonly string[];
   metadata: CaptureEnrichmentPromptMetadata;
   abortSignal?: AbortSignal;
 };
@@ -102,7 +102,10 @@ export class CodexAppServerClient {
       if (request.abortSignal?.aborted) {
         throw new DOMException("capture enrichment aborted", "AbortError");
       }
-      const imageDataUrl = await imagePathToDataUrl(request.imagePath);
+      if (request.imagePaths.length === 0) {
+        throw new Error("capture enrichment requires at least one image input");
+      }
+      const imageDataUrls = await Promise.all(request.imagePaths.map((path) => imagePathToDataUrl(path)));
 
       const threadResponse = (await connection.request(
         "thread/start",
@@ -126,10 +129,10 @@ export class CodexAppServerClient {
               text: buildCaptureEnrichmentPrompt(request.metadata),
               text_elements: []
             },
-            {
+            ...imageDataUrls.map((url) => ({
               type: "image",
-              url: imageDataUrl
-            }
+              url
+            }))
           ],
           effort: "low",
           outputSchema: CAPTURE_ENRICHMENT_SCHEMA

@@ -9,7 +9,13 @@ import {
 } from "@pwrsnap/shared";
 import type { AiRunSnapshot, CaptureEnrichment, PwrSnapError, Result, Settings } from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
-import { prepareEnrichmentImage } from "../ai/enrichment-image";
+import {
+  prepareEnrichmentImage,
+  prepareEnrichmentVideoFrames,
+  type PreparedEnrichmentImage,
+  type PreparedEnrichmentVideoFrames
+} from "../ai/enrichment-image";
+import type { CaptureEnrichmentPromptMetadata } from "../ai/enrichment-schema";
 import { bus, type CommandContext } from "../command-bus";
 import { getMainLogger } from "../log";
 import {
@@ -137,9 +143,13 @@ export function registerCodexHandlers(params?: {
       captureId: capture.id,
       codexCommand,
       request: {
-        image: {
+        media: {
           maxLongEdgePx: 1024,
-          format: "jpeg"
+          format: "jpeg",
+          samples:
+            capture.kind === "video" && capture.video !== null && capture.video !== undefined
+              ? [15, 50, 85]
+              : undefined
         }
       }
     });
@@ -155,7 +165,8 @@ export function registerCodexHandlers(params?: {
         captureKind: capture.kind,
         widthPx: capture.width_px,
         heightPx: capture.height_px,
-        capturedAt: capture.captured_at
+        capturedAt: capture.captured_at,
+        videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
       ctx,
@@ -251,14 +262,7 @@ async function runCaptureEnrichment(params: {
   runId: string;
   captureId: string;
   sourcePath: string;
-  metadata: {
-    sourceAppName: string | null;
-    sourceAppBundleId: string | null;
-    captureKind: "image" | "video";
-    widthPx: number;
-    heightPx: number;
-    capturedAt: string;
-  };
+  metadata: CaptureEnrichmentPromptMetadata;
   command: string;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
@@ -269,7 +273,7 @@ async function runCaptureEnrichment(params: {
   params.ctx.signal.addEventListener("abort", abortFromContext, { once: true });
   activeRuns.set(params.runId, abortController);
 
-  let prepared: Awaited<ReturnType<typeof prepareEnrichmentImage>> | null = null;
+  let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
   let client: CodexAppServerClient | null = null;
 
   try {
@@ -279,11 +283,36 @@ async function runCaptureEnrichment(params: {
       enrichment: getCaptureEnrichment(params.captureId)
     });
 
-    prepared = await prepareEnrichmentImage(params.sourcePath);
+    const metadata: CaptureEnrichmentPromptMetadata = { ...params.metadata };
+    let imagePaths: string[];
+    if (metadata.captureKind === "video") {
+      if (
+        typeof metadata.videoDurationSec !== "number" ||
+        !Number.isFinite(metadata.videoDurationSec) ||
+        metadata.videoDurationSec < 0
+      ) {
+        throw new Error("video capture enrichment requires duration metadata");
+      }
+      prepared = await prepareEnrichmentVideoFrames(params.sourcePath, {
+        durationSec: metadata.videoDurationSec,
+        abortSignal: abortController.signal
+      });
+      metadata.videoFrameSamples = prepared.frames.map(({ positionPct, timestampSec }) => ({
+        positionPct,
+        timestampSec
+      }));
+      imagePaths = prepared.frames.map((frame) => frame.path);
+    } else {
+      prepared = await prepareEnrichmentImage(params.sourcePath, {
+        abortSignal: abortController.signal
+      });
+      imagePaths = [prepared.path];
+    }
+
     client = params.clientFactory(params.command);
     const response = await client.enrichCapture({
-      imagePath: prepared.path,
-      metadata: params.metadata,
+      imagePaths,
+      metadata,
       abortSignal: abortController.signal
     });
 

@@ -24,6 +24,7 @@ import type {
 import { getMainLogger } from "../log";
 import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
+import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import {
   adoptExistingFileAsSource,
@@ -348,7 +349,7 @@ class NativeRecorderService implements RecordingService {
     const sourceAppName =
       subject.kind === "window" ? subject.appName ?? null : null;
 
-    const { record } = insertOrFindCapture({
+    const { record, isNew } = insertOrFindCapture({
       id: stored.id,
       kind: "video",
       captured_at: new Date().toISOString(),
@@ -381,6 +382,9 @@ class NativeRecorderService implements RecordingService {
     broadcastCapturesChanged([record.id]);
     setFloatOverState({ kind: "show-loaded", captureId: record.id, record: hydrated });
     setRecordingState({ phase: "ready", sessionId, captureId: record.id });
+    if (isNew) {
+      maybeEnqueueCaptureEnrichment(record.id);
+    }
     // Best-effort system notification — not every platform / build
     // supports Notification.isSupported(), so fail open if it
     // doesn't. Mirrors the existing post-capture toast pattern.

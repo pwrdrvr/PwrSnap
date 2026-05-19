@@ -69,4 +69,26 @@ describe("capture enrichment schema", () => {
       })
     ).toContain("Source application name: unknown");
   });
+
+  it("includes sampled video frame facts in the variable user prompt", () => {
+    const prompt = buildCaptureEnrichmentPrompt({
+      sourceAppName: "Telegram",
+      sourceAppBundleId: "ru.keepcoder.Telegram",
+      captureKind: "video",
+      widthPx: 2116,
+      heightPx: 1830,
+      capturedAt: "2026-05-18T13:30:00.000Z",
+      videoDurationSec: 10,
+      videoFrameSamples: [
+        { positionPct: 15, timestampSec: 1.5 },
+        { positionPct: 50, timestampSec: 5 },
+        { positionPct: 85, timestampSec: 8.5 }
+      ]
+    });
+
+    expect(prompt).toContain("Video duration: 10.000 seconds");
+    expect(prompt).toContain(
+      "Provided video frame samples: 15% at 1.500s, 50% at 5.000s, 85% at 8.500s"
+    );
+  });
 });

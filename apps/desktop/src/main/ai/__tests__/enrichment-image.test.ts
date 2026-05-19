@@ -3,13 +3,31 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { prepareEnrichmentImage } from "../enrichment-image";
+import { getVideoFrameSamples, prepareEnrichmentImage } from "../enrichment-image";
 
 let tempRoot: string;
 
 beforeEach(async () => {
   tempRoot = join(tmpdir(), `pwrsnap-enrichment-image-test-${process.pid}-${Date.now()}`);
   await mkdir(tempRoot, { recursive: true });
+});
+
+describe("getVideoFrameSamples", () => {
+  it("samples videos at 15, 50, and 85 percent", () => {
+    expect(getVideoFrameSamples(10)).toEqual([
+      { positionPct: 15, timestampSec: 1.5 },
+      { positionPct: 50, timestampSec: 5 },
+      { positionPct: 85, timestampSec: 8.5 }
+    ]);
+  });
+
+  it("falls back to the first frame for invalid durations", () => {
+    expect(getVideoFrameSamples(0)).toEqual([
+      { positionPct: 15, timestampSec: 0 },
+      { positionPct: 50, timestampSec: 0 },
+      { positionPct: 85, timestampSec: 0 }
+    ]);
+  });
 });
 
 afterEach(async () => {

@@ -81,17 +81,39 @@ export type CaptureEnrichmentPromptMetadata = {
   widthPx: number;
   heightPx: number;
   capturedAt: string;
+  videoDurationSec?: number | null;
+  videoFrameSamples?: ReadonlyArray<{
+    positionPct: number;
+    timestampSec: number;
+  }>;
 };
 
 export function buildCaptureEnrichmentPrompt(metadata: CaptureEnrichmentPromptMetadata): string {
-  return [
+  const lines = [
     "Capture metadata:",
     `- Source application name: ${metadata.sourceAppName?.trim() || "unknown"}`,
     `- Source application bundle id: ${metadata.sourceAppBundleId?.trim() || "unknown"}`,
     `- Capture kind: ${metadata.captureKind}`,
     `- Dimensions: ${metadata.widthPx} x ${metadata.heightPx} px`,
     `- Captured at: ${metadata.capturedAt || "unknown"}`
-  ].join("\n");
+  ];
+  if (metadata.captureKind === "video") {
+    lines.push(
+      `- Video duration: ${
+        typeof metadata.videoDurationSec === "number"
+          ? `${metadata.videoDurationSec.toFixed(3)} seconds`
+          : "unknown"
+      }`
+    );
+    if (metadata.videoFrameSamples !== undefined && metadata.videoFrameSamples.length > 0) {
+      lines.push(
+        `- Provided video frame samples: ${metadata.videoFrameSamples
+          .map((sample) => `${sample.positionPct}% at ${sample.timestampSec.toFixed(3)}s`)
+          .join(", ")}`
+      );
+    }
+  }
+  return lines.join("\n");
 }
 
 export function parseCaptureEnrichmentResponse(rawText: string): EnrichmentResult {

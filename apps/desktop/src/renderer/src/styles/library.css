@@ -99,7 +99,7 @@
   height: 26px;
   padding: 0 14px;
   background: color-mix(in srgb, var(--bg-app) 85%, transparent);
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+  border-bottom: 1px solid color-mix(in srgb, var(--shadow-inset-base) 5%, transparent);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   display: flex; align-items: center; justify-content: space-between;
@@ -117,7 +117,7 @@
   background: var(--bg-panel-elevated);
   color: var(--accent);
 }
-.tray-menubar__pwrsnap-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px rgba(109,186,126,0.18); }
+.tray-menubar__pwrsnap-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent); }
 
 /* ============================================================
    TRAY MENU  —  big keyboard-driven popover
@@ -192,7 +192,7 @@
 .ps-tray__status-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--success);
-  box-shadow: 0 0 0 2px rgba(109,186,126,0.18);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
 }
 
 /* Quick Capture button — promoted to the prominent default action.
@@ -213,7 +213,7 @@
   outline: 2px solid var(--accent-border);
   outline-offset: 1px;
   transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out), transform 120ms var(--ease-out);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.08) inset, 0 1px 8px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 8%, transparent) inset, 0 1px 8px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .ps-tray__quick:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
 .ps-tray__quick:active { transform: translateY(1px); }
@@ -232,7 +232,7 @@
    the button fill for attention. */
 .ps-tray__quick-hk .ps-kbd {
   background: color-mix(in srgb, var(--bg-app) 22%, transparent);
-  border-color: rgba(0,0,0,0.28);
+  border-color: color-mix(in srgb, var(--shadow-base) 28%, transparent);
   color: var(--button-text-on-accent);
   border-bottom-width: 2px;
 }
@@ -524,7 +524,7 @@
 }
 .psl[data-left="peek"] .psl__left {
   transform: translateX(0);
-  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 8px 0 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
 }
 /* Spine — the 36px sliver that's the only visible part of the left
    column when collapsed. Hover over it (or the panel area) reveals
@@ -685,7 +685,7 @@
   scrollbar-width: thin;
 }
 .psl__reel::-webkit-scrollbar { height: 6px; }
-.psl__reel::-webkit-scrollbar-thumb { background: rgba(140,133,122,0.32); border-radius: 999px; }
+.psl__reel::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-muted) 32%, transparent); border-radius: 999px; }
 .psl__reel-day {
   display: flex; flex-direction: column;
   flex-shrink: 0;
@@ -695,7 +695,7 @@
   color: var(--text-muted);
   letter-spacing: 0.05em;
   padding: 0 6px 6px 4px;
-  border-bottom: 1px dashed rgba(245,239,227,0.08);
+  border-bottom: 1px dashed color-mix(in srgb, var(--text-primary) 8%, transparent);
   margin-bottom: 6px;
   white-space: nowrap;
   /* Override the parent column-flex's default `align-items: stretch`
@@ -720,7 +720,7 @@
     90deg,
     var(--bg-app) 0%,
     var(--bg-app) 70%,
-    rgba(0, 0, 0, 0) 100%
+    transparent 100%
   );
   z-index: 1;
 }
@@ -797,8 +797,8 @@
 }
 .psl__frame:hover .psl__frame-trash { opacity: 1; }
 .psl__frame-trash:hover {
-  background: var(--danger-soft, rgba(220, 80, 80, 0.18));
-  color: var(--danger-text, #e58a8a);
+  background: var(--danger-soft);
+  color: var(--danger-text, var(--danger-text));
 }
 /* In-trash filmstrip affordance: Restore + Permanent Delete pair.
    Pinned to top-right, just like the single trash icon. */
@@ -810,7 +810,7 @@
   position: static;
 }
 .psl__frame-trash--restore:hover {
-  background: var(--accent-soft, rgba(255, 138, 31, 0.12));
+  background: var(--accent-soft);
   color: var(--accent-bright, var(--accent));
 }
 
@@ -902,10 +902,10 @@
 .psl__error {
   margin: 12px 18px;
   padding: 10px 14px;
-  background: var(--danger-soft, rgba(220, 80, 80, 0.08));
-  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.32));
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
   border-radius: 6px;
-  color: var(--danger-text, #e58a8a);
+  color: var(--danger-text, var(--danger-text));
   font: 500 12px/1.4 var(--font-sans);
 }
 /* Trash-view banner. Pinned at the top of the grid pane when the
@@ -927,13 +927,13 @@
   padding: 6px 10px;
   border-radius: 5px;
   background: transparent;
-  border: 1px solid var(--danger-border, rgba(220, 80, 80, 0.32));
-  color: var(--danger-text, #e58a8a);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text, var(--danger-text));
   cursor: pointer;
   transition: background 100ms var(--ease-out);
 }
 .psl__trash-banner-btn:hover {
-  background: var(--danger-soft, rgba(220, 80, 80, 0.12));
+  background: var(--danger-soft);
 }
 
 .psl__cell {
@@ -1005,8 +1005,8 @@
 .psl__cell:hover .psl__cell-trash,
 .psl__cell-trash:focus-visible { opacity: 1; }
 .psl__cell-trash:hover {
-  background: var(--danger-soft, rgba(220, 80, 80, 0.18));
-  color: var(--danger-text, #e58a8a);
+  background: var(--danger-soft);
+  color: var(--danger-text, var(--danger-text));
 }
 /* In-trash hover affordance: pair of icons (Restore + Permanent
    Delete). Sits in the same bottom-right slot as the single soft-
@@ -1022,7 +1022,7 @@
 }
 /* Restore icon: positive accent on hover (the safe action). */
 .psl__cell-trash--restore:hover {
-  background: var(--accent-soft, rgba(255, 138, 31, 0.12));
+  background: var(--accent-soft);
   color: var(--accent-bright, var(--accent));
 }
 /* HoverRevealPanel — pin / auto-hide side panel.
@@ -1072,7 +1072,7 @@
 }
 .hover-reveal-panel.is-open {
   transform: translateX(0);
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  box-shadow: -8px 0 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
 }
 .hover-reveal-panel__spine {
   display: flex;
@@ -1267,15 +1267,15 @@
   padding-right: 4px;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(232,116,58,0.42) rgba(255,255,255,0.06);
+  scrollbar-color: color-mix(in srgb, var(--accent) 42%, transparent) color-mix(in srgb, var(--shadow-inset-base) 6%, transparent);
 }
 .psl__ai-card-scroll::-webkit-scrollbar { width: 8px; }
 .psl__ai-card-scroll::-webkit-scrollbar-track {
-  background: rgba(255,255,255,0.06);
+  background: color-mix(in srgb, var(--shadow-inset-base) 6%, transparent);
   border-radius: 999px;
 }
 .psl__ai-card-scroll::-webkit-scrollbar-thumb {
-  background: rgba(232,116,58,0.42);
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
   border-radius: 999px;
 }
 .psl__ai-card-text {
@@ -1293,7 +1293,7 @@
   padding: 7px 8px;
   font: 500 10px/1.45 var(--font-mono);
   color: var(--text-muted);
-  background: rgba(0,0,0,0.18);
+  background: color-mix(in srgb, var(--shadow-base) 18%, transparent);
 }
 .psl__ai-card-actions { display: flex; gap: 6px; }
 .psl__chip-btn {
@@ -1679,7 +1679,7 @@
   max-height: calc(100% - 32px);
   border-radius: 7px;
   border: 1px solid var(--border-default);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-base) 60%, transparent);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -1740,8 +1740,8 @@
   border-radius: 10px;
   backdrop-filter: blur(20px) saturate(1.2);
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
   z-index: 4;
 }
 .psl__et-btn {
@@ -1893,6 +1893,6 @@
     outline-color: var(--accent);
   }
   100% {
-    outline-color: rgba(255, 138, 31, 0);
+    outline-color: transparent;
   }
 }

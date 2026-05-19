@@ -42,10 +42,17 @@
   --accent-strong: #ffa33d;
   --accent-bright: #ffb35c;
   --accent-deep:   #b35f15;
-  --accent-soft:   rgba(255, 138, 31, 0.12);
-  --accent-tint:   rgba(255, 138, 31, 0.06);
-  --accent-border: rgba(255, 138, 31, 0.42);
-  --accent-shadow: rgba(255, 138, 31, 0.34);
+  /* Derived alpha overlays of `--accent`. Defined as color-mix so a
+     future theme that overrides `--accent` automatically gets the
+     matching soft / tint / border / shadow values. Previous shape
+     was a hard-coded `rgba(255, 138, 31, X)` literal here AND a
+     separate `rgba(196, 82, 0, X)` override in the light block;
+     both reduced to "X% of accent" once we trust color-mix to do
+     the math at paint time. */
+  --accent-soft:   color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-tint:   color-mix(in srgb, var(--accent) 6%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
+  --accent-shadow: color-mix(in srgb, var(--accent) 34%, transparent);
 
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
   /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
@@ -79,12 +86,23 @@
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
   /* ---------- SHADOWS ---------- */
-  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.32);
-  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.30);
-  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.36);
-  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.42);
+  /* `--shadow-base` is the pure black that every drop-shadow rgba in
+     the renderer derives from via color-mix. Stays #000000 in both
+     themes — drop shadows under light surfaces still want black,
+     just at lower alpha (the existing rules pick a smaller percent).
+     `--shadow-inset-base` is the matching highlight color for the
+     1px inset top edge; flips to white-bone on dark and stays subtle
+     on light. Defining both means the lint can flag any new
+     `box-shadow: ... rgba(...)` and we can convert via color-mix on
+     these bases. */
+  --shadow-base:       #000000;
+  --shadow-inset-base: var(--text-primary);
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 32%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 36%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 42%, transparent);
   --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--shadow-inset-base) 4%, transparent);
 
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
@@ -173,10 +191,12 @@
   --accent-strong: #b34a00;
   --accent-bright: #d96d00;
   --accent-deep:   #8a3a00;
-  --accent-soft:   rgba(196, 82, 0, 0.12);
-  --accent-tint:   rgba(196, 82, 0, 0.06);
-  --accent-border: rgba(196, 82, 0, 0.42);
-  --accent-shadow: rgba(196, 82, 0, 0.28);
+  /* Light theme's --accent-shadow at the matching 28% (slightly
+     lighter than dark's 34% so the cast doesn't read as a heavy
+     ring on white panels). The other three derivatives inherit
+     from :root by deriving off `--accent` — color-mix re-evaluates
+     here because `--accent` was overridden above. */
+  --accent-shadow: color-mix(in srgb, var(--accent) 28%, transparent);
 
   /* ---------- COLOR — semantic (deeper for legibility on white) ---------- */
   --danger:        #b94232;

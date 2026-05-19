@@ -151,7 +151,12 @@
   border: 1px solid transparent;
   border-radius: 5px;
   cursor: pointer;
-  font: 500 13px/1 var(--font-sans);
+  /* line-height: 1.4 (not 1) so the line-box has room for
+     descenders — section names like "Output & format",
+     "Appearance", "Notifications" all have descender-bearing
+     glyphs that would otherwise be clipped by the row's flex
+     layout. Mirrors the same fix on `.psl__nav` in library.css. */
+  font: 500 13px/1.4 var(--font-sans);
   color: var(--text-primary);
   text-align: left;
   width: 100%;

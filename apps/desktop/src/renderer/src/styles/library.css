@@ -596,7 +596,15 @@
   border-radius: 5px;
   background: transparent; border: 1px solid transparent;
   color: var(--text-primary);
-  font: 500 12px/1 var(--font-sans);
+  /* line-height: 1.4 (not 1) so the line-box has room for
+     descenders. `.psl__nav-label` below uses `overflow: hidden` for
+     ellipsis, which clips anything outside the line-box — at
+     line-height 1 the descender ink on letters like g/p/y in source-
+     app names ("App Store", "PwrAgent") falls outside the box and
+     gets shaved off at the bottom edge. The row height stays 30px
+     (controlled by `height:` above), so this is purely about giving
+     the glyphs vertical headroom inside the label. */
+  font: 500 12px/1.4 var(--font-sans);
   cursor: pointer; width: 100%; text-align: left;
 }
 .psl__nav:hover { background: var(--bg-panel-hover); }

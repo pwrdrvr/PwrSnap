@@ -114,7 +114,7 @@ afterEach(async () => {
 });
 
 describe("DetailRail", () => {
-  test("Use draft accepts both title and description via codex:accept verbs", async () => {
+  test("per-field Use button promotes Codex's initial draft to accepted", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({
         suggestedTitle: "LINE chat with PwrAgent help",
@@ -122,20 +122,24 @@ describe("DetailRail", () => {
       })
     );
 
-    const button = Array.from(el.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Use draft"
-    ) as HTMLButtonElement | undefined;
-
-    expect(button).toBeDefined();
+    const useButtons = Array.from(
+      el.querySelectorAll<HTMLButtonElement>(".psl__field-use")
+    );
+    // Two Use buttons — one per field (title + description). The
+    // previous bulk "Use draft" button is gone so tags can't be
+    // accepted as a side effect.
+    expect(useButtons).toHaveLength(2);
 
     await act(async () => {
-      button?.click();
+      useButtons[0]?.click();
+      useButtons[1]?.click();
       await Promise.resolve();
       await Promise.resolve();
     });
 
     const titleCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTitle");
     const descCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptDescription");
+    const tagCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTag");
     expect(titleCalls[0]?.[1]).toEqual({
       captureId: "cap_1",
       title: "LINE chat with PwrAgent help"
@@ -144,6 +148,68 @@ describe("DetailRail", () => {
       captureId: "cap_1",
       description: "Dark-mode LINE desktop chat showing PwrAgent command help."
     });
+    // Crucial: no tag-accept side effects. Bug #7 of the user report.
+    expect(tagCalls).toHaveLength(0);
+  });
+
+  test("DraftPreview surfaces a Codex suggestion that diverges from the accepted value", async () => {
+    const { el, dispatch } = await renderDetailRail(
+      enrichment({
+        suggestedTitle: "Codex headline",
+        acceptedTitle: "Custom user title - Cats",
+        titleAcceptedAt: "2026-05-19T18:00:00.000Z",
+        suggestedDescription: "Codex body draft",
+        acceptedDescription: null
+      })
+    );
+
+    // Title input shows the user's accepted value; the Codex draft
+    // is surfaced in a DraftPreview block beneath it so the user
+    // can see what they'd be replacing.
+    const titleInput = el.querySelector<HTMLInputElement>(".psl__field-input");
+    expect(titleInput?.value).toBe("Custom user title - Cats");
+    expect(titleInput?.classList.contains("is-suggested")).toBe(false);
+
+    const previews = Array.from(
+      el.querySelectorAll<HTMLDivElement>(".psl__draft-preview")
+    );
+    // Only the title diverges (description has no acceptedDescription
+    // so it's still showing as a "suggested" input). One preview block.
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.textContent).toContain("Codex headline");
+
+    const previewUse = previews[0]?.querySelector<HTMLButtonElement>(
+      ".psl__draft-preview-use"
+    );
+    expect(previewUse).not.toBeNull();
+    await act(async () => {
+      previewUse?.click();
+      await Promise.resolve();
+    });
+
+    const titleCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTitle");
+    expect(titleCalls[0]?.[1]).toEqual({ captureId: "cap_1", title: "Codex headline" });
+    // Description was untouched.
+    expect(dispatch.mock.calls.some(([name]) => name === "codex:acceptDescription")).toBe(false);
+  });
+
+  test("header only carries the source-app chip, not accepted content tags", async () => {
+    const { el } = await renderDetailRail(
+      enrichment({ acceptedTags: ["chat", "pwrsnap", "bot"] })
+    );
+
+    // The .psl__detail-tags row used to render accepted tags AND was
+    // mirrored below by the TagEditor — a duplicated "live" list.
+    // Now: header only carries the source-app chip; TagEditor below
+    // is the single tag surface.
+    const headerTags = el.querySelector(".psl__detail-tags");
+    expect(headerTags?.querySelectorAll(".ps-tag").length ?? 0).toBe(0);
+
+    const tagEditor = el.querySelector(".psl__tag-editor");
+    const editorTagLabels = Array.from(
+      tagEditor?.querySelectorAll(".ps-tag") ?? []
+    ).map((node) => node.textContent?.trim());
+    expect(editorTagLabels).toEqual(["chat", "pwrsnap", "bot"]);
   });
 
   test("title and description render as editable inputs with the suggested-state class", async () => {

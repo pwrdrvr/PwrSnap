@@ -1402,6 +1402,25 @@
   text-transform: lowercase;
   letter-spacing: 0.02em;
 }
+.psl__field-use {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font: 600 9px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.psl__field-use:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.psl__field-use:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .psl__field-input,
 .psl__field-textarea {
   width: 100%;
@@ -1428,6 +1447,57 @@
   font-style: italic;
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   background: color-mix(in srgb, var(--accent) 3%, var(--bg-input));
+}
+
+/* Inline draft preview: shown under a field when Codex has a
+   suggestion that diverges from what the user has saved. Replaces
+   the prior bulk "Use draft" pill button so the user can see the
+   alternative text before they click. */
+.psl__draft-preview {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-input));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.psl__draft-preview-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.psl__draft-preview-label {
+  font: 600 10px/1 var(--font-sans);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.psl__draft-preview-use {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--accent-border);
+  color: var(--accent-bright);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__draft-preview-use:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.psl__draft-preview-use:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.psl__draft-preview-text {
+  margin: 0;
+  color: color-mix(in srgb, var(--text-primary) 82%, transparent);
+  font: 400 11px/1.45 var(--font-sans);
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ----- Tag editor ----- */

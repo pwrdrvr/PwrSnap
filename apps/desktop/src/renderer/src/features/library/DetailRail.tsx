@@ -383,29 +383,30 @@ function DetailTab({
     [acceptedDescription, onEnrichmentUpdate, record.id]
   );
 
-  const useAllDrafts = useCallback(async () => {
-    if (suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle) {
-      await acceptTitleIfNeeded(suggestedTitle);
-    }
-    if (suggestedDescription.trim().length > 0 && suggestedDescription !== acceptedDescription) {
-      await acceptDescriptionIfNeeded(suggestedDescription);
-    }
-    for (const tag of pendingTags) {
-      if (tag.id === undefined) continue;
-      const result = await dispatch("codex:acceptTag", { captureId: record.id, tagId: tag.id });
-      if (result.ok) onEnrichmentUpdate(result.value);
-    }
-  }, [
-    acceptDescriptionIfNeeded,
-    acceptTitleIfNeeded,
-    acceptedDescription,
-    acceptedTitle,
-    onEnrichmentUpdate,
-    pendingTags,
-    record.id,
-    suggestedDescription,
-    suggestedTitle
-  ]);
+  // Per-field draft acceptance — the prior bulk "Use draft" button
+  // accepted title + description + every pending tag in one click,
+  // which surprised users in two ways:
+  //   1. Pending tags they'd ignored on the float-over (e.g., `github`)
+  //      got applied along with the text drafts.
+  //   2. The accepted title/description got overwritten with no
+  //      preview of what they were about to lose.
+  // Now: each field's drafted text is previewed below the input with
+  // an inline "Use" button. Tags continue to live in <TagEditor/>
+  // with their own +/× per-suggestion controls.
+  const useTitleDraft = useCallback(async () => {
+    if (suggestedTitle.trim().length === 0) return;
+    await acceptTitleIfNeeded(suggestedTitle);
+  }, [acceptTitleIfNeeded, suggestedTitle]);
+
+  const useDescriptionDraft = useCallback(async () => {
+    if (suggestedDescription.trim().length === 0) return;
+    await acceptDescriptionIfNeeded(suggestedDescription);
+  }, [acceptDescriptionIfNeeded, suggestedDescription]);
+
+  const titleDraftDiverged =
+    suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle;
+  const descriptionDraftDiverged =
+    suggestedDescription.trim().length > 0 && suggestedDescription !== acceptedDescription;
 
   const regenerate = useCallback(() => {
     void dispatch("codex:enrich", { captureId: record.id });
@@ -425,17 +426,16 @@ function DetailTab({
           <span>{record.kind === "image" ? "PNG" : record.kind.toUpperCase()}</span>
           <span>{capturedAt}</span>
         </div>
+        {/* Header only carries the source-app chip — accepted content
+            tags render below in <TagEditor/> so they aren't duplicated.
+            Used to also mirror `acceptedTags` here, which produced two
+            "live" tag rows in the sidebar (the user-reported goof). */}
         <div className="psl__detail-tags">
           <AppTag
             app={appId}
             name={sourceName}
             bundleId={record.source_app_bundle_id ?? undefined}
           />
-          {acceptedTags.map((tag) => (
-            <span key={tag} className="ps-tag is-sm">
-              {tag}
-            </span>
-          ))}
         </div>
       </div>
 
@@ -444,34 +444,33 @@ function DetailTab({
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
         action={
-          <>
-            <button
-              type="button"
-              className="psl__chip-btn"
-              onClick={regenerate}
-              disabled={codexStatus === "queued" || codexStatus === "running"}
-            >
-              {codexStatus === "queued" || codexStatus === "running" ? "Reading…" : "Regenerate"}
-            </button>
-            {draftAvailable && !allDraftsAccepted ? (
-              <button
-                type="button"
-                className="psl__chip-btn psl__chip-btn--accent"
-                onClick={() => void useAllDrafts()}
-              >
-                Use draft
-              </button>
-            ) : null}
-          </>
+          <button
+            type="button"
+            className="psl__chip-btn"
+            onClick={regenerate}
+            disabled={codexStatus === "queued" || codexStatus === "running"}
+          >
+            {codexStatus === "queued" || codexStatus === "running" ? "Reading…" : "Regenerate"}
+          </button>
         }
       />
 
       <div className="psl__detail-fields">
         <label className="psl__field">
           <span className="psl__field-label">
-            Title
+            <span>Title</span>
             {titleOrigin === "suggested" ? (
-              <span className="psl__field-origin">draft from Codex</span>
+              <>
+                <span className="psl__field-origin">draft from Codex</span>
+                <button
+                  type="button"
+                  className="psl__field-use"
+                  onClick={() => void useTitleDraft()}
+                  title="Save this Codex draft as your title"
+                >
+                  Use
+                </button>
+              </>
             ) : null}
           </span>
           <input
@@ -483,13 +482,30 @@ function DetailTab({
             onChange={(event) => setTitleEdit(event.target.value)}
             onBlur={() => void acceptTitleIfNeeded(titleValue)}
           />
+          {titleDraftDiverged && titleOrigin !== "suggested" ? (
+            <DraftPreview
+              label="Codex draft"
+              text={suggestedTitle}
+              onUse={() => void useTitleDraft()}
+            />
+          ) : null}
         </label>
 
         <label className="psl__field">
           <span className="psl__field-label">
-            Description
+            <span>Description</span>
             {descriptionOrigin === "suggested" ? (
-              <span className="psl__field-origin">draft from Codex</span>
+              <>
+                <span className="psl__field-origin">draft from Codex</span>
+                <button
+                  type="button"
+                  className="psl__field-use"
+                  onClick={() => void useDescriptionDraft()}
+                  title="Save this Codex draft as your description"
+                >
+                  Use
+                </button>
+              </>
             ) : null}
           </span>
           <textarea
@@ -503,6 +519,13 @@ function DetailTab({
             onChange={(event) => setDescriptionEdit(event.target.value)}
             onBlur={() => void acceptDescriptionIfNeeded(descriptionValue)}
           />
+          {descriptionDraftDiverged && descriptionOrigin !== "suggested" ? (
+            <DraftPreview
+              label="Codex draft"
+              text={suggestedDescription}
+              onUse={() => void useDescriptionDraft()}
+            />
+          ) : null}
         </label>
       </div>
 
@@ -673,6 +696,36 @@ function OcrTab({ record, enrichment }: OcrTabProps): ReactElement {
             : "No OCR text yet. Hit Refresh to ask Codex to read the snap."}
         </div>
       )}
+    </div>
+  );
+}
+
+type DraftPreviewProps = {
+  readonly label: string;
+  readonly text: string;
+  readonly onUse: () => void;
+};
+
+// DraftPreview — small banner shown under a field when Codex has a
+// suggestion that diverges from the value the user has accepted. The
+// prior bulk-overwrite button gave the user no visibility into what
+// they were about to lose; this surfaces the alternative text so the
+// "Use" click is informed, not a leap of faith.
+function DraftPreview({ label, text, onUse }: DraftPreviewProps): ReactElement {
+  return (
+    <div className="psl__draft-preview" role="group" aria-label={label}>
+      <div className="psl__draft-preview-hdr">
+        <span className="psl__draft-preview-label">{label}</span>
+        <button
+          type="button"
+          className="psl__draft-preview-use"
+          onClick={onUse}
+          title="Replace current text with this Codex draft"
+        >
+          Use this
+        </button>
+      </div>
+      <p className="psl__draft-preview-text">{text}</p>
     </div>
   );
 }

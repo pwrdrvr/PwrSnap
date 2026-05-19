@@ -600,6 +600,29 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return labels;
   }, [appStats, liveFixturesForCounts]);
 
+  // Representative bundle id per app key — used by `<AppIcon>` to
+  // resolve the full-color icon from the installed .app via the
+  // `pwrsnap-app-icon://` protocol. Multiple bundle ids can fold
+  // into the same curated short id (`com.tinyspeck.slackmacgap` and
+  // `com.slack.macos` both → `"slack"`); we pick the highest-count
+  // representative so the icon is most likely installed on the user's
+  // machine. Bundle ids with no installed .app fall back to the
+  // procedural / hand-drawn glyph automatically.
+  const appBundleIds = useMemo<Record<string, string>>(() => {
+    const byApp = new Map<string, { bundleId: string; count: number }>();
+    for (const stat of appStats) {
+      if (stat.bundleId === null) continue;
+      const appId = mapBundleIdToAppId(stat.bundleId);
+      const current = byApp.get(appId);
+      if (current === undefined || stat.count > current.count) {
+        byApp.set(appId, { bundleId: stat.bundleId, count: stat.count });
+      }
+    }
+    const out: Record<string, string> = {};
+    for (const [appId, { bundleId }] of byApp) out[appId] = bundleId;
+    return out;
+  }, [appStats]);
+
   // Apps that should appear in the left rail: any app with ≥1 capture,
   // PLUS the currently-active filter (so a user who's filtered to
   // "Telegram" and just deleted their last Telegram capture doesn't
@@ -608,23 +631,28 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // glyph) appear here with their OS-supplied name and a procedural
   // initials icon. Sorted alphabetically by display name for stable
   // ordering across renders.
-  const visibleApps = useMemo<Array<{ app: string; name: string }>>(() => {
+  const visibleApps = useMemo<Array<{ app: string; name: string; bundleId: string | undefined }>>(() => {
     const seen = new Set<string>();
-    const out: Array<{ app: string; name: string }> = [];
+    const out: Array<{ app: string; name: string; bundleId: string | undefined }> = [];
     for (const app of Object.keys(appCounts)) {
       if ((appCounts[app] ?? 0) === 0) continue;
       seen.add(app);
-      out.push({ app, name: appLabels[app] ?? "Unknown app" });
+      out.push({
+        app,
+        name: appLabels[app] ?? "Unknown app",
+        bundleId: appBundleIds[app]
+      });
     }
     if (activeSourceAppId !== null && !seen.has(activeSourceAppId)) {
       out.push({
         app: activeSourceAppId,
-        name: appLabels[activeSourceAppId] ?? APP_INFO[activeSourceAppId]?.name ?? "Unknown app"
+        name: appLabels[activeSourceAppId] ?? APP_INFO[activeSourceAppId]?.name ?? "Unknown app",
+        bundleId: appBundleIds[activeSourceAppId]
       });
     }
     out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return out;
-  }, [appCounts, appLabels, activeSourceAppId]);
+  }, [appCounts, appLabels, appBundleIds, activeSourceAppId]);
 
   // The CaptureRecord for the currently-selected id — passed to
   // <DetailRail> + <Stage> so they can render metadata + L/M/H copy
@@ -1485,14 +1513,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         </button>
 
         <div className="psl__left-section">Source App</div>
-        {visibleApps.map(({ app, name }) => (
+        {visibleApps.map(({ app, name, bundleId }) => (
           <button
             key={app}
             className={"psl__nav" + (activeSourceAppId === app ? " is-active" : "")}
             onClick={() => selectFilter({ kind: "sourceApp", appId: app })}
           >
             <span className="psl__nav-icon">
-              <AppIcon app={app} size={11} name={name} />
+              <AppIcon app={app} size={11} name={name} bundleId={bundleId} />
             </span>
             <span className="psl__nav-label">{name}</span>
             <span className="psl__nav-count">{appCounts[app] ?? 0}</span>
@@ -1670,7 +1698,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   <CellThumb capture={c} record={record} width={140} />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
-                                    <AppIcon app={c.app} size={8} name={appLabels[c.app]} />
+                                    <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
                                   </span>
                                   {record !== null &&
                                     (isTrashView ? (
@@ -2209,11 +2237,6 @@ function CellRow({
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} width={400} />
               <span className="psl__cell-time">{c.time}</span>
-              <span className="psl__cell-app">
-                <span className="psl__app-dot">
-                  <AppIcon app={c.app} size={10} name={appLabels[c.app]} />
-                </span>
-              </span>
               {record !== null &&
                 (isTrashView ? (
                   <span className="psl__cell-actions">
@@ -2258,7 +2281,7 @@ function CellRow({
             <div className="psl__cell-meta">
               <div className="psl__cell-name">{c.n}</div>
               <div className="psl__cell-tags">
-                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" />
+                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 {c.tags.slice(0, 1).map((t) => (
                   <span key={t} className="ps-tag is-sm">
                     {t}

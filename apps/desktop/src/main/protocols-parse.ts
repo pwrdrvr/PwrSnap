@@ -14,7 +14,14 @@ export const SCHEMES = {
    *  taken at show() time; deleted when the selector dismisses. The
    *  url shape is `pwrsnap-screen://r/<id>` (same path/host trick as
    *  the capture scheme so nanoid case survives). */
-  screen: "pwrsnap-screen"
+  screen: "pwrsnap-screen",
+  /** Per-bundle-id app icon, extracted lazily from the installed
+   *  .app via the NSWorkspace helper and cached under
+   *  `<userData>/app-icons/`. URL shape: `pwrsnap-app-icon://r/<bundle-id>`.
+   *  Bundle ids contain dots and may carry case (`com.apple.Terminal`),
+   *  so the id sits in the path component (Chromium lowercases the
+   *  host for standard schemes; would collapse `Terminal` → `terminal`). */
+  appIcon: "pwrsnap-app-icon"
 } as const;
 
 export type CacheUrlParts = {
@@ -65,4 +72,20 @@ export function parseCacheUrl(url: string): CacheUrlParts | null {
   const width = Number.parseInt(widthStr, 10);
   if (!Number.isFinite(width) || width < 1 || width > 8192) return null;
   return { captureId, width, format: format as "png" | "webp" };
+}
+
+/**
+ * Parse `pwrsnap-app-icon://r/<bundle-id>` → `<bundle-id>`. Allows
+ * `A-Za-z0-9._-` (the bundle-id alphabet). Strips any `?...` cache-
+ * buster suffix the renderer might append. Returns `null` for any
+ * malformed URL.
+ */
+export function parseAppIconBundleId(url: string): string | null {
+  const prefix = `${SCHEMES.appIcon}://r/`;
+  if (!url.startsWith(prefix)) return null;
+  const noQuery = url.split(/[?#]/, 1)[0]!;
+  const rest = noQuery.slice(prefix.length).replace(/\/+$/, "");
+  if (rest.length === 0 || rest.length > 256) return null;
+  if (!/^[A-Za-z0-9._-]+$/.test(rest)) return null;
+  return rest;
 }

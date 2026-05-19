@@ -90,6 +90,22 @@
 .ps-app-tag.is-sm { height: 18px; font-size: 9px; padding-right: 6px; gap: 4px; }
 .ps-app-tag.is-sm .ps-app-tag__tile { width: 18px; height: 18px; }
 .ps-app-tag.is-sm .ps-app-tag__tile svg { width: 10px; height: 10px; }
+/* Real-bundle full-color icons (extracted from the installed .app
+   via the pwrsnap-app-icon:// protocol). macOS app icons carry their
+   own squircle + bezel — the copper-bordered tile chrome that frames
+   the procedural / hand-drawn glyphs becomes redundant + noisy on
+   top of them. Drop the chrome and let the icon fill the tile. */
+.ps-app-tag__tile:has(> .ps-app-icon-img) {
+  background: transparent;
+  border-right: none;
+  border-radius: 4px;
+  padding: 1px;
+}
+.ps-app-tag__tile > .ps-app-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
 /* ============================================================
    TRAY menubar (host frame for tray dropdown)
@@ -611,6 +627,17 @@
   background: var(--bg-panel-elevated);
 }
 .psl__nav-icon svg { width: 11px; height: 11px; }
+/* Real-bundle icons in the Source App sidebar list — drop tile chrome
+   so the macOS squircle stands on its own (see .ps-app-tag__tile note). */
+.psl__nav-icon:has(> .ps-app-icon-img) {
+  border-color: transparent;
+  background: transparent;
+}
+.psl__nav-icon > .ps-app-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
 .psl__nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .psl__nav-count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); flex-shrink: 0; }
 .psl__nav.is-active .psl__nav-count { color: var(--accent-bright); }
@@ -780,6 +807,17 @@
   color: var(--accent);
 }
 .psl__frame-app svg { width: 8px; height: 8px; }
+/* Same chrome-drop as .psl__app-dot — real squircle stands alone,
+   no copper bezel framing it (which reads as a second icon). */
+.psl__frame-app:has(> .ps-app-icon-img) {
+  border-color: transparent;
+  background: transparent;
+}
+.psl__frame-app > .ps-app-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 /* Hover-only trash affordance on filmstrip frames. Same pattern as
    `.psl__cell-trash` but smaller — frames are 70×56. Sits in the
    top-right opposite the bottom-right app dot. */
@@ -981,9 +1019,6 @@
   color: var(--text-secondary);
   padding: 2px 4px;
   border-radius: 3px;
-}
-.psl__cell-app {
-  position: absolute; bottom: 5px; left: 5px;
 }
 /* Hover-only trash affordance on grid cells. Hidden by default, fades
    in on cell hover. Sits in the bottom-right corner — opposite the
@@ -1475,18 +1510,6 @@
   color: var(--danger-text);
   font: 600 11px/1.3 var(--font-sans);
 }
-
-/* App-icon dot for grid corner */
-.psl__app-dot {
-  width: 18px; height: 18px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--bg-app) 85%, transparent);
-  border: 1px solid var(--accent-border);
-  display: inline-flex; align-items: center; justify-content: center;
-  color: var(--accent);
-}
-.psl__app-dot svg { width: 10px; height: 10px; }
-
 
 /* ============================================================
    PHASE C — STAGE / FOCUS / EDIT-TOOLBAR / COPY-ROW

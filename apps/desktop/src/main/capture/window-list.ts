@@ -143,7 +143,7 @@ export async function captureWindowImage(
 export async function extractAppIcon(
   bundleId: string,
   outputPath: string,
-  size = 1024
+  size: number
 ): Promise<{ ok: true; appPath: string } | { ok: false; message: string }> {
   const helper = resolveHelperPath();
   if (helper === null) {

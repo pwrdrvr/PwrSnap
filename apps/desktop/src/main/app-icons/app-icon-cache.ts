@@ -4,7 +4,8 @@
 //
 // Layout (under `getAppIconsRoot()`):
 //
-//   <bundleId>.png      — the icon PNG (1024px)
+//   <bundleId>.png      — the icon PNG (`EXTRACT_SIZE_PX` × scale,
+//                          typically 256×256 on Retina)
 //   <bundleId>.json     — sidecar: { appPath, infoPlistMtimeMs,
 //                                     extractedAt, version }
 //
@@ -20,7 +21,7 @@
 // with a TTL so we don't shell out to the helper repeatedly while
 // the sidebar repaints.
 
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractAppIcon } from "../capture/window-list";
 import { getMainLogger } from "../log";
@@ -48,14 +49,15 @@ const EXTRACT_SIZE_PX = 128;
  *  works" within a couple of minutes. */
 const NEGATIVE_TTL_MS = 5 * 60_000;
 
-/** Bundle ids we will never resolve to a real icon — the curated
- *  blocklist + the synthetic `"any"` placeholder used by the
- *  renderer when no bundle id was captured. Short-circuits before we
- *  even hit the Swift helper. */
+/** Synthetic placeholders the renderer may pass when no real bundle
+ *  id was captured (`"any"` from `mapBundleIdToAppId`, or `"unknown"`
+ *  for legacy fixtures). Short-circuits before we hit the Swift
+ *  helper or even the regex validator. Empty / malformed strings are
+ *  already rejected by `isValidBundleId` below — no need to enumerate
+ *  them here. */
 const PERMANENT_MISS: ReadonlySet<string> = new Set<string>([
   "any",
-  "unknown",
-  ""
+  "unknown"
 ]);
 
 const inFlight = new Map<string, Promise<string | null>>();
@@ -95,11 +97,17 @@ async function readSidecar(bundleId: string): Promise<Sidecar | null> {
 
 async function writeSidecar(sidecar: Sidecar): Promise<void> {
   // tmp + rename so a crash mid-write doesn't leave a half-flushed
-  // JSON sidecar that parses but lies.
+  // JSON sidecar that parses but lies. If the rename itself fails,
+  // best-effort unlink the tmp so it doesn't leak on disk forever.
   const finalPath = sidecarPathFor(sidecar.bundleId);
   const tmpPath = `${finalPath}.tmp-${process.pid}`;
   await writeFile(tmpPath, JSON.stringify(sidecar), "utf8");
-  await rename(tmpPath, finalPath);
+  try {
+    await rename(tmpPath, finalPath);
+  } catch (cause) {
+    await unlink(tmpPath).catch(() => undefined);
+    throw cause;
+  }
 }
 
 async function infoPlistMtime(appPath: string): Promise<number | null> {

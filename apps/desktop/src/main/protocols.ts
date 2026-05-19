@@ -146,7 +146,12 @@ function mimeForPath(filePath: string): string {
  * Non-Range branch keeps the existing read-the-whole-file fast
  * path for small assets (PNG thumbnails, screen snapshots).
  */
-async function fileResponse(filePath: string, request: Request): Promise<Response> {
+async function fileResponse(
+  filePath: string,
+  request: Request,
+  options: { cacheControl?: string } = {}
+): Promise<Response> {
+  const cacheControl = options.cacheControl ?? "private, max-age=300";
   const stats = await stat(filePath);
   const total = stats.size;
   const rangeHeader = request.headers.get("range");
@@ -199,7 +204,7 @@ async function fileResponse(filePath: string, request: Request): Promise<Respons
       "content-type": mimeForPath(filePath),
       "content-length": String(total),
       "accept-ranges": "bytes",
-      "cache-control": "private, max-age=300"
+      "cache-control": cacheControl
     }
   });
 }
@@ -268,7 +273,13 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
         // onError handler swaps to the procedural fallback — quiet 404.
         return new Response("not found", { status: 404 });
       }
-      return await fileResponse(filePath, request);
+      // `no-cache` (not `no-store`) so Chromium keeps the bytes but
+      // revalidates with us before serving. Our handler is in-process
+      // and `appIconPath` already mtime-validates the on-disk cache,
+      // so a "revalidation" is a single fast file stat. Without this,
+      // Chromium's default 5-min HTTP cache would serve a stale PNG
+      // for up to 5 minutes after an app auto-update changed the icon.
+      return await fileResponse(filePath, request, { cacheControl: "no-cache" });
     } catch (cause) {
       log.error("app-icon handler threw", {
         bundleId,

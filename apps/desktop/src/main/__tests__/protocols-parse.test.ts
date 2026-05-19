@@ -6,7 +6,7 @@
 // in commit 8d92916; lock it down.
 
 import { describe, expect, test } from "vitest";
-import { parseCacheUrl, parseCaptureId, SCHEMES } from "../protocols-parse";
+import { parseAppIconBundleId, parseCacheUrl, parseCaptureId, SCHEMES } from "../protocols-parse";
 
 describe("parseCaptureId", () => {
   test("parses a typical nanoid id from the path", () => {
@@ -148,5 +148,81 @@ describe("parseCacheUrl", () => {
       width: 640,
       format: "webp"
     });
+  });
+});
+
+describe("parseAppIconBundleId", () => {
+  test("parses a typical reverse-DNS bundle id", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.tinyspeck.slackmacgap"))
+      .toBe("com.tinyspeck.slackmacgap");
+  });
+
+  test("preserves mixed case (com.apple.Terminal would 404 if collapsed)", () => {
+    // NSWorkspace.urlForApplication(withBundleIdentifier:) is case-
+    // sensitive on the comparison side for some apps. Path-component
+    // placement is the whole reason we don't put the id in the host.
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.Terminal"))
+      .toBe("com.apple.Terminal");
+  });
+
+  test("allows the full bundle-id alphabet (letters, digits, dot, underscore, dash)", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.openai.codex"))
+      .toBe("com.openai.codex");
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.pwrdrvr.synth_air-table_v2"))
+      .toBe("com.pwrdrvr.synth_air-table_v2");
+  });
+
+  test("tolerates a trailing slash", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.finder/"))
+      .toBe("com.apple.finder");
+  });
+
+  test("strips ?v=<n> cache-buster + hash fragments", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.finder?v=17"))
+      .toBe("com.apple.finder");
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.finder?"))
+      .toBe("com.apple.finder");
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple.finder#anchor"))
+      .toBe("com.apple.finder");
+  });
+
+  test("returns null for an empty id", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/")).toBeNull();
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/////")).toBeNull();
+  });
+
+  test("rejects ids with disallowed characters", () => {
+    // Bundle-id alphabet is [A-Za-z0-9._-]; slashes, spaces, percent-
+    // encoded sequences, anything else must 400 — never let a malformed
+    // URL through to the file-system layer.
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/../etc/passwd")).toBeNull();
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple finder")).toBeNull();
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple%2Efinder")).toBeNull();
+    expect(parseAppIconBundleId("pwrsnap-app-icon://r/com.apple/finder")).toBeNull();
+  });
+
+  test("caps length at 256 chars (DoS guard)", () => {
+    // Real bundle ids are <100 chars; 256 leaves head-room without
+    // letting a pathological URL pass through to the file path layer.
+    const ok = "a".repeat(256);
+    const tooLong = "a".repeat(257);
+    expect(parseAppIconBundleId(`pwrsnap-app-icon://r/${ok}`)).toBe(ok);
+    expect(parseAppIconBundleId(`pwrsnap-app-icon://r/${tooLong}`)).toBeNull();
+  });
+
+  test("rejects the wrong scheme", () => {
+    expect(parseAppIconBundleId("pwrsnap-capture://r/com.apple.finder")).toBeNull();
+    expect(parseAppIconBundleId("file:///r/com.apple.finder")).toBeNull();
+    expect(parseAppIconBundleId("https://r/com.apple.finder")).toBeNull();
+  });
+
+  test("rejects URLs missing the literal 'r' host", () => {
+    expect(parseAppIconBundleId("pwrsnap-app-icon://com.apple.finder")).toBeNull();
+    expect(parseAppIconBundleId("pwrsnap-app-icon://x/com.apple.finder")).toBeNull();
+  });
+
+  test("uses SCHEMES.appIcon", () => {
+    expect(parseAppIconBundleId(`${SCHEMES.appIcon}://r/com.apple.finder`))
+      .toBe("com.apple.finder");
   });
 });

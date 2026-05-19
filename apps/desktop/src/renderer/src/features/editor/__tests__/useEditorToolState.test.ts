@@ -68,6 +68,7 @@ function makeSettings(overrides?: {
     ai: {
       enabled: false,
       consentAcceptedAt: null,
+      budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
       chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
     },

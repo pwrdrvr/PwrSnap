@@ -28,6 +28,7 @@ export const EVENT_CHANNELS = {
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",
+  aiBudgetUpdated: "events:ai-budget:updated",
   renderProgress: "events:render:progress",
   /**
    * Main → every BrowserWindow: recording-service lifecycle update.
@@ -314,6 +315,13 @@ export type SettingsChangedEvent = {
 export type SettingsNavigateEvent = {
   page: import("./protocol").SettingsPage;
 };
+
+/**
+ * `events:ai-budget:updated` broadcast payload. Sent whenever the
+ * enrichment token bucket changes state, including slow mode and the
+ * safety auto-disable transition.
+ */
+export type AiBudgetUpdatedEvent = import("./protocol").AiEnrichmentBudgetStatus;
 
 /**
  * Renderer → main perf-mark payloads. New marks land here as new

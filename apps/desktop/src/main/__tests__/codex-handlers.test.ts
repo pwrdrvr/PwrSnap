@@ -88,6 +88,7 @@ function unregisterCodexHandlers(): void {
     "codex:acceptTag",
     "codex:rejectTag",
     "codex:runStatus",
+    "codex:budgetStatus",
     "codex:cancel",
     "codex:annotate",
     "codex:describe",
@@ -209,6 +210,7 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
@@ -273,6 +275,7 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }

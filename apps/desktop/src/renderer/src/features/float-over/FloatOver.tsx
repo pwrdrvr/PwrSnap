@@ -175,6 +175,7 @@ export function FloatOver({
   codexAvailable = true,
   aiEnabled = false,
   aiConsentAccepted = false,
+  aiSafetyDisabled = false,
   autoAcceptSuggestions = false,
   onEnableAi,
   onConfigureAi,
@@ -222,6 +223,7 @@ export function FloatOver({
   codexAvailable?: boolean;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
+  aiSafetyDisabled?: boolean;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
    *  toast renders the checkbox in the "checked" state and trusts
    *  main to promote `suggested_*` → `accepted_*` on its own at the
@@ -731,6 +733,7 @@ export function FloatOver({
             }
             accepted={allDraftsAccepted}
             needsConsent={aiNeedsConsent}
+            safetyDisabled={aiSafetyDisabled}
             action={
               !thinking && !aiFailed ? (
                 suggestedTitle.length === 0 && suggestedDescription.length === 0 && !codexAvailable ? (
@@ -748,7 +751,7 @@ export function FloatOver({
                       setAiConsentDialogOpen(true);
                     }}
                   >
-                    Enable
+                    {aiSafetyDisabled ? "Re-enable" : "Enable"}
                   </button>
                 ) : hasUnacceptedDrafts ? (
                   <button

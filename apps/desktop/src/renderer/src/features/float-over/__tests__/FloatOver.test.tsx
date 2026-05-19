@@ -52,7 +52,7 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
+  ai: { enabled: false, consentAcceptedAt: null, budgetSafetyDisabledAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -282,7 +282,11 @@ describe("FloatOverHost", () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
         settings: {
           ...baseSettings,
-          ai: { enabled: true, consentAcceptedAt: "2026-05-19T12:00:00.000Z" }
+          ai: {
+            ...baseSettings.ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-19T12:00:00.000Z"
+          }
         },
         secrets: {}
       });

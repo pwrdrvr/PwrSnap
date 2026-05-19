@@ -11,14 +11,18 @@ import {
   ok
 } from "@pwrsnap/shared";
 import type {
+  AiEnrichmentBudgetStatus,
+  AiEnrichmentTriggerSource,
   AiRunSnapshot,
   CaptureEnrichment,
   CaptureRecord,
   PwrSnapError,
   Result,
-  Settings
+  Settings,
+  SettingsPatch
 } from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
+import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
   prepareEnrichmentImage,
   prepareEnrichmentVideoFrames,
@@ -58,6 +62,7 @@ const log = getMainLogger("pwrsnap:codex-handlers");
 
 export type CodexClientFactory = (command: string) => CodexAppServerClient;
 export type SettingsReader = () => Promise<Settings>;
+export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
 
@@ -68,6 +73,36 @@ function broadcastAiRunUpdated(payload: {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     win.webContents.send(EVENT_CHANNELS.aiRunUpdated, payload);
+  }
+}
+
+function preparedMediaShape(
+  prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null
+): Record<string, unknown> | null {
+  if (prepared === null) return null;
+  if ("frames" in prepared) {
+    return {
+      imageCount: prepared.frames.length,
+      maxEdgePx: Math.max(0, ...prepared.frames.map((frame) => Math.max(frame.width, frame.height))),
+      byteSizes: prepared.frames.map((frame) => frame.byteSize),
+      videoFrameSamplePositions: prepared.frames.map((frame) => ({
+        positionPct: frame.positionPct,
+        timestampSec: frame.timestampSec
+      }))
+    };
+  }
+  return {
+    imageCount: 1,
+    maxEdgePx: Math.max(prepared.width, prepared.height),
+    byteSizes: [prepared.byteSize],
+    videoFrameSamplePositions: []
+  };
+}
+
+function broadcastAiBudgetUpdated(payload: AiEnrichmentBudgetStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(EVENT_CHANNELS.aiBudgetUpdated, payload);
   }
 }
 
@@ -83,10 +118,25 @@ async function defaultSettingsReader(): Promise<Settings> {
   return result.value;
 }
 
+async function defaultSettingsWriter(patch: SettingsPatch): Promise<Settings> {
+  const result = await bus.dispatch("settings:write", patch, { principal: "ipc" });
+  if (!result.ok) {
+    throw new Error(result.error.message);
+  }
+  return result.value;
+}
+
 function codexCommandForSettings(settings: Settings): string {
   return settings.codex.mode === "pinned" && settings.codex.pinnedPath !== ""
     ? settings.codex.pinnedPath
     : "codex";
+}
+
+function triggerSourceOrDefault(
+  value: AiEnrichmentTriggerSource | undefined,
+  fallback: AiEnrichmentTriggerSource
+): AiEnrichmentTriggerSource {
+  return value ?? fallback;
 }
 
 function mapError(error: unknown): Result<never, PwrSnapError> {
@@ -123,7 +173,11 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
       if (!settings.ai.enabled || settings.ai.consentAcceptedAt === null) {
         return null;
       }
-      return bus.dispatch("codex:enrich", { captureId }, { principal: "ipc", cancellationKey: captureId });
+      return bus.dispatch(
+        "codex:enrich",
+        { captureId, triggerSource: "auto-enrichment" },
+        { principal: "ipc", cancellationKey: captureId }
+      );
     })
     .then((result) => {
       if (result === null) return;
@@ -146,11 +200,16 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
 export function registerCodexHandlers(params?: {
   clientFactory?: CodexClientFactory;
   settingsReader?: SettingsReader;
+  settingsWriter?: SettingsWriter;
+  budget?: AiEnrichmentBudget;
 }): void {
   const clientFactory = params?.clientFactory ?? ((command) => new CodexAppServerClient({ command }));
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
+  const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
+  const budget = params?.budget ?? aiEnrichmentBudget;
 
   bus.register("codex:enrich", async (req, ctx) => {
+    const triggerSource = triggerSourceOrDefault(req.triggerSource, "unknown");
     let settings: Settings;
     try {
       settings = await settingsReader();
@@ -161,6 +220,14 @@ export function registerCodexHandlers(params?: {
         message: error instanceof Error ? error.message : String(error),
         cause: error
       });
+    }
+    if (settings.ai.budgetSafetyDisabledAt !== null) {
+      const status = budget.status(settings);
+      broadcastAiBudgetUpdated(status);
+      return validationError(
+        "ai_budget_safety_disabled",
+        "AI enrichment was disabled after repeated budget exhaustion"
+      );
     }
     if (!settings.ai.enabled) {
       return validationError("ai_disabled", "AI enrichment is disabled");
@@ -175,6 +242,64 @@ export function registerCodexHandlers(params?: {
     }
 
     const codexCommand = codexCommandForSettings(settings);
+    const budgetDecision = budget.consume(settings);
+    broadcastAiBudgetUpdated(budgetDecision.after);
+    if (!budgetDecision.allowed) {
+      log.warn("capture enrichment budget limited", {
+        captureId: capture.id,
+        captureKind: capture.kind,
+        sourceAppName: capture.source_app_name,
+        sourceAppBundleId: capture.source_app_bundle_id,
+        triggerSource,
+        codexCommand,
+        reason: budgetDecision.reason,
+        bucketBefore: budgetDecision.before,
+        bucketAfter: budgetDecision.after
+      });
+      if (budgetDecision.shouldDisableAi) {
+        const disabledAt = new Date().toISOString();
+        void settingsWriter({
+          ai: {
+            enabled: false,
+            budgetSafetyDisabledAt: disabledAt
+          }
+        })
+          .then((nextSettings) => {
+            const status = budget.status(nextSettings);
+            broadcastAiBudgetUpdated(status);
+            log.warn("AI enrichment disabled by budget circuit breaker", {
+              captureId: capture.id,
+              triggerSource,
+              disabledAt,
+              limitedAttemptsLastHour: status.limitedAttemptsLastHour,
+              disableThreshold: status.disableThreshold
+            });
+          })
+          .catch((error: unknown) => {
+            log.warn("AI enrichment budget auto-disable failed", {
+              captureId: capture.id,
+              triggerSource,
+              message: error instanceof Error ? error.message : String(error)
+            });
+          });
+      }
+      return validationError(
+        budgetDecision.shouldDisableAi ? "ai_budget_safety_disabled" : "ai_budget_limited",
+        budgetDecision.shouldDisableAi
+          ? "AI enrichment was disabled after repeated budget exhaustion"
+          : "AI enrichment is in budget-limited slow mode"
+      );
+    }
+    log.info("capture enrichment budget consumed", {
+      captureId: capture.id,
+      captureKind: capture.kind,
+      sourceAppName: capture.source_app_name,
+      sourceAppBundleId: capture.source_app_bundle_id,
+      triggerSource,
+      codexCommand,
+      bucketBefore: budgetDecision.before,
+      bucketAfter: budgetDecision.after
+    });
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
@@ -215,6 +340,9 @@ export function registerCodexHandlers(params?: {
       },
       command: codexCommand,
       settingsReader,
+      triggerSource,
+      budgetBefore: budgetDecision.before,
+      budgetAfter: budgetDecision.after,
       ctx,
       clientFactory
     });
@@ -324,6 +452,21 @@ export function registerCodexHandlers(params?: {
     return ok(getAiRun(req.runId));
   });
 
+  bus.register("codex:budgetStatus", async () => {
+    let settings: Settings;
+    try {
+      settings = await settingsReader();
+    } catch (error) {
+      return err({
+        kind: "settings",
+        code: "read_failed",
+        message: error instanceof Error ? error.message : String(error),
+        cause: error
+      });
+    }
+    return ok(budget.status(settings));
+  });
+
   bus.register("codex:cancel", async (req) => {
     activeRuns.get(req.runId)?.abort();
     activeRuns.delete(req.runId);
@@ -333,18 +476,28 @@ export function registerCodexHandlers(params?: {
     return ok(undefined);
   });
 
-  for (const name of [
-    "codex:annotate",
-    "codex:describe",
-    "codex:tag",
-    "codex:filename",
-    "codex:sensitiveScan"
-  ] as const) {
+  const enrichAliases = {
+    "codex:annotate": "annotate",
+    "codex:describe": "describe",
+    "codex:tag": "tag",
+    "codex:filename": "filename",
+    "codex:sensitiveScan": "sensitive-scan"
+  } as const;
+  for (const [name, fallbackTriggerSource] of Object.entries(enrichAliases) as Array<
+    [keyof typeof enrichAliases, (typeof enrichAliases)[keyof typeof enrichAliases]]
+  >) {
     bus.register(name, async (req, ctx) => {
-      return bus.dispatch("codex:enrich", req, {
-        principal: ctx.principal,
-        cancellationKey: req.captureId
-      });
+      return bus.dispatch(
+        "codex:enrich",
+        {
+          captureId: req.captureId,
+          triggerSource: triggerSourceOrDefault(req.triggerSource, fallbackTriggerSource)
+        },
+        {
+          principal: ctx.principal,
+          cancellationKey: req.captureId
+        }
+      );
     });
   }
 
@@ -365,6 +518,9 @@ async function runCaptureEnrichment(params: {
    * the float-over checkbox visibly promises.
    */
   settingsReader: SettingsReader;
+  triggerSource: AiEnrichmentTriggerSource;
+  budgetBefore: AiEnrichmentBudgetStatus;
+  budgetAfter: AiEnrichmentBudgetStatus;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
 }): Promise<void> {
@@ -419,6 +575,19 @@ async function runCaptureEnrichment(params: {
       imagePaths = [prepared.path];
     }
 
+    log.info("capture enrichment turn starting", {
+      runId: params.runId,
+      captureId,
+      captureKind: params.metadata.captureKind,
+      sourceAppName: params.metadata.sourceAppName,
+      sourceAppBundleId: params.metadata.sourceAppBundleId,
+      triggerSource: params.triggerSource,
+      codexCommand: params.command,
+      preparedMedia: preparedMediaShape(prepared),
+      bucketBefore: params.budgetBefore,
+      bucketAfter: params.budgetAfter
+    });
+
     client = params.clientFactory(params.command);
     const response = await client.enrichCapture({
       imagePaths,
@@ -457,6 +626,21 @@ async function runCaptureEnrichment(params: {
       run: completed,
       enrichment: getCaptureEnrichment(captureId)
     });
+    log.info("capture enrichment completed", {
+      runId: params.runId,
+      captureId,
+      captureKind: params.metadata.captureKind,
+      sourceAppName: params.metadata.sourceAppName,
+      sourceAppBundleId: params.metadata.sourceAppBundleId,
+      triggerSource: params.triggerSource,
+      codexCommand: params.command,
+      codexUserAgent: response.userAgent,
+      threadId: response.threadId,
+      turnId: response.turnId,
+      latencyMs,
+      preparedMedia: preparedMediaShape(prepared),
+      outcome: "completed"
+    });
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
@@ -475,7 +659,26 @@ async function runCaptureEnrichment(params: {
       log.warn("capture enrichment failed", {
         runId: params.runId,
         captureId,
+        captureKind: params.metadata.captureKind,
+        sourceAppName: params.metadata.sourceAppName,
+        sourceAppBundleId: params.metadata.sourceAppBundleId,
+        triggerSource: params.triggerSource,
+        codexCommand: params.command,
+        preparedMedia: preparedMediaShape(prepared),
+        outcome: "failed",
         message: error instanceof Error ? error.message : String(error)
+      });
+    } else {
+      log.info("capture enrichment cancelled", {
+        runId: params.runId,
+        captureId,
+        captureKind: params.metadata.captureKind,
+        sourceAppName: params.metadata.sourceAppName,
+        sourceAppBundleId: params.metadata.sourceAppBundleId,
+        triggerSource: params.triggerSource,
+        codexCommand: params.command,
+        preparedMedia: preparedMediaShape(prepared),
+        outcome: "cancelled"
       });
     }
   } finally {

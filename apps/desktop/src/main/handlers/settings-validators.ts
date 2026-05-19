@@ -193,6 +193,27 @@ export function validateSettingsWrite(
         )
       };
     }
+    if (
+      !isUndefined(ai.budgetSafetyDisabledAt) &&
+      !isStringOrNull(ai.budgetSafetyDisabledAt)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_budgetSafetyDisabledAt",
+          "settings:write: ai.budgetSafetyDisabledAt must be a string or null"
+        )
+      };
+    }
+    if (!isUndefined(ai.autoAcceptSuggestions) && !isBoolean(ai.autoAcceptSuggestions)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_ai_autoAcceptSuggestions",
+          "settings:write: ai.autoAcceptSuggestions must be a boolean"
+        )
+      };
+    }
     if (!isUndefined(ai.chat)) {
       const chatErr = validateChatPatch(ai.chat);
       if (chatErr) return { ok: false, error: chatErr };

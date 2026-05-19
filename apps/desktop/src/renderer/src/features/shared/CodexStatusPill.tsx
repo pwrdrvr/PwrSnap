@@ -23,6 +23,7 @@ export type CodexStatusPillProps = {
   readonly draftAvailable?: boolean;
   readonly accepted?: boolean;
   readonly needsConsent?: boolean;
+  readonly safetyDisabled?: boolean;
   readonly action?: ReactNode;
   readonly style?: CSSProperties;
   readonly className?: string;
@@ -35,18 +36,21 @@ type StatusKind =
   | "ready"
   | "accepted"
   | "failed"
+  | "safety-disabled"
   | "needs-consent";
 
 function resolveKind(
   status: AiRunStatus | null,
   draftAvailable: boolean,
   accepted: boolean,
-  needsConsent: boolean
+  needsConsent: boolean,
+  safetyDisabled: boolean
 ): StatusKind {
   if (status === "running") return "running";
   if (status === "queued") return "queued";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "idle";
+  if (safetyDisabled) return "safety-disabled";
   if (accepted) return "accepted";
   if (draftAvailable && status === "completed") return "ready";
   if (needsConsent) return "needs-consent";
@@ -73,6 +77,8 @@ function labelFor(kind: StatusKind): ReactNode {
       return <>Description filled from Codex.</>;
     case "failed":
       return <>Codex could not read this snap.</>;
+    case "safety-disabled":
+      return <>AI enrichment was disabled for cost safety.</>;
     case "needs-consent":
       return <>Enable Codex to read a bounded copy of this snap.</>;
     case "idle":
@@ -92,6 +98,8 @@ function shortLabelFor(kind: StatusKind): string {
       return "used";
     case "failed":
       return "failed";
+    case "safety-disabled":
+      return "safety off";
     case "needs-consent":
       return "disabled";
     case "idle":
@@ -105,11 +113,12 @@ export function CodexStatusPill({
   draftAvailable = false,
   accepted = false,
   needsConsent = false,
+  safetyDisabled = false,
   action,
   style,
   className
 }: CodexStatusPillProps): ReactElement {
-  const kind = resolveKind(status, draftAvailable, accepted, needsConsent);
+  const kind = resolveKind(status, draftAvailable, accepted, needsConsent, safetyDisabled);
   const classes = [
     "ps-codex-pill",
     `ps-codex-pill--${variant}`,

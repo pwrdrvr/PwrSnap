@@ -387,6 +387,7 @@ export function FloatOverHost(): React.ReactElement {
         codexAvailable={codexAvailable !== false}
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
+        aiSafetyDisabled={settings?.ai.budgetSafetyDisabledAt !== null && settings !== null}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
         onSetAutoAccept={(next) => {
           void dispatch("settings:write", {
@@ -409,7 +410,8 @@ export function FloatOverHost(): React.ReactElement {
           void dispatch("settings:write", {
             ai: {
               enabled: true,
-              consentAcceptedAt
+              consentAcceptedAt,
+              budgetSafetyDisabledAt: null
             }
           }).then((result) => {
             if (!result.ok) return;
@@ -417,7 +419,10 @@ export function FloatOverHost(): React.ReactElement {
               if (current.kind !== "loaded" || current.record.id !== record.id) return current;
               return { ...current, settings: result.value };
             });
-            void dispatch("codex:enrich", { captureId: record.id });
+            void dispatch("codex:enrich", {
+              captureId: record.id,
+              triggerSource: "popover-enable"
+            });
           });
         }}
         onConfigureAi={() => {

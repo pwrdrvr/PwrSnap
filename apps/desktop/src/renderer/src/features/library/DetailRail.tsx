@@ -30,9 +30,11 @@ import {
 } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
+  AiEnrichmentBudgetStatus,
   CaptureEnrichment,
   CaptureRecord,
   LibrarySidebarTab,
+  SettingsChangedEvent,
   Settings,
   SuggestedTag
 } from "@pwrsnap/shared";
@@ -138,6 +140,12 @@ export function DetailRail({
   // intended to control sees the bug instead of silent fallback.
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
+  const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
+
+  const refreshBudgetStatus = useCallback(async (): Promise<void> => {
+    const result = await dispatch("codex:budgetStatus", {});
+    if (result.ok) setBudgetStatus(result.value);
+  }, []);
   const initialReadDoneRef = useRef<boolean>(false);
   // Subscribe to the canonical sizzle project list so the Project
   // tab can appear/disappear without a relaunch. The hook fetches
@@ -322,6 +330,23 @@ export function DetailRail({
     };
   }, [record?.id]);
 
+  useEffect(() => {
+    void refreshBudgetStatus();
+    const unsubscribeBudget = window.pwrsnapApi?.on(EVENT_CHANNELS.aiBudgetUpdated, (payload) => {
+      setBudgetStatus(payload as AiEnrichmentBudgetStatus);
+    });
+    const unsubscribeSettings = window.pwrsnapApi?.on(EVENT_CHANNELS.settingsChanged, (payload) => {
+      const { settings } = payload as SettingsChangedEvent;
+      if (settings.ai.budgetSafetyDisabledAt === null) {
+        void refreshBudgetStatus();
+      }
+    });
+    return () => {
+      unsubscribeBudget?.();
+      unsubscribeSettings?.();
+    };
+  }, [refreshBudgetStatus]);
+
   // Tabs are memo'd UNCONDITIONALLY (Rules of Hooks: every render
   // must call the same hooks in the same order). The original
   // implementation kept `useMemo` BELOW the `view.kind === "grid"`
@@ -442,6 +467,7 @@ export function DetailRail({
     (enrichment?.suggestedDescription ?? "") !== "" &&
     titleAccepted &&
     descriptionAccepted;
+  const aiSafetyDisabled = budgetStatus?.mode === "safety_disabled";
 
   // renderPanel returns the panel BODY only — the outer role="tabpanel"
   // wrapper (with id + aria-labelledby) is supplied by RightActivityBar
@@ -461,6 +487,7 @@ export function DetailRail({
             codexStatus={codexStatus}
             draftAvailable={draftAvailable}
             allDraftsAccepted={allDraftsAccepted}
+            aiSafetyDisabled={aiSafetyDisabled}
             onEnrichmentUpdate={setEnrichment}
           />
         </div>
@@ -469,7 +496,7 @@ export function DetailRail({
     if (id === "ocr") {
       return (
         <div className="psl__right-body">
-          <OcrTab record={record} enrichment={enrichment} />
+          <OcrTab record={record} enrichment={enrichment} aiSafetyDisabled={aiSafetyDisabled} />
         </div>
       );
     }
@@ -793,6 +820,7 @@ type DetailTabProps = {
   readonly codexStatus: CaptureEnrichment["status"] | null;
   readonly draftAvailable: boolean;
   readonly allDraftsAccepted: boolean;
+  readonly aiSafetyDisabled: boolean;
   readonly onEnrichmentUpdate: (next: CaptureEnrichment) => void;
 };
 
@@ -805,6 +833,7 @@ function DetailTab({
   codexStatus,
   draftAvailable,
   allDraftsAccepted,
+  aiSafetyDisabled,
   onEnrichmentUpdate
 }: DetailTabProps): ReactElement {
   const acceptedTitle = enrichment?.acceptedTitle ?? "";
@@ -949,7 +978,10 @@ function DetailTab({
     suggestedDescription.trim().length > 0 && suggestedDescription !== acceptedDescription;
 
   const regenerate = useCallback(() => {
-    void dispatch("codex:enrich", { captureId: record.id });
+    void dispatch("codex:enrich", {
+      captureId: record.id,
+      triggerSource: "library-regenerate"
+    });
   }, [record.id]);
 
   // Bulk "Use draft" — applies title + description atomically
@@ -1005,7 +1037,6 @@ function DetailTab({
 
   const hasAnyDraft = titleDraftDiverged || descriptionDraftDiverged;
   const codexBusy = codexStatus === "queued" || codexStatus === "running";
-
   return (
     <>
       <div className="psl__detail-meta">
@@ -1037,6 +1068,7 @@ function DetailTab({
         status={codexStatus}
         draftAvailable={draftAvailable}
         accepted={allDraftsAccepted}
+        safetyDisabled={aiSafetyDisabled}
         action={
           <>
             {/* Prominent bulk Use — the common case. Covers title +
@@ -1055,7 +1087,7 @@ function DetailTab({
             {/* Regenerate de-emphasized — text-link weight. Hidden
                 while Codex is mid-run; the per-pill status already
                 communicates "reading…". */}
-            {!codexBusy ? (
+            {!codexBusy && !aiSafetyDisabled ? (
               <button
                 type="button"
                 className="psl__chip-link"
@@ -1308,9 +1340,10 @@ function TagEditor({
 type OcrTabProps = {
   readonly record: CaptureRecord;
   readonly enrichment: CaptureEnrichment | null;
+  readonly aiSafetyDisabled: boolean;
 };
 
-function OcrTab({ record, enrichment }: OcrTabProps): ReactElement {
+function OcrTab({ record, enrichment, aiSafetyDisabled }: OcrTabProps): ReactElement {
   const ocrText = enrichment?.ocrText ?? "";
   const status = enrichment?.status ?? null;
   const refreshing = status === "queued" || status === "running";
@@ -1328,13 +1361,19 @@ function OcrTab({ record, enrichment }: OcrTabProps): ReactElement {
           status={status}
           draftAvailable={ocrText.length > 0}
           accepted={ocrText.length > 0 && status === "completed"}
+          safetyDisabled={aiSafetyDisabled}
         />
         <div className="psl__ocr-tab-actions">
           <button
             type="button"
             className="psl__chip-btn"
-            onClick={() => void dispatch("codex:enrich", { captureId: record.id })}
-            disabled={refreshing}
+            onClick={() =>
+              void dispatch("codex:enrich", {
+                captureId: record.id,
+                triggerSource: "library-regenerate"
+              })
+            }
+            disabled={refreshing || aiSafetyDisabled}
           >
             {refreshing ? "Reading…" : "Refresh OCR"}
           </button>

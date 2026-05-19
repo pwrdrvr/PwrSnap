@@ -2,8 +2,9 @@
 // `settings.codex.mode` — same logic stdio-transport uses to spawn
 // Codex, so the renderer doesn't lie about which binary actually runs.
 
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  AiEnrichmentBudgetStatus,
   CodexCaptionModel,
   CodexTestResult,
   DesktopCodexDiscoveryCandidate,
@@ -12,8 +13,10 @@ import type {
 import {
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  EVENT_CHANNELS,
   isCodexCaptionModel
 } from "@pwrsnap/shared";
+import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import {
   Card,
   OptionRow,
@@ -45,6 +48,12 @@ export function AIProvidersPage(): ReactElement {
   const [snapshotLoading, setSnapshotLoading] = useState<boolean>(true);
   const [codexTest, setCodexTest] = useState<CodexTestResult | null>(null);
   const [codexTesting, setCodexTesting] = useState<boolean>(false);
+  const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
+
+  const refreshBudgetStatus = useCallback(async (): Promise<void> => {
+    const result = await dispatch("codex:budgetStatus", {});
+    if (result.ok) setBudgetStatus(result.value);
+  }, []);
 
   // Cache-friendly first fetch on mount; only force=true when the user
   // clicks Refresh. `refreshCodex` is a stable `useCallback` from
@@ -62,6 +71,16 @@ export function AIProvidersPage(): ReactElement {
       cancelled = true;
     };
   }, [refreshCodex]);
+
+  useEffect(() => {
+    void refreshBudgetStatus();
+    const unsubscribe = subscribe(EVENT_CHANNELS.aiBudgetUpdated, (payload) => {
+      setBudgetStatus(payload as AiEnrichmentBudgetStatus);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshBudgetStatus]);
 
   const onRefresh = async (): Promise<void> => {
     setSnapshotLoading(true);
@@ -126,6 +145,57 @@ export function AIProvidersPage(): ReactElement {
           model="Coming soon"
           dim
         />
+      </Card>
+
+      <Card eyebrow="SAFETY" title="Capture enrichment">
+        <Row
+          label="AI enrichment"
+          sub="Controls Codex caption, OCR, filename, and tag generation for captures."
+          tag={settings?.ai.enabled ? "enabled" : "off"}
+        >
+          <div className="pss__test">
+            <span className="pss__test-icon">AI</span>
+            <div className="pss__test-l">
+              <span className="pss__test-cmd">
+                {settings?.ai.budgetSafetyDisabledAt !== null &&
+                settings?.ai.budgetSafetyDisabledAt !== undefined
+                  ? "Disabled for cost safety"
+                  : settings?.ai.enabled
+                    ? "Enrichment enabled"
+                    : "Enrichment disabled"}
+              </span>
+              <span className="pss__test-sub">
+                {budgetStatusSubLine(budgetStatus, settings?.ai.budgetSafetyDisabledAt ?? null)}
+              </span>
+            </div>
+            <div className="pss__test-r">
+              <span className={"pss__badge " + budgetBadgeClass(budgetStatus)}>
+                {budgetBadgeLabel(budgetStatus)}
+              </span>
+              <button
+                className="pss__test-btn"
+                type="button"
+                onClick={() => {
+                  const enabled = !(settings?.ai.enabled ?? false);
+                  void (async () => {
+                    await patch({
+                      ai: {
+                        enabled,
+                        budgetSafetyDisabledAt: null,
+                        ...(enabled && settings?.ai.consentAcceptedAt === null
+                          ? { consentAcceptedAt: new Date().toISOString() }
+                          : {})
+                      }
+                    });
+                    await refreshBudgetStatus();
+                  })();
+                }}
+              >
+                {settings?.ai.enabled ? "Disable" : "Enable"}
+              </button>
+            </div>
+          </div>
+        </Row>
       </Card>
 
       <Card
@@ -393,6 +463,47 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
   );
 }
 
+function budgetBadgeLabel(status: AiEnrichmentBudgetStatus | null): string {
+  switch (status?.mode) {
+    case "safety_disabled":
+      return "Safety off";
+    case "slow":
+      return "Slow mode";
+    case "available":
+      return "Ready";
+    case undefined:
+      return "Checking";
+  }
+}
+
+function budgetBadgeClass(status: AiEnrichmentBudgetStatus | null): string {
+  switch (status?.mode) {
+    case "safety_disabled":
+      return "is-danger";
+    case "slow":
+      return "is-accent";
+    case "available":
+      return "is-using";
+    case undefined:
+      return "";
+  }
+}
+
+function budgetStatusSubLine(
+  status: AiEnrichmentBudgetStatus | null,
+  disabledAt: string | null
+): string {
+  if (disabledAt !== null) {
+    return `Repeated budget exhaustion disabled enrichment at ${formatLastSetAt(disabledAt)}.`;
+  }
+  if (status === null) return "Loading budget status.";
+  const tokenLabel = `${status.tokensAvailable}/${status.capacity} budget tokens`;
+  if (status.mode === "slow") {
+    return `Slow mode: ${tokenLabel}; next token ${formatNextTokenAt(status.nextTokenAt)}.`;
+  }
+  return `${tokenLabel}; refill cadence is one token every ${Math.round(status.refillIntervalMs / 1000)}s.`;
+}
+
 type SecretKeyControlProps = {
   status: { configured: boolean; lastSetAt: string | null } | null;
   placeholder: string;
@@ -637,6 +748,20 @@ function codexAuthSubLine(
     return snapshot.auth.errorMessage ?? "Codex auth check failed.";
   }
   return "~/.codex";
+}
+
+export function formatNextTokenAt(iso: string | null): string {
+  if (iso === null || iso.length === 0) return "soon";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const deltaMs = then - Date.now();
+  if (deltaMs <= 0) return "now";
+  const sec = Math.ceil(deltaMs / 1000);
+  if (sec < 60) return `in ${sec}s`;
+  const min = Math.ceil(sec / 60);
+  if (min < 60) return `in ${min} min${min === 1 ? "" : "s"}`;
+  const hr = Math.ceil(min / 60);
+  return `in ${hr} hour${hr === 1 ? "" : "s"}`;
 }
 
 export function codexTestBadgeLabel(

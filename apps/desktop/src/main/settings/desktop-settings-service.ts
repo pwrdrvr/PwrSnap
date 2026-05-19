@@ -88,6 +88,7 @@ export function defaultSettings(): Settings {
     ai: {
       enabled: false,
       consentAcceptedAt: null,
+      budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
     },
@@ -478,6 +479,10 @@ function parseV1(raw: unknown): Settings | null {
     ai: {
       enabled: pickBoolean(ai.enabled, defaults.ai.enabled),
       consentAcceptedAt: pickStringOrNull(ai.consentAcceptedAt, defaults.ai.consentAcceptedAt),
+      budgetSafetyDisabledAt: pickStringOrNull(
+        ai.budgetSafetyDisabledAt,
+        defaults.ai.budgetSafetyDisabledAt
+      ),
       autoAcceptSuggestions: pickBoolean(
         ai.autoAcceptSuggestions,
         defaults.ai.autoAcceptSuggestions
@@ -975,6 +980,10 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
     consentAcceptedAt:
       patch.consentAcceptedAt !== undefined ? patch.consentAcceptedAt : current.consentAcceptedAt,
+    budgetSafetyDisabledAt:
+      patch.budgetSafetyDisabledAt !== undefined
+        ? patch.budgetSafetyDisabledAt
+        : current.budgetSafetyDisabledAt,
     autoAcceptSuggestions:
       patch.autoAcceptSuggestions !== undefined
         ? patch.autoAcceptSuggestions

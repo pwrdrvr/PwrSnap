@@ -2279,7 +2279,6 @@ function CellRow({
                 ))}
             </div>
             <div className="psl__cell-meta">
-              <div className="psl__cell-name">{c.n}</div>
               <div className="psl__cell-tags">
                 <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 {c.tags.slice(0, 1).map((t) => (

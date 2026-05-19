@@ -1030,10 +1030,9 @@
    not zoomed-and-cropped to fill the cell). */
 .psl__cell-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .psl__cell-meta {
-  padding: 7px 9px;
-  display: flex; flex-direction: column; gap: 5px;
+  padding: 6px 8px;
+  display: flex; flex-direction: column;
 }
-.psl__cell-name { font: 600 11px/1.3 var(--font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .psl__cell-tags { display: flex; flex-wrap: wrap; gap: 4px; }
 .psl__cell-time {
   position: absolute; top: 5px; right: 5px;

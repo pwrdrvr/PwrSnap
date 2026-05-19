@@ -136,8 +136,12 @@ test.describe("clipboard paste into library", () => {
       expect(pasted.value.device_pixel_ratio).toBe(1);
       expect(pasted.value.source_app_bundle_id).toBe("com.pwrsnap.clipboard");
       expect(pasted.value.source_app_name).toBe("Clipboard");
-      expect(pasted.value.flat_png_path).not.toBeNull();
-      const fileStat = await stat(pasted.value.flat_png_path!);
+      // Bundle-is-system-of-record: paired flat PNG is no longer
+      // written, so flat_png_path is NULL. The bundle file itself is
+      // what's on disk.
+      expect(pasted.value.flat_png_path).toBeNull();
+      expect(pasted.value.bundle_path).not.toBeNull();
+      const fileStat = await stat(pasted.value.bundle_path!);
       expect(fileStat.isFile()).toBe(true);
 
       const listed = await app.dispatch("library:list", { limit: 5 });
@@ -176,9 +180,12 @@ test.describe("clipboard paste into library", () => {
 
       expect(pasted.value.width_px).toBe(96);
       expect(pasted.value.height_px).toBe(54);
-      expect(pasted.value.flat_png_path).not.toBe(pngPath);
-      expect(pasted.value.flat_png_path).not.toBeNull();
-      const fileStat = await stat(pasted.value.flat_png_path!);
+      // Paired flat PNG no longer written; the bundle is what's on
+      // disk and it lives at a fresh path (not the source PNG path).
+      expect(pasted.value.flat_png_path).toBeNull();
+      expect(pasted.value.bundle_path).not.toBe(pngPath);
+      expect(pasted.value.bundle_path).not.toBeNull();
+      const fileStat = await stat(pasted.value.bundle_path!);
       expect(fileStat.isFile()).toBe(true);
     } finally {
       await app.close();

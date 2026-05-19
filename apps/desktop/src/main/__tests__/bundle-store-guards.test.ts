@@ -118,11 +118,34 @@ describe("validateBundleZipEntryNames — Zip-Slip / allowlist gate", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects a missing required entry (corrupt bundle, partial archive)", () => {
+  test("accepts a bundle without composite.png (composite is OPTIONAL post-refactor)", () => {
+    // Pre-refactor: composite.png was required; missing entry = invalid.
+    // Post-refactor: composite.png is allowed but optional — new bundles
+    // never write it (readers reconstruct composite from source+overlays
+    // via compose() and the Thumbnail Extension reads
+    // composite_thumbnail.jpg). The three remaining REQUIRED entries
+    // (manifest, overlays, source) are present here, so the bundle
+    // validates.
     const result = validateBundleZipEntryNames(["manifest.json", "overlays.json", "source.png"]);
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts a bundle with composite_thumbnail.jpg (new optional entry)", () => {
+    const result = validateBundleZipEntryNames([
+      "manifest.json",
+      "overlays.json",
+      "source.png",
+      "composite_thumbnail.jpg"
+    ]);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects a missing required entry (corrupt bundle, partial archive)", () => {
+    // source.png IS still required — its absence still fails validation.
+    const result = validateBundleZipEntryNames(["manifest.json", "overlays.json"]);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.missingEntries).toContain("composite.png");
+      expect(result.missingEntries).toContain("source.png");
     }
   });
 

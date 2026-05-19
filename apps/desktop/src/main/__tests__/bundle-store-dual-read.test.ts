@@ -180,7 +180,7 @@ describe("readBundleView — uniform adapter for v1 + v2", () => {
       manifest: v1Manifest,
       overlays: v1Overlays,
       sourcePng: Buffer.from("fake-source"),
-      compositePng: Buffer.from("fake-composite")
+      thumbnailJpg: Buffer.from("fake-composite")
     });
     const bundlePath = join(workDir, "v1.pwrsnap");
     await writeFile(bundlePath, buf);
@@ -216,7 +216,7 @@ describe("readBundleView — uniform adapter for v1 + v2", () => {
       manifest: v1Manifest,
       overlays: v1Overlays,
       sourcePng: Buffer.from("v1"),
-      compositePng: Buffer.from("v1c")
+      thumbnailJpg: Buffer.from("v1c")
     });
     const v2Buf = await packV2Bundle({
       manifest: v2Manifest,
@@ -244,7 +244,7 @@ describe("readBundleManifest — version dispatch", () => {
       manifest: v1Manifest,
       overlays: v1Overlays,
       sourcePng: Buffer.from("a"),
-      compositePng: Buffer.from("b")
+      thumbnailJpg: Buffer.from("b")
     });
     const bundlePath = join(workDir, "v1.pwrsnap");
     await writeFile(bundlePath, buf);
@@ -308,7 +308,7 @@ describe("readBundleDocument — v2 only", () => {
       manifest: v1Manifest,
       overlays: v1Overlays,
       sourcePng: Buffer.from("a"),
-      compositePng: Buffer.from("b")
+      thumbnailJpg: Buffer.from("b")
     });
     const bundlePath = join(workDir, "v1.pwrsnap");
     await writeFile(bundlePath, buf);
@@ -327,7 +327,7 @@ describe("readBundleOverlays — v1 only", () => {
       manifest: v1Manifest,
       overlays: v1Overlays,
       sourcePng: Buffer.from("a"),
-      compositePng: Buffer.from("b")
+      thumbnailJpg: Buffer.from("b")
     });
     const bundlePath = join(workDir, "v1.pwrsnap");
     await writeFile(bundlePath, buf);

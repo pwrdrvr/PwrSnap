@@ -35,6 +35,15 @@ export const BundleManifestV1 = z.object({
     width_px: z.number().int().positive(),
     height_px: z.number().int().positive()
   }),
+  /**
+   * Legacy field: the basename of a paired flat PNG sibling that used
+   * to be written next to the bundle for Finder visibility. As of the
+   * bundle-is-system-of-record refactor, fresh bundles no longer write
+   * this sibling, but the manifest field stays (always set to a sane
+   * default like `${capture_id}.png`) so legacy bundles already on disk
+   * keep validating and a future Thumbnail Extension can use the value
+   * if it wants. Readers MUST NOT assume the file actually exists.
+   */
   paired_png_filename: PairedFilename,
   created_at: z.iso.datetime(),
   bundle_modified_at: z.iso.datetime()
@@ -85,15 +94,42 @@ export const BundleOverlaysV1 = z.object({
 
 export type BundleOverlaysV1 = z.infer<typeof BundleOverlaysV1>;
 
-// The four-entry allowlist for ZIP central directory entries. yauzl
-// does NOT auto-validate filenames — Zip-Slip defense is the consumer's
-// job. Anything outside this set causes the bundle to be quarantined,
-// not extracted.
+// ZIP central-directory entries. yauzl does NOT auto-validate
+// filenames — Zip-Slip defense is the consumer's job. Anything outside
+// the ALLOWED set causes the bundle to be quarantined, not extracted.
+//
+// `BUNDLE_ENTRY_REQUIRED` is the subset that MUST be present in every
+// bundle. Two entries are allowed but not required:
+//
+//   • `composite.png` — legacy. Pre-refactor bundles wrote a full-res
+//     composite PNG inside the bundle (in addition to a paired flat
+//     PNG sibling outside). Both have been removed for new bundles:
+//     readers reconstruct the composite from source + overlays via
+//     compose(), and the Thumbnail Extension uses composite_thumbnail
+//     for Finder previews. Kept in the allowlist so legacy bundles
+//     already on disk validate; new bundles don't write it.
+//
+//   • `composite_thumbnail.jpg` — low-resolution (max 1024px long
+//     edge), JPEG quality 80, baked at pack time. The macOS Thumbnail
+//     Extension reads this directly without re-running compose. Not
+//     required because (a) tiny captures (already ≤ 1024px) skip it
+//     since the source IS thumbnail-sized, and (b) legacy bundles
+//     don't have it.
+//
+// Anything outside the allowlist is a Zip-Slip / shape-bomb attempt
+// and the bundle is quarantined.
 export const BUNDLE_ENTRY_ALLOWLIST = [
   "manifest.json",
   "overlays.json",
   "source.png",
-  "composite.png"
+  "composite.png",
+  "composite_thumbnail.jpg"
+] as const;
+
+export const BUNDLE_ENTRY_REQUIRED = [
+  "manifest.json",
+  "overlays.json",
+  "source.png"
 ] as const;
 
 export type BundleEntryName = (typeof BUNDLE_ENTRY_ALLOWLIST)[number];

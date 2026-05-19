@@ -73,7 +73,7 @@ describe("packBundle + readBundleManifest roundtrip", () => {
       manifest: validManifest,
       overlays: validOverlays,
       sourcePng: fakeSourcePng,
-      compositePng: fakeCompositePng
+      thumbnailJpg: fakeCompositePng
     });
     expect(buf.length).toBeGreaterThan(0);
 
@@ -106,7 +106,7 @@ describe("packBundle + readBundleManifest roundtrip", () => {
       manifest: validManifest,
       overlays: populated,
       sourcePng: fakeSourcePng,
-      compositePng: fakeCompositePng
+      thumbnailJpg: fakeCompositePng
     });
 
     const bundlePath = join(workDir, "round.pwrsnap");
@@ -120,22 +120,59 @@ describe("packBundle + readBundleManifest roundtrip", () => {
     expect(got.ai_runs).toEqual([]);
   });
 
-  test("source.png and composite.png survive pack/unpack byte-exact (STORE mode, no recompression)", async () => {
+  test("source.png and composite_thumbnail.jpg survive pack/unpack byte-exact (STORE mode, no recompression)", async () => {
     const buf = await packBundle({
       manifest: validManifest,
       overlays: validOverlays,
       sourcePng: fakeSourcePng,
-      compositePng: fakeCompositePng
+      thumbnailJpg: fakeCompositePng
     });
 
     const bundlePath = join(workDir, "round.pwrsnap");
     await writeFile(bundlePath, buf);
 
     const sourceOut = await readBundleEntry(bundlePath, "source.png");
-    const compositeOut = await readBundleEntry(bundlePath, "composite.png");
+    const thumbnailOut = await readBundleEntry(bundlePath, "composite_thumbnail.jpg");
 
     expect(sourceOut.equals(fakeSourcePng)).toBe(true);
-    expect(compositeOut.equals(fakeCompositePng)).toBe(true);
+    expect(thumbnailOut.equals(fakeCompositePng)).toBe(true);
+  });
+
+  test("omits composite_thumbnail.jpg when thumbnailJpg is null (small captures)", async () => {
+    const buf = await packBundle({
+      manifest: validManifest,
+      overlays: validOverlays,
+      sourcePng: fakeSourcePng,
+      thumbnailJpg: null
+    });
+
+    const bundlePath = join(workDir, "no-thumb.pwrsnap");
+    await writeFile(bundlePath, buf);
+
+    // source.png + manifest + overlays are present; composite_thumbnail.jpg
+    // is absent. The validator's required-set check still passes.
+    const sourceOut = await readBundleEntry(bundlePath, "source.png");
+    expect(sourceOut.equals(fakeSourcePng)).toBe(true);
+    await expect(
+      readBundleEntry(bundlePath, "composite_thumbnail.jpg")
+    ).rejects.toThrow();
+  });
+
+  test("does NOT write full-resolution composite.png (legacy field removed)", async () => {
+    const buf = await packBundle({
+      manifest: validManifest,
+      overlays: validOverlays,
+      sourcePng: fakeSourcePng,
+      thumbnailJpg: fakeCompositePng
+    });
+
+    const bundlePath = join(workDir, "no-composite.pwrsnap");
+    await writeFile(bundlePath, buf);
+
+    // composite.png is no longer written. Readers reconstruct the
+    // composite from source + overlays via compose() when they need
+    // it full-res, and the Thumbnail Extension uses composite_thumbnail.
+    await expect(readBundleEntry(bundlePath, "composite.png")).rejects.toThrow();
   });
 
   test("rejects a manifest that fails zod validation on read (corrupt-bundle path)", async () => {
@@ -255,12 +292,12 @@ describe("packBundle — output structure invariants", () => {
       manifest: validManifest,
       overlays: validOverlays,
       sourcePng: fakeSourcePng,
-      compositePng: fakeCompositePng
+      thumbnailJpg: fakeCompositePng
     });
     expect(buf.length).toBeGreaterThan(0);
   });
 
-  test("PNG entries use STORE (no DEFLATE) — bundle size is at least source + composite combined", async () => {
+  test("PNG + thumbnail entries use STORE (no DEFLATE) — bytes appear verbatim", async () => {
     const big = Buffer.alloc(50_000, 0xab); // already-incompressible-ish
     const big2 = Buffer.alloc(40_000, 0xcd);
 
@@ -268,17 +305,16 @@ describe("packBundle — output structure invariants", () => {
       manifest: validManifest,
       overlays: validOverlays,
       sourcePng: big,
-      compositePng: big2
+      thumbnailJpg: big2
     });
 
-    // STORE mode means the PNG bytes appear verbatim. Bundle size ≥
-    // sum of PNG entries (modulo ZIP framing overhead). If the
-    // implementation regresses to DEFLATE on PNG, this test still
-    // passes because deflate-on-uniform-bytes is also small — but
-    // for incompressible inputs (real PNGs are already DEFLATE'd),
-    // STORE is materially cheaper at write time. Check via direct
-    // search for the recognizable 0xab/0xcd pattern; STORE leaves
-    // it intact in the bundle.
+    // STORE mode means the PNG/JPG bytes appear verbatim. If the
+    // implementation regresses to DEFLATE on already-compressed input,
+    // this test still passes for uniform fills (deflate-on-uniform is
+    // also small) — but for real PNGs (which are already DEFLATE'd
+    // internally), STORE is materially cheaper at write time. Check
+    // via direct search for the recognizable 0xab/0xcd patterns;
+    // STORE leaves them intact in the bundle.
     expect(buf.includes(big)).toBe(true);
     expect(buf.includes(big2)).toBe(true);
   });

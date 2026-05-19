@@ -204,12 +204,13 @@ describe("BundleOverlaysV1", () => {
 });
 
 describe("BUNDLE_ENTRY_ALLOWLIST + isBundleEntryName", () => {
-  test("contains exactly the four expected entries", () => {
+  test("contains exactly the five expected entries", () => {
     expect(BUNDLE_ENTRY_ALLOWLIST).toEqual([
       "manifest.json",
       "overlays.json",
       "source.png",
-      "composite.png"
+      "composite.png",          // legacy; pre-refactor bundles ship this
+      "composite_thumbnail.jpg" // new; ≤ 1024px JPEG for the Thumbnail Extension
     ]);
   });
 

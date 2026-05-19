@@ -16,8 +16,7 @@
 // §"Legacy-data migration" for the full spec.
 
 import { BrowserWindow } from "electron";
-import { writeFile } from "node:fs/promises";
-import { mkdir } from "node:fs/promises";
+import { writeFile, mkdir, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import sharp from "sharp";
 
@@ -33,7 +32,7 @@ import { compose } from "../render/compose";
 import { getDb } from "./db";
 import { getCacheSourcePath } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
-import { writeBundlePair } from "./bundle-store";
+import { buildCompositeThumbnail, writeBundle } from "./bundle-store";
 
 const log = getMainLogger("pwrsnap:legacy-bundle-migration");
 
@@ -78,14 +77,37 @@ export type LegacyMigrationResult = {
   failedIds: string[];
 };
 
+type LegacyOrphanRow = {
+  id: string;
+  bundle_path: string;
+  flat_png_path: string;
+};
+
 /**
- * Run the legacy-bundle migration if any pre-bundle rows exist. No-op
- * when every row already has `bundle_path` populated.
+ * Run the legacy-bundle migration. Two passes, both walked in one
+ * progress-emitting loop:
+ *
+ *   Pass A — WRAP. Rows that still have a pre-bundle source PNG and
+ *   no bundle (`bundle_path IS NULL AND legacy_src_path IS NOT NULL`).
+ *   Reads the PNG, packs a bundle, writes it, deletes the PNG (with
+ *   the bundle-size-≥-PNG-size safety check).
+ *
+ *   Pass B — SWEEP. Rows already wrapped in a prior boot's migration
+ *   that still have a paired flat PNG sibling on disk
+ *   (`bundle_path IS NOT NULL AND flat_png_path IS NOT NULL`). These
+ *   are leftovers from when the bundle-flow used to also write a
+ *   `<id>.png` next to the bundle. Same safety check, then unlink +
+ *   NULL out flat_png_path.
+ *
+ * Both passes share the same progress banner because for the user
+ * they're the same conceptual "library upgrade" event. No-op when
+ * both pass-A and pass-B queries return empty (the steady state).
  */
 export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult> {
   const db = getDb();
 
-  // Three filters beyond bundle_path/legacy_src_path/deleted_at:
+  // Pass A — rows that need bundle wrapping. Three filters beyond
+  // bundle_path/legacy_src_path/deleted_at:
   //   • kind = 'image' — videos can't be wrapped via sharp(); they're
   //     handled by the doctor in a separate pass. Without this filter
   //     every boot would re-attempt and re-fail every video row.
@@ -93,7 +115,7 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
   //   • last_failed_at older than 1 hour — adds backoff so a quick
   //     relaunch after a failed boot doesn't burn another attempt
   //     count immediately. Successful rows have NULL here.
-  const rows = db
+  const wrapRows = db
     .prepare(
       `SELECT id, captured_at,
               source_app_bundle_id, source_app_name,
@@ -113,13 +135,30 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     )
     .all({ maxAttempts: MAX_ATTEMPTS }) as LegacyRow[];
 
-  if (rows.length === 0) {
+  // Pass B — rows already wrapped but still carrying a paired flat
+  // PNG sibling on disk. No retry backoff here because the only
+  // failure modes are "PNG missing" (then we just NULL the column
+  // and move on) and "unlink failed" (logged but doesn't block).
+  const sweepRows = db
+    .prepare(
+      `SELECT id, bundle_path, flat_png_path
+       FROM captures
+       WHERE bundle_path IS NOT NULL
+         AND flat_png_path IS NOT NULL
+         AND deleted_at IS NULL`
+    )
+    .all() as LegacyOrphanRow[];
+
+  const total = wrapRows.length + sweepRows.length;
+  if (total === 0) {
     return { attempted: 0, succeeded: 0, failed: 0, failedIds: [] };
   }
 
-  log.info("legacy-bundle migration: starting", { rowCount: rows.length });
+  log.info("legacy-bundle migration: starting", {
+    wrapCount: wrapRows.length,
+    sweepCount: sweepRows.length
+  });
 
-  const total = rows.length;
   let done = 0;
   let failed = 0;
   const failedIds: string[] = [];
@@ -140,8 +179,12 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
          legacy_bundle_last_failed_at = datetime('now')
      WHERE id = @id`
   );
+  const clearFlatPngPath = db.prepare(
+    `UPDATE captures SET flat_png_path = NULL WHERE id = @id`
+  );
 
-  for (const row of rows) {
+  // Pass A loop.
+  for (const row of wrapRows) {
     try {
       await migrateRow(row);
       done += 1;
@@ -164,12 +207,57 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     }
   }
 
+  // Pass B loop — sweep orphan paired PNGs. Same safety check
+  // (bundle_size ≥ png_size) before unlinking.
+  for (const row of sweepRows) {
+    try {
+      const pngStat = await stat(row.flat_png_path);
+      const bundleStat = await stat(row.bundle_path);
+      if (bundleStat.size < pngStat.size) {
+        log.warn("legacy-bundle sweep: bundle smaller than paired PNG; skipping", {
+          captureId: row.id,
+          pngBytes: pngStat.size,
+          bundleBytes: bundleStat.size
+        });
+        // Don't NULL the column — keep the PNG visible so the user /
+        // doctor can investigate.
+        done += 1;
+        continue;
+      }
+      await unlink(row.flat_png_path);
+      clearFlatPngPath.run({ id: row.id });
+      done += 1;
+    } catch (cause) {
+      // Missing PNG → ENOENT here. Clear the column anyway; the file
+      // is gone, the row's pointer is stale, NULL is now correct.
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        clearFlatPngPath.run({ id: row.id });
+        done += 1;
+      } else {
+        failed += 1;
+        done += 1;
+        failedIds.push(row.id);
+        log.warn("legacy-bundle sweep: failed to inspect/unlink", {
+          captureId: row.id,
+          flatPngPath: row.flat_png_path,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
+    if (done % PROGRESS_EVERY_N === 0) {
+      emitProgress("running");
+    }
+  }
+
   emitProgress("complete");
 
   log.info("legacy-bundle migration: done", {
     attempted: total,
     succeeded: done - failed,
-    failed
+    failed,
+    wrapAttempts: wrapRows.length,
+    sweepAttempts: sweepRows.length
   });
 
   return {
@@ -181,20 +269,27 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
 }
 
 async function migrateRow(row: LegacyRow): Promise<void> {
-  const flatPngPath = row.legacy_src_path;
+  const legacyPngPath = row.legacy_src_path;
+
+  // Stat the legacy PNG up front for the post-write size safety check.
+  // If the bundle ends up smaller than the source PNG, something went
+  // sideways (partial write, sharp encode produced empty output, etc.)
+  // and we keep the PNG as a fallback rather than delete it blindly.
+  const legacyStat = await stat(legacyPngPath);
+  const legacyPngBytes = legacyStat.size;
 
   // Read the existing flat PNG bytes — these become source.png inside
-  // the bundle. The flat PNG itself stays in place as the paired
-  // composite (it IS the composite for captures with no overlays).
-  const sourcePng = await sharp(flatPngPath).toBuffer();
+  // the bundle.
+  const sourcePng = await sharp(legacyPngPath).toBuffer();
 
   // Render composite at source resolution. compose() reads live
   // overlays internally; for captures with no overlays the output is
-  // byte-equivalent to the source. For captures with overlays we get
-  // the latest baked composite.
+  // byte-equivalent to the source. The composite is consumed by the
+  // thumbnail builder only — it's not embedded full-res in the bundle
+  // anymore.
   const composeResult = await compose({
     captureId: row.id,
-    srcPath: flatPngPath,
+    srcPath: legacyPngPath,
     imageWidthPx: row.width_px,
     imageHeightPx: row.height_px,
     width: row.width_px,
@@ -242,20 +337,19 @@ async function migrateRow(row: LegacyRow): Promise<void> {
     ai_runs: []
   };
 
-  // The flat PNG already exists at flatPngPath (we just read it).
-  // writeBundlePair writes a NEW bundle next to it AND rewrites the
-  // flat PNG with the composite bytes — for captures with no
-  // overlays that's a no-op-equivalent rewrite (same bytes); for
-  // captures WITH overlays it ensures the user-visible flat is the
-  // baked composite.
-  const outputDir = dirname(flatPngPath);
-  const { bundlePath } = await writeBundlePair({
+  const thumbnailJpg = await buildCompositeThumbnail(compositePng, {
+    width_px: row.width_px,
+    height_px: row.height_px
+  });
+
+  const outputDir = dirname(legacyPngPath);
+  const { bundlePath } = await writeBundle({
     outputDir,
     filenameStem,
     manifest,
     overlays,
     sourcePng,
-    compositePng
+    thumbnailJpg
   });
 
   // Materialize source.png to per-capture cache so synchronous readers
@@ -267,14 +361,14 @@ async function migrateRow(row: LegacyRow): Promise<void> {
   // Atomically advance the row to bundle-flow state. Clears any
   // failure bookkeeping (legacy_bundle_attempts, last_failed_at) so a
   // row that succeeded after N-1 attempts isn't left with stale
-  // failure metadata. The runner's filter excludes successful rows
-  // (bundle_path IS NULL) anyway, but keeping the bookkeeping clean
-  // makes the schema honest if a future doctor pass queries by it.
+  // failure metadata. `flat_png_path` is set to NULL — the legacy PNG
+  // is about to be unlinked below, and bundles no longer write paired
+  // sibling files in the bundle-is-system-of-record model.
   getDb()
     .prepare(
       `UPDATE captures
        SET bundle_path = @bundle_path,
-           flat_png_path = @flat_png_path,
+           flat_png_path = NULL,
            bundle_modified_at = @bundle_modified_at,
            bundle_edits_version = edits_version,
            legacy_bundle_attempts = 0,
@@ -284,9 +378,38 @@ async function migrateRow(row: LegacyRow): Promise<void> {
     .run({
       id: row.id,
       bundle_path: bundlePath,
-      flat_png_path: flatPngPath,
       bundle_modified_at: now
     });
+
+  // Safety-checked sweep of the legacy PNG. The bundle is the system
+  // of record now; the source.png inside it (STORE-mode, same bytes
+  // as the legacy PNG) is the durable copy. Before unlinking, verify
+  // the bundle is at least as large as the PNG it's replacing — a
+  // bundle smaller than its own source.png entry means something
+  // went very wrong (partial write that atomicWriteBundle should have
+  // prevented, but defense-in-depth). On mismatch we keep the PNG.
+  try {
+    const bundleStat = await stat(bundlePath);
+    if (bundleStat.size < legacyPngBytes) {
+      log.warn("legacy-bundle migration: bundle smaller than legacy PNG; keeping PNG", {
+        captureId: row.id,
+        legacyPngBytes,
+        bundleBytes: bundleStat.size
+      });
+      return;
+    }
+    await unlink(legacyPngPath);
+  } catch (cause) {
+    // Failure to delete is non-fatal — the row is already migrated;
+    // a future cleanup pass (or this same migration on next boot —
+    // bundle_path will be set so the row won't re-enter; we'd need a
+    // separate sweep job) can pick up the orphan PNG.
+    log.warn("legacy-bundle migration: failed to delete legacy PNG", {
+      captureId: row.id,
+      legacyPngPath,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
 
   log.info("legacy-bundle migration: row migrated", {
     captureId: row.id,

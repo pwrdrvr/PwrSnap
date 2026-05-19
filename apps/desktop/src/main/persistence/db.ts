@@ -136,6 +136,16 @@ export async function openDatabase(): Promise<Database.Database> {
 }
 
 /**
+ * Test-only entry to the migration runner. The production path goes
+ * through `openDatabase`, but the migrations.test.ts suite exercises
+ * the duplicate-column tolerance against an explicit `Database`
+ * instance.
+ */
+export function applyMigrationsForTest(db: Database.Database): void {
+  runMigrations(db);
+}
+
+/**
  * Apply pending migrations from ./migrations/. Each migration runs in
  * its own transaction; partial failure leaves the schema unchanged.
  */
@@ -185,6 +195,35 @@ function runMigrations(db: Database.Database): void {
         insertMigration.run(version);
       });
       tx();
+    } catch (err) {
+      // Forgiving idempotency for `ADD COLUMN`-style migrations: if
+      // every failing statement is a duplicate-column error, the column
+      // already exists and the migration is effectively a no-op. Mark
+      // this version applied and continue.
+      //
+      // Why we need this: feature branches sometimes renumber their
+      // migrations when merging with main. A dev who installed the
+      // pre-renumber branch has `version_X` marked applied, but on the
+      // post-merge branch `version_X` is a different file (main's) and
+      // the file that used to be `version_X` has moved to `version_Y`.
+      // The runner then tries to apply `version_Y` (correctly seeing
+      // it as new), but its `ADD COLUMN` collides with what the old
+      // `version_X` already added. On fresh DBs this never happens.
+      //
+      // We scope the tolerance to duplicate-column errors only —
+      // anything else (table not found, syntax error, FK violation)
+      // re-throws so real migration bugs aren't swallowed.
+      const message = err instanceof Error ? err.message : String(err);
+      if (/duplicate column name/i.test(message)) {
+        log.warn("migration target column already exists, treating as applied", {
+          file,
+          version,
+          message
+        });
+        insertMigration.run(version);
+      } else {
+        throw err;
+      }
     } finally {
       if (needsFkOff) db.pragma("foreign_keys = ON");
     }

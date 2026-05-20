@@ -211,6 +211,17 @@ export function createMainWindow(): BrowserWindow {
     log.warn("main window renderer unresponsive", { id: window.id });
   });
 
+  // Disable Electron's built-in trackpad pinch-to-zoom (which scales
+  // the entire renderer's visual viewport). The library's Editor has
+  // its own canvas-level pinch handler that listens for wheel events
+  // with ctrlKey=true — when visual zoom is enabled at the webContents
+  // level, Chromium consumes the pinch gesture for visual zoom BEFORE
+  // dispatching wheel events to our handler, so editor pinch-zoom
+  // appears dead. setVisualZoomLevelLimits(1, 1) pins the visual
+  // viewport at 1× and lets pinch through as wheel-with-ctrlKey for
+  // our handler to interpret as a canvas zoom.
+  window.webContents.setVisualZoomLevelLimits(1, 1);
+
   return window;
 }
 

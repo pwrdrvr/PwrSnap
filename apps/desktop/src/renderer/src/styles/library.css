@@ -2030,25 +2030,22 @@
    parent's max-height clipped what overflowed). */
 .psl__stage-img {
   position: relative;
-  /* Width is an EXPLICIT calc, not just a max-width, because the
-     chromeless Editor inside now uses canvas-grows zoom which sets
-     explicit pixel dimensions on the inner canvas. Without an
-     explicit width on this wrapper, stage-img would size to its
-     content's intrinsic — which is the inner canvas's explicit
-     pixel width — creating a feedback loop where shrinking the
-     canvas shrinks stage-img which shrinks the wrap which shrinks
-     fit which shrinks the canvas. With explicit `width: 100% - 32px`
-     plus `max-height: 100% - 32px` plus the inline `aspect-ratio`,
-     stage-img resolves to object-fit:contain semantics independent
-     of the canvas's intrinsic size. 32px reserves nav-button
-     clearance + a little breathing room. */
+  /* Rectangular viewport for the canvas-grows zoom model. Fills the
+     stage-wrap area minus 32px (nav-button clearance + breathing
+     room). EXPLICIT width/height (not just max-*) so the size is
+     content-independent — without that, the canvas's explicit pixel
+     dimensions inside would propagate up here and re-create the
+     shrink-or-grow feedback loop.
+
+     The "framed photo" look (rounded border + shadow matching the
+     image aspect) is no longer on this element — it moved onto the
+     `.editor-canvas` so the frame matches the image aspect at fit
+     AND grows with the canvas when zoomed past fit. stage-img is
+     now a transparent passthrough. */
   width: calc(100% - 32px);
+  height: calc(100% - 32px);
   max-width: calc(100% - 32px);
   max-height: calc(100% - 32px);
-  border-radius: 7px;
-  border: 1px solid var(--border-default);
-  box-shadow: 0 24px 64px color-mix(in srgb, var(--shadow-base) 60%, transparent);
-  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -242,18 +242,23 @@ function StageBody({
         </svg>
       </button>
 
-      {/* `aspect-ratio` driven from the actual capture dimensions so
-          the canvas box object-fit:contains the image — biggest
-          dimension fits the available stage area, the other dimension
-          scales proportionally. The previous fixed `width: 720px`
-          on this box (with no height) made portrait captures
-          (e.g. 900×1438) blow past the parent's max-height and
-          show only the centered region. With aspect-ratio set,
-          the box shrinks to fit either bound automatically. */}
-      <div
-        className="psl__stage-img"
-        style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
-      >
+      {/* Stage area — a RECTANGULAR viewport for the canvas-grows
+          zoom model. Sized to fill stage-wrap minus a 32px reserve
+          for nav-button clearance. The canvas inside is sized by
+          useZoomPan: at fit it matches the image aspect (with
+          letterbox/pillarbox inside this rectangular viewport); at
+          zoom>1 it grows past the viewport and the wrap shows
+          scrollbars. Aspect-ratio used to be set here (matching the
+          image, for a "framed photo" look) but that prevented the
+          canvas from extending into the full stage area when
+          zoomed — the visible image stayed clipped to the
+          aspect-ratio shape no matter how zoomed in. The visual
+          frame is now on the canvas itself (border + box-shadow),
+          so the framed-photo look is preserved at fit, and the
+          frame grows with the canvas under zoom. Aspect-ratio for
+          video captures is still set inline below so the <video>
+          element gets a sensible default size. */}
+      <div className="psl__stage-img">
         {record.kind === "video" ? (
           // Video captures render as a native <video> player. The
           // overlay editor is image-only (annotation tools operate

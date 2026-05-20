@@ -19,16 +19,21 @@
  * This hook runs AFTER electron-builder finishes packing the staged
  * app (so the .appex is in place) and BEFORE the parent signing pass
  * starts. It signs each `.appex` with the same Developer ID identity
- * the parent will use, applying minimal extension-specific
- * entitlements (no V8 / libvips exemptions — those belong to the
- * parent's Hardened Runtime profile, not a sandboxed Quick Look
- * provider).
+ * the parent will use (discovered via CSC_NAME or
+ * `security find-identity`), applying minimal extension-specific
+ * entitlements (App Sandbox + files.user-selected.read-only — no
+ * V8 / libvips exemptions, those belong to the parent's Hardened
+ * Runtime profile, not a sandboxed Quick Look provider). The parent
+ * app's signing pass does NOT replace this signature — the .appex
+ * keeps the signature we apply here, sealed into the parent's
+ * CodeResources manifest by cdhash.
  *
  * For unsigned dev builds (no CSC_* env var, no Developer ID
  * identity in the keychain), the hook ad-hoc signs with `-` so the
- * .appex is still a valid bundle on disk; the parent's `--deep`
- * pass replaces these signatures with the real identity at release
- * time anyway.
+ * .appex is still a valid bundle on disk. Ad-hoc signing is
+ * acceptable ONLY in dev — in a release context we error out
+ * rather than ship an ad-hoc-signed extension that won't pass
+ * notarization. See `assertReleaseContextHasIdentity` below.
  */
 
 import { execSync, spawnSync } from "node:child_process";
@@ -105,6 +110,50 @@ function signAppex(appexPath, identity) {
 }
 
 /**
+ * Decide whether this is a "release context" — i.e., the build is
+ * supposed to produce a notarizable artifact, and ad-hoc signing
+ * would be a bug. Signals:
+ *
+ *   - `CSC_LINK` is set (electron-builder uses this for a code-sign
+ *     cert path, almost always set in CI)
+ *   - The packager's mac config has `notarize` truthy (we set
+ *     `notarize: true` in electron-builder.yml; CI or release.mjs
+ *     could override it false for an unnotarized dev DMG)
+ *   - `npm_lifecycle_event` is `release` or similar (catches
+ *     `pnpm release`-style invocations)
+ *
+ * Any one of those being on flips us to "must sign for real."
+ */
+function isReleaseContext(context) {
+  if (process.env.CSC_LINK) return true;
+  if (process.env.npm_lifecycle_event === "release") return true;
+  const macConfig = context.packager?.config?.mac;
+  if (macConfig?.notarize) return true;
+  return false;
+}
+
+/**
+ * Bail loudly if we'd ad-hoc sign a release artifact. Catches the
+ * "CI forgot to load the keychain" failure mode where everything
+ * looks green until you try to notarize the DMG and Apple rejects
+ * it for the nested ad-hoc signature inside the parent app.
+ */
+function assertReleaseContextHasIdentity(context, identity) {
+  if (identity !== null) return;
+  if (!isReleaseContext(context)) return;
+  throw new Error(
+    "[afterpack-sign-appex] release context detected " +
+    "(CSC_LINK / npm_lifecycle_event=release / mac.notarize=true) " +
+    "but no Developer ID Application identity was discovered " +
+    "(CSC_NAME unset, `security find-identity -v -p codesigning` " +
+    "found no Developer ID Application certificate). Refusing to " +
+    "ad-hoc sign — the resulting .appex would fail notarization. " +
+    "Load the signing keychain (CI: unlock-keychain step) or set " +
+    "CSC_NAME explicitly, then re-run the build."
+  );
+}
+
+/**
  * Default export — electron-builder's `afterPack` hook entry point.
  */
 export default async function afterPackSignAppex(context) {
@@ -122,6 +171,8 @@ export default async function afterPackSignAppex(context) {
   if (appexBundles.length === 0) return;
 
   const identity = discoverSigningIdentity();
+  assertReleaseContextHasIdentity(context, identity);
+
   for (const name of appexBundles) {
     signAppex(join(pluginsDir, name), identity);
   }

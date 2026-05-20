@@ -14,16 +14,19 @@
       (macOS 12+) Quick Look thumbnail provider API.
     - NSExtensionPrincipalClass: name of the Swift class the host
       framework instantiates per thumbnail request. We use
-      `@objc(ThumbnailProvider)` in main.swift to keep this name
-      stable across Swift module renames.
+      `@objc(ThumbnailProvider)` in zip-reader.swift to keep this
+      Objective-C-visible name stable across Swift module renames.
+      The extension binary's `_NSExtensionMain` entry point (from
+      Foundation) reads this key to find the principal class.
     - NSExtensionAttributes.QLSupportedContentTypes: which UTIs this
       extension claims to thumbnail. Must match the UTI declared by
       the parent app's electron-builder.yml
       (`com.pwrdrvr.pwrsnap.bundle`).
     - NSExtensionAttributes.QLThumbnailMinimumSize: don't bother
       asking us for tiny thumbnails — Finder falls back to the
-      generic icon below this. Saves XPC roundtrips for icon-view
-      rows the user never expands.
+      generic icon (the app's icon.icns via UTTypeIconFile) below
+      this. Saves XPC roundtrips for icon-view rows the user never
+      expands.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

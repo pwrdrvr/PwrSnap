@@ -24,9 +24,12 @@
 //       source.png) found in the bundle
 //   3 — argument / IO error
 //
-// Built by the same scripts/build-native.mjs target as the
-// Extension binary itself; the ZIP-reading logic lives in main.swift
-// and is shared between the two via the Swift module-internal scope.
+// Built by scripts/build-native.mjs alongside the .appex; the
+// ZIP-reading logic lives in zip-reader.swift and is shared between
+// the two via the Swift module-internal scope. (The CLI binary is
+// compiled as MH_EXECUTE with the standard `_main` entry; the
+// extension binary is compiled MH_EXECUTE with `_NSExtensionMain` —
+// same Mach-O type, different entry points, same Swift code.)
 
 import Foundation
 
@@ -105,5 +108,6 @@ private func runCli(args: [String]) -> Int32 {
 }
 
 // (PwrSnapThumbnailCli.main above is the @main entry; runCli is
-// invoked from there. Top-level expressions can't appear here
-// because main.swift script mode isn't active.)
+// invoked from there. Top-level expressions can't appear at file
+// scope here because we compile with -parse-as-library — there's no
+// implicit `main.swift`.)

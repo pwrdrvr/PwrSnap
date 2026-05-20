@@ -34,9 +34,16 @@ export type ZoomPanState = {
    *  twice as big as fit, etc. NOT a multiplier on the source image
    *  pixels — that depends on the wrap's current size. */
   scale: number;
+  /** Pan offset in CSS pixels, added to the canvas's flex-centered
+   *  position via `transform: translate(panX, panY)`. With the wrap
+   *  at `overflow: hidden` (not auto — overflow:auto disrupts macOS
+   *  trackpad pinch routing), we drive pan ourselves: drag and
+   *  cursor-anchored zoom both update panX/panY. */
+  panX: number;
+  panY: number;
 };
 
-export const FIT_TO_WINDOW: ZoomPanState = { scale: 1 };
+export const FIT_TO_WINDOW: ZoomPanState = { scale: 1, panX: 0, panY: 0 };
 
 /** Which zoom anchor the user last selected. Determines how the
  *  toolbar button labels the current state — "Fit (62%)" vs "100%"
@@ -61,7 +68,7 @@ export type UseZoomPanResult = {
    *  wrap hasn't laid out yet (first paint); caller should render a
    *  fallback canvas sized by aspect-ratio + max-width/max-height
    *  until the ResizeObserver fires. */
-  canvasStyle: { width: string; height: string } | null;
+  canvasStyle: { width: string; height: string; transform: string } | null;
   /** Fit-to-window reset (⌘0). Sets mode="fit". */
   resetToFit: () => void;
   /** 100% / 1:1 — one image pixel per screen pixel (DPR-aware). Sets
@@ -119,8 +126,8 @@ export function useZoomPan(opts: {
   const panStart = useRef<{
     x: number;
     y: number;
-    baseScrollLeft: number;
-    baseScrollTop: number;
+    basePanX: number;
+    basePanY: number;
   } | null>(null);
 
   const imageAspect = imageWidthPx / imageHeightPx;
@@ -194,7 +201,7 @@ export function useZoomPan(opts: {
         const targetScale = imageWidthPx / devicePixelRatio / fit.width;
         setState((prev) => {
           const next = clamp(targetScale, MIN_SCALE, MAX_SCALE);
-          return Math.abs(prev.scale - next) < 0.001 ? prev : { scale: next };
+          return Math.abs(prev.scale - next) < 0.001 ? prev : { ...prev, scale: next };
         });
       }
     };
@@ -214,7 +221,7 @@ export function useZoomPan(opts: {
     if (fit === null) return;
     const targetScale = imageWidthPx / devicePixelRatio / fit.width;
     setMode("actual");
-    setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+    setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
   }, [computeFit, imageWidthPx, devicePixelRatio]);
 
   // displayPct = scale × (fit.width × DPR / imageWidth) × 100
@@ -225,27 +232,35 @@ export function useZoomPan(opts: {
       if (fit === null) return;
       const targetScale = (pct / 100) * (imageWidthPx / devicePixelRatio) / fit.width;
       setMode("custom");
-      setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+      setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE), panX: 0, panY: 0 });
     },
     [computeFit, imageWidthPx, devicePixelRatio]
   );
 
   const zoomBy = useCallback((factor: number) => {
     setMode("custom");
-    setState((prev) => ({ scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE) }));
+    setState((prev) => ({
+      ...prev,
+      scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE)
+    }));
   }, []);
 
-  // Shared cursor-anchored zoom — driven by both onWheel (mouse +
-  // ctrl+wheel) and onGestureChange (macOS trackpad pinch). Computes
-  // the cursor's content-fraction on the pre-zoom canvas, then
-  // chooses scrollLeft/scrollTop so the same fraction lands under
-  // the cursor post-zoom.
+  // Shared cursor-anchored zoom — driven by onWheel (mouse +
+  // ctrl+wheel) and onGestureChange (macOS trackpad pinch). The
+  // canvas is laid out by flex centering on the wrap; we add
+  // `transform: translate(panX, panY)` on top. So the canvas's
+  // top-left in wrap-content coords is:
+  //   topLeft = (wrapContentSize - canvasSize) / 2 + pan
+  // (this holds whether canvas is smaller OR larger than wrap —
+  // when larger, the (wrap-canvas)/2 term is negative and the
+  // canvas's left edge ends up to the LEFT of the wrap's content
+  // origin, with the right edge protruding past wrap's right
+  // edge.)
   //
-  // When the canvas is SMALLER than the wrap (fit or zoomed out),
-  // margin:auto centers it — `scrollLeft` is meaningless. When the
-  // canvas is LARGER than the wrap, it's pinned to (0,0) of the
-  // scroll area. The transition is handled by the `prevOffset` /
-  // `nextOffset` calc below.
+  // To keep the cursor's content point fixed during zoom:
+  //   fx = (cursorInWrap - prevTopLeft) / prevCanvasW   // in [0, 1]
+  //   nextTopLeft = cursorInWrap - fx * nextCanvasW
+  //   nextPan     = nextTopLeft - (wrapContent - nextCanvas) / 2
   const zoomAtCursor = useCallback(
     (factor: number, clientX: number, clientY: number): void => {
       const wrap = wrapRef.current;
@@ -253,10 +268,19 @@ export function useZoomPan(opts: {
       const fit = computeFit();
       if (fit === null) return;
       const wrapRect = wrap.getBoundingClientRect();
-      const scrollLeftBefore = wrap.scrollLeft;
-      const scrollTopBefore = wrap.scrollTop;
-      const cursorInWrapX = clientX - wrapRect.left;
-      const cursorInWrapY = clientY - wrapRect.top;
+      // Inner content-area dimensions (clientWidth/Height minus the
+      // wrap's CSS padding — same math as computeFit).
+      const cs = getComputedStyle(wrap);
+      const padL = parseFloat(cs.paddingLeft);
+      const padT = parseFloat(cs.paddingTop);
+      const padX = padL + parseFloat(cs.paddingRight);
+      const padY = padT + parseFloat(cs.paddingBottom);
+      const wrapW = Math.max(0, wrap.clientWidth - padX);
+      const wrapH = Math.max(0, wrap.clientHeight - padY);
+      // Cursor in wrap-content coords (relative to content-area
+      // top-left, NOT wrap border-box).
+      const cursorInWrapX = clientX - wrapRect.left - padL;
+      const cursorInWrapY = clientY - wrapRect.top - padT;
       setState((prev) => {
         const targetScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
         if (targetScale === prev.scale) return prev;
@@ -264,27 +288,17 @@ export function useZoomPan(opts: {
         const prevCanvasH = fit.height * prev.scale;
         const nextCanvasW = fit.width * targetScale;
         const nextCanvasH = fit.height * targetScale;
-        const prevOffsetX = Math.max(0, (wrap.clientWidth - prevCanvasW) / 2);
-        const prevOffsetY = Math.max(0, (wrap.clientHeight - prevCanvasH) / 2);
-        const contentX = scrollLeftBefore + cursorInWrapX;
-        const contentY = scrollTopBefore + cursorInWrapY;
-        const cursorInCanvasX = contentX - prevOffsetX;
-        const cursorInCanvasY = contentY - prevOffsetY;
+        const prevTopLeftX = (wrapW - prevCanvasW) / 2 + prev.panX;
+        const prevTopLeftY = (wrapH - prevCanvasH) / 2 + prev.panY;
+        const cursorInCanvasX = cursorInWrapX - prevTopLeftX;
+        const cursorInCanvasY = cursorInWrapY - prevTopLeftY;
         const fx = prevCanvasW > 0 ? clamp(cursorInCanvasX / prevCanvasW, 0, 1) : 0.5;
         const fy = prevCanvasH > 0 ? clamp(cursorInCanvasY / prevCanvasH, 0, 1) : 0.5;
-        const nextOffsetX = Math.max(0, (wrap.clientWidth - nextCanvasW) / 2);
-        const nextOffsetY = Math.max(0, (wrap.clientHeight - nextCanvasH) / 2);
-        const newContentX = nextOffsetX + fx * nextCanvasW;
-        const newContentY = nextOffsetY + fy * nextCanvasH;
-        const newScrollLeft = newContentX - cursorInWrapX;
-        const newScrollTop = newContentY - cursorInWrapY;
-        queueMicrotask(() => {
-          const el = wrapRef.current;
-          if (el === null) return;
-          el.scrollLeft = newScrollLeft;
-          el.scrollTop = newScrollTop;
-        });
-        return { scale: targetScale };
+        const nextTopLeftX = cursorInWrapX - fx * nextCanvasW;
+        const nextTopLeftY = cursorInWrapY - fy * nextCanvasH;
+        const nextPanX = nextTopLeftX - (wrapW - nextCanvasW) / 2;
+        const nextPanY = nextTopLeftY - (wrapH - nextCanvasH) / 2;
+        return { scale: targetScale, panX: nextPanX, panY: nextPanY };
       });
     },
     [wrapRef, computeFit]
@@ -371,33 +385,29 @@ export function useZoomPan(opts: {
     (event: React.PointerEvent<HTMLElement>): void => {
       if (event.button !== 0) return;
       if (state.scale <= 1 && !spaceHeld) return;
-      const wrap = wrapRef.current;
-      if (wrap === null) return;
       event.preventDefault();
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
       setIsPanning(true);
       panStart.current = {
         x: event.clientX,
         y: event.clientY,
-        baseScrollLeft: wrap.scrollLeft,
-        baseScrollTop: wrap.scrollTop
+        basePanX: state.panX,
+        basePanY: state.panY
       };
     },
-    [state.scale, spaceHeld, wrapRef]
+    [state.scale, state.panX, state.panY, spaceHeld]
   );
 
-  const onPanPointerMove = useCallback(
-    (event: React.PointerEvent<HTMLElement>): void => {
-      if (panStart.current === null) return;
-      const wrap = wrapRef.current;
-      if (wrap === null) return;
-      const dx = event.clientX - panStart.current.x;
-      const dy = event.clientY - panStart.current.y;
-      wrap.scrollLeft = panStart.current.baseScrollLeft - dx;
-      wrap.scrollTop = panStart.current.baseScrollTop - dy;
-    },
-    [wrapRef]
-  );
+  const onPanPointerMove = useCallback((event: React.PointerEvent<HTMLElement>): void => {
+    if (panStart.current === null) return;
+    const dx = event.clientX - panStart.current.x;
+    const dy = event.clientY - panStart.current.y;
+    setState((prev) => ({
+      ...prev,
+      panX: (panStart.current?.basePanX ?? 0) + dx,
+      panY: (panStart.current?.basePanY ?? 0) + dy
+    }));
+  }, []);
 
   const onPanPointerUp = useCallback((event: React.PointerEvent<HTMLElement>): void => {
     if (panStart.current === null) return;
@@ -406,12 +416,13 @@ export function useZoomPan(opts: {
     setIsPanning(false);
   }, []);
 
-  const canvasStyle: { width: string; height: string } | null =
+  const canvasStyle: { width: string; height: string; transform: string } | null =
     fitSize === null
       ? null
       : {
           width: `${fitSize.width * state.scale}px`,
-          height: `${fitSize.height * state.scale}px`
+          height: `${fitSize.height * state.scale}px`,
+          transform: `translate(${state.panX}px, ${state.panY}px)`
         };
 
   // fitPct = canvas-CSS-width-at-fit / actual-CSS-width × 100

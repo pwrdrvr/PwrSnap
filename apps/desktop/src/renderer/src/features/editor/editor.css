@@ -104,25 +104,27 @@
 .editor-canvas-wrap {
   position: relative;
   display: flex;
-  align-items: safe center;
-  justify-content: safe center;
+  align-items: center;
+  justify-content: center;
   padding: 24px;
-  overflow: auto;
+  /* overflow: hidden (not auto). The canvas-grows model now uses
+     transform: translate on the canvas for pan instead of native
+     scroll, because `overflow: auto` on the wrap makes Chromium
+     route macOS trackpad pinch as a scroll gesture instead of
+     dispatching the wheel-with-ctrlKey events the renderer needs
+     to handle pinch zoom. With overflow:hidden the wrap is no
+     longer a scroll container — pinch routes through the wheel
+     pipeline, our onWheel handler fires, and we adjust scale +
+     pan to keep the cursor anchor. See PR #91 history; pinch
+     worked at 3490195 (overflow:hidden) and broke at b7672da
+     (overflow:auto). Took several attempted "fixes" to land back
+     on the real cause. */
+  overflow: hidden;
   /* DO NOT add `touch-action: pan-x pan-y` here. Looks innocuous —
      "I want to handle scrolling, but not zoom" — but Chromium
-     extends `touch-action` to wheel events too: declaring pan-only
-     suppresses the synthetic ctrl+wheel events that the OS sends
-     for macOS trackpad pinch gestures, killing the Editor's
-     canvas-level pinch-to-zoom. The browser-level visual-viewport
-     pinch is disabled via `setVisualZoomLevelLimits(1, 1)` on the
-     library window's webContents (apps/desktop/src/main/window.ts)
-     so we don't need touch-action to suppress it here. Keep the
-     default `touch-action: auto`. */
-  /* Prevent intrinsic content size from forcing the wrap (and its
-     grid-row 1fr ancestor) wider than the parent. Without this, a
-     large canvas can pressure ancestors and create a layout-loop:
-     canvas pushes wrap wider → fit recomputes larger → canvas pushes
-     wrap wider again → etc. */
+     extends `touch-action` to wheel events: declaring pan-only
+     suppresses the synthetic ctrl+wheel events for macOS trackpad
+     pinch. Default `touch-action: auto`. */
   min-width: 0;
   min-height: 0;
 }

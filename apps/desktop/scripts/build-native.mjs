@@ -76,27 +76,40 @@ const targets = [
 ];
 
 /**
- * Loadable-bundle (`.appex`) targets. macOS extensions are dlopen'd
- * by their host framework (here: QuickLookThumbnailing) which looks
- * up `NSExtensionPrincipalClass` from Info.plist — there's no main().
+ * App-extension (`.appex`) targets. Despite the directory layout
+ * resembling a loadable bundle, **App Extensions are MH_EXECUTE
+ * binaries** — not MH_BUNDLE — with `_NSExtensionMain` (Foundation)
+ * as their entry point. `pluginkit` and `extensionkitd` silently
+ * reject MH_BUNDLE binaries when scanning Contents/PlugIns/, and
+ * `codesign --entitlements` is also a no-op on MH_BUNDLE, so getting
+ * the binary type wrong cascades into "extension never registers,
+ * no log entry anywhere" (the failure mode that cost us a session
+ * the first time we shipped this).
  *
  * Bundle layout:
  *   PwrSnapThumbnailExtension.appex/
  *     Contents/
  *       Info.plist
  *       MacOS/
- *         PwrSnapThumbnailExtension   # MH_BUNDLE binary
+ *         PwrSnapThumbnailExtension   # MH_EXECUTE Mach-O
  *
  * Compiler flags differ from the CLI targets above:
- *   • `-emit-library` + `-Xlinker -bundle` — produce a loadable
- *     bundle, not an MH_EXECUTE. Quick Look's framework dlopen()s
- *     this and looks up the principal class by Objective-C name.
+ *   • `-Xlinker -e -Xlinker _NSExtensionMain` — set the entry point
+ *     to the symbol Foundation exports for App Extensions. It reads
+ *     `NSExtension.NSExtensionPrincipalClass` from Info.plist, sets
+ *     up the XPC connection with the host (Finder / QuickLookUI),
+ *     and instantiates our `@objc(ThumbnailProvider)` class.
+ *   • `-parse-as-library` — there's no `main.swift` / top-level code
+ *     in our sources; tell swiftc to compile the files as a library
+ *     module. The `-e _NSExtensionMain` linker flag wires up the
+ *     entry point in place of Swift's usual `_main`.
  *   • `-framework QuickLookThumbnailing` — explicit; the principal
  *     class subclasses `QLThumbnailProvider`.
  *
- * After the binary is built we assemble the .appex directory
- * structure and ad-hoc sign the bundle as a whole (signing the
- * inner binary alone confuses macOS's TCC / Gatekeeper).
+ * The .appex is intentionally not signed here — electron-builder's
+ * afterPack hook (apps/desktop/scripts/afterpack-sign-appex.mjs)
+ * signs it with the Developer ID identity + the sandbox-enabling
+ * entitlements file before the parent app's signing pass runs.
  */
 const appexTargets = [
   {
@@ -249,28 +262,41 @@ for (const appex of appexTargets) {
   // still inspect the manifest).
   copyFileSync(appex.infoPlist, innerInfoPlist);
 
-  // Frameworks must be linked explicitly because we're producing a
-  // bundle (not an executable) and there's no default auto-link path
-  // for QuickLookThumbnailing.
+  // Frameworks must be linked explicitly — QuickLookThumbnailing has
+  // no auto-link path, and we need Foundation explicitly (rather than
+  // letting swiftc pick it up implicitly) because we're requesting
+  // its `_NSExtensionMain` symbol as the linker entry point.
   const frameworkArgs = appex.frameworks.flatMap((fw) => ["-framework", fw]);
 
-  // `-emit-library -Xlinker -bundle`: produce a Mach-O MH_BUNDLE
-  // (loadable bundle) rather than MH_EXECUTE. The host framework
-  // dlopen()s it and looks up NSExtensionPrincipalClass.
+  // `-Xlinker -e -Xlinker _NSExtensionMain`: override the default
+  // entry point (`_main`) with Foundation's NSExtensionMain. This is
+  // what makes the output an App Extension instead of just an
+  // executable that exits immediately. NSExtensionMain reads
+  // NSExtension.NSExtensionPrincipalClass from Info.plist, sets up
+  // the XPC connection with the extension host, and instantiates the
+  // principal class. The two `-Xlinker` invocations are how swiftc
+  // passes split flag pairs through to `ld`.
+  //
+  // `-parse-as-library`: there's no `main.swift` / top-level Swift
+  // entry — our sources only define types. Tell swiftc to compile
+  // them as a library module; the linker-level entry point above
+  // takes over the `_main`-symbol role.
   //
   // `-module-name <name>`: stable Swift module name so @objc-exposed
   // class names ("ThumbnailProvider") match the Info.plist entry.
   //
-  // `-parse-as-library`: required when there's no top-level `main`
-  // entry; treats the source as a Swift module rather than a
-  // script. (Without this, `swiftc` looks for a `main.swift` /
-  // top-level executable code and emits warnings.)
+  // NOT used here (and would be a bug): `-emit-library` /
+  // `-Xlinker -bundle`. Those produce MH_BUNDLE. App Extensions on
+  // macOS must be MH_EXECUTE — both `codesign --entitlements` and
+  // `pluginkit` silently reject MH_BUNDLE binaries, leading to a
+  // very confusing "extension never registers, no log entry"
+  // failure mode.
   const baseFlags = [
     "-O",
     "-module-name", appex.name,
-    "-emit-library",
     "-parse-as-library",
-    "-Xlinker", "-bundle",
+    "-Xlinker", "-e",
+    "-Xlinker", "_NSExtensionMain",
     ...frameworkArgs
   ];
 

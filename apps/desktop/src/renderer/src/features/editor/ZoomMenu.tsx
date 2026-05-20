@@ -86,8 +86,10 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
   }, [draft, zoom]);
 
   const label = formatLabel(zoom);
-  const title =
-    "Zoom · click for Fit / 100% / custom · ⌘0 fit · ⌘1 100% · ⌘+/⌘- step · ⌘+scroll cursor zoom · two-finger scroll pans";
+  // Short title — the open menu surfaces every shortcut inline (see
+  // .ed-zoom-step-key + .ed-zoom-hint). A long native title is unreadable
+  // anyway because the OS renderer wraps it into a multi-line tooltip.
+  const title = "Zoom";
 
   return (
     <div className="ed-zoom" ref={rootRef}>

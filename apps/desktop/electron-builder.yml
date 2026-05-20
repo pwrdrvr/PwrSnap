@@ -2,6 +2,17 @@ appId: com.pwrdrvr.pwrsnap
 productName: PwrSnap
 copyright: "Copyright © 2026 PwrDrvr LLC. All rights reserved."
 
+# Sign nested .appex Quick Look extensions BEFORE electron-builder
+# signs the parent app's main binary. electron-builder's
+# auto-walker doesn't auto-discover .appex bundles in
+# Contents/PlugIns/ for signing, so the parent codesign pass would
+# otherwise abort with "code object is not signed at all / In
+# subcomponent: PlugIns/PwrSnapThumbnailExtension.appex". The hook
+# uses the same Developer ID identity electron-builder discovers for
+# the parent + a minimal entitlements file (no V8 / libvips
+# exemptions, this is a sandboxed Quick Look provider).
+afterPack: "scripts/afterpack-sign-appex.mjs"
+
 electronVersion: 41.2.1
 
 asar: true

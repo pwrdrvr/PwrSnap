@@ -1,0 +1,187 @@
+/* Zoom menu — used by both the Library's floating EditToolbar and
+   the standalone Editor window's bottom toolbar. Owns its own
+   stylesheet so both surfaces pick up the styling via the component
+   import (Library doesn't load editor.css; the standalone editor
+   doesn't load library.css). */
+
+.ed-zoom {
+  position: relative;
+  display: inline-flex;
+}
+.ed-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 76px;
+  height: 36px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ed-zoom-btn:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.ed-zoom-btn.is-open {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.ed-zoom-btn svg {
+  width: 9px;
+  height: 6px;
+  opacity: 0.7;
+}
+.ed-zoom-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 10;
+}
+.ed-zoom-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  height: 30px;
+  padding: 0 10px 0 6px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.ed-zoom-row:hover {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.ed-zoom-row.is-selected {
+  color: var(--accent-bright);
+}
+.ed-zoom-row-meta {
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+}
+.ed-zoom-row-key {
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.ed-zoom-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent-bright);
+}
+.ed-zoom-custom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 0 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.ed-zoom-step {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 14px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ed-zoom-step:hover {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+/* Tiny shortcut hint anchored to the bottom-right of each step
+   button. Only visible on hover so the buttons stay clean at rest. */
+.ed-zoom-step-key {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  font: 700 8px/1 var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 120ms;
+  pointer-events: none;
+}
+.ed-zoom-step:hover .ed-zoom-step-key {
+  opacity: 1;
+}
+/* Footer line listing scroll/pan shortcuts the menu can't show
+   inline. Native HTML title tooltips are unreliable in Electron
+   (especially in light mode), so we surface the hints in the menu
+   body where they're always discoverable. */
+.ed-zoom-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px 8px 2px;
+  margin-top: 2px;
+  font: 500 10px/1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.ed-zoom-hint kbd {
+  display: inline-block;
+  padding: 0 3px;
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: inherit;
+}
+.ed-zoom-input {
+  flex: 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+}
+.ed-zoom-input input {
+  width: 100%;
+  height: 28px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-mono);
+  text-align: right;
+  padding: 0 22px 0 8px;
+  outline: none;
+}
+.ed-zoom-input input:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+.ed-zoom-input-pct {
+  position: absolute;
+  right: 8px;
+  color: var(--text-muted);
+  font: 600 11px/1 var(--font-mono);
+  pointer-events: none;
+}

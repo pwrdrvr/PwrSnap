@@ -211,6 +211,19 @@ export function createMainWindow(): BrowserWindow {
     log.warn("main window renderer unresponsive", { id: window.id });
   });
 
+  // Re-enable pinch zoom for the library window. Electron disables
+  // visual zoom by default — and "disabled" means more than "no
+  // zoom"; Chromium silently drops the synthetic ctrl+wheel events
+  // for trackpad pinch entirely. Calling setVisualZoomLevelLimits
+  // with a non-degenerate range re-enables event dispatch. The
+  // Editor's onWheel preventDefaults before the browser actually
+  // visual-zooms. See Electron docs:
+  // https://www.electronjs.org/docs/latest/api/web-contents#contentssetvisualzoomlevellimitsminimumlevel-maximumlevel
+  // and preload/index.ts for the matching webFrame call (which
+  // applies on every renderer reload).
+  // (1, 1) does NOT re-enable. Range must be non-degenerate.
+  window.webContents.setVisualZoomLevelLimits(1, 3);
+
   return window;
 }
 

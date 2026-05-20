@@ -5,6 +5,11 @@
 .editor-root {
   display: grid;
   grid-template-rows: auto 1fr auto;
+  /* Explicit 1fr column — without it, the grid's implicit auto
+     column would size to the canvas-wrap's content (the canvas's
+     explicit pixel width), letting canvas dimensions propagate up
+     into the parent layout. */
+  grid-template-columns: 1fr;
   height: 100vh;
   min-height: 0;
   background: var(--bg-deep);
@@ -22,8 +27,15 @@
    the canvas's intrinsic aspect-ratio + max-width:100% don't kick
    in and the canvas overflows. */
 .editor-root.is-embedded {
+  width: 100%;
   height: 100%;
   grid-template-rows: 1fr auto;
+  /* Explicit 1fr column so the canvas-wrap fills editor-root's
+     width instead of auto-sizing to the canvas's max-content (which
+     would let the canvas's explicit pixel width propagate back up
+     into the parent layout and re-create the shrink/grow feedback
+     loop). */
+  grid-template-columns: 1fr;
 }
 .editor-root.is-embedded .editor-canvas-wrap {
   min-height: 0;
@@ -35,8 +47,11 @@
    Library at the Stage level (<EditToolbar>) using shared lifted
    tool state. */
 .editor-root.is-chromeless {
+  width: 100%;
   height: 100%;
   grid-template-rows: 1fr;
+  /* Explicit 1fr column — see is-embedded note above. */
+  grid-template-columns: 1fr;
   background: transparent;
 }
 .editor-root.is-chromeless .editor-canvas-wrap {
@@ -64,21 +79,85 @@
   font-size: 11px;
 }
 
+/* Canvas-grows zoom model: the wrap is the SCROLL container. The
+   canvas inside has explicit width/height set by useZoomPan, growing
+   past the wrap when zoomed in (scrollbars appear) and centered by
+   flex when smaller than the wrap (fit / zoomed out). This is the
+   model every photo editor uses — Preview, Photos, Photoshop, Figma.
+   The alternative (transform:scale inside overflow:hidden) keeps the
+   canvas the same DOM size and visually scales the pixels, which
+   feels wrong and isolates the canvas from scrollbar / pinch-zoom
+   gesture conventions.
+
+   `align-items: safe center` is the load-bearing trick: when content
+   overflows the wrap, "safe" falls back to start (so the user can
+   scroll to the top/left edge). Without "safe", flex centering uses
+   negative-margin tricks and the scroll origin gets stuck below the
+   content's start.
+
+   `scrollbar-gutter: stable` reserves space for the scrollbar even
+   when the canvas fits — preventing the rocket-launching-away
+   oscillation where scrollbar appearance shifts the wrap's inner
+   dimensions, which changes fit, which makes the scrollbar
+   disappear, which lets fit grow, which brings the scrollbar back.
+*/
 .editor-canvas-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  overflow: auto;
+  /* overflow: hidden (not auto). The canvas-grows model now uses
+     transform: translate on the canvas for pan instead of native
+     scroll, because `overflow: auto` on the wrap makes Chromium
+     route macOS trackpad pinch as a scroll gesture instead of
+     dispatching the wheel-with-ctrlKey events the renderer needs
+     to handle pinch zoom. With overflow:hidden the wrap is no
+     longer a scroll container — pinch routes through the wheel
+     pipeline, our onWheel handler fires, and we adjust scale +
+     pan to keep the cursor anchor. See PR #91 history; pinch
+     worked at 3490195 (overflow:hidden) and broke at b7672da
+     (overflow:auto). Took several attempted "fixes" to land back
+     on the real cause. */
+  overflow: hidden;
+  /* DO NOT add `touch-action: pan-x pan-y` here. Looks innocuous —
+     "I want to handle scrolling, but not zoom" — but Chromium
+     extends `touch-action` to wheel events: declaring pan-only
+     suppresses the synthetic ctrl+wheel events for macOS trackpad
+     pinch. Default `touch-action: auto`. */
+  min-width: 0;
+  min-height: 0;
+}
+.editor-canvas-wrap.is-pannable {
+  cursor: grab;
+}
+.editor-canvas-wrap.is-panning {
+  cursor: grabbing;
 }
 .editor-canvas {
   position: relative;
-  max-width: 100%;
-  max-height: 100%;
+  /* `flex: none` ensures the flex container respects the canvas's
+     explicit width/height instead of stretching/shrinking it to
+     fit the cross-axis. Without this, the canvas would be sized by
+     flex's default `flex: 0 1 auto` which can shrink past explicit
+     dimensions when zoomed. */
+  flex: none;
   cursor: crosshair;
   border-radius: 6px;
   overflow: hidden;
   box-shadow: 0 0 0 1px var(--border-default), 0 12px 40px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+}
+/* Pre-measurement fallback: before useZoomPan's layout effect fires,
+   `canvasStyle` is null and the canvas only has aspect-ratio set
+   (inline). Without max-w/max-h constraints, the canvas would size
+   to its <img>'s intrinsic dimensions (potentially thousands of px),
+   forcing scrollbars on the wrap and kicking off the resize feedback
+   loop the user saw as "rocket launching away." The
+   .is-pre-measured class is dropped by Editor.tsx the moment
+   useZoomPan returns explicit dimensions. */
+.editor-canvas.is-pre-measured {
+  max-width: 100%;
+  max-height: 100%;
 }
 /* Pointer tool: default arrow cursor — the user is "viewing", not
    drawing. Other tools keep the crosshair. */

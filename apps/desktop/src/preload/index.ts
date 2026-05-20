@@ -14,7 +14,39 @@
 // fully typed with autocomplete. See apps/desktop/src/renderer/src/lib/
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webFrame } from "electron";
+
+// **Re-enable pinch gestures.** Electron disables visual zoom by
+// default, and "disabled" here means more than "no zooming
+// happens" — Chromium silently drops the synthetic ctrl+wheel
+// events that the OS dispatches for macOS trackpad pinch. From
+// the renderer's point of view, pinch becomes a no-op event
+// stream. setVisualZoomLevelLimits(1, N) with N > 1 RE-ENABLES
+// the dispatch (see Electron's `webContents.setVisualZoomLevelLimits`
+// docs, which explicitly say "Visual zoom is disabled by default
+// in Electron. To re-enable it, call w.webContents.setVisualZoomLevelLimits(1, 3)").
+//
+// Subtle: setVisualZoomLevelLimits(1, 1) does NOT re-enable —
+// min===max means no zoom range, and Chromium still treats it as
+// "no pinch interest." Need a non-degenerate range, even if we
+// preventDefault every event before the browser visually zooms.
+//
+// Calling from the preload (via webFrame, instead of from main
+// via webContents) takes effect on every renderer reload (Cmd+R)
+// without a main-process restart, and applies before any input
+// event reaches the page's JavaScript — so the very first pinch
+// after window load is delivered to us. Applies to every PwrSnap
+// renderer (library, settings, tray, float-over, capture); the
+// non-editor surfaces have no pinch handler at all, so the worst
+// case is that a stray pinch over a fixed-layout window briefly
+// visual-zooms before snapping back — acceptable.
+try {
+  webFrame.setVisualZoomLevelLimits(1, 3);
+} catch {
+  // setVisualZoomLevelLimits can throw if called before the frame
+  // is fully initialized in some Electron versions. Swallow — the
+  // main-side fallback covers this.
+}
 // Import from the `/ipc` subpath, NOT the package barrel — the barrel
 // re-exports the Zod overlay schemas, whose `z.object(...)` calls have
 // construction side-effects Vite can't tree-shake. Pulling the barrel

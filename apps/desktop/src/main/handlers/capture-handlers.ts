@@ -311,10 +311,17 @@ export function registerCaptureHandlers(): void {
       });
     }
     const { shell } = await import("electron");
-    // After the bundle-flow rewire, this prefers `flat_png_path` (the
-    // user-shareable composite). Until then, legacy_src_path is the only
-    // file we know about for pre-migration captures.
-    const revealPath = record.flat_png_path ?? record.legacy_src_path;
+    // Priority order:
+    //   1. flat_png_path — the user-shareable paired PNG, written
+    //      alongside the bundle pre-PR-#90. Post-PR-#90 this is null
+    //      for all new captures (paired PNG was dropped).
+    //   2. bundle_path — the .pwrsnap bundle itself. Finder doesn't
+    //      know how to open .pwrsnap files but it WILL select the
+    //      bundle in its containing folder, which is what "reveal"
+    //      means. This is the post-PR-#90 path for new captures.
+    //   3. legacy_src_path — pre-bundle-migration captures only.
+    const revealPath =
+      record.flat_png_path ?? record.bundle_path ?? record.legacy_src_path;
     if (revealPath === null) {
       return err({
         kind: "validation",

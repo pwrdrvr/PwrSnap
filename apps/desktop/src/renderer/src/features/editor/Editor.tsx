@@ -17,58 +17,29 @@
 // just a rect with normalized coords; the bake produces an SVG
 // buffer at source-pixel resolution.
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type FormEvent
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
-import { computeArrowGeometry } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
 import { TOOLS, type Tool } from "./editor-tools";
+import { useZoomPan, type ZoomMode } from "./useZoomPan";
+import { useUndoRedo } from "./useUndoRedo";
+import { OverlaySvg } from "./OverlaySvg";
+import { TextDraftInput } from "./TextDraftInput";
+import { ZoomMenu } from "./ZoomMenu";
+import {
+  MIN_DRAG_LENGTH,
+  rectFromDrag,
+  type Draft,
+  type DraftArrow,
+  type DraftRect,
+  type DraftText
+} from "./editor-types";
 import "./editor.css";
 
 type LoadState =
   | { kind: "loading" }
   | { kind: "loaded"; record: CaptureRecord; overlays: OverlayRow[] }
   | { kind: "error"; message: string };
-
-type DraftArrow = {
-  kind: "arrow";
-  fromXn: number;
-  fromYn: number;
-  toXn: number;
-  toYn: number;
-};
-
-type DraftRect = {
-  /** Same shape for rect / highlight / blur — they all drag a box.
-   *  The `tool` discriminator below tells the renderer which look
-   *  to apply during drag. */
-  kind: "rect-drag";
-  tool: "rect" | "highlight" | "blur";
-  startXn: number;
-  startYn: number;
-  curXn: number;
-  curYn: number;
-};
-
-type DraftText = {
-  kind: "text";
-  /** Anchor point (top-left of the text box). */
-  xn: number;
-  yn: number;
-  /** Live-typed body. Persisted on commit (Enter / blur). */
-  body: string;
-};
-
-type Draft = DraftArrow | DraftRect | DraftText;
-
-const MIN_DRAG_LENGTH = 0.005; // 0.5% of canvas — below = treat as click
 
 /** Three structural shapes for the editor:
  *
@@ -86,11 +57,36 @@ const MIN_DRAG_LENGTH = 0.005; // 0.5% of canvas — below = treat as click
  *                    `tool` / `onToolChange` props. */
 export type EditorChrome = "full" | "embedded" | "chromeless";
 
+export type { ZoomMode };
+
+/** Reactive snapshot of the editor's zoom state, surfaced to parents
+ *  that render zoom controls outside the editor (Library's floating
+ *  EditToolbar). `null` means the editor has unmounted — clear any
+ *  cached api. */
+export type ZoomApi = {
+  mode: ZoomMode;
+  /** Current zoom % relative to "actual size" (image's natural CSS
+   *  dimensions, accounting for devicePixelRatio). 100 = one image
+   *  pixel per screen pixel. Null until the wrap is first measured. */
+  displayPct: number | null;
+  /** What displayPct would be at fit (scale=1). Used to render
+   *  "Fit (XX%)" in the toolbar without flipping into fit mode. */
+  fitPct: number | null;
+  resetToFit: () => void;
+  actualSize: () => void;
+  /** Jump to a specific display percentage. */
+  setCustomPct: (pct: number) => void;
+  /** Multiply current scale by `factor` (e.g. 1.2 for +20%, 1/1.2
+   *  for -20%). */
+  zoomBy: (factor: number) => void;
+} | null;
+
 export function Editor({
   captureId,
   chrome = "full",
   tool: toolProp,
-  onToolChange
+  onToolChange,
+  onZoomChange
 }: {
   captureId: string;
   /** Chrome shape — see `EditorChrome` above. Defaults to `"full"`
@@ -104,6 +100,11 @@ export function Editor({
    *  fall back to internal state. */
   tool?: Tool;
   onToolChange?: (tool: Tool) => void;
+  /** Called whenever the editor's zoom state changes. Library uses
+   *  this to render the zoom indicator in the floating EditToolbar
+   *  (so the indicator doesn't float over the image). Called with
+   *  `null` on unmount so the parent can clear its cached api. */
+  onZoomChange?: (api: ZoomApi) => void;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   // Controlled-or-uncontrolled tool state. When the parent passes
@@ -122,7 +123,16 @@ export function Editor({
   );
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+  // True while undo/redo is replaying an op via the IPC. The
+  // events:overlays:changed broadcast will fire and refetch; we
+  // don't want that refetch to re-record a new EditOp.
+  const undoApplyingRef = useRef<boolean>(false);
+  // Hook-owned recorder, populated by EditorLoaded once the record
+  // resolves. persistOverlay needs to call it; the hook lives in the
+  // child so it can depend on the loaded record's id.
+  const recordCreateRef = useRef<((row: OverlayRow) => void) | null>(null);
 
   // refetch accepts a "cancelled" predicate so the caller can opt-out
   // of post-await setState if the component has moved on. Critical for
@@ -298,6 +308,13 @@ export function Editor({
     if (!result.ok) {
       // eslint-disable-next-line no-console
       console.error("overlays:upsert failed", result.error);
+      return;
+    }
+    // Record the create on the undo stack so ⌘Z reverts it.
+    // Suppressed when we ARE the undo/redo replay path
+    // (undoApplyingRef === true).
+    if (!undoApplyingRef.current) {
+      recordCreateRef.current?.(result.value);
     }
     // events:overlays:changed broadcast triggers refetch.
   }
@@ -349,7 +366,252 @@ export function Editor({
     return <div className="editor-error">{state.message}</div>;
   }
 
-  const { record, overlays } = state;
+  return (
+    <EditorLoaded
+      record={state.record}
+      overlays={state.overlays}
+      chrome={chrome}
+      tool={tool}
+      setTool={setTool}
+      draft={draft}
+      setDraft={setDraft}
+      canvasRef={canvasRef}
+      canvasWrapRef={canvasWrapRef}
+      textInputRef={textInputRef}
+      undoApplyingRef={undoApplyingRef}
+      recordCreateRef={recordCreateRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      commitText={commitText}
+      onZoomChange={onZoomChange}
+    />
+  );
+}
+
+/** Loaded body extracted so the zoom + undo hooks can depend on
+ *  the capture's intrinsic dimensions (and only mount once the
+ *  record has resolved). */
+function EditorLoaded({
+  record,
+  overlays,
+  chrome,
+  tool,
+  setTool,
+  draft,
+  setDraft,
+  canvasRef,
+  canvasWrapRef,
+  textInputRef,
+  undoApplyingRef,
+  recordCreateRef,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  commitText,
+  onZoomChange
+}: {
+  record: CaptureRecord;
+  overlays: OverlayRow[];
+  chrome: EditorChrome;
+  tool: Tool;
+  setTool: (t: Tool) => void;
+  draft: Draft | null;
+  setDraft: (d: Draft | null) => void;
+  canvasRef: React.RefObject<HTMLDivElement | null>;
+  canvasWrapRef: React.RefObject<HTMLDivElement | null>;
+  textInputRef: React.RefObject<HTMLInputElement | null>;
+  undoApplyingRef: React.RefObject<boolean>;
+  recordCreateRef: React.RefObject<((row: OverlayRow) => void) | null>;
+  onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
+  commitText: () => Promise<void>;
+  onZoomChange: ((api: ZoomApi) => void) | undefined;
+}) {
+  const zoom = useZoomPan({
+    devicePixelRatio: record.device_pixel_ratio,
+    imageWidthPx: record.width_px,
+    imageHeightPx: record.height_px,
+    wrapRef: canvasWrapRef
+  });
+
+  // Surface zoom state to Library (so its floating EditToolbar can
+  // render zoom controls without overlaying the image). Split into
+  // two effects so we don't bounce null/value/null/value on every
+  // zoom tick (the cleanup of a deps-based effect would otherwise
+  // fire `null` between every scale change).
+  useEffect(() => {
+    if (onZoomChange === undefined) return;
+    onZoomChange({
+      mode: zoom.mode,
+      displayPct: zoom.displayPct,
+      fitPct: zoom.fitPct,
+      resetToFit: zoom.resetToFit,
+      actualSize: zoom.actualSize,
+      setCustomPct: zoom.setCustomPct,
+      zoomBy: zoom.zoomBy
+    });
+  }, [
+    onZoomChange,
+    zoom.mode,
+    zoom.displayPct,
+    zoom.fitPct,
+    zoom.resetToFit,
+    zoom.actualSize,
+    zoom.setCustomPct,
+    zoom.zoomBy
+  ]);
+  useEffect(() => {
+    if (onZoomChange === undefined) return;
+    return () => onZoomChange(null);
+  }, [onZoomChange]);
+
+  const undo = useUndoRedo({ captureId: record.id, applyingRef: undoApplyingRef });
+
+  // Bridge: parent's persistOverlay reads recordCreateRef.current
+  // to push onto the undo stack. Sync the hook's recorder into
+  // the parent's ref every render so callbacks aren't stale.
+  useEffect(() => {
+    recordCreateRef.current = undo.recordCreate;
+    return () => {
+      recordCreateRef.current = null;
+    };
+  }, [recordCreateRef, undo.recordCreate]);
+
+  // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable === true
+      ) {
+        return;
+      }
+      if (e.key === "0") {
+        e.preventDefault();
+        zoom.resetToFit();
+      } else if (e.key === "1") {
+        e.preventDefault();
+        zoom.actualSize();
+      } else if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        zoom.zoomBy(1.25);
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        zoom.zoomBy(1 / 1.25);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoom]);
+
+  // Attach the non-passive wheel listener at the WINDOW level with
+  // CAPTURE phase. Two reasons:
+  //
+  // 1. Capture-phase at window catches wheel events BEFORE any
+  //    intermediate element can stopPropagation or otherwise hide
+  //    them from us. Earlier debugging suggested the wheel-with-
+  //    ctrlKey synthetic events from macOS trackpad pinch weren't
+  //    reliably reaching a wrap-level listener even with
+  //    setVisualZoomLevelLimits(1, 1) on the webContents. Going
+  //    window-level guarantees we see the events.
+  //
+  // 2. React's synthetic events go through a passive listener, so
+  //    event.preventDefault() inside an onWheel JSX prop would warn
+  //    or no-op. Native addEventListener with `passive: false` is
+  //    the only reliable way.
+  //
+  // We filter by whether the event target is inside the canvas-wrap
+  // so wheel events over the DetailRail, sidebar, popover, etc.
+  // pass through normally.
+  //
+  // `onWheelRef` lets the listener attach ONCE on mount but still
+  // call the latest `zoom.onWheel` closure (which captures `state`,
+  // `computeFit`, etc.). Without the ref the effect would have to
+  // depend on `zoom` (a new object every render) and re-attach the
+  // listener every render — a microsecond window where pinch
+  // events get dropped.
+  const onWheelRef = useRef(zoom.onWheel);
+  const onGestureStartRef = useRef(zoom.onGestureStart);
+  const onGestureChangeRef = useRef(zoom.onGestureChange);
+  const onGestureEndRef = useRef(zoom.onGestureEnd);
+  useEffect(() => {
+    onWheelRef.current = zoom.onWheel;
+    onGestureStartRef.current = zoom.onGestureStart;
+    onGestureChangeRef.current = zoom.onGestureChange;
+    onGestureEndRef.current = zoom.onGestureEnd;
+  });
+  useEffect(() => {
+    const inWrap = (e: Event): boolean => {
+      const wrap = canvasWrapRef.current;
+      if (wrap === null) return false;
+      if (!(e.target instanceof Node)) return false;
+      return wrap.contains(e.target);
+    };
+    const onWheel = (e: WheelEvent): void => {
+      if (!inWrap(e)) return;
+      onWheelRef.current(e);
+    };
+    // macOS trackpad pinch SHOULD dispatch synthetic ctrl+wheel
+    // events (when setVisualZoomLevelLimits is set to a
+    // non-degenerate range, which preload/main both do). On some
+    // Chromium configurations the synthesis is silently dropped —
+    // diagnostic logs from PR #91 verified that on the test
+    // machine, pinch fires nothing while regular wheel fires
+    // normally. Gesture event handlers (gesturestart/change/end)
+    // are wired here as a fallback for the WebKit-style native
+    // gesture path Chromium uses on some macOS configs. We leave
+    // them in because they're harmless when they don't fire and
+    // load-bearing when they do — pinch dispatch is unreliable
+    // enough across machines that defense in depth is worth it.
+    // The Figma-style ctrl/⌘+scroll fallback (in useZoomPan's
+    // onWheel) is what gets the user a working zoom regardless.
+    const onGestureStart = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureStartRef.current(e);
+    };
+    const onGestureChange = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureChangeRef.current(e);
+    };
+    const onGestureEnd = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureEndRef.current(e);
+    };
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    // macOS trackpad pinch — primary signal on Mac. Capture-phase
+    // on the window so we catch them no matter where they're
+    // dispatched. Note: gesturestart/change/end aren't in the
+    // standard DOM event map; we use string event names.
+    window.addEventListener("gesturestart", onGestureStart, { passive: false, capture: true });
+    window.addEventListener("gesturechange", onGestureChange, { passive: false, capture: true });
+    window.addEventListener("gestureend", onGestureEnd, { passive: false, capture: true });
+    return () => {
+      window.removeEventListener("wheel", onWheel, { capture: true });
+      window.removeEventListener("gesturestart", onGestureStart, { capture: true });
+      window.removeEventListener("gesturechange", onGestureChange, { capture: true });
+      window.removeEventListener("gestureend", onGestureEnd, { capture: true });
+    };
+  }, [canvasWrapRef]);
+
+  // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
+  // pointer events instead of the canvas's drawing handlers.
+  // Single-finger drag arbitration on the canvas wrap:
+  //   • Space held → always pan (Photoshop convention: hold Space
+  //     to grab + drag regardless of active tool).
+  //   • Pointer tool + zoomed in → pan (Pointer is the "no-op on
+  //     drag" tool, so we repurpose its drag for navigation).
+  //   • Any drawing tool (arrow, rect, highlight, blur, text) →
+  //     pointer events go to the canvas so the user can DRAW. Pan
+  //     stays accessible via Space+drag and via two-finger scroll
+  //     (which doesn't conflict with tool drag — it's a separate
+  //     gesture handled by useZoomPan's wheel handler).
+  const wantPan = zoom.spaceHeld || (tool === "pointer" && zoom.state.scale > 1);
+
   return (
     <div
       className={
@@ -369,14 +631,40 @@ export function Editor({
         </header>
       )}
 
-      <div className="editor-canvas-wrap">
+      <div
+        ref={canvasWrapRef}
+        className={
+          "editor-canvas-wrap" +
+          (wantPan ? " is-pannable" : "") +
+          (zoom.isPanning ? " is-panning" : "")
+        }
+        onPointerDown={wantPan ? zoom.onPanPointerDown : undefined}
+        onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
+        onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
+      >
         <div
           ref={canvasRef}
-          className="editor-canvas"
-          style={{ aspectRatio: `${record.width_px} / ${record.height_px}` }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
+          className={
+            "editor-canvas" +
+            // Until useZoomPan's layout effect measures the wrap and
+            // emits explicit CSS px for the canvas, `.is-pre-measured`
+            // applies max-width/max-height:100% as a safety net so the
+            // canvas can't size up to the <img>'s intrinsic
+            // dimensions (which would force scrollbars on the wrap
+            // and start the resize feedback loop).
+            (zoom.canvasStyle === null ? " is-pre-measured" : "")
+          }
+          style={
+            // After first layout, useZoomPan returns explicit CSS px
+            // for width/height. Before the wrap measures (rare; only
+            // on the first frame between commit and useLayoutEffect),
+            // fall back to aspect-ratio so the canvas has a sane
+            // intrinsic shape.
+            zoom.canvasStyle ?? { aspectRatio: `${record.width_px} / ${record.height_px}` }
+          }
+          onPointerDown={wantPan ? undefined : onPointerDown}
+          onPointerMove={wantPan ? undefined : onPointerMove}
+          onPointerUp={wantPan ? undefined : onPointerUp}
           data-tool={tool}
         >
           <img
@@ -395,6 +683,9 @@ export function Editor({
             <TextDraftInput
               draft={draft}
               inputRef={textInputRef}
+              imageWidthPx={record.width_px}
+              imageHeightPx={record.height_px}
+              canvasRef={canvasRef}
               onChange={(body) => setDraft({ ...draft, body })}
               onCommit={() => void commitText()}
               onCancel={() => setDraft(null)}
@@ -408,35 +699,26 @@ export function Editor({
           tool={tool}
           onChange={setTool}
           appliedCount={overlays.length}
-          onClearLast={async () => {
-            const last = overlays[overlays.length - 1];
-            if (last === undefined) return;
-            await dispatch("overlays:delete", { id: last.id });
+          canUndo={undo.canUndo}
+          canRedo={undo.canRedo}
+          zoom={{
+            mode: zoom.mode,
+            displayPct: zoom.displayPct,
+            fitPct: zoom.fitPct,
+            resetToFit: zoom.resetToFit,
+            actualSize: zoom.actualSize,
+            setCustomPct: zoom.setCustomPct,
+            zoomBy: zoom.zoomBy
+          }}
+          onUndo={() => void undo.undo()}
+          onRedo={() => void undo.redo()}
+          onReveal={() => {
+            void dispatch("capture:reveal", { captureId: record.id });
           }}
         />
       )}
     </div>
   );
-}
-
-/**
- * Convert the rect-drag draft into a normalized {x, y, w, h}. Returns
- * null when the drag is below the minimum-length threshold (treats
- * a stray click as a no-op rather than producing an invisible rect).
- */
-function rectFromDrag(d: DraftRect): { x: number; y: number; w: number; h: number } | null {
-  const x = Math.min(d.startXn, d.curXn);
-  const y = Math.min(d.startYn, d.curYn);
-  const w = Math.abs(d.curXn - d.startXn);
-  const h = Math.abs(d.curYn - d.startYn);
-  if (w < MIN_DRAG_LENGTH || h < MIN_DRAG_LENGTH) return null;
-  // Clamp to [0,1] in case the cursor went out of bounds.
-  return {
-    x: Math.max(0, Math.min(1, x)),
-    y: Math.max(0, Math.min(1, y)),
-    w: Math.max(0, Math.min(1 - x, w)),
-    h: Math.max(0, Math.min(1 - y, h))
-  };
 }
 
 // EditorToolbar: bottom-row toolbar attached to Editor's own chrome
@@ -449,12 +731,22 @@ function EditorToolbar({
   tool,
   onChange,
   appliedCount,
-  onClearLast
+  canUndo,
+  canRedo,
+  zoom,
+  onUndo,
+  onRedo,
+  onReveal
 }: {
   tool: Tool;
   onChange: (t: Tool) => void;
   appliedCount: number;
-  onClearLast: () => Promise<void>;
+  canUndo: boolean;
+  canRedo: boolean;
+  zoom: NonNullable<ZoomApi>;
+  onUndo: () => void;
+  onRedo: () => void;
+  onReveal: () => void;
 }) {
   return (
     <div className="editor-toolbar" role="toolbar" aria-label="Annotation tools">
@@ -473,385 +765,21 @@ function EditorToolbar({
         ))}
       </div>
       <div className="editor-toolbar-meta">
-        <span>{appliedCount} overlay{appliedCount === 1 ? "" : "s"}</span>
-        <button type="button" disabled={appliedCount === 0} onClick={() => void onClearLast()}>
-          Undo last
+        <span>
+          {appliedCount} overlay{appliedCount === 1 ? "" : "s"}
+        </span>
+        <button type="button" disabled={!canUndo} onClick={onUndo} title="Undo (⌘Z)">
+          ↶ Undo
+        </button>
+        <button type="button" disabled={!canRedo} onClick={onRedo} title="Redo (⌘⇧Z)">
+          ↷ Redo
+        </button>
+        <ZoomMenu zoom={zoom} />
+        <button type="button" onClick={onReveal} title="Reveal in Finder">
+          Reveal
         </button>
       </div>
     </div>
   );
 }
 
-function OverlaySvg({
-  overlays,
-  draft,
-  imageWidthPx,
-  imageHeightPx
-}: {
-  overlays: OverlayRow[];
-  draft: Draft | null;
-  imageWidthPx: number;
-  imageHeightPx: number;
-}) {
-  const viewBox = "0 0 1 1";
-  const arrows = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "arrow" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
-  const rects = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "rect" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
-  const highlights = useMemo(
-    () =>
-      overlays.flatMap((row) =>
-        row.data.kind === "highlight" ? [{ row, data: row.data }] : []
-      ),
-    [overlays]
-  );
-  const blurs = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "blur" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
-  const texts = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "text" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
-
-  // Live-rect for rect/highlight/blur drags, computed once so all
-  // three branches can share.
-  const liveRect =
-    draft !== null && draft.kind === "rect-drag" ? rectFromDrag(draft) : null;
-
-  return (
-    <svg className="editor-svg" viewBox={viewBox} preserveAspectRatio="none">
-      {/* Highlights painted first so they sit beneath rects/arrows. */}
-      {highlights.map(({ row, data }) => (
-        <HighlightGlyph key={row.id} rect={data.rect} />
-      ))}
-      {blurs.map(({ row, data }) => (
-        <BlurGlyph key={row.id} rect={data.rect} />
-      ))}
-      {rects.map(({ row, data }) => (
-        <RectGlyph
-          key={row.id}
-          rect={data.rect}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
-      {arrows.map(({ row, data }) => (
-        <ArrowGlyph
-          key={row.id}
-          fromXn={data.from.x}
-          fromYn={data.from.y}
-          toXn={data.to.x}
-          toYn={data.to.y}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
-      {texts.map(({ row, data }) => (
-        <TextGlyph
-          key={row.id}
-          point={data.point}
-          body={data.body}
-          size={data.size}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
-
-      {/* Drafts (live-drag preview) rendered last so they're on top. */}
-      {draft?.kind === "arrow" && (
-        <ArrowGlyph
-          fromXn={draft.fromXn}
-          fromYn={draft.fromYn}
-          toXn={draft.toXn}
-          toYn={draft.toYn}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-          isDraft
-        />
-      )}
-      {draft?.kind === "rect-drag" && liveRect !== null && (
-        <>
-          {draft.tool === "highlight" && <HighlightGlyph rect={liveRect} isDraft />}
-          {draft.tool === "blur" && <BlurGlyph rect={liveRect} isDraft />}
-          {draft.tool === "rect" && (
-            <RectGlyph
-              rect={liveRect}
-              imageWidthPx={imageWidthPx}
-              imageHeightPx={imageHeightPx}
-              isDraft
-            />
-          )}
-        </>
-      )}
-    </svg>
-  );
-}
-
-function ArrowGlyph({
-  fromXn,
-  fromYn,
-  toXn,
-  toYn,
-  imageWidthPx,
-  imageHeightPx,
-  isDraft = false
-}: {
-  fromXn: number;
-  fromYn: number;
-  toXn: number;
-  toYn: number;
-  imageWidthPx: number;
-  imageHeightPx: number;
-  isDraft?: boolean;
-}) {
-  const geom = computeArrowGeometry({
-    from: { x: fromXn, y: fromYn },
-    to: { x: toXn, y: toYn },
-    imageWidthPx,
-    imageHeightPx
-  });
-  const headPolygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
-  const stroke = geom.strokeFraction;
-  const outline = Math.max(stroke * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
-  return (
-    <g strokeLinecap="round" strokeLinejoin="round">
-      <line
-        x1={geom.from.x}
-        y1={geom.from.y}
-        x2={geom.baseCenter.x}
-        y2={geom.baseCenter.y}
-        stroke="white"
-        strokeWidth={stroke + outline * 2}
-        fill="none"
-      />
-      <polygon
-        points={headPolygon}
-        fill="white"
-        stroke="white"
-        strokeWidth={outline * 2}
-      />
-      <line
-        x1={geom.from.x}
-        y1={geom.from.y}
-        x2={geom.baseCenter.x}
-        y2={geom.baseCenter.y}
-        stroke={accent}
-        strokeWidth={stroke}
-        fill="none"
-      />
-      <polygon points={headPolygon} fill={accent} />
-    </g>
-  );
-}
-
-function RectGlyph({
-  rect,
-  imageWidthPx,
-  imageHeightPx,
-  isDraft = false
-}: {
-  rect: { x: number; y: number; w: number; h: number };
-  imageWidthPx: number;
-  imageHeightPx: number;
-  isDraft?: boolean;
-}) {
-  // Stroke width scaled by image short-side, like the arrow's. We
-  // compute via computeArrowGeometry across the diagonal so the
-  // stroke matches the arrow's visual weight on the same image.
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const strokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
-  const outline = Math.max(strokeFraction * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
-  return (
-    <g>
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
-        fill="none"
-        stroke="white"
-        strokeWidth={strokeFraction + outline * 2}
-        strokeLinejoin="round"
-      />
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
-        fill="none"
-        stroke={accent}
-        strokeWidth={strokeFraction}
-        strokeLinejoin="round"
-      />
-    </g>
-  );
-}
-
-function HighlightGlyph({
-  rect,
-  isDraft = false
-}: {
-  rect: { x: number; y: number; w: number; h: number };
-  isDraft?: boolean;
-}) {
-  // Yellow translucent fill — the marker-pen look. Slightly more
-  // opaque on draft so the user sees the drag clearly.
-  return (
-    <rect
-      x={rect.x}
-      y={rect.y}
-      width={rect.w}
-      height={rect.h}
-      fill={isDraft ? "rgba(255, 220, 80, 0.45)" : "rgba(255, 220, 80, 0.32)"}
-      stroke="none"
-    />
-  );
-}
-
-function BlurGlyph({
-  rect,
-  isDraft = false
-}: {
-  rect: { x: number; y: number; w: number; h: number };
-  isDraft?: boolean;
-}) {
-  // Live preview: a translucent gray block with a "frosted" pattern.
-  // The actual blur is applied in the bake — the live render just
-  // signals "this region will be blurred when copied/exported".
-  return (
-    <g>
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
-        fill={isDraft ? "rgba(40, 40, 50, 0.55)" : "rgba(40, 40, 50, 0.45)"}
-        stroke="rgba(255,255,255,0.25)"
-        strokeWidth={0.0015}
-        strokeDasharray="0.005 0.005"
-      />
-    </g>
-  );
-}
-
-function TextGlyph({
-  point,
-  body,
-  size,
-  imageWidthPx,
-  imageHeightPx
-}: {
-  point: { x: number; y: number };
-  body: string;
-  size: "small" | "large";
-  imageWidthPx: number;
-  imageHeightPx: number;
-}) {
-  // Font size derived from image short-side, matching the bake.
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const sizePx = size === "large" ? shortSide / 30 : shortSide / 60;
-  const fontSize = sizePx / shortSide;
-  const accent = "var(--accent, #ff8a1f)";
-  return (
-    <g>
-      <text
-        x={point.x}
-        y={point.y}
-        fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSize}
-        fontWeight={600}
-        fill="white"
-        stroke="rgba(0,0,0,0.6)"
-        strokeWidth={fontSize * 0.08}
-        paintOrder="stroke"
-        dominantBaseline="hanging"
-      >
-        {body}
-      </text>
-      <text
-        x={point.x}
-        y={point.y}
-        fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSize}
-        fontWeight={600}
-        fill={accent}
-        dominantBaseline="hanging"
-      >
-        {body}
-      </text>
-    </g>
-  );
-}
-
-function TextDraftInput({
-  draft,
-  inputRef,
-  onChange,
-  onCommit,
-  onCancel
-}: {
-  draft: DraftText;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-  onChange: (body: string) => void;
-  onCommit: () => void;
-  onCancel: () => void;
-}) {
-  // Inline input positioned at the click point. It overlays the
-  // SVG text glyph (which is invisible until commit). On Enter or
-  // blur, the parent commits via persist; on Escape, cancel.
-  const style: CSSProperties = {
-    position: "absolute",
-    left: `${draft.xn * 100}%`,
-    top: `${draft.yn * 100}%`,
-    transform: "translateY(-2px)",
-    background: "color-mix(in srgb, var(--bg-app) 92%, transparent)",
-    color: "var(--accent-bright, #ffa33d)",
-    border: "1px solid var(--accent, #ff8a1f)",
-    borderRadius: 4,
-    padding: "2px 6px",
-    font: "600 13px var(--font-sans, system-ui)",
-    outline: "none",
-    minWidth: 80
-  };
-  function onSubmit(e: FormEvent): void {
-    e.preventDefault();
-    onCommit();
-  }
-  return (
-    <form style={style} onSubmit={onSubmit}>
-      <input
-        ref={inputRef}
-        type="text"
-        value={draft.body}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onCommit}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            onCancel();
-          }
-        }}
-        placeholder="Type to annotate…"
-        style={{
-          background: "transparent",
-          color: "inherit",
-          border: "none",
-          outline: "none",
-          font: "inherit",
-          minWidth: 80
-        }}
-      />
-    </form>
-  );
-}

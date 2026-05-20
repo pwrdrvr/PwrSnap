@@ -271,25 +271,33 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
                 </svg>
                 File
               </button>
-              <button
-                type="button"
-                title="Open in standalone editor window"
-                onClick={() => {
-                  void dispatch("editor:open", { captureId: record.id });
-                }}
-              >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
+              {/* "Editor" button opens a STANDALONE editor window for
+                  the capture. When the rail is showing in Focus or
+                  Reel mode, the user is already in an editor view
+                  (chromeless Editor inside Library) — surfacing this
+                  button would suggest there's another editor to open,
+                  which is just a confusing duplicate. Hide it. */}
+              {view.kind !== "focus" && view.kind !== "reel" && (
+                <button
+                  type="button"
+                  title="Open in standalone editor window"
+                  onClick={() => {
+                    void dispatch("editor:open", { captureId: record.id });
+                  }}
                 >
-                  <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
-                </svg>
-                Editor
-              </button>
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+                  </svg>
+                  Editor
+                </button>
+              )}
               <button
                 type="button"
                 className="is-danger"

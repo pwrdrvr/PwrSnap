@@ -5,6 +5,11 @@
 .editor-root {
   display: grid;
   grid-template-rows: auto 1fr auto;
+  /* Explicit 1fr column — without it, the grid's implicit auto
+     column would size to the canvas-wrap's content (the canvas's
+     explicit pixel width), letting canvas dimensions propagate up
+     into the parent layout. */
+  grid-template-columns: 1fr;
   height: 100vh;
   min-height: 0;
   background: var(--bg-deep);
@@ -25,6 +30,12 @@
   width: 100%;
   height: 100%;
   grid-template-rows: 1fr auto;
+  /* Explicit 1fr column so the canvas-wrap fills editor-root's
+     width instead of auto-sizing to the canvas's max-content (which
+     would let the canvas's explicit pixel width propagate back up
+     into the parent layout and re-create the shrink/grow feedback
+     loop). */
+  grid-template-columns: 1fr;
 }
 .editor-root.is-embedded .editor-canvas-wrap {
   min-height: 0;
@@ -39,6 +50,8 @@
   width: 100%;
   height: 100%;
   grid-template-rows: 1fr;
+  /* Explicit 1fr column — see is-embedded note above. */
+  grid-template-columns: 1fr;
   background: transparent;
 }
 .editor-root.is-chromeless .editor-canvas-wrap {

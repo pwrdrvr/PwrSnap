@@ -38,22 +38,43 @@ export type ZoomPanState = {
 
 export const FIT_TO_WINDOW: ZoomPanState = { scale: 1 };
 
+/** Which zoom anchor the user last selected. Determines how the
+ *  toolbar button labels the current state — "Fit (62%)" vs "100%"
+ *  vs "150%" — and tracks intent across resize / pinch / typed
+ *  values. Pinch-zoom and the +/- buttons both flip to "custom". */
+export type ZoomMode = "fit" | "actual" | "custom";
+
 export type UseZoomPanResult = {
   state: ZoomPanState;
+  /** Which anchor the current scale corresponds to. */
+  mode: ZoomMode;
+  /** What percentage the canvas's current CSS size represents
+   *  relative to the image's "actual size" CSS dimensions
+   *  (imageWidth / devicePixelRatio). Null until the wrap is first
+   *  measured. */
+  displayPct: number | null;
+  /** What displayPct *would* be at fit (scale=1). Lets the toolbar
+   *  show "Fit (XX%)" without having to flip into fit mode to
+   *  measure. Null until wrap is measured. */
+  fitPct: number | null;
   /** Apply as inline style on the canvas element. `null` when the
    *  wrap hasn't laid out yet (first paint); caller should render a
    *  fallback canvas sized by aspect-ratio + max-width/max-height
    *  until the ResizeObserver fires. */
   canvasStyle: { width: string; height: string } | null;
-  /** Fit-to-window reset (⌘0). */
+  /** Fit-to-window reset (⌘0). Sets mode="fit". */
   resetToFit: () => void;
-  /** 1:1 pixel mapping (⌘1). Accounts for devicePixelRatio so a
-   *  Retina capture renders at OS-1:1 inside the viewport. */
+  /** 100% / 1:1 — one image pixel per screen pixel (DPR-aware). Sets
+   *  mode="actual" and re-tracks on wrap resize so it stays at 100%
+   *  even as the wrap grows or shrinks. (⌘1) */
   actualSize: () => void;
-  /** ⌘+ */
-  zoomIn: () => void;
-  /** ⌘- */
-  zoomOut: () => void;
+  /** Jump to a specific displayPct (e.g. the user typed "175"). Sets
+   *  mode="custom". */
+  setCustomPct: (pct: number) => void;
+  /** Multiply the current scale by `factor`. Sets mode="custom" so
+   *  the menu reflects "user is hand-tweaking the zoom." Used by
+   *  the +/- buttons and keyboard ⌘+ / ⌘-. */
+  zoomBy: (factor: number) => void;
   /** Whether space is held — caller uses this to suppress the active
    *  tool's drag handler and pan instead. */
   spaceHeld: boolean;
@@ -85,14 +106,10 @@ export function useZoomPan(opts: {
 }): UseZoomPanResult {
   const { devicePixelRatio = 1, imageWidthPx, imageHeightPx, wrapRef } = opts;
   const [state, setState] = useState<ZoomPanState>(FIT_TO_WINDOW);
+  const [mode, setMode] = useState<ZoomMode>("fit");
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [fitSize, setFitSize] = useState<{ width: number; height: number } | null>(null);
-  // When the user clicks 1:1, we lock into "actual size" mode and
-  // re-compute on wrap resize (rendered CSS-px size depends on the
-  // wrap's current dimensions). Cleared by any other zoom op so the
-  // user can leave 1:1 freely.
-  const [actualSizeLocked, setActualSizeLocked] = useState(false);
   const panStart = useRef<{
     x: number;
     y: number;
@@ -134,8 +151,8 @@ export function useZoomPan(opts: {
   }, [wrapRef, imageAspect]);
 
   // Track wrap size; refresh fit whenever it changes. Also recompute
-  // 1:1 scale when actualSizeLocked, so the canvas stays at one
-  // image-pixel-per-screen-pixel as the wrap grows/shrinks.
+  // the actual-size scale when mode==="actual", so the canvas stays
+  // at one image-pixel-per-screen-pixel as the wrap grows/shrinks.
   //
   // `useLayoutEffect` (not `useEffect`) for two reasons:
   //   1. The initial fit must be computed BEFORE the browser paints,
@@ -167,7 +184,7 @@ export function useZoomPan(opts: {
         }
         return fit;
       });
-      if (actualSizeLocked) {
+      if (mode === "actual") {
         const targetScale = imageWidthPx / devicePixelRatio / fit.width;
         setState((prev) => {
           const next = clamp(targetScale, MIN_SCALE, MAX_SCALE);
@@ -179,10 +196,10 @@ export function useZoomPan(opts: {
     const ro = new ResizeObserver(update);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [wrapRef, computeFit, actualSizeLocked, imageWidthPx, devicePixelRatio]);
+  }, [wrapRef, computeFit, mode, imageWidthPx, devicePixelRatio]);
 
   const resetToFit = useCallback(() => {
-    setActualSizeLocked(false);
+    setMode("fit");
     setState(FIT_TO_WINDOW);
   }, []);
 
@@ -190,18 +207,26 @@ export function useZoomPan(opts: {
     const fit = computeFit();
     if (fit === null) return;
     const targetScale = imageWidthPx / devicePixelRatio / fit.width;
-    setActualSizeLocked(true);
+    setMode("actual");
     setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
   }, [computeFit, imageWidthPx, devicePixelRatio]);
 
-  const zoomIn = useCallback(() => {
-    setActualSizeLocked(false);
-    setState((prev) => ({ scale: clamp(prev.scale * KEYBOARD_STEP, MIN_SCALE, MAX_SCALE) }));
-  }, []);
+  // displayPct = scale × (fit.width × DPR / imageWidth) × 100
+  // ⇒ scale    = (pct / 100) × imageWidth / (DPR × fit.width)
+  const setCustomPct = useCallback(
+    (pct: number) => {
+      const fit = computeFit();
+      if (fit === null) return;
+      const targetScale = (pct / 100) * (imageWidthPx / devicePixelRatio) / fit.width;
+      setMode("custom");
+      setState({ scale: clamp(targetScale, MIN_SCALE, MAX_SCALE) });
+    },
+    [computeFit, imageWidthPx, devicePixelRatio]
+  );
 
-  const zoomOut = useCallback(() => {
-    setActualSizeLocked(false);
-    setState((prev) => ({ scale: clamp(prev.scale / KEYBOARD_STEP, MIN_SCALE, MAX_SCALE) }));
+  const zoomBy = useCallback((factor: number) => {
+    setMode("custom");
+    setState((prev) => ({ scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE) }));
   }, []);
 
   // Cursor-anchored zoom for pinch/meta+wheel. Math: compute the
@@ -218,7 +243,7 @@ export function useZoomPan(opts: {
     (event: WheelEvent): void => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      setActualSizeLocked(false);
+      setMode("custom");
       const wrap = wrapRef.current;
       if (wrap === null) return;
       const fit = computeFit();
@@ -348,13 +373,23 @@ export function useZoomPan(opts: {
           height: `${fitSize.height * state.scale}px`
         };
 
+  // fitPct = canvas-CSS-width-at-fit / actual-CSS-width × 100
+  //        = fit.width / (imageWidth / DPR) × 100
+  // displayPct = fitPct × scale
+  const fitPct =
+    fitSize === null ? null : (fitSize.width * devicePixelRatio) / imageWidthPx * 100;
+  const displayPct = fitPct === null ? null : fitPct * state.scale;
+
   return {
     state,
+    mode,
+    fitPct,
+    displayPct,
     canvasStyle,
     resetToFit,
     actualSize,
-    zoomIn,
-    zoomOut,
+    setCustomPct,
+    zoomBy,
     spaceHeld,
     isPanning,
     onWheel,

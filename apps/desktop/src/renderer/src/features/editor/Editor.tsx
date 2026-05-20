@@ -21,10 +21,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
 import { TOOLS, type Tool } from "./editor-tools";
-import { useZoomPan } from "./useZoomPan";
+import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo } from "./useUndoRedo";
 import { OverlaySvg } from "./OverlaySvg";
 import { TextDraftInput } from "./TextDraftInput";
+import { ZoomMenu } from "./ZoomMenu";
 import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
@@ -56,14 +57,28 @@ type LoadState =
  *                    `tool` / `onToolChange` props. */
 export type EditorChrome = "full" | "embedded" | "chromeless";
 
+export type { ZoomMode };
+
 /** Reactive snapshot of the editor's zoom state, surfaced to parents
  *  that render zoom controls outside the editor (Library's floating
  *  EditToolbar). `null` means the editor has unmounted — clear any
  *  cached api. */
 export type ZoomApi = {
-  scale: number;
+  mode: ZoomMode;
+  /** Current zoom % relative to "actual size" (image's natural CSS
+   *  dimensions, accounting for devicePixelRatio). 100 = one image
+   *  pixel per screen pixel. Null until the wrap is first measured. */
+  displayPct: number | null;
+  /** What displayPct would be at fit (scale=1). Used to render
+   *  "Fit (XX%)" in the toolbar without flipping into fit mode. */
+  fitPct: number | null;
   resetToFit: () => void;
   actualSize: () => void;
+  /** Jump to a specific display percentage. */
+  setCustomPct: (pct: number) => void;
+  /** Multiply current scale by `factor` (e.g. 1.2 for +20%, 1/1.2
+   *  for -20%). */
+  zoomBy: (factor: number) => void;
 } | null;
 
 export function Editor({
@@ -429,11 +444,24 @@ function EditorLoaded({
   useEffect(() => {
     if (onZoomChange === undefined) return;
     onZoomChange({
-      scale: zoom.state.scale,
+      mode: zoom.mode,
+      displayPct: zoom.displayPct,
+      fitPct: zoom.fitPct,
       resetToFit: zoom.resetToFit,
-      actualSize: zoom.actualSize
+      actualSize: zoom.actualSize,
+      setCustomPct: zoom.setCustomPct,
+      zoomBy: zoom.zoomBy
     });
-  }, [onZoomChange, zoom.state.scale, zoom.resetToFit, zoom.actualSize]);
+  }, [
+    onZoomChange,
+    zoom.mode,
+    zoom.displayPct,
+    zoom.fitPct,
+    zoom.resetToFit,
+    zoom.actualSize,
+    zoom.setCustomPct,
+    zoom.zoomBy
+  ]);
   useEffect(() => {
     if (onZoomChange === undefined) return;
     return () => onZoomChange(null);
@@ -471,10 +499,10 @@ function EditorLoaded({
         zoom.actualSize();
       } else if (e.key === "=" || e.key === "+") {
         e.preventDefault();
-        zoom.zoomIn();
+        zoom.zoomBy(1.25);
       } else if (e.key === "-" || e.key === "_") {
         e.preventDefault();
-        zoom.zoomOut();
+        zoom.zoomBy(1 / 1.25);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -484,13 +512,24 @@ function EditorLoaded({
   // Attach the non-passive wheel listener manually — React's
   // synthetic events go through a passive listener, so
   // event.preventDefault() inside onWheel from JSX would warn / no-op.
+  //
+  // The listener attaches ONCE on mount and reads `zoom.onWheel`
+  // through a ref. Previously the effect depended on `zoom` (a new
+  // object every render), causing rapid detach/reattach cycles —
+  // there's a microsecond window between cleanup and re-add where
+  // wheel events get dropped. With trackpad pinches firing ~60 wheel
+  // events/second, missing events made pinch zoom feel inert.
+  const onWheelRef = useRef(zoom.onWheel);
+  useEffect(() => {
+    onWheelRef.current = zoom.onWheel;
+  });
   useEffect(() => {
     const el = canvasWrapRef.current;
     if (el === null) return;
-    const handler = (e: WheelEvent): void => zoom.onWheel(e);
+    const handler = (e: WheelEvent): void => onWheelRef.current(e);
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
-  }, [zoom, canvasWrapRef]);
+  }, [canvasWrapRef]);
 
   // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
   // pointer events instead of the canvas's drawing handlers.
@@ -585,9 +624,15 @@ function EditorLoaded({
           appliedCount={overlays.length}
           canUndo={undo.canUndo}
           canRedo={undo.canRedo}
-          zoomPct={Math.round(zoom.state.scale * 100)}
-          onResetZoom={zoom.resetToFit}
-          onActualSize={zoom.actualSize}
+          zoom={{
+            mode: zoom.mode,
+            displayPct: zoom.displayPct,
+            fitPct: zoom.fitPct,
+            resetToFit: zoom.resetToFit,
+            actualSize: zoom.actualSize,
+            setCustomPct: zoom.setCustomPct,
+            zoomBy: zoom.zoomBy
+          }}
           onUndo={() => void undo.undo()}
           onRedo={() => void undo.redo()}
           onReveal={() => {
@@ -611,9 +656,7 @@ function EditorToolbar({
   appliedCount,
   canUndo,
   canRedo,
-  zoomPct,
-  onResetZoom,
-  onActualSize,
+  zoom,
   onUndo,
   onRedo,
   onReveal
@@ -623,9 +666,7 @@ function EditorToolbar({
   appliedCount: number;
   canUndo: boolean;
   canRedo: boolean;
-  zoomPct: number;
-  onResetZoom: () => void;
-  onActualSize: () => void;
+  zoom: NonNullable<ZoomApi>;
   onUndo: () => void;
   onRedo: () => void;
   onReveal: () => void;
@@ -656,12 +697,7 @@ function EditorToolbar({
         <button type="button" disabled={!canRedo} onClick={onRedo} title="Redo (⌘⇧Z)">
           ↷ Redo
         </button>
-        <button type="button" onClick={onResetZoom} title="Fit to window (⌘0)">
-          {zoomPct}%
-        </button>
-        <button type="button" onClick={onActualSize} title="Actual size (⌘1)">
-          1:1
-        </button>
+        <ZoomMenu zoom={zoom} />
         <button type="button" onClick={onReveal} title="Reveal in Finder">
           Reveal
         </button>

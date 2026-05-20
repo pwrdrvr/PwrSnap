@@ -1,0 +1,164 @@
+/*
+ * Floating bottom-right toast for the legacy-bundle migration.
+ * Replaces the previous full-width strip that lived above the
+ * library topbar — it was being painted-over by the macOS
+ * stoplight buttons because the topbar row IS the title-bar row
+ * with `titleBarStyle: "hiddenInset"`.
+ *
+ * Visual treatment matches PwrSnap's general overlay aesthetic
+ * (see also tray popover, float-over toast):
+ *   • Black-elevated background with subtle accent-tinted border.
+ *   • Soft glow / shadow that's stronger on the accent side.
+ *   • Compact spinner / check indicator on the left.
+ *   • Progress bar slides in BELOW the label while running so the
+ *     numeric "10 / 461" gets a visual anchor — same affordance as
+ *     iOS / Linear / Vercel migration toasts.
+ *   • Slide-in animation on mount (translateY 12px → 0, fade in),
+ *     gentle fade-out on dismiss (driven by the auto-dismiss timer
+ *     in the React component, not a CSS-only out animation —
+ *     React unmounts the node when the timer fires).
+ */
+
+.psl-migration {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 100;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+  max-width: 380px;
+  padding: 12px 16px;
+
+  background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+
+  color: var(--text-primary);
+  font: 500 12px/1.35 var(--font-sans, system-ui);
+
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 32px -8px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 24px -6px var(--accent-shadow);
+
+  /* The library window listens for clicks anywhere outside elements
+     marked no-drag to start a drag — the toast is interactive
+     enough (no buttons today, but accessibility) that it should be
+     clickable. Belt-and-suspenders since we're position:fixed,
+     not inside .psl__topbar. */
+  -webkit-app-region: no-drag;
+
+  animation: psl-migration-slide-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* On completion, fade the accent border out — the toast still
+   shows for the auto-dismiss window but no longer looks "active." */
+.psl-migration.is-complete {
+  border-color: var(--border-default);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 32px -8px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes psl-migration-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ----- indicator (spinner or check) ----- */
+
+.psl-migration__spinner,
+.psl-migration__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+
+.psl-migration__spinner {
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  animation: psl-migration-spin 0.85s linear infinite;
+}
+
+@keyframes psl-migration-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.psl-migration__check {
+  font: 700 11px/1 var(--font-sans, system-ui);
+  color: var(--bg-app);
+}
+.psl-migration__check--ok {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+}
+.psl-migration__check--warn {
+  /* Soft amber for "completed with skipped rows" — clearly different
+     from green-success and from accent-orange. */
+  background: #e8a04a;
+}
+
+/* ----- body (label + progress bar) ----- */
+
+.psl-migration__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.psl-migration__label {
+  color: var(--text-primary);
+  font: 500 12px/1.35 var(--font-sans, system-ui);
+  /* Tabular numerals — keeps the "10 / 461" digits from jittering
+     as the count ticks up. */
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.psl-migration__bar {
+  position: relative;
+  display: block;
+  height: 3px;
+  width: 100%;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  overflow: hidden;
+}
+
+.psl-migration__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* Scaled-X transform so the bar fills LTR without layout shift
+     and gets free GPU compositing. */
+  transform-origin: left center;
+  transform: scaleX(var(--psl-migration-progress, 0));
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-bright) 100%
+  );
+  border-radius: inherit;
+  transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}

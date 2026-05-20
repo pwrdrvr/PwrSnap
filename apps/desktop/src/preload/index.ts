@@ -14,35 +14,17 @@
 // fully typed with autocomplete. See apps/desktop/src/renderer/src/lib/
 // command-bus.ts (Phase 1.4) for the renderer-side helper.
 
-import { contextBridge, ipcRenderer, webFrame } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 
-// Pin visual viewport zoom at 1× for every PwrSnap renderer. macOS
-// trackpad pinch otherwise gets consumed by Chromium's built-in
-// page-zoom handler — the gesture never dispatches as a wheel /
-// gesture* event the page can react to. With limits set to (1, 1)
-// pinches still arrive at the renderer, they just don't move the
-// visual viewport (so our editor-canvas pinch handler can run
-// instead).
-//
-// Calling from the preload (rather than from main via
-// `webContents.setVisualZoomLevelLimits`) is load-bearing in two
-// ways:
-//   1. Takes effect on renderer reload (Cmd+R), no main-process
-//      restart needed.
-//   2. Applies before any input event reaches the renderer's
-//      JavaScript — so the first pinch gesture after window load
-//      is handled by us, not by Chromium's default zoom.
-// No window in PwrSnap wants browser-level pinch (tray, library,
-// settings, float-over, capture — none of them); applying it from
-// the shared preload is correct.
-try {
-  webFrame.setVisualZoomLevelLimits(1, 1);
-} catch {
-  // setVisualZoomLevelLimits can throw if called before the frame
-  // is fully initialized in some Electron versions. Swallow — the
-  // main-side fallback (window.webContents.setVisualZoomLevelLimits)
-  // covers this case.
-}
+// NOTE: do NOT call webFrame.setVisualZoomLevelLimits(1, 1) here.
+// It looks like it should help ("disable browser pinch zoom so our
+// canvas zoom can take over") but it actually SUPPRESSES the
+// wheel-with-ctrlKey synthesis Chromium uses to deliver macOS
+// trackpad pinch to the renderer — pinning visual zoom at 1×
+// signals "this page can't zoom" and Chromium stops sending the
+// events. Our editor's pinch handler calls `event.preventDefault()`
+// on wheel-with-ctrlKey, which already prevents page-level zoom
+// without disabling the event pipeline. See PR #91 history.
 // Import from the `/ipc` subpath, NOT the package barrel — the barrel
 // re-exports the Zod overlay schemas, whose `z.object(...)` calls have
 // construction side-effects Vite can't tree-shake. Pulling the barrel

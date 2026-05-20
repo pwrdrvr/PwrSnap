@@ -119,6 +119,16 @@ extraResources:
 extraFiles:
   - from: "build/native/PwrSnapThumbnailExtension.appex"
     to: "PlugIns/PwrSnapThumbnailExtension.appex"
+  # Sibling Quick Look Preview Extension (Spacebar / full-screen).
+  # Separate extension point (`com.apple.quicklook.preview` vs the
+  # Thumbnail Extension's `com.apple.quicklook.thumbnail`), separate
+  # principal class (PreviewProvider vs ThumbnailProvider), separate
+  # bundle id. Apple's docs recommend one .appex per extension point
+  # so a registration failure for one doesn't take the sibling down
+  # with it. Both signed by the same afterPack hook above — it
+  # iterates every `.appex` under PlugIns/.
+  - from: "build/native/PwrSnapPreviewExtension.appex"
+    to: "PlugIns/PwrSnapPreviewExtension.appex"
 
 electronFuses:
   runAsNode: false

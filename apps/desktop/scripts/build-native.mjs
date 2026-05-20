@@ -118,6 +118,29 @@ const appexTargets = [
     infoPlist: join(nativeRoot, "thumbnail-extension", "Info.plist"),
     output: join(buildRoot, "PwrSnapThumbnailExtension.appex"),
     frameworks: ["QuickLookThumbnailing", "AppKit", "Foundation"]
+  },
+  // PwrSnapPreviewExtension — separate .appex for Quick Look's
+  // full-screen / Spacebar preview surface. Shares zip-reader.swift
+  // with the Thumbnail Extension (identical ZIP central-directory
+  // walk + same Data-extraction surface area) — building both
+  // targets compiles zip-reader.swift twice, once into each .appex.
+  // Acceptable: zip-reader.swift is ~280 LOC, compile is sub-second.
+  // The alternative (a shared framework) would mean signing a third
+  // bundle and dealing with library-validation rules from inside a
+  // sandbox.
+  {
+    name: "PwrSnapPreviewExtension",
+    sources: [
+      join(nativeRoot, "thumbnail-extension", "zip-reader.swift"),
+      join(nativeRoot, "preview-extension", "preview-provider.swift")
+    ],
+    infoPlist: join(nativeRoot, "preview-extension", "Info.plist"),
+    output: join(buildRoot, "PwrSnapPreviewExtension.appex"),
+    // QuickLookUI hosts QLPreviewProvider / QLPreviewingController
+    // (the Preview API), distinct from QuickLookThumbnailing which
+    // hosts QLThumbnailProvider. UniformTypeIdentifiers is needed
+    // for the `.png` / `.jpeg` UTType references in the reply.
+    frameworks: ["QuickLookUI", "AppKit", "Foundation", "UniformTypeIdentifiers"]
   }
 ];
 

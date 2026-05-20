@@ -509,26 +509,45 @@ function EditorLoaded({
     return () => window.removeEventListener("keydown", onKey);
   }, [zoom]);
 
-  // Attach the non-passive wheel listener manually — React's
-  // synthetic events go through a passive listener, so
-  // event.preventDefault() inside onWheel from JSX would warn / no-op.
+  // Attach the non-passive wheel listener at the WINDOW level with
+  // CAPTURE phase. Two reasons:
   //
-  // The listener attaches ONCE on mount and reads `zoom.onWheel`
-  // through a ref. Previously the effect depended on `zoom` (a new
-  // object every render), causing rapid detach/reattach cycles —
-  // there's a microsecond window between cleanup and re-add where
-  // wheel events get dropped. With trackpad pinches firing ~60 wheel
-  // events/second, missing events made pinch zoom feel inert.
+  // 1. Capture-phase at window catches wheel events BEFORE any
+  //    intermediate element can stopPropagation or otherwise hide
+  //    them from us. Earlier debugging suggested the wheel-with-
+  //    ctrlKey synthetic events from macOS trackpad pinch weren't
+  //    reliably reaching a wrap-level listener even with
+  //    setVisualZoomLevelLimits(1, 1) on the webContents. Going
+  //    window-level guarantees we see the events.
+  //
+  // 2. React's synthetic events go through a passive listener, so
+  //    event.preventDefault() inside an onWheel JSX prop would warn
+  //    or no-op. Native addEventListener with `passive: false` is
+  //    the only reliable way.
+  //
+  // We filter by whether the event target is inside the canvas-wrap
+  // so wheel events over the DetailRail, sidebar, popover, etc.
+  // pass through normally.
+  //
+  // `onWheelRef` lets the listener attach ONCE on mount but still
+  // call the latest `zoom.onWheel` closure (which captures `state`,
+  // `computeFit`, etc.). Without the ref the effect would have to
+  // depend on `zoom` (a new object every render) and re-attach the
+  // listener every render — a microsecond window where pinch
+  // events get dropped.
   const onWheelRef = useRef(zoom.onWheel);
   useEffect(() => {
     onWheelRef.current = zoom.onWheel;
   });
   useEffect(() => {
-    const el = canvasWrapRef.current;
-    if (el === null) return;
-    const handler = (e: WheelEvent): void => onWheelRef.current(e);
-    el.addEventListener("wheel", handler, { passive: false });
-    return () => el.removeEventListener("wheel", handler);
+    const handler = (e: WheelEvent): void => {
+      const wrap = canvasWrapRef.current;
+      if (wrap === null) return;
+      if (!(e.target instanceof Node) || !wrap.contains(e.target)) return;
+      onWheelRef.current(e);
+    };
+    window.addEventListener("wheel", handler, { passive: false, capture: true });
+    return () => window.removeEventListener("wheel", handler, { capture: true });
   }, [canvasWrapRef]);
 
   // When zoomed in or space-held, the canvas-wrap absorbs pan-drag

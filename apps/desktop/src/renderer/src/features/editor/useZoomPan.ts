@@ -304,13 +304,36 @@ export function useZoomPan(opts: {
     [wrapRef, computeFit]
   );
 
+  // Wheel dispatch — Figma-style:
+  //   • ctrl/meta + wheel  → zoom (cursor-anchored)
+  //   • wheel (no modifier) → pan (deltaX, deltaY shift canvas)
+  //
+  // macOS trackpad pinch dispatches synthetic ctrl+wheel events on
+  // some Chromium configurations and silently drops them on others
+  // (depends on system trackpad settings, macOS accessibility, and
+  // Chromium version — we can't control any of that from JS). So
+  // we never rely on pinch as the ONLY zoom path; Cmd+wheel and the
+  // ⌘+/⌘- keyboard shortcuts and the zoom-menu buttons are all
+  // first-class. When pinch DOES dispatch as ctrl+wheel, this same
+  // handler runs.
   const onWheel = useCallback(
     (event: WheelEvent): void => {
-      if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      setMode("custom");
-      const factor = WHEEL_STEP_BASE ** -event.deltaY;
-      zoomAtCursor(factor, event.clientX, event.clientY);
+      if (event.ctrlKey || event.metaKey) {
+        setMode("custom");
+        const factor = WHEEL_STEP_BASE ** -event.deltaY;
+        zoomAtCursor(factor, event.clientX, event.clientY);
+      } else {
+        // Two-finger scroll: pan the canvas. At scale ≤ 1 the canvas
+        // is centered with no room to pan, so this is a visual no-op;
+        // at scale > 1 the user can two-finger-scroll to navigate
+        // the zoomed canvas. Matches Figma's interaction model.
+        setState((prev) => ({
+          ...prev,
+          panX: prev.panX - event.deltaX,
+          panY: prev.panY - event.deltaY
+        }));
+      }
     },
     [zoomAtCursor]
   );

@@ -1,7 +1,13 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import type { CaptureEnrichment, CaptureRecord } from "@pwrsnap/shared";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import type {
+  AiEnrichmentBudgetStatus,
+  CaptureEnrichment,
+  CaptureRecord,
+  SettingsChangedEvent
+} from "@pwrsnap/shared";
 import { DetailRail } from "../DetailRail";
 import type { LibraryView } from "../library-view";
 
@@ -56,7 +62,19 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
 
 function installFakeApi(initial: CaptureEnrichment): {
   dispatch: ReturnType<typeof vi.fn>;
+  pushEvent: (channel: string, payload: unknown) => void;
 } {
+  const handlers = new Map<string, Set<(payload: unknown) => void>>();
+  const budgetStatus: AiEnrichmentBudgetStatus = {
+    mode: "available",
+    tokensAvailable: 5,
+    capacity: 5,
+    refillIntervalMs: 30_000,
+    nextTokenAt: null,
+    limitedAttemptsLastHour: 0,
+    disableThreshold: 3,
+    disabledAt: null
+  };
   const accepted = enrichment({
     suggestedTitle: initial.suggestedTitle,
     acceptedTitle: initial.suggestedTitle,
@@ -77,6 +95,7 @@ function installFakeApi(initial: CaptureEnrichment): {
     if (name === "codex:acceptTag") return { ok: true, value: accepted };
     if (name === "codex:rejectTag") return { ok: true, value: accepted };
     if (name === "codex:enrich") return { ok: true, value: { runId: "run_2" } };
+    if (name === "codex:budgetStatus") return { ok: true, value: budgetStatus };
     if (name === "library:addTag") return { ok: true, value: accepted };
     if (name === "library:removeTag") return { ok: true, value: accepted };
     if (name === "clipboard:copyText") return { ok: true, value: undefined };
@@ -87,17 +106,32 @@ function installFakeApi(initial: CaptureEnrichment): {
   });
   (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
     dispatch,
-    on: () => () => undefined,
+    on: (channel: string, handler: (payload: unknown) => void) => {
+      const subscribers = handlers.get(channel) ?? new Set<(payload: unknown) => void>();
+      subscribers.add(handler);
+      handlers.set(channel, subscribers);
+      return () => {
+        subscribers.delete(handler);
+      };
+    },
     startCaptureDrag: () => undefined
   } as unknown as NonNullable<Window["pwrsnapApi"]>;
-  return { dispatch };
+  return {
+    dispatch,
+    pushEvent: (channel, payload) => {
+      for (const handler of handlers.get(channel) ?? []) {
+        handler(payload);
+      }
+    }
+  };
 }
 
 async function renderDetailRail(initial: CaptureEnrichment): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
+  pushEvent: (channel: string, payload: unknown) => void;
 }> {
-  const { dispatch } = installFakeApi(initial);
+  const { dispatch, pushEvent } = installFakeApi(initial);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -114,7 +148,7 @@ async function renderDetailRail(initial: CaptureEnrichment): Promise<{
   await act(async () => {
     await Promise.resolve();
   });
-  return { el: container, dispatch };
+  return { el: container, dispatch, pushEvent };
 }
 
 async function unmount(): Promise<void> {
@@ -543,6 +577,29 @@ describe("DetailRail", () => {
     expect(el.querySelector(".ps-codex-pill .psl__chip-btn--accent")).toBeNull();
     // Regenerate stays available.
     expect(el.querySelector(".ps-codex-pill .psl__chip-link")?.textContent).toBe("Regenerate");
+  });
+
+  test("settings change that clears budget safety refreshes budget status", async () => {
+    const { dispatch, pushEvent } = await renderDetailRail(enrichment());
+    const initialBudgetReads = dispatch.mock.calls.filter(
+      ([name]) => name === "codex:budgetStatus"
+    ).length;
+
+    await act(async () => {
+      pushEvent(EVENT_CHANNELS.settingsChanged, {
+        settings: {
+          ai: {
+            budgetSafetyDisabledAt: null
+          }
+        }
+      } as SettingsChangedEvent);
+      await Promise.resolve();
+    });
+
+    const nextBudgetReads = dispatch.mock.calls.filter(
+      ([name]) => name === "codex:budgetStatus"
+    ).length;
+    expect(nextBudgetReads).toBe(initialBudgetReads + 1);
   });
 
   test("per-field Use rolls back the optimistic commit when the dispatch fails", async () => {

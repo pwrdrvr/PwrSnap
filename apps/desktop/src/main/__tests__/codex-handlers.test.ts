@@ -34,6 +34,7 @@ const { registerCodexHandlers } = await import("../handlers/codex-handlers");
 const { getAiRun } = await import("../persistence/ai-runs-repo");
 const { getCaptureEnrichment } = await import("../persistence/enrichment-repo");
 const { defaultSettings } = await import("../settings/desktop-settings-service");
+const { AiEnrichmentBudget } = await import("../ai/enrichment-budget");
 
 function testSettings(patch?: Partial<Settings>): Settings {
   return {
@@ -264,6 +265,137 @@ describe("Codex handlers", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("ai_disabled");
     }
+  });
+
+  test("codex:enrich reports safety-disabled state before generic AI disabled state", async () => {
+    let clientCreated = false;
+    electronMock.windows.push({
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel, payload) => {
+          electronMock.sentEvents.push({ channel, payload });
+        }
+      }
+    });
+    registerCodexHandlers({
+      clientFactory: () => {
+        clientCreated = true;
+        return new FakeCodexClient() as never;
+      },
+      budget: new AiEnrichmentBudget(),
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            ...defaultSettings().ai,
+            enabled: false,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: "2026-05-20T12:00:00.000Z",
+            autoAcceptSuggestions: false
+          }
+        })
+    });
+
+    const result = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("ai_budget_safety_disabled");
+    }
+    expect(clientCreated).toBe(false);
+    expect(electronMock.sentEvents).toContainEqual(
+      expect.objectContaining({
+        channel: EVENT_CHANNELS.aiBudgetUpdated,
+        payload: expect.objectContaining({ mode: "safety_disabled" })
+      })
+    );
+  });
+
+  test("codex:enrich refuses to start a run when enrichment budget is empty", async () => {
+    let clientCreated = false;
+    registerCodexHandlers({
+      clientFactory: () => {
+        clientCreated = true;
+        return new FakeCodexClient() as never;
+      },
+      budget: new AiEnrichmentBudget({ capacity: 0, disableThreshold: 10 }),
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false
+          }
+        })
+    });
+
+    const result = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("ai_budget_limited");
+    }
+    expect(clientCreated).toBe(false);
+    expect(testDb.prepare("SELECT COUNT(*) AS n FROM ai_runs").get()).toEqual({ n: 0 });
+  });
+
+  test("codex:enrich auto-disables AI after repeated budget exhaustion", async () => {
+    const writes: Settings[] = [];
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      budget: new AiEnrichmentBudget({ capacity: 0, disableThreshold: 2 }),
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false
+          }
+        }),
+      settingsWriter: async (patch) => {
+        const next = testSettings({
+          ai: {
+            ...defaultSettings().ai,
+            enabled: patch.ai?.enabled ?? true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: patch.ai?.budgetSafetyDisabledAt ?? null,
+            autoAcceptSuggestions: false
+          }
+        });
+        writes.push(next);
+        return next;
+      }
+    });
+
+    await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "auto-enrichment" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    const second = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "auto-enrichment" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error.code).toBe("ai_budget_safety_disabled");
+    }
+    await waitFor(() => writes.length === 1);
+    expect(writes[0]?.ai.enabled).toBe(false);
+    expect(writes[0]?.ai.budgetSafetyDisabledAt).toMatch(/^20/);
   });
 
   test("codex:cancel aborts an active background run", async () => {

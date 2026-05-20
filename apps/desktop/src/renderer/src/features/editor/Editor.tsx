@@ -546,9 +546,6 @@ function EditorLoaded({
     onGestureEndRef.current = zoom.onGestureEnd;
   });
   useEffect(() => {
-    // TEMP DIAGNOSTIC — keep until pinch is confirmed working.
-    // eslint-disable-next-line no-console
-    console.warn("[Editor] zoom listeners attached");
     const inWrap = (e: Event): boolean => {
       const wrap = canvasWrapRef.current;
       if (wrap === null) return false;
@@ -556,30 +553,32 @@ function EditorLoaded({
       return wrap.contains(e.target);
     };
     const onWheel = (e: WheelEvent): void => {
-      // eslint-disable-next-line no-console
-      console.warn("[wheel]", {
-        ctrlKey: e.ctrlKey, metaKey: e.metaKey,
-        deltaY: e.deltaY, deltaX: e.deltaX,
-        inWrap: inWrap(e)
-      });
       if (!inWrap(e)) return;
       onWheelRef.current(e);
     };
+    // macOS trackpad pinch SHOULD dispatch synthetic ctrl+wheel
+    // events (when setVisualZoomLevelLimits is set to a
+    // non-degenerate range, which preload/main both do). On some
+    // Chromium configurations the synthesis is silently dropped —
+    // diagnostic logs from PR #91 verified that on the test
+    // machine, pinch fires nothing while regular wheel fires
+    // normally. Gesture event handlers (gesturestart/change/end)
+    // are wired here as a fallback for the WebKit-style native
+    // gesture path Chromium uses on some macOS configs. We leave
+    // them in because they're harmless when they don't fire and
+    // load-bearing when they do — pinch dispatch is unreliable
+    // enough across machines that defense in depth is worth it.
+    // The Figma-style ctrl/⌘+scroll fallback (in useZoomPan's
+    // onWheel) is what gets the user a working zoom regardless.
     const onGestureStart = (e: Event): void => {
-      // eslint-disable-next-line no-console
-      console.warn("[gesturestart]", { scale: (e as Event & { scale?: number }).scale, inWrap: inWrap(e) });
       if (!inWrap(e)) return;
       onGestureStartRef.current(e);
     };
     const onGestureChange = (e: Event): void => {
-      // eslint-disable-next-line no-console
-      console.warn("[gesturechange]", { scale: (e as Event & { scale?: number }).scale, inWrap: inWrap(e) });
       if (!inWrap(e)) return;
       onGestureChangeRef.current(e);
     };
     const onGestureEnd = (e: Event): void => {
-      // eslint-disable-next-line no-console
-      console.warn("[gestureend]");
       if (!inWrap(e)) return;
       onGestureEndRef.current(e);
     };

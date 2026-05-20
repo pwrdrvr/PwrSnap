@@ -86,7 +86,8 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
   }, [draft, zoom]);
 
   const label = formatLabel(zoom);
-  const title = "Zoom · click to choose Fit / 100% / custom (⌘0 fit, ⌘1 100%)";
+  const title =
+    "Zoom · click for Fit / 100% / custom · ⌘0 fit · ⌘1 100% · ⌘+/⌘- step · ⌘+scroll cursor zoom · two-finger scroll pans";
 
   return (
     <div className="ed-zoom" ref={rootRef}>

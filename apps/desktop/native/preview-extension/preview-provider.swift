@@ -73,12 +73,22 @@ public func extractPwrSnapPreview(
 /// Principal class for the Quick Look preview extension point.
 /// macOS instantiates this via `_NSExtensionMain` reading
 /// `NSExtension.NSExtensionPrincipalClass` from Info.plist.
+///
+/// **API shape note**: `QLPreviewingController` declares the
+/// preview method in Objective-C as
+/// `-providePreviewForFileRequest:completionHandler:` (per
+/// QuickLookUI.framework/Headers/QLPreviewingController.h). Swift
+/// surfaces it as `providePreview(for:completionHandler:)`. There
+/// is no canonical `async throws -> QLPreviewReply` overload — the
+/// Obj-C runtime can't find a Swift-only `async` method via the
+/// extension XPC dispatch, so the preview surface stays blank and
+/// Finder falls back to the brand icon (the bug we hit before this
+/// rewrite). Always use the callback form, mirroring how the
+/// Thumbnail Extension uses `provideThumbnail(for:_:)`.
 @objc(PreviewProvider)
 final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
 
-  /// `QLPreviewingController.providePreview(for:)` is the actually-
-  /// invoked entry point for Quick Look previews on macOS. We
-  /// extract the best available image entry, hand it back as raw
+  /// Extract the best available image entry, hand it back as raw
   /// PNG/JPEG bytes via `QLPreviewReply(dataOfContentType:...)`.
   /// macOS renders the bytes in its own surface — we don't need to
   /// draw into a context, set up an NSGraphicsContext, or worry
@@ -88,28 +98,37 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
   /// contentSize so Quick Look can size its window appropriately
   /// before the bitmap finishes decoding.
   func providePreview(
-    for request: QLFilePreviewRequest
-  ) async throws -> QLPreviewReply {
-    let (data, contentType) = try extractPwrSnapPreview(bundleURL: request.fileURL)
+    for request: QLFilePreviewRequest,
+    completionHandler handler: @escaping (QLPreviewReply?, Error?) -> Void
+  ) {
+    do {
+      let (data, contentType) = try extractPwrSnapPreview(bundleURL: request.fileURL)
 
-    // Read image dimensions to feed contentSize. NSImage decodes
-    // headers cheaply; for a malformed image we fall back to a
-    // reasonable default rather than failing the whole preview.
-    let contentSize: CGSize
-    if let image = NSImage(data: data), image.size.width > 0 {
-      contentSize = image.size
-    } else {
-      // Default to a 4:3 frame at a sensible mid-size. Quick Look
-      // will rescale around this once the bitmap loads.
-      contentSize = CGSize(width: 1280, height: 960)
-    }
+      // Read image dimensions to feed contentSize. NSImage decodes
+      // headers cheaply; for a malformed image we fall back to a
+      // reasonable default rather than failing the whole preview.
+      let contentSize: CGSize
+      if let image = NSImage(data: data), image.size.width > 0 {
+        contentSize = image.size
+      } else {
+        // Default to a 4:3 frame at a sensible mid-size. Quick Look
+        // will rescale around this once the bitmap loads.
+        contentSize = CGSize(width: 1280, height: 960)
+      }
 
-    let reply = QLPreviewReply(
-      dataOfContentType: contentType,
-      contentSize: contentSize
-    ) { _ in
-      return data
+      // Swift bridges the Obj-C two-arg block
+      // `(QLPreviewReply *reply, NSError ** error)` to a single-
+      // argument closure (the inout NSError pointer is dropped on
+      // the Swift side; we surface errors by throwing instead).
+      let reply = QLPreviewReply(
+        dataOfContentType: contentType,
+        contentSize: contentSize
+      ) { _ in
+        return data
+      }
+      handler(reply, nil)
+    } catch {
+      handler(nil, error)
     }
-    return reply
   }
 }

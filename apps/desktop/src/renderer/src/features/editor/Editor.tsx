@@ -536,18 +536,52 @@ function EditorLoaded({
   // listener every render — a microsecond window where pinch
   // events get dropped.
   const onWheelRef = useRef(zoom.onWheel);
+  const onGestureStartRef = useRef(zoom.onGestureStart);
+  const onGestureChangeRef = useRef(zoom.onGestureChange);
+  const onGestureEndRef = useRef(zoom.onGestureEnd);
   useEffect(() => {
     onWheelRef.current = zoom.onWheel;
+    onGestureStartRef.current = zoom.onGestureStart;
+    onGestureChangeRef.current = zoom.onGestureChange;
+    onGestureEndRef.current = zoom.onGestureEnd;
   });
   useEffect(() => {
-    const handler = (e: WheelEvent): void => {
+    const inWrap = (e: Event): boolean => {
       const wrap = canvasWrapRef.current;
-      if (wrap === null) return;
-      if (!(e.target instanceof Node) || !wrap.contains(e.target)) return;
+      if (wrap === null) return false;
+      if (!(e.target instanceof Node)) return false;
+      return wrap.contains(e.target);
+    };
+    const onWheel = (e: WheelEvent): void => {
+      if (!inWrap(e)) return;
       onWheelRef.current(e);
     };
-    window.addEventListener("wheel", handler, { passive: false, capture: true });
-    return () => window.removeEventListener("wheel", handler, { capture: true });
+    const onGestureStart = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureStartRef.current(e);
+    };
+    const onGestureChange = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureChangeRef.current(e);
+    };
+    const onGestureEnd = (e: Event): void => {
+      if (!inWrap(e)) return;
+      onGestureEndRef.current(e);
+    };
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    // macOS trackpad pinch — primary signal on Mac. Capture-phase
+    // on the window so we catch them no matter where they're
+    // dispatched. Note: gesturestart/change/end aren't in the
+    // standard DOM event map; we use string event names.
+    window.addEventListener("gesturestart", onGestureStart, { passive: false, capture: true });
+    window.addEventListener("gesturechange", onGestureChange, { passive: false, capture: true });
+    window.addEventListener("gestureend", onGestureEnd, { passive: false, capture: true });
+    return () => {
+      window.removeEventListener("wheel", onWheel, { capture: true });
+      window.removeEventListener("gesturestart", onGestureStart, { capture: true });
+      window.removeEventListener("gesturechange", onGestureChange, { capture: true });
+      window.removeEventListener("gestureend", onGestureEnd, { capture: true });
+    };
   }, [canvasWrapRef]);
 
   // When zoomed in or space-held, the canvas-wrap absorbs pan-drag

@@ -84,6 +84,12 @@ export type UseZoomPanResult = {
    *  or meta+wheel; lets plain wheel-scroll pass through to native
    *  scrollbar pan. */
   onWheel: (event: WheelEvent) => void;
+  /** macOS gesture handlers — primary pinch-zoom signal on macOS
+   *  trackpads. Attach as `gesturestart`/`gesturechange`/`gestureend`
+   *  on the wrap (or window). */
+  onGestureStart: (event: Event) => void;
+  onGestureChange: (event: Event) => void;
+  onGestureEnd: (event: Event) => void;
   /** Pan handlers — attach to the wrap when `scale > 1 || spaceHeld`.
    *  Drives `wrap.scrollLeft/scrollTop` directly; no React state for
    *  pan position. */
@@ -229,21 +235,19 @@ export function useZoomPan(opts: {
     setState((prev) => ({ scale: clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE) }));
   }, []);
 
-  // Cursor-anchored zoom for pinch/meta+wheel. Math: compute the
-  // cursor's content-fraction on the pre-zoom canvas, then choose a
-  // new scrollLeft/scrollTop so the same fraction lands under the
-  // cursor on the post-zoom canvas.
+  // Shared cursor-anchored zoom — driven by both onWheel (mouse +
+  // ctrl+wheel) and onGestureChange (macOS trackpad pinch). Computes
+  // the cursor's content-fraction on the pre-zoom canvas, then
+  // chooses scrollLeft/scrollTop so the same fraction lands under
+  // the cursor post-zoom.
   //
   // When the canvas is SMALLER than the wrap (fit or zoomed out),
   // margin:auto centers it — `scrollLeft` is meaningless. When the
-  // canvas is LARGER than the wrap, it's pinned to (0,0) of the scroll
-  // area. The transition between the two regimes is handled by the
-  // `canvasOffset` calc below.
-  const onWheel = useCallback(
-    (event: WheelEvent): void => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      event.preventDefault();
-      setMode("custom");
+  // canvas is LARGER than the wrap, it's pinned to (0,0) of the
+  // scroll area. The transition is handled by the `prevOffset` /
+  // `nextOffset` calc below.
+  const zoomAtCursor = useCallback(
+    (factor: number, clientX: number, clientY: number): void => {
       const wrap = wrapRef.current;
       if (wrap === null) return;
       const fit = computeFit();
@@ -251,28 +255,21 @@ export function useZoomPan(opts: {
       const wrapRect = wrap.getBoundingClientRect();
       const scrollLeftBefore = wrap.scrollLeft;
       const scrollTopBefore = wrap.scrollTop;
-      const cursorInWrapX = event.clientX - wrapRect.left;
-      const cursorInWrapY = event.clientY - wrapRect.top;
+      const cursorInWrapX = clientX - wrapRect.left;
+      const cursorInWrapY = clientY - wrapRect.top;
       setState((prev) => {
-        const factor = WHEEL_STEP_BASE ** -event.deltaY;
         const targetScale = clamp(prev.scale * factor, MIN_SCALE, MAX_SCALE);
         if (targetScale === prev.scale) return prev;
         const prevCanvasW = fit.width * prev.scale;
         const prevCanvasH = fit.height * prev.scale;
         const nextCanvasW = fit.width * targetScale;
         const nextCanvasH = fit.height * targetScale;
-        // Canvas's offset within the scroll content. When canvas <=
-        // wrap, margin:auto inserts (wrap - canvas) / 2 of slack on
-        // each side. When canvas > wrap, offset is 0.
         const prevOffsetX = Math.max(0, (wrap.clientWidth - prevCanvasW) / 2);
         const prevOffsetY = Math.max(0, (wrap.clientHeight - prevCanvasH) / 2);
         const contentX = scrollLeftBefore + cursorInWrapX;
         const contentY = scrollTopBefore + cursorInWrapY;
         const cursorInCanvasX = contentX - prevOffsetX;
         const cursorInCanvasY = contentY - prevOffsetY;
-        // Fraction in [0,1] of cursor's position over the canvas.
-        // Clamp keeps anchor sane when cursor is in the wrap padding
-        // (outside the canvas) — anchors at nearest edge.
         const fx = prevCanvasW > 0 ? clamp(cursorInCanvasX / prevCanvasW, 0, 1) : 0.5;
         const fy = prevCanvasH > 0 ? clamp(cursorInCanvasY / prevCanvasH, 0, 1) : 0.5;
         const nextOffsetX = Math.max(0, (wrap.clientWidth - nextCanvasW) / 2);
@@ -281,9 +278,6 @@ export function useZoomPan(opts: {
         const newContentY = nextOffsetY + fy * nextCanvasH;
         const newScrollLeft = newContentX - cursorInWrapX;
         const newScrollTop = newContentY - cursorInWrapY;
-        // Schedule the scroll AFTER React commits the new canvas size
-        // — otherwise `scrollLeft = ...` is clamped to the OLD
-        // scrollWidth and we lose the cursor anchor.
         queueMicrotask(() => {
           const el = wrapRef.current;
           if (el === null) return;
@@ -295,6 +289,53 @@ export function useZoomPan(opts: {
     },
     [wrapRef, computeFit]
   );
+
+  const onWheel = useCallback(
+    (event: WheelEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      setMode("custom");
+      const factor = WHEEL_STEP_BASE ** -event.deltaY;
+      zoomAtCursor(factor, event.clientX, event.clientY);
+    },
+    [zoomAtCursor]
+  );
+
+  // macOS trackpad pinch dispatches gesturestart/change/end events
+  // (WebKit-style, also implemented by Chromium on macOS). These are
+  // the PRIMARY pinch-zoom signal on macOS — wheel-with-ctrlKey is
+  // a Chromium synthesis that may or may not happen depending on
+  // setVisualZoomLevelLimits state and other settings, but gesture
+  // events fire reliably.
+  //
+  // GestureEvent isn't in the standard DOM type lib (WebKit
+  // extension), so the parameter is typed minimally and accessed
+  // through casts. `event.scale` is the cumulative scale factor
+  // since gesturestart; we track it across changes so each
+  // gesturechange applies an INCREMENTAL factor.
+  const gestureScaleRef = useRef(1);
+  const onGestureStart = useCallback((event: Event): void => {
+    event.preventDefault();
+    setMode("custom");
+    gestureScaleRef.current = 1;
+  }, []);
+  const onGestureChange = useCallback(
+    (event: Event): void => {
+      event.preventDefault();
+      const ge = event as Event & { scale?: number; clientX?: number; clientY?: number };
+      const cumulative = typeof ge.scale === "number" ? ge.scale : 1;
+      const factor = cumulative / gestureScaleRef.current;
+      gestureScaleRef.current = cumulative;
+      const cx = typeof ge.clientX === "number" ? ge.clientX : 0;
+      const cy = typeof ge.clientY === "number" ? ge.clientY : 0;
+      zoomAtCursor(factor, cx, cy);
+    },
+    [zoomAtCursor]
+  );
+  const onGestureEnd = useCallback((event: Event): void => {
+    event.preventDefault();
+    gestureScaleRef.current = 1;
+  }, []);
 
   // Listen for Space keydown/keyup so the caller can switch to pan
   // mode without changing the active tool.
@@ -393,6 +434,9 @@ export function useZoomPan(opts: {
     spaceHeld,
     isPanning,
     onWheel,
+    onGestureStart,
+    onGestureChange,
+    onGestureEnd,
     onPanPointerDown,
     onPanPointerMove,
     onPanPointerUp

@@ -15,6 +15,7 @@
     "build:native": "node ./scripts/build-native.mjs",
     "rebuild:electron-native": "node ./scripts/rebuild-native-for-electron.mjs && node ./scripts/build-native.mjs",
     "package:dryrun": "node ./scripts/release.mjs --dryrun",
+    "package:skip-notarize": "node ./scripts/release.mjs --no-publish --skip-notarize",
     "package": "node ./scripts/release.mjs --no-publish",
     "release": "node ./scripts/release.mjs",
     "postinstall": "pnpm run rebuild:electron-native",

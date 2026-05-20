@@ -60,6 +60,13 @@ const dryrun = args.includes("--dryrun");
 const noPublish = args.includes("--no-publish");
 const prepareOnly = args.includes("--prepare-only");
 const signStageOnly = args.includes("--sign-stage-only");
+// `--skip-notarize`: produce a Developer-ID-signed but unnotarized
+// build. Useful for fast local iteration where you have a signing
+// keychain but no App Store Connect API key handy, and you're OK
+// with macOS Gatekeeper requiring a right-click → Open the first
+// time. Default is to notarize whenever the build is meant to be
+// shipped (anything except --dryrun).
+const skipNotarize = args.includes("--skip-notarize");
 
 if (prepareOnly && signStageOnly) {
   throw new Error("--prepare-only and --sign-stage-only cannot be combined");
@@ -67,8 +74,77 @@ if (prepareOnly && signStageOnly) {
 if (prepareOnly && dryrun) {
   throw new Error("--prepare-only and --dryrun cannot be combined");
 }
+if (skipNotarize && dryrun) {
+  throw new Error("--skip-notarize is implied by --dryrun (already unsigned)");
+}
 
 const publish = !dryrun && !noPublish && !prepareOnly;
+
+/**
+ * Returns true when this run is expected to produce a notarizable
+ * artifact: not a dryrun, not --skip-notarize, and we're on macOS.
+ * The check below is structural — see `assertNotarizationCreds`
+ * for the upfront cred check.
+ */
+function shouldNotarize() {
+  if (dryrun) return false;
+  if (skipNotarize) return false;
+  if (process.platform !== "darwin") return false;
+  return true;
+}
+
+/**
+ * Validate notarization credentials BEFORE running electron-builder.
+ * Without this check, a missing-creds build silently produces a
+ * Developer-ID-signed-but-unnotarized DMG — Gatekeeper rejects it
+ * on first open with no actionable error. Two credential paths are
+ * supported (electron-builder accepts either):
+ *
+ *   1. App Store Connect API key (CI's preferred path) —
+ *      `APPLE_API_KEY` (or base64-encoded `APPLE_API_KEY_BASE64`
+ *      decoded by maybeDecodeAppleApiKey above) + `APPLE_API_KEY_ID`
+ *      + `APPLE_API_ISSUER`.
+ *   2. Apple ID + app-specific password (local-dev convenience) —
+ *      `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`.
+ *
+ * Set either group, or pass `--skip-notarize` to produce an
+ * unnotarized build deliberately. The third option (--dryrun) is
+ * for fast iteration with no signing at all.
+ */
+function assertNotarizationCreds() {
+  if (!shouldNotarize()) return;
+
+  const hasApiKey =
+    Boolean(process.env.APPLE_API_KEY)
+    && Boolean(process.env.APPLE_API_KEY_ID)
+    && Boolean(process.env.APPLE_API_ISSUER);
+  const hasAppleId =
+    Boolean(process.env.APPLE_ID)
+    && Boolean(process.env.APPLE_APP_SPECIFIC_PASSWORD)
+    && Boolean(process.env.APPLE_TEAM_ID);
+
+  if (hasApiKey || hasAppleId) return;
+
+  throw new Error([
+    "Refusing to build without notarization credentials.",
+    "",
+    "Set ONE of these credential groups:",
+    "",
+    "  • App Store Connect API key (CI default):",
+    "      APPLE_API_KEY=/path/to/AuthKey_<id>.p8",
+    "      APPLE_API_KEY_ID=<10-char key id>",
+    "      APPLE_API_ISSUER=<issuer uuid>",
+    "",
+    "  • Apple ID + app-specific password (local convenience):",
+    "      APPLE_ID=<apple-id@example.com>",
+    "      APPLE_APP_SPECIFIC_PASSWORD=<xxxx-xxxx-xxxx-xxxx>",
+    "      APPLE_TEAM_ID=<10-char team id>",
+    "",
+    "Or pass --skip-notarize to build a signed-but-unnotarized DMG ",
+    "(Gatekeeper will warn the first time the user opens it).",
+    "Or pass --dryrun for a fast unsigned local build."
+  ].join("\n"));
+}
 
 function step(label) {
   console.log(`\n→ ${label}`);
@@ -260,6 +336,12 @@ maybeDecodeAppleApiKey();
 if (!dryrun) {
   maybeDecodeCscLink();
 }
+// Fail loudly BEFORE invoking electron-builder if we expect to
+// notarize but don't have the creds. Cheaper than letting the
+// notarize step run for ~10 minutes and then fail (or worse,
+// silently produce an unnotarized artifact that Gatekeeper
+// rejects on first open).
+assertNotarizationCreds();
 const builderArgs = ["--mac"];
 if (dryrun) {
   builderArgs.push("dmg");
@@ -273,6 +355,12 @@ if (dryrun) {
   // Ad-hoc signing creates a locally valid signature that satisfies
   // macOS page validation without requiring a Developer ID certificate.
   builderArgs.push("--config.mac.identity=-", "--config.mac.notarize=false");
+} else if (skipNotarize) {
+  // Sign with the real Developer ID identity (so the .app and its
+  // nested .appex bundles pass codesign --verify), but skip the
+  // Apple-server notarization call. Result: Gatekeeper warns on
+  // first open; user can right-click → Open to dismiss.
+  builderArgs.push("--config.mac.notarize=false");
 }
 builderArgs.push(publish ? "--publish" : "--publish=never", publish ? "always" : "");
 const cleanedArgs = builderArgs.filter((arg) => arg !== "");

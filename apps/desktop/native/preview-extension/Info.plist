@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist for the macOS Quick Look Preview Extension that
+  renders Spacebar / full-screen Quick Look previews for
+  `.pwrsnap` bundles.
+
+  Distinct from the Thumbnail Extension's Info.plist
+  (apps/desktop/native/thumbnail-extension/Info.plist):
+    - NSExtensionPointIdentifier differs:
+        com.apple.quicklook.preview   (this extension)
+        com.apple.quicklook.thumbnail (sibling)
+    - NSExtensionPrincipalClass differs:
+        PreviewProvider   (@objc-exposed name)
+        ThumbnailProvider (sibling's principal)
+    - CFBundleIdentifier differs (each .appex needs a unique id):
+        com.pwrdrvr.pwrsnap.PreviewExtension
+        com.pwrdrvr.pwrsnap.ThumbnailExtension
+
+  Both bundles ship side-by-side under PwrSnap.app/Contents/PlugIns/
+  and are signed by the same afterPack hook (apps/desktop/scripts/
+  afterpack-sign-appex.mjs already loops over every .appex in
+  the directory). Both inherit the sandbox entitlements from
+  apps/desktop/build/entitlements.thumbnail-extension.plist — the
+  Preview Extension reads the same file URL via the same
+  files.user-selected.read-only grant, so a separate entitlements
+  file would just duplicate the existing one.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>PwrSnap Preview</string>
+  <key>CFBundleExecutable</key>
+  <string>PwrSnapPreviewExtension</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.pwrdrvr.pwrsnap.PreviewExtension</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>PwrSnap Preview</string>
+  <key>CFBundlePackageType</key>
+  <string>XPC!</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSExtension</key>
+  <dict>
+    <key>NSExtensionPointIdentifier</key>
+    <string>com.apple.quicklook.preview</string>
+    <key>NSExtensionPrincipalClass</key>
+    <string>PreviewProvider</string>
+    <key>NSExtensionAttributes</key>
+    <dict>
+      <key>QLSupportedContentTypes</key>
+      <array>
+        <string>com.pwrdrvr.pwrsnap.bundle</string>
+      </array>
+      <!--
+        QLIsDataBasedPreview=true is what tells macOS to invoke
+        providePreview(for:completionHandler:) and consume the
+        returned QLPreviewReply. Without this key macOS defaults
+        to the view-controller-based path (looking for
+        preparePreviewOfFileAtURL: on a QLPreviewingController-
+        conforming view controller subclass), can't find that
+        method on our QLPreviewProvider subclass, and silently
+        falls back to the brand icon. Apple's own data-based
+        preview extensions all set this — see
+        QLPreviewGenerationExtension.appex (System framework
+        Quick Look fallback), OFD_Preview.appex, and the
+        IPSExtension.appex bundled with Console.
+      -->
+      <key>QLIsDataBasedPreview</key>
+      <true/>
+    </dict>
+  </dict>
+</dict>
+</plist>

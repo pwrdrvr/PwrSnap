@@ -823,6 +823,19 @@ export type Commands = {
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
 
+  /** Current status of the legacy-bundle migration, or `null` if no
+   *  migration has run this boot. The migration also broadcasts live
+   *  updates via `EVENT_CHANNELS.legacyBundleMigrationProgress`; this
+   *  verb exists to recover from the cold-start race where the
+   *  renderer's banner mounts AFTER the first progress events were
+   *  sent (and thus dropped — `webContents.send` is fire-and-forget,
+   *  not buffered). The banner queries this on mount to pick up the
+   *  current snapshot, then watches the event channel for updates. */
+  "migration:status": {
+    req: Record<string, never>;
+    res: LegacyBundleMigrationProgress | null;
+  };
+
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
   "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };

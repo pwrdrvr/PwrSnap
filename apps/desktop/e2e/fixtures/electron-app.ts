@@ -157,6 +157,14 @@ export type LaunchOptions = {
   env?: Record<string, string | undefined>;
   /** Override the main BrowserWindow size before assertions run. */
   windowSize?: { width: number; height: number };
+  /**
+   * Extra command-line arguments appended after the main entry point.
+   * Used by the open-file spec to simulate `open foo.pwrsnap` cold-
+   * start launches: a `.pwrsnap` path in argv triggers the argv-
+   * sweep branch of `wireOpenFileHandler()` and exercises the
+   * full `open-file → readBundleManifest → editor:open` flow.
+   */
+  extraArgs?: readonly string[];
 };
 
 export async function launchPwrSnap(
@@ -195,7 +203,7 @@ export async function launchPwrSnap(
   let electronApp: ElectronApplication | null = null;
   try {
     const launchedApp = await electron.launch({
-      args: [mainEntry],
+      args: [mainEntry, ...(options.extraArgs ?? [])],
       cwd: desktopRoot,
       env
     });

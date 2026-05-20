@@ -18,6 +18,7 @@
 import { BrowserWindow } from "electron";
 import { writeFile, mkdir, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+import { createHash } from "node:crypto";
 import sharp from "sharp";
 
 import {
@@ -32,7 +33,13 @@ import { compose } from "../render/compose";
 import { getDb } from "./db";
 import { getCacheSourcePath } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
-import { buildCompositeThumbnail, writeBundle } from "./bundle-store";
+import {
+  buildCompositeThumbnail,
+  readBundleEntry,
+  readBundleManifest,
+  readBundleOverlays,
+  writeBundle
+} from "./bundle-store";
 
 const log = getMainLogger("pwrsnap:legacy-bundle-migration");
 
@@ -81,6 +88,23 @@ type LegacyOrphanRow = {
   id: string;
   bundle_path: string;
   flat_png_path: string;
+};
+
+/**
+ * Pass C rows: already-bundle'd captures that still carry the
+ * pre-PR-90 `composite.png` entry inside their `.pwrsnap`. We
+ * rewrite each one in place — drop composite.png, add
+ * composite_thumbnail.jpg (1024px JPEG q80) — so the Thumbnail
+ * Extension's fastest preferred entry is present and the bundle
+ * shrinks back down to source.png + JSON + tiny thumbnail JPEG.
+ */
+type LegacyCompositeRow = {
+  id: string;
+  captured_at: string;
+  bundle_path: string;
+  width_px: number;
+  height_px: number;
+  legacy_composite_v2_attempts: number;
 };
 
 /**
@@ -149,14 +173,47 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     )
     .all() as LegacyOrphanRow[];
 
-  const total = wrapRows.length + sweepRows.length;
+  // Pass C — bundle'd rows that still have the pre-PR-90
+  // `composite.png` entry. Same retry/backoff shape as Pass A:
+  //   • bundle_path NOT NULL — must already be wrapped (Pass A's
+  //     output, or a fresh capture).
+  //   • kind = 'image' — videos don't have composites.
+  //   • legacy_composite_v2_attempts < MAX — parked rows skipped.
+  //   • last_failed_at older than 1 hour — quick relaunch shouldn't
+  //     burn another attempt.
+  //
+  // We over-select here (every bundled image row) and let
+  // `rewriteCompositeRow` quickly skip already-migrated bundles
+  // by inspecting their entry list. Cheap (a single yauzl-list
+  // open per skipped bundle) and means we don't need a separate
+  // "already migrated" flag — the predicate "composite.png is
+  // present in the ZIP" IS the flag.
+  const compositeRows = db
+    .prepare(
+      `SELECT id, captured_at, bundle_path,
+              width_px, height_px,
+              legacy_composite_v2_attempts
+       FROM captures
+       WHERE bundle_path IS NOT NULL
+         AND deleted_at IS NULL
+         AND kind = 'image'
+         AND legacy_composite_v2_attempts < @maxAttempts
+         AND (
+           legacy_composite_v2_last_failed_at IS NULL
+           OR datetime(legacy_composite_v2_last_failed_at) < datetime('now', '-1 hour')
+         )`
+    )
+    .all({ maxAttempts: MAX_ATTEMPTS }) as LegacyCompositeRow[];
+
+  const total = wrapRows.length + sweepRows.length + compositeRows.length;
   if (total === 0) {
     return { attempted: 0, succeeded: 0, failed: 0, failedIds: [] };
   }
 
   log.info("legacy-bundle migration: starting", {
     wrapCount: wrapRows.length,
-    sweepCount: sweepRows.length
+    sweepCount: sweepRows.length,
+    compositeCount: compositeRows.length
   });
 
   let done = 0;
@@ -181,6 +238,19 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
   );
   const clearFlatPngPath = db.prepare(
     `UPDATE captures SET flat_png_path = NULL WHERE id = @id`
+  );
+  const recordCompositeFailure = db.prepare(
+    `UPDATE captures
+     SET legacy_composite_v2_attempts = legacy_composite_v2_attempts + 1,
+         legacy_composite_v2_last_failed_at = datetime('now')
+     WHERE id = @id`
+  );
+  const markCompositeMigrated = db.prepare(
+    `UPDATE captures
+     SET bundle_modified_at = @bundle_modified_at,
+         legacy_composite_v2_attempts = 0,
+         legacy_composite_v2_last_failed_at = NULL
+     WHERE id = @id`
   );
 
   // Pass A loop.
@@ -250,6 +320,44 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     }
   }
 
+  // Pass C loop — composite.png → composite_thumbnail.jpg rewrite.
+  for (const row of compositeRows) {
+    try {
+      const outcome = await rewriteCompositeRow(row);
+      if (outcome.changed) {
+        markCompositeMigrated.run({
+          id: row.id,
+          bundle_modified_at: outcome.bundleModifiedAt
+        });
+      } else {
+        // No composite.png in this bundle — already migrated (e.g.
+        // captured post-PR-90). Mark as success so we don't re-scan
+        // every boot.
+        markCompositeMigrated.run({
+          id: row.id,
+          bundle_modified_at: row.captured_at
+        });
+      }
+      done += 1;
+    } catch (cause) {
+      failed += 1;
+      done += 1;
+      failedIds.push(row.id);
+      recordCompositeFailure.run({ id: row.id });
+      const nextAttempt = row.legacy_composite_v2_attempts + 1;
+      log.warn("legacy-bundle migration (Pass C): row failed", {
+        captureId: row.id,
+        bundlePath: row.bundle_path,
+        attempt: nextAttempt,
+        parked: nextAttempt >= MAX_ATTEMPTS,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    if (done % PROGRESS_EVERY_N === 0) {
+      emitProgress("running");
+    }
+  }
+
   emitProgress("complete");
 
   log.info("legacy-bundle migration: done", {
@@ -257,7 +365,8 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     succeeded: done - failed,
     failed,
     wrapAttempts: wrapRows.length,
-    sweepAttempts: sweepRows.length
+    sweepAttempts: sweepRows.length,
+    compositeAttempts: compositeRows.length
   });
 
   return {
@@ -416,4 +525,107 @@ async function migrateRow(row: LegacyRow): Promise<void> {
     bundlePath,
     overlayCount: liveOverlays.length
   });
+}
+
+type RewriteCompositeOutcome =
+  | { changed: false }
+  | { changed: true; bundleModifiedAt: string };
+
+/**
+ * Rewrite one legacy bundle that still carries `composite.png` —
+ * drop the composite, generate `composite_thumbnail.jpg` from
+ * whichever rendered image is freshest (composite.png if it
+ * differs from source.png — meaning baked-in overlays — else
+ * source.png itself), and atomic-rename the result over the
+ * existing bundle.
+ *
+ * Returns `{ changed: false }` when the bundle is already
+ * composite.png-free (a post-PR-90 capture that snuck through
+ * the over-selection predicate). Caller still marks the row as
+ * migrated in that case so we don't re-scan it.
+ *
+ * Idempotent: a second call on an already-rewritten bundle is a
+ * no-op (composite.png is gone → `changed: false`).
+ */
+async function rewriteCompositeRow(
+  row: LegacyCompositeRow
+): Promise<RewriteCompositeOutcome> {
+  const manifest = await readBundleManifest(row.bundle_path);
+  if (manifest.bundle_format_version !== 1) {
+    // v2 bundles have a different on-disk shape; Pass C doesn't
+    // touch them. Mark as no-change and move on.
+    return { changed: false };
+  }
+
+  // Read source.png and try to read composite.png. The read APIs
+  // throw for missing entries, so we catch the composite case
+  // narrowly — anything else (corrupt zip, missing source.png) is
+  // a real failure and surfaces to the caller's retry book-keeping.
+  const sourcePng = await readBundleEntry(row.bundle_path, "source.png");
+  let compositePng: Buffer | null = null;
+  try {
+    compositePng = await readBundleEntry(row.bundle_path, "composite.png");
+  } catch (cause) {
+    // The entry validator throws with a "missing" / "impossible"
+    // message when the entry isn't present. We can't pattern-match
+    // on the message reliably across releases, so treat ANY read
+    // failure here as "composite.png absent" — the bundle is
+    // already migrated, mark it done.
+    log.debug("Pass C: composite.png absent or unreadable; treating as migrated", {
+      captureId: row.id,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return { changed: false };
+  }
+
+  // Decide what to feed buildCompositeThumbnail. If composite ==
+  // source byte-for-byte (the common case for captures with no
+  // applied overlays at bundle time), feeding either is equivalent
+  // and using source skips a redundant decode. If they differ, the
+  // composite carries baked-in overlay rendering — use it so the
+  // thumbnail still reflects what the user saw in PwrSnap.
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const compositeSha = createHash("sha256").update(compositePng).digest("hex");
+  const thumbnailInput = sourceSha === compositeSha ? sourcePng : compositePng;
+
+  const thumbnailJpg = await buildCompositeThumbnail(thumbnailInput, {
+    width_px: row.width_px,
+    height_px: row.height_px
+  });
+
+  // Preserve every field from the original manifest except
+  // bundle_modified_at, which we bump to "now" so the migration is
+  // visible in the row's audit trail.
+  const now = new Date().toISOString();
+  const nextManifest: BundleManifestV1 = {
+    ...manifest,
+    bundle_modified_at: now
+  };
+
+  // Overlays.json is untouched — Pass C only changes which image
+  // entries are present, not the editing history.
+  const overlays = await readBundleOverlays(row.bundle_path);
+
+  const filenameStem = row.id;
+  const outputDir = dirname(row.bundle_path);
+
+  // writeBundle takes (manifest, overlays, sourcePng, thumbnailJpg)
+  // — no `compositePng` parameter exists anymore, so the rewritten
+  // bundle is composite.png-free by construction.
+  await writeBundle({
+    outputDir,
+    filenameStem,
+    manifest: nextManifest,
+    overlays,
+    sourcePng,
+    thumbnailJpg
+  });
+
+  log.info("Pass C: rewrote bundle without composite.png", {
+    captureId: row.id,
+    bundlePath: row.bundle_path,
+    compositeEqualSource: sourceSha === compositeSha
+  });
+
+  return { changed: true, bundleModifiedAt: now };
 }

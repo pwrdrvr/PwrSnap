@@ -73,6 +73,11 @@ import {
   showTrayPopoverForE2E
 } from "./tray";
 import { createMainWindow, findMainLibraryWindow } from "./window";
+import {
+  handleSecondInstanceArgv,
+  processQueuedOpenFiles,
+  wireOpenFileHandler
+} from "./open-file";
 
 const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
@@ -677,7 +682,7 @@ export function bootstrapApp(): void {
       app.quit();
       return;
     }
-    app.on("second-instance", () => {
+    app.on("second-instance", (_event, argv) => {
       // Another `pnpm dev` (or another launch of the .app) tried to
       // start. Raise (or recreate) the library singleton so the user
       // gets the window they were trying to launch.
@@ -685,8 +690,22 @@ export function bootstrapApp(): void {
       if (main.isMinimized()) main.restore();
       if (!main.isVisible()) main.show();
       main.focus();
+      // If the second instance was launched via `open foo.pwrsnap` /
+      // `PwrSnap.app /path/to/foo.pwrsnap`, route those paths to the
+      // open-file pipeline. macOS's GUI double-click uses the
+      // open-file event (already wired below); this catches CLI
+      // launches and drag-onto-Dock-while-running.
+      handleSecondInstanceArgv(argv);
     });
   }
+
+  // open-file MUST be registered before `app.whenReady()` resolves —
+  // macOS can fire it during cold start with the path the user
+  // double-clicked in Finder. The handler queues paths and drains
+  // them after `processQueuedOpenFiles()` is called inside the
+  // whenReady block below, once the DB is open + handlers are
+  // registered (so `editor:open` is dispatchable).
+  wireOpenFileHandler();
 
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();
@@ -812,6 +831,12 @@ export function bootstrapApp(): void {
       void wireHotkeyRegistrations();
     }
     createMainWindow();
+    // Drain any `.pwrsnap` paths the OS handed us during cold-start
+    // (macOS `app.on('open-file')` fires before whenReady; we queue
+    // and dispatch here once the DB + handlers + main window are
+    // ready). For each path, looks up the capture by id and opens
+    // the editor window. See open-file.ts for the resolution flow.
+    processQueuedOpenFiles();
     if (!isE2E) {
       // Auto-update needs the channel resolver wired
       // (wireHotkeyRegistrations sets it). In production, kicks off

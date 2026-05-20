@@ -2030,10 +2030,19 @@
    parent's max-height clipped what overflowed). */
 .psl__stage-img {
   position: relative;
-  /* Tightened from 80px to 32px — the old reservation wasted half
-     the available space on margin around the canvas. 32px gives
-     nav-button clearance + a little breathing room without
-     collapsing the canvas. */
+  /* Width is an EXPLICIT calc, not just a max-width, because the
+     chromeless Editor inside now uses canvas-grows zoom which sets
+     explicit pixel dimensions on the inner canvas. Without an
+     explicit width on this wrapper, stage-img would size to its
+     content's intrinsic — which is the inner canvas's explicit
+     pixel width — creating a feedback loop where shrinking the
+     canvas shrinks stage-img which shrinks the wrap which shrinks
+     fit which shrinks the canvas. With explicit `width: 100% - 32px`
+     plus `max-height: 100% - 32px` plus the inline `aspect-ratio`,
+     stage-img resolves to object-fit:contain semantics independent
+     of the canvas's intrinsic size. 32px reserves nav-button
+     clearance + a little breathing room. */
+  width: calc(100% - 32px);
   max-width: calc(100% - 32px);
   max-height: calc(100% - 32px);
   border-radius: 7px;

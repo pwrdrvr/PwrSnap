@@ -44,6 +44,44 @@ import {
 const log = getMainLogger("pwrsnap:legacy-bundle-migration");
 
 /**
+ * Most recent progress event emitted by the running migration (or
+ * the terminal "complete" event of the last one to run). Cached
+ * here so a late-mounting renderer can call `migration:status` on
+ * mount and pick up the current state — `webContents.send` is
+ * fire-and-forget, so any event broadcast before the renderer's
+ * IPC listener attached is lost. Reset to `null` between runs (set
+ * by `runLegacyBundleMigration` before the first `emitProgress`).
+ *
+ * Why this is load-bearing for UX:
+ *   1. Cold-start ordering — migration kicks off in
+ *      `app.whenReady` right after window creation, but the
+ *      BrowserWindow's renderer hasn't yet parsed its JS bundle,
+ *      mounted React, or run the banner's subscribe-effect. The
+ *      first one-to-three progress events are dropped.
+ *   2. Small migrations — when only a few rows need processing
+ *      the whole loop finishes in under a second, before the
+ *      renderer mounts at all. Without the cached snapshot the
+ *      user never sees the banner even though the migration ran.
+ *
+ * The bus verb `migration:status` reads this and returns it; the
+ * banner queries it on mount BEFORE event subscription kicks in,
+ * so it picks up the current state if a migration is already in-
+ * flight or recently completed.
+ */
+let cachedProgress: LegacyBundleMigrationProgress | null = null;
+
+/**
+ * Returns the most recent progress event emitted by the migration
+ * loop. Bus exposure (`migration:status`) wraps this — banner
+ * subscribes via the events channel for live updates AND queries
+ * via this verb on mount to recover from the inevitable race
+ * between migration start and renderer ready-state.
+ */
+export function getLegacyMigrationProgress(): LegacyBundleMigrationProgress | null {
+  return cachedProgress;
+}
+
+/**
  * Rows whose `legacy_bundle_attempts` has hit this ceiling are parked —
  * still visible via `legacy_src_path`, no longer re-attempted on boot.
  * A doctor pass can `UPDATE captures SET legacy_bundle_attempts = 0`
@@ -222,12 +260,20 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
 
   const emitProgress = (status: LegacyBundleMigrationProgress["status"]): void => {
     const payload: LegacyBundleMigrationProgress = { status, total, done, failed };
+    // Cache the snapshot BEFORE broadcasting — if a renderer mounts
+    // and queries `migration:status` while we're mid-broadcast, it
+    // sees the new value rather than a stale one.
+    cachedProgress = payload;
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
       win.webContents.send(EVENT_CHANNELS.legacyBundleMigrationProgress, payload);
     }
   };
 
+  // Reset the cache at the start of a fresh run so a renderer that
+  // mounts before the first emit sees `null` (no banner) rather
+  // than a stale "complete" from the previous run.
+  cachedProgress = null;
   emitProgress("running");
 
   const recordFailure = db.prepare(

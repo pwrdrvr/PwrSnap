@@ -31,11 +31,11 @@ import { app, BrowserWindow, Notification } from "electron";
 import { extname } from "node:path";
 
 import { getMainLogger } from "./log";
-
-const log = getMainLogger("open-file");
 import { readBundleManifest } from "./persistence/bundle-store";
 import { getCaptureById } from "./persistence/captures-repo";
 import { createEditWindow, createMainWindow, findMainLibraryWindow } from "./window";
+
+const log = getMainLogger("open-file");
 
 // Files received before `app.whenReady()` resolves go here and get
 // drained later. After ready, paths are dispatched immediately.
@@ -85,6 +85,15 @@ export function wireOpenFileHandler(): void {
  * process's argv and queues any `.pwrsnap` paths. The newer process
  * has already exited (single-instance lock); we're handling its
  * requested files.
+ *
+ * Rare path on macOS: GUI double-click on a `.pwrsnap` while
+ * PwrSnap is already running dispatches the `open-file` event
+ * directly to the running app, NOT a second-instance spawn — argv
+ * is never re-evaluated. This handler covers (a) `open foo.pwrsnap`
+ * from a terminal while the app is running, (b) drag-onto-Dock
+ * shortcuts that occasionally land via argv depending on macOS
+ * version. Mostly defense-in-depth so a future macOS behavior
+ * change doesn't silently drop file opens.
  */
 export function handleSecondInstanceArgv(argv: readonly string[]): void {
   for (const path of extractPwrsnapPaths(argv)) {
@@ -157,6 +166,17 @@ async function openPwrsnapInEditor(bundlePath: string): Promise<void> {
   }
 
   log.info("open-file: opening editor", { bundlePath, captureId });
+  // Raise the library too. Two reasons:
+  //   1. On cold-start double-click, `createMainWindow()` and our
+  //      `createEditWindow` run back-to-back; the editor often lands
+  //      in front of an as-yet-invisible library and the user has no
+  //      obvious way back to the rest of their captures.
+  //   2. The not-in-library and in-trash branches above both raise
+  //      the library — consistency.
+  // We raise BEFORE creating the editor so the editor naturally lands
+  // in front (most-recently-focused win).
+  const main = findMainLibraryWindow() ?? createMainWindow();
+  raiseToFront(main);
   createEditWindow(captureId);
 }
 

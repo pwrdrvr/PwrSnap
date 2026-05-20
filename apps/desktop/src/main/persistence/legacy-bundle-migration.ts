@@ -291,10 +291,32 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
          legacy_composite_v2_last_failed_at = datetime('now')
      WHERE id = @id`
   );
-  const markCompositeMigrated = db.prepare(
+  // Two flavors of "Pass C succeeded":
+  //   1. We actually rewrote the bundle — bump bundle_modified_at to
+  //      the rewrite timestamp so the row's audit trail reflects the
+  //      on-disk change.
+  //   2. The bundle was already composite.png-free (a previous Pass C
+  //      run, or a post-PR-90 capture caught by the over-selection
+  //      predicate) — leave bundle_modified_at ALONE. The on-disk
+  //      bundle hasn't changed; we just want to clear the
+  //      retry/backoff bookkeeping.
+  //
+  // Earlier this UPDATE was a single statement that took
+  // bundle_modified_at as a parameter, and the no-change branch
+  // passed row.captured_at — which silently rewrote
+  // bundle_modified_at to the original capture time, destroying
+  // whatever the true file-mtime-derived value was. Caught in
+  // /review.
+  const markCompositeMigratedRewritten = db.prepare(
     `UPDATE captures
      SET bundle_modified_at = @bundle_modified_at,
          legacy_composite_v2_attempts = 0,
+         legacy_composite_v2_last_failed_at = NULL
+     WHERE id = @id`
+  );
+  const markCompositeMigratedNoChange = db.prepare(
+    `UPDATE captures
+     SET legacy_composite_v2_attempts = 0,
          legacy_composite_v2_last_failed_at = NULL
      WHERE id = @id`
   );
@@ -371,18 +393,20 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
     try {
       const outcome = await rewriteCompositeRow(row);
       if (outcome.changed) {
-        markCompositeMigrated.run({
+        // We rewrote the bundle on disk; advance bundle_modified_at
+        // to match.
+        markCompositeMigratedRewritten.run({
           id: row.id,
           bundle_modified_at: outcome.bundleModifiedAt
         });
       } else {
         // No composite.png in this bundle — already migrated (e.g.
-        // captured post-PR-90). Mark as success so we don't re-scan
-        // every boot.
-        markCompositeMigrated.run({
-          id: row.id,
-          bundle_modified_at: row.captured_at
-        });
+        // captured post-PR-90, or rewritten by a previous Pass C
+        // run). Clear retry/backoff bookkeeping but leave
+        // bundle_modified_at UNTOUCHED — the on-disk file hasn't
+        // changed and overwriting the column with anything else
+        // (captured_at, "now") would corrupt the audit trail.
+        markCompositeMigratedNoChange.run({ id: row.id });
       }
       done += 1;
     } catch (cause) {

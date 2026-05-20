@@ -987,6 +987,16 @@ export function bootstrapApp(): void {
         // skips it to test the cold path.
         prewarmTrayPopover: () => {
           prewarmTrayWindow();
+        },
+        // Drive the open-file pipeline directly from a spec. Same
+        // entry point used by `app.on('open-file')` (macOS GUI
+        // double-click), `process.argv` cold-start sweeps (terminal
+        // `open foo.pwrsnap`), and `second-instance` argv routing.
+        // Specs use this to verify the read-manifest → look-up-row
+        // → createEditWindow chain without needing to dispatch
+        // real macOS NSAppleEvents from Playwright.
+        triggerOpenFile: (bundlePath: string) => {
+          handleSecondInstanceArgv([bundlePath]);
         }
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =

@@ -546,6 +546,9 @@ function EditorLoaded({
     onGestureEndRef.current = zoom.onGestureEnd;
   });
   useEffect(() => {
+    // TEMP DIAGNOSTIC — remove once pinch confirmed working.
+    // eslint-disable-next-line no-console
+    console.warn("[Editor] zoom listeners attached, wrap=", canvasWrapRef.current);
     const inWrap = (e: Event): boolean => {
       const wrap = canvasWrapRef.current;
       if (wrap === null) return false;
@@ -553,18 +556,32 @@ function EditorLoaded({
       return wrap.contains(e.target);
     };
     const onWheel = (e: WheelEvent): void => {
+      // TEMP DIAGNOSTIC: log ALL wheel events at this listener.
+      // eslint-disable-next-line no-console
+      console.warn("[Editor wheel]", {
+        ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+        deltaY: e.deltaY, deltaX: e.deltaX,
+        inWrap: inWrap(e),
+        target: (e.target as HTMLElement)?.tagName + "." + (e.target as HTMLElement)?.className
+      });
       if (!inWrap(e)) return;
       onWheelRef.current(e);
     };
     const onGestureStart = (e: Event): void => {
+      // eslint-disable-next-line no-console
+      console.warn("[Editor gesturestart]", { inWrap: inWrap(e), scale: (e as Event & { scale?: number }).scale });
       if (!inWrap(e)) return;
       onGestureStartRef.current(e);
     };
     const onGestureChange = (e: Event): void => {
+      // eslint-disable-next-line no-console
+      console.warn("[Editor gesturechange]", { inWrap: inWrap(e), scale: (e as Event & { scale?: number }).scale });
       if (!inWrap(e)) return;
       onGestureChangeRef.current(e);
     };
     const onGestureEnd = (e: Event): void => {
+      // eslint-disable-next-line no-console
+      console.warn("[Editor gestureend]");
       if (!inWrap(e)) return;
       onGestureEndRef.current(e);
     };

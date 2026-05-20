@@ -101,6 +101,7 @@
   border-top: 1px solid var(--border-subtle);
 }
 .ed-zoom-step {
+  position: relative;
   width: 28px;
   height: 28px;
   display: inline-flex;
@@ -116,6 +117,43 @@
 .ed-zoom-step:hover {
   background: var(--bg-panel);
   color: var(--text-primary);
+}
+/* Tiny shortcut hint anchored to the bottom-right of each step
+   button. Only visible on hover so the buttons stay clean at rest. */
+.ed-zoom-step-key {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  font: 700 8px/1 var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 120ms;
+  pointer-events: none;
+}
+.ed-zoom-step:hover .ed-zoom-step-key {
+  opacity: 1;
+}
+/* Footer line listing scroll/pan shortcuts the menu can't show
+   inline. Native HTML title tooltips are unreliable in Electron
+   (especially in light mode), so we surface the hints in the menu
+   body where they're always discoverable. */
+.ed-zoom-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px 8px 2px;
+  margin-top: 2px;
+  font: 500 10px/1.4 var(--font-mono);
+  color: var(--text-muted);
+}
+.ed-zoom-hint kbd {
+  display: inline-block;
+  padding: 0 3px;
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font: inherit;
 }
 .ed-zoom-input {
   flex: 1;

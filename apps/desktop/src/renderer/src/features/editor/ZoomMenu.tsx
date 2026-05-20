@@ -145,9 +145,9 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
               className="ed-zoom-step"
               onClick={() => zoom.zoomBy(1 / ZOOM_STEP)}
               aria-label="Zoom out 20%"
-              title="−20%"
             >
-              −
+              <span aria-hidden="true">−</span>
+              <span className="ed-zoom-step-key">⌘-</span>
             </button>
             <div className="ed-zoom-input">
               <input
@@ -181,10 +181,14 @@ export function ZoomMenu({ zoom }: { zoom: NonNullable<ZoomApi> }): ReactElement
               className="ed-zoom-step"
               onClick={() => zoom.zoomBy(ZOOM_STEP)}
               aria-label="Zoom in 20%"
-              title="+20%"
             >
-              +
+              <span aria-hidden="true">+</span>
+              <span className="ed-zoom-step-key">⌘+</span>
             </button>
+          </div>
+          <div className="ed-zoom-hint">
+            <span><kbd>⌘</kbd>+scroll cursor zoom</span>
+            <span>· two-finger scroll pans</span>
           </div>
         </div>
       )}

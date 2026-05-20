@@ -211,18 +211,18 @@ export function createMainWindow(): BrowserWindow {
     log.warn("main window renderer unresponsive", { id: window.id });
   });
 
-  // NOTE: do NOT call setVisualZoomLevelLimits(1, 1) on the library
-  // window. It looks like the right tool ("disable browser zoom so
-  // our canvas handler takes the gesture") but it actually
-  // SUPPRESSES the wheel-with-ctrlKey synthesis Chromium uses to
-  // deliver macOS trackpad pinch to the renderer — pinning visual
-  // zoom at 1× signals "this page can't zoom" and Chromium stops
-  // sending the events. The Editor's onWheel handler calls
-  // `event.preventDefault()` on wheel-with-ctrlKey, which already
-  // prevents page-level zoom without disabling the event pipeline.
-  // (The tray, float-over, settings, and capture windows still call
-  // setVisualZoomLevelLimits because they have no pinch handler at
-  // all and want pinch to be a no-op there.)
+  // Re-enable pinch zoom for the library window. Electron disables
+  // visual zoom by default — and "disabled" means more than "no
+  // zoom"; Chromium silently drops the synthetic ctrl+wheel events
+  // for trackpad pinch entirely. Calling setVisualZoomLevelLimits
+  // with a non-degenerate range re-enables event dispatch. The
+  // Editor's onWheel preventDefaults before the browser actually
+  // visual-zooms. See Electron docs:
+  // https://www.electronjs.org/docs/latest/api/web-contents#contentssetvisualzoomlevellimitsminimumlevel-maximumlevel
+  // and preload/index.ts for the matching webFrame call (which
+  // applies on every renderer reload).
+  // (1, 1) does NOT re-enable. Range must be non-degenerate.
+  window.webContents.setVisualZoomLevelLimits(1, 3);
 
   return window;
 }

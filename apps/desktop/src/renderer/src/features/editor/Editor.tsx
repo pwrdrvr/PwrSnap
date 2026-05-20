@@ -600,7 +600,17 @@ function EditorLoaded({
 
   // When zoomed in or space-held, the canvas-wrap absorbs pan-drag
   // pointer events instead of the canvas's drawing handlers.
-  const wantPan = zoom.state.scale > 1 || zoom.spaceHeld;
+  // Single-finger drag arbitration on the canvas wrap:
+  //   • Space held → always pan (Photoshop convention: hold Space
+  //     to grab + drag regardless of active tool).
+  //   • Pointer tool + zoomed in → pan (Pointer is the "no-op on
+  //     drag" tool, so we repurpose its drag for navigation).
+  //   • Any drawing tool (arrow, rect, highlight, blur, text) →
+  //     pointer events go to the canvas so the user can DRAW. Pan
+  //     stays accessible via Space+drag and via two-finger scroll
+  //     (which doesn't conflict with tool drag — it's a separate
+  //     gesture handled by useZoomPan's wheel handler).
+  const wantPan = zoom.spaceHeld || (tool === "pointer" && zoom.state.scale > 1);
 
   return (
     <div

@@ -108,9 +108,16 @@
   justify-content: safe center;
   padding: 24px;
   overflow: auto;
-  /* Disable browser-native pinch zoom on the wrap so our wheel
-     handler can drive zoom instead of the page-level zoom. */
-  touch-action: pan-x pan-y;
+  /* DO NOT add `touch-action: pan-x pan-y` here. Looks innocuous —
+     "I want to handle scrolling, but not zoom" — but Chromium
+     extends `touch-action` to wheel events too: declaring pan-only
+     suppresses the synthetic ctrl+wheel events that the OS sends
+     for macOS trackpad pinch gestures, killing the Editor's
+     canvas-level pinch-to-zoom. The browser-level visual-viewport
+     pinch is disabled via `setVisualZoomLevelLimits(1, 1)` on the
+     library window's webContents (apps/desktop/src/main/window.ts)
+     so we don't need touch-action to suppress it here. Keep the
+     default `touch-action: auto`. */
   /* Prevent intrinsic content size from forcing the wrap (and its
      grid-row 1fr ancestor) wider than the parent. Without this, a
      large canvas can pressure ancestors and create a layout-loop:

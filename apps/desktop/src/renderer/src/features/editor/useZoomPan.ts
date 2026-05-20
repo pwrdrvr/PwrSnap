@@ -318,8 +318,24 @@ export function useZoomPan(opts: {
   // handler runs.
   const onWheel = useCallback(
     (event: WheelEvent): void => {
-      event.preventDefault();
+      // Only preventDefault when we're actually handling the event
+      // as a zoom. Unconditional preventDefault on every wheel event
+      // signals Chromium that the page "owns" wheel handling, and
+      // Chromium then stops synthesizing the pinch-as-ctrl+wheel
+      // events for macOS trackpad pinch — the gesture pipeline goes
+      // silent. (Confirmed by user: regular wheel events fire but
+      // pinch dispatches nothing while we were preventDefault'ing
+      // unconditionally.)
+      //
+      // Default behavior on un-modified wheel events:
+      //   • Pan branch: we update panX/panY ourselves; default
+      //     wheel behavior on overflow:hidden wrap is a no-op, so
+      //     no visible conflict.
+      //   • Page-level wheel scroll: the editor-root is grid-row
+      //     1fr inside a height-bounded container, no document
+      //     scroll exists for the wheel to navigate.
       if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
         setMode("custom");
         const factor = WHEEL_STEP_BASE ** -event.deltaY;
         zoomAtCursor(factor, event.clientX, event.clientY);

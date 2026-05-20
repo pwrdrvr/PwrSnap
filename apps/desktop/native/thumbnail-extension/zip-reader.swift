@@ -229,29 +229,53 @@ final class ThumbnailProvider: QLThumbnailProvider {
         return
       }
 
-      // Aspect-fit the source image into the requested max size.
-      // request.maximumSize is in POINTS; QuickLook handles the
-      // scale-factor → physical pixels conversion under the hood for
-      // Retina displays.
+      // Apple's canonical pattern (from the QLThumbnailProvider
+      // sample code): `contextSize = request.maximumSize` (the full
+      // slot Finder allocates for us), then aspect-fit + center the
+      // source image within that slot using the
+      // `currentContextDrawing` initializer.
+      //
+      // We deliberately use `currentContextDrawing` rather than the
+      // raw-CGContext overload (`{ context in ... }`). The
+      // current-context form sets up `NSGraphicsContext.current` for
+      // us with the appropriate Retina scale transform already
+      // applied — drawing in POINTS just works, and `NSImage.draw`
+      // produces pixel-correct output on any backing-store scale.
+      // The raw-CGContext form is harder to use correctly: macOS
+      // gives you a context that's `maximumSize × scale` pixels,
+      // but the coordinate transform inside it isn't documented
+      // consistently across releases. Apple's own sample code uses
+      // `currentContextDrawing`; we mirror it.
+      //
+      // Earlier attempt (commit 6f9f57e) sized the context as
+      // `maximumSize × scale` and drew at the same pixel-sized
+      // rect. On Retina that put the entire rendered image into
+      // the bottom-left quadrant of Finder's slot because the
+      // backing bitmap was 2× too large and macOS placed it at
+      // origin (0,0) without rescaling. This version sticks to
+      // points end-to-end and centers the aspect-fit rect.
       let nativeSize = image.size
-      let targetMax = request.maximumSize
-      let scale = min(
-        targetMax.width / max(nativeSize.width, 1),
-        targetMax.height / max(nativeSize.height, 1)
+      let maxSize = request.maximumSize
+      let fit = min(
+        maxSize.width / max(nativeSize.width, 1),
+        maxSize.height / max(nativeSize.height, 1)
       )
       let drawSize = CGSize(
-        width: max(1, nativeSize.width * scale),
-        height: max(1, nativeSize.height * scale)
+        width: max(1, nativeSize.width * fit),
+        height: max(1, nativeSize.height * fit)
+      )
+      let drawOrigin = CGPoint(
+        x: (maxSize.width - drawSize.width) / 2,
+        y: (maxSize.height - drawSize.height) / 2
       )
 
-      let reply = QLThumbnailReply(contextSize: drawSize) { context in
-        let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = nsContext
-        image.draw(in: CGRect(origin: .zero, size: drawSize))
-        NSGraphicsContext.restoreGraphicsState()
-        return true
-      }
+      let reply = QLThumbnailReply(
+        contextSize: maxSize,
+        currentContextDrawing: {
+          image.draw(in: CGRect(origin: drawOrigin, size: drawSize))
+          return true
+        }
+      )
       handler(reply, nil)
     } catch {
       handler(nil, error)

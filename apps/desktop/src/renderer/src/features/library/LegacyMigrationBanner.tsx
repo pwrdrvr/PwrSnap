@@ -1,11 +1,22 @@
-// One-shot "Upgrading library…" banner. Subscribes to
+// One-shot "Upgrading library…" toast. Subscribes to
 // `events:legacy-bundle-migration:progress` from main and renders a
-// progress chip while the migration runs; auto-dismisses ~3s after
-// `status: "complete"` so the user has time to read the final count.
+// floating chip in the bottom-right while the migration runs; auto-
+// dismisses ~3s after `status: "complete"` so the user has time to
+// read the final count.
 //
-// Most users see no banner at all — the migration is a no-op when no
+// Most users see no toast at all — the migration is a no-op when no
 // pre-bundle rows exist. First-launch upgraders see "Upgrading
 // library… 142 / 400" tick up over ~20s for a typical library.
+//
+// Placement note: previously rendered above `.psl__topbar` in
+// app-shell's flex column. That put the banner in the title-bar
+// row, where macOS draws its stoplight buttons (red/yellow/green)
+// at fixed window coordinates — they painted ON TOP of the
+// banner's text, leaving the count partially occluded. Moving to
+// position:fixed in the bottom-right takes the toast out of the
+// stoplight overlap zone entirely and matches the native macOS
+// notification-banner location, which users instinctively read as
+// "transient app status."
 //
 // Cold-start race: the migration kicks off in main's whenReady
 // handler at the same time the renderer is loading. The first batch
@@ -22,6 +33,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { EVENT_CHANNELS, type LegacyBundleMigrationProgress } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import "./LegacyMigrationBanner.css";
 
 const COMPLETE_AUTO_DISMISS_MS = 3_000;
 
@@ -75,41 +87,37 @@ export function LegacyMigrationBanner(): ReactElement | null {
         : `Library upgraded · ${done - failed} of ${total} migrated, ${failed} skipped`
       : `Upgrading library… ${done} / ${total}`;
 
+  // Progress fraction for the bar — 0..1. Clamp to avoid NaN on the
+  // tiny window between "total=0 emit" and "first row processed."
+  const fraction =
+    total > 0 ? Math.min(1, Math.max(0, done / total)) : status === "complete" ? 1 : 0;
+  const isComplete = status === "complete";
+  const indicatorClass = isComplete
+    ? failed === 0
+      ? "psl-migration__check psl-migration__check--ok"
+      : "psl-migration__check psl-migration__check--warn"
+    : "psl-migration__spinner";
+
   return (
     <div
-      className="legacy-migration-banner"
+      className={`psl-migration${isComplete ? " is-complete" : ""}`}
       role="status"
       aria-live="polite"
-      style={{
-        padding: "8px 14px",
-        background: "var(--surface-1, #161312)",
-        borderBottom: "1px solid var(--border-subtle, #2a2624)",
-        color: "var(--text-secondary, #c7bdb5)",
-        font: "500 12px var(--font-sans, system-ui)",
-        display: "flex",
-        alignItems: "center",
-        gap: 10
-      }}
+      aria-label={label}
     >
-      {status === "running" ? (
-        <span
-          aria-hidden
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            border: "1.5px solid currentColor",
-            borderTopColor: "transparent",
-            animation: "spin 0.9s linear infinite",
-            display: "inline-block"
-          }}
-        />
-      ) : (
-        <span aria-hidden style={{ color: failed === 0 ? "#7fc97f" : "#e8a04a" }}>
-          ✓
-        </span>
-      )}
-      <span>{label}</span>
+      <span aria-hidden className={indicatorClass}>
+        {isComplete ? "✓" : null}
+      </span>
+      <div className="psl-migration__body">
+        <span className="psl-migration__label">{label}</span>
+        {!isComplete && total > 0 && (
+          <span
+            className="psl-migration__bar"
+            aria-hidden
+            style={{ ["--psl-migration-progress" as string]: fraction.toString() }}
+          />
+        )}
+      </div>
     </div>
   );
 }

@@ -60,6 +60,22 @@
       <array>
         <string>com.pwrdrvr.pwrsnap.bundle</string>
       </array>
+      <!--
+        QLIsDataBasedPreview=true is what tells macOS to invoke
+        providePreview(for:completionHandler:) and consume the
+        returned QLPreviewReply. Without this key macOS defaults
+        to the view-controller-based path (looking for
+        preparePreviewOfFileAtURL: on a QLPreviewingController-
+        conforming view controller subclass), can't find that
+        method on our QLPreviewProvider subclass, and silently
+        falls back to the brand icon. Apple's own data-based
+        preview extensions all set this — see
+        QLPreviewGenerationExtension.appex (System framework
+        Quick Look fallback), OFD_Preview.appex, and the
+        IPSExtension.appex bundled with Console.
+      -->
+      <key>QLIsDataBasedPreview</key>
+      <true/>
     </dict>
   </dict>
 </dict>

@@ -42,12 +42,35 @@ export const HighlightOverlay = z.object({
   rect: NormalizedRect
 });
 
+/** How the blur region renders: a soft Gaussian smear, a chunky
+ *  mosaic / pixelation, or a solid opaque "redaction" box. All three
+ *  ship in compose.ts; the renderer previews each with a distinct
+ *  glyph so the user knows what they're getting before export. */
+export const BlurStyle = z.enum(["gaussian", "pixelate", "redact"]);
+export type BlurStyle = z.infer<typeof BlurStyle>;
+/** Default applied for legacy rows (created before the style field
+ *  existed) and as the initial style for new captures. Matches the
+ *  pre-v2 behavior — single Gaussian blur for every blur overlay. */
+export const DEFAULT_BLUR_STYLE: BlurStyle = "gaussian";
+
 export const BlurOverlay = z.object({
   kind: z.literal("blur"),
   rect: NormalizedRect,
+  /** Render style. Optional for backwards compat — legacy rows are
+   *  parsed as `"gaussian"` via the default in `readBlurStyle` below. */
+  style: BlurStyle.optional(),
   /** Why the blur was applied — for the AI suggestion strip. */
   reason: z.string().max(80).optional()
 });
+
+/** Read the style off a blur overlay, applying the default for legacy
+ *  rows that pre-date the style field. Keeps every render / bake site
+ *  from having to repeat the `?? "gaussian"` fallback. */
+export function readBlurStyle(
+  data: { style?: BlurStyle | undefined }
+): BlurStyle {
+  return data.style ?? DEFAULT_BLUR_STYLE;
+}
 
 export const TextOverlay = z.object({
   kind: z.literal("text"),

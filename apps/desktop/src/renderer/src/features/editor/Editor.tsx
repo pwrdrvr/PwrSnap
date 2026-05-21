@@ -18,7 +18,8 @@
 // buffer at source-pixel resolution.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
+import type { BlurStyle, CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
+import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
@@ -86,6 +87,7 @@ export function Editor({
   chrome = "full",
   tool: toolProp,
   onToolChange,
+  blurStyle: blurStyleProp,
   onZoomChange
 }: {
   captureId: string;
@@ -100,6 +102,11 @@ export function Editor({
    *  fall back to internal state. */
   tool?: Tool;
   onToolChange?: (tool: Tool) => void;
+  /** Optional controlled blur-style state. When provided (Library
+   *  mode), the EditToolbar's BlurMenu owns the picker UI and writes
+   *  this back to Library. When omitted (standalone window), the
+   *  editor falls back to `DEFAULT_BLUR_STYLE` for every commit. */
+  blurStyle?: BlurStyle;
   /** Called whenever the editor's zoom state changes. Library uses
    *  this to render the zoom indicator in the floating EditToolbar
    *  (so the indicator doesn't float over the image). Called with
@@ -121,6 +128,9 @@ export function Editor({
     },
     [isControlled, onToolChange]
   );
+  // Blur style is fed in from the parent (Library) or defaults to
+  // gaussian in the standalone-window case where no menu UI exists.
+  const blurStyle: BlurStyle = blurStyleProp ?? DEFAULT_BLUR_STYLE;
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -296,7 +306,7 @@ export function Editor({
           ? { kind: "rect", rect, color: "auto" }
           : draft.tool === "highlight"
           ? { kind: "highlight", rect }
-          : { kind: "blur", rect };
+          : { kind: "blur", rect, style: blurStyle };
       setDraft(null);
       await persistOverlay(overlay);
       return;
@@ -385,6 +395,7 @@ export function Editor({
       onPointerUp={onPointerUp}
       commitText={commitText}
       onZoomChange={onZoomChange}
+      blurStyle={blurStyle}
     />
   );
 }
@@ -409,7 +420,8 @@ function EditorLoaded({
   onPointerMove,
   onPointerUp,
   commitText,
-  onZoomChange
+  onZoomChange,
+  blurStyle
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -428,6 +440,7 @@ function EditorLoaded({
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
+  blurStyle: BlurStyle;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -678,6 +691,7 @@ function EditorLoaded({
             draft={draft}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
+            blurStyle={blurStyle}
           />
           {draft?.kind === "text" && (
             <TextDraftInput

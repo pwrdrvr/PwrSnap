@@ -12,9 +12,11 @@ import {
   ArrowOverlay,
   BlurOverlay,
   CropOverlay,
+  DEFAULT_BLUR_STYLE,
   HighlightOverlay,
   Overlay,
   OVERLAY_RENDER_ORDER,
+  readBlurStyle,
   RectOverlay,
   StepOverlay,
   TextOverlay
@@ -174,5 +176,40 @@ describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
       rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
     });
     expect(parsed.reason).toBeUndefined();
+  });
+
+  test("BlurOverlay accepts every BlurStyle", () => {
+    for (const style of ["gaussian", "pixelate", "redact"] as const) {
+      const parsed = BlurOverlay.parse({
+        kind: "blur",
+        rect: { x: 0, y: 0, w: 0.5, h: 0.5 },
+        style
+      });
+      expect(parsed.style).toBe(style);
+    }
+  });
+
+  test("BlurOverlay rejects an unknown style", () => {
+    expect(() =>
+      BlurOverlay.parse({
+        kind: "blur",
+        rect: { x: 0, y: 0, w: 0.5, h: 0.5 },
+        style: "vignette"
+      })
+    ).toThrow();
+  });
+
+  test("BlurOverlay style is optional — legacy rows parse cleanly", () => {
+    const parsed = BlurOverlay.parse({
+      kind: "blur",
+      rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
+    });
+    expect(parsed.style).toBeUndefined();
+  });
+
+  test("readBlurStyle defaults legacy rows to the canonical default", () => {
+    expect(readBlurStyle({})).toBe(DEFAULT_BLUR_STYLE);
+    expect(readBlurStyle({ style: "pixelate" })).toBe("pixelate");
+    expect(readBlurStyle({ style: "redact" })).toBe("redact");
   });
 });

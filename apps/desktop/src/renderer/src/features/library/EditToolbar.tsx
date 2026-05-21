@@ -24,9 +24,11 @@
 // inside Editor and exposing it here would need a Library-level lift.
 
 import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
+import type { BlurStyle } from "@pwrsnap/shared";
 import { TOOLS, type Tool } from "../editor/editor-tools";
 import type { ZoomApi } from "../editor/Editor";
 import { ZoomMenu } from "../editor/ZoomMenu";
+import { BlurMenu } from "../editor/BlurMenu";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
@@ -42,6 +44,13 @@ export type EditToolbarProps = {
    *  and reports its first scale, or after unmount. When null the
    *  zoom indicator is hidden (no useful state to show). */
   readonly zoom?: ZoomApi;
+  /** Current blur style + setter. The BlurMenu replaces the plain
+   *  Blur tool button in the toolbar; users click to switch to the
+   *  Blur tool AND open a style picker (gaussian / pixelate /
+   *  redact). Library owns the state so the choice persists across
+   *  capture navigations. */
+  readonly blurStyle: BlurStyle;
+  readonly onBlurStyleChange: (style: BlurStyle) => void;
 };
 
 /** Module-level position store. Lives across mounts (Stage may
@@ -58,7 +67,9 @@ export function EditToolbar({
   tool,
   onChange,
   captureId,
-  zoom
+  zoom,
+  blurStyle,
+  onBlurStyleChange
 }: EditToolbarProps): ReactElement {
   const [position, setPosition] = useState<{ x: number; y: number } | null>(savedPosition);
   // Two-click confirm state for Reset. `null` = idle; non-null =
@@ -231,16 +242,29 @@ export function EditToolbar({
               magic wand + undo, but those clusters aren't rendered
               in this phase. */}
           {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
-          <button
-            type="button"
-            className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
-            onClick={() => onChange(t.id)}
-            title={`${t.label} (${t.key})`}
-          >
-            {t.icon}
-            <span>{t.label}</span>
-            <span className="psl__et-btn-key">{t.key}</span>
-          </button>
+          {t.id === "blur" ? (
+            // Blur gets a popover so the user can pick a style
+            // (gaussian / pixelate / redact). Same click target
+            // also activates the Blur tool, so a single click both
+            // selects + opens the picker.
+            <BlurMenu
+              tool={tool}
+              onChange={onChange}
+              blurStyle={blurStyle}
+              onBlurStyleChange={onBlurStyleChange}
+            />
+          ) : (
+            <button
+              type="button"
+              className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
+              onClick={() => onChange(t.id)}
+              title={`${t.label} (${t.key})`}
+            >
+              {t.icon}
+              <span>{t.label}</span>
+              <span className="psl__et-btn-key">{t.key}</span>
+            </button>
+          )}
         </Fragment>
       ))}
       <span className="psl__et-sep" aria-hidden="true" />

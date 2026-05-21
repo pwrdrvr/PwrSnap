@@ -641,16 +641,12 @@ async function rewriteCompositeRow(
   let compositePng: Buffer | null = null;
   try {
     compositePng = await readBundleEntry(row.bundle_path, "composite.png");
-  } catch (cause) {
+  } catch {
     // The entry validator throws with a "missing" / "impossible"
     // message when the entry isn't present. We can't pattern-match
     // on the message reliably across releases, so treat ANY read
     // failure here as "composite.png absent" — the bundle is
     // already migrated, mark it done.
-    log.debug("Pass C: composite.png absent or unreadable; treating as migrated", {
-      captureId: row.id,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
     return { changed: false };
   }
 

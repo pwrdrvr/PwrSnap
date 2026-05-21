@@ -160,7 +160,11 @@ function insertOrFindCaptureInTx(
     flat_png_path: input.flat_png_path ?? null,
     bundle_modified_at: input.bundle_modified_at ?? null,
     bundle_format_version: input.bundle_format_version ?? 1,
-    bundle_edits_version: input.bundle_edits_version ?? 0
+    bundle_edits_version: input.bundle_edits_version ?? 0,
+    legacy_composite_v2_migrated_at:
+      input.bundle_path === null || input.bundle_path === undefined
+        ? null
+        : (input.bundle_modified_at ?? input.captured_at)
   };
   const inserted = db
     .prepare(
@@ -169,6 +173,7 @@ function insertOrFindCaptureInTx(
         source_app_bundle_id, source_app_name, legacy_src_path,
         bundle_path, flat_png_path, bundle_modified_at,
         bundle_format_version, bundle_edits_version,
+        legacy_composite_v2_migrated_at,
         width_px, height_px, device_pixel_ratio,
         byte_size, sha256, edits_version, deleted_at
       ) VALUES (
@@ -176,6 +181,7 @@ function insertOrFindCaptureInTx(
         @source_app_bundle_id, @source_app_name, @legacy_src_path,
         @bundle_path, @flat_png_path, @bundle_modified_at,
         @bundle_format_version, @bundle_edits_version,
+        @legacy_composite_v2_migrated_at,
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )

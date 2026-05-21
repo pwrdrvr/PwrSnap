@@ -8,12 +8,11 @@
 //      source.png gets rewritten: composite.png is gone,
 //      composite_thumbnail.jpg appears, the DB row's
 //      bundle_modified_at advances, attempts counter clears.
-//   2. Idempotent re-run — the same migration run a second time on
-//      the now-rewritten bundle is a no-op AND must NOT touch
-//      bundle_modified_at. The earlier shape of this code rewrote
-//      bundle_modified_at to `row.captured_at` in the no-change
-//      branch, silently corrupting the audit trail. Reviewer
-//      caught it in /review; this test prevents regression.
+//   2. Idempotent re-run — once Pass C sees a row, it stamps
+//      legacy_composite_v2_migrated_at so the next startup does not
+//      select the row again. The no-change branch still must NOT touch
+//      bundle_modified_at; an earlier shape rewrote it to row.captured_at
+//      and silently corrupted the audit trail.
 //   3. Failure path — a malformed bundle bumps
 //      legacy_composite_v2_attempts + sets
 //      legacy_composite_v2_last_failed_at, but doesn't tank the
@@ -49,6 +48,7 @@ vi.mock("electron", () => ({
 // use the production `packBundle` / yazl path so the bundle's ZIP
 // shape exactly matches what users have on disk.
 const { packBundle } = await import("../persistence/bundle-store");
+const { insertOrFindCapture } = await import("../persistence/captures-repo");
 const { runLegacyBundleMigration } = await import(
   "../persistence/legacy-bundle-migration"
 );
@@ -281,18 +281,24 @@ describe("legacy bundle migration — Pass C", () => {
     // attempts cleared.
     const row = testDb
       .prepare(
-        `SELECT bundle_modified_at, legacy_composite_v2_attempts,
+        `SELECT bundle_modified_at, legacy_composite_v2_migrated_at,
+                legacy_composite_v2_attempts,
                 legacy_composite_v2_last_failed_at
          FROM captures WHERE id = @id`
       )
       .get({ id: captureId }) as {
         bundle_modified_at: string;
+        legacy_composite_v2_migrated_at: string | null;
         legacy_composite_v2_attempts: number;
         legacy_composite_v2_last_failed_at: string | null;
       };
     expect(row.bundle_modified_at).not.toBe("2026-01-01T00:00:00.000Z");
+    expect(row.legacy_composite_v2_migrated_at).toBe(row.bundle_modified_at);
     expect(row.legacy_composite_v2_attempts).toBe(0);
     expect(row.legacy_composite_v2_last_failed_at).toBeNull();
+
+    const secondResult = await runLegacyBundleMigration();
+    expect(secondResult.attempted).toBe(0);
   });
 
   test("idempotent re-run leaves bundle_modified_at ALONE on the no-change branch", async () => {
@@ -326,18 +332,24 @@ describe("legacy bundle migration — Pass C", () => {
 
     const row = testDb
       .prepare(
-        `SELECT bundle_modified_at, legacy_composite_v2_attempts
+        `SELECT bundle_modified_at, legacy_composite_v2_migrated_at,
+                legacy_composite_v2_attempts
          FROM captures WHERE id = @id`
       )
       .get({ id: captureId }) as {
         bundle_modified_at: string;
+        legacy_composite_v2_migrated_at: string | null;
         legacy_composite_v2_attempts: number;
       };
 
     // The critical assertion. If this fails the
     // markCompositeMigrated-clobber bug has regressed.
     expect(row.bundle_modified_at).toBe(sentinelTimestamp);
+    expect(row.legacy_composite_v2_migrated_at).not.toBeNull();
     expect(row.legacy_composite_v2_attempts).toBe(0);
+
+    const secondResult = await runLegacyBundleMigration();
+    expect(secondResult.attempted).toBe(0);
   });
 
   test("bundle on disk is byte-stable across the no-change branch", async () => {
@@ -365,5 +377,48 @@ describe("legacy bundle migration — Pass C", () => {
     const after = await stat(bundlePath);
     expect(after.size).toBe(before.size);
     expect(after.mtimeMs).toBe(before.mtimeMs);
+
+    const secondResult = await runLegacyBundleMigration();
+    expect(secondResult.attempted).toBe(0);
+  });
+
+  test("new bundle-flow captures are stamped as Pass C complete on insert", async () => {
+    const captureId = "passC-new-capture";
+    const bundlePath = join(workDir, `${captureId}.pwrsnap`);
+
+    const inserted = insertOrFindCapture({
+      id: captureId,
+      kind: "image",
+      captured_at: "2026-05-21T12:00:00.000Z",
+      source_app_bundle_id: null,
+      source_app_name: null,
+      legacy_src_path: null,
+      bundle_path: bundlePath,
+      flat_png_path: null,
+      bundle_modified_at: "2026-05-21T12:00:00.000Z",
+      bundle_format_version: 1,
+      bundle_edits_version: 0,
+      width_px: 1200,
+      height_px: 800,
+      device_pixel_ratio: 2,
+      byte_size: 100,
+      sha256: "new-capture-sha"
+    });
+
+    expect(inserted.isNew).toBe(true);
+
+    const row = testDb
+      .prepare(
+        `SELECT legacy_composite_v2_migrated_at
+         FROM captures WHERE id = @id`
+      )
+      .get({ id: captureId }) as {
+        legacy_composite_v2_migrated_at: string | null;
+      };
+
+    expect(row.legacy_composite_v2_migrated_at).toBe("2026-05-21T12:00:00.000Z");
+
+    const result = await runLegacyBundleMigration();
+    expect(result.attempted).toBe(0);
   });
 });

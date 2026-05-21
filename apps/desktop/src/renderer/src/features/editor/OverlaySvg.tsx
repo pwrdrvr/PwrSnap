@@ -9,27 +9,25 @@
 // Editor file itself stays focused on state/handlers/effects.
 
 import { useMemo, type ReactElement } from "react";
-import type { OverlayRow, BlurStyle } from "@pwrsnap/shared";
-import { computeArrowGeometry, readBlurStyle } from "@pwrsnap/shared";
+import type { OverlayRow } from "@pwrsnap/shared";
+import { computeArrowGeometry } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 
 export function OverlaySvg({
   overlays,
   draft,
   imageWidthPx,
-  imageHeightPx,
-  blurStyle
+  imageHeightPx
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
   imageWidthPx: number;
   imageHeightPx: number;
-  /** The blur style the user has currently selected in the toolbar
-   *  popover. Drives the look of the live-drag blur preview so it
-   *  matches what will be committed. Committed blur overlays read
-   *  their own style off `row.data.style`. */
-  blurStyle: BlurStyle;
 }): ReactElement {
+  // Blur overlays render outside this SVG via <BlurOverlays> — HTML
+  // divs with backdrop-filter, so the live preview ACTUALLY blurs
+  // the underlying image. SVG <filter> can blur SVG content but
+  // can't reach behind itself to blur a sibling <img>.
   const viewBox = "0 0 1 1";
   const arrows = useMemo(
     () =>
@@ -48,11 +46,6 @@ export function OverlaySvg({
       ),
     [overlays]
   );
-  const blurs = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "blur" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
   const texts = useMemo(
     () =>
       overlays.flatMap((row) => (row.data.kind === "text" ? [{ row, data: row.data }] : [])),
@@ -68,9 +61,6 @@ export function OverlaySvg({
       {/* Highlights painted first so they sit beneath rects/arrows. */}
       {highlights.map(({ row, data }) => (
         <HighlightGlyph key={row.id} rect={data.rect} />
-      ))}
-      {blurs.map(({ row, data }) => (
-        <BlurGlyph key={row.id} rect={data.rect} style={readBlurStyle(data)} />
       ))}
       {rects.map(({ row, data }) => (
         <RectGlyph
@@ -117,7 +107,6 @@ export function OverlaySvg({
       {draft?.kind === "rect-drag" && liveRect !== null && (
         <>
           {draft.tool === "highlight" && <HighlightGlyph rect={liveRect} isDraft />}
-          {draft.tool === "blur" && <BlurGlyph rect={liveRect} style={blurStyle} isDraft />}
           {draft.tool === "rect" && (
             <RectGlyph
               rect={liveRect}
@@ -251,96 +240,6 @@ function HighlightGlyph({
       height={rect.h}
       fill={isDraft ? "rgba(255, 220, 80, 0.45)" : "rgba(255, 220, 80, 0.32)"}
       stroke="none"
-    />
-  );
-}
-
-function BlurGlyph({
-  rect,
-  style,
-  isDraft = false
-}: {
-  rect: { x: number; y: number; w: number; h: number };
-  style: BlurStyle;
-  isDraft?: boolean;
-}): ReactElement {
-  // Live preview only — the real effect (sharp Gaussian / nearest-neighbor
-  // downscale / solid fill) is applied in compose.ts at export time. The
-  // glyph just needs to telegraph which style the user picked so the
-  // result on export matches expectations.
-  //
-  //   gaussian → translucent frosted-grey block (current behavior)
-  //   pixelate → coarser chequer of grey squares
-  //   redact   → solid black box (matches the bake exactly)
-  if (style === "redact") {
-    return (
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
-        fill="#000000"
-        stroke={isDraft ? "rgba(255,255,255,0.45)" : "none"}
-        strokeWidth={isDraft ? 0.0015 : 0}
-        strokeDasharray={isDraft ? "0.005 0.005" : undefined}
-      />
-    );
-  }
-  if (style === "pixelate") {
-    // Coarse chequer rendered with two SVG `<rect>`s per cell would
-    // be unbounded; instead we paint a single base rect, then a
-    // <pattern> of small offset squares. The cell size is a fraction
-    // of the rect's short side so dense rects look "pixelated" while
-    // huge rects don't fragment into thousands of cells.
-    const shortSide = Math.min(rect.w, rect.h);
-    const cell = Math.max(0.008, shortSide / 8);
-    const patternId = `psl-blur-pix-${rect.x.toFixed(4)}-${rect.y.toFixed(4)}-${rect.w.toFixed(4)}-${rect.h.toFixed(4)}`;
-    return (
-      <g>
-        <defs>
-          <pattern
-            id={patternId}
-            x={rect.x}
-            y={rect.y}
-            width={cell}
-            height={cell}
-            patternUnits="userSpaceOnUse"
-          >
-            <rect width={cell} height={cell} fill="rgba(40, 40, 50, 0.55)" />
-            <rect width={cell / 2} height={cell / 2} fill="rgba(85, 90, 100, 0.55)" />
-            <rect
-              x={cell / 2}
-              y={cell / 2}
-              width={cell / 2}
-              height={cell / 2}
-              fill="rgba(85, 90, 100, 0.55)"
-            />
-          </pattern>
-        </defs>
-        <rect
-          x={rect.x}
-          y={rect.y}
-          width={rect.w}
-          height={rect.h}
-          fill={`url(#${patternId})`}
-          stroke="rgba(255,255,255,0.25)"
-          strokeWidth={0.0015}
-          strokeDasharray="0.005 0.005"
-        />
-      </g>
-    );
-  }
-  // gaussian (default)
-  return (
-    <rect
-      x={rect.x}
-      y={rect.y}
-      width={rect.w}
-      height={rect.h}
-      fill={isDraft ? "rgba(40, 40, 50, 0.55)" : "rgba(40, 40, 50, 0.45)"}
-      stroke="rgba(255,255,255,0.25)"
-      strokeWidth={0.0015}
-      strokeDasharray="0.005 0.005"
     />
   );
 }

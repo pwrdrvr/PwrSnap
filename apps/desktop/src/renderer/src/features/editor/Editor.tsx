@@ -25,6 +25,7 @@ import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo } from "./useUndoRedo";
 import { OverlaySvg } from "./OverlaySvg";
+import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { ZoomMenu } from "./ZoomMenu";
 import {
@@ -686,12 +687,17 @@ function EditorLoaded({
             draggable={false}
             className="editor-image"
           />
+          {/* HTML blur layer between the <img> and the SVG so
+              backdrop-filter on each blur rect actually obscures
+              the image behind. Lives separately from OverlaySvg
+              because SVG <filter> can blur SVG content but not a
+              sibling raster <img>. */}
+          <BlurOverlays overlays={overlays} draft={draft} blurStyle={blurStyle} />
           <OverlaySvg
             overlays={overlays}
             draft={draft}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
-            blurStyle={blurStyle}
           />
           {draft?.kind === "text" && (
             <TextDraftInput

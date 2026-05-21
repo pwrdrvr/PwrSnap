@@ -1,0 +1,77 @@
+/* Live blur-preview layer. Sits between the canvas <img> and the
+   SVG overlay layer; backdrop-filter on each item actually blurs
+   the image behind. Pure preview — the real bake (compose.ts)
+   runs in sharp at export time. */
+
+.ed-blur-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ed-blur-item {
+  position: absolute;
+  /* Mirror the canvas's own border-radius rounding very subtly so
+     blur edges don't bleed past the canvas corners when the rect
+     touches them. */
+  border-radius: 1px;
+}
+
+/* Gaussian — soft Gaussian blur. The stdDeviation in the sharp bake
+   is `rectShortSide / 8` (capped 8–60). A flat 14px CSS blur reads
+   as similar strength in the editor at typical canvas sizes; the
+   bake produces a higher-fidelity result on export. */
+.ed-blur-item--gaussian {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px dashed rgba(255, 255, 255, 0.32);
+}
+.ed-blur-item--gaussian.is-draft {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Pixelate — CSS has no true nearest-neighbor downscale filter on
+   the backdrop, so the live preview approximates: a tighter blur +
+   a thin diagonal-chequer pattern overlay so it reads as "mosaic
+   redaction" instead of "soft blur." Distinct visual silhouette
+   from the gaussian style. The real export uses sharp's
+   resize→nearest-neighbor for true pixelation. */
+.ed-blur-item--pixelate {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  background-image:
+    linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.1) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(255, 255, 255, 0.1) 75%
+    ),
+    linear-gradient(
+      45deg,
+      rgba(0, 0, 0, 0.18) 25%,
+      transparent 25%,
+      transparent 75%,
+      rgba(0, 0, 0, 0.18) 75%
+    );
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+  border: 1px dashed rgba(255, 255, 255, 0.32);
+}
+.ed-blur-item--pixelate.is-draft {
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* Redact — solid opaque black. Matches the bake exactly; no blur
+   needed (and a blur would actually be wrong because the bake
+   doesn't preserve any source pixels here). */
+.ed-blur-item--redact {
+  background: #000000;
+}
+.ed-blur-item--redact.is-draft {
+  outline: 1px dashed rgba(255, 255, 255, 0.5);
+  outline-offset: -1px;
+}

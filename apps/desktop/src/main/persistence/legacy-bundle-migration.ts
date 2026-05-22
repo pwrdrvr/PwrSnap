@@ -220,12 +220,11 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
   //   • last_failed_at older than 1 hour — quick relaunch shouldn't
   //     burn another attempt.
   //
-  // We over-select here (every bundled image row) and let
-  // `rewriteCompositeRow` quickly skip already-migrated bundles
-  // by inspecting their entry list. Cheap (a single yauzl-list
-  // open per skipped bundle) and means we don't need a separate
-  // "already migrated" flag — the predicate "composite.png is
-  // present in the ZIP" IS the flag.
+  // We cannot make SQLite inspect ZIP entries, so completion is tracked
+  // in `legacy_composite_v2_migrated_at`. Rows enter this queue once;
+  // `rewriteCompositeRow` either rewrites legacy bundles or confirms
+  // they were already composite.png-free, and the caller marks the row
+  // complete in both success cases.
   const compositeRows = db
     .prepare(
       `SELECT id, captured_at, bundle_path,
@@ -235,6 +234,7 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
        WHERE bundle_path IS NOT NULL
          AND deleted_at IS NULL
          AND kind = 'image'
+         AND legacy_composite_v2_migrated_at IS NULL
          AND legacy_composite_v2_attempts < @maxAttempts
          AND (
            legacy_composite_v2_last_failed_at IS NULL
@@ -310,13 +310,15 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
   const markCompositeMigratedRewritten = db.prepare(
     `UPDATE captures
      SET bundle_modified_at = @bundle_modified_at,
+         legacy_composite_v2_migrated_at = @legacy_composite_v2_migrated_at,
          legacy_composite_v2_attempts = 0,
          legacy_composite_v2_last_failed_at = NULL
      WHERE id = @id`
   );
   const markCompositeMigratedNoChange = db.prepare(
     `UPDATE captures
-     SET legacy_composite_v2_attempts = 0,
+     SET legacy_composite_v2_migrated_at = @legacy_composite_v2_migrated_at,
+         legacy_composite_v2_attempts = 0,
          legacy_composite_v2_last_failed_at = NULL
      WHERE id = @id`
   );
@@ -397,7 +399,8 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
         // to match.
         markCompositeMigratedRewritten.run({
           id: row.id,
-          bundle_modified_at: outcome.bundleModifiedAt
+          bundle_modified_at: outcome.bundleModifiedAt,
+          legacy_composite_v2_migrated_at: outcome.bundleModifiedAt
         });
       } else {
         // No composite.png in this bundle — already migrated (e.g.
@@ -406,7 +409,10 @@ export async function runLegacyBundleMigration(): Promise<LegacyMigrationResult>
         // bundle_modified_at UNTOUCHED — the on-disk file hasn't
         // changed and overwriting the column with anything else
         // (captured_at, "now") would corrupt the audit trail.
-        markCompositeMigratedNoChange.run({ id: row.id });
+        markCompositeMigratedNoChange.run({
+          id: row.id,
+          legacy_composite_v2_migrated_at: new Date().toISOString()
+        });
       }
       done += 1;
     } catch (cause) {
@@ -542,7 +548,9 @@ async function migrateRow(row: LegacyRow): Promise<void> {
   // row that succeeded after N-1 attempts isn't left with stale
   // failure metadata. `flat_png_path` is set to NULL — the legacy PNG
   // is about to be unlinked below, and bundles no longer write paired
-  // sibling files in the bundle-is-system-of-record model.
+  // sibling files in the bundle-is-system-of-record model. Pass A uses
+  // the modern writer, which already omits legacy `composite.png`, so
+  // stamp the Pass C completion marker here as well.
   getDb()
     .prepare(
       `UPDATE captures
@@ -550,6 +558,7 @@ async function migrateRow(row: LegacyRow): Promise<void> {
            flat_png_path = NULL,
            bundle_modified_at = @bundle_modified_at,
            bundle_edits_version = edits_version,
+           legacy_composite_v2_migrated_at = @bundle_modified_at,
            legacy_bundle_attempts = 0,
            legacy_bundle_last_failed_at = NULL
        WHERE id = @id`
@@ -635,16 +644,12 @@ async function rewriteCompositeRow(
   let compositePng: Buffer | null = null;
   try {
     compositePng = await readBundleEntry(row.bundle_path, "composite.png");
-  } catch (cause) {
+  } catch {
     // The entry validator throws with a "missing" / "impossible"
     // message when the entry isn't present. We can't pattern-match
     // on the message reliably across releases, so treat ANY read
     // failure here as "composite.png absent" — the bundle is
     // already migrated, mark it done.
-    log.debug("Pass C: composite.png absent or unreadable; treating as migrated", {
-      captureId: row.id,
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
     return { changed: false };
   }
 

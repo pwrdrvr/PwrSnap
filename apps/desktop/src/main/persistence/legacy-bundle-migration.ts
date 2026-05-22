@@ -548,7 +548,9 @@ async function migrateRow(row: LegacyRow): Promise<void> {
   // row that succeeded after N-1 attempts isn't left with stale
   // failure metadata. `flat_png_path` is set to NULL — the legacy PNG
   // is about to be unlinked below, and bundles no longer write paired
-  // sibling files in the bundle-is-system-of-record model.
+  // sibling files in the bundle-is-system-of-record model. Pass A uses
+  // the modern writer, which already omits legacy `composite.png`, so
+  // stamp the Pass C completion marker here as well.
   getDb()
     .prepare(
       `UPDATE captures
@@ -556,6 +558,7 @@ async function migrateRow(row: LegacyRow): Promise<void> {
            flat_png_path = NULL,
            bundle_modified_at = @bundle_modified_at,
            bundle_edits_version = edits_version,
+           legacy_composite_v2_migrated_at = @bundle_modified_at,
            legacy_bundle_attempts = 0,
            legacy_bundle_last_failed_at = NULL
        WHERE id = @id`

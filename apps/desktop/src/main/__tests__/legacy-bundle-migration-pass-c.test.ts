@@ -39,6 +39,9 @@ vi.mock("../persistence/db", () => ({
 // BrowserWindow.getAllWindows(). The Electron module isn't loadable
 // in a vitest node environment, so stub it to an empty list.
 vi.mock("electron", () => ({
+  app: {
+    getPath: (name: string) => `/tmp/pwrsnap-test-${name}`
+  },
   BrowserWindow: {
     getAllWindows: () => []
   }
@@ -420,5 +423,53 @@ describe("legacy bundle migration — Pass C", () => {
 
     const result = await runLegacyBundleMigration();
     expect(result.attempted).toBe(0);
+  });
+
+  test("Pass A wrapped legacy PNGs are stamped as Pass C complete", async () => {
+    const captureId = "passA-wrapped";
+    const legacyPngPath = join(workDir, `${captureId}.png`);
+    await writeFile(legacyPngPath, largePng);
+
+    testDb
+      .prepare(
+        `INSERT INTO captures (
+          id, kind, captured_at, source_app_bundle_id, source_app_name,
+          legacy_src_path, width_px, height_px, device_pixel_ratio,
+          byte_size, sha256, edits_version
+        ) VALUES (
+          @id, 'image', '2026-01-01T00:00:00.000Z', NULL, NULL,
+          @legacy_src_path, 1200, 800, 2,
+          @byte_size, @sha256, 0
+        )`
+      )
+      .run({
+        id: captureId,
+        legacy_src_path: legacyPngPath,
+        byte_size: largePng.length,
+        sha256: PLACEHOLDER_SHA256
+      });
+
+    const result = await runLegacyBundleMigration();
+
+    expect(result.attempted).toBe(1);
+    expect(result.failed).toBe(0);
+
+    const row = testDb
+      .prepare(
+        `SELECT bundle_path, bundle_modified_at, legacy_composite_v2_migrated_at
+         FROM captures WHERE id = @id`
+      )
+      .get({ id: captureId }) as {
+        bundle_path: string | null;
+        bundle_modified_at: string | null;
+        legacy_composite_v2_migrated_at: string | null;
+      };
+
+    expect(row.bundle_path).toBe(join(workDir, `${captureId}.pwrsnap`));
+    expect(row.bundle_modified_at).not.toBeNull();
+    expect(row.legacy_composite_v2_migrated_at).toBe(row.bundle_modified_at);
+
+    const secondResult = await runLegacyBundleMigration();
+    expect(secondResult.attempted).toBe(0);
   });
 });

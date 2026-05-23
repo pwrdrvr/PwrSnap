@@ -531,3 +531,7 @@ export const arrowSvgForV2 = arrowSvg;
 export const rectSvgForV2 = rectSvg;
 export const highlightSvgForV2 = highlightSvg;
 export const textSvgForV2 = textSvg;
+/** Internal blur-layer builder, exported for unit tests so the bake
+ *  paths for gaussian / pixelate / redact can be asserted in
+ *  isolation without spinning up a full compose() pipeline. */
+export const blurLayerForTests = blurLayer;

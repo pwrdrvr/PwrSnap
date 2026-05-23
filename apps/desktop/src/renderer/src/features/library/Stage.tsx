@@ -302,6 +302,8 @@ function StageBody({
           tool={tool}
           onChange={onToolChange}
           captureId={record.id}
+          sourceWidth={record.width_px}
+          sourceHeight={record.height_px}
           zoom={zoom}
           blurStyle={blurStyle}
           onBlurStyleChange={onBlurStyleChange}

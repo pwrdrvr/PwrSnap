@@ -1,4 +1,4 @@
-// Phase 2 Editor — full tool palette.
+// Phase 2 Editor — full tool palette + Phase 1 v2 editor refresh wiring.
 //
 // Tools (Slice B):
 //   • Arrow      — drag from→to. Smart geometry shared with bake.
@@ -6,6 +6,7 @@
 //   • Highlight  — drag a rectangle. Semi-transparent yellow fill.
 //   • Blur       — drag a rectangle. Mask-style blur per region in bake.
 //   • Text       — click to anchor; inline input; Enter commits.
+//   • Crop       — Phase 1 v2 refresh: 8-handle crop overlay; ↵ commits.
 //
 // Coordinate system: every overlay's geometry is normalized to
 // [0, 1]^2 fractions of the source image's W×H — independent of
@@ -16,8 +17,23 @@
 // between live render and bake. Rect/highlight/blur are simpler:
 // just a rect with normalized coords; the bake produces an SVG
 // buffer at source-pixel resolution.
+//
+// Phase 1 v2 wiring (chrome === "full" only):
+//   • useEditorToolState — owns active tool + per-tool style memory +
+//     COLOR-slot fan-out + matching-text affordance lifecycle.
+//   • EditorChrome — VS-Code-style activity bar + collapsible panel
+//     that wraps the editor viewport in standalone-window mode only.
+//   • ToolStylePopover — anchored to the toolbar's active tool button
+//     via a caret. Double-tapping the tool's letter shortcut also
+//     opens the popover.
+//   • CropTool — rendered as an overlay when activeTool === "crop";
+//     commits a CropOverlay via overlays:upsert and stays in crop
+//     mode (sticky) until the user picks another tool.
+//   • Matching-text affordance — small "+ Add label" button positioned
+//     near the just-placed arrow's tail; click → flips to text tool
+//     for one placement, then returns to arrow.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BlurStyle, CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
 import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
 import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
@@ -28,6 +44,17 @@ import { OverlaySvg } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { ZoomMenu } from "./ZoomMenu";
+import { CropTool } from "./CropTool";
+import { EditorChrome } from "./EditorChrome";
+import { ToolStylePopover, type StyledToolKind } from "./ToolStylePopover";
+import { InfoPanel } from "./panels/InfoPanel";
+import { ToolConfigPanel } from "./panels/ToolConfigPanel";
+import {
+  useEditorToolState,
+  type ActiveStyle,
+  type StyledTool,
+  type StyleFor
+} from "./useEditorToolState";
 import {
   MIN_DRAG_LENGTH,
   rectFromDrag,
@@ -46,7 +73,9 @@ type LoadState =
 /** Three structural shapes for the editor:
  *
  *   • "full"       — standalone editor window: titlebar + bottom
- *                    toolbar. Default when no chrome prop is passed.
+ *                    toolbar, wrapped in <EditorChrome> (Phase 1 v2
+ *                    refresh: activity bar + collapsible right panel).
+ *                    Default when no chrome prop is passed.
  *   • "embedded"   — inline-in-Library mode (Phase 2 Slice C / Phase
  *                    A transitional): no titlebar, but keeps the
  *                    bottom toolbar. This branch was dropped in
@@ -57,7 +86,9 @@ type LoadState =
  *                    floating EditToolbar lives at the Library level
  *                    and shares tool state via the controlled
  *                    `tool` / `onToolChange` props. */
-export type EditorChrome = "full" | "embedded" | "chromeless";
+export type EditorChromeKind = "full" | "embedded" | "chromeless";
+/** Back-compat alias — callers import this name. */
+export type { EditorChromeKind as EditorChrome };
 
 export type { ZoomMode };
 
@@ -83,6 +114,18 @@ export type ZoomApi = {
   zoomBy: (factor: number) => void;
 } | null;
 
+const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
+  "arrow",
+  "text",
+  "rect",
+  "blur",
+  "highlight"
+]);
+
+function isStyledToolKind(tool: Tool): tool is StyledToolKind {
+  return STYLED_TOOLS.has(tool);
+}
+
 export function Editor({
   captureId,
   chrome = "full",
@@ -92,21 +135,23 @@ export function Editor({
   onZoomChange
 }: {
   captureId: string;
-  /** Chrome shape — see `EditorChrome` above. Defaults to `"full"`
+  /** Chrome shape — see `EditorChromeKind` above. Defaults to `"full"`
    *  (standalone editor window). */
-  chrome?: EditorChrome;
+  chrome?: EditorChromeKind;
   /** Optional controlled tool state. If both `tool` and `onToolChange`
    *  are passed, Editor is fully controlled — Library owns the tool
    *  state and drives the floating EditToolbar. If neither is passed,
-   *  Editor falls back to internal `useState` (standalone-window
-   *  path). Mixed (one without the other) is not supported and will
-   *  fall back to internal state. */
+   *  Editor falls back to internal state (the standalone window uses
+   *  `useEditorToolState` in that branch; the embedded fallback uses a
+   *  plain useState). Mixed (one without the other) is not supported
+   *  and will fall back to internal state. */
   tool?: Tool;
   onToolChange?: (tool: Tool) => void;
   /** Optional controlled blur-style state. When provided (Library
    *  mode), the EditToolbar's BlurMenu owns the picker UI and writes
    *  this back to Library. When omitted (standalone window), the
-   *  editor falls back to `DEFAULT_BLUR_STYLE` for every commit. */
+   *  editor falls back to the `useEditorToolState` blur tool style
+   *  block (which the right-sidebar ToolConfigPanel + popover edit). */
   blurStyle?: BlurStyle;
   /** Called whenever the editor's zoom state changes. Library uses
    *  this to render the zoom indicator in the floating EditToolbar
@@ -115,23 +160,61 @@ export function Editor({
   onZoomChange?: (api: ZoomApi) => void;
 }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
-  // Controlled-or-uncontrolled tool state. When the parent passes
-  // both `tool` and `onToolChange`, we mirror their value as the
-  // single source of truth. Otherwise we fall back to internal
-  // useState (the standalone-window invariant).
+
+  // ----- Tool + style state ---------------------------------------
+  //
+  // Two-mode source-of-truth:
+  //
+  //   • Controlled (Library Focus): `tool` + `onToolChange` props are
+  //     both passed. Library is the single owner; per-tool style memory
+  //     lives in the floating EditToolbar's own hook in task #10.
+  //   • Standalone window (chrome === "full"): we own the hook here.
+  //     Active tool + per-tool style memory + matching-text affordance
+  //     all live in `useEditorToolState`.
+  //
+  // The hook is ALWAYS instantiated (hooks rules) but its result is only
+  // consumed when not in controlled mode. The controlled branch keeps
+  // the hook in a stable state — its tool stays "pointer" because
+  // controlled paths never call setActiveTool.
   const isControlled = toolProp !== undefined && onToolChange !== undefined;
-  const [internalTool, setInternalTool] = useState<Tool>("pointer");
-  const tool = isControlled ? toolProp : internalTool;
+  const toolState = useEditorToolState({ captureId });
+  const tool: Tool = isControlled ? toolProp : toolState.activeTool;
+  // `options.singleShot` is the ⌥-click escape hatch: place ONE
+  // annotation, then return to Pointer. The hook honors the flag by
+  // routing `onAnnotationPlaced` through a single-shot reset; the
+  // controlled (Library Focus) path doesn't see this — it has its own
+  // mirror in features/library/EditToolbar.tsx that wires the same
+  // semantic through the hook instantiated there.
   const setTool = useCallback(
-    (next: Tool) => {
-      if (isControlled) onToolChange(next);
-      else setInternalTool(next);
+    (next: Tool, options?: { singleShot?: boolean }): void => {
+      if (isControlled) {
+        onToolChange(next);
+      } else {
+        toolState.setActiveTool(next, options);
+      }
     },
-    [isControlled, onToolChange]
+    [isControlled, onToolChange, toolState]
   );
-  // Blur style is fed in from the parent (Library) or defaults to
-  // gaussian in the standalone-window case where no menu UI exists.
-  const blurStyle: BlurStyle = blurStyleProp ?? DEFAULT_BLUR_STYLE;
+
+  // Blur style for the commit pipeline:
+  //   • Library (controlled) → use the `blurStyle` prop the parent
+  //     threads in (EditToolbar's BlurMenu owns it there).
+  //   • Standalone → take the live blur-tool-style mode from the hook,
+  //     falling back to the default until settings resolve.
+  const blurStyle: BlurStyle = useMemo(() => {
+    if (blurStyleProp !== undefined) return blurStyleProp;
+    if (toolState.activeStyle.tool === "blur") {
+      return toolState.activeStyle.style.mode;
+    }
+    // For non-blur active tools in standalone mode, we still need a
+    // mode for the rare ad-hoc shortcut commit. Read the blur block
+    // through a temporary tool switch is overkill — the hook's
+    // activeStyle only carries the active tool's block. Fall back to
+    // the persisted default; the popover/panel writes will update this
+    // path on the next blur-tool selection.
+    return DEFAULT_BLUR_STYLE;
+  }, [blurStyleProp, toolState.activeStyle]);
+
   const [draft, setDraft] = useState<Draft | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -214,12 +297,25 @@ export function Editor({
     return { xn, yn };
   }
 
+  /** Translate normalized [0,1] coords back to canvas-pixel coords —
+   *  used to anchor the matching-text affordance at the arrow's tail
+   *  in the same coordinate space the canvas overlay renders in. */
+  function normalizedToCanvasPx(
+    xn: number,
+    yn: number
+  ): { x: number; y: number } | null {
+    const canvas = canvasRef.current;
+    if (canvas === null) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { x: xn * rect.width, y: yn * rect.height };
+  }
+
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
-    // Pointer tool is no-op on drag — lets the user click on the
-    // canvas without accidentally drawing. They have to explicitly
-    // select a drawing tool first.
+    // Pointer / crop are no-op on canvas drag — pointer is the "no-op"
+    // tool, crop has its own overlay element that owns its drags.
     if (tool === "pointer") return;
+    if (tool === "crop") return;
     // If we're mid-text and the user clicks elsewhere, commit/cancel
     // the text first (the input's blur handler will fire).
     if (draft?.kind === "text") return;
@@ -291,8 +387,19 @@ export function Editor({
         to: { x: draft.toXn, y: draft.toYn },
         color: "auto"
       };
+      // Capture the arrow tail in canvas-px so the matching-text
+      // affordance can position itself; this lookup needs the live
+      // canvas rect, so do it BEFORE the await.
+      const tailCanvasPx = normalizedToCanvasPx(draft.toXn, draft.toYn);
       setDraft(null);
-      await persistOverlay(overlay);
+      const wrote = await persistOverlay(overlay);
+      if (wrote && !isControlled) {
+        toolState.onAnnotationPlaced(
+          tailCanvasPx !== null
+            ? { tool: "arrow", anchorPoint: tailCanvasPx }
+            : { tool: "arrow" }
+        );
+      }
       return;
     }
 
@@ -302,24 +409,29 @@ export function Editor({
         setDraft(null);
         return;
       }
+      const placedKind = draft.tool;
       const overlay: Overlay =
-        draft.tool === "rect"
+        placedKind === "rect"
           ? { kind: "rect", rect, color: "auto" }
-          : draft.tool === "highlight"
+          : placedKind === "highlight"
           ? { kind: "highlight", rect }
           : { kind: "blur", rect, style: blurStyle };
       setDraft(null);
-      await persistOverlay(overlay);
+      const wrote = await persistOverlay(overlay);
+      if (wrote && !isControlled) {
+        toolState.onAnnotationPlaced({ tool: placedKind });
+      }
       return;
     }
   }
 
-  async function persistOverlay(overlay: Overlay): Promise<void> {
+  /** Returns true if the overlay was written successfully. */
+  async function persistOverlay(overlay: Overlay): Promise<boolean> {
     const result = await dispatch("overlays:upsert", { captureId, overlay });
     if (!result.ok) {
       // eslint-disable-next-line no-console
       console.error("overlays:upsert failed", result.error);
-      return;
+      return false;
     }
     // Record the create on the undo stack so ⌘Z reverts it.
     // Suppressed when we ARE the undo/redo replay path
@@ -328,6 +440,7 @@ export function Editor({
       recordCreateRef.current?.(result.value);
     }
     // events:overlays:changed broadcast triggers refetch.
+    return true;
   }
 
   async function commitText(): Promise<void> {
@@ -345,10 +458,23 @@ export function Editor({
       color: "auto"
     };
     setDraft(null);
-    await persistOverlay(overlay);
+    const wrote = await persistOverlay(overlay);
+    if (wrote && !isControlled) {
+      toolState.onAnnotationPlaced({ tool: "text" });
+    }
   }
 
   // Keyboard shortcuts: tool selection + Esc cancels drag.
+  //
+  // "Double-tap to configure" shortcut: pressing the active tool's
+  // letter (e.g. "A" while already on Arrow) a second time opens the
+  // tool's style popover. Tracked via `lastShortcutToolRef` so a
+  // back-to-back shortcut counts; any tool change in between resets.
+  const lastShortcutToolRef = useRef<Tool | null>(null);
+  // Toolbar imperative API: exposes a function the keyboard handler
+  // can call to open the popover for the active tool when the user
+  // double-taps its shortcut. Populated by the toolbar render below.
+  const openActivePopoverRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
       if (event.key === "Escape" && draft !== null) {
@@ -359,16 +485,33 @@ export function Editor({
       // Don't interpret as a tool shortcut when text input has focus.
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
+      if (target?.isContentEditable === true) return;
+      // Modifier presses (⌘/⌃/⌥) belong to other handlers — don't eat
+      // ⌘A or similar as the arrow shortcut.
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
       const upper = event.key.toUpperCase();
       const matched = TOOLS.find((t) => t.key === upper);
       if (matched !== undefined) {
         event.preventDefault();
+        if (
+          !isControlled &&
+          tool === matched.id &&
+          lastShortcutToolRef.current === matched.id &&
+          isStyledToolKind(matched.id)
+        ) {
+          // Double-tap: open the popover for this styled tool.
+          openActivePopoverRef.current?.();
+          // Reset so a third tap doesn't repeat the open.
+          lastShortcutToolRef.current = null;
+          return;
+        }
+        lastShortcutToolRef.current = matched.id;
         setTool(matched.id);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft]);
+  }, [draft, isControlled, setTool, tool]);
 
   if (state.kind === "loading") {
     return <div className="editor-loading">Loading capture…</div>;
@@ -397,6 +540,9 @@ export function Editor({
       commitText={commitText}
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
+      isControlled={isControlled}
+      toolState={toolState}
+      openActivePopoverRef={openActivePopoverRef}
     />
   );
 }
@@ -422,13 +568,18 @@ function EditorLoaded({
   onPointerUp,
   commitText,
   onZoomChange,
-  blurStyle
+  blurStyle,
+  isControlled,
+  toolState,
+  openActivePopoverRef
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
-  chrome: EditorChrome;
+  chrome: EditorChromeKind;
   tool: Tool;
-  setTool: (t: Tool) => void;
+  /** Mirrors the outer `setTool` signature so the ⌥-click single-shot
+   *  option passes through the toolbar wrapper into useEditorToolState. */
+  setTool: (t: Tool, options?: { singleShot?: boolean }) => void;
   draft: Draft | null;
   setDraft: (d: Draft | null) => void;
   canvasRef: React.RefObject<HTMLDivElement | null>;
@@ -442,6 +593,9 @@ function EditorLoaded({
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   blurStyle: BlurStyle;
+  isControlled: boolean;
+  toolState: ReturnType<typeof useEditorToolState>;
+  openActivePopoverRef: React.RefObject<(() => void) | null>;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -624,14 +778,126 @@ function EditorLoaded({
   //     stays accessible via Space+drag and via two-finger scroll
   //     (which doesn't conflict with tool drag — it's a separate
   //     gesture handled by useZoomPan's wheel handler).
+  //
+  // Crop is excluded from the pan arbitration — its overlay catches
+  // all pointer events directly via its own element handlers.
   const wantPan = zoom.spaceHeld || (tool === "pointer" && zoom.state.scale > 1);
 
-  return (
+  // -------------------- Canvas DOMRect for CropTool ----------------
+  //
+  // CropTool needs the canvas's bounding rect in viewport coords so it
+  // can translate pointer events into source-pixel coords. Track it as
+  // state so a window resize / zoom change re-renders the overlay with
+  // the new rect. ResizeObserver fires on size changes; scroll +
+  // zoom-induced layout shifts get picked up via the deps below.
+  const [canvasRect, setCanvasRect] = useState<DOMRect | null>(null);
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (el === null) return;
+    const update = (): void => {
+      setCanvasRect(el.getBoundingClientRect());
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+    // Use the primitive components of canvasStyle, NOT the object
+    // reference itself. `useZoomPan` rebuilds the canvasStyle object
+    // on every render (no useMemo); depending on the object reference
+    // here would tick the effect on every parent re-render, which
+    // calls setCanvasRect with a fresh DOMRect, which forces another
+    // render → React's "Maximum update depth exceeded" loop. Primitive
+    // string deps stay reference-stable across renders that don't
+    // actually change the canvas layout.
+  }, [
+    canvasRef,
+    zoom.canvasStyle?.width,
+    zoom.canvasStyle?.height,
+    zoom.canvasStyle?.transform
+  ]);
+
+  // -------------------- ToolStylePopover anchor + open state -------
+  //
+  // The popover anchors to a DOM ref provided by the toolbar's active
+  // tool button. The toolbar populates `popoverAnchorRef.current` when
+  // it mounts the active styled tool button.
+  const popoverAnchorRef = useRef<HTMLElement | null>(null);
+  const [popoverOpen, setPopoverOpen] = useState<boolean>(false);
+  const styledActiveTool: StyledToolKind | null = isStyledToolKind(tool)
+    ? tool
+    : null;
+  // If the active tool changes off the styled set (e.g. user switches
+  // to pointer), close the popover.
+  useEffect(() => {
+    if (styledActiveTool === null) {
+      setPopoverOpen(false);
+    }
+  }, [styledActiveTool]);
+  // Expose the open action to the parent's keyboard handler.
+  useEffect(() => {
+    openActivePopoverRef.current = (): void => {
+      if (styledActiveTool !== null) {
+        setPopoverOpen(true);
+      }
+    };
+    return () => {
+      openActivePopoverRef.current = null;
+    };
+  }, [openActivePopoverRef, styledActiveTool]);
+
+  // -------------------- Crop commit handler ------------------------
+  //
+  // On ↵ inside CropTool, persist a CropOverlay via overlays:upsert.
+  // Crop is sticky — DO NOT change tools after commit; the user can
+  // re-position by re-entering the crop tool or move on by picking
+  // another tool themselves.
+  const onCropCommit = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }): void => {
+      const overlay: Overlay = { kind: "crop", rect };
+      void (async (): Promise<void> => {
+        const result = await dispatch("overlays:upsert", {
+          captureId: record.id,
+          overlay
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("overlays:upsert (crop) failed", result.error);
+          return;
+        }
+        if (!undoApplyingRef.current) {
+          recordCreateRef.current?.(result.value);
+        }
+        if (!isControlled) {
+          toolState.onAnnotationPlaced({ tool: "crop" });
+        }
+      })();
+    },
+    [isControlled, record.id, recordCreateRef, toolState, undoApplyingRef]
+  );
+
+  const onCropCancel = useCallback((): void => {
+    // Switching to pointer feels like "I'm done cropping" without
+    // wedging the user on the crop tool. Mirrors Photoshop's behavior.
+    setTool("pointer");
+  }, [setTool]);
+
+  // ------------------------------------------------------------------
+  // Render — three modes:
+  //   • chrome === "full" → wrap viewport in <EditorChrome> with the
+  //     four right-sidebar panels.
+  //   • chrome === "embedded" → standalone-style root, no chrome.
+  //   • chrome === "chromeless" → Library Focus / Reel; canvas-only.
+  // ------------------------------------------------------------------
+
+  const viewport = (
     <div
       className={
         "editor-root" +
         (chrome === "embedded" ? " is-embedded" : "") +
-        (chrome === "chromeless" ? " is-chromeless" : "")
+        (chrome === "chromeless" ? " is-chromeless" : "") +
+        (chrome === "full" ? " is-in-chrome" : "")
       }
     >
       {chrome === "full" && (
@@ -711,13 +977,54 @@ function EditorLoaded({
               onCancel={() => setDraft(null)}
             />
           )}
+          {tool === "crop" && (
+            <CropTool
+              captureId={record.id}
+              sourceWidth={record.width_px}
+              sourceHeight={record.height_px}
+              canvasRect={canvasRect}
+              onCommit={onCropCommit}
+              onCancel={onCropCancel}
+            />
+          )}
+          {/* Matching-text affordance — only in standalone mode (the
+              hook is dormant when controlled). Positioned relative to
+              the canvas so the anchor coords (canvas-px) line up
+              directly. */}
+          {!isControlled && toolState.matchingText.kind === "available" && (
+            <button
+              type="button"
+              className="pse-affordance"
+              data-testid="matching-text-affordance"
+              style={{
+                position: "absolute",
+                left: toolState.matchingText.anchorPoint.x,
+                top: toolState.matchingText.anchorPoint.y + 8,
+                transform: "translate(-50%, 0)"
+              }}
+              onClick={() => {
+                toolState.clickMatchingTextAffordance();
+              }}
+            >
+              + Add label
+            </button>
+          )}
         </div>
       </div>
 
       {chrome !== "chromeless" && (
         <EditorToolbar
           tool={tool}
-          onChange={setTool}
+          onChange={(next, options) => {
+            // Toolbar click: also clear the double-tap shortcut latch
+            // so a "click-then-press-key" sequence doesn't accidentally
+            // count as a double-tap. `options.singleShot` carries the
+            // ⌥-click escape hatch through to setTool → useEditorTool-
+            // State so it actually arms single-shot for one placement.
+            setTool(next, options);
+            // Close popover on tool change.
+            setPopoverOpen(false);
+          }}
           appliedCount={overlays.length}
           canUndo={undo.canUndo}
           canRedo={undo.canRedo}
@@ -735,9 +1042,119 @@ function EditorLoaded({
           onReveal={() => {
             void dispatch("capture:reveal", { captureId: record.id });
           }}
+          // v2 wiring — only meaningful in standalone (chrome === "full");
+          // EditorToolbar still works without these props for embedded
+          // mode (no carets, no popover anchor wiring).
+          enableStyleCaret={chrome === "full" && !isControlled}
+          onCaretClick={(t) => {
+            if (t === tool && isStyledToolKind(t)) {
+              setPopoverOpen((prev) => !prev);
+            }
+          }}
+          popoverAnchorRef={popoverAnchorRef}
         />
       )}
+
+      {/* Popover anchored to the active styled tool's button. Re-mounted
+          on tool change so the popover internals rebind to the new
+          anchor + style shape. */}
+      {chrome === "full" &&
+        !isControlled &&
+        popoverOpen &&
+        styledActiveTool !== null &&
+        toolState.activeStyle.tool === styledActiveTool && (
+          <ToolStylePopover
+            anchorRef={popoverAnchorRef}
+            tool={styledActiveTool}
+            style={
+              // Discriminated narrowing: the guard above ensures
+              // activeStyle.tool === styledActiveTool so `.style` is
+              // present on the union member.
+              (toolState.activeStyle as Extract<
+                ActiveStyle,
+                { tool: StyledToolKind }
+              >).style
+            }
+            onClose={() => setPopoverOpen(false)}
+            onStyleFieldChange={(field, value) => {
+              // The popover's signature is (field, value); we close over
+              // `styledActiveTool` to fan out to the hook's
+              // (tool, field, value) shape. The runtime invariant is
+              // that the popover only emits fields valid for its
+              // current tool — the cast bridges the generic gap.
+              (
+                toolState.setStyleField as unknown as (
+                  t: StyledToolKind,
+                  f: string,
+                  v: unknown
+                ) => void
+              )(styledActiveTool, field, value);
+            }}
+          />
+        )}
     </div>
+  );
+
+  if (chrome !== "full") {
+    return viewport;
+  }
+
+  // Standalone-window mode: wrap in EditorChrome and provide the four
+  // right-sidebar panels. Library Focus + embedded modes don't get the
+  // chrome — they're hosted inside the Library shell.
+  return (
+    <EditorChrome
+      panels={{
+        info: <InfoPanel captureId={record.id} />,
+        chat: (
+          <div className="pse-panel-stub" data-testid="panel-chat-stub">
+            Chat with AI lands in Phase 7.
+          </div>
+        ),
+        toolConfig: (
+          <ToolConfigPanel
+            captureId={record.id}
+            activeTool={isControlled ? tool : toolState.activeTool}
+            activeStyle={
+              isControlled
+                ? // In controlled mode the hook stays at default
+                  // "pointer" — but `chrome === "full"` is never
+                  // controlled in current callers (Library uses
+                  // chromeless). Defensive fallback only.
+                  ({ tool: "pointer" } as ActiveStyle)
+                : toolState.activeStyle
+            }
+            onStyleFieldChange={
+              isControlled
+                ? // Controlled mode has no hook to write into.
+                  (<T extends StyledTool, K extends keyof StyleFor<T>>(
+                    _tool: T,
+                    _field: K,
+                    _value: StyleFor<T>[K]
+                  ): void => {
+                    /* no-op */
+                  })
+                : toolState.setStyleField
+            }
+          />
+        ),
+        help: (
+          <div className="pse-panel-stub" data-testid="panel-help-stub">
+            <p>
+              Editor shortcuts: V/A/R/H/B/T/C — tools · ⌘Z — undo · ⌘⇧Z — redo ·
+              ⌘\ — toggle sidebar · ⌘1/⌘2/⌘3 — panels · ⌘+ / ⌘− — zoom · ⌘0 —
+              fit · ⌘1 — actual size · Esc — cancel · ↵ — commit text/crop
+            </p>
+            <p>
+              Tip: press a tool&apos;s shortcut twice in a row to open its
+              style options.
+            </p>
+          </div>
+        )
+      }}
+    >
+      {viewport}
+    </EditorChrome>
   );
 }
 
@@ -747,6 +1164,14 @@ function EditorLoaded({
 // Library's Stage component (chromeless Editor + floating bottom-
 // center toolbar, Phase C). Renamed from `Toolbar` to avoid the
 // name collision flagged by pattern-recognition-specialist.
+//
+// Phase 1 v2 wiring: when `enableStyleCaret` is true (standalone
+// window in non-controlled mode), styled tools render a small ▾
+// caret on the right edge of the button — click opens
+// ToolStylePopover via `onCaretClick`. The caret is rendered as a
+// nested <span> with role="button" (NOT a nested <button>) to keep
+// the parent <button> the single focusable target; the click handler
+// catches the caret event via target inspection.
 function EditorToolbar({
   tool,
   onChange,
@@ -756,10 +1181,13 @@ function EditorToolbar({
   zoom,
   onUndo,
   onRedo,
-  onReveal
+  onReveal,
+  enableStyleCaret = false,
+  onCaretClick,
+  popoverAnchorRef
 }: {
   tool: Tool;
-  onChange: (t: Tool) => void;
+  onChange: (t: Tool, options?: { singleShot?: boolean }) => void;
   appliedCount: number;
   canUndo: boolean;
   canRedo: boolean;
@@ -767,22 +1195,86 @@ function EditorToolbar({
   onUndo: () => void;
   onRedo: () => void;
   onReveal: () => void;
+  enableStyleCaret?: boolean;
+  onCaretClick?: (tool: Tool) => void;
+  popoverAnchorRef?: React.MutableRefObject<HTMLElement | null>;
 }) {
   return (
     <div className="editor-toolbar" role="toolbar" aria-label="Annotation tools">
       <div className="editor-toolbar-tools">
-        {TOOLS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={tool === t.id ? "is-active" : ""}
-            onClick={() => onChange(t.id)}
-            title={`${t.label} (${t.key})`}
-          >
-            <span className="editor-tool-key">{t.key}</span>
-            <span>{t.label}</span>
-          </button>
-        ))}
+        {TOOLS.map((t) => {
+          const isActive = tool === t.id;
+          const hasCaret = enableStyleCaret && STYLED_TOOLS.has(t.id);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              // data-testid is for E2E spec selectors only — added per
+              // the v2 editor refresh task #11 (editor-tool-styles,
+              // editor-sticky-tool specs). Stable identifier survives
+              // label/icon refactors.
+              data-testid={`editor-tool-button-${t.id}`}
+              className={isActive ? "is-active" : ""}
+              ref={
+                isActive && popoverAnchorRef !== undefined
+                  ? (el) => {
+                      popoverAnchorRef.current = el;
+                    }
+                  : undefined
+              }
+              onClick={(e) => {
+                // If the user clicked the caret glyph specifically, the
+                // intent is "open the popover" — not "select the tool
+                // again." Catch that by checking the event target.
+                const tgt = e.target as HTMLElement | null;
+                if (
+                  hasCaret &&
+                  tgt !== null &&
+                  tgt.closest(".pse-tool-caret") !== null
+                ) {
+                  e.stopPropagation();
+                  onCaretClick?.(t.id);
+                  return;
+                }
+                // ⌥-click (Option on macOS / Alt elsewhere) flips this
+                // tool into single-shot mode for one annotation — places
+                // one and snaps back to Pointer. Lets a user override
+                // sticky-tool mode on a per-click basis without leaving
+                // the toolbar. See useEditorToolState `setActiveTool`
+                // options + plan §"⌥-click toolbar tool → single-shot
+                // mode (legacy behavior)".
+                onChange(t.id, e.altKey ? { singleShot: true } : undefined);
+              }}
+              title={`${t.label} (${t.key})`}
+            >
+              <span className="editor-tool-key">{t.key}</span>
+              <span>{t.label}</span>
+              {hasCaret && isActive && (
+                <span
+                  className="pse-tool-caret"
+                  role="button"
+                  aria-label={`Open ${t.label} style options`}
+                  data-testid={`tool-caret-${t.id}`}
+                  // Stop the propagation here too so a stray pointerdown
+                  // on the caret can't double-fire the select.
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
+                  <svg
+                    width="8"
+                    height="8"
+                    viewBox="0 0 8 8"
+                    aria-hidden="true"
+                    fill="currentColor"
+                  >
+                    <path d="M1 2.5 L4 5.5 L7 2.5 Z" />
+                  </svg>
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
       <div className="editor-toolbar-meta">
         <span>
@@ -802,4 +1294,3 @@ function EditorToolbar({
     </div>
   );
 }
-

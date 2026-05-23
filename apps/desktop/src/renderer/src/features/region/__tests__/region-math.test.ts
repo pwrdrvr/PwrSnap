@@ -8,8 +8,11 @@ import {
   ALL_HANDLES,
   applyResize,
   clampRectToViewport,
+  DRAG_ENGAGE_PX,
+  exceedsDragThreshold,
   isPointInsideRect,
   rectFromTwoPoints,
+  rectIsMeaningful,
   type HandleId,
   type Rect
 } from "../region-math";
@@ -218,6 +221,85 @@ describe("clampRectToViewport", () => {
       w: 1,
       h: 1
     });
+  });
+});
+
+describe("exceedsDragThreshold — drag-to-select responsiveness (bug iv)", () => {
+  test("a no-move mouseup does not engage drag", () => {
+    expect(exceedsDragThreshold(0, 0)).toBe(false);
+  });
+
+  test("sub-threshold movement in any direction does NOT engage", () => {
+    expect(exceedsDragThreshold(1, 0)).toBe(false);
+    expect(exceedsDragThreshold(0, 1)).toBe(false);
+    expect(exceedsDragThreshold(2, 2)).toBe(false);
+    expect(exceedsDragThreshold(-2, -2)).toBe(false);
+  });
+
+  test("threshold-on-the-dot movement DOES engage (>= boundary)", () => {
+    // The user described "tiny flicks" as the failure mode — make
+    // sure the engage boundary is inclusive, not exclusive.
+    expect(exceedsDragThreshold(DRAG_ENGAGE_PX, 0)).toBe(true);
+    expect(exceedsDragThreshold(0, DRAG_ENGAGE_PX)).toBe(true);
+    expect(exceedsDragThreshold(-DRAG_ENGAGE_PX, 0)).toBe(true);
+    expect(exceedsDragThreshold(0, -DRAG_ENGAGE_PX)).toBe(true);
+  });
+
+  test("horizontal-only and vertical-only flicks engage equally fast", () => {
+    // Regression for the previous Euclidean-distance gate: a 3px
+    // horizontal flick had hypot=3 which failed `< 4`, so the user's
+    // drag intent was lost. Max-of-axes treats both axes symmetrically.
+    expect(exceedsDragThreshold(3, 0)).toBe(true);
+    expect(exceedsDragThreshold(0, 3)).toBe(true);
+  });
+
+  test("diagonal drag engages at the same axis threshold", () => {
+    expect(exceedsDragThreshold(3, 3)).toBe(true);
+    expect(exceedsDragThreshold(-3, 3)).toBe(true);
+    expect(exceedsDragThreshold(3, -3)).toBe(true);
+  });
+
+  test("threshold is low enough for fast wrist flicks (<= 3px)", () => {
+    // Anti-regression: if someone bumps DRAG_ENGAGE_PX above 3, this
+    // pins the responsiveness contract. The whole point of bug iv
+    // was that the threshold was too aggressive — bumping it back
+    // up reintroduces the bug.
+    expect(DRAG_ENGAGE_PX).toBeLessThanOrEqual(3);
+  });
+
+  test("large drags obviously engage", () => {
+    expect(exceedsDragThreshold(100, 50)).toBe(true);
+    expect(exceedsDragThreshold(-200, 300)).toBe(true);
+  });
+});
+
+describe("rectIsMeaningful — committed rect acceptance (bug iv)", () => {
+  test("zero-area rect is not meaningful", () => {
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 0, h: 0 })).toBe(false);
+    expect(rectIsMeaningful({ x: 100, y: 100, w: 0, h: 50 })).toBe(false);
+    expect(rectIsMeaningful({ x: 100, y: 100, w: 50, h: 0 })).toBe(false);
+  });
+
+  test("a thin horizontal strip is meaningful (e.g. status bar selection)", () => {
+    // Regression for bug iv: previously a 200×2 rect failed `h < 4`
+    // and got thrown away as a "tiny drag," so the user couldn't
+    // grab a thin strip of UI.
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 200, h: 1 })).toBe(true);
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 200, h: 2 })).toBe(true);
+  });
+
+  test("a thin vertical strip is meaningful", () => {
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 1, h: 400 })).toBe(true);
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 2, h: 400 })).toBe(true);
+  });
+
+  test("a small but non-zero square is meaningful", () => {
+    // A 3×3 drag is small but the user committed to it. Don't toss it.
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 3, h: 3 })).toBe(true);
+  });
+
+  test("a typical full-screen rect is meaningful", () => {
+    expect(rectIsMeaningful({ x: 0, y: 0, w: 1920, h: 1080 })).toBe(true);
   });
 });
 

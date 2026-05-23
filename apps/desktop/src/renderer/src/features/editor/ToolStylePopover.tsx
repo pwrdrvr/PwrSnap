@@ -158,21 +158,74 @@ const BLEND_MODES: ReadonlyArray<{ id: HighlightBlendMode; label: string }> = [
 
 // ---- Helpers --------------------------------------------------------
 
+/**
+ * Compute the popover's `{top, left}` against the viewport. Two-pass:
+ *
+ *  Pass 1 — `popoverHeight = null`. We don't know the popover's own
+ *  measured height yet, so we lay out at the anchor's top in viewport
+ *  space (matches the legacy single-pass behavior) AND with a
+ *  right-of-anchor horizontal preference.
+ *
+ *  Pass 2 — `popoverHeight = <measured>`. After the popover renders
+ *  once, the layout effect measures its inline-block wrapper and calls
+ *  back through here. We now have enough to flip-up when the natural
+ *  position would overflow the bottom edge (the regression that bug #1
+ *  triggers on the chromeless Library Focus floating bottom toolbar:
+ *  anchor near the bottom of the viewport + tall popover = the lower
+ *  half is clipped under the window edge).
+ *
+ *  Vertical flip rules:
+ *    • If `top + popoverHeight > viewport.innerHeight - 8`, flip ABOVE
+ *      the anchor: `top = anchor.top - popoverHeight - 8`.
+ *    • If flipping above ALSO overflows the top, clamp to viewport with
+ *      an 8px gutter. (Visual fallback; the alternative would be to
+ *      compress the popover, but the body is content-sized via the
+ *      inline-block wrapper and a vertical clip would lose options.)
+ *
+ *  Horizontal flip is unchanged from the legacy single-pass: prefer
+ *  right-of-anchor, fall back to left-of-anchor when overflow.
+ */
 function computeAnchorPosition(
   anchor: HTMLElement,
-  popoverWidth: number
+  popoverWidth: number,
+  popoverHeight: number | null
 ): CSSProperties {
   const rect = anchor.getBoundingClientRect();
   let left = rect.right + POPOVER_OFFSET_PX;
   const viewportWidth =
     typeof window === "undefined" ? popoverWidth : window.innerWidth;
+  const viewportHeight =
+    typeof window === "undefined"
+      ? popoverHeight ?? 0
+      : window.innerHeight;
   if (left + popoverWidth > viewportWidth - 8) {
     // Flip to left side of anchor.
     left = Math.max(8, rect.left - POPOVER_OFFSET_PX - popoverWidth);
   }
+  let top = rect.top;
+  if (popoverHeight !== null) {
+    if (top + popoverHeight > viewportHeight - 8) {
+      // Flip ABOVE the anchor — typical case for the chromeless Library
+      // Focus floating bottom toolbar.
+      const flippedTop = rect.top - POPOVER_OFFSET_PX - popoverHeight;
+      if (flippedTop >= 8) {
+        top = flippedTop;
+      } else {
+        // Doesn't fit above either. Pick whichever side has more space
+        // and clamp to the viewport with an 8px gutter.
+        const spaceBelow = viewportHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        if (spaceAbove > spaceBelow) {
+          top = 8;
+        } else {
+          top = Math.max(8, viewportHeight - 8 - popoverHeight);
+        }
+      }
+    }
+  }
   return {
     position: "fixed",
-    top: `${rect.top}px`,
+    top: `${top}px`,
     left: `${left}px`,
     width: `${popoverWidth}px`,
     zIndex: 1000
@@ -200,6 +253,12 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
   // also under this ref so any click within the popover is recognized
   // as inside.
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // Outer inline-block measurer ref — measured for the two-pass
+  // viewport-edge-aware positioning (see `computeAnchorPosition`).
+  // Per AGENTS.md "Tray + float-over popover sizing", we measure the
+  // outer inline-block wrapper rather than the styled inner box (which
+  // carries `overflow: hidden`) to avoid the clip-loop feedback bug.
+  const measureRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<CSSProperties>({});
   // Coachmark visibility — shown only when settings says so AND only
   // on this open's lifecycle (set during mount effect; cleared at
@@ -207,18 +266,58 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
   const [coachmarkVisible, setCoachmarkVisible] = useState<boolean>(false);
 
   // Position the popover on mount + when anchor moves (e.g. window
-  // resize). Most callers re-mount the popover when the active tool
-  // changes, so this effect captures the anchor at that moment.
+  // resize). Two-pass:
+  //
+  //   Pass 1 runs synchronously here with `popoverHeight = null` —
+  //   places the popover at the legacy "right-of-anchor, top aligned"
+  //   position so the user sees something on the next commit. Anything
+  //   that overflows the viewport edges is invisible momentarily.
+  //
+  //   Pass 2 runs once the popover has rendered: we measure its
+  //   inline-block wrapper (height = natural content), recompute, and
+  //   if the position changed (vertical flip-up, horizontal flip-left)
+  //   we setState again. The ResizeObserver covers the rare case of
+  //   the popover's content changing height while open (e.g. blur
+  //   radius "Custom…" expands the numeric input row); a single
+  //   recompute on every wrapper-height change keeps the flip honest.
+  //
+  // Most callers re-mount the popover when the active tool changes,
+  // so the pass-1 measurement captures the new tool's content at
+  // open.
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
     if (anchor === null) return;
-    const recompute = (): void => {
-      setPosition(computeAnchorPosition(anchor, POPOVER_WIDTH_PX));
+    const recompute = (popoverHeight: number | null): void => {
+      setPosition(computeAnchorPosition(anchor, POPOVER_WIDTH_PX, popoverHeight));
     };
-    recompute();
-    window.addEventListener("resize", recompute);
+    // Pass 1 — no height yet.
+    recompute(null);
+    const measure = (): void => {
+      const el = measureRef.current;
+      if (el === null) return;
+      const h = el.getBoundingClientRect().height;
+      if (h > 0) {
+        recompute(Math.ceil(h));
+      }
+    };
+    // Pass 2 — measure after first paint. requestAnimationFrame
+    // gives the renderer one paint cycle to lay out the body before
+    // we read getBoundingClientRect — otherwise we'd read 0 in some
+    // synchronous renders before layout has flushed.
+    const raf = requestAnimationFrame(measure);
+    // Re-measure on content changes (rare; covers the blur "Custom…"
+    // expansion + the coachmark dismissing at 3s). Guard for jsdom test
+    // environments that don't ship a ResizeObserver — measurement
+    // there happens via the explicit `resize` event handler below.
+    const ro =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (ro !== null && measureRef.current !== null) ro.observe(measureRef.current);
+    const onResize = (): void => measure();
+    window.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("resize", recompute);
+      cancelAnimationFrame(raf);
+      ro?.disconnect();
+      window.removeEventListener("resize", onResize);
     };
   }, [anchorRef]);
 
@@ -306,6 +405,7 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
           rules; gBCR returns content-determined height for any
           future ResizeObserver consumer. */}
       <div
+        ref={measureRef}
         className="pse-popover-measure"
         style={{ display: "inline-block", width: "100%" }}
       >

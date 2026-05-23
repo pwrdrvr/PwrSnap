@@ -79,10 +79,57 @@ export const RectOverlay = z.object({
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
 });
 
+/** Blend mode for highlight overlays. Mirrors `HighlightBlendMode` in
+ *  `protocol.ts` (the popover/settings preference type) — same value
+ *  space by design so the picker writes verbatim into the row. The zod
+ *  schema lives here as the runtime source-of-truth for the on-disk
+ *  row; the type alias is re-imported from protocol below. */
+export const HighlightBlendModeSchema = z.enum(["multiply", "screen", "overlay"]);
+type HighlightBlendMode = z.infer<typeof HighlightBlendModeSchema>;
+export const DEFAULT_HIGHLIGHT_BLEND_MODE: HighlightBlendMode = "multiply";
+export const DEFAULT_HIGHLIGHT_COLOR_HEX = "#facc15";
+export const DEFAULT_HIGHLIGHT_OPACITY = 0.3;
+
 export const HighlightOverlay = z.object({
   kind: z.literal("highlight"),
-  rect: NormalizedRect
+  rect: NormalizedRect,
+  /** Phase 3.1 v2-editor refresh — optional for back-compat. Legacy
+   *  rows (which had only `rect`) render with the historical yellow
+   *  default via `readHighlightColor`. Either an "auto" sentinel (use
+   *  legacy yellow) or an explicit hex from the popover swatches. */
+  color: z
+    .union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)])
+    .optional(),
+  /** 0..1 opacity. Optional for back-compat; default applied via
+   *  `readHighlightOpacity`. */
+  opacity: z.number().min(0).max(1).optional(),
+  /** CSS-style blend mode. Optional for back-compat. */
+  blend: HighlightBlendModeSchema.optional()
 });
+
+/** Mirrors `readBlurStyle` / `readArrowEndStyle`: applies the legacy
+ *  yellow default for highlight rows drawn before the color field
+ *  existed. Renderers should ALWAYS read through this helper rather
+ *  than touching `data.color` directly, so legacy rows render
+ *  identically before and after the schema bump. */
+export function readHighlightColor(data: {
+  color?: "auto" | string | undefined;
+}): string {
+  if (data.color === undefined || data.color === "auto") {
+    return DEFAULT_HIGHLIGHT_COLOR_HEX;
+  }
+  return data.color;
+}
+
+export function readHighlightOpacity(data: { opacity?: number | undefined }): number {
+  return data.opacity ?? DEFAULT_HIGHLIGHT_OPACITY;
+}
+
+export function readHighlightBlend(
+  data: { blend?: HighlightBlendMode | undefined }
+): HighlightBlendMode {
+  return data.blend ?? DEFAULT_HIGHLIGHT_BLEND_MODE;
+}
 
 /** How the blur region renders: a soft Gaussian smear, a chunky
  *  mosaic / pixelation, or a solid opaque "redaction" box. All three

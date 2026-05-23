@@ -39,10 +39,13 @@ import type {
   BundleLayerNode,
   CaptureRecord,
   Overlay,
-  OverlayRow
+  OverlayRow,
+  ToolSizePreset
 } from "@pwrsnap/shared";
 import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
+import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
+import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
@@ -128,6 +131,20 @@ const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
   return STYLED_TOOLS.has(tool);
+}
+
+/** Map a text tool's `fontSize` preset (auto / small / medium / large)
+ *  into the v1 `TextOverlay.size` enum (small | large). The v1 schema
+ *  only has two buckets; "auto" + "small" → "small", "medium" + "large"
+ *  → "large". Numeric presets aren't reachable from the popover today
+ *  but fall back to "small" defensively. */
+function resolveTextSize(
+  fontSize: ToolSizePreset | number
+): "small" | "large" {
+  if (typeof fontSize === "number") return "small";
+  if (fontSize === "large") return "large";
+  if (fontSize === "medium") return "large";
+  return "small";
 }
 
 /** v2 → v1 read-only projection. The existing `OverlaySvg` and
@@ -470,18 +487,37 @@ export function Editor({
         closeInteraction();
         return;
       }
-      const overlay: Overlay = {
+      // Phase 3.1 fix #2/#4: thread the active arrow style (color +
+      // endStyle + stemStyle + doubleEnded) into the overlay shape so
+      // the popover's choices actually stick. Pre-fix this dropped
+      // everything to `color: "auto"` and the v1 defaults.
+      // `toolState.activeStyle` is dormant in controlled (Library
+      // Focus) mode — that path is Phase C's responsibility and is
+      // not in scope here.
+      const arrowStyleSrc =
+        !isControlled && toolState.activeStyle.tool === "arrow"
+          ? toolState.activeStyle.style
+          : null;
+      const arrowOverlay: Extract<Overlay, { kind: "arrow" }> = {
         kind: "arrow",
         from: { x: draft.fromXn, y: draft.fromYn },
         to: { x: draft.toXn, y: draft.toYn },
-        color: "auto"
+        color:
+          arrowStyleSrc !== null
+            ? resolveToolColor(arrowStyleSrc.color)
+            : "auto"
       };
+      if (arrowStyleSrc !== null) {
+        arrowOverlay.endStyle = arrowStyleSrc.endStyle;
+        arrowOverlay.stemStyle = arrowStyleSrc.stemStyle;
+        arrowOverlay.doubleEnded = arrowStyleSrc.doubleEnded;
+      }
       // Capture the arrow tail in canvas-px so the matching-text
       // affordance can position itself; this lookup needs the live
       // canvas rect, so do it BEFORE the await.
       const tailCanvasPx = normalizedToCanvasPx(draft.toXn, draft.toYn);
       setDraft(null);
-      const wrote = await persistOverlay(overlay);
+      const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
       if (wrote && !isControlled) {
         toolState.onAnnotationPlaced(
@@ -501,12 +537,44 @@ export function Editor({
         return;
       }
       const placedKind = draft.tool;
-      const overlay: Overlay =
-        placedKind === "rect"
-          ? { kind: "rect", rect, color: "auto" }
-          : placedKind === "highlight"
-          ? { kind: "highlight", rect }
-          : { kind: "blur", rect, style: blurStyle };
+      // Phase 3.1 fix #2: thread the active style into rect / highlight
+      // / blur overlays. Pre-fix, rect + highlight dropped everything
+      // to defaults regardless of popover choices.
+      let overlay: Overlay;
+      if (placedKind === "rect") {
+        const rectStyleSrc =
+          !isControlled && toolState.activeStyle.tool === "rect"
+            ? toolState.activeStyle.style
+            : null;
+        overlay = {
+          kind: "rect",
+          rect,
+          color:
+            rectStyleSrc !== null
+              ? resolveToolColor(rectStyleSrc.color)
+              : "auto"
+        };
+      } else if (placedKind === "highlight") {
+        const hlStyleSrc =
+          !isControlled && toolState.activeStyle.tool === "highlight"
+            ? toolState.activeStyle.style
+            : null;
+        const hlOverlay: Extract<Overlay, { kind: "highlight" }> = {
+          kind: "highlight",
+          rect
+        };
+        if (hlStyleSrc !== null) {
+          const resolved = resolveToolColor(hlStyleSrc.color);
+          hlOverlay.color = resolved;
+          hlOverlay.opacity = hlStyleSrc.opacity;
+          hlOverlay.blend = hlStyleSrc.blend;
+        }
+        overlay = hlOverlay;
+      } else {
+        // blur — already threaded via the `blurStyle` memo at the
+        // top of this function, so this branch was correct pre-fix.
+        overlay = { kind: "blur", rect, style: blurStyle };
+      }
       setDraft(null);
       const wrote = await persistOverlay(overlay);
       closeInteraction();
@@ -519,8 +587,60 @@ export function Editor({
     closeInteraction();
   }
 
-  /** Returns true if the overlay was written successfully. */
+  /**
+   * Returns true if the overlay was written successfully.
+   *
+   * Phase 3.1 fix #3 (the cascade root): route writes by current bundle
+   * format. The Phase 3 doctor flips v1 captures to v2 on first edit-
+   * open; the bus-side guard `refuseIfV2Capture` then rejects
+   * `overlays:upsert` on those captures, so the legacy single-dispatch
+   * code dropped every new overlay on the floor. v2 captures take the
+   * `layers:upsert` path via an Overlay→BundleLayerNode adapter.
+   *
+   * TODO(phase-4-5): fold this branch into `useCaptureModel.dispatchEdit`
+   * (Approach B) so callers stop restating the format. Kept as a
+   * surgical site-local branch here to ship the fix without a
+   * 3-file refactor.
+   */
   async function persistOverlay(overlay: Overlay): Promise<boolean> {
+    // Snapshot the model at call time. The model branch is the only
+    // thing we read; subsequent state changes (e.g. a captures:changed
+    // broadcast) re-render but don't race this in-flight write — the
+    // result is recorded on the same model.
+    if (model.kind === "loaded" && model.format === 2) {
+      // v2 path: adapt the Overlay → BundleLayerNode + dispatch layers:upsert.
+      const adapted = overlayToBundleLayerNode(
+        overlay,
+        { width: model.record.width_px, height: model.record.height_px },
+        findRootGroupId(model.layers)
+      );
+      if (!adapted.ok) {
+        // eslint-disable-next-line no-console
+        console.error("overlayToBundleLayerNode failed", adapted.error);
+        return false;
+      }
+      const result = await dispatch("layers:upsert", {
+        captureId,
+        layer: adapted.layer
+      });
+      if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.error("layers:upsert failed", result.error);
+        return false;
+      }
+      // Undo / redo intentionally skipped on the v2 path. The undo
+      // stack (`useUndoRedo`) dispatches `overlays:delete` /
+      // `overlays:upsert` directly, and both verbs would be rejected
+      // by the bus-side v2 guard (`v2_capture_use_layers_ipc`). The
+      // v2-native undo path lands in Phase 4-5 alongside the
+      // BundleLayerNode-shaped op stack. For Phase 3.1, the user can
+      // still ⌘Z within a v1 capture; v2 captures get a working
+      // create path now and a working undo path later.
+      // TODO(phase-4-5): teach useUndoRedo to branch on capture format.
+      return true;
+    }
+
+    // v1 path — unchanged behavior.
     const result = await dispatch("overlays:upsert", { captureId, overlay });
     if (!result.ok) {
       // eslint-disable-next-line no-console
@@ -544,12 +664,21 @@ export function Editor({
       setDraft(null);
       return;
     }
+    // Phase 3.1 fix #2: thread the active text style (color + fontSize
+    // mapped to v1's two-bucket size enum). Pre-fix this hardcoded
+    // "small" / "auto".
+    const textStyleSrc =
+      !isControlled && toolState.activeStyle.tool === "text"
+        ? toolState.activeStyle.style
+        : null;
     const overlay: Overlay = {
       kind: "text",
       point: { x: draft.xn, y: draft.yn },
       body,
-      size: "small",
-      color: "auto"
+      size:
+        textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "small",
+      color:
+        textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
     };
     setDraft(null);
     const wrote = await persistOverlay(overlay);
@@ -1008,6 +1137,22 @@ function EditorLoaded({
     (rect: { x: number; y: number; w: number; h: number }): void => {
       const overlay: Overlay = { kind: "crop", rect };
       void (async (): Promise<void> => {
+        // v1 path only. The v2 adapter (`overlayToBundleLayerNode`)
+        // explicitly refuses crop with `crop_not_supported_on_v2` —
+        // there's no per-layer crop in v2, the canvas-side equivalent
+        // mutates `canvas_dimensions` and is Phase 4+. For v2 captures
+        // we log and no-op so the user gets a quiet failure rather
+        // than a doomed `overlays:upsert` rejection. The crop button
+        // itself stays clickable in the toolbar; future work hides
+        // it for v2 captures.
+        // TODO(phase-4): v2-native crop via canvas_dimensions mutation.
+        if (record.bundle_format_version >= 2) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "crop overlay skipped: v2 capture has no per-layer crop; Phase 4 ships canvas-side crop"
+          );
+          return;
+        }
         const result = await dispatch("overlays:upsert", {
           captureId: record.id,
           overlay
@@ -1025,7 +1170,7 @@ function EditorLoaded({
         }
       })();
     },
-    [isControlled, record.id, recordCreateRef, toolState, undoApplyingRef]
+    [isControlled, record, recordCreateRef, toolState, undoApplyingRef]
   );
 
   const onCropCancel = useCallback((): void => {

@@ -645,6 +645,100 @@ describe("ToolStylePopover", () => {
     expect(document.activeElement).toBe(yellow);
   });
 
+  test("flip-up: anchor near bottom of viewport positions popover ABOVE the anchor (Phase 3.1 fix)", () => {
+    // Phase 3.1 bug #1 repro: chromeless Library Focus floating bottom
+    // toolbar. The anchor sits near `viewportHeight - <toolbarHeight>`.
+    // Pre-fix, the popover anchored at `rect.top` and extended down
+    // past the window edge — entire control rows clipped off.
+    //
+    // The fix: after the pass-1 layout, measure the popover wrapper
+    // and recompute. When `rect.top + measuredHeight` overflows, set
+    // `top` to `rect.top - measuredHeight - 8` (flip above).
+    //
+    // We monkey-patch `getBoundingClientRect` on both the anchor and
+    // the popover wrapper to deterministically reproduce the
+    // overflow geometry without depending on the test machine's
+    // viewport.
+
+    // 1) Anchor near the bottom of an 800x600 viewport (mirrors the
+    //    floating bottom toolbar layout).
+    const originalInnerHeight = window.innerHeight;
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 600
+    });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 800
+    });
+    try {
+      render(
+        createElement(Harness, {
+          tool: "arrow",
+          style: DEFAULT_ARROW_STYLE
+        })
+      );
+      const anchor = document.querySelector<HTMLButtonElement>(
+        '[data-testid="anchor"]'
+      );
+      const popover = queryPopover();
+      const measure = popover.querySelector<HTMLElement>(".pse-popover-measure");
+      expect(anchor).not.toBeNull();
+      expect(measure).not.toBeNull();
+      // Anchor at y=560 with height=32 → bottom ~= 592.
+      anchor!.getBoundingClientRect = () =>
+        ({
+          x: 100,
+          y: 560,
+          left: 100,
+          right: 140,
+          top: 560,
+          bottom: 592,
+          width: 40,
+          height: 32,
+          toJSON: () => ({})
+        }) as DOMRect;
+      // Force the measured wrapper to report a tall popover (440px).
+      measure!.getBoundingClientRect = () =>
+        ({
+          x: 0,
+          y: 0,
+          left: 0,
+          right: 280,
+          top: 0,
+          bottom: 440,
+          width: 280,
+          height: 440,
+          toJSON: () => ({})
+        }) as DOMRect;
+      // Trigger a resize so the popover recomputes against our patched
+      // rects. (The mount-time pass already ran, but with the default
+      // jsdom rects of {0,0,0,0}, which don't exercise the flip.)
+      act(() => {
+        window.dispatchEvent(new Event("resize"));
+      });
+      const topStr = popover.style.top;
+      expect(topStr).toMatch(/px$/);
+      const topPx = Number.parseFloat(topStr);
+      // Expected post-flip: anchor.top - height - 8 = 560 - 440 - 8 = 112.
+      // If the fix is missing, top would equal rect.top (560) or a
+      // clipped variant; either way, > 200 fails the assertion below.
+      expect(topPx).toBeLessThan(200);
+      // And the bottom edge must fit within the viewport.
+      expect(topPx + 440).toBeLessThanOrEqual(600);
+    } finally {
+      Object.defineProperty(window, "innerHeight", {
+        configurable: true,
+        value: originalInnerHeight
+      });
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth
+      });
+    }
+  });
+
   test("19. keyboard accessibility: every interactive control is reachable + has a label", () => {
     render(
       createElement(Harness, {

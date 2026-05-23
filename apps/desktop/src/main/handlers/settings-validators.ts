@@ -13,7 +13,12 @@
 // deeper than two levels). When a third or fourth verb needs the same
 // treatment, revisit.
 
-import { isAppearanceTheme, isSettingsPage } from "@pwrsnap/shared";
+import {
+  isAppearanceTheme,
+  isColorToken,
+  isEditorSidebarPanel,
+  isSettingsPage
+} from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
   PwrSnapError,
@@ -361,7 +366,205 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.editor !== undefined) {
+    const editorErr = validateEditorPatch(p.editor);
+    if (editorErr !== null) return { ok: false, error: editorErr };
+  }
+
   return { ok: true, value: patch as SettingsPatch };
+}
+
+// ---- settings:write — editor sub-validator -----------------------------
+//
+// Pulled into a separate function because the editor block is materially
+// deeper than the other sections (toolStyles → per-kind → per-field).
+// Returns null on success or a structured error on first failure.
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isToolColor(value: unknown): boolean {
+  // Accept named tokens OR any string (the popover's "Custom…" affordance
+  // writes free-form hex via the OS color picker; renderer maps tokens to
+  // var(--swatch-*) at paint and passes strings through unchanged).
+  return typeof value === "string" || isColorToken(value);
+}
+
+function isToolSizePreset(value: unknown): boolean {
+  return (
+    value === "auto" ||
+    value === "small" ||
+    value === "medium" ||
+    value === "large" ||
+    isFiniteNumber(value)
+  );
+}
+
+function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_arrow_color", "settings:write: editor.toolStyles.arrow.color must be a color token or string");
+  }
+  if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
+    return validationError("invalid_editor_arrow_thickness", "settings:write: editor.toolStyles.arrow.thickness must be auto/small/medium/large or a finite number");
+  }
+  if (!isUndefined(raw.endStyle)) {
+    const v = raw.endStyle;
+    if (v !== "filled-triangle" && v !== "open-triangle" && v !== "line" && v !== "dot") {
+      return validationError("invalid_editor_arrow_endStyle", "settings:write: editor.toolStyles.arrow.endStyle must be one of filled-triangle/open-triangle/line/dot");
+    }
+  }
+  if (!isUndefined(raw.stemStyle)) {
+    const v = raw.stemStyle;
+    if (v !== "solid" && v !== "dashed" && v !== "dotted") {
+      return validationError("invalid_editor_arrow_stemStyle", "settings:write: editor.toolStyles.arrow.stemStyle must be solid/dashed/dotted");
+    }
+  }
+  if (!isUndefined(raw.doubleEnded) && !isBoolean(raw.doubleEnded)) {
+    return validationError("invalid_editor_arrow_doubleEnded", "settings:write: editor.toolStyles.arrow.doubleEnded must be a boolean");
+  }
+  return null;
+}
+
+function validateTextStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_text_color", "settings:write: editor.toolStyles.text.color must be a color token or string");
+  }
+  if (!isUndefined(raw.fontSize) && !isToolSizePreset(raw.fontSize)) {
+    return validationError("invalid_editor_text_fontSize", "settings:write: editor.toolStyles.text.fontSize must be auto/small/medium/large or a finite number");
+  }
+  if (!isUndefined(raw.weight)) {
+    const v = raw.weight;
+    if (v !== "regular" && v !== "bold") {
+      return validationError("invalid_editor_text_weight", "settings:write: editor.toolStyles.text.weight must be regular or bold");
+    }
+  }
+  return null;
+}
+
+function validateRectStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_rect_color", "settings:write: editor.toolStyles.rect.color must be a color token or string");
+  }
+  if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
+    return validationError("invalid_editor_rect_thickness", "settings:write: editor.toolStyles.rect.thickness must be auto/small/medium/large or a finite number");
+  }
+  if (!isUndefined(raw.filled) && !isBoolean(raw.filled)) {
+    return validationError("invalid_editor_rect_filled", "settings:write: editor.toolStyles.rect.filled must be a boolean");
+  }
+  return null;
+}
+
+function validateBlurStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.mode)) {
+    const v = raw.mode;
+    if (v !== "gaussian" && v !== "pixelate" && v !== "redact") {
+      return validationError("invalid_editor_blur_mode", "settings:write: editor.toolStyles.blur.mode must be gaussian/pixelate/redact");
+    }
+  }
+  if (!isUndefined(raw.radius)) {
+    if (!isObject(raw.radius)) {
+      return validationError("invalid_editor_blur_radius", "settings:write: editor.toolStyles.blur.radius must be an object");
+    }
+    const r = raw.radius;
+    if (r.mode === "auto") {
+      // ok; no value field allowed but we ignore extras
+    } else if (r.mode === "px") {
+      if (!isFiniteNumber(r.value) || r.value <= 0) {
+        return validationError("invalid_editor_blur_radius_value", "settings:write: editor.toolStyles.blur.radius.value must be a positive finite number when mode is \"px\"");
+      }
+    } else {
+      return validationError("invalid_editor_blur_radius_mode", "settings:write: editor.toolStyles.blur.radius.mode must be \"auto\" or \"px\"");
+    }
+  }
+  return null;
+}
+
+function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | null {
+  if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
+    return validationError("invalid_editor_highlight_color", "settings:write: editor.toolStyles.highlight.color must be a color token or string");
+  }
+  if (!isUndefined(raw.opacity)) {
+    if (!isFiniteNumber(raw.opacity) || raw.opacity < 0 || raw.opacity > 1) {
+      return validationError("invalid_editor_highlight_opacity", "settings:write: editor.toolStyles.highlight.opacity must be a finite number in [0,1]");
+    }
+  }
+  if (!isUndefined(raw.blend)) {
+    const v = raw.blend;
+    if (v !== "multiply" && v !== "screen" && v !== "overlay") {
+      return validationError("invalid_editor_highlight_blend", "settings:write: editor.toolStyles.highlight.blend must be multiply/screen/overlay");
+    }
+  }
+  return null;
+}
+
+function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
+  if (!isObject(rawEditor)) {
+    return validationError("invalid_editor", "settings:write: editor must be an object");
+  }
+  const editor = rawEditor;
+
+  if (editor.toolStyles !== undefined) {
+    if (!isObject(editor.toolStyles)) {
+      return validationError("invalid_editor_toolStyles", "settings:write: editor.toolStyles must be an object");
+    }
+    const ts = editor.toolStyles;
+    const perKind = [
+      ["arrow", validateArrowStyle],
+      ["text", validateTextStyle],
+      ["rect", validateRectStyle],
+      ["blur", validateBlurStyle],
+      ["highlight", validateHighlightStyle]
+    ] as const;
+    for (const [key, validator] of perKind) {
+      const block = ts[key];
+      if (block === undefined) continue;
+      if (!isObject(block)) {
+        return validationError(`invalid_editor_${key}`, `settings:write: editor.toolStyles.${key} must be an object`);
+      }
+      const err = validator(block);
+      if (err !== null) return err;
+    }
+  }
+
+  if (editor.coachmarks !== undefined) {
+    if (!isObject(editor.coachmarks)) {
+      return validationError("invalid_editor_coachmarks", "settings:write: editor.coachmarks must be an object");
+    }
+    if (!isUndefined(editor.coachmarks.stoplightSeen) && !isBoolean(editor.coachmarks.stoplightSeen)) {
+      return validationError("invalid_editor_stoplightSeen", "settings:write: editor.coachmarks.stoplightSeen must be a boolean");
+    }
+  }
+
+  if (editor.matchingText !== undefined) {
+    if (!isObject(editor.matchingText)) {
+      return validationError("invalid_editor_matchingText", "settings:write: editor.matchingText must be an object");
+    }
+    if (!isUndefined(editor.matchingText.enabled) && !isBoolean(editor.matchingText.enabled)) {
+      return validationError("invalid_editor_matchingText_enabled", "settings:write: editor.matchingText.enabled must be a boolean");
+    }
+  }
+
+  if (editor.sidebar !== undefined) {
+    if (!isObject(editor.sidebar)) {
+      return validationError("invalid_editor_sidebar", "settings:write: editor.sidebar must be an object");
+    }
+    if (!isUndefined(editor.sidebar.pinned) && !isBoolean(editor.sidebar.pinned)) {
+      return validationError("invalid_editor_sidebar_pinned", "settings:write: editor.sidebar.pinned must be a boolean");
+    }
+    if (
+      !isUndefined(editor.sidebar.lastSelectedPanel) &&
+      !isEditorSidebarPanel(editor.sidebar.lastSelectedPanel)
+    ) {
+      return validationError("invalid_editor_sidebar_panel", "settings:write: editor.sidebar.lastSelectedPanel must be info/chat/toolConfig/help");
+    }
+  }
+
+  return null;
 }
 
 // ---- settings:refreshCodexDiscovery ----

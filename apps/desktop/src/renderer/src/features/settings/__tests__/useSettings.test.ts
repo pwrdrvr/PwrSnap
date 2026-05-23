@@ -54,6 +54,18 @@ const baseSettings: Settings = {
     includeSystemAudio: false,
     includeMicrophone: false,
     lastRoutedPermissionFingerprint: ""
+  },
+  editor: {
+    toolStyles: {
+      arrow: { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false },
+      text: { color: "accent", fontSize: "auto", weight: "regular" },
+      rect: { color: "accent", thickness: "auto", filled: false },
+      blur: { mode: "gaussian", radius: { mode: "auto" } },
+      highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
+    },
+    coachmarks: { stoplightSeen: false },
+    matchingText: { enabled: true },
+    sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
   }
 };
 

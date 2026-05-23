@@ -12,7 +12,22 @@
 
 import type { ReactElement } from "react";
 
-export type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text";
+export type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text" | "crop";
+
+/** Canonical toolbar order. Exported as an array of `Tool` so the
+ *  toolbar row + the `useEditorToolState` cycle helpers consume the
+ *  same source. `satisfies` proves at compile time that every member
+ *  of `Tool` shows up exactly once — adding a new tool kind without
+ *  updating this array becomes a typecheck error. */
+export const TOOL_ORDER = [
+  "pointer",
+  "arrow",
+  "rect",
+  "highlight",
+  "blur",
+  "text",
+  "crop"
+] as const satisfies readonly Tool[];
 
 export const TOOLS: ReadonlyArray<{
   id: Tool;
@@ -98,6 +113,21 @@ export const TOOLS: ReadonlyArray<{
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M5 6h14M12 6v14M9 20h6" />
+      </svg>
+    )
+  },
+  // Crop landed in Phase 1 of the v2 editor refresh. Bound to `C`
+  // (the same chord as Quick Capture's global hotkey but unique
+  // inside the editor where global hotkeys don't fire). Activates the
+  // CropTool overlay — 8 handles + rule-of-thirds + W×H HUD; ↵ commits.
+  {
+    id: "crop",
+    label: "Crop",
+    key: "C",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M6 2v16h16" />
+        <path d="M2 6h16v16" />
       </svg>
     )
   }

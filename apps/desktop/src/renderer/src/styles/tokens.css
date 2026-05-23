@@ -157,6 +157,40 @@
   --dur-fast:    120ms;
   --dur-base:    180ms;
   --dur-slow:    320ms;
+
+  /* ---------- COLOR — annotation swatches (stoplight palette) ----------
+     The annotation tool color picker exposes these as the always-visible
+     stoplight + neutrals. They stay constant across dark / light themes
+     because annotation semantics are universal — a red arrow means "bad"
+     to anyone who opens a screenshot regardless of how their OS is
+     themed. The one exception is `--swatch-accent`, which intentionally
+     follows `--accent` so the brand-accent swatch deepens to the
+     WCAG-AA tangerine on white surfaces.
+
+     Source: docs/plans/2026-05-23-001-feat-v2-editor-plan.md (Phase 1
+     "Color tokens added to tokens.css" — values chosen to match Apple
+     traffic-light hues so they read as familiar stoplight semantics on
+     macOS). */
+  --swatch-red:    #ff5f57;
+  --swatch-yellow: #facc15;
+  --swatch-green:  #28c840;
+  --swatch-blue:   #1f7cff;
+  --swatch-gray:   #8b8a87;
+  --swatch-black:  #0a0a0a;
+  --swatch-white:  #f5efe3;
+  --swatch-accent: var(--accent);
+
+  /* ---------- EDITOR PANELS — hover / pop / safe-triangle timings ----------
+     Tuned per NN/g + Baymard hover-delay research (300ms hover-enter,
+     500ms exit grace combined with the safe-triangle pattern that
+     Amazon's mega-menu and Linear's sidebar both adopt). Stored as
+     CSS custom properties so any future panel re-tuning is a one-line
+     change rather than chasing magic numbers across components. */
+  --pse-panel-hover-delay-ms: 300ms;
+  --pse-panel-grace-ms: 500ms;
+  --pse-panel-slide-dur: 180ms;
+  --pse-panel-slide-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --pse-affordance-auto-dismiss-ms: 8000ms;
 }
 
 /* ============================================================

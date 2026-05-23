@@ -242,8 +242,12 @@ async function render(node: ReactElement): Promise<void> {
   await act(async () => {
     root!.render(node);
   });
-  // Drain microtasks for the initial overlays:list dispatch.
+  // Drain microtasks for the initial library:byId + overlays:list
+  // dispatch chain (useCaptureModel runs them sequentially before
+  // resolving out of `kind: "loading"`).
   await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -279,10 +283,43 @@ async function fireClick(
   });
 }
 
+/** v1 CaptureRecord stub used by both initial-load and broadcast
+ *  refetch paths. Tests don't care about the record fields beyond
+ *  what useCaptureModel + the renderer touch — bundle_format_version
+ *  matters most (must be 1 so the model resolves to the v1 branch). */
+function makeStubRecord() {
+  return {
+    id: "cap-1",
+    kind: "image" as const,
+    captured_at: "2026-05-23T12:00:00.000Z",
+    legacy_src_path: null,
+    bundle_path: "/tmp/cap-1.pwrsnap",
+    flat_png_path: null,
+    bundle_modified_at: "2026-05-23T12:00:00.000Z",
+    bundle_format_version: 1,
+    bundle_edits_version: 0,
+    width_px: 800,
+    height_px: 600,
+    device_pixel_ratio: 2,
+    byte_size: 0,
+    sha256: "0".repeat(64),
+    source_app_bundle_id: null,
+    source_app_name: null,
+    edits_version: 0,
+    deleted_at: null
+  };
+}
+
 async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
-  // Configure the mock so the subscribe handler's awaited
-  // overlays:list returns the supplied rows.
+  // Configure the mock so the subscribe handler's awaited library:byId
+  // + overlays:list refetch returns fresh data. useCaptureModel's
+  // events:overlays:changed handler does ONE library:byId + ONE
+  // overlays:list per broadcast for v1 captures, so both verbs need
+  // to resolve.
   dispatchMock.mockImplementation(async (name: string) => {
+    if (name === "library:byId") {
+      return { ok: true, value: makeStubRecord() };
+    }
     if (name === "overlays:list") return { ok: true, value: rows };
     return { ok: true, value: undefined };
   });
@@ -292,8 +329,10 @@ async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
     }
   });
   // Drain the microtasks that the listener kicks off (the inner
-  // async iife awaits dispatch + setState).
+  // async iife awaits dispatch + setState). One extra tick for the
+  // library:byId + overlays:list chain useCaptureModel runs.
   await act(async () => {
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -302,8 +341,15 @@ async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
 
 beforeEach(() => {
   dispatchMock.mockReset();
-  // Default dispatch: overlays:list returns empty; settings:write OK.
+  // Default dispatch: library:byId returns a v1 capture; overlays:list
+  // returns empty; settings:write OK. Phase 2 EditToolbar reads through
+  // useCaptureModel which dispatches library:byId before overlays:list,
+  // so both verbs must respond for the model to resolve out of
+  // `kind: "loading"`.
   dispatchMock.mockImplementation(async (name: string) => {
+    if (name === "library:byId") {
+      return { ok: true, value: makeStubRecord() };
+    }
     if (name === "overlays:list") return { ok: true, value: [] };
     return { ok: true, value: undefined };
   });

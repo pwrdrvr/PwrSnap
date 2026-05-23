@@ -295,6 +295,73 @@ describe("FloatOverHost", () => {
     expect(container.textContent).toContain("Codex has no suggestion yet");
     expect(container.textContent).not.toContain("Enable Codex");
   });
+
+  // Regression: bug v — the ⌘1/⌘2/⌘3 keydown listener must keep
+  // dispatching `clipboard:copy` with the correct captureId after
+  // enrichment IPC arrives. Previously the listener's effect was
+  // keyed on `[state]`, so each enrichment update detached + re-
+  // attached the window listener; if the keystroke landed mid-
+  // detach (or main batched the update), the dispatch was lost or
+  // pointed at stale closure data.
+  test("⌘1 keeps dispatching clipboard:copy after enrichment updates arrive", async () => {
+    const api = installHostApi();
+    const dispatchMock = window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(createElement(FloatOverHost));
+    });
+    await act(async () => {
+      api.pushEvent(EVENT_CHANNELS.floatOverState, {
+        kind: "show-loaded",
+        captureId: imageRecord.id,
+        record: imageRecord
+      });
+    });
+
+    // Simulate the Codex enrichment broadcast train: queued → running
+    // → completed, each one a separate IPC. Pre-fix this caused the
+    // keydown listener to be torn down + re-built three times.
+    for (const status of ["queued", "running", "completed"] as const) {
+      await act(async () => {
+        api.pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+          enrichment: {
+            captureId: imageRecord.id,
+            latestRunId: "run_1",
+            status,
+            ocrText: null,
+            suggestedTitle: null,
+            acceptedTitle: null,
+            titleAcceptedAt: null,
+            suggestedFilenameStem: null,
+            acceptedFilenameStem: null,
+            filenameAcceptedAt: null,
+            suggestedDescription: null,
+            acceptedDescription: null,
+            descriptionAcceptedAt: null,
+            suggestedTags: [],
+            acceptedTags: []
+          }
+        });
+      });
+    }
+
+    dispatchMock.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "1", metaKey: true, bubbles: true })
+      );
+    });
+
+    const clipboardCalls = dispatchMock.mock.calls.filter(
+      ([name]) => name === "clipboard:copy"
+    );
+    expect(clipboardCalls.length).toBe(1);
+    expect(clipboardCalls[0]?.[1]).toEqual({ captureId: imageRecord.id, preset: "low" });
+  });
 });
 
 describe("FloatOver Codex suggestions", () => {

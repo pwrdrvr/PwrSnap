@@ -650,4 +650,67 @@ describe("FloatOver Codex suggestions", () => {
 
     expect(el.querySelector(".fo__ai-accept")).toBeNull();
   });
+
+  // Regression: bug vii — when enrichment lands with auto-accepted
+  // tags, the countdown must NOT pause indefinitely. Previously the
+  // `tags.length > initialTags.length` heuristic interpreted auto-
+  // accept's setTags() as user engagement and stuck the toast on
+  // screen until the user manually dismissed.
+  test("auto-accepted tags from enrichment do NOT pin the countdown", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "completed",
+        suggestedTitle: "Auto title",
+        acceptedTitle: "Auto title",
+        suggestedDescription: "Auto body",
+        acceptedDescription: "Auto body",
+        acceptedTags: ["alpha", "beta"],
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true,
+      autoAcceptSuggestions: true
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
+  });
+
+  // Regression: bug vii — user-added tags SHOULD pause the countdown.
+  // The fix swapped a `tags.length > initialTags.length` heuristic for
+  // a user-interaction counter; verify the new counter still tracks
+  // explicit user actions.
+  test("user-added tag pauses the countdown", async () => {
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      enrichment: enrichment({
+        status: "completed",
+        suggestedTitle: "Title",
+        acceptedTitle: "Title",
+        suggestedDescription: "Body",
+        acceptedDescription: "Body",
+        suggestedTags: []
+      }),
+      aiEnabled: true,
+      aiConsentAccepted: true
+    });
+
+    // Before user interaction: not paused.
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(false);
+
+    const tagInput = el.querySelector<HTMLInputElement>(".fo__tag-input");
+    expect(tagInput).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      setter?.call(tagInput, "manual-tag");
+      tagInput?.dispatchEvent(new Event("input", { bubbles: true }));
+      tagInput?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector(".fo")?.classList.contains("is-paused")).toBe(true);
+  });
 });

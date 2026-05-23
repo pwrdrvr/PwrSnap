@@ -306,6 +306,15 @@ export function FloatOver({
   const elapsedAtPause = useRef(0);
   const rafRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // Stable ref to `onDismiss` so the countdown effect can call the
+  // latest callback without re-subscribing on every parent re-render.
+  // Without this, an enrichment-arrived re-render (which creates a
+  // fresh `onDismiss` function reference in FloatOverHost) would
+  // retrigger the countdown effect mid-tick, reset `startedAt.current`
+  // to "now", and effectively halt the countdown's forward progress.
+  // See bug vii.
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
   // Exit-animation timeout handle. Stored in a ref so we can clear it
   // on unmount — without this, an in-flight `setTimeout(..., 220)` from
   // the previous capture's exit animation would survive a renderer
@@ -314,6 +323,14 @@ export function FloatOver({
   // (With the persistent renderer + state machine added in this same
   // phase, re-mount is rare — but defensive cleanup is cheap.)
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Counter for tags the USER explicitly added/removed via the input
+  // field or the suggestion-accept buttons. Distinct from `tags.length`
+  // because enrichment auto-accept lands acceptedTags directly into
+  // `tags` via the sync useEffect — that path must NOT pause the
+  // countdown (otherwise the toast hangs indefinitely once Codex
+  // auto-applies its suggestions). See bug vii.
+  const userTagInteractionsRef = useRef(0);
+  const [userTagInteractions, setUserTagInteractions] = useState(0);
 
   // "Awaiting AI" covers the window between mount and the first
   // aiStatus broadcast — without this, the toast races the codex:enrich
@@ -343,7 +360,7 @@ export function FloatOver({
     nativeDragging ||
     hasUserDescription ||
     hasUserTitle ||
-    tags.length > initialTags.length ||
+    userTagInteractions > 0 ||
     aiAccepted;
 
   const syncHoverFromPoint = (clientX: number, clientY: number): void => {
@@ -393,7 +410,11 @@ export function FloatOver({
       setProgress(p);
       if (p <= 0) {
         setExiting(true);
-        exitTimerRef.current = setTimeout(() => onDismiss?.(), 220);
+        // Use the ref so we always call the latest onDismiss without
+        // requiring the effect to re-subscribe on every parent
+        // re-render (which would reset `startedAt.current` mid-tick
+        // and stall the countdown — bug vii).
+        exitTimerRef.current = setTimeout(() => onDismissRef.current?.(), 220);
         return;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -403,7 +424,12 @@ export function FloatOver({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [isPaused, startCountdown, cfg.autoMs, onDismiss]);
+    // `onDismiss` is intentionally NOT a dep — it is read via
+    // `onDismissRef`. Adding it back would re-run this effect on
+    // every parent re-render (e.g., enrichment IPC arrival),
+    // resetting startedAt.current and freezing the countdown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPaused, startCountdown, cfg.autoMs]);
 
   useEffect(() => {
     const finishNativeDrag = (event?: MouseEvent | DragEvent): void => {
@@ -710,11 +736,26 @@ export function FloatOver({
           />
           <FoTags
             tags={tags}
-            onAdd={(t) => setTags([...tags, t])}
-            onRemove={(t) => setTags(tags.filter((x) => x !== t))}
+            onAdd={(t) => {
+              setTags([...tags, t]);
+              // Bumping the user-interaction counter — not just
+              // tags.length — is what keeps the countdown paused on
+              // user-added tags WITHOUT being tricked into a permanent
+              // pause when Codex's auto-accept lands acceptedTags via
+              // the enrichment broadcast. See bug vii.
+              userTagInteractionsRef.current += 1;
+              setUserTagInteractions(userTagInteractionsRef.current);
+            }}
+            onRemove={(t) => {
+              setTags(tags.filter((x) => x !== t));
+              userTagInteractionsRef.current += 1;
+              setUserTagInteractions(userTagInteractionsRef.current);
+            }}
             suggestions={aiSuggestions}
             onAcceptSuggest={(suggestion) => {
               setTags([...tags, suggestion.label]);
+              userTagInteractionsRef.current += 1;
+              setUserTagInteractions(userTagInteractionsRef.current);
               onAcceptTag?.(suggestion.id);
             }}
             onRejectSuggest={(suggestion) => {

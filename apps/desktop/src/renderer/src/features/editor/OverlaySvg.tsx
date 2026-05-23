@@ -42,7 +42,14 @@ export function OverlaySvg({
   const highlights = useMemo(
     () =>
       overlays.flatMap((row) =>
-        row.data.kind === "highlight" ? [{ row, data: row.data }] : []
+        row.data.kind === "highlight"
+          ? [
+              {
+                row,
+                data: row.data as Extract<typeof row.data, { kind: "highlight" }>
+              }
+            ]
+          : []
       ),
     [overlays]
   );
@@ -60,7 +67,12 @@ export function OverlaySvg({
     <svg className="editor-svg" viewBox={viewBox} preserveAspectRatio="none">
       {/* Highlights painted first so they sit beneath rects/arrows. */}
       {highlights.map(({ row, data }) => (
-        <HighlightGlyph key={row.id} rect={data.rect} />
+        <HighlightGlyph
+          key={row.id}
+          rect={data.rect}
+          color={data.color}
+          opacity={data.opacity}
+        />
       ))}
       {rects.map(({ row, data }) => (
         <RectGlyph
@@ -225,20 +237,41 @@ function RectGlyph({
 
 function HighlightGlyph({
   rect,
+  color,
+  opacity,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
+  /** Optional explicit color. v2-editor refresh: legacy rows (no
+   *  color field) fall back to the historical yellow marker hue. */
+  color?: "auto" | string | undefined;
+  /** Optional 0..1 opacity. Legacy rows fall back to the marker-pen
+   *  default (0.32 applied, 0.45 draft). */
+  opacity?: number | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Yellow translucent fill — the marker-pen look. Slightly more
-  // opaque on draft so the user sees the drag clearly.
+  // Legacy marker yellow + opacity tunings preserved as defaults for
+  // back-compat — rows drawn before HighlightOverlay's color/opacity
+  // fields existed render exactly as they did pre-Phase-3.1.
+  const baseHex =
+    color === undefined || color === "auto"
+      ? "rgb(255, 220, 80)"
+      : color;
+  // Slightly more opaque on draft so the user sees the drag clearly.
+  const fillOpacity =
+    opacity !== undefined
+      ? (isDraft ? Math.min(1, opacity * 1.4) : opacity)
+      : isDraft
+      ? 0.45
+      : 0.32;
   return (
     <rect
       x={rect.x}
       y={rect.y}
       width={rect.w}
       height={rect.h}
-      fill={isDraft ? "rgba(255, 220, 80, 0.45)" : "rgba(255, 220, 80, 0.32)"}
+      fill={baseHex}
+      fillOpacity={fillOpacity}
       stroke="none"
     />
   );

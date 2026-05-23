@@ -843,6 +843,51 @@ export type LegacyBundleMigrationProgress =
   | { status: "running"; total: number; done: number; failed: number }
   | { status: "complete"; total: number; done: number; failed: number };
 
+/**
+ * Progress payload for `events:v1-to-v2-doctor:progress`. Fired by the
+ * v1 → v2 bundle doctor (apps/desktop/src/main/persistence/
+ * v1-to-v2-doctor.ts) for both the boot-time reconcile sweep AND
+ * per-capture lazy upgrades. Editor toolbar consumes this to show the
+ * "Upgrading…" banner during a doctor run; library banner reports
+ * boot-time progress.
+ *
+ * Two scopes share the channel:
+ *   • Boot-time sweep — fired once at run start (with total), throttled
+ *     per row, once at completion.
+ *   • Per-capture lazy — fired at start (`captureId` set, `total: 1`),
+ *     once at success or failure.
+ *
+ * The `captureId` field disambiguates per-capture events from the
+ * boot-time global progress (captureId === null in the latter).
+ * Mirrors the LegacyBundleMigrationProgress shape so the renderer
+ * can reuse the same banner component.
+ */
+export type V1ToV2DoctorProgress =
+  | {
+      status: "running";
+      captureId: string | null;
+      total: number;
+      done: number;
+      failed: number;
+    }
+  | {
+      status: "complete";
+      captureId: string | null;
+      total: number;
+      done: number;
+      failed: number;
+    }
+  | {
+      /** Per-capture failure event. `captureId` set; `errorCode`
+       *  carries the structured error envelope so the editor banner
+       *  can offer a Retry button bound to the right capture. */
+      status: "failed";
+      captureId: string;
+      errorCode: string;
+      attempts: number;
+      parked: boolean;
+    };
+
 export type AppUpdateReleaseInfo = {
   version?: string;
   name?: string;
@@ -1040,6 +1085,50 @@ export type Commands = {
   "migration:status": {
     req: Record<string, never>;
     res: LegacyBundleMigrationProgress | null;
+  };
+
+  // ---- v1 → v2 bundle doctor ----
+  /** Trigger the per-capture v1 → v2 bundle doctor for `captureId`.
+   *  Idempotent: returns `{ migrated: false, reason: "already_v2" }`
+   *  if the bundle on disk is already v2 (reads the bundle manifest,
+   *  not the DB row — heals mid-crash gaps where the row claims v1
+   *  but the bundle is already v2). Per-capture retry budget (5
+   *  attempts); after exhaustion the row parks and the editor renders
+   *  read-only with a Retry button that calls `v1ToV2:retry`.
+   *
+   *  Atomic ordering inside the implementation:
+   *    1. atomicWriteBundle(tempPath, v2_bytes) + fsync
+   *    2. BEGIN IMMEDIATE
+   *       INSERT INTO layers (...);
+   *       UPDATE captures SET bundle_format_version=2, bundle_path=tempPath, ...;
+   *       COMMIT
+   *    3. rename(tempPath → finalBundlePath) + dir-fsync
+   *    4. DELETE FROM overlays WHERE capture_id = ?
+   *
+   *  Each step is independently recoverable; `reconcileV1ToV2OnBoot`
+   *  heals any mid-step crash.
+   */
+  "v1ToV2:upgrade": {
+    req: { captureId: string };
+    res: { migrated: boolean; reason?: "already_v2" | "parked" };
+  };
+  /** Cached-snapshot reader for the v1 → v2 doctor. Same race-safe
+   *  pattern as `migration:status` — late-mounting renderers query
+   *  this once on mount to pick up the current state, then subscribe
+   *  to `events:v1-to-v2-doctor:progress` for updates. Returns null
+   *  if no doctor activity has happened this session. */
+  "v1ToV2:status": {
+    req: Record<string, never>;
+    res: V1ToV2DoctorProgress | null;
+  };
+  /** Clear a parked capture's retry budget so the doctor can re-attempt
+   *  on next user open. Sets `v1_to_v2_attempts = 0` and clears
+   *  `v1_to_v2_last_failed_at` + `v1_to_v2_last_error_code`. Bound to
+   *  the Retry button on the editor's "Couldn't upgrade — read-only
+   *  view" banner. */
+  "v1ToV2:retry": {
+    req: { captureId: string };
+    res: void;
   };
 
   // ---- storage ----

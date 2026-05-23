@@ -2209,6 +2209,67 @@
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }
+/* Tool-button + caret pairing. Wrapper is inline-flex so the caret
+   sits flush against the right edge of the active button without a
+   gap. The caret only renders when the tool is active (see
+   EditToolbar.tsx) so the wrapper is layout-neutral the rest of the
+   time. */
+.psl__et-tool-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  position: relative;
+}
+.psl__et-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 36px;
+  padding: 0;
+  margin-left: -3px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-bright);
+  cursor: pointer;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.psl__et-caret:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.psl__et-caret svg {
+  width: 7px;
+  height: 5px;
+}
+/* "+ Add label" matching-text affordance — chip that pops near a
+   freshly-placed arrow's tail. Positioned via `position: fixed`
+   inline-styled coords from EditToolbar's matchingTextStyle memo.
+   8s auto-dismiss is handled by useEditorToolState's internal timer. */
+.psl__et-matching-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-border);
+  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
+  color: var(--accent-bright);
+  border-radius: 14px;
+  cursor: pointer;
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.03em;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+}
+.psl__et-matching-text:hover {
+  background: var(--accent-soft);
+}
+.psl__et-matching-text > span:first-child {
+  font-size: 14px;
+  line-height: 1;
+}
 
 /* DetailRail layout — fixed 360px column grid-column 3 in focus +
    reel modes. Contains tabs row + body. The body holds the

@@ -69,6 +69,7 @@ vi.mock("../../settings/useSettings", () => ({
 
 import { EditToolbar } from "../EditToolbar";
 import type { Tool } from "../../editor/editor-tools";
+import { useEditorToolState } from "../../editor/useEditorToolState";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -444,6 +445,43 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     // onChange with "text".
     expect(onToolChange).toHaveBeenCalledWith("text");
     expect(findToolButton("text").className).toContain("is-active");
+  });
+
+  test("Phase 3.2 lift: when parent passes `toolState`, EditToolbar reads from it instead of its own hook", async () => {
+    // The Library lifts `useEditorToolState` to its level so the
+    // chromeless Editor and the floating EditToolbar share ONE hook
+    // instance. We mimic that here by instantiating the hook in a
+    // wrapper component and threading it to EditToolbar via the new
+    // `toolState` prop. Switching tools through the toolbar should
+    // reflect in the parent-owned hook's `activeTool`, proving the
+    // toolbar isn't shadowing into a private copy.
+    const observedActiveTool: { value: Tool } = { value: "pointer" };
+
+    function LiftedHarness(): ReactElement {
+      const lifted = useEditorToolState({ captureId: "cap-1" });
+      observedActiveTool.value = lifted.activeTool;
+      return createElement(EditToolbar, {
+        tool: lifted.activeTool,
+        onChange: () => undefined,
+        toolState: lifted,
+        captureId: "cap-1",
+        sourceWidth: 800,
+        sourceHeight: 600,
+        blurStyle: "gaussian",
+        onBlurStyleChange: () => undefined
+      });
+    }
+
+    await render(createElement(LiftedHarness));
+
+    // Initial: pointer.
+    expect(observedActiveTool.value).toBe("pointer");
+    // Click arrow in the toolbar → lifted hook flips.
+    await fireClick(findToolButton("arrow"));
+    expect(observedActiveTool.value).toBe("arrow");
+    // Click rect → lifted hook flips again.
+    await fireClick(findToolButton("rect"));
+    expect(observedActiveTool.value).toBe("rect");
   });
 
   test("5. ⌥-click arrow → single-shot; placing one arrow returns to pointer", async () => {

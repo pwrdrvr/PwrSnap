@@ -17,12 +17,18 @@ export function OverlaySvg({
   overlays,
   draft,
   imageWidthPx,
-  imageHeightPx
+  imageHeightPx,
+  selectedLayerId = null
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** Phase 3.2 selection model — id of the currently-selected overlay
+   *  row, or null for none. When set, a 1px accent-colored outline
+   *  glyph is drawn over that overlay's bounding box so the user can
+   *  see what they've selected and confirm before Delete/Backspace. */
+  selectedLayerId?: string | null;
 }): ReactElement {
   // Blur overlays render outside this SVG via <BlurOverlays> — HTML
   // divs with backdrop-filter, so the live preview ACTUALLY blurs
@@ -103,6 +109,17 @@ export function OverlaySvg({
           imageHeightPx={imageHeightPx}
         />
       ))}
+
+      {/* Phase 3.2 selection outline — rendered after all overlays but
+          before drafts so a draft-in-progress doesn't hide the
+          selection. Resolves the selected row + draws a thin accent
+          outline around its bounding box. Out of scope: handle glyphs
+          and color-of-selected-glyph editing (Phase 4). */}
+      {selectedLayerId !== null && (() => {
+        const sel = overlays.find((r) => r.id === selectedLayerId);
+        if (sel === undefined) return null;
+        return <SelectionOutline data={sel.data} />;
+      })()}
 
       {/* Drafts (live-drag preview) rendered last so they're on top. */}
       {draft?.kind === "arrow" && (
@@ -274,6 +291,74 @@ function HighlightGlyph({
       fillOpacity={fillOpacity}
       stroke="none"
     />
+  );
+}
+
+/** Phase 3.2 selection outline. Draws a 1px accent dashed rectangle
+ *  around the selected overlay's bounding box, in normalized [0,1]
+ *  coords. The outline is a glyph (not interactive); the pointerdown
+ *  handler in Editor.tsx owns selection clear / re-select. */
+function SelectionOutline({
+  data
+}: {
+  data: OverlayRow["data"];
+}): ReactElement | null {
+  // Derive a normalized bounding box for each overlay kind.
+  let box: { x: number; y: number; w: number; h: number } | null = null;
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    box = data.rect;
+  } else if (data.kind === "arrow") {
+    const x = Math.min(data.from.x, data.to.x);
+    const y = Math.min(data.from.y, data.to.y);
+    const w = Math.abs(data.to.x - data.from.x);
+    const h = Math.abs(data.to.y - data.from.y);
+    box = { x, y, w, h };
+  } else if (data.kind === "text") {
+    // Small fixed box around the text anchor point. The actual
+    // rendered glyph extends to the right/down; a tight box would
+    // miss most of the glyph. Approximate at 12% width × 4% height.
+    box = {
+      x: Math.max(0, data.point.x - 0.005),
+      y: Math.max(0, data.point.y - 0.005),
+      w: 0.12,
+      h: 0.04
+    };
+  } else if (data.kind === "crop") {
+    box = data.rect;
+  }
+  if (box === null) return null;
+  // Pad slightly so the outline doesn't sit ON the stroke.
+  const pad = 0.006;
+  const x = Math.max(0, box.x - pad);
+  const y = Math.max(0, box.y - pad);
+  const w = Math.min(1 - x, box.w + pad * 2);
+  const h = Math.min(1 - y, box.h + pad * 2);
+  const stroke = "var(--accent, #ff8a1f)";
+  const strokeW = 0.003;
+  return (
+    <g data-testid="selection-outline">
+      {/* White halo for contrast on dark images. */}
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill="none"
+        stroke="white"
+        strokeWidth={strokeW * 2}
+        strokeDasharray="0.012 0.008"
+      />
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={strokeW}
+        strokeDasharray="0.012 0.008"
+      />
+    </g>
   );
 }
 

@@ -65,7 +65,8 @@ import {
   useEditorToolState,
   type ActiveStyle,
   type StyledTool,
-  type StyleFor
+  type StyleFor,
+  type UseEditorToolStateReturn
 } from "./useEditorToolState";
 import {
   MIN_DRAG_LENGTH,
@@ -220,11 +221,83 @@ function projectV2LayersToOverlayRows(
   return rows;
 }
 
+/** Hit-test a normalized [0,1] point against a list of overlay rows.
+ *  Walks rows in reverse z-order (last-painted = topmost = first
+ *  candidate) so the visually-topmost overlay under the cursor wins
+ *  ties. Returns the matching row id, or null if nothing under the
+ *  point. Phase 3.2 minimal selection model; the threshold for
+ *  arrow/text hits is generous (≈ stroke width) so the user doesn't
+ *  have to pixel-hunt a 1px line.
+ *
+ *  Coordinate space: `xn`, `yn` are normalized [0,1]; rect overlays
+ *  carry normalized {x,y,w,h}; arrow overlays carry normalized
+ *  {from,to}. The threshold scales with the canvas's pixel extent
+ *  (passed in) so the click radius is roughly constant in screen-
+ *  px regardless of canvas size.
+ */
+export function hitTestOverlays(
+  overlays: OverlayRow[],
+  xn: number,
+  yn: number,
+  canvasPxShortSide: number
+): string | null {
+  // ~10px hit radius on a 1000px short-side canvas → 0.01 in
+  // normalized coords. Scales inversely with size for a roughly
+  // constant pixel tolerance.
+  const hitRadiusN = Math.max(0.008, 10 / Math.max(1, canvasPxShortSide));
+  for (let i = overlays.length - 1; i >= 0; i -= 1) {
+    const row = overlays[i];
+    if (row === undefined) continue;
+    const o = row.data;
+    if (o.kind === "rect" || o.kind === "highlight" || o.kind === "blur") {
+      if (
+        xn >= o.rect.x &&
+        xn <= o.rect.x + o.rect.w &&
+        yn >= o.rect.y &&
+        yn <= o.rect.y + o.rect.h
+      ) {
+        return row.id;
+      }
+      continue;
+    }
+    if (o.kind === "arrow") {
+      // Point-to-segment distance in normalized space.
+      const ax = o.from.x;
+      const ay = o.from.y;
+      const bx = o.to.x;
+      const by = o.to.y;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq < 1e-9) continue;
+      let t = ((xn - ax) * dx + (yn - ay) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx;
+      const py = ay + t * dy;
+      const distN = Math.hypot(xn - px, yn - py);
+      if (distN <= hitRadiusN) return row.id;
+      continue;
+    }
+    if (o.kind === "text") {
+      // Approximate text hit by a small radius around the anchor
+      // point. The font scales with image short-side; this gives a
+      // generous click target without measuring rendered glyphs.
+      const distN = Math.hypot(xn - o.point.x, yn - o.point.y);
+      if (distN <= hitRadiusN * 4) return row.id;
+      continue;
+    }
+    // crop / step: not user-selectable in Phase 3.2 (crop is a
+    // canvas-side mutation, not a layer; step is legacy).
+  }
+  return null;
+}
+
 export function Editor({
   captureId,
   chrome = "full",
   tool: toolProp,
   onToolChange,
+  toolState: toolStateProp,
   blurStyle: blurStyleProp,
   onZoomChange
 }: {
@@ -241,6 +314,16 @@ export function Editor({
    *  and will fall back to internal state. */
   tool?: Tool;
   onToolChange?: (tool: Tool) => void;
+  /** Optional controlled tool-state surface — Phase 3.2 lift. When
+   *  provided (Library Focus path), Editor reads `activeStyle` /
+   *  `onAnnotationPlaced` from this shared hook instance instead of
+   *  its own dormant copy. The lift fixes the long-standing "popover
+   *  picks land in EditToolbar's hook, persistOverlay reads from
+   *  Editor's hook, so style choices don't stick" bug. The standalone
+   *  Editor window leaves this undefined and keeps owning its own
+   *  hook (its EditorChrome panels also need a single source of truth
+   *  in-window). */
+  toolState?: UseEditorToolStateReturn;
   /** Optional controlled blur-style state. When provided (Library
    *  mode), the EditToolbar's BlurMenu owns the picker UI and writes
    *  this back to Library. When omitted (standalone window), the
@@ -292,8 +375,16 @@ export function Editor({
   // the hook in a stable state — its tool stays "pointer" because
   // controlled paths never call setActiveTool.
   const isControlled = toolProp !== undefined && onToolChange !== undefined;
-  const toolState = useEditorToolState({ captureId });
-  const tool: Tool = isControlled ? toolProp : toolState.activeTool;
+  // Phase 3.2 lift: in Library Focus, the parent owns ONE hook instance
+  // that's also threaded into EditToolbar — so popover style picks land
+  // in the same `activeStyle` that `persistOverlay` reads here. When
+  // not lifted (standalone editor window), instantiate our own hook.
+  // We always call the hook (rules of hooks), then pick whichever source
+  // is active. `effectiveToolState` is what every downstream read uses.
+  const ownToolState = useEditorToolState({ captureId });
+  const effectiveToolState: UseEditorToolStateReturn =
+    toolStateProp ?? ownToolState;
+  const tool: Tool = isControlled ? toolProp : effectiveToolState.activeTool;
   // `options.singleShot` is the ⌥-click escape hatch: place ONE
   // annotation, then return to Pointer. The hook honors the flag by
   // routing `onAnnotationPlaced` through a single-shot reset; the
@@ -305,10 +396,10 @@ export function Editor({
       if (isControlled) {
         onToolChange(next);
       } else {
-        toolState.setActiveTool(next, options);
+        effectiveToolState.setActiveTool(next, options);
       }
     },
-    [isControlled, onToolChange, toolState]
+    [isControlled, onToolChange, effectiveToolState]
   );
 
   // Blur style for the commit pipeline:
@@ -318,8 +409,8 @@ export function Editor({
   //     falling back to the default until settings resolve.
   const blurStyle: BlurStyle = useMemo(() => {
     if (blurStyleProp !== undefined) return blurStyleProp;
-    if (toolState.activeStyle.tool === "blur") {
-      return toolState.activeStyle.style.mode;
+    if (effectiveToolState.activeStyle.tool === "blur") {
+      return effectiveToolState.activeStyle.style.mode;
     }
     // For non-blur active tools in standalone mode, we still need a
     // mode for the rare ad-hoc shortcut commit. Read the blur block
@@ -328,9 +419,26 @@ export function Editor({
     // the persisted default; the popover/panel writes will update this
     // path on the next blur-tool selection.
     return DEFAULT_BLUR_STYLE;
-  }, [blurStyleProp, toolState.activeStyle]);
+  }, [blurStyleProp, effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
+  // Phase 3.2 — minimal selection model. Tracks the id of the
+  // currently-selected overlay/layer; null means nothing selected.
+  // Used to render a selection outline and to delete on backspace/
+  // delete. Click on the pointer tool hit-tests against existing
+  // overlays; click on empty canvas clears. Escape clears too.
+  //
+  // Out of scope (deferred to Phase 4): transform handles (move /
+  // resize / rotate), color/style editing of the selected glyph,
+  // multi-select. Just enough state for the user to clean up wrong
+  // annotations without rebuilding the whole capture.
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  // Mirror of the resolved overlay list, kept in a ref so
+  // onPointerDown's hit-test reads the latest value without bouncing
+  // through state. The list itself lives in the EditorLoaded child
+  // (after the model resolves); we project a v1-shaped view of it
+  // here for the synchronous click handler.
+  const overlaysRef = useRef<OverlayRow[]>([]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
@@ -391,13 +499,31 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
-    // Pointer / crop are no-op on canvas drag — pointer is the "no-op"
-    // tool, crop has its own overlay element that owns its drags.
-    if (tool === "pointer") return;
+    // Phase 3.2 selection: pointer tool clicks hit-test against
+    // existing overlays. Hit → select that overlay. Miss → clear.
+    // The hit-test runs against `overlaysRef.current` which the
+    // EditorLoaded child keeps in sync (the overlay list lives on
+    // that branch). Crop still owns its own canvas via its overlay
+    // element; pointer-mode only ever sees pointerdown when the
+    // user actually clicks on `.editor-canvas`.
+    if (tool === "pointer") {
+      const start = clientToNormalized(event.clientX, event.clientY);
+      if (start === null) return;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const shortSide =
+        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
+      const overlays = overlaysRef.current;
+      const hit = hitTestOverlays(overlays, start.xn, start.yn, shortSide);
+      setSelectedLayerId(hit);
+      return;
+    }
     if (tool === "crop") return;
     // If we're mid-text and the user clicks elsewhere, commit/cancel
     // the text first (the input's blur handler will fire).
     if (draft?.kind === "text") return;
+    // Drawing a new annotation deselects any previous selection so
+    // the outline doesn't linger on top of the new draft.
+    if (selectedLayerId !== null) setSelectedLayerId(null);
 
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
@@ -487,16 +613,18 @@ export function Editor({
         closeInteraction();
         return;
       }
-      // Phase 3.1 fix #2/#4: thread the active arrow style (color +
-      // endStyle + stemStyle + doubleEnded) into the overlay shape so
-      // the popover's choices actually stick. Pre-fix this dropped
-      // everything to `color: "auto"` and the v1 defaults.
-      // `toolState.activeStyle` is dormant in controlled (Library
-      // Focus) mode — that path is Phase C's responsibility and is
-      // not in scope here.
+      // Phase 3.1 fix #2/#4 + Phase 3.2 lift: thread the active arrow
+      // style (color + endStyle + stemStyle + doubleEnded) into the
+      // overlay shape so the popover's choices actually stick. The
+      // pre-3.2 guard `!isControlled` skipped style reads in Library
+      // Focus because there was no shared hook to read from; the 3.2
+      // lift gives us one (toolStateProp), so we can now read
+      // activeStyle in BOTH paths. `effectiveToolState` is the lifted
+      // hook in Library Focus and our own hook in standalone — both
+      // reflect the popover picks live.
       const arrowStyleSrc =
-        !isControlled && toolState.activeStyle.tool === "arrow"
-          ? toolState.activeStyle.style
+        effectiveToolState.activeStyle.tool === "arrow"
+          ? effectiveToolState.activeStyle.style
           : null;
       const arrowOverlay: Extract<Overlay, { kind: "arrow" }> = {
         kind: "arrow",
@@ -520,12 +648,18 @@ export function Editor({
       const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
       if (wrote && !isControlled) {
-        toolState.onAnnotationPlaced(
+        // Standalone Editor: the canvas-side affordance reads
+        // anchorPoint in canvas-px from this same hook instance, so
+        // post directly.
+        effectiveToolState.onAnnotationPlaced(
           tailCanvasPx !== null
             ? { tool: "arrow", anchorPoint: tailCanvasPx }
             : { tool: "arrow" }
         );
       }
+      // Library Focus path uses the EditToolbar's broadcast-driven
+      // diff to call onAnnotationPlaced (see EditToolbar.tsx,
+      // describePlacement). We intentionally don't double-fire here.
       return;
     }
 
@@ -543,8 +677,8 @@ export function Editor({
       let overlay: Overlay;
       if (placedKind === "rect") {
         const rectStyleSrc =
-          !isControlled && toolState.activeStyle.tool === "rect"
-            ? toolState.activeStyle.style
+          effectiveToolState.activeStyle.tool === "rect"
+            ? effectiveToolState.activeStyle.style
             : null;
         overlay = {
           kind: "rect",
@@ -556,8 +690,8 @@ export function Editor({
         };
       } else if (placedKind === "highlight") {
         const hlStyleSrc =
-          !isControlled && toolState.activeStyle.tool === "highlight"
-            ? toolState.activeStyle.style
+          effectiveToolState.activeStyle.tool === "highlight"
+            ? effectiveToolState.activeStyle.style
             : null;
         const hlOverlay: Extract<Overlay, { kind: "highlight" }> = {
           kind: "highlight",
@@ -579,7 +713,7 @@ export function Editor({
       const wrote = await persistOverlay(overlay);
       closeInteraction();
       if (wrote && !isControlled) {
-        toolState.onAnnotationPlaced({ tool: placedKind });
+        effectiveToolState.onAnnotationPlaced({ tool: placedKind });
       }
       return;
     }
@@ -664,12 +798,13 @@ export function Editor({
       setDraft(null);
       return;
     }
-    // Phase 3.1 fix #2: thread the active text style (color + fontSize
-    // mapped to v1's two-bucket size enum). Pre-fix this hardcoded
-    // "small" / "auto".
+    // Phase 3.1 fix #2 + Phase 3.2 lift: thread the active text style
+    // (color + fontSize mapped to v1's two-bucket size enum). Reads
+    // from effectiveToolState so Library Focus picks up the lifted
+    // hook's live style; standalone uses its own hook the same way.
     const textStyleSrc =
-      !isControlled && toolState.activeStyle.tool === "text"
-        ? toolState.activeStyle.style
+      effectiveToolState.activeStyle.tool === "text"
+        ? effectiveToolState.activeStyle.style
         : null;
     const overlay: Overlay = {
       kind: "text",
@@ -683,7 +818,7 @@ export function Editor({
     setDraft(null);
     const wrote = await persistOverlay(overlay);
     if (wrote && !isControlled) {
-      toolState.onAnnotationPlaced({ tool: "text" });
+      effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
   }
 
@@ -709,6 +844,27 @@ export function Editor({
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (target?.isContentEditable === true) return;
+      // Phase 3.2 selection: Escape clears the selection (when not
+      // mid-draft — that case was handled above). Delete / Backspace
+      // soft-deletes the selected overlay. We route through the
+      // overlays:delete IPC for v1; v2 layers use layers:delete.
+      // Branching on bundle_format_version lives in the deletion
+      // helper below (set up in EditorLoaded which has the record).
+      if (event.key === "Escape" && selectedLayerId !== null) {
+        event.preventDefault();
+        setSelectedLayerId(null);
+        return;
+      }
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        selectedLayerId !== null
+      ) {
+        event.preventDefault();
+        const id = selectedLayerId;
+        setSelectedLayerId(null);
+        deleteSelectedRef.current?.(id);
+        return;
+      }
       // Modifier presses (⌘/⌃/⌥) belong to other handlers — don't eat
       // ⌘A or similar as the arrow shortcut.
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -734,7 +890,13 @@ export function Editor({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [draft, isControlled, setTool, tool]);
+  }, [draft, isControlled, selectedLayerId, setTool, tool]);
+
+  // Hook-owned deleter (populated by EditorLoaded once it knows the
+  // bundle format). Like recordCreateRef, this lives in the outer
+  // function because the keyboard handler is here but the model
+  // resolution + format branching lives in the child.
+  const deleteSelectedRef = useRef<((id: string) => void) | null>(null);
 
   if (model.kind === "loading") {
     return (
@@ -758,6 +920,21 @@ export function Editor({
     model.format === 1
       ? model.overlays
       : projectV2LayersToOverlayRows(model.layers, captureId);
+  // Sync the synchronous-read ref the outer pointerdown handler reads.
+  // Render-phase write to a ref is safe (refs don't trigger renders);
+  // we deliberately do this before returning EditorLoaded so a click
+  // landing in the same commit reads the up-to-date overlay list.
+  overlaysRef.current = overlaysForRender;
+  // Clear stale selection when the selected overlay is no longer in
+  // the list (e.g. another window deleted it via the events:overlays:
+  // changed broadcast, or the capture switched).
+  if (
+    selectedLayerId !== null &&
+    overlaysForRender.find((r) => r.id === selectedLayerId) === undefined
+  ) {
+    // Schedule via microtask so we don't setState during render.
+    queueMicrotask(() => setSelectedLayerId(null));
+  }
 
   return (
     <EditorLoaded
@@ -782,10 +959,13 @@ export function Editor({
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
       isControlled={isControlled}
-      toolState={toolState}
+      toolState={effectiveToolState}
       openActivePopoverRef={openActivePopoverRef}
       ensureV2State={ensureV2.state}
       onEnsureV2Retry={ensureV2.retry}
+      selectedLayerId={selectedLayerId}
+      deleteSelectedRef={deleteSelectedRef}
+      modelFormat={model.format}
     />
   );
 }
@@ -818,7 +998,10 @@ function EditorLoaded({
   toolState,
   openActivePopoverRef,
   ensureV2State,
-  onEnsureV2Retry
+  onEnsureV2Retry,
+  selectedLayerId,
+  deleteSelectedRef,
+  modelFormat
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -858,6 +1041,17 @@ function EditorLoaded({
   ensureV2State: EnsureV2State;
   /** Bound to the Retry button on the view-only banner. */
   onEnsureV2Retry: () => void;
+  /** Phase 3.2 selection model — id of the currently-selected overlay,
+   *  null if nothing selected. Drives the selection outline glyph in
+   *  OverlaySvg. */
+  selectedLayerId: string | null;
+  /** Outer Editor's keyboard handler reads this for Delete/Backspace.
+   *  EditorLoaded populates it with a format-aware deleter (v1 →
+   *  overlays:delete, v2 → layers:delete). */
+  deleteSelectedRef: React.RefObject<((id: string) => void) | null>;
+  /** Resolved bundle format from the model (1 or 2). EditorLoaded uses
+   *  it to branch overlay-delete IPC selection. */
+  modelFormat: 1 | 2;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -926,6 +1120,27 @@ function EditorLoaded({
     undo.beginInteraction,
     undo.endInteraction
   ]);
+
+  // Phase 3.2 — selection deleter. The outer Editor's keyboard handler
+  // reads `deleteSelectedRef.current` on Delete/Backspace. We bridge a
+  // format-aware deleter here (v1 → overlays:delete, v2 → layers:delete)
+  // so the outer doesn't need to know about bundle_format_version.
+  // The events:overlays:changed / events:captures:changed broadcasts
+  // trigger useCaptureModel to refetch and the deleted row drops out.
+  useEffect(() => {
+    deleteSelectedRef.current = (id: string): void => {
+      void (async (): Promise<void> => {
+        if (modelFormat === 2) {
+          await dispatch("layers:delete", { id });
+        } else {
+          await dispatch("overlays:delete", { id });
+        }
+      })();
+    };
+    return () => {
+      deleteSelectedRef.current = null;
+    };
+  }, [deleteSelectedRef, modelFormat, record.id]);
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
   useEffect(() => {
@@ -1263,6 +1478,7 @@ function EditorLoaded({
             draft={draft}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
+            selectedLayerId={selectedLayerId}
           />
           {draft?.kind === "text" && (
             <TextDraftInput

@@ -60,21 +60,21 @@ import {
   useState,
   type ReactElement
 } from "react";
-import type { BlurStyle, Overlay, OverlayRow } from "@pwrsnap/shared";
+import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
 import { TOOLS, type Tool } from "../editor/editor-tools";
 import type { ZoomApi } from "../editor/Editor";
 import { ZoomMenu } from "../editor/ZoomMenu";
 import { BlurMenu } from "../editor/BlurMenu";
 import {
   useEditorToolState,
-  isStyledTool
+  isStyledTool,
+  type UseEditorToolStateReturn
 } from "../editor/useEditorToolState";
 import {
   ToolStylePopover,
   type StyledToolKind,
   type ToolStylePopoverStyle
 } from "../editor/ToolStylePopover";
-import { CropTool } from "../editor/CropTool";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import { dispatch } from "../../lib/pwrsnap";
 
@@ -89,14 +89,22 @@ const NO_CAPTURE_SENTINEL = "__no_capture__";
 export type EditToolbarProps = {
   readonly tool: Tool;
   readonly onChange: (next: Tool) => void;
+  /** Phase 3.2 lift: optional shared hook from Library. When passed,
+   *  this toolbar uses the parent's `useEditorToolState` instance
+   *  instead of instantiating its own — popover style picks land in
+   *  the same hook that the chromeless Editor's persistOverlay reads
+   *  from. The tests still mount EditToolbar standalone (no parent
+   *  hook) and rely on the internal-hook fallback. */
+  readonly toolState?: UseEditorToolStateReturn;
   /** Required for the Reset button. Optional in the type so Stage
    *  can still render the toolbar before a record selects (rare;
    *  Reset is disabled when undefined). */
   readonly captureId?: string;
-  /** Source image pixel dimensions — required for the crop tool's
-   *  source-pixel coordinate space. Optional only because Stage may
-   *  mount before the record resolves; crop is disabled until both
-   *  are non-null. */
+  /** Source image pixel dimensions. Kept for callsite compatibility
+   *  (Stage still passes them); EditToolbar no longer renders its
+   *  own <CropTool> overlay — the chromeless Editor owns that, with
+   *  the correct canvas coordinate space. See Phase 3.2 fix in
+   *  Stage.tsx + Editor.tsx. */
   readonly sourceWidth?: number;
   readonly sourceHeight?: number;
   /** Editor's current zoom snapshot — `null` until the Editor mounts
@@ -125,9 +133,13 @@ function clamp(value: number, min: number, max: number): number {
 export function EditToolbar({
   tool,
   onChange,
+  toolState: toolStateProp,
   captureId,
-  sourceWidth,
-  sourceHeight,
+  // Held in the prop type but no longer consumed — the crop overlay
+  // lives in the chromeless Editor now (see EditToolbarProps comment).
+  // Discard explicitly so noUnusedParameters doesn't flag them.
+  sourceWidth: _sourceWidth,
+  sourceHeight: _sourceHeight,
   zoom,
   blurStyle,
   onBlurStyleChange
@@ -150,13 +162,23 @@ export function EditToolbar({
 
   // ---- v2 tool-state hook ----------------------------------------
   //
-  // Window-scoped state machine. We pass captureId (sentinel-guarded
-  // until a capture loads) so the hook resets matching-text on
-  // capture switches per its captureId-based cleanup effect.
-  const toolState = useEditorToolState({
+  // Phase 3.2 lift: when the parent (Library) provides `toolStateProp`,
+  // use it directly so the chromeless Editor and this toolbar share
+  // ONE hook instance. Pre-lift, EditToolbar always instantiated its
+  // own copy, so popover style picks landed in the toolbar's hook and
+  // never reached Editor's persistOverlay (which read its own dormant
+  // hook). The standalone fallback hook below preserves the test
+  // harness's contract (tests mount EditToolbar without a parent
+  // hook) and the legacy non-Library callsite (if any).
+  //
+  // Always call the hook (rules of hooks) so the fallback is stable
+  // across re-renders even when toolStateProp toggles between defined
+  // and undefined.
+  const fallbackToolState = useEditorToolState({
     captureId: captureId ?? NO_CAPTURE_SENTINEL,
     initialTool: tool
   });
+  const toolState = toolStateProp ?? fallbackToolState;
 
   // Bidirectional sync between the Library-owned `tool` prop and the
   // hook's `activeTool`. Library uses the prop to reset to "pointer"
@@ -432,61 +454,6 @@ export function EditToolbar({
     setPopoverTool((prev) => (prev === t ? null : t));
   };
 
-  // ---- Canvas rect resolution (for CropTool) --------------------
-  //
-  // CropTool needs the canvas DOMRect to translate pointer coords →
-  // source pixels. The chromeless Editor renders `.editor-canvas`
-  // inside Stage. We query it from the DOM + observe with a
-  // ResizeObserver so zoom changes keep the rect fresh.
-  const [canvasRect, setCanvasRect] = useState<DOMRect | null>(null);
-  useEffect(() => {
-    // Only need the canvas while crop is active — observing always
-    // would burn cycles for the 95% case (user isn't cropping).
-    if (toolState.activeTool !== "crop") {
-      setCanvasRect(null);
-      return undefined;
-    }
-    const canvas = document.querySelector<HTMLElement>(".editor-canvas");
-    if (canvas === null) return undefined;
-    const update = (): void => {
-      setCanvasRect(canvas.getBoundingClientRect());
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(canvas);
-    // Window resize / scroll changes the canvas's viewport coords
-    // even if its own size doesn't change.
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
-    };
-  }, [toolState.activeTool]);
-
-  // ---- Crop commit / cancel -------------------------------------
-  const commitCrop = async (rect: {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  }): Promise<void> => {
-    if (captureId === undefined) return;
-    const overlay: Overlay = {
-      kind: "crop",
-      rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
-    };
-    await dispatch("overlays:upsert", { captureId, overlay });
-    // Return to pointer after a commit — crop is a one-shot
-    // semantic (you commit one crop per session typically). The
-    // hook clears matching-text via setActiveTool too.
-    toolState.setActiveTool("pointer");
-  };
-  const cancelCrop = (): void => {
-    toolState.setActiveTool("pointer");
-  };
-
   // ---- Matching-text affordance positioning ---------------------
   //
   // The hook stores the affordance's anchorPoint in normalized [0,1]
@@ -652,23 +619,16 @@ export function EditToolbar({
         />
       )}
 
-      {/* Crop overlay — only rendered while crop is active AND the
-          canvas has measured. CropTool null-renders defensively too. */}
-      {toolState.activeTool === "crop" &&
-        captureId !== undefined &&
-        sourceWidth !== undefined &&
-        sourceHeight !== undefined && (
-          <CropTool
-            captureId={captureId}
-            sourceWidth={sourceWidth}
-            sourceHeight={sourceHeight}
-            canvasRect={canvasRect}
-            onCommit={(rect) => {
-              void commitCrop(rect);
-            }}
-            onCancel={cancelCrop}
-          />
-        )}
+      {/* Crop overlay used to render here too — Phase 3.2 fix:
+          removed the duplicate. The chromeless Editor renders <CropTool>
+          inside its own .editor-canvas via canvasRef (positioned
+          absolute; inset: 0). That's the correct coord space; the
+          EditToolbar's old copy was anchored to a window-level
+          querySelector of `.editor-canvas` and re-renders made it
+          drift, AND it duplicated the HUD because both copies were
+          mounted. The toolbar still owns the user-facing "click Crop"
+          tool button — but the OVERLAY itself stays inside the editor
+          where the canvas's positioning context lives. */}
 
       {/* Matching-text affordance — "+ Add label" chip that pops near
           a just-placed arrow's tail. Clicking it transitions the hook

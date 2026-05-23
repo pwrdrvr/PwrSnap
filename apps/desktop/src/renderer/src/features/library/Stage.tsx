@@ -42,6 +42,7 @@ import { useState, type ReactElement } from "react";
 import type { BlurStyle, CaptureRecord } from "@pwrsnap/shared";
 import { Editor, type ZoomApi } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
+import type { UseEditorToolStateReturn } from "../editor/useEditorToolState";
 import { AppTag } from "../shared/AppIcons";
 import { captureSrcUrl } from "../../lib/pwrsnap";
 import { DetailRail } from "./DetailRail";
@@ -76,6 +77,14 @@ export type StageProps = {
    *  EditToolbar. Library owns the source of truth. */
   readonly tool: Tool;
   readonly onToolChange: (tool: Tool) => void;
+  /** Phase 3.2 lift: the FULL hook return from `useEditorToolState`,
+   *  instantiated once at the Library level. Stage threads it into
+   *  both `<Editor>` (so persistOverlay reads the same activeStyle)
+   *  AND `<EditToolbar>` (so popover picks land in the same hook).
+   *  Without this single source of truth, style picks vanish on
+   *  drag-commit because the popover and the editor write to two
+   *  different hook instances. */
+  readonly toolState: UseEditorToolStateReturn;
   /** Lifted blur-style state. Same shape as tool — Library owns it,
    *  the Editor uses it when committing a new blur overlay and the
    *  EditToolbar's BlurMenu reads + writes it. */
@@ -134,6 +143,7 @@ function StageBody({
   nextRecordId,
   tool,
   onToolChange,
+  toolState,
   blurStyle,
   onBlurStyleChange,
   onClose
@@ -291,6 +301,7 @@ function StageBody({
             chrome="chromeless"
             tool={tool}
             onToolChange={onToolChange}
+            toolState={toolState}
             blurStyle={blurStyle}
             onZoomChange={setZoom}
           />
@@ -301,6 +312,7 @@ function StageBody({
         <EditToolbar
           tool={tool}
           onChange={onToolChange}
+          toolState={toolState}
           captureId={record.id}
           sourceWidth={record.width_px}
           sourceHeight={record.height_px}

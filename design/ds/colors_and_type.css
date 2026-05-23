@@ -1,6 +1,9 @@
 /* ============================================================
    PwrDrvr Design System — Colors & Type
-   Warm dark, copper accent, geometric mono-leaning.
+   Pure black, tangerine accent, geometric mono-leaning. (Suite-aligned w/ PwrAgent.)
+
+   Source-of-truth: pwrdrvr/PwrSnap@main —
+   apps/desktop/src/renderer/src/styles/tokens.css
    ============================================================ */
 
 @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800;900&family=Geist+Mono:wght@400;500;600;700&display=swap");
@@ -14,12 +17,12 @@
   --font-display: "Geist", "SF Pro Display", system-ui, sans-serif;
 
   /* ---------- COLOR — surfaces (pure-black suite system) ---------- */
-  --bg-app:            #000000;   /* root, pure black per PwrAgent suite */
+  --bg-app:            #000000;   /* root, pure black — matches PwrAgent */
   --bg-sidebar:        #050505;   /* nav rail */
   --bg-panel:          #0a0a0a;   /* primary cards/content panels */
   --bg-panel-elevated: #101010;   /* nested cards, popovers */
-  --bg-panel-hover:    #14110d;   /* subtle warm cast retained on hover only */
-  --bg-row-active:     #1f1107;   /* tangerine-tinted, selected items (~12% darken of accent on black) */
+  --bg-panel-hover:    #14110d;   /* hover on panels — subtle warm cast */
+  --bg-row-active:     #1f1107;   /* selected items — ~12% darken of accent on black */
   --bg-input:          #080808;   /* input fields */
   --bg-overlay:        rgba(0, 0, 0, 0.78);  /* modal scrim */
 
@@ -34,19 +37,20 @@
   --text-muted:     #8c857a;
   --text-subtle:    #5a544b;
 
-  /* ---------- COLOR — accent (tangerine) ---------- */
+  /* ---------- COLOR — accent (tangerine, suite signature) ---------- */
   --accent:        #ff8a1f;
   --accent-strong: #ffa33d;
   --accent-bright: #ffb35c;
   --accent-deep:   #b35f15;
-  --accent-soft:   rgba(255, 138, 31, 0.12);
-  --accent-tint:   rgba(255, 138, 31, 0.06);
-  --accent-border: rgba(255, 138, 31, 0.42);
-  --accent-shadow: rgba(255, 138, 31, 0.34);
+  /* Derived alpha overlays of --accent. Defined as color-mix so a
+     future theme override of --accent automatically gets the
+     matching soft / tint / border / shadow values. */
+  --accent-soft:   color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-tint:   color-mix(in srgb, var(--accent) 6%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
+  --accent-shadow: color-mix(in srgb, var(--accent) 34%, transparent);
 
   /* ---------- COLOR — brand blue (logo / parent stamp ONLY) ---------- */
-  /* Reserved for the PwrDrvr brand mark on its navy plate. Do NOT use
-     in product UI — the in-product accent is copper above. */
   --brand-blue:       #1f7cff;
   --brand-blue-bright:#4a96ff;
   --brand-blue-deep:  #0e1a2b;
@@ -76,12 +80,28 @@
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
   /* ---------- SHADOWS ---------- */
-  --shadow-xs:     0 1px 2px rgba(0, 0, 0, 0.32);
-  --shadow-sm:     0 4px 10px rgba(0, 0, 0, 0.30);
-  --shadow-md:     0 12px 28px rgba(0, 0, 0, 0.36);
-  --shadow-lg:     0 18px 48px rgba(0, 0, 0, 0.42);
+  /* --shadow-base is the color every drop-shadow derives from via
+     color-mix. Stays #000 in both themes — drop shadows under light
+     surfaces still want black, just at lower alpha.
+
+     --surface-highlight is the matching color for the 1px inset
+     top-edge highlight. Stays #fff in both themes — "lit from above"
+     reads bright in both modes. */
+  --shadow-base:        #000000;
+  --surface-highlight:  #ffffff;
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 32%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 36%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 42%, transparent);
   --shadow-glow:   0 0 0 1px var(--accent-border), 0 8px 32px var(--accent-shadow);
-  --shadow-inset:  inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 4%, transparent);
+  /* legacy aliases for the existing library.css ramp */
+  --shadow-popover: var(--shadow-lg);
+  --shadow-card:    var(--shadow-md);
+  --shadow-thumb:   var(--shadow-md);
+
+  /* ---------- FOCUS ---------- */
+  --focus-ring: 0 0 0 3px var(--accent-shadow);
 
   /* ---------- RADII ---------- */
   --radius-xs:   4px;
@@ -128,6 +148,94 @@
   --dur-fast:    120ms;
   --dur-base:    180ms;
   --dur-slow:    320ms;
+}
+
+/* ============================================================
+   LIGHT THEME OVERRIDES
+
+   Selector matches BOTH the production setup (<html data-theme="light">
+   flipped by the appearance hook) AND any subtree scoped via the same
+   attribute. The subtree variant is what lets the design canvas show
+   light + dark artboards side-by-side in a single page.
+
+   Tangerine narrows to #c45200 on white for WCAG AA contrast
+   (≥4.5:1 against body text), mirroring PwrAgent's suite light
+   palette. Semantic colors deepen to retain reading contrast on
+   the lifted surfaces. color-scheme:light flips native scrollbar +
+   form-control rendering — the one effect CSS variables can't reach.
+   ============================================================ */
+:root[data-theme="light"],
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* ---------- COLOR — surfaces (warm off-white system) ---------- */
+  --bg-app:            #ffffff;
+  --bg-sidebar:        #f7f4ef;
+  --bg-panel:          #fdfcfa;
+  --bg-panel-elevated: #ffffff;
+  --bg-panel-hover:    #f4f0e8;
+  --bg-row-active:     #fff5e9;   /* tangerine-tinted on white */
+  --bg-input:          #ffffff;
+  --bg-overlay:        rgba(0, 0, 0, 0.32);
+
+  /* ---------- COLOR — borders ---------- */
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-default: rgba(0, 0, 0, 0.12);
+  --border-strong: rgba(0, 0, 0, 0.20);
+
+  /* ---------- COLOR — text ---------- */
+  --text-primary:   #1a1612;   /* warm near-black */
+  --text-secondary: #524a40;
+  --text-muted:     #807870;
+  --text-subtle:    rgba(26, 22, 18, 0.42);
+
+  /* ---------- COLOR — accent (deepened tangerine for WCAG on white) ---------- */
+  --accent:        #c45200;
+  --accent-strong: #b34a00;
+  --accent-bright: #d96d00;
+  --accent-deep:   #8a3a00;
+  /* Redeclare every derivative of --accent here. color-mix() inside
+     a custom-property declaration substitutes its var()s at
+     declaration-site computed-value time, so the :root --accent-soft
+     / tint / border / shadow are baked against the dark accent and
+     would otherwise inherit unchanged. Light theme's --accent-shadow
+     also lifts from 34% → 28% so the cast doesn't read as a heavy
+     ring on white panels. */
+  --accent-soft:   color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-tint:   color-mix(in srgb, var(--accent) 6%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 42%, transparent);
+  --accent-shadow: color-mix(in srgb, var(--accent) 28%, transparent);
+
+  /* ---------- COLOR — semantic (deeper for legibility on white) ---------- */
+  --danger:        #b94232;
+  --danger-soft:   rgba(185, 66, 50, 0.12);
+  --danger-border: rgba(185, 66, 50, 0.32);
+  --danger-text:   #8a1f12;
+
+  --success:       #2e7d3c;
+  --success-soft:  rgba(46, 110, 64, 0.12);
+  --success-border:rgba(46, 110, 64, 0.28);
+  --success-text:  #1a5c2e;
+
+  --info:          #3666a5;
+  --info-soft:     rgba(54, 102, 165, 0.12);
+  --info-border:   rgba(54, 102, 165, 0.24);
+  --info-text:     #1a4f8a;
+
+  --warn:          #a86b00;
+  --warn-soft:     rgba(168, 107, 0, 0.12);
+  --warn-border:   rgba(168, 107, 0, 0.28);
+  --warn-text:     #6b4400;
+
+  /* ---------- BUTTON ---------- */
+  --button-text-on-accent: #ffffff;   /* white reads cleanest on deep tangerine */
+
+  /* ---------- SHADOWS — softer on light surfaces ---------- */
+  --shadow-xs:     0 1px 2px color-mix(in srgb, var(--shadow-base) 6%, transparent);
+  --shadow-sm:     0 4px 10px color-mix(in srgb, var(--shadow-base) 8%, transparent);
+  --shadow-md:     0 12px 28px color-mix(in srgb, var(--shadow-base) 12%, transparent);
+  --shadow-lg:     0 18px 48px color-mix(in srgb, var(--shadow-base) 18%, transparent);
+  --shadow-inset:  inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 60%, transparent);
 }
 
 /* ============================================================

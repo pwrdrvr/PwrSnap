@@ -31,6 +31,174 @@ const { DesignCanvas, DCSection, DCArtboard } = window;
 const { Library, PsAppTag, APP_INFO } = window.PS;
 
 // ============================================================
+// Theme showcase — surface ramp + accent + status
+// Renders the same tokens against both schemes so light/dark
+// drift is visible at a glance.
+// ============================================================
+function ThemeShowcase() {
+  const surfaceTokens = [
+    ["--bg-app",            "App"],
+    ["--bg-sidebar",        "Sidebar"],
+    ["--bg-panel",          "Panel"],
+    ["--bg-panel-elevated", "Panel-elevated"],
+    ["--bg-panel-hover",    "Panel-hover"],
+    ["--bg-row-active",     "Row-active"],
+    ["--bg-input",          "Input"],
+  ];
+  const accentTokens = [
+    ["--accent",        "accent"],
+    ["--accent-strong", "strong"],
+    ["--accent-bright", "bright"],
+    ["--accent-deep",   "deep"],
+    ["--accent-border", "border"],
+    ["--accent-soft",   "soft"],
+  ];
+  const textTokens = [
+    ["--text-primary",   "primary"],
+    ["--text-secondary", "secondary"],
+    ["--text-muted",     "muted"],
+    ["--text-subtle",    "subtle"],
+  ];
+
+  function Swatch({ token, name }) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{
+          width: 28, height: 28,
+          borderRadius: 5,
+          border: "1px solid var(--border-strong)",
+          background: `var(${token})`,
+          flexShrink: 0,
+        }} />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ font: "600 11px/1.1 var(--font-sans)", color: "var(--text-primary)" }}>{name}</div>
+          <div style={{ font: "500 9.5px/1.2 var(--font-mono)", color: "var(--text-muted)" }}>{token}</div>
+        </div>
+      </div>
+    );
+  }
+
+  function Pane({ scheme }) {
+    const wrapStyle = {
+      flex: 1,
+      padding: 22,
+      background: "var(--bg-app)",
+      color: "var(--text-primary)",
+      borderRadius: 10,
+      border: "1px solid var(--border-default)",
+      display: "flex", flexDirection: "column", gap: 16,
+      minWidth: 0,
+    };
+    const sectionLabel = {
+      font: "700 9px/1 var(--font-sans)",
+      letterSpacing: "0.14em",
+      textTransform: "uppercase",
+      color: "var(--text-muted)",
+    };
+
+    return (
+      <div data-theme={scheme === "light" ? "light" : undefined} style={wrapStyle}>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+          <div style={{ font: "700 16px/1 var(--font-display)", color: "var(--text-primary)", letterSpacing: "-0.01em" }}>
+            {scheme === "light" ? "Light" : "Dark"}
+          </div>
+          <div style={{ font: "500 10px/1 var(--font-mono)", color: "var(--text-muted)" }}>
+            data-theme="{scheme}"
+          </div>
+        </div>
+
+        <div>
+          <div style={{ ...sectionLabel, marginBottom: 10 }}>Surfaces</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {surfaceTokens.map(([t, n]) => <Swatch key={t} token={t} name={n} />)}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ ...sectionLabel, marginBottom: 10 }}>Accent</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {accentTokens.map(([t, n]) => <Swatch key={t} token={t} name={n} />)}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ ...sectionLabel, marginBottom: 10 }}>Text</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {textTokens.map(([t, n]) => (
+              <div key={t} style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+                <span style={{ color: `var(${t})`, font: "500 13px/1.2 var(--font-sans)" }}>The quick brown fox</span>
+                <span style={{ font: "500 9.5px/1 var(--font-mono)", color: "var(--text-muted)" }}>{n} · {t}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ ...sectionLabel, marginBottom: 10 }}>Components</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <button style={{
+              height: 28, padding: "0 14px",
+              background: "var(--accent)",
+              border: "1px solid var(--accent)",
+              color: "var(--button-text-on-accent)",
+              font: "600 12px/1 var(--font-sans)",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}>Quick Capture</button>
+            <button style={{
+              height: 28, padding: "0 12px",
+              background: "transparent",
+              border: "1px solid var(--border-default)",
+              color: "var(--text-primary)",
+              font: "500 12px/1 var(--font-sans)",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}>Cancel</button>
+            <PsAppTag app="electron" name="Electron" size="sm" />
+            <span className="ps-tag">tag</span>
+            <span className="ps-tag is-accent">accent</span>
+          </div>
+          <div style={{ marginTop: 10, padding: 10, background: "var(--bg-input)", border: "1px solid var(--border-subtle)", borderRadius: 7 }}>
+            <input
+              placeholder="Title"
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: 0,
+                outline: 0,
+                color: "var(--text-primary)",
+                font: "500 13px/1.3 var(--font-sans)",
+              }}
+              defaultValue="pwragent resume menu bug"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      width: "100%", height: "100%", padding: 24,
+      background: "var(--bg-app)",
+      border: "1px solid var(--border-subtle)",
+      borderRadius: 12,
+      overflow: "auto",
+      fontFamily: "var(--font-sans)",
+    }}>
+      <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 4px", letterSpacing: "-0.01em" }}>Themes — Dark & Light</h2>
+      <p style={{ font: "400 12px/1.45 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 18px", maxWidth: 720 }}>
+        Tokens cascade through <code style={{ font: "600 11px/1 var(--font-mono)", background: "var(--bg-panel-elevated)", padding: "2px 5px", borderRadius: 3, color: "var(--accent-bright)" }}>[data-theme="light"]</code> on any subtree — the production app sets it on <code style={{ font: "600 11px/1 var(--font-mono)", background: "var(--bg-panel-elevated)", padding: "2px 5px", borderRadius: 3, color: "var(--accent-bright)" }}>&lt;html&gt;</code>; the design canvas scopes it per-artboard. Tangerine narrows to <b style={{color:"var(--text-primary)"}}>#c45200</b> on white for WCAG AA contrast.
+      </p>
+      <div style={{ display: "flex", gap: 14 }}>
+        <Pane scheme="dark" />
+        <Pane scheme="light" />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // Notes panel
 // ============================================================
 function NotesPanel({ children, title }) {
@@ -67,14 +235,13 @@ function TagShowcase() {
     }}>
       <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 6px", letterSpacing: "-0.01em" }}>App-source tags</h2>
       <p style={{ font: "400 13px/1.45 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 24px", maxWidth: 560 }}>
-        A <b style={{color:"var(--text-primary)"}}>system tag</b> distinct from regular content tags.
-        Auto-detected at capture time, immutable. Visual signal: square icon-tile on the left, mono name, no leading-dot, slight squarer corner radius. App icons are monochrome, tinted in the system accent — never a foreign brand color in the UI.
+        A <b style={{color:"var(--text-primary)"}}>system tag</b> distinct from regular content tags. Auto-detected at capture time, immutable. Visual signal: real <b style={{color:"var(--text-primary)"}}>.app bundle icon</b> on the left (full color, no tinting), mono name in accent, no leading-dot, slight squarer corner radius.
       </p>
 
       {/* Side-by-side */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 32 }}>
         <div style={{ padding: 18, background: "var(--bg-panel)", borderRadius: 10, border: "1px solid var(--border-subtle)" }}>
-          <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 12 }}>Regular tags</div>
+          <div style={{ font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 12 }}>Regular tags</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             <span className="ps-tag">bug</span>
             <span className="ps-tag is-accent">auth</span>
@@ -88,31 +255,31 @@ function TagShowcase() {
           </div>
         </div>
         <div style={{ padding: 18, background: "var(--bg-panel)", borderRadius: 10, border: "1px solid var(--accent-border)" }}>
-          <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", marginBottom: 12 }}>App-source tag</div>
+          <div style={{ font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--accent-bright)", marginBottom: 12 }}>App-source tag</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             <PsAppTag app="telegram" name="Telegram" />
-            <PsAppTag app="excel" name="Excel" />
-            <PsAppTag app="vscode" name="VS Code" />
-            <PsAppTag app="figma" name="Figma" />
+            <PsAppTag app="claude" name="Claude" />
+            <PsAppTag app="electron" name="Electron" />
             <PsAppTag app="terminal" name="Terminal" />
+            <PsAppTag app="safari" name="Safari" />
           </div>
           <div style={{ font: "500 10px/1.4 var(--font-mono)", color: "var(--text-muted)", marginTop: 12 }}>
-            System · square tile + name · immutable · always one per snap
+            System · bundle icon + name · immutable · always one per snap
           </div>
         </div>
       </div>
 
       {/* Sizes */}
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Sizes</div>
+      <div style={{ font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Sizes</div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 28 }}>
-        <PsAppTag app="figma" name="Figma" size="sm" />
-        <PsAppTag app="figma" name="Figma" size="md" />
-        <PsAppTag app="figma" name="Figma" size="lg" />
-        <span style={{ font: "500 10px/1.4 var(--font-mono)", color: "var(--text-muted)", marginLeft: 12 }}>sm 18 · md 22 · lg 26</span>
+        <PsAppTag app="claude" name="Claude" size="sm" />
+        <PsAppTag app="claude" name="Claude" size="md" />
+        <PsAppTag app="claude" name="Claude" size="lg" />
+        <span style={{ font: "500 10px/1.4 var(--font-mono)", color: "var(--text-muted)", marginLeft: 12 }}>sm 20 · md 22 · lg 26</span>
       </div>
 
       {/* Full grid */}
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Detected apps · {apps.length}</div>
+      <div style={{ font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 10 }}>Detected apps · {apps.length}</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
         {apps.map(([app, info]) => (
           <PsAppTag key={app} app={app} name={info.name} />
@@ -120,15 +287,15 @@ function TagShowcase() {
       </div>
 
       {/* In context */}
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", margin: "28px 0 10px" }}>In context · capture metadata row</div>
+      <div style={{ font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", margin: "28px 0 10px" }}>In context · capture metadata row</div>
       <div style={{ padding: 14, background: "var(--bg-panel)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
-        <div style={{ font: "600 13px/1.3 var(--font-sans)", marginBottom: 8 }}>auth flow — token refresh</div>
+        <div style={{ font: "600 13px/1.3 var(--font-sans)", marginBottom: 8 }}>pwragent — resume menu not clearing</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
-          <PsAppTag app="vscode" name="VS Code" />
+          <PsAppTag app="electron" name="Electron" />
           <span className="ps-tag">bug</span>
-          <span className="ps-tag is-accent">auth</span>
+          <span className="ps-tag is-accent">resume</span>
           <span className="ps-tag is-warn">p1</span>
-          <span className="ps-tag is-suggest">+ token-refresh</span>
+          <span className="ps-tag is-suggest">+ ui</span>
         </div>
       </div>
     </div>
@@ -136,44 +303,57 @@ function TagShowcase() {
 }
 
 function LibraryNotes() {
+  const eyebrow = { font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" };
+  const muted   = { font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", margin: "14px 0 6px" };
+  const ul      = { font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" };
   return (
-    <NotesPanel title="Library — three states, one model">
+    <NotesPanel title="Library — what changed">
       <p style={{ font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 12px" }}>
-        Reworked from a mashed-together reel+grid into <b style={{color:"var(--text-primary)"}}>three discrete view-states</b> sharing the same selection + filter model. The Reel/Grid toggle now actually does something.
+        Picks up four threads from the last review: real .app bundle icons, tile cleanup, the new detail form, and a captured-in-place edit toolbar.
       </p>
 
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "14px 0 6px" }}>① Grid (default landing)</div>
-      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
-        <li>Day-grouped cells fill the entire main area — no shrunken sidebar preview competing.</li>
-        <li>Click any cell → opens <b style={{color:"var(--text-primary)"}}>Focus overlay</b>; the cell briefly pulses on return.</li>
+      <div style={eyebrow}>① Bundle icons</div>
+      <ul style={ul}>
+        <li>Source-app icons in the rail are now full-color facsimiles of the real macOS bundle icons. Same role as before (provenance signal), much faster scan.</li>
+        <li>The system-shipped rows — All Captures / Today / Trash / Pinned / Bug repros / Has annotations — stay <b style={{color:"var(--text-primary)"}}>monochrome amber</b>. The visual split is the meaning: bundle = real app, mono = PwrSnap.</li>
+        <li>Capture tiles wear the colored chip too, so the source reads at the tile level without going into the rail.</li>
       </ul>
 
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "12px 0 6px" }}>② Focus overlay (single image · edit)</div>
-      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
-        <li>Big stage at usable size — solving the "sidebar image too small to edit" gripe.</li>
-        <li><b style={{color:"var(--text-primary)"}}>Floating × top-right</b> + Esc dismiss back to scroll position.</li>
-        <li><b style={{color:"var(--text-primary)"}}>Edit toolbar floats bottom-center of canvas</b> — Select / Crop / Arrow / Rect / Highlight / Text / Blur with single-letter hotkeys + color swatches + magic wand + undo. Ports the affordances we had hidden in the sidebar onto a surface big enough to actually use.</li>
-        <li>← / → cycle through filtered set without leaving.</li>
-        <li>Detail rail shows metadata, Codex caption, and the <b style={{color:"var(--text-primary)"}}>L/M/H copy row</b> from FloatOver — no more blind clipboard copy.</li>
+      <div style={eyebrow}>② Tile cleanup</div>
+      <ul style={ul}>
+        <li>Killed the meta strip beneath the thumb. <b style={{color:"var(--text-primary)"}}>One chip, one timestamp, one image</b> — that's the whole cell.</li>
+        <li>Removed the duplicate app-icon pip in the top-left corner. The bottom-left chip carries provenance; the corner pip was redundant.</li>
+        <li>Tiles are now 16:10 thumb-only, gap 16px, min-col 240px. Reads as a single scannable grid rather than a list of metadata blocks.</li>
       </ul>
 
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "12px 0 6px" }}>③ Reel mode</div>
-      <ul style={{ font: "400 13px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 10px" }}>
-        <li>Filmstrip on top + always-open big stage below — you're always on one image, so no × needed.</li>
-        <li>Exit via the segmented control. Selection preserved across modes.</li>
-        <li>Same edit toolbar + L/M/H copy row — consistent muscle memory.</li>
+      <div style={eyebrow}>③ Detail form (right rail)</div>
+      <ul style={ul}>
+        <li><b style={{color:"var(--text-primary)"}}>Title / Description / Filename stem / Tags</b> as four labeled fields. Filename stem is mono; the date prefix is locked.</li>
+        <li>Codex suggestions land in a dotted-amber card with <b style={{color:"var(--text-primary)"}}>per-field ✓ / ✗</b> — accept promotes the suggestion into the real field, reject hides it without committing.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Accept all</b> shortcut at the bottom + Regenerate. The card collapses once every suggestion has been resolved.</li>
       </ul>
 
-      <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", margin: "14px 0 6px" }}>State transitions</div>
-      <pre style={{ font: "500 11px/1.5 var(--font-mono)", color: "var(--text-secondary)", background: "var(--bg-input)", padding: 10, borderRadius: 6, border: "1px solid var(--border-subtle)", margin: "0 0 12px", whiteSpace: "pre-wrap" }}>{`Grid ──click cell──▶ Focus overlay
-Grid ──[Reel toggle]──▶ Reel
-Focus ──[× / Esc]──▶ Grid (return to scroll)
-Focus ──[Reel toggle]──▶ Reel (selection kept)
-Reel ──[Grid toggle]──▶ Grid (selection kept)`}</pre>
+      <div style={eyebrow}>④ Edit bar (starting point — full redesign next thread)</div>
+      <ul style={ul}>
+        <li>Tools read <b style={{color:"var(--text-primary)"}}>LABEL [K]</b> — uppercase mono name with the hotkey in a bracketed chip. Active tool gets a full amber outline + tinted text.</li>
+        <li>Drag handle on the left edge, Reset + Zoom (Fit / 100% / custom %) on the right.</li>
+        <li>Zoom + Blur each open a small popover above their button — same dropdown chrome (dark, dashed amber border on the active row).</li>
+        <li><i>Captured as-is — the next iteration will redesign this bar end-to-end.</i></li>
+      </ul>
 
-      <p style={{ font: "400 12px/1.45 var(--font-mono)", color: "var(--text-muted)", margin: 0 }}>
-        L/M/H mirrors FloatOver: ⌘1/⌘2/⌘3, scaled dimensions visible <i>before</i> copy, byte estimate, primary = High.
-      </p>
+      <div style={muted}>Topbar</div>
+      <ul style={ul}>
+        <li>Search field removed (folded into ⌘K). Topbar now: brand + count, REEL/GRID toggle, settings cog + Quick Capture pill.</li>
+        <li>Quick Capture hotkey is <b style={{color:"var(--text-primary)"}}>⌘⇧C</b> (per CLAUDE.md — ⌘⇧P retired to free the P slot).</li>
+      </ul>
+
+      <div style={eyebrow}>⑤ Light theme</div>
+      <ul style={ul}>
+        <li>Tokens now ship a <b style={{color:"var(--text-primary)"}}>[data-theme="light"]</b> override block — copied verbatim from <code style={{ font: "600 11px/1 var(--font-mono)" }}>apps/desktop/src/renderer/src/styles/tokens.css</code>.</li>
+        <li>Accent narrows to <b style={{color:"var(--text-primary)"}}>#c45200</b> on white for WCAG AA. <code style={{ font: "600 11px/1 var(--font-mono)" }}>--button-text-on-accent</code> flips to white.</li>
+        <li>Library CSS swept: all <code style={{ font: "600 11px/1 var(--font-mono)" }}>rgba(255,138,31,X)</code> literals are now <code style={{ font: "600 11px/1 var(--font-mono)" }}>color-mix(--accent, X%)</code> so they re-derive in light. Dark panel literals route through <code style={{ font: "600 11px/1 var(--font-mono)" }}>--bg-panel-elevated</code>; white-on-dark borders route through <code style={{ font: "600 11px/1 var(--font-mono)" }}>--border-*</code>.</li>
+        <li>Capture thumbs stay in their own colored palette — a screenshot of an Electron app is the same image regardless of which theme the Library wears.</li>
+      </ul>
     </NotesPanel>
   );
 }
@@ -186,32 +366,51 @@ function App() {
     <DesignCanvas projectName="PwrSnap" deliverable="Library">
 
       <DCSection id="library-grid" title="① Library · Grid mode (default landing)">
-        <DCArtboard id="library-grid-default" label="Grid · all captures · nothing open" width={1440} height={900}>
-          <Library initialView="grid" initialSelected={5} initialOpen={false} />
+        <DCArtboard id="library-grid-default" label="Grid · dark theme · bundle icons · cleaned tiles" width={1440} height={900}>
+          <Library initialView="grid" initialSelected={1} initialOpen={false} />
         </DCArtboard>
         <DCArtboard id="library-notes" label="Design notes" width={500} height={900}>
           <LibraryNotes />
         </DCArtboard>
       </DCSection>
 
-      <DCSection id="library-focus" title="② Focus overlay · single-image edit (from Grid)">
-        <DCArtboard id="library-focus-open" label="Cell clicked · floating × · in-canvas edit toolbar · L/M/H copy" width={1440} height={900}>
-          <Library initialView="grid" initialSelected={5} initialOpen={true} />
+      <DCSection id="library-light" title="② Light theme · same Library, [data-theme='light'] scoped to the artboard">
+        <DCArtboard id="library-grid-light" label="Grid · light theme · accent narrows to #c45200" width={1440} height={900}>
+          <div data-theme="light" style={{ width: "100%", height: "100%" }}>
+            <Library initialView="grid" initialSelected={1} initialOpen={false} />
+          </div>
+        </DCArtboard>
+        <DCArtboard id="library-focus-light" label="Focus overlay · light theme · detail form + edit toolbar" width={1440} height={900}>
+          <div data-theme="light" style={{ width: "100%", height: "100%" }}>
+            <Library initialView="grid" initialSelected={1} initialOpen={true} />
+          </div>
         </DCArtboard>
       </DCSection>
 
-      <DCSection id="apptag" title="③ App-source tag · system provenance">
-        <DCArtboard id="apptag-showcase" label="Anatomy · sizes · matrix" width={920} height={760}>
+      <DCSection id="theme" title="③ Theme tokens · side-by-side">
+        <DCArtboard id="theme-showcase" label="Surfaces · accent · text · components" width={1180} height={820}>
+          <ThemeShowcase />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="library-focus" title="④ Focus overlay · dark theme · detail form + AI accept/reject">
+        <DCArtboard id="library-focus-open" label="Cell clicked · new edit toolbar · title/desc/filename + AI accept-reject" width={1440} height={900}>
+          <Library initialView="grid" initialSelected={1} initialOpen={true} />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="apptag" title="⑤ App-source tag · bundle-icon variant">
+        <DCArtboard id="apptag-showcase" label="Anatomy · sizes · matrix · in-context" width={920} height={820}>
           <TagShowcase />
         </DCArtboard>
       </DCSection>
 
-      <DCSection id="library-reel" title="④ Reel mode · always-open stage + filmstrip">
-        <DCArtboard id="library-reel-default" label="Reel · no × needed · same edit toolbar + L/M/H" width={1440} height={900}>
-          <Library initialView="reel" initialSelected={5} />
+      <DCSection id="library-reel" title="⑥ Reel mode · always-open stage + filmstrip">
+        <DCArtboard id="library-reel-default" label="Reel · same edit toolbar + detail form" width={1440} height={900}>
+          <Library initialView="reel" initialSelected={1} />
         </DCArtboard>
-        <DCArtboard id="library-reel-vscode" label="Reel · filtered to VS Code" width={1440} height={900}>
-          <Library initialView="reel" initialSelected={5} initialApp="vscode" />
+        <DCArtboard id="library-reel-electron" label="Reel · filtered to Electron (226 captures)" width={1440} height={900}>
+          <Library initialView="reel" initialSelected={2} initialApp="electron" />
         </DCArtboard>
       </DCSection>
 

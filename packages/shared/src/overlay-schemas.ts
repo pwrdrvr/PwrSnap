@@ -22,14 +22,56 @@ const NormalizedRect = z.object({
   h: NormalizedScalar
 });
 
+/** Arrow head/end glyph. New in Phase 1 of the v2 editor refresh —
+ *  existing arrows without this field render as `"filled-triangle"`
+ *  (the legacy behavior). Renderer reads via `readArrowEndStyle`. */
+export const ArrowEndStyle = z.enum(["filled-triangle", "open-triangle", "line", "dot"]);
+export type ArrowEndStyle = z.infer<typeof ArrowEndStyle>;
+export const DEFAULT_ARROW_END_STYLE: ArrowEndStyle = "filled-triangle";
+
+/** Arrow stem stroke. Solid is the legacy default. Dashed/dotted are
+ *  new in Phase 1. */
+export const ArrowStemStyle = z.enum(["solid", "dashed", "dotted"]);
+export type ArrowStemStyle = z.infer<typeof ArrowStemStyle>;
+export const DEFAULT_ARROW_STEM_STYLE: ArrowStemStyle = "solid";
+
 export const ArrowOverlay = z.object({
   kind: z.literal("arrow"),
   from: NormalizedPoint,
   to: NormalizedPoint,
   /** "auto" derives stroke + color from image short-side; explicit hex overrides. */
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
-  label: z.string().max(80).optional()
+  label: z.string().max(80).optional(),
+  /** Phase 1 v2-editor refresh — optional for back-compat. Legacy rows
+   *  rendered through `readArrowEndStyle` / `readArrowStemStyle` get
+   *  the pre-Phase-1 defaults. */
+  endStyle: ArrowEndStyle.optional(),
+  stemStyle: ArrowStemStyle.optional(),
+  /** When true, render the same end glyph at both endpoints. Legacy
+   *  rows omit this field (rendered as single-ended). */
+  doubleEnded: z.boolean().optional()
 });
+
+/** Mirror of readBlurStyle — applies the legacy default for arrows
+ *  drawn before the endStyle field existed. Keeps the renderer from
+ *  repeating the `?? "filled-triangle"` fallback at every paint site. */
+export function readArrowEndStyle(
+  data: { endStyle?: ArrowEndStyle | undefined }
+): ArrowEndStyle {
+  return data.endStyle ?? DEFAULT_ARROW_END_STYLE;
+}
+
+export function readArrowStemStyle(
+  data: { stemStyle?: ArrowStemStyle | undefined }
+): ArrowStemStyle {
+  return data.stemStyle ?? DEFAULT_ARROW_STEM_STYLE;
+}
+
+export function readArrowDoubleEnded(
+  data: { doubleEnded?: boolean | undefined }
+): boolean {
+  return data.doubleEnded ?? false;
+}
 
 export const RectOverlay = z.object({
   kind: z.literal("rect"),

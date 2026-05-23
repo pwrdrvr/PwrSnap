@@ -22,15 +22,18 @@ function FoIcon({ name, size = 14, style }) {
   );
 }
 
-// ----- The PwrSnap "P" mark -----
+// ----- The PwrSnap brand mark (stacked screenshots) — CANONICAL, see CLAUDE.md -----
+// Must stay byte-identical to APP_ICONS.pwrsnap in src/AppIcons.jsx.
+// Front is BOTTOM-LEFT (bright), back is TOP-RIGHT (deep). Explicit strokes, never currentColor.
 function FoMark({ size = 14 }) {
   return (
-    <svg viewBox="0 0 128 128" width={size} height={size} style={{ display: "block" }}>
-      <path
-        fill="currentColor"
-        fillRule="evenodd"
-        d="M22 14H62a30 26 0 0 1 0 52H46v48H22Z M44 30L52 30L52 34L48 34L48 38L44 38Z M64 30L72 30L72 38L68 38L68 34L64 34Z M44 42L48 42L48 46L52 46L52 50L44 50Z M64 50L64 46L68 46L68 42L72 42L72 50Z"
-      />
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" strokeLinejoin="round" strokeLinecap="round" style={{ display: "block" }} aria-label="PwrSnap">
+      {/* Back — top-right, deepest burnt copper */}
+      <rect x="8"   y="3"   width="13" height="13" rx="2.5" style={{ stroke: "var(--accent-deep)" }} strokeWidth="1.5"/>
+      {/* Mid — centered, midpoint between deep and accent */}
+      <rect x="5.5" y="5.5" width="13" height="13" rx="2.5" style={{ stroke: "color-mix(in oklch, var(--accent-deep), var(--accent))" }} strokeWidth="1.5"/>
+      {/* Front — bottom-left, bright tangerine */}
+      <rect x="3"   y="8"   width="13" height="13" rx="2.5" style={{ stroke: "var(--accent)" }} strokeWidth="1.6"/>
     </svg>
   );
 }
@@ -387,7 +390,7 @@ function FoDesktopFrame({ children, label }) {
             <span className="fo-menubar__pwr">
               <span className="fo-menubar__pwr-dot" />
               <FoMark size={11} />
-              <span style={{ color: "var(--accent-bright)", fontSize: 10, fontWeight: 600 }}>PwrSnap</span>
+              <span style={{ color: "var(--accent-bright)", fontSize: 10, fontWeight: 600, letterSpacing: "-0.03em" }}>PwrSnap</span>
             </span>
             <span>WiFi</span>
             <span>Tue 10:43 PM</span>

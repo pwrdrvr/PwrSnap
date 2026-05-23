@@ -42,7 +42,7 @@
 .pss__title-brand {
   display: inline-flex; align-items: center; gap: 8px;
   font: 700 13px/1 var(--font-display);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
   margin-left: 4px;
 }
 .pss__title-brand .a { color: var(--accent); }
@@ -147,6 +147,8 @@
   overflow-y: auto;
   background: var(--bg-app);
   padding: 36px 56px 56px;
+  display: flex;
+  flex-direction: column;
 }
 .pss__main-hdr {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -163,7 +165,7 @@
 }
 .pss__main-title {
   font: 700 26px/1.15 var(--font-display);
-  letter-spacing: -0.01em;
+  letter-spacing: -0.03em;
   color: var(--text-primary);
   margin: 0 0 8px;
 }
@@ -331,7 +333,7 @@
   font: 700 12px/1 var(--font-mono);
 }
 .pss__opt.is-using .pss__opt-icon {
-  background: rgba(232,116,58,0.1);
+  background: rgba(255, 138, 31,0.1);
   border-color: var(--accent-border);
   color: var(--accent);
 }
@@ -741,34 +743,13 @@
 .pss__role-provider svg { color: var(--text-muted); margin-left: auto; }
 .pss__role-provider b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
-/* footer save / cancel buttons */
+/* footer — anchored to bottom of .pss__main flex column.
+   No sticky: the design-canvas artboard doesn't scroll, and sticky+bottom:0 on a
+   non-scrolling flex parent was zeroing out the auto margin and floating mid-page. */
 .pss__footer {
-  position: sticky;
-  bottom: 0;
+  margin-top: auto;          /* push to bottom of the flex column */
   background: linear-gradient(180deg, transparent 0%, var(--bg-app) 30%, var(--bg-app) 100%);
   padding: 24px 0 0;
-  margin-top: 8px;
-  display: flex; align-items: center; gap: 10px;
-}
-.pss__footer-status {
-  flex: 1;
-  font: 500 11px/1 var(--font-mono);
-  color: var(--text-muted);
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.pss__footer-status::before {
-  content: "";
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 2px rgba(109,186,126,0.18);
-}
-.pss__footer {
-  position: sticky;
-  bottom: 0;
-  background: linear-gradient(180deg, transparent 0%, var(--bg-app) 30%, var(--bg-app) 100%);
-  padding: 24px 0 0;
-  margin-top: 8px;
   display: flex; align-items: center; gap: 10px;
 }
 .pss__footer-status {

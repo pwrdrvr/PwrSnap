@@ -75,7 +75,8 @@ import {
   type ToolStylePopoverStyle
 } from "../editor/ToolStylePopover";
 import { CropTool } from "../editor/CropTool";
-import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { useCaptureModel } from "../editor/useCaptureModel";
+import { dispatch } from "../../lib/pwrsnap";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
 
@@ -185,83 +186,109 @@ export function EditToolbar({
     onChange(toolState.activeTool);
   }, [toolState.activeTool, tool, onChange]);
 
-  // Self-track the overlay count via overlays:list + the existing
-  // events:overlays:changed broadcast. Editor fetches the same data
-  // separately for rendering; both paths converge on the same view.
+  // Phase 2 task #14: shared data through useCaptureModel. The hook
+  // owns the dispatch + cancel-safety + broadcast-driven refetch for
+  // both v1 (overlays) and v2 (layers) — EditToolbar reads the result
+  // for both `overlayCount` and the fresh-placement detection that
+  // feeds `onAnnotationPlaced`. We always call the hook (rules of
+  // hooks) with a sentinel when no capture is selected.
+  const model = useCaptureModel(captureId ?? NO_CAPTURE_SENTINEL);
+
+  // Resolve to a uniform OverlayRow[] view. v1 returns it natively;
+  // v2 captures (Phase 2 read-only) get back-projected via the same
+  // shape Editor uses. EditToolbar reads `data.kind` to feed
+  // describePlacement, which is overlay-shaped — projecting keeps the
+  // call site format-agnostic. When the hook is loading / errored /
+  // sentinel-mounted, the list is empty.
+  const overlayRows: OverlayRow[] = useMemo(() => {
+    if (captureId === undefined) return [];
+    if (model.kind !== "loaded") return [];
+    if (model.format === 1) return model.overlays;
+    // v2: re-shape vector + blur-effect layers back into OverlayRow
+    // shape. EditToolbar only needs id + data.kind + created_at +
+    // source for placement detection, all of which carry through.
+    const rows: OverlayRow[] = [];
+    for (const layer of model.layers) {
+      if (layer.kind === "vector") {
+        rows.push({
+          id: layer.id,
+          capture_id: captureId,
+          data: layer.shape,
+          schema_version: 1,
+          source: layer.source,
+          ai_run_id: layer.ai_run_id,
+          z_index: layer.z_index,
+          rejected_at: layer.rejected_at,
+          applied_at: layer.applied_at,
+          superseded_by: layer.superseded_by,
+          created_at: layer.created_at
+        });
+      }
+    }
+    return rows;
+  }, [captureId, model]);
+
+  // Detect freshly-placed overlays so we can feed the hook's
+  // `onAnnotationPlaced` (drives matching-text affordance). Rows
+  // unseen since the last render that came from "user" source are
+  // placements; we pick the most-recent one chronologically.
   //
-  // We also use this subscription to detect a freshly-placed overlay
-  // — when the overlay list grows on a broadcast, the newest row is
-  // what was just placed, and we feed it into the hook's
-  // `onAnnotationPlaced`. The chromeless Editor is task #9's
-  // responsibility; we can't reach into its `persistOverlay` to call
-  // the hook directly, so the broadcast bus is our shared signal.
-  const [overlayCount, setOverlayCount] = useState(0);
-  const lastSeenRowIdsRef = useRef<Set<string>>(new Set());
-  // Stash a stable reference to onAnnotationPlaced so the subscribe
-  // effect doesn't re-bind every render. The hook returns a fresh
-  // callback on each render (useCallback deps change with localStyles
-  // etc), so we capture the latest via ref and read it inside the
-  // listener.
+  // Initial-load convention: the FIRST model resolution after mount
+  // (or after a capture switch) is the seed — its rows go into the
+  // seen-set silently. Subsequent updates compare against the seed
+  // and any rows that appear after that point are placements.
+  //
+  // Stash a stable reference to onAnnotationPlaced so the effect
+  // doesn't re-bind every render (the hook returns a fresh callback
+  // when localStyles change).
   const onAnnotationPlacedRef = useRef(toolState.onAnnotationPlaced);
   useLayoutEffect(() => {
     onAnnotationPlacedRef.current = toolState.onAnnotationPlaced;
   });
+  const lastSeenRowIdsRef = useRef<Set<string>>(new Set());
+  /** Captures we've already seeded (first model resolution recorded).
+   *  Comparing against captureId on each effect tick distinguishes:
+   *    • capture switch → reset seed
+   *    • first load for this capture → seed silently (no placement)
+   *    • subsequent loads → diff for placements */
+  const seededCaptureRef = useRef<string | null>(null);
   useEffect(() => {
     if (captureId === undefined) {
-      setOverlayCount(0);
       lastSeenRowIdsRef.current = new Set();
-      return undefined;
+      seededCaptureRef.current = null;
+      return;
     }
-    let cancelled = false;
-    const handleRows = (rows: OverlayRow[], detectPlacement: boolean): void => {
-      const nextIds = new Set(rows.map((r) => r.id));
-      if (detectPlacement) {
-        // Find rows we haven't seen before — those are placements
-        // that happened since the last broadcast. Typically exactly
-        // one (the user just released a pointer); we feed the most
-        // recent one to the hook so matching-text picks up the arrow
-        // tail correctly. Filter to user-source rows so an AI batch
-        // doesn't spawn a "+ Add label" chip on a Codex suggestion.
-        const fresh = rows.filter(
-          (r) =>
-            !lastSeenRowIdsRef.current.has(r.id) && r.source === "user"
-        );
-        // Pick the most recently created row; created_at is ISO so
-        // string comparison sorts chronologically.
-        const newest = fresh.sort((a, b) =>
-          b.created_at.localeCompare(a.created_at)
-        )[0];
-        if (newest !== undefined) {
-          const placement = describePlacement(newest);
-          if (placement !== null) {
-            onAnnotationPlacedRef.current(placement);
-          }
+    const nextIds = new Set(overlayRows.map((r) => r.id));
+    const isFirstLoadForCapture = seededCaptureRef.current !== captureId;
+    if (isFirstLoadForCapture) {
+      // Seed silently — whatever the initial load contains is the
+      // baseline, not a placement.
+      lastSeenRowIdsRef.current = nextIds;
+      seededCaptureRef.current = captureId;
+      return;
+    }
+    // Subsequent updates — diff against the seen-set.
+    const fresh = overlayRows.filter(
+      (r) =>
+        !lastSeenRowIdsRef.current.has(r.id) && r.source === "user"
+    );
+    if (fresh.length > 0) {
+      // Pick the most recently created row; created_at is ISO so
+      // string comparison sorts chronologically.
+      const newest = [...fresh].sort((a, b) =>
+        b.created_at.localeCompare(a.created_at)
+      )[0];
+      if (newest !== undefined) {
+        const placement = describePlacement(newest);
+        if (placement !== null) {
+          onAnnotationPlacedRef.current(placement);
         }
       }
-      lastSeenRowIdsRef.current = nextIds;
-      setOverlayCount(rows.length);
-    };
-    const initial = async (): Promise<void> => {
-      const result = await dispatch("overlays:list", { captureId });
-      if (cancelled || !result.ok) return;
-      // Initial load is NOT a placement — seed the seen-set silently.
-      handleRows(result.value, false);
-    };
-    void initial();
-    const unsubscribe = subscribe("events:overlays:changed", (payload) => {
-      const p = payload as { captureId?: string };
-      if (p.captureId !== undefined && p.captureId !== captureId) return;
-      void (async (): Promise<void> => {
-        const result = await dispatch("overlays:list", { captureId });
-        if (cancelled || !result.ok) return;
-        handleRows(result.value, true);
-      })();
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [captureId]);
+    }
+    lastSeenRowIdsRef.current = nextIds;
+  }, [captureId, overlayRows]);
+
+  const overlayCount = overlayRows.length;
   // Persist to module-level on every change so a remount picks up
   // the same position.
   useEffect(() => {

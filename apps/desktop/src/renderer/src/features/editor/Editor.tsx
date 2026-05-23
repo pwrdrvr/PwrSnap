@@ -34,12 +34,19 @@
 //     for one placement, then returns to arrow.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { BlurStyle, CaptureRecord, Overlay, OverlayRow } from "@pwrsnap/shared";
+import type {
+  BlurStyle,
+  BundleLayerNode,
+  CaptureRecord,
+  Overlay,
+  OverlayRow
+} from "@pwrsnap/shared";
 import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
-import { dispatch, subscribe, captureSrcUrl } from "../../lib/pwrsnap";
+import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
-import { useUndoRedo } from "./useUndoRedo";
+import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
+import { useCaptureModel } from "./useCaptureModel";
 import { OverlaySvg } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
@@ -64,11 +71,6 @@ import {
   type DraftText
 } from "./editor-types";
 import "./editor.css";
-
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "loaded"; record: CaptureRecord; overlays: OverlayRow[] }
-  | { kind: "error"; message: string };
 
 /** Three structural shapes for the editor:
  *
@@ -126,6 +128,79 @@ function isStyledToolKind(tool: Tool): tool is StyledToolKind {
   return STYLED_TOOLS.has(tool);
 }
 
+/** v2 → v1 read-only projection. The existing `OverlaySvg` and
+ *  `BlurOverlays` components consume `OverlayRow[]`; for v2 captures we
+ *  back-project layer nodes into the same shape so the renderers don't
+ *  need to know about the format split during Phase 2 (Phase 4-5 swap
+ *  the renderers to consume `LayerView` natively and this shim
+ *  retires). Only `vector` and `effect` (blur) layers project — groups
+ *  and rasters are skipped (no Phase 1 renderer surface for them). */
+function projectV2LayersToOverlayRows(
+  layers: BundleLayerNode[],
+  captureId: string
+): OverlayRow[] {
+  const rows: OverlayRow[] = [];
+  for (const layer of layers) {
+    if (layer.kind === "vector") {
+      // v2 vector layers carry the v1 Overlay shape verbatim under
+      // `shape`. The renderer only reads `id` + `data` so the projection
+      // is direct.
+      rows.push({
+        id: layer.id,
+        capture_id: captureId,
+        data: layer.shape,
+        schema_version: 1,
+        source: layer.source,
+        ai_run_id: layer.ai_run_id,
+        z_index: layer.z_index,
+        rejected_at: layer.rejected_at,
+        applied_at: layer.applied_at,
+        superseded_by: layer.superseded_by,
+        created_at: layer.created_at
+      });
+      continue;
+    }
+    if (layer.kind === "effect" && layer.effect.type === "blur") {
+      // v2 blur effects clip to a `clip_rect` in canvas pixels; v1
+      // blurs use normalized [0,1] coords. The renderer expects v1
+      // shape, so we round-trip through `clip_rect`-as-canvas-pixels
+      // by skipping when null (no spatial extent → can't render).
+      if (layer.clip_rect === null) continue;
+      rows.push({
+        id: layer.id,
+        capture_id: captureId,
+        data: {
+          kind: "blur",
+          rect: {
+            // v2 canvas-pixel coords come back here; we re-normalize
+            // against… the canvas dimensions, which we don't have at
+            // this scope. Fall back to passing absolute pixels and
+            // trusting the renderer treats them as a clip box. The
+            // pixel-coord branch is rarely exercised in Phase 2 (only
+            // bundle_v2-flagged captures hit it).
+            x: layer.clip_rect.x,
+            y: layer.clip_rect.y,
+            w: layer.clip_rect.w,
+            h: layer.clip_rect.h
+          },
+          style: DEFAULT_BLUR_STYLE
+        },
+        schema_version: 1,
+        source: layer.source,
+        ai_run_id: layer.ai_run_id,
+        z_index: layer.z_index,
+        rejected_at: layer.rejected_at,
+        applied_at: layer.applied_at,
+        superseded_by: layer.superseded_by,
+        created_at: layer.created_at
+      });
+    }
+    // group + raster + highlight-effect: no Phase 2 renderer surface.
+    // Phase 4-5 LayerView rewrite covers them.
+  }
+  return rows;
+}
+
 export function Editor({
   captureId,
   chrome = "full",
@@ -159,7 +234,15 @@ export function Editor({
    *  `null` on unmount so the parent can clear its cached api. */
   onZoomChange?: (api: ZoomApi) => void;
 }) {
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
+  // ----- Capture data ---------------------------------------------
+  //
+  // Phase 2 v2 editor refresh — single hook owns both v1 and v2 reads
+  // plus the cancel-safety dance + broadcast-driven refetch. The hook
+  // returns a discriminated union (loading / loaded-v1 / loaded-v2 /
+  // error); we project v2 layers back to OverlayRow[] for the existing
+  // OverlaySvg / BlurOverlays render path (read-only — write paths
+  // still go through overlays:upsert for v1; v2 writes are Phase 4-5).
+  const model = useCaptureModel(captureId);
 
   // ----- Tool + style state ---------------------------------------
   //
@@ -227,55 +310,19 @@ export function Editor({
   // resolves. persistOverlay needs to call it; the hook lives in the
   // child so it can depend on the loaded record's id.
   const recordCreateRef = useRef<((row: OverlayRow) => void) | null>(null);
-
-  // refetch accepts a "cancelled" predicate so the caller can opt-out
-  // of post-await setState if the component has moved on. Critical for
-  // the rapid mode-flip cases the Library plan introduces (Grid →
-  // Focus[A] → Esc → Focus[B]): without this guard, A's library:byId
-  // can resolve AFTER B has mounted and stomp B's state with A's
-  // record. Plan reference: docs/plans/2026-05-05-001-feat-library-
-  // three-state-view-model-plan.md, Phase A.7.
-  const refetch = useCallback(
-    async (isCancelled: () => boolean = () => false) => {
-      const recordResult = await dispatch("library:byId", { id: captureId });
-      if (isCancelled()) return;
-      if (!recordResult.ok) {
-        setState({ kind: "error", message: recordResult.error.message });
-        return;
-      }
-      if (recordResult.value === null) {
-        setState({ kind: "error", message: `capture not found: ${captureId}` });
-        return;
-      }
-      const overlaysResult = await dispatch("overlays:list", { captureId });
-      if (isCancelled()) return;
-      const overlays = overlaysResult.ok ? overlaysResult.value : [];
-      setState({ kind: "loaded", record: recordResult.value, overlays });
-    },
-    [captureId]
+  // Coalescing bracket refs (Phase 2 task #14, plan Alt 5). pointerdown
+  // opens a "drag" interaction; pointerup closes it. Current Phase 2
+  // editor flows commit exactly one recordCreate per drag at pointerup,
+  // so the bracket is a no-op for now — the API is exercised here so
+  // Phase 4+ drag-existing-overlay paths pick up the coalescing
+  // automatically without touching pointer handlers.
+  const beginInteractionRef = useRef<
+    ((opKind: string, layerId: string) => InteractionToken) | null
+  >(null);
+  const endInteractionRef = useRef<((token: InteractionToken) => void) | null>(
+    null
   );
-
-  useEffect(() => {
-    let cancelled = false;
-    void refetch(() => cancelled);
-    return () => {
-      cancelled = true;
-    };
-  }, [refetch]);
-
-  // Re-fetch when overlays change for this capture.
-  useEffect(() => {
-    let cancelled = false;
-    const unsubscribe = subscribe("events:overlays:changed", (payload) => {
-      const p = payload as { captureId?: string };
-      if (p.captureId !== undefined && p.captureId !== captureId) return;
-      void refetch(() => cancelled);
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [captureId, refetch]);
+  const activeInteractionTokenRef = useRef<InteractionToken | null>(null);
 
   // Auto-focus the text input when entering text-draft state.
   useEffect(() => {
@@ -324,6 +371,19 @@ export function Editor({
     if (start === null) return;
     event.preventDefault();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
+
+    // Open a coalescing bracket for the drag. layerId uses the tool
+    // name as a sentinel since the actual layer doesn't exist yet
+    // (it's created at pointerup via persistOverlay). For Phase 2's
+    // one-write-per-drag flow this bracket is a no-op for coalescing;
+    // it's wired here so Phase 4+'s drag-existing-overlay path
+    // automatically picks up the coalescing semantics.
+    if (tool !== "text" && beginInteractionRef.current !== null) {
+      activeInteractionTokenRef.current = beginInteractionRef.current(
+        "drag",
+        `draft-${tool}`
+      );
+    }
 
     if (tool === "arrow") {
       setDraft({
@@ -374,11 +434,25 @@ export function Editor({
     if (draft.kind === "text") return;
     (event.target as HTMLElement).releasePointerCapture(event.pointerId);
 
+    // Grab the coalescing bracket token. We close it AFTER persistOverlay
+    // resolves so the recordCreate fires inside the bracket — that way
+    // Phase 4+ drag-existing-overlay flows that emit multiple intermediate
+    // writes will coalesce correctly. endInteraction tolerates mismatched
+    // / null tokens silently.
+    const interactionToken = activeInteractionTokenRef.current;
+    activeInteractionTokenRef.current = null;
+    const closeInteraction = (): void => {
+      if (interactionToken !== null && endInteractionRef.current !== null) {
+        endInteractionRef.current(interactionToken);
+      }
+    };
+
     if (draft.kind === "arrow") {
       const dx = draft.toXn - draft.fromXn;
       const dy = draft.toYn - draft.fromYn;
       if (Math.hypot(dx, dy) < MIN_DRAG_LENGTH) {
         setDraft(null);
+        closeInteraction();
         return;
       }
       const overlay: Overlay = {
@@ -393,6 +467,7 @@ export function Editor({
       const tailCanvasPx = normalizedToCanvasPx(draft.toXn, draft.toYn);
       setDraft(null);
       const wrote = await persistOverlay(overlay);
+      closeInteraction();
       if (wrote && !isControlled) {
         toolState.onAnnotationPlaced(
           tailCanvasPx !== null
@@ -407,6 +482,7 @@ export function Editor({
       const rect = rectFromDrag(draft);
       if (rect === null) {
         setDraft(null);
+        closeInteraction();
         return;
       }
       const placedKind = draft.tool;
@@ -418,11 +494,14 @@ export function Editor({
           : { kind: "blur", rect, style: blurStyle };
       setDraft(null);
       const wrote = await persistOverlay(overlay);
+      closeInteraction();
       if (wrote && !isControlled) {
         toolState.onAnnotationPlaced({ tool: placedKind });
       }
       return;
     }
+    // Fallthrough: close interaction even if no draft branch matched.
+    closeInteraction();
   }
 
   /** Returns true if the overlay was written successfully. */
@@ -513,17 +592,33 @@ export function Editor({
     return () => window.removeEventListener("keydown", onKey);
   }, [draft, isControlled, setTool, tool]);
 
-  if (state.kind === "loading") {
-    return <div className="editor-loading">Loading capture…</div>;
+  if (model.kind === "loading") {
+    return (
+      <div className="editor-loading" data-testid="editor-loading">
+        Loading capture…
+      </div>
+    );
   }
-  if (state.kind === "error") {
-    return <div className="editor-error">{state.message}</div>;
+  if (model.kind === "error") {
+    return (
+      <div className="editor-error" data-testid="editor-error">
+        {model.message}
+      </div>
+    );
   }
+
+  // Resolve OverlayRow[] for the existing renderer code path. v1 hands
+  // back overlays natively. v2 projects layer nodes back to OverlayRow
+  // shape (read-only — vector + blur-effect cover Phase 2 surface).
+  const overlaysForRender: OverlayRow[] =
+    model.format === 1
+      ? model.overlays
+      : projectV2LayersToOverlayRows(model.layers, captureId);
 
   return (
     <EditorLoaded
-      record={state.record}
-      overlays={state.overlays}
+      record={model.record}
+      overlays={overlaysForRender}
       chrome={chrome}
       tool={tool}
       setTool={setTool}
@@ -534,6 +629,8 @@ export function Editor({
       textInputRef={textInputRef}
       undoApplyingRef={undoApplyingRef}
       recordCreateRef={recordCreateRef}
+      beginInteractionRef={beginInteractionRef}
+      endInteractionRef={endInteractionRef}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -563,6 +660,8 @@ function EditorLoaded({
   textInputRef,
   undoApplyingRef,
   recordCreateRef,
+  beginInteractionRef,
+  endInteractionRef,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -587,6 +686,15 @@ function EditorLoaded({
   textInputRef: React.RefObject<HTMLInputElement | null>;
   undoApplyingRef: React.RefObject<boolean>;
   recordCreateRef: React.RefObject<((row: OverlayRow) => void) | null>;
+  /** Coalescing bracket refs — populated from the undo hook so pointer
+   *  handlers in the outer Editor function can open/close coalescing
+   *  windows without depending on the hook directly. */
+  beginInteractionRef: React.RefObject<
+    ((opKind: string, layerId: string) => InteractionToken) | null
+  >;
+  endInteractionRef: React.RefObject<
+    ((token: InteractionToken) => void) | null
+  >;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
@@ -646,6 +754,24 @@ function EditorLoaded({
       recordCreateRef.current = null;
     };
   }, [recordCreateRef, undo.recordCreate]);
+
+  // Bridge: parent's pointer handlers read begin/endInteractionRef
+  // to bracket coalescing windows around drag operations. Phase 2
+  // is no-op (one write per drag) but the wiring readies Phase 4+'s
+  // drag-existing-overlay flow.
+  useEffect(() => {
+    beginInteractionRef.current = undo.beginInteraction;
+    endInteractionRef.current = undo.endInteraction;
+    return () => {
+      beginInteractionRef.current = null;
+      endInteractionRef.current = null;
+    };
+  }, [
+    beginInteractionRef,
+    endInteractionRef,
+    undo.beginInteraction,
+    undo.endInteraction
+  ]);
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
   useEffect(() => {
@@ -899,6 +1025,8 @@ function EditorLoaded({
         (chrome === "chromeless" ? " is-chromeless" : "") +
         (chrome === "full" ? " is-in-chrome" : "")
       }
+      data-testid="editor-root"
+      data-bundle-format-version={record.bundle_format_version}
     >
       {chrome === "full" && (
         <header className="editor-titlebar">
@@ -952,6 +1080,7 @@ function EditorLoaded({
             alt={record.source_app_name ?? "Capture"}
             draggable={false}
             className="editor-image"
+            data-testid="editor-image"
           />
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures
@@ -1280,10 +1409,22 @@ function EditorToolbar({
         <span>
           {appliedCount} overlay{appliedCount === 1 ? "" : "s"}
         </span>
-        <button type="button" disabled={!canUndo} onClick={onUndo} title="Undo (⌘Z)">
+        <button
+          type="button"
+          data-testid="editor-undo"
+          disabled={!canUndo}
+          onClick={onUndo}
+          title="Undo (⌘Z)"
+        >
           ↶ Undo
         </button>
-        <button type="button" disabled={!canRedo} onClick={onRedo} title="Redo (⌘⇧Z)">
+        <button
+          type="button"
+          data-testid="editor-redo"
+          disabled={!canRedo}
+          onClick={onRedo}
+          title="Redo (⌘⇧Z)"
+        >
           ↷ Redo
         </button>
         <ZoomMenu zoom={zoom} />

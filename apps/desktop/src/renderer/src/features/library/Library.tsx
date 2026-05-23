@@ -22,6 +22,7 @@ import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/editor-tools";
+import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
 import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
@@ -710,6 +711,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     setTool("pointer");
   }, [view.kind]);
+  // Lifted blur-style state — same shape as `tool`. Persists across
+  // mode changes (Focus ↔ Reel) and across capture navigations so
+  // the user doesn't have to re-pick their style every time. Doesn't
+  // reset on view.kind change like `tool` does, because style is a
+  // preference, not a transient drawing-tool selection.
+  const [blurStyle, setBlurStyle] = useState<BlurStyle>(DEFAULT_BLUR_STYLE);
 
   // Ref to the scrollable grid container. Used by:
   //   • Cell click handler — captures scrollTop into the OPEN_FOCUS
@@ -1641,6 +1648,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           nextRecordId={nextRecordId}
           tool={tool}
           onToolChange={setTool}
+          blurStyle={blurStyle}
+          onBlurStyleChange={setBlurStyle}
           {...(view.kind === "reel"
             ? {
                 aboveStageSlot: (

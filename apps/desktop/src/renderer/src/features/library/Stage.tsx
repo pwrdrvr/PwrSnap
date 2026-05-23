@@ -39,7 +39,7 @@
 //   Phase C.1 (Stage), C.11 (focus management — Library window keydown).
 
 import { useState, type ReactElement } from "react";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { BlurStyle, CaptureRecord } from "@pwrsnap/shared";
 import { Editor, type ZoomApi } from "../editor/Editor";
 import type { Tool } from "../editor/editor-tools";
 import { AppTag } from "../shared/AppIcons";
@@ -76,6 +76,11 @@ export type StageProps = {
    *  EditToolbar. Library owns the source of truth. */
   readonly tool: Tool;
   readonly onToolChange: (tool: Tool) => void;
+  /** Lifted blur-style state. Same shape as tool — Library owns it,
+   *  the Editor uses it when committing a new blur overlay and the
+   *  EditToolbar's BlurMenu reads + writes it. */
+  readonly blurStyle: BlurStyle;
+  readonly onBlurStyleChange: (style: BlurStyle) => void;
   /** Optional content to render above the stage — used by Reel mode
    *  to host the filmstrip. Focus passes nothing (no filmstrip). */
   readonly aboveStageSlot?: ReactElement;
@@ -129,6 +134,8 @@ function StageBody({
   nextRecordId,
   tool,
   onToolChange,
+  blurStyle,
+  onBlurStyleChange,
   onClose
 }: StageProps & { onClose: () => void }): ReactElement {
   const captureId = record.id;
@@ -284,6 +291,7 @@ function StageBody({
             chrome="chromeless"
             tool={tool}
             onToolChange={onToolChange}
+            blurStyle={blurStyle}
             onZoomChange={setZoom}
           />
         )}
@@ -295,6 +303,8 @@ function StageBody({
           onChange={onToolChange}
           captureId={record.id}
           zoom={zoom}
+          blurStyle={blurStyle}
+          onBlurStyleChange={onBlurStyleChange}
         />
       )}
     </>

@@ -1,0 +1,150 @@
+/* Blur menu — used by the Library's floating EditToolbar (and
+   eventually the standalone Editor window's bottom toolbar). Owns
+   its own stylesheet so both surfaces pick up styling through the
+   component import without needing a shared css file.
+
+   Mirrors the `.psl__et-btn` shell shape (height, padding, font,
+   etc.) so the button lines up with the other tool buttons in the
+   Library toolbar — but doesn't *depend* on that class. Anywhere
+   BlurMenu drops in, the button stands alone. */
+
+.ed-blur {
+  position: relative;
+  display: inline-flex;
+}
+.ed-blur-btn {
+  height: 36px;
+  min-width: 36px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ed-blur-btn:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+.ed-blur-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.ed-blur-btn.is-open {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.ed-blur-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+}
+.ed-blur-btn.is-active .ed-blur-btn-icon,
+.ed-blur-btn.is-open .ed-blur-btn-icon {
+  color: var(--accent-bright);
+}
+/* Keyboard-hint chip matching the toolbar's other tool buttons —
+   defined here so we don't need to pull in `.psl__et-btn-key` from
+   library.css. */
+.ed-blur-btn-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  font: 700 9px/1 var(--font-mono);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-app) 40%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 2px;
+}
+.ed-blur-btn.is-active .ed-blur-btn-key,
+.ed-blur-btn.is-open .ed-blur-btn-key {
+  color: var(--accent-bright);
+  border-color: var(--accent-border);
+}
+.ed-blur-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 260px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 10;
+}
+.ed-blur-row {
+  display: grid;
+  grid-template-columns: 18px 20px 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.ed-blur-row:hover {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.ed-blur-row.is-selected {
+  color: var(--accent-bright);
+}
+.ed-blur-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: currentColor;
+}
+.ed-blur-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.ed-blur-row-label {
+  font: 600 12px/1 var(--font-sans);
+}
+.ed-blur-row-hint {
+  font: 500 10px/1.3 var(--font-sans);
+  color: var(--text-muted);
+  white-space: normal;
+}
+.ed-blur-row.is-selected .ed-blur-row-hint {
+  color: color-mix(in srgb, var(--accent-bright) 75%, transparent);
+}
+.ed-blur-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent-bright);
+}

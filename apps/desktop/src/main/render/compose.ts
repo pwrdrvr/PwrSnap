@@ -26,7 +26,7 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { computeArrowGeometry } from "@pwrsnap/shared";
+import { computeArrowGeometry, readBlurStyle } from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { getMainLogger } from "../log";
@@ -438,10 +438,11 @@ async function blurLayer(
   imageWidthPx: number,
   imageHeightPx: number
 ): Promise<sharp.OverlayOptions | null> {
-  // Mask-style blur: extract the rect from the source, blur it,
-  // composite back at the same coords. Cheaper than blurring the
-  // full source + masking because the blur kernel's cost is
-  // O(width × height).
+  // Mask-style overlay: extract the rect from the source, transform
+  // it (Gaussian blur / nearest-neighbor downscale / solid fill),
+  // composite back at the same coords. Cheaper than running the
+  // operation on the full source + masking, because the inner pixel
+  // cost scales with the rect, not the whole image.
   const left = Math.round(data.rect.x * imageWidthPx);
   const top = Math.round(data.rect.y * imageHeightPx);
   const width = Math.round(data.rect.w * imageWidthPx);
@@ -457,20 +458,61 @@ async function blurLayer(
     height: Math.max(1, Math.min(imageHeightPx - top, height))
   };
 
-  // Sigma proportional to the rect's short side so the blur amount
-  // looks similar regardless of the rect's size — a small blur on
-  // a small region matches a large blur on a large region visually.
-  // Cap at 60 to keep the kernel cost bounded.
+  const style = readBlurStyle(data);
+
+  if (style === "redact") {
+    // Solid opaque black — privacy redaction. Cheapest of the three
+    // because no source extraction is needed; we just generate a
+    // flat PNG of the right dimensions.
+    const buf = await sharp({
+      create: {
+        width: clamped.width,
+        height: clamped.height,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+    return { input: buf, top: clamped.top, left: clamped.left };
+  }
+
+  if (style === "pixelate") {
+    // Classic "mosaic" pixelation — downscale the extracted region
+    // to a coarse grid (one pixel per visible block), then scale it
+    // back up with nearest-neighbor so the blocks stay crisp instead
+    // of smoothing back out.
+    //
+    // Block size proportional to the rect's short side: ~16 blocks
+    // along the short side at any rect size keeps the visual chunk
+    // density consistent. Floor to at least 4×4 pixels per block so
+    // tiny rects don't end up looking smooth.
+    const shortSide = Math.min(clamped.width, clamped.height);
+    const blocksAcrossShortSide = 16;
+    const blockSizePx = Math.max(4, Math.round(shortSide / blocksAcrossShortSide));
+    const downW = Math.max(1, Math.floor(clamped.width / blockSizePx));
+    const downH = Math.max(1, Math.floor(clamped.height / blockSizePx));
+    const buf = await sharp(srcPath)
+      .extract(clamped)
+      // First hop: average down to the coarse grid (default bicubic
+      // kernel does the averaging — exactly what mosaic wants).
+      .resize(downW, downH)
+      // Second hop: scale back up with nearest-neighbor so the
+      // blocks stay sharp-edged.
+      .resize(clamped.width, clamped.height, { kernel: "nearest" })
+      .png()
+      .toBuffer();
+    return { input: buf, top: clamped.top, left: clamped.left };
+  }
+
+  // gaussian (default) — soft Gaussian blur. Sigma proportional to
+  // the rect's short side so the blur amount looks similar
+  // regardless of the rect's size. Cap at 60 to keep the kernel
+  // cost bounded.
   const rectShortSidePx = Math.min(clamped.width, clamped.height);
   const sigma = Math.min(60, Math.max(8, rectShortSidePx / 8));
-
   const buf = await sharp(srcPath).extract(clamped).blur(sigma).png().toBuffer();
-
-  return {
-    input: buf,
-    top: clamped.top,
-    left: clamped.left
-  };
+  return { input: buf, top: clamped.top, left: clamped.left };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -489,3 +531,7 @@ export const arrowSvgForV2 = arrowSvg;
 export const rectSvgForV2 = rectSvg;
 export const highlightSvgForV2 = highlightSvg;
 export const textSvgForV2 = textSvg;
+/** Internal blur-layer builder, exported for unit tests so the bake
+ *  paths for gaussian / pixelate / redact can be asserted in
+ *  isolation without spinning up a full compose() pipeline. */
+export const blurLayerForTests = blurLayer;

@@ -24,6 +24,10 @@ export function OverlaySvg({
   imageWidthPx: number;
   imageHeightPx: number;
 }): ReactElement {
+  // Blur overlays render outside this SVG via <BlurOverlays> — HTML
+  // divs with backdrop-filter, so the live preview ACTUALLY blurs
+  // the underlying image. SVG <filter> can blur SVG content but
+  // can't reach behind itself to blur a sibling <img>.
   const viewBox = "0 0 1 1";
   const arrows = useMemo(
     () =>
@@ -42,11 +46,6 @@ export function OverlaySvg({
       ),
     [overlays]
   );
-  const blurs = useMemo(
-    () =>
-      overlays.flatMap((row) => (row.data.kind === "blur" ? [{ row, data: row.data }] : [])),
-    [overlays]
-  );
   const texts = useMemo(
     () =>
       overlays.flatMap((row) => (row.data.kind === "text" ? [{ row, data: row.data }] : [])),
@@ -62,9 +61,6 @@ export function OverlaySvg({
       {/* Highlights painted first so they sit beneath rects/arrows. */}
       {highlights.map(({ row, data }) => (
         <HighlightGlyph key={row.id} rect={data.rect} />
-      ))}
-      {blurs.map(({ row, data }) => (
-        <BlurGlyph key={row.id} rect={data.rect} />
       ))}
       {rects.map(({ row, data }) => (
         <RectGlyph
@@ -111,7 +107,6 @@ export function OverlaySvg({
       {draft?.kind === "rect-drag" && liveRect !== null && (
         <>
           {draft.tool === "highlight" && <HighlightGlyph rect={liveRect} isDraft />}
-          {draft.tool === "blur" && <BlurGlyph rect={liveRect} isDraft />}
           {draft.tool === "rect" && (
             <RectGlyph
               rect={liveRect}
@@ -246,32 +241,6 @@ function HighlightGlyph({
       fill={isDraft ? "rgba(255, 220, 80, 0.45)" : "rgba(255, 220, 80, 0.32)"}
       stroke="none"
     />
-  );
-}
-
-function BlurGlyph({
-  rect,
-  isDraft = false
-}: {
-  rect: { x: number; y: number; w: number; h: number };
-  isDraft?: boolean;
-}): ReactElement {
-  // Live preview: a translucent gray block with a "frosted" pattern.
-  // The actual blur is applied in the bake — the live render just
-  // signals "this region will be blurred when copied/exported".
-  return (
-    <g>
-      <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
-        fill={isDraft ? "rgba(40, 40, 50, 0.55)" : "rgba(40, 40, 50, 0.45)"}
-        stroke="rgba(255,255,255,0.25)"
-        strokeWidth={0.0015}
-        strokeDasharray="0.005 0.005"
-      />
-    </g>
   );
 }
 

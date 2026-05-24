@@ -238,7 +238,10 @@ function projectV2LayersToOverlayRows(
             w: layer.clip_rect.w / dims.widthPx,
             h: layer.clip_rect.h / dims.heightPx
           },
-          style: DEFAULT_BLUR_STYLE
+          // Phase 3.4: read the v2 BlurEffect's `style` field (optional;
+          // older v2 bundles without it fall back to DEFAULT_BLUR_STYLE
+          // — same gaussian default the renderer always assumed).
+          style: layer.effect.style ?? DEFAULT_BLUR_STYLE
         },
         schema_version: 1,
         source: layer.source,

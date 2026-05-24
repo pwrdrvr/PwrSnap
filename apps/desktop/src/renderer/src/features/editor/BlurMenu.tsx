@@ -151,17 +151,28 @@ export function BlurMenu({
         aria-expanded={open}
         title="Blur"
         onClick={() => {
-          // Always activate the Blur tool when this button is clicked.
-          // Also toggle the menu so a single click both selects the
-          // tool AND lets the user pick a style if they want a
-          // different one. Outside-click closes without changing tool.
+          // Two behaviors, gated on whether Blur was already the
+          // active tool:
+          //   - First click (tool was something else) → activate Blur
+          //     only. No menu pop — matches Arrow / Rect / Highlight /
+          //     Text behavior where the first click is just tool
+          //     selection. Lets the user start drawing immediately
+          //     with whatever style they had staged.
+          //   - Subsequent click on the same button (tool is already
+          //     Blur) → toggle the style menu. Same "click the active
+          //     tool twice to configure it" pattern that the unified
+          //     ToolStylePopover uses via its caret. Outside-click
+          //     closes without changing tool.
           //
-          // Design note: every other tool button just selects its tool
-          // (no popover). Blur uses a unified click on purpose — the
-          // style selection is too important to hide behind a chevron,
-          // and a separate chevron would crowd the toolbar.
+          // Earlier shape opened the menu on EVERY click — that's a
+          // UX inconsistency the user flagged in 3.4 smoke testing
+          // ("Arrow and Text don't open the menu when you click the
+          // button the first time. Blur does.").
+          const wasActive = isActive;
           onChange(BLUR_TOOL_ID);
-          setOpen((o) => !o);
+          if (wasActive) {
+            setOpen((o) => !o);
+          }
         }}
       >
         {/* Current style's icon as the button glyph so the user can

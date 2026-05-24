@@ -52,7 +52,7 @@ import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
 import { useCaptureModel } from "./useCaptureModel";
 import { useEnsureV2, type EnsureV2State } from "./useEnsureV2";
 import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
-import { OverlaySvg } from "./OverlaySvg";
+import { OverlaySvg, type DraftStyle } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { ZoomMenu } from "./ZoomMenu";
@@ -132,6 +132,27 @@ const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
 
 function isStyledToolKind(tool: Tool): tool is StyledToolKind {
   return STYLED_TOOLS.has(tool);
+}
+
+/** Phase 3.3 — derive the OverlaySvg DraftStyle from the live active
+ *  style. Each tool that paints in `OverlaySvg` (arrow / rect /
+ *  highlight / text) contributes its picked color so the live drag
+ *  preview matches what the commit will look like. Blur is rendered
+ *  by `<BlurOverlays>` (HTML backdrop-filter), not OverlaySvg, so
+ *  blur's mode/radius don't appear here. Returns undefined for tools
+ *  whose draft has no styled-glyph component (pointer / crop). */
+function resolveDraftStyleForActiveTool(
+  activeStyle: ActiveStyle
+): DraftStyle | undefined {
+  switch (activeStyle.tool) {
+    case "arrow":
+    case "rect":
+    case "highlight":
+    case "text":
+      return { color: resolveToolColor(activeStyle.style.color) };
+    default:
+      return undefined;
+  }
 }
 
 /** Map a text tool's `fontSize` preset (auto / small / medium / large)
@@ -1476,6 +1497,14 @@ function EditorLoaded({
           <OverlaySvg
             overlays={overlays}
             draft={draft}
+            // Phase 3.3 — thread the active tool's color through to the
+            // live-drag preview so a draft renders in the picked color
+            // (not just on commit). Resolves the live activeStyle for
+            // the relevant tool to a hex via resolveToolColor; for
+            // tools whose draft kind doesn't carry a color (blur is
+            // rendered separately by BlurOverlays), this is a no-op.
+            // Falls back to undefined → glyph's own --accent default.
+            draftStyle={resolveDraftStyleForActiveTool(toolState.activeStyle)}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
             selectedLayerId={selectedLayerId}

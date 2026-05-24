@@ -172,7 +172,14 @@ export const BlurEffect = z.object({
   // Radius capped at 200 — a 200-px blur on a 32k canvas is
   // already ludicrous; anything larger is almost certainly an
   // attacker probing sharp.
-  radius_px: FiniteNumber.positive().lte(200)
+  radius_px: FiniteNumber.positive().lte(200),
+  // Render style — gaussian smear (the historic default), chunky
+  // mosaic pixelation, or solid-fill redaction. Mirrors v1
+  // BlurOverlay's `style` field. Optional for back-compat with v2
+  // bundles produced before Phase 3.4 landed; readers fall back to
+  // "gaussian" via DEFAULT_BLUR_STYLE so legacy rows render the
+  // same as they always did.
+  style: z.enum(["gaussian", "pixelate", "redact"]).optional()
 });
 export type BlurEffect = z.infer<typeof BlurEffect>;
 

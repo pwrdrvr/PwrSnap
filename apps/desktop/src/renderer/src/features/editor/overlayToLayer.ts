@@ -123,11 +123,19 @@ export function overlayToBundleLayerNode(
   }
 
   if (overlay.kind === "blur") {
+    // Phase 3.4 — thread the v1 BlurOverlay's `style` field into the v2
+    // BlurEffect. The v2 schema gained an optional `style` for exactly
+    // this round-trip; without it, every committed blur would
+    // re-project as gaussian regardless of what the user picked.
     const layer: BundleLayerNode = {
       id,
       parent_id: parentId,
       kind: "effect",
-      effect: { type: "blur", radius_px: deriveBlurRadiusPx(canvas) },
+      effect: {
+        type: "blur",
+        radius_px: deriveBlurRadiusPx(canvas),
+        ...(overlay.style !== undefined ? { style: overlay.style } : {})
+      },
       clip_rect: {
         x: overlay.rect.x * canvas.width,
         y: overlay.rect.y * canvas.height,

@@ -336,14 +336,50 @@ async function applyEffectOntoAccumulator(
 
   let operated: Buffer;
   if (node.effect.type === "blur") {
-    // sharp's blur(sigma) Gaussian blur. radius_px is interpreted as
-    // sigma (sharp's convention). Clamp to sharp's documented range.
-    const sigma = Math.max(0.3, Math.min(1000, node.effect.radius_px));
-    operated = await sharp(extracted, { raw: extractedInfo })
-      .blur(sigma)
-      .ensureAlpha()
-      .raw()
-      .toBuffer();
+    // Phase 3.4 — branch on the optional `style` field added to the
+    // v2 BlurEffect schema. Legacy v2 bundles without it fall back to
+    // gaussian (the historic default). Mirrors the three modes v1's
+    // compose.ts bake supports — see apps/desktop/src/main/render/
+    // compose.ts:463-506 for the canonical implementation.
+    const style = node.effect.style ?? "gaussian";
+
+    if (style === "redact") {
+      // Solid opaque black fill. No need to consult the extracted
+      // source — just synthesize a same-sized raw RGBA buffer.
+      const buf = Buffer.alloc(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        buf[i * 4] = 0;
+        buf[i * 4 + 1] = 0;
+        buf[i * 4 + 2] = 0;
+        buf[i * 4 + 3] = 255;
+      }
+      operated = buf;
+    } else if (style === "pixelate") {
+      // Mosaic: resize down to a coarse grid (bicubic averaging) then
+      // back up with nearest-neighbor so the blocks stay sharp. Block
+      // size = 1/16 of the short side, floored at 4 px so tiny rects
+      // don't smooth out.
+      const shortSide = Math.min(w, h);
+      const blockSizePx = Math.max(4, Math.round(shortSide / 16));
+      const downW = Math.max(1, Math.floor(w / blockSizePx));
+      const downH = Math.max(1, Math.floor(h / blockSizePx));
+      operated = await sharp(extracted, { raw: extractedInfo })
+        .resize(downW, downH)
+        .resize(w, h, { kernel: "nearest" })
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
+    } else {
+      // gaussian (default) — sharp's blur(sigma). radius_px is
+      // interpreted as sigma (sharp's convention). Clamp to sharp's
+      // documented range.
+      const sigma = Math.max(0.3, Math.min(1000, node.effect.radius_px));
+      operated = await sharp(extracted, { raw: extractedInfo })
+        .blur(sigma)
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
+    }
   } else {
     // Highlight: tint the rect with the chosen color at the given
     // opacity, composited over the extracted region. Simpler than

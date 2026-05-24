@@ -146,6 +146,17 @@ function resolveDraftStyleForActiveTool(
 ): DraftStyle | undefined {
   switch (activeStyle.tool) {
     case "arrow":
+      // Thread the user's picked endStyle / stemStyle / doubleEnded
+      // through so the live drag preview matches what the commit will
+      // produce. Without this the draft renders a filled-triangle +
+      // solid stem regardless of the popover pick, and only the
+      // committed overlay flips to the right variant on mouseup.
+      return {
+        color: resolveToolColor(activeStyle.style.color),
+        endStyle: activeStyle.style.endStyle,
+        stemStyle: activeStyle.style.stemStyle,
+        doubleEnded: activeStyle.style.doubleEnded
+      };
     case "rect":
     case "highlight":
     case "text":

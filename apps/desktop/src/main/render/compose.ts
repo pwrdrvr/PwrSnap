@@ -25,8 +25,14 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import type { OverlayRow } from "@pwrsnap/shared";
-import { computeArrowGeometry, readBlurStyle } from "@pwrsnap/shared";
+import type { ArrowEndStyle, ArrowStemStyle, OverlayRow } from "@pwrsnap/shared";
+import {
+  computeArrowGeometry,
+  readArrowDoubleEnded,
+  readArrowEndStyle,
+  readArrowStemStyle,
+  readBlurStyle
+} from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { getMainLogger } from "../log";
@@ -174,9 +180,27 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
     intermediateRaw !== null
       ? sharp(bufForResize, { raw: intermediateRaw })
       : sharp(bufForResize);
+
+  // Resize-kernel selection. The default (lanczos3) is the right call
+  // for photographic content — sharp edges, good anti-aliasing. But
+  // pixelate blur overlays are baked into the source-resolution
+  // composite as crisp mosaic blocks (`kernel: "nearest"` in
+  // blurLayer()); a subsequent lanczos3 downscale to thumbnail width
+  // smooths those blocks back out so the library grid renders the
+  // pixelate looking like a gaussian blur. Detect a pixelate overlay
+  // and downgrade to `nearest` for that capture's downscale — the
+  // pixelate blocks survive intact, and the rest of the image gets a
+  // slightly harsher (but still legible) thumbnail. Only applies when
+  // an actual downscale is happening; equal-width renders are
+  // pass-through.
+  const hasPixelate = overlays.some(
+    (row) => row.data.kind === "blur" && readBlurStyle(row.data) === "pixelate"
+  );
+  const downscaling = req.width < srcWidthPx;
   const sized = resizePipeline.resize({
     width: req.width,
-    withoutEnlargement: true
+    withoutEnlargement: true,
+    ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
 
   // Do not pass `effort` to Sharp's PNG encoder here: in Sharp, PNG
@@ -308,38 +332,158 @@ function arrowSvg(
   imageWidthPx: number,
   imageHeightPx: number
 ): string {
-  const geom = computeArrowGeometry({
+  const endStyle = readArrowEndStyle(data);
+  const stemStyle = readArrowStemStyle(data);
+  const doubleEnded = readArrowDoubleEnded(data);
+  const headGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
     imageHeightPx
   });
-
-  const fromPx = pxOf(geom.from, imageWidthPx, imageHeightPx);
-  const baseCenterPx = pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
-  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
-  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
-  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  // Mirrored geometry for the tail-end head — same algorithm with
+  // from/to swapped. Keeps the head triangle's proportions identical
+  // at both ends instead of trying to reflect points by hand and
+  // getting the perpendicular sign wrong on slanted arrows.
+  const tailGeom = doubleEnded
+    ? computeArrowGeometry({
+        from: data.to,
+        to: data.from,
+        imageWidthPx,
+        imageHeightPx
+      })
+    : null;
 
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   // White outline always drawn (per plan §"Smart arrow algorithm"):
   // legibility on busy images. The outline is a slightly thicker
   // pass underneath the accent.
-  const outlineWidth = Math.max(1.5, geom.strokeWidthPx * 0.25);
+  const outlineWidth = Math.max(1.5, headGeom.strokeWidthPx * 0.25);
+  const strokeWidthPx = headGeom.strokeWidthPx;
 
-  const headPolygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+  // Stem endpoints depend on the head style (see live editor's
+  // `stemEndpointFor` — keep this in sync). Filled / open triangles
+  // hand off to the head at baseCenter; line / dot terminate at the
+  // apex (`to`) and the head paints over the stem end.
+  const stemEndAtTo = stemEndpointPx(endStyle, headGeom, imageWidthPx, imageHeightPx);
+  const stemEndAtFrom = tailGeom !== null
+    ? stemEndpointPx(endStyle, tailGeom, imageWidthPx, imageHeightPx)
+    : pxOf(headGeom.from, imageWidthPx, imageHeightPx);
+
+  // Stem dash pattern — pixel-space (since this SVG's viewBox is in
+  // image pixels). dotted uses round caps so dots look like dots.
+  const stemDashAttr = stemDashAttr_PixelSpace(stemStyle, strokeWidthPx);
+
+  const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
+  const head = arrowHeadSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor);
+  const haloTail = tailGeom !== null
+    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx)
+    : "";
+  const headTail = tailGeom !== null
+    ? arrowHeadSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor)
+    : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linecap="round" stroke-linejoin="round">
-    <line x1="${fromPx.x}" y1="${fromPx.y}" x2="${baseCenterPx.x}" y2="${baseCenterPx.y}"
-          stroke="white" stroke-width="${geom.strokeWidthPx + outlineWidth * 2}" fill="none" />
-    <polygon points="${headPolygon}"
-             fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />
-    <line x1="${fromPx.x}" y1="${fromPx.y}" x2="${baseCenterPx.x}" y2="${baseCenterPx.y}"
-          stroke="${fillColor}" stroke-width="${geom.strokeWidthPx}" fill="none" />
-    <polygon points="${headPolygon}" fill="${fillColor}" />
+  <g stroke-linejoin="round">
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" fill="none" />
+    ${halo}
+    ${haloTail}
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round"${stemDashAttr} fill="none" />
+    ${head}
+    ${headTail}
   </g>
 </svg>`;
+}
+
+/** Pixel-space stem endpoint for the bake. Mirror of OverlaySvg's
+ *  `stemEndpointFor` — kept in sync so the live preview and the bake
+ *  put the stem in the same place relative to each head style. */
+function stemEndpointPx(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): { x: number; y: number } {
+  switch (style) {
+    case "filled-triangle":
+    case "open-triangle":
+      return pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
+    case "line":
+    case "dot":
+      return pxOf(geom.to, imageWidthPx, imageHeightPx);
+  }
+}
+
+/** SVG `stroke-dasharray` attribute fragment (including the leading
+ *  space) for the bake's pixel-space SVG buffer. Returns "" for
+ *  solid so the line element stays clean. */
+function stemDashAttr_PixelSpace(style: ArrowStemStyle, strokeWidthPx: number): string {
+  switch (style) {
+    case "solid":
+      return "";
+    case "dashed":
+      return ` stroke-dasharray="${strokeWidthPx * 4} ${strokeWidthPx * 2}"`;
+    case "dotted":
+      // 0.01px "on" + round cap → renders as a dot of diameter ≈ stroke.
+      return ` stroke-dasharray="${strokeWidthPx * 0.01} ${strokeWidthPx * 1.8}"`;
+  }
+}
+
+function arrowHeadHaloSvg(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number,
+  outlineWidth: number,
+  strokeWidthPx: number
+): string {
+  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
+  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
+  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  switch (style) {
+    case "filled-triangle":
+    case "open-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+    }
+    case "line":
+      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+    case "dot": {
+      const r = strokeWidthPx * 1.5;
+      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />`;
+    }
+  }
+}
+
+function arrowHeadSvg(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number,
+  strokeWidthPx: number,
+  fillColor: string
+): string {
+  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
+  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
+  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  switch (style) {
+    case "filled-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="${fillColor}" />`;
+    }
+    case "open-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="none" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linejoin="round" />`;
+    }
+    case "line":
+      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round" />`;
+    case "dot": {
+      const r = strokeWidthPx * 1.5;
+      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r}" fill="${fillColor}" />`;
+    }
+  }
 }
 
 function pxOf(

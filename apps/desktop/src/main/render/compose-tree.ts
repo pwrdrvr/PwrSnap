@@ -124,9 +124,26 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
 
   // Final pass: resize + encode. Single PNG encode at the very end,
   // not per-layer — preserves v1's two-pass discipline.
+  //
+  // Resize-kernel selection mirrors v1 compose.ts: when ANY blur
+  // effect layer in the tree uses `style: "pixelate"`, the source-
+  // resolution composite has crisp mosaic blocks baked in via
+  // `kernel: "nearest"`. A subsequent lanczos3 downscale to library-
+  // thumbnail width smooths those blocks back out (pixelate ends up
+  // looking like a gaussian blur in the grid). Detect pixelate and
+  // downgrade the downscale kernel to `nearest` so the blocks
+  // survive intact.
+  const hasPixelate = layers.some(
+    (node) =>
+      node.kind === "effect" &&
+      node.effect.type === "blur" &&
+      (node.effect.style ?? "gaussian") === "pixelate"
+  );
+  const downscaling = req.width < req.canvasWidthPx;
   const sized = sharp(accumulator, { raw: canvasInfo }).resize({
     width: req.width,
-    withoutEnlargement: true
+    withoutEnlargement: true,
+    ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
   const outputBuf =
     req.format === "png"

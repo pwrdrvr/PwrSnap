@@ -150,23 +150,26 @@ Both shapes go through Codex App Server:
 
 PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
-## Bundle format v2 — experimental, opt-in
+## Bundle format v2 — default; v1 is the rollback path
 
 The v2 layer-tree bundle format (multi-source canvas, layer tree,
-contextual effects, private-UTI clipboard) is **merged but gated
-behind a feature flag**:
+contextual effects, private-UTI clipboard) is **the default for new
+captures**. Per the v2 editor plan §Phase 6, the flip moved before
+the v2-only feature work (smart blur, multi-image) so those features
+ship against a real v2 install base instead of dogfood-only.
 
-- Flag: `PWRSNAP_BUNDLE_V2=1` env var
 - Source of truth: [apps/desktop/src/main/feature-flags.ts](apps/desktop/src/main/feature-flags.ts)
-- Default: **off** — new captures write v1 bundles so `overlays:*`
-  IPC keeps working
+- Default: **on** — new captures write v2 bundles; the lazy
+  v1→v2 doctor promotes existing v1 captures on first edit-open
+- Escape hatch: `PWRSNAP_BUNDLE_V2=0` forces the legacy v1 write
+  path. Debug-only — used for bisecting v2-codepath regressions
+  against an existing v1-only install.
 - Read path: always dual-format — both v1 and v2 captures render
   correctly regardless of flag state
 
-The flag will be promoted to the default once the layer-editor UI
-ships, the v1→v2 doctor lands, and Phase 6 E2E specs are green. See
+See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
-§"Shipping Status" for the full promotion checklist.
+§"Shipping Status" for the rollout history.
 
 ## Repository conventions
 

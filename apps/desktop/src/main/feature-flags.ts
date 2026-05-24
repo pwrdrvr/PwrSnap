@@ -5,34 +5,34 @@
 // lands (see protocol.ts → Settings).
 //
 // Today each flag is sourced from an env var:
-//   PWRSNAP_BUNDLE_V2=1   → opts in to the v2 layer-tree bundle
-//                           write path. Read path is dual-format
-//                           regardless of this flag; only NEW
-//                           captures change shape.
+//   PWRSNAP_BUNDLE_V2=0   → DEBUG ESCAPE HATCH — forces new captures
+//                           back onto the v1 write path. Default
+//                           (unset / any other value) is v2.
 //
-// Why an env var (not a Settings row) for now:
-//   The full v2 surface (layer panel UI, multi-image canvas, effect
-//   palette, v1→v2 doctor promotion, cross-instance UTI roundtrip
-//   verification) isn't built. Defaulting v2 on would break
-//   `overlays:upsert` for every new capture — the editor's only
-//   annotation IPC. The env var keeps the v2 code path live for
-//   development + E2E without affecting normal users.
-//
-// Promotion path: once the layer-editor UI ships AND the v1→v2
-// doctor lands AND Phase 6 E2E specs are green, flip the default in
-// `isV2WriteEnabled()` and add a Settings → Experimental UI toggle
-// behind the same getter.
+// Why an env var (not a Settings row) for the escape hatch:
+//   The v2 layer-editor UI, the v1→v2 doctor, and the dual-read path
+//   are all shipped — v2 is now the default for new captures. The
+//   env var survives as a debug-only rollback knob for bisecting
+//   v2-codepath regressions against an existing v1-only install
+//   without requiring a downgrade. A future Settings → Experimental
+//   toggle backed by the same getter can replace the env var once a
+//   user-visible reason to expose it appears.
 
 /**
- * True when the user (or test harness) has opted in to writing new
- * captures as v2 layer-tree bundles. Read path is unaffected — v1
- * and v2 captures both render correctly regardless of this flag.
+ * True when new captures should be written as v2 layer-tree bundles.
+ * Default is true (v2). The read path is dual-format — v1 and v2
+ * captures both render correctly regardless of this flag.
+ *
+ * Set `PWRSNAP_BUNDLE_V2=0` (or `false`/`no`/`off`) to force the v1
+ * write path for debugging / rollback.
  */
 export function isV2WriteEnabled(): boolean {
-  // Truthy values: "1", "true", "yes", "on" (case-insensitive).
-  // Anything else (including unset) → v1 write path.
+  // Falsy values: "0", "false", "no", "off" (case-insensitive)
+  // explicitly opt OUT and force v1 writes. Anything else
+  // (including unset) → v2 write path.
   const raw = process.env.PWRSNAP_BUNDLE_V2;
-  if (raw === undefined || raw === "") return false;
+  if (raw === undefined || raw === "") return true;
   const norm = raw.toLowerCase();
-  return norm === "1" || norm === "true" || norm === "yes" || norm === "on";
+  if (norm === "0" || norm === "false" || norm === "no" || norm === "off") return false;
+  return true;
 }

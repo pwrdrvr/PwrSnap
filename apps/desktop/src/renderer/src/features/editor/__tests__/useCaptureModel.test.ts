@@ -467,6 +467,147 @@ describe("useCaptureModel", () => {
     expect(upsertCalls[0]?.[1]).toEqual({ captureId: "cap_2", layer });
   });
 
+  test("5c'. v1 dispatchEdit: upsert artifact carries the inserted row", async () => {
+    const record = makeRecord("cap_1", 1);
+    const inserted = makeOverlayRow("ov_fresh", "cap_1");
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
+      if (name === "overlays:upsert") return Promise.resolve({ ok: true, value: inserted });
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const placeholder = makeOverlayRow("placeholder", "cap_1");
+    const r = await m.dispatchEdit({ kind: "upsert", row: placeholder });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("upsert");
+    if (r.value.kind !== "upsert") throw new Error("unreachable");
+    expect(r.value.artifact.format).toBe(1);
+    if (r.value.artifact.format !== 1) throw new Error("unreachable");
+    expect(r.value.artifact.row).toEqual(inserted);
+  });
+
+  test("5e. v1 dispatchEdit: crop → overlays:upsert with CropOverlay + previous dims", async () => {
+    const record = makeRecord("cap_1", 1);
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
+      if (name === "overlays:upsert") {
+        // Return a synthesized OverlayRow shaped like the request's
+        // overlay so the dispatcher's artifact projection works.
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: {
+            ...makeOverlayRow("ov_crop", "cap_1"),
+            data: r.overlay
+          }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("crop");
+    if (r.value.kind !== "crop") throw new Error("unreachable");
+    // v1 surfaces the current capture's dims as "previous" — they
+    // don't actually change, but the shape is uniform with v2.
+    expect(r.value.artifact.previousWidthPx).toBe(record.width_px);
+    expect(r.value.artifact.previousHeightPx).toBe(record.height_px);
+    // overlays:upsert was called with a CropOverlay.
+    const upsertCalls = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upsertCalls.length).toBe(1);
+    expect((upsertCalls[0]?.[1] as { overlay: { kind: string } })?.overlay.kind).toBe(
+      "crop"
+    );
+  });
+
+  test("5f. v2 dispatchEdit: crop → bundle:updateCanvasDimensions with derived dims", async () => {
+    const record = makeRecord("cap_2", 2); // width_px=2000, height_px=1000
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0, y: 0, w: 0.5, h: 0.75 }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("crop");
+    if (r.value.kind !== "crop") throw new Error("unreachable");
+    expect(r.value.artifact).toEqual({
+      previousWidthPx: 2000,
+      previousHeightPx: 1000
+    });
+    // Multiply rect.w/h * record.width_px/height_px → derived dims.
+    const calls = dispatchMock.mock.calls.filter(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.[1]).toEqual({
+      captureId: "cap_2",
+      widthPx: 1000, // 2000 * 0.5
+      heightPx: 750 // 1000 * 0.75
+    });
+  });
+
   test("5d. v2 dispatchEdit: upsertBatch → not yet supported error", async () => {
     const record = makeRecord("cap_2", 2);
     const layer = makeLayerNode("ly_1");

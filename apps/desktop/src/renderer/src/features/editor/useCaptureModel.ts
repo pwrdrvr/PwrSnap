@@ -89,15 +89,55 @@ export type LayerView =
       meta: LayerMeta;
     };
 
+/** Normalized [0,1]² rectangle in the CURRENT canvas's coordinate
+ *  space. Used by `crop` ops. CropTool always normalizes before
+ *  dispatching, so callers don't need to know the canvas dims. */
+export type CropRect = { x: number; y: number; w: number; h: number };
+
+/** Result of an `upsert` op that emits a fresh row/layer id (v1
+ *  overlays:upsert returns the inserted row; v2 layers:upsert returns
+ *  the inserted node). Surfaced so callers (notably useUndoRedo) can
+ *  capture the artifact for replay on redo and inverse-delete on undo. */
+export type EditUpsertArtifact =
+  | { format: 1; row: OverlayRow }
+  | { format: 2; node: BundleLayerNode };
+
+/** Result of a `crop` op — the PREVIOUS canvas dims so the caller can
+ *  stash them for undo. v1 records the previous source dims of the
+ *  capture (which don't actually change, but we surface them so the
+ *  undo plumbing has a uniform shape). v2 surfaces the previous
+ *  width_px / height_px from the captures row. */
+export type EditCropArtifact = {
+  previousWidthPx: number;
+  previousHeightPx: number;
+};
+
 export type OverlayEditOp =
   | { kind: "upsert"; row: OverlayRow }
   | { kind: "delete"; id: string }
-  | { kind: "replace"; rows: OverlayRow[] };
+  | { kind: "replace"; rows: OverlayRow[] }
+  /** v1 crop: writes a normalized CropOverlay through overlays:upsert.
+   *  v1 doesn't physically crop the source — the rect is stored for
+   *  downstream consumers (export, baked composite) that may honor it
+   *  in a future slice. */
+  | { kind: "crop"; rect: CropRect };
 
 export type LayerEditOp =
   | { kind: "upsert"; node: BundleLayerNode }
   | { kind: "delete"; id: string }
-  | { kind: "upsertBatch"; nodes: BundleLayerNode[] };
+  | { kind: "upsertBatch"; nodes: BundleLayerNode[] }
+  /** v2 crop: writes new canvas dimensions to the captures row via
+   *  `bundle:updateCanvasDimensions`. The rect is normalized to the
+   *  CURRENT canvas; the dispatcher multiplies by the current canvas
+   *  dims to derive the new dims in source pixels.
+   *
+   *  Crop is currently an axis-aligned re-frame from (0, 0) — `rect.x`
+   *  and `rect.y` are ignored. The crop UI honors that today (commits
+   *  whatever rect the user picks; we collapse it to `w × h` here).
+   *  Off-origin crops would also require translating every layer's
+   *  transform; Phase 4-5 layers that on once the editor exposes
+   *  positional crops. For now `w × h` defines the new canvas size. */
+  | { kind: "crop"; rect: CropRect };
 
 export type CaptureModelLoading = {
   kind: "loading";
@@ -110,6 +150,16 @@ export type CaptureModelError = {
   message: string;
 };
 
+/** Discriminated by the op kind so callers can read the artifact
+ *  without restating the op kind. `delete` resolves with `undefined`
+ *  artifact (nothing to surface). `upsert` resolves with the fresh
+ *  row/layer; `crop` resolves with the previous canvas dims (so the
+ *  undo stack can stash them and reverse on ⌘Z). */
+export type EditOpResult =
+  | { kind: "upsert"; artifact: EditUpsertArtifact }
+  | { kind: "delete" }
+  | { kind: "crop"; artifact: EditCropArtifact };
+
 export type CaptureModelV1 = {
   kind: "loaded";
   format: 1;
@@ -119,7 +169,9 @@ export type CaptureModelV1 = {
   /** Synthesized format-agnostic view. The renderer can consume this
    *  without caring about v1 vs v2. */
   layers: LayerView[];
-  dispatchEdit: (op: OverlayEditOp) => Promise<Result<void, PwrSnapError>>;
+  dispatchEdit: (
+    op: OverlayEditOp
+  ) => Promise<Result<EditOpResult, PwrSnapError>>;
 };
 
 export type CaptureModelV2 = {
@@ -131,7 +183,9 @@ export type CaptureModelV2 = {
   /** Same uniform view shape as v1. v2 layer nodes are already
    *  LayerView-compatible natively; the shim just projects them. */
   layersView: LayerView[];
-  dispatchEdit: (op: LayerEditOp) => Promise<Result<void, PwrSnapError>>;
+  dispatchEdit: (
+    op: LayerEditOp
+  ) => Promise<Result<EditOpResult, PwrSnapError>>;
 };
 
 export type CaptureModel =
@@ -465,9 +519,21 @@ export function useCaptureModel(captureId: string): CaptureModel {
     };
   }, [captureId, refetch]);
 
+  // Always-fresh ref to the resolved record so the dispatchers can
+  // read the current canvas dims without forcing a re-creation every
+  // time the record's `edits_version` ticks. The crop dispatcher
+  // needs source dims; capturing them via useCallback deps would
+  // invalidate the dispatchEdit reference on every refetch and could
+  // strand a recorded-but-not-yet-replayed undo entry pointing at a
+  // stale function.
+  const recordRef = useRef<CaptureRecord | null>(null);
+  if (state.kind === "v1" || state.kind === "v2") {
+    recordRef.current = state.record;
+  }
+
   // v1 edit dispatcher.
   const dispatchEditV1 = useCallback(
-    async (op: OverlayEditOp): Promise<Result<void, PwrSnapError>> => {
+    async (op: OverlayEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
       switch (op.kind) {
         case "upsert": {
           const result = await dispatch("overlays:upsert", {
@@ -475,25 +541,66 @@ export function useCaptureModel(captureId: string): CaptureModel {
             overlay: op.row.data
           });
           if (!result.ok) return err(result.error);
-          return { ok: true, value: undefined };
+          return {
+            ok: true,
+            value: {
+              kind: "upsert",
+              artifact: { format: 1, row: result.value }
+            }
+          };
         }
         case "delete": {
           const result = await dispatch("overlays:delete", { id: op.id });
           if (!result.ok) return err(result.error);
-          return { ok: true, value: undefined };
+          return { ok: true, value: { kind: "delete" } };
         }
         case "replace": {
           // overlays:replace isn't in the bus today. Fall back to
           // per-row upserts so Phase 2 callers have a path; Phase 7
-          // will wire a real replace verb if needed.
+          // will wire a real replace verb if needed. The artifact we
+          // surface is the LAST inserted row — single-shot undo will
+          // only revert that one. Multi-row replace is Phase 7.
+          let last: OverlayRow | null = null;
           for (const row of op.rows) {
             const result = await dispatch("overlays:upsert", {
               captureId,
               overlay: row.data
             });
             if (!result.ok) return err(result.error);
+            last = result.value;
           }
-          return { ok: true, value: undefined };
+          if (last === null) {
+            return err({
+              kind: "validation",
+              code: "empty_replace",
+              message: "replace op called with empty rows array"
+            });
+          }
+          return {
+            ok: true,
+            value: { kind: "upsert", artifact: { format: 1, row: last } }
+          };
+        }
+        case "crop": {
+          // v1 crop is stored as a normal CropOverlay through
+          // overlays:upsert. CropTool already normalizes the rect to
+          // [0,1]² before dispatching, so we forward as-is.
+          const result = await dispatch("overlays:upsert", {
+            captureId,
+            overlay: { kind: "crop", rect: op.rect }
+          });
+          if (!result.ok) return err(result.error);
+          const record = recordRef.current;
+          return {
+            ok: true,
+            value: {
+              kind: "crop",
+              artifact: {
+                previousWidthPx: record?.width_px ?? 0,
+                previousHeightPx: record?.height_px ?? 0
+              }
+            }
+          };
         }
         default: {
           const _exhaustive: never = op;
@@ -513,7 +620,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // (Phase 7 expands the surface per the plan); return a typed
   // not-yet-supported error rather than silently no-oping.
   const dispatchEditV2 = useCallback(
-    async (op: LayerEditOp): Promise<Result<void, PwrSnapError>> => {
+    async (op: LayerEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
       switch (op.kind) {
         case "upsert": {
           const result = await dispatch("layers:upsert", {
@@ -521,12 +628,18 @@ export function useCaptureModel(captureId: string): CaptureModel {
             layer: op.node
           });
           if (!result.ok) return err(result.error);
-          return { ok: true, value: undefined };
+          return {
+            ok: true,
+            value: {
+              kind: "upsert",
+              artifact: { format: 2, node: result.value }
+            }
+          };
         }
         case "delete": {
           const result = await dispatch("layers:delete", { id: op.id });
           if (!result.ok) return err(result.error);
-          return { ok: true, value: undefined };
+          return { ok: true, value: { kind: "delete" } };
         }
         case "upsertBatch":
           return err({
@@ -535,6 +648,48 @@ export function useCaptureModel(captureId: string): CaptureModel {
             message:
               "layers:upsertBatch is not in the IPC surface yet; Phase 7 ships it"
           });
+        case "crop": {
+          // v2 crop: multiply the normalized rect by the CURRENT canvas
+          // dims (from the live record) to derive new dims in source
+          // pixels, then ship via bundle:updateCanvasDimensions. The
+          // main-side handler returns the previous dims so we can
+          // stash them for undo.
+          const record = recordRef.current;
+          if (record === null) {
+            return err({
+              kind: "validation",
+              code: "record_not_loaded",
+              message: "crop op dispatched before record resolved"
+            });
+          }
+          // Collapse to (0,0) + w×h here. Off-origin crops require
+          // translating every layer's transform by (-rect.x, -rect.y)
+          // — deferred to the layer-editor UI in Phase 4-5.
+          const newWidth = Math.max(
+            1,
+            Math.round(op.rect.w * record.width_px)
+          );
+          const newHeight = Math.max(
+            1,
+            Math.round(op.rect.h * record.height_px)
+          );
+          const result = await dispatch("bundle:updateCanvasDimensions", {
+            captureId,
+            widthPx: newWidth,
+            heightPx: newHeight
+          });
+          if (!result.ok) return err(result.error);
+          return {
+            ok: true,
+            value: {
+              kind: "crop",
+              artifact: {
+                previousWidthPx: result.value.previousWidthPx,
+                previousHeightPx: result.value.previousHeightPx
+              }
+            }
+          };
+        }
         default: {
           const _exhaustive: never = op;
           void _exhaustive;

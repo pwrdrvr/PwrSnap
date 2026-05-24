@@ -40,6 +40,8 @@ import type {
   CaptureRecord,
   Overlay,
   OverlayRow,
+  PwrSnapError,
+  Result,
   ToolSizePreset
 } from "@pwrsnap/shared";
 import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
@@ -49,7 +51,12 @@ import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
-import { useCaptureModel } from "./useCaptureModel";
+import {
+  useCaptureModel,
+  type EditOpResult,
+  type LayerEditOp,
+  type OverlayEditOp
+} from "./useCaptureModel";
 import { useEnsureV2, type EnsureV2State } from "./useEnsureV2";
 import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
 import { OverlaySvg, type DraftStyle } from "./OverlaySvg";
@@ -501,7 +508,32 @@ export function Editor({
   // Hook-owned recorder, populated by EditorLoaded once the record
   // resolves. persistOverlay needs to call it; the hook lives in the
   // child so it can depend on the loaded record's id.
-  const recordCreateRef = useRef<((row: OverlayRow) => void) | null>(null);
+  //
+  // The optional `node` arg is the freshly-inserted v2 BundleLayerNode
+  // — required for undo of a v2 create (the redo path needs to
+  // `layers:upsert` with the original layer shape, not just the v1
+  // overlay data).
+  const recordCreateRef = useRef<
+    | ((
+        row: OverlayRow,
+        opts?: { node?: BundleLayerNode | null }
+      ) => void)
+    | null
+  >(null);
+  // Crop-specific recorder. Populated by EditorLoaded alongside
+  // recordCreateRef. Receives both the original normalized rect and
+  // the previous + new canvas dims (for v2 undo via
+  // bundle:updateCanvasDimensions).
+  const recordCropRef = useRef<
+    | ((entry: {
+        rect: { x: number; y: number; w: number; h: number };
+        previousWidthPx: number;
+        previousHeightPx: number;
+        newWidthPx: number;
+        newHeightPx: number;
+      }) => void)
+    | null
+  >(null);
   // Coalescing bracket refs (Phase 2 task #14, plan Alt 5). pointerdown
   // opens a "drag" interaction; pointerup closes it. Current Phase 2
   // editor flows commit exactly one recordCreate per drag at pointerup,
@@ -776,25 +808,35 @@ export function Editor({
   /**
    * Returns true if the overlay was written successfully.
    *
-   * Phase 3.1 fix #3 (the cascade root): route writes by current bundle
-   * format. The Phase 3 doctor flips v1 captures to v2 on first edit-
-   * open; the bus-side guard `refuseIfV2Capture` then rejects
-   * `overlays:upsert` on those captures, so the legacy single-dispatch
-   * code dropped every new overlay on the floor. v2 captures take the
-   * `layers:upsert` path via an Overlay→BundleLayerNode adapter.
+   * Routes through `model.dispatchEdit` so v1 + v2 write paths land
+   * in one place — the dispatcher picks `overlays:upsert` or
+   * `layers:upsert` based on `bundle_format_version`. The v2 branch
+   * runs `overlayToBundleLayerNode` to project the renderer's
+   * Overlay shape into a BundleLayerNode, then routes through
+   * dispatchEdit's `{ kind: "upsert", node }` op.
    *
-   * TODO(phase-4-5): fold this branch into `useCaptureModel.dispatchEdit`
-   * (Approach B) so callers stop restating the format. Kept as a
-   * surgical site-local branch here to ship the fix without a
-   * 3-file refactor.
+   * Undo records for BOTH formats now — earlier the v2 path skipped
+   * recordCreate because useUndoRedo dispatched `overlays:*` directly
+   * (which v2 captures refuse). The undo hook now routes through
+   * dispatchEdit too, so the v2 inverse (`layers:delete` /
+   * `layers:upsert`) lands without the v2-guard refusal.
    */
   async function persistOverlay(overlay: Overlay): Promise<boolean> {
     // Snapshot the model at call time. The model branch is the only
     // thing we read; subsequent state changes (e.g. a captures:changed
     // broadcast) re-render but don't race this in-flight write — the
     // result is recorded on the same model.
-    if (model.kind === "loaded" && model.format === 2) {
-      // v2 path: adapt the Overlay → BundleLayerNode + dispatch layers:upsert.
+    if (model.kind !== "loaded") {
+      // No record yet — drop the write. Shouldn't happen since the
+      // editor wraps EditorLoaded inside a model.kind === "loaded"
+      // guard, but be defensive.
+      return false;
+    }
+    if (model.format === 2) {
+      // v2 path: adapt the Overlay → BundleLayerNode + route through
+      // dispatchEdit. The adapter still refuses crop here — crop
+      // takes the dispatchEdit `{ kind: "crop" }` path via
+      // onCropCommit, not persistOverlay.
       const adapted = overlayToBundleLayerNode(
         overlay,
         { width: model.record.width_px, height: model.record.height_px },
@@ -805,39 +847,77 @@ export function Editor({
         console.error("overlayToBundleLayerNode failed", adapted.error);
         return false;
       }
-      const result = await dispatch("layers:upsert", {
-        captureId,
-        layer: adapted.layer
+      const result = await model.dispatchEdit({
+        kind: "upsert",
+        node: adapted.layer
       });
       if (!result.ok) {
         // eslint-disable-next-line no-console
-        console.error("layers:upsert failed", result.error);
+        console.error("layers:upsert via dispatchEdit failed", result.error);
         return false;
       }
-      // Undo / redo intentionally skipped on the v2 path. The undo
-      // stack (`useUndoRedo`) dispatches `overlays:delete` /
-      // `overlays:upsert` directly, and both verbs would be rejected
-      // by the bus-side v2 guard (`v2_capture_use_layers_ipc`). The
-      // v2-native undo path lands in Phase 4-5 alongside the
-      // BundleLayerNode-shaped op stack. For Phase 3.1, the user can
-      // still ⌘Z within a v1 capture; v2 captures get a working
-      // create path now and a working undo path later.
-      // TODO(phase-4-5): teach useUndoRedo to branch on capture format.
+      if (!undoApplyingRef.current && result.value.kind === "upsert") {
+        const artifact = result.value.artifact;
+        if (artifact.format === 2) {
+          // Pass the inserted layer node so undo→redo can re-insert
+          // the structurally-identical layer via layers:upsert. The
+          // synthetic OverlayRow gives the v1-shaped recorder a
+          // working .id for the delete-side of undo (matches the
+          // layer's id since the v2-to-row projection in
+          // projectV2LayersToOverlayRows uses layer.id as row.id).
+          const syntheticRow: OverlayRow = {
+            id: artifact.node.id,
+            capture_id: captureId,
+            data: overlay,
+            schema_version: 1,
+            source: artifact.node.source,
+            ai_run_id: artifact.node.ai_run_id,
+            z_index: artifact.node.z_index,
+            rejected_at: artifact.node.rejected_at,
+            applied_at: artifact.node.applied_at,
+            superseded_by: artifact.node.superseded_by,
+            created_at: artifact.node.created_at
+          };
+          recordCreateRef.current?.(syntheticRow, { node: artifact.node });
+        }
+      }
       return true;
     }
 
-    // v1 path — unchanged behavior.
-    const result = await dispatch("overlays:upsert", { captureId, overlay });
+    // v1 path — same dispatchEdit indirection. The synthesized
+    // OverlayRow comes back from the dispatcher (v1 captures persist
+    // OverlayRows verbatim). Behavior identical to the pre-refactor
+    // path; the only diff is the call goes through model.dispatchEdit.
+    // Need a placeholder OverlayRow to pass into the dispatcher — the
+    // v1 dispatcher only reads `op.row.data`, so a minimal shape is
+    // enough. The REAL row id comes back in the artifact.
+    const placeholderRow: OverlayRow = {
+      id: "",
+      capture_id: captureId,
+      data: overlay,
+      schema_version: 1,
+      source: "user",
+      ai_run_id: null,
+      z_index: 0,
+      rejected_at: null,
+      applied_at: null,
+      superseded_by: null,
+      created_at: new Date().toISOString()
+    };
+    const result = await model.dispatchEdit({
+      kind: "upsert",
+      row: placeholderRow
+    });
     if (!result.ok) {
       // eslint-disable-next-line no-console
-      console.error("overlays:upsert failed", result.error);
+      console.error("overlays:upsert via dispatchEdit failed", result.error);
       return false;
     }
-    // Record the create on the undo stack so ⌘Z reverts it.
-    // Suppressed when we ARE the undo/redo replay path
-    // (undoApplyingRef === true).
-    if (!undoApplyingRef.current) {
-      recordCreateRef.current?.(result.value);
+    if (!undoApplyingRef.current && result.value.kind === "upsert") {
+      const artifact = result.value.artifact;
+      if (artifact.format === 1) {
+        recordCreateRef.current?.(artifact.row, { node: null });
+      }
     }
     // events:overlays:changed broadcast triggers refetch.
     return true;
@@ -991,6 +1071,15 @@ export function Editor({
     queueMicrotask(() => setSelectedLayerId(null));
   }
 
+  // Type-erase dispatchEdit so EditorLoaded doesn't carry the format
+  // discriminant in its prop type. The hook itself reads
+  // `bundle_format_version` at dispatch time via its closure over
+  // `state`, so the runtime branch is correct regardless of which
+  // typed entry we hand over.
+  const dispatchEditErased = model.dispatchEdit as (
+    op: OverlayEditOp | LayerEditOp
+  ) => Promise<Result<EditOpResult, PwrSnapError>>;
+
   return (
     <EditorLoaded
       record={model.record}
@@ -1005,6 +1094,7 @@ export function Editor({
       textInputRef={textInputRef}
       undoApplyingRef={undoApplyingRef}
       recordCreateRef={recordCreateRef}
+      recordCropRef={recordCropRef}
       beginInteractionRef={beginInteractionRef}
       endInteractionRef={endInteractionRef}
       onPointerDown={onPointerDown}
@@ -1021,6 +1111,7 @@ export function Editor({
       selectedLayerId={selectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
       modelFormat={model.format}
+      dispatchEdit={dispatchEditErased}
     />
   );
 }
@@ -1041,6 +1132,7 @@ function EditorLoaded({
   textInputRef,
   undoApplyingRef,
   recordCreateRef,
+  recordCropRef,
   beginInteractionRef,
   endInteractionRef,
   onPointerDown,
@@ -1056,7 +1148,8 @@ function EditorLoaded({
   onEnsureV2Retry,
   selectedLayerId,
   deleteSelectedRef,
-  modelFormat
+  modelFormat,
+  dispatchEdit
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -1071,7 +1164,23 @@ function EditorLoaded({
   canvasWrapRef: React.RefObject<HTMLDivElement | null>;
   textInputRef: React.RefObject<HTMLInputElement | null>;
   undoApplyingRef: React.RefObject<boolean>;
-  recordCreateRef: React.RefObject<((row: OverlayRow) => void) | null>;
+  recordCreateRef: React.RefObject<
+    | ((
+        row: OverlayRow,
+        opts?: { node?: BundleLayerNode | null }
+      ) => void)
+    | null
+  >;
+  recordCropRef: React.RefObject<
+    | ((entry: {
+        rect: { x: number; y: number; w: number; h: number };
+        previousWidthPx: number;
+        previousHeightPx: number;
+        newWidthPx: number;
+        newHeightPx: number;
+      }) => void)
+    | null
+  >;
   /** Coalescing bracket refs — populated from the undo hook so pointer
    *  handlers in the outer Editor function can open/close coalescing
    *  windows without depending on the hook directly. */
@@ -1107,6 +1216,13 @@ function EditorLoaded({
   /** Resolved bundle format from the model (1 or 2). EditorLoaded uses
    *  it to branch overlay-delete IPC selection. */
   modelFormat: 1 | 2;
+  /** Type-erased dispatchEdit from the resolved CaptureModel. EditorLoaded
+   *  threads it into useUndoRedo (so undo/redo route through the same
+   *  format-aware dispatcher as create writes) and into onCropCommit
+   *  (so v2 captures use bundle:updateCanvasDimensions). */
+  dispatchEdit: (
+    op: OverlayEditOp | LayerEditOp
+  ) => Promise<Result<EditOpResult, PwrSnapError>>;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -1146,7 +1262,16 @@ function EditorLoaded({
     return () => onZoomChange(null);
   }, [onZoomChange]);
 
-  const undo = useUndoRedo({ captureId: record.id, applyingRef: undoApplyingRef });
+  const undo = useUndoRedo({
+    captureId: record.id,
+    applyingRef: undoApplyingRef,
+    // Thread the format-aware dispatcher in so undo/redo route through
+    // the same v1-or-v2 logic as create writes. Without this, the
+    // hook would fall back to the legacy direct `overlays:*` dispatch
+    // path — which the bus rejects on v2 captures with
+    // `v2_capture_use_layers_ipc`.
+    dispatchEdit
+  });
 
   // Bridge: parent's persistOverlay reads recordCreateRef.current
   // to push onto the undo stack. Sync the hook's recorder into
@@ -1157,6 +1282,15 @@ function EditorLoaded({
       recordCreateRef.current = null;
     };
   }, [recordCreateRef, undo.recordCreate]);
+
+  // Bridge: onCropCommit reads recordCropRef.current to push a crop
+  // op onto the undo stack. Same pattern as recordCreateRef above.
+  useEffect(() => {
+    recordCropRef.current = undo.recordCrop;
+    return () => {
+      recordCropRef.current = null;
+    };
+  }, [recordCropRef, undo.recordCrop]);
 
   // Bridge: parent's pointer handlers read begin/endInteractionRef
   // to bracket coalescing windows around drag operations. Phase 2
@@ -1177,25 +1311,19 @@ function EditorLoaded({
   ]);
 
   // Phase 3.2 — selection deleter. The outer Editor's keyboard handler
-  // reads `deleteSelectedRef.current` on Delete/Backspace. We bridge a
-  // format-aware deleter here (v1 → overlays:delete, v2 → layers:delete)
-  // so the outer doesn't need to know about bundle_format_version.
-  // The events:overlays:changed / events:captures:changed broadcasts
-  // trigger useCaptureModel to refetch and the deleted row drops out.
+  // reads `deleteSelectedRef.current` on Delete/Backspace. Routes
+  // through the format-aware dispatchEdit so v1 captures hit
+  // overlays:delete and v2 captures hit layers:delete with no
+  // local branching. The events:overlays:changed broadcast triggers
+  // useCaptureModel to refetch and the deleted row drops out.
   useEffect(() => {
     deleteSelectedRef.current = (id: string): void => {
-      void (async (): Promise<void> => {
-        if (modelFormat === 2) {
-          await dispatch("layers:delete", { id });
-        } else {
-          await dispatch("overlays:delete", { id });
-        }
-      })();
+      void dispatchEdit({ kind: "delete", id });
     };
     return () => {
       deleteSelectedRef.current = null;
     };
-  }, [deleteSelectedRef, modelFormat, record.id]);
+  }, [deleteSelectedRef, dispatchEdit]);
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
   useEffect(() => {
@@ -1399,48 +1527,63 @@ function EditorLoaded({
 
   // -------------------- Crop commit handler ------------------------
   //
-  // On ↵ inside CropTool, persist a CropOverlay via overlays:upsert.
+  // On ↵ inside CropTool, route through dispatchEdit's `crop` op kind.
+  // For v1 captures the dispatcher inserts a CropOverlay through
+  // overlays:upsert. For v2 captures the dispatcher updates the
+  // captures row's width_px/height_px via bundle:updateCanvasDimensions,
+  // which causes the compositor to clip the next composite to the
+  // new canvas size.
+  //
   // Crop is sticky — DO NOT change tools after commit; the user can
   // re-position by re-entering the crop tool or move on by picking
   // another tool themselves.
   const onCropCommit = useCallback(
     (rect: { x: number; y: number; w: number; h: number }): void => {
-      const overlay: Overlay = { kind: "crop", rect };
       void (async (): Promise<void> => {
-        // v1 path only. The v2 adapter (`overlayToBundleLayerNode`)
-        // explicitly refuses crop with `crop_not_supported_on_v2` —
-        // there's no per-layer crop in v2, the canvas-side equivalent
-        // mutates `canvas_dimensions` and is Phase 4+. For v2 captures
-        // we log and no-op so the user gets a quiet failure rather
-        // than a doomed `overlays:upsert` rejection. The crop button
-        // itself stays clickable in the toolbar; future work hides
-        // it for v2 captures.
-        // TODO(phase-4): v2-native crop via canvas_dimensions mutation.
-        if (record.bundle_format_version >= 2) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            "crop overlay skipped: v2 capture has no per-layer crop; Phase 4 ships canvas-side crop"
-          );
-          return;
-        }
-        const result = await dispatch("overlays:upsert", {
-          captureId: record.id,
-          overlay
-        });
+        // Snapshot the pre-crop canvas dims BEFORE dispatching so the
+        // undo entry knows what to restore on ⌘Z. Reading after the
+        // dispatch would race the events:captures:changed broadcast
+        // (which refetches the record with the new dims).
+        const previousWidthPx = record.width_px;
+        const previousHeightPx = record.height_px;
+        const result = await dispatchEdit({ kind: "crop", rect });
         if (!result.ok) {
           // eslint-disable-next-line no-console
-          console.error("overlays:upsert (crop) failed", result.error);
+          console.error("crop via dispatchEdit failed", result.error);
           return;
         }
-        if (!undoApplyingRef.current) {
-          recordCreateRef.current?.(result.value);
+        if (result.value.kind === "crop" && !undoApplyingRef.current) {
+          // Compute the post-crop dims the dispatcher just landed.
+          // For v2 it's previous × rect.{w,h} (rounded); for v1 the
+          // canvas doesn't change, but we still record the entry so
+          // ⌘Z removes the just-inserted CropOverlay row.
+          let newWidthPx = previousWidthPx;
+          let newHeightPx = previousHeightPx;
+          if (record.bundle_format_version >= 2) {
+            newWidthPx = Math.max(1, Math.round(rect.w * previousWidthPx));
+            newHeightPx = Math.max(1, Math.round(rect.h * previousHeightPx));
+          }
+          recordCropRef.current?.({
+            rect,
+            previousWidthPx,
+            previousHeightPx,
+            newWidthPx,
+            newHeightPx
+          });
         }
         if (!isControlled) {
           toolState.onAnnotationPlaced({ tool: "crop" });
         }
       })();
     },
-    [isControlled, record, recordCreateRef, toolState, undoApplyingRef]
+    [
+      isControlled,
+      record,
+      dispatchEdit,
+      recordCropRef,
+      toolState,
+      undoApplyingRef
+    ]
   );
 
   const onCropCancel = useCallback((): void => {

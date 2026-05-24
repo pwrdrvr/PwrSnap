@@ -7,24 +7,20 @@
 // the v1 → v2 lazy doctor, so any v1 capture is doctored to v2 on first
 // edit-open.
 //
-// The WRITE path is still v1-only. That's the regression diagnosed in
-// the manual smoke test: `Editor.tsx#persistOverlay` dispatches
-// `overlays:upsert` unconditionally, and the bus-side
-// `refuseIfV2Capture` guard rejects v2 captures with
-// `v2_capture_use_layers_ipc`. The arrow disappears on pointerup.
+// This adapter is what `persistOverlay` calls to project the editor's
+// v1-shaped Overlay payloads (arrow/rect/text/highlight/blur) into v2
+// BundleLayerNodes for `layers:upsert`. The renderer doesn't
+// independently track v2-shape state — drag handlers produce normalized
+// Overlays as the source of truth, and the adapter mints a fresh
+// BundleLayerNode at commit time.
 //
-// This adapter is the surgical-A fix: branch in `persistOverlay` on
-// `model.format`, and adapt the v1 Overlay payload into a v2 vector or
-// effect layer for the `layers:upsert` path. Crop is refused — the v2
-// canvas-side crop semantic is Phase 4 (renderer manipulates the
-// canvas_dimensions in the document) and there's no overlay-shaped
-// equivalent.
-//
-// A cleaner long-term move (Approach B in the prompt) is to fold this
-// branch into `useCaptureModel.dispatchEdit` so callers never restate
-// the format. Doing that here would creep scope into a 3-file
-// refactor; Phase 4-5 revisits the write path as part of the layer-
-// editor UI work.
+// Crop NO LONGER goes through this adapter. The v2-native crop semantic
+// (Option A: data-layer crop via canvas_dimensions mutation) ships as
+// a top-level `crop` op kind on `useCaptureModel.dispatchEdit` —
+// onCropCommit in Editor.tsx routes there directly. The
+// `crop_not_supported_on_v2` refusal below is defense in depth in case
+// a caller accidentally hands a CropOverlay through the create path;
+// the editor itself won't.
 //
 // TODO(phase-4-5): replace this adapter with a Layer-native write path
 // that doesn't round-trip through the v1 Overlay shape.

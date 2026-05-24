@@ -1171,6 +1171,27 @@ export type Commands = {
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
 
+  // ---- canvas (v2 captures only) ----
+  /** Update the canvas dimensions of a v2 capture. Writes the new
+   *  `width_px`/`height_px` to the `captures` row, bumps `edits_version`
+   *  so the doctor knows the bundle needs a re-pack, and broadcasts
+   *  `events:captures:changed` + `events:overlays:changed` so any open
+   *  editor + library window re-fetches the new dims.
+   *
+   *  This is the v2-native crop semantic — Option A from the plan:
+   *  data-layer only, source raster bytes are preserved. Layers whose
+   *  absolute coords fall outside the new canvas still exist; the
+   *  compositor clips them at canvas bounds. A future undo can grow
+   *  the canvas back to original dims and the layers come back fully.
+   *
+   *  Refuses v1 captures (use overlays:upsert with a CropOverlay).
+   *  Refuses widths/heights ≤ 0 and any that exceed the source raster's
+   *  natural dimensions (can't "crop bigger" than what was captured). */
+  "bundle:updateCanvasDimensions": {
+    req: { captureId: string; widthPx: number; heightPx: number };
+    res: { previousWidthPx: number; previousHeightPx: number };
+  };
+
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
   /** Render (or reuse) the cache file at `preset` and write its POSIX

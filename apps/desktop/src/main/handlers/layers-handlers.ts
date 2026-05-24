@@ -14,7 +14,7 @@ import { ok, err, EVENT_CHANNELS, BundleLayerNode as BundleLayerNodeSchema } fro
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { scheduleRepack } from "../persistence/bundle-store";
-import { getCaptureById } from "../persistence/captures-repo";
+import { getCaptureById, updateCaptureCanvasDimensions } from "../persistence/captures-repo";
 import { getDb } from "../persistence/db";
 import {
   insertLayer,
@@ -143,6 +143,102 @@ export function registerLayersHandlers(): void {
       scheduleRepack(captureId);
     }
     return ok(undefined);
+  });
+
+  // v2-native crop: update the captures row's canvas dimensions, bump
+  // edits_version, broadcast. The bundle re-packer reads width_px /
+  // height_px from the row when packing the new manifest, so the next
+  // scheduled repack picks up the new dims automatically. composeV2
+  // already reads them from the captures row for the live render
+  // pipeline (see render/coordinator.ts).
+  //
+  // Refuses v1 captures (use overlays:upsert with a CropOverlay).
+  // Refuses any width/height <= 0 or any value that exceeds the source
+  // raster's natural dimensions — we don't expand the canvas past
+  // what we have pixels for. (A future "expand canvas" surface could
+  // relax this for users who want to compose past the source bounds.)
+  bus.register("bundle:updateCanvasDimensions", async (req) => {
+    const refusal = refuseIfV1Capture(req.captureId);
+    if (refusal !== null) return err(refusal);
+
+    if (
+      !Number.isInteger(req.widthPx) ||
+      !Number.isInteger(req.heightPx) ||
+      req.widthPx <= 0 ||
+      req.heightPx <= 0
+    ) {
+      return err({
+        kind: "validation",
+        code: "invalid_canvas_dimensions",
+        message: `canvas dimensions must be positive integers: got ${req.widthPx}x${req.heightPx}`
+      });
+    }
+
+    // Find the source raster's natural dimensions — the canvas can't
+    // exceed them (no pixels to fill). We look up the single root
+    // raster layer in the live tree; v2 captures always have at least
+    // one raster from the persistCaptureFromTempV2 or v1-to-v2-doctor
+    // seed.
+    const layers = listLayerTree(req.captureId);
+    let maxNaturalWidth = 0;
+    let maxNaturalHeight = 0;
+    for (const layer of layers) {
+      if (layer.kind === "raster") {
+        if (layer.natural_width_px > maxNaturalWidth) {
+          maxNaturalWidth = layer.natural_width_px;
+        }
+        if (layer.natural_height_px > maxNaturalHeight) {
+          maxNaturalHeight = layer.natural_height_px;
+        }
+      }
+    }
+    // Fallback: if there's no raster (shouldn't happen for valid v2
+    // captures), fall back to the current capture row's dims so we
+    // never grow the canvas past what was already there.
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+    const maxAllowedWidth =
+      maxNaturalWidth > 0 ? maxNaturalWidth : record.width_px;
+    const maxAllowedHeight =
+      maxNaturalHeight > 0 ? maxNaturalHeight : record.height_px;
+    if (req.widthPx > maxAllowedWidth || req.heightPx > maxAllowedHeight) {
+      return err({
+        kind: "validation",
+        code: "canvas_exceeds_source",
+        message: `canvas dimensions ${req.widthPx}x${req.heightPx} exceed source raster ${maxAllowedWidth}x${maxAllowedHeight}`
+      });
+    }
+
+    const previous = updateCaptureCanvasDimensions(req.captureId, {
+      widthPx: req.widthPx,
+      heightPx: req.heightPx
+    });
+    if (previous === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+    log.info("canvas dimensions updated", {
+      captureId: req.captureId,
+      previousWidthPx: previous.widthPx,
+      previousHeightPx: previous.heightPx,
+      widthPx: req.widthPx,
+      heightPx: req.heightPx
+    });
+    broadcastLayersChanged(req.captureId);
+    scheduleRepack(req.captureId);
+    return ok({
+      previousWidthPx: previous.widthPx,
+      previousHeightPx: previous.heightPx
+    });
   });
 }
 

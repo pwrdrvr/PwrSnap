@@ -374,8 +374,10 @@ export function Editor({
    *  in-window). */
   toolState?: UseEditorToolStateReturn;
   /** Optional controlled blur-style state. When provided (Library
-   *  mode), the EditToolbar's BlurMenu owns the picker UI and writes
-   *  this back to Library. When omitted (standalone window), the
+   *  mode), Library owns the v1-string-shaped blur mode and writes
+   *  it back via the EditToolbar's hook-mirror effect (post-
+   *  BlurMenu-fold the picker UI lives in the unified
+   *  ToolStylePopover). When omitted (standalone window), the
    *  editor falls back to the `useEditorToolState` blur tool style
    *  block (which the right-sidebar ToolConfigPanel + popover edit). */
   blurStyle?: BlurStyle;
@@ -453,7 +455,8 @@ export function Editor({
 
   // Blur style for the commit pipeline:
   //   • Library (controlled) → use the `blurStyle` prop the parent
-  //     threads in (EditToolbar's BlurMenu owns it there).
+  //     threads in (EditToolbar mirrors `toolState.activeStyle.style.
+  //     mode` back into Library's state via a sync effect).
   //   • Standalone → take the live blur-tool-style mode from the hook,
   //     falling back to the default until settings resolve.
   const blurStyle: BlurStyle = useMemo(() => {

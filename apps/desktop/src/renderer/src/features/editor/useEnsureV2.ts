@@ -154,7 +154,27 @@ export function useEnsureV2(opts: UseEnsureV2Options): UseEnsureV2Return {
   // that arrive faster than the upgrade Promise resolves (or in case
   // the resolution path was missed). Also seed via `v1ToV2:status` on
   // mount for late-mount race recovery.
+  //
+  // CRITICAL — the snapshot + progress channels are CONSULTED ONLY
+  // WHEN the capture is actually a v1 (or unknown) and the doctor
+  // could plausibly be running. If `currentBundleFormatVersion >= 2`,
+  // the capture is healthy v2 on disk RIGHT NOW — any "failed"
+  // event we see for this captureId is a stale snapshot from a
+  // previous attempt that has since been rescued (by the boot-time
+  // reconcile sweep, a successful retry, etc.). Flipping to
+  // view_only in that case is the bug described in
+  // docs/plans Phase 3.2 verification — six healthy v2 screenshots
+  // all sporting a spurious "Couldn't upgrade — read-only view"
+  // banner because the module-level cachedProgress in the doctor
+  // still remembered an old failure for the same captureId.
   useEffect(() => {
+    // Skip the entire subscribe + snapshot dance for already-healthy
+    // captures. The doctor has no work to do; any stale snapshot
+    // chatter is just noise.
+    if (currentBundleFormatVersion !== null && currentBundleFormatVersion >= 2) {
+      return;
+    }
+
     let cancelled = false;
 
     // 1. Subscribe FIRST so a "failed" event arriving while the
@@ -205,7 +225,7 @@ export function useEnsureV2(opts: UseEnsureV2Options): UseEnsureV2Return {
       cancelled = true;
       unsubscribe();
     };
-  }, [captureId]);
+  }, [captureId, currentBundleFormatVersion]);
 
   const retry = useCallback((): void => {
     void (async (): Promise<void> => {

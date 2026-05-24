@@ -87,7 +87,8 @@ export type StageProps = {
   readonly toolState: UseEditorToolStateReturn;
   /** Lifted blur-style state. Same shape as tool — Library owns it,
    *  the Editor uses it when committing a new blur overlay and the
-   *  EditToolbar's BlurMenu reads + writes it. */
+   *  EditToolbar's ToolStylePopover writes through to it via the
+   *  hook-mirror effect (post-BlurMenu-fold). */
   readonly blurStyle: BlurStyle;
   readonly onBlurStyleChange: (style: BlurStyle) => void;
   /** Optional content to render above the stage — used by Reel mode

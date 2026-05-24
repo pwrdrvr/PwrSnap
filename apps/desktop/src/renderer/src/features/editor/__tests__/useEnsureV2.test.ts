@@ -370,7 +370,7 @@ describe("useEnsureV2", () => {
     expect(ret!.state.status).toBe("upgrading");
   });
 
-  test("8. Late-mount race recovery: v1ToV2:status snapshot says failed+parked → jumps to view_only", async () => {
+  test("8. Late-mount race recovery: v1 capture with snapshot=failed+parked → jumps to view_only", async () => {
     const snapshot: V1ToV2DoctorProgress = {
       status: "failed",
       captureId: "cap_v1",
@@ -378,18 +378,16 @@ describe("useEnsureV2", () => {
       attempts: 5,
       parked: true
     };
-    // For this test the format is 2 (already migrated) so the
-    // upgrade dispatch path doesn't fire. We're testing that the
-    // cached-snapshot reader picks up a prior failure on the SAME
-    // capture id even when there's nothing to do.
-    //
-    // (In practice the snapshot also picks up live-edge state when
-    // a v1 capture is opened just after the doctor parked it, but
-    // simulating that race needs a coordinated dispatch + snapshot
-    // sequence and the format-driven path is simpler.)
+    // Format is 1 — the doctor IS the source of truth; the
+    // late-mount snapshot reader picks up the prior parking and
+    // skips a doomed retry. Keep the upgrade dispatch pending so
+    // the snapshot wins the race deterministically.
     dispatchMock.mockImplementation((name: string) => {
       if (name === "v1ToV2:status") {
         return Promise.resolve({ ok: true, value: snapshot });
+      }
+      if (name === "v1ToV2:upgrade") {
+        return new Promise<unknown>(() => undefined);
       }
       return Promise.resolve({ ok: true, value: null });
     });
@@ -398,6 +396,49 @@ describe("useEnsureV2", () => {
     render(
       createElement(Probe, {
         captureId: "cap_v1",
+        currentBundleFormatVersion: 1,
+        onSnapshot: (r) => {
+          ret = r;
+        }
+      })
+    );
+    await flush();
+
+    const s = ret!.state;
+    expect(s.status).toBe("view_only");
+    if (s.status === "view_only") {
+      expect(s.errorCode).toBe("disk_full");
+      expect(s.attempts).toBe(5);
+    }
+  });
+
+  test("8b. Healthy v2 capture is NEVER tagged view_only by a stale snapshot for the same id", async () => {
+    // Regression: the v1-to-v2 doctor's module-level cachedProgress
+    // can hold a "failed" event from a previous attempt on this
+    // captureId. If the capture has since been rescued (boot-time
+    // reconcile sweep, a successful retry in another window, etc.)
+    // and the DB row now says bundle_format_version === 2, the
+    // editor must NOT show "Couldn't upgrade — read-only view".
+    // Six Phase 3.2 verification screenshots showed exactly this
+    // spurious banner on healthy v2 captures.
+    const staleSnapshot: V1ToV2DoctorProgress = {
+      status: "failed",
+      captureId: "cap_already_v2",
+      errorCode: "manifest_invalid",
+      attempts: 5,
+      parked: true
+    };
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "v1ToV2:status") {
+        return Promise.resolve({ ok: true, value: staleSnapshot });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let ret: UseEnsureV2Return | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_already_v2",
         currentBundleFormatVersion: 2,
         onSnapshot: (r) => {
           ret = r;
@@ -406,16 +447,56 @@ describe("useEnsureV2", () => {
     );
     await flush();
 
-    // The snapshot says "failed" for cap_v1; even though the
-    // format-driven path would say "irrelevant", the snapshot
-    // overrides because the user needs to see that the doctor
-    // previously parked this capture.
-    const s = ret!.state;
-    expect(s.status).toBe("view_only");
-    if (s.status === "view_only") {
-      expect(s.errorCode).toBe("disk_full");
-      expect(s.attempts).toBe(5);
-    }
+    // Healthy v2 → "irrelevant", regardless of what the stale
+    // snapshot says. The snapshot dispatch should not even fire
+    // because the format-driven short-circuit makes it pointless.
+    expect(ret!.state.status).toBe("irrelevant");
+    const statusCalls = dispatchMock.mock.calls.filter(
+      (c) => c[0] === "v1ToV2:status"
+    );
+    expect(statusCalls.length).toBe(0);
+  });
+
+  test("8c. Healthy v2 capture ignores live 'failed' progress events for the same id", async () => {
+    // Same class of bug as 8b but via the live progress channel.
+    // A doctor failure broadcast for a captureId that is already v2
+    // in the renderer's view must be ignored.
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "v1ToV2:status") {
+        return Promise.resolve({ ok: true, value: null });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let ret: UseEnsureV2Return | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_already_v2",
+        currentBundleFormatVersion: 2,
+        onSnapshot: (r) => {
+          ret = r;
+        }
+      })
+    );
+    await flush();
+
+    expect(ret!.state.status).toBe("irrelevant");
+
+    // No subscriber should have been registered because the snapshot/
+    // subscribe effect short-circuits for v2 captures. Broadcasting
+    // a stale "failed" should therefore be a no-op.
+    await act(async () => {
+      broadcast(EVENT_CHANNELS.v1ToV2DoctorProgress, {
+        status: "failed",
+        captureId: "cap_already_v2",
+        errorCode: "manifest_invalid",
+        attempts: 5,
+        parked: true
+      } satisfies V1ToV2DoctorProgress);
+      await Promise.resolve();
+    });
+
+    expect(ret!.state.status).toBe("irrelevant");
   });
 
   test("9. Cancel-safety: captureId changes mid-flight; late response from cap_a doesn't clobber cap_b's state", async () => {

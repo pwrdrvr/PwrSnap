@@ -26,9 +26,10 @@
 //     window owns its own. Style memory persists across both via
 //     Settings; the active-tool state stays local.
 //   • Caret button on each styled tool button (arrow / text / rect /
-//     highlight) → opens the unified `ToolStylePopover` anchored to
-//     that button. Blur keeps its existing `BlurMenu` (it already has
-//     its own style picker).
+//     blur / highlight) → opens the unified `ToolStylePopover`
+//     anchored to that button. Blur was folded into the same popover
+//     in the v2 editor refresh (Phase 3.2 follow-up); the bespoke
+//     <BlurMenu> with its labeled rows + hint copy is gone.
 //   • Crop tool — renders `<CropTool>` over the chromeless Editor's
 //     canvas when activeTool === "crop". On ↵ commit, dispatches a
 //     `crop` overlay through the same `overlays:upsert` IPC.
@@ -64,7 +65,6 @@ import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
 import { TOOLS, type Tool } from "../editor/editor-tools";
 import type { ZoomApi } from "../editor/Editor";
 import { ZoomMenu } from "../editor/ZoomMenu";
-import { BlurMenu } from "../editor/BlurMenu";
 import {
   useEditorToolState,
   isStyledTool,
@@ -111,11 +111,14 @@ export type EditToolbarProps = {
    *  and reports its first scale, or after unmount. When null the
    *  zoom indicator is hidden (no useful state to show). */
   readonly zoom?: ZoomApi;
-  /** Current blur style + setter. The BlurMenu replaces the plain
-   *  Blur tool button in the toolbar; users click to switch to the
-   *  Blur tool AND open a style picker (gaussian / pixelate /
-   *  redact). Library owns the state so the choice persists across
-   *  capture navigations. */
+  /** Current blur style + setter. Legacy v1-string-shaped mode
+   *  (gaussian / pixelate / redact). Library owns the state so the
+   *  choice survives Focus ↔ Reel ↔ Grid transitions; Editor reads
+   *  it for the live drag draft and the v1 commit pipeline. Post-
+   *  BlurMenu-fold the toolbar no longer mutates this directly —
+   *  the unified ToolStylePopover writes to `toolState`'s blur
+   *  block and an effect mirrors `toolState.activeStyle.style.mode`
+   *  back into `onBlurStyleChange` so the prop pair stays in sync.  */
   readonly blurStyle: BlurStyle;
   readonly onBlurStyleChange: (style: BlurStyle) => void;
 };
@@ -207,6 +210,20 @@ export function EditToolbar({
     lastPropToolRef.current = toolState.activeTool;
     onChange(toolState.activeTool);
   }, [toolState.activeTool, tool, onChange]);
+
+  // After folding BlurMenu into ToolStylePopover, the popover writes
+  // blur picks through `toolState.setStyleField("blur", "mode", …)`
+  // — but the legacy `blurStyle` / `onBlurStyleChange` prop pair is
+  // still threaded through Library → Stage → Editor for the live drag
+  // draft (Editor only owns the v1-string-shaped blur style for the
+  // commit pipeline + BlurOverlays rendering). Mirror the hook's blur
+  // mode out to the legacy prop whenever blur is the active tool so
+  // a popover pick lands in both surfaces consistently.
+  useEffect(() => {
+    if (toolState.activeStyle.tool !== "blur") return;
+    const mode = toolState.activeStyle.style.mode;
+    if (mode !== blurStyle) onBlurStyleChange(mode);
+  }, [toolState.activeStyle, blurStyle, onBlurStyleChange]);
 
   // Phase 2 task #14: shared data through useCaptureModel. The hook
   // owns the dispatch + cancel-safety + broadcast-driven refetch for
@@ -399,8 +416,8 @@ export function EditToolbar({
   // Each styled tool button holds a ref so its caret can anchor the
   // ToolStylePopover. We keep refs in a Map keyed by tool id so the
   // single useState for `popoverTool` resolves to the correct anchor
-  // at render time. Blur is excluded — it owns its style via
-  // BlurMenu's own popover, not ToolStylePopover.
+  // at render time. Blur is included since the v2 editor refresh
+  // folded the bespoke <BlurMenu> into the unified popover.
   const buttonRefs = useRef<Map<Tool, HTMLButtonElement | null>>(new Map());
   const [popoverTool, setPopoverTool] = useState<StyledToolKind | null>(null);
   // Pinned ref for whichever button currently anchors the popover.
@@ -526,40 +543,30 @@ export function EditToolbar({
                 magic wand + undo, but those clusters aren't rendered
                 in this phase. */}
             {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
-            {t.id === "blur" ? (
-              // Blur gets its own popover so the user can pick a style
-              // (gaussian / pixelate / redact). Same click target also
-              // activates the Blur tool, so a single click both selects
-              // + opens the picker. We deliberately keep BlurMenu
-              // separate from ToolStylePopover — BlurMenu's style UI
-              // (the labeled rows with hints) is denser than the
-              // segmented control the unified popover uses, and a
-              // mid-flight collapse would be a regression.
-              <BlurMenu
-                tool={tool}
-                onChange={(next) => {
-                  toolState.setActiveTool(next);
-                }}
-                blurStyle={blurStyle}
-                onBlurStyleChange={onBlurStyleChange}
-              />
-            ) : (
-              <ToolButton
-                tool={t}
-                active={toolState.activeTool === t.id}
-                onClick={(e) => handleToolClick(t.id, e)}
-                onCaretClick={(e) => {
-                  // Pointer + crop have no style block; suppress the
-                  // caret button entirely (handled inside ToolButton).
-                  if (!isStyledTool(t.id)) return;
-                  handleCaretClick(t.id as StyledToolKind, e);
-                }}
-                showCaret={isStyledTool(t.id)}
-                buttonRef={(el) => {
-                  buttonRefs.current.set(t.id, el);
-                }}
-              />
-            )}
+            {/* Blur uses the SAME ToolButton + caret pattern as every
+                other styled tool. Earlier shape branched blur through
+                a bespoke <BlurMenu> with labeled rows and hint copy —
+                folded into the unified ToolStylePopover (Phase 3.2
+                follow-up) so a single popover shell drives every
+                styled tool. The popover's BlurBody covers the same
+                gaussian / pixelate / redact choice as the old menu,
+                plus the Auto / Custom radius control that the menu
+                never exposed. */}
+            <ToolButton
+              tool={t}
+              active={toolState.activeTool === t.id}
+              onClick={(e) => handleToolClick(t.id, e)}
+              onCaretClick={(e) => {
+                // Pointer + crop have no style block; suppress the
+                // caret button entirely (handled inside ToolButton).
+                if (!isStyledTool(t.id)) return;
+                handleCaretClick(t.id as StyledToolKind, e);
+              }}
+              showCaret={isStyledTool(t.id)}
+              buttonRef={(el) => {
+                buttonRefs.current.set(t.id, el);
+              }}
+            />
           </Fragment>
         ))}
         <span className="psl__et-sep" aria-hidden="true" />

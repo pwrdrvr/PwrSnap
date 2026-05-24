@@ -74,7 +74,7 @@ import { useEditorToolState } from "../../editor/useEditorToolState";
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
     true;
-  // jsdom doesn't implement these — the BlurMenu + ToolStylePopover use
+  // jsdom doesn't implement these — the ToolStylePopover uses
   // dialog.showModal + ResizeObserver indirectly. Light stubs keep the
   // module load + initial render from throwing.
   const proto = (globalThis as unknown as { HTMLDialogElement?: { prototype: HTMLDialogElement } })
@@ -255,17 +255,13 @@ async function render(node: ReactElement): Promise<void> {
 }
 
 function findToolButton(id: Tool): HTMLButtonElement {
-  // Blur renders through BlurMenu (no data-tool attribute on the
-  // root button); fall back to the title attribute for it.
+  // All tool buttons (blur included, post-BlurMenu-fold) carry a
+  // `data-tool="<id>"` attribute. The bespoke `.ed-blur-btn`
+  // selector that used to back blur is no longer needed.
   const el = host?.querySelector<HTMLButtonElement>(
     `button[data-tool="${id}"]`
   );
   if (el !== null && el !== undefined) return el;
-  // Blur fallback — its inner button uses class ed-blur-btn.
-  if (id === "blur") {
-    const blur = host?.querySelector<HTMLButtonElement>(".ed-blur-btn");
-    if (blur !== null && blur !== undefined) return blur;
-  }
   throw new Error(`tool button not found: ${id}`);
 }
 
@@ -380,15 +376,23 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
   test("1. renders all 7 tool buttons (pointer/arrow/rect/highlight/blur/text/crop)", async () => {
     await render(createElement(Harness));
 
-    // 6 of 7 carry data-tool — pointer/arrow/rect/highlight/text/crop.
-    // Blur renders through BlurMenu (its own button class).
+    // Post-BlurMenu-fold: all 7 tool buttons carry the same
+    // `data-tool` attribute. Earlier shape rendered blur through a
+    // bespoke <BlurMenu>; we now use the unified ToolButton + caret
+    // pattern for every styled tool.
     const dataTooled = host?.querySelectorAll("button[data-tool]");
-    expect(dataTooled?.length).toBe(6);
-    for (const id of ["pointer", "arrow", "rect", "highlight", "text", "crop"] as const) {
+    expect(dataTooled?.length).toBe(7);
+    for (const id of [
+      "pointer",
+      "arrow",
+      "rect",
+      "highlight",
+      "blur",
+      "text",
+      "crop"
+    ] as const) {
       expect(findToolButton(id)).toBeTruthy();
     }
-    // Blur button exists too — via BlurMenu.
-    expect(findToolButton("blur")).toBeTruthy();
   });
 
   test("2. click arrow → activeTool = arrow, parent onChange fires with 'arrow'", async () => {

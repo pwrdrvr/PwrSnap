@@ -176,9 +176,20 @@ function resolveTextSize(
  *  the renderers to consume `LayerView` natively and this shim
  *  retires). Only `vector` and `effect` (blur) layers project — groups
  *  and rasters are skipped (no Phase 1 renderer surface for them). */
+/** Source dims for the v2 → v1 projection (Phase 3.3 fix). The
+ *  caller is the EditorLoaded render which has the CaptureRecord in
+ *  scope, so passing them in is cheap. Used to renormalize v2 effect
+ *  layers' `clip_rect` (absolute canvas pixels per the v2 EffectLayer
+ *  schema) back into v1's normalized [0,1] coords for BlurOverlays. */
+interface ProjectionDims {
+  widthPx: number;
+  heightPx: number;
+}
+
 function projectV2LayersToOverlayRows(
   layers: BundleLayerNode[],
-  captureId: string
+  captureId: string,
+  dims: ProjectionDims
 ): OverlayRow[] {
   const rows: OverlayRow[] = [];
   for (const layer of layers) {
@@ -202,10 +213,19 @@ function projectV2LayersToOverlayRows(
       continue;
     }
     if (layer.kind === "effect" && layer.effect.type === "blur") {
-      // v2 blur effects clip to a `clip_rect` in canvas pixels; v1
-      // blurs use normalized [0,1] coords. The renderer expects v1
-      // shape, so we round-trip through `clip_rect`-as-canvas-pixels
-      // by skipping when null (no spatial extent → can't render).
+      // v2 blur effects clip to a `clip_rect` in absolute canvas
+      // pixels (per the v2 EffectLayer schema in
+      // packages/shared/src/bundle-manifest-schema-v2.ts — CanvasRect
+      // uses FiniteNumber, no [0,1] constraint). v1 blurs use
+      // normalized [0,1] coords. Phase 2's first cut left this branch
+      // "rarely exercised" so it shipped without the division below;
+      // Phase 3's doctor changed that overnight by migrating any
+      // capture the user opens to v2 — every blur on a doctored
+      // capture started rendering off-canvas because BlurOverlays
+      // treated the raw canvas-pixel values as percentages.
+      //
+      // Phase 3.3 fix: divide by source/canvas dims to renormalize.
+      // Skip null clip_rect (no spatial extent → unrenderable).
       if (layer.clip_rect === null) continue;
       rows.push({
         id: layer.id,
@@ -213,16 +233,10 @@ function projectV2LayersToOverlayRows(
         data: {
           kind: "blur",
           rect: {
-            // v2 canvas-pixel coords come back here; we re-normalize
-            // against… the canvas dimensions, which we don't have at
-            // this scope. Fall back to passing absolute pixels and
-            // trusting the renderer treats them as a clip box. The
-            // pixel-coord branch is rarely exercised in Phase 2 (only
-            // bundle_v2-flagged captures hit it).
-            x: layer.clip_rect.x,
-            y: layer.clip_rect.y,
-            w: layer.clip_rect.w,
-            h: layer.clip_rect.h
+            x: layer.clip_rect.x / dims.widthPx,
+            y: layer.clip_rect.y / dims.heightPx,
+            w: layer.clip_rect.w / dims.widthPx,
+            h: layer.clip_rect.h / dims.heightPx
           },
           style: DEFAULT_BLUR_STYLE
         },
@@ -940,7 +954,10 @@ export function Editor({
   const overlaysForRender: OverlayRow[] =
     model.format === 1
       ? model.overlays
-      : projectV2LayersToOverlayRows(model.layers, captureId);
+      : projectV2LayersToOverlayRows(model.layers, captureId, {
+          widthPx: model.record.width_px,
+          heightPx: model.record.height_px
+        });
   // Sync the synchronous-read ref the outer pointerdown handler reads.
   // Render-phase write to a ref is safe (refs don't trigger renders);
   // we deliberately do this before returning EditorLoaded so a click

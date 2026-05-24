@@ -13,15 +13,31 @@ import type { OverlayRow } from "@pwrsnap/shared";
 import { computeArrowGeometry } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 
+/** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
+ *  When the user picks "red" for the arrow tool, the draft preview
+ *  should render in red DURING the drag (not just on commit). Editor.tsx
+ *  reads `effectiveToolState.activeStyle` and passes the relevant slice
+ *  here so the OverlaySvg renders the draft with the picked style.
+ *  Persisted overlays read their own `data.color` etc.; this prop only
+ *  affects the live-draft branch. */
+export interface DraftStyle {
+  /** Color slug or hex — matches the OverlaySchema `color` field. */
+  color?: "auto" | string;
+}
+
 export function OverlaySvg({
   overlays,
   draft,
+  draftStyle,
   imageWidthPx,
   imageHeightPx,
   selectedLayerId = null
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
+  /** Explicitly `| undefined` (not just `?`) so callers can pass the
+   *  helper's result directly under `exactOptionalPropertyTypes`. */
+  draftStyle?: DraftStyle | undefined;
   imageWidthPx: number;
   imageHeightPx: number;
   /** Phase 3.2 selection model — id of the currently-selected overlay
@@ -84,6 +100,7 @@ export function OverlaySvg({
         <RectGlyph
           key={row.id}
           rect={data.rect}
+          color={data.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -95,6 +112,7 @@ export function OverlaySvg({
           fromYn={data.from.y}
           toXn={data.to.x}
           toYn={data.to.y}
+          color={data.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -105,6 +123,7 @@ export function OverlaySvg({
           point={data.point}
           body={data.body}
           size={data.size}
+          color={data.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -121,13 +140,18 @@ export function OverlaySvg({
         return <SelectionOutline data={sel.data} />;
       })()}
 
-      {/* Drafts (live-drag preview) rendered last so they're on top. */}
+      {/* Drafts (live-drag preview) rendered last so they're on top.
+          Phase 3.3 — the draft now consumes `draftStyle.color` so the
+          live preview matches the user's popover pick during the drag,
+          not just on commit. Falls back to "auto" → --accent for any
+          tool that doesn't pass a draftStyle. */}
       {draft?.kind === "arrow" && (
         <ArrowGlyph
           fromXn={draft.fromXn}
           fromYn={draft.fromYn}
           toXn={draft.toXn}
           toYn={draft.toYn}
+          color={draftStyle?.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
           isDraft
@@ -135,10 +159,13 @@ export function OverlaySvg({
       )}
       {draft?.kind === "rect-drag" && liveRect !== null && (
         <>
-          {draft.tool === "highlight" && <HighlightGlyph rect={liveRect} isDraft />}
+          {draft.tool === "highlight" && (
+            <HighlightGlyph rect={liveRect} color={draftStyle?.color} isDraft />
+          )}
           {draft.tool === "rect" && (
             <RectGlyph
               rect={liveRect}
+              color={draftStyle?.color}
               imageWidthPx={imageWidthPx}
               imageHeightPx={imageHeightPx}
               isDraft
@@ -157,6 +184,7 @@ function ArrowGlyph({
   toYn,
   imageWidthPx,
   imageHeightPx,
+  color,
   isDraft = false
 }: {
   fromXn: number;
@@ -165,6 +193,15 @@ function ArrowGlyph({
   toYn: number;
   imageWidthPx: number;
   imageHeightPx: number;
+  /** Persisted overlay's color (or live-drag's chosen color). When
+   *  `"auto"` or undefined, falls back to the theme `--accent` token so
+   *  legacy rows + draft-without-style render with the original
+   *  pre-Phase-3.1 brand color. Anything else (hex from the popover
+   *  swatches or Custom… picker) is passed through. Pre-3.3 the
+   *  hardcoded accent meant the persisted `data.color` was silently
+   *  ignored — library thumbnails baked via compose.ts showed the
+   *  picked color but the live editor canvas showed tangerine. */
+  color?: "auto" | string | undefined;
   isDraft?: boolean;
 }): ReactElement {
   const geom = computeArrowGeometry({
@@ -176,7 +213,17 @@ function ArrowGlyph({
   const headPolygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
   const stroke = geom.strokeFraction;
   const outline = Math.max(stroke * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
+  // Resolution: explicit color → use it; "auto" / undefined → fall back
+  // to the theme accent token. Draft variant uses --accent-strong for
+  // the pre-Phase-3.1 visual cue, but ONLY when color is "auto"/missing
+  // — when the user picked a swatch we honor it for both draft + commit
+  // so the preview matches what's about to be persisted.
+  const accent =
+    color !== undefined && color !== "auto"
+      ? color
+      : isDraft
+      ? "var(--accent-strong, #ffa33d)"
+      : "var(--accent, #ff8a1f)";
   return (
     <g strokeLinecap="round" strokeLinejoin="round">
       <line
@@ -212,11 +259,14 @@ function RectGlyph({
   rect,
   imageWidthPx,
   imageHeightPx,
+  color,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
   imageWidthPx: number;
   imageHeightPx: number;
+  /** See ArrowGlyph.color for the resolution rationale. Same shape. */
+  color?: "auto" | string | undefined;
   isDraft?: boolean;
 }): ReactElement {
   // Stroke width scaled by image short-side, like the arrow's. We
@@ -225,7 +275,12 @@ function RectGlyph({
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const strokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
   const outline = Math.max(strokeFraction * 0.25, 0.0015);
-  const accent = isDraft ? "var(--accent-strong, #ffa33d)" : "var(--accent, #ff8a1f)";
+  const accent =
+    color !== undefined && color !== "auto"
+      ? color
+      : isDraft
+      ? "var(--accent-strong, #ffa33d)"
+      : "var(--accent, #ff8a1f)";
   return (
     <g>
       <rect
@@ -367,19 +422,23 @@ function TextGlyph({
   body,
   size,
   imageWidthPx,
-  imageHeightPx
+  imageHeightPx,
+  color
 }: {
   point: { x: number; y: number };
   body: string;
   size: "small" | "large";
   imageWidthPx: number;
   imageHeightPx: number;
+  /** See ArrowGlyph.color. */
+  color?: "auto" | string | undefined;
 }): ReactElement {
   // Font size derived from image short-side, matching the bake.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const sizePx = size === "large" ? shortSide / 30 : shortSide / 60;
   const fontSize = sizePx / shortSide;
-  const accent = "var(--accent, #ff8a1f)";
+  const accent =
+    color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
   return (
     <g>
       <text

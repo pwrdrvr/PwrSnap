@@ -666,12 +666,28 @@ describe("validateBundleZipEntryNamesV2 — missing + duplicate enforcement", ()
     }
   });
 
-  test("rejects when composite.png is missing", () => {
+  test("accepts the minimal v2 bundle (manifest + document only) — composite is optional", () => {
+    // The packer in bundle-store.ts dropped `composite.png` in PR #90
+    // and the `composite_thumbnail.jpg` thumbnail is intentionally
+    // optional (omitted for small images). Readers reconstruct the
+    // composite from sources/* + document.json layers when neither
+    // is present. So a v2 bundle with just manifest.json + document.json
+    // is structurally valid.
     const result = validateBundleZipEntryNamesV2(["manifest.json", "document.json"]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.missingEntries).toContain("composite.png");
-    }
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts composite_thumbnail.jpg as a known entry", () => {
+    // The current packer writes composite_thumbnail.jpg (replaces the
+    // legacy composite.png). The validator must recognize it as a
+    // known v2 entry — otherwise it'd land in `badEntries` and
+    // reject every bundle the live packer produces.
+    const result = validateBundleZipEntryNamesV2([
+      "manifest.json",
+      "document.json",
+      "composite_thumbnail.jpg"
+    ]);
+    expect(result.ok).toBe(true);
   });
 
   test("rejects duplicate manifest.json (shadow-entry attack)", () => {

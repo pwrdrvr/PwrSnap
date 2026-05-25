@@ -4,6 +4,7 @@ import type { AppDocumentKind } from "@pwrsnap/shared";
 import { installDevelopmentDockIcon, showDockWithDevelopmentIcon } from "./development-dock-icon";
 import { getStartupAppearanceArgs, getStartupBackgroundColor } from "./settings/startup-appearance";
 import { getMainLogger } from "./log";
+import { showWindowWhenReady } from "./window-show";
 
 const log = getMainLogger("pwrsnap:window");
 
@@ -195,14 +196,20 @@ export function createMainWindow(): BrowserWindow {
 
   loadRenderer(window, rendererTarget());
 
-  window.once("ready-to-show", () => {
-    log.info("main window ready-to-show", { id: window.id });
-    window.show();
-    // Claim the dock icon as soon as the library is on screen. On
-    // macOS this flips activation policy → Regular; on other
-    // platforms `app.dock` is undefined and this is a no-op.
-    if (process.platform === "darwin" && !isE2E()) {
-      showDockWithDevelopmentIcon();
+  // `showWindowWhenReady` handles the Linux `ready-to-show`
+  // unreliability (see window-show.ts for the why); on macOS the
+  // `ready-to-show` path wins exactly as before. The onShow callback
+  // runs on whichever fallback fires first so the dock claim lines up
+  // with the moment the window becomes visible to the user.
+  showWindowWhenReady(window, {
+    label: "main",
+    onShow: () => {
+      // Claim the dock icon as soon as the library is on screen. On
+      // macOS this flips activation policy → Regular; on other
+      // platforms `app.dock` is undefined and this is a no-op.
+      if (process.platform === "darwin" && !isE2E()) {
+        showDockWithDevelopmentIcon();
+      }
     }
   });
 
@@ -315,10 +322,7 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
 
   loadRenderer(window, rendererTarget("settings", extraHash));
 
-  window.once("ready-to-show", () => {
-    log.info("settings window ready-to-show", { id: window.id });
-    window.show();
-  });
+  showWindowWhenReady(window, { label: "settings" });
 
   window.on("close", () => log.info("settings window close event", { id: window.id }));
   window.on("closed", () => {
@@ -364,10 +368,7 @@ export function showAppDocumentWindow(kind: AppDocumentKind): BrowserWindow {
 
   loadRenderer(window, rendererTarget("document", `kind=${kind}`));
 
-  window.once("ready-to-show", () => {
-    log.info("document window ready-to-show", { id: window.id, kind });
-    window.show();
-  });
+  showWindowWhenReady(window, { label: `document/${kind}` });
 
   window.on("close", () => log.info("document window close event", { id: window.id, kind }));
   window.on("closed", () => {
@@ -603,10 +604,12 @@ export function createEditWindow(captureId: string): BrowserWindow {
 
   loadRenderer(window, rendererTarget("edit", `captureId=${encodeURIComponent(captureId)}`));
 
-  window.once("ready-to-show", () => {
-    log.info("edit window ready-to-show", { id: window.id, captureId });
-    window.show();
-    window.focus();
+  showWindowWhenReady(window, {
+    label: `edit/${captureId}`,
+    // Focus the edit window so the user's next keystroke lands on the
+    // canvas (Cmd+Z for undo, tool letters, etc.) rather than the
+    // launching window.
+    onShow: () => window.focus()
   });
 
   return window;

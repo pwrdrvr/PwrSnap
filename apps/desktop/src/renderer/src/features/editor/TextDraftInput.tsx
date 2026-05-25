@@ -75,39 +75,33 @@ export function TextDraftInput({
     size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
   const fontPx =
     canvasCssHeight > 0 ? canvasCssHeight * (sizePx / shortSide) : 16;
-  // Halo to match TextGlyph's SVG stroke. The SVG renders a stroke of
-  // `strokeWidth = fontSize * 0.08` in BLACK (rgba(0,0,0,0.6)) with
-  // `paintOrder="stroke"`, then layers an accent-colored fill on top.
-  // Net visible halo is approximately HALF the strokeWidth (the stroke
-  // is centered on the glyph path; only the outer half is visible
-  // around the accent fill). Match that here:
-  //   • COLOR: black (rgba(0,0,0,0.6)) — pre-fix this was WHITE,
-  //     making the draft look like a soft glow instead of the SVG's
-  //     crisp dark outline. Side-by-side they looked nothing alike.
-  //   • WIDTH: fontPx * 0.04 — half of the SVG's stroke-width, since
-  //     CSS text-shadow paints OUTSIDE the glyph path (no inner
-  //     overlap to subtract). Pre-fix this was fontPx * 0.08 — twice
-  //     as thick, making the draft look heavier than the commit.
+  // Halo MUST use the SAME technique as TextGlyph's SVG stroke or
+  // Regular-weight glyphs render visibly wider on commit than they did
+  // in draft. Why: SVG strokes are GEOMETRIC outlines that follow the
+  // glyph path exactly, while CSS text-shadow at 8 cardinal offsets is
+  // an APPROXIMATION made of duplicate glyph shapes. The approximation
+  // works fine for Bold (thick glyphs swallow the rendering
+  // differences) but breaks for Regular (thin glyphs where the SVG
+  // stroke adds a lot of visible thickness relative to the fill, and
+  // the text-shadow approximation doesn't quite match). Net effect:
+  // Regular weight looked wider after Enter — different rendering
+  // pipelines, different effective halo, even at matching widths.
+  //
+  // Chromium supports `-webkit-text-stroke` + `paint-order: stroke fill`
+  // on HTML text — that gives us the same GEOMETRIC stroke as SVG.
+  // Width matches TextGlyph's `strokeWidth = fontSize * 0.08`. paint-
+  // order=stroke means stroke paints first, fill on top — matching
+  // TextGlyph's `paintOrder="stroke"`. Net visible halo (outside-half
+  // of the centered stroke) = fontPx * 0.04, same as SVG, same render
+  // algorithm.
+  //
   // Clamped to 1px minimum so small fonts still show a halo.
-  const haloPx = Math.max(1, fontPx * 0.04);
+  const strokePx = Math.max(1, fontPx * 0.08);
   // Font family stack — verbatim from TextGlyph. Apple system fonts
   // render slightly differently from HTML's default "system-ui" alias,
   // so being explicit here keeps the rendered glyph metrics identical.
   const fontFamily =
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-  // Eight directional black shadows produce a uniform dark outline
-  // without a blur pass — crisp edges matching the SVG stroke. Same
-  // rgba as TextGlyph's stroke (0.6 alpha).
-  const textShadow = [
-    `-${haloPx}px -${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `${haloPx}px -${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `-${haloPx}px ${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `${haloPx}px ${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `0 -${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `0 ${haloPx}px 0 rgba(0,0,0,0.6)`,
-    `-${haloPx}px 0 0 rgba(0,0,0,0.6)`,
-    `${haloPx}px 0 0 rgba(0,0,0,0.6)`
-  ].join(", ");
   const wrapperStyle: CSSProperties = {
     position: "absolute",
     left: `${draft.xn * 100}%`,
@@ -132,7 +126,12 @@ export function TextDraftInput({
     lineHeight: 1,
     color: colorHex,
     caretColor: "var(--accent, #ff8a1f)",
-    textShadow,
+    // Geometric outline matching TextGlyph's SVG stroke — see the
+    // strokePx comment above for why this MUST be text-stroke and not
+    // text-shadow. `paint-order: stroke` makes the stroke paint first,
+    // fill on top — covering the inner half of the centered stroke.
+    WebkitTextStroke: `${strokePx}px rgba(0,0,0,0.6)`,
+    paintOrder: "stroke" as CSSProperties["paintOrder"],
     // No chrome — must visually match the committed glyph.
     background: "transparent",
     border: "none",

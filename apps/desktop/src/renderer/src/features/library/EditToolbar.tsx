@@ -578,14 +578,35 @@ export function EditToolbar({
           onConfirm={async () => {
             if (captureId === undefined) return;
             setResetArmedAt(null);
-            const list = await dispatch("overlays:list", { captureId });
-            if (!list.ok) return;
-            // Sequentially — the overlays handler updates app_stats /
-            // edits_version per row + broadcasts. Parallel deletes would
-            // race those side-effects.
-            for (const row of list.value) {
-              // eslint-disable-next-line no-await-in-loop
-              await dispatch("overlays:delete", { id: row.id });
+            // Format-branch — Phase 3 doctor migrates captures to v2 on
+            // first edit-open, and the bus-side gates refuse cross-
+            // format IPC (v2 captures → `overlays:list` returns
+            // Result.err `v2_capture_use_layers_ipc`). Before this fix
+            // Reset silently no-op'd on every doctored capture.
+            const recordRes = await dispatch("library:byId", { id: captureId });
+            if (!recordRes.ok || recordRes.value === null) return;
+            const isV2 = recordRes.value.bundle_format_version >= 2;
+            if (isV2) {
+              const list = await dispatch("layers:list", { captureId });
+              if (!list.ok) return;
+              // Skip the synthesized root group + raster source; just
+              // delete user-facing annotation layers. Sequential per
+              // the same broadcast / edits_version reasoning as v1.
+              for (const node of list.value) {
+                if (node.kind === "group" || node.kind === "raster") continue;
+                // eslint-disable-next-line no-await-in-loop
+                await dispatch("layers:delete", { id: node.id });
+              }
+            } else {
+              const list = await dispatch("overlays:list", { captureId });
+              if (!list.ok) return;
+              // Sequentially — the overlays handler updates app_stats /
+              // edits_version per row + broadcasts. Parallel deletes
+              // would race those side-effects.
+              for (const row of list.value) {
+                // eslint-disable-next-line no-await-in-loop
+                await dispatch("overlays:delete", { id: row.id });
+              }
             }
           }}
         />

@@ -381,11 +381,19 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       const target = e.target;
       if (!(target instanceof Node)) return;
       if (root.contains(target)) return;
-      // Clicks on the anchor itself are "the user wants to toggle"
-      // and the parent toolbar handles that — but ALSO treat it as
-      // outside-click so we close. The parent's onClose handler can
-      // distinguish via state if needed.
+      // Clicks on the anchor (main tool button) — the parent toolbar's
+      // onClick handler will toggle the popover state, so the close
+      // here is redundant. Bail.
       if (anchor !== null && anchor.contains(target)) return;
+      // Clicks on the CARET button — anchor's sibling inside the same
+      // tool-wrap. anchor.parentElement is the wrap (.psl__et-tool-wrap
+      // or the EditorToolbar's equivalent). Closing here would cause a
+      // close-then-reopen flash: this listener fires (capture phase)
+      // and closes the popover; then React's onClick on the caret fires
+      // and toggles the popover state from null → tool → reopens.
+      // Treating the whole wrap as part of the anchor zone lets the
+      // caret own its own toggle behavior.
+      if (anchor !== null && anchor.parentElement?.contains(target)) return;
       onClose();
     };
     const onKey = (e: KeyboardEvent): void => {

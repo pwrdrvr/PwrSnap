@@ -1294,18 +1294,32 @@ function TextGlyph({
 }: {
   point: { x: number; y: number };
   body: string;
-  size: "small" | "large";
+  size: "small" | "medium" | "large";
   imageWidthPx: number;
   imageHeightPx: number;
   /** See ArrowGlyph.color. */
   color?: "auto" | string | undefined;
 }): ReactElement {
   // Font size derived from image short-side, matching the bake.
+  // Three buckets at ~1.7× ratios so users can actually tell them
+  // apart in the popover — the old 60/30 split made "small" too tiny
+  // to read at typical zooms and the medium/large gap was too small
+  // to be useful.
+  //   small  ≈ shortSide / 50  (e.g. 38 px on a 1920-px-tall image)
+  //   medium ≈ shortSide / 30  (e.g. 64 px)
+  //   large  ≈ shortSide / 18  (e.g. 107 px)
+  // Same values in the bake; see compose.ts textSvg.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const sizePx = size === "large" ? shortSide / 30 : shortSide / 60;
+  const sizePx =
+    size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
   const fontSize = sizePx / shortSide;
   const accent =
     color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
+  // Multi-line support: body may contain "\n" from the Shift+Enter
+  // path in the draft input. Split, emit one <tspan> per line with
+  // dy="1.2em" advancing the baseline. Single-line bodies keep their
+  // original placement exactly (the first tspan has dy="0").
+  const lines = body.split("\n");
   // Compensate for the outer SVG's `preserveAspectRatio="none"` on a
   // viewBox of `0 0 1 1`. With "none", X and Y axes scale independently
   // to fill the canvas — so a glyph at font-size F user-units ends up
@@ -1333,6 +1347,10 @@ function TextGlyph({
   // normalized rect fills the canvas rect at any aspect. Text is the
   // only glyph where the natural-aspect rendering matters.
   const aspectCompensation = imageHeightPx / imageWidthPx;
+  // Vertically center the FIRST line on the click point — matches the
+  // draft input's `translateY(-50%)` so the text doesn't jump on
+  // commit. Subsequent lines extend downward via `dy="1.2em"` per
+  // tspan, which is the conventional layout for multi-line annotation.
   return (
     <g
       transform={`translate(${point.x} ${point.y}) scale(${aspectCompensation} 1)`}
@@ -1347,9 +1365,13 @@ function TextGlyph({
         stroke="rgba(0,0,0,0.6)"
         strokeWidth={fontSize * 0.08}
         paintOrder="stroke"
-        dominantBaseline="hanging"
+        dominantBaseline="central"
       >
-        {body}
+        {lines.map((line, i) => (
+          <tspan key={i} x={0} dy={i === 0 ? "0em" : "1.2em"}>
+            {line}
+          </tspan>
+        ))}
       </text>
       <text
         x={0}
@@ -1358,9 +1380,13 @@ function TextGlyph({
         fontSize={fontSize}
         fontWeight={600}
         fill={accent}
-        dominantBaseline="hanging"
+        dominantBaseline="central"
       >
-        {body}
+        {lines.map((line, i) => (
+          <tspan key={i} x={0} dy={i === 0 ? "0em" : "1.2em"}>
+            {line}
+          </tspan>
+        ))}
       </text>
     </g>
   );

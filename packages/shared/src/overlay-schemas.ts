@@ -214,8 +214,17 @@ export const TextOverlay = z.object({
   kind: z.literal("text"),
   point: NormalizedPoint,
   body: z.string().max(2000),
-  /** Two sizes — small / large — derived from image short-side at render time. */
-  size: z.union([z.literal("small"), z.literal("large")]).default("small"),
+  /** Three sizes — small / medium / large — derived from image short-side
+   *  at render time. The ratio between buckets is intentionally ~1.7×
+   *  so they're visually distinct (the original v1 schema only had
+   *  small/large at a 2× ratio, which mapped popover "medium" to "large"
+   *  silently; users couldn't tell their picks apart). "medium" is a
+   *  back-compatible addition: legacy rows with size="small"|"large"
+   *  parse unchanged, and the renderer keeps its historical sizes for
+   *  those buckets — only "medium" lands as a new in-between value. */
+  size: z
+    .union([z.literal("small"), z.literal("medium"), z.literal("large")])
+    .default("medium"),
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
 });
 

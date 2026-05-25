@@ -606,12 +606,33 @@ function textSvg(
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  // Two sizes per the schema: small ≈ 1.7%, large ≈ 3.3% of short-side.
-  const fontSizePx = data.size === "large" ? shortSidePx / 30 : shortSidePx / 60;
+  // Three buckets, ~1.7× ratios — must match
+  // apps/desktop/src/renderer/src/features/editor/OverlaySvg.tsx's
+  // TextGlyph or the live preview and the export will disagree.
+  //   small  ≈ shortSide / 50
+  //   medium ≈ shortSide / 30
+  //   large  ≈ shortSide / 18
+  const fontSizePx =
+    data.size === "large"
+      ? shortSidePx / 18
+      : data.size === "medium"
+        ? shortSidePx / 30
+        : shortSidePx / 50;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
-  // Black halo via paint-order. xml-escape the body so user input
-  // can't break out of the SVG.
-  const escaped = escapeXml(data.body);
+  // Multi-line: split body on "\n" and emit one tspan per line, each
+  // advancing the baseline by 1.2em. dominant-baseline="central" puts
+  // the first line's glyph center on the click point (matches the
+  // editor's click-to-center UX) — the v1 default was "hanging" which
+  // put the click at the TOP of the text, causing it to appear below
+  // the cursor on commit. The renderer (TextGlyph) does the same.
+  // xml-escape each line so user input can't break out of the SVG.
+  const lines = data.body
+    .split("\n")
+    .map((line, i) => {
+      const dy = i === 0 ? "0em" : "1.2em";
+      return `<tspan x="${xPx}" dy="${dy}">${escapeXml(line)}</tspan>`;
+    })
+    .join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
@@ -621,7 +642,7 @@ function textSvg(
         stroke="rgba(0,0,0,0.7)"
         stroke-width="${fontSizePx * 0.08}"
         paint-order="stroke"
-        dominant-baseline="hanging">${escaped}</text>
+        dominant-baseline="central">${lines}</text>
 </svg>`;
 }
 

@@ -106,7 +106,7 @@ export type Point = { x: number; y: number };
 export type VectorGeometry =
   | { kind: "arrow"; from: Point; to: Point }
   | { kind: "rect"; rect: Rect }
-  | { kind: "text"; point: Point; body: string; size: "small" | "large" }
+  | { kind: "text"; point: Point; body: string; size: "small" | "medium" | "large" }
   | { kind: "step"; point: Point; index: number };
 
 export type VectorStyle = {

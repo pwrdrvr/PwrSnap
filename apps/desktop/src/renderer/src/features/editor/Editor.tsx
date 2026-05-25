@@ -318,17 +318,24 @@ function selectedOverlayToToolStyle(
 }
 
 /** Map a text tool's `fontSize` preset (auto / small / medium / large)
- *  into the v1 `TextOverlay.size` enum (small | large). The v1 schema
- *  only has two buckets; "auto" + "small" → "small", "medium" + "large"
- *  → "large". Numeric presets aren't reachable from the popover today
- *  but fall back to "small" defensively. */
+ *  into the `TextOverlay.size` enum (small | medium | large). Three
+ *  buckets with a ~1.7× ratio between each — the v1 schema originally
+ *  only had small/large so "medium" silently collapsed to "large",
+ *  making the popover's three sizes look identical. The schema now
+ *  carries "medium" as a first-class bucket; this helper is the only
+ *  place that maps the popover's "auto" sentinel — default goes to
+ *  "medium" (the sweet spot for screenshot annotation) instead of the
+ *  too-small "small" the v1 schema defaulted to. Numeric presets
+ *  aren't reachable from the popover today but fall back to "medium"
+ *  defensively. */
 function resolveTextSize(
   fontSize: ToolSizePreset | number
-): "small" | "large" {
-  if (typeof fontSize === "number") return "small";
+): "small" | "medium" | "large" {
+  if (typeof fontSize === "number") return "medium";
   if (fontSize === "large") return "large";
-  if (fontSize === "medium") return "large";
-  return "small";
+  if (fontSize === "small") return "small";
+  // "auto" and "medium" both resolve to medium.
+  return "medium";
 }
 
 /** v2 → v1 read-only projection. The existing `OverlaySvg` and
@@ -644,7 +651,7 @@ export function Editor({
   const overlaysRef = useRef<OverlayRow[]>([]);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
-  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // True while undo/redo is replaying an op via the IPC. The
   // events:overlays:changed broadcast will fire and refetch; we
   // don't want that refetch to re-record a new EditOp.
@@ -1346,7 +1353,7 @@ function EditorLoaded({
   setDraft: (d: Draft | null) => void;
   canvasRef: React.RefObject<HTMLDivElement | null>;
   canvasWrapRef: React.RefObject<HTMLDivElement | null>;
-  textInputRef: React.RefObject<HTMLInputElement | null>;
+  textInputRef: React.RefObject<HTMLTextAreaElement | null>;
   undoApplyingRef: React.RefObject<boolean>;
   recordCreateRef: React.RefObject<
     | ((

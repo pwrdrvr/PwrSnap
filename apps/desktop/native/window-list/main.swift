@@ -368,7 +368,33 @@ if args.count >= 4 && args[1] == "--extract-app-icon" {
     exit(0)
 }
 
+/// Snapshot envelope. Wraps the on-screen window list with the
+/// pid / bundle id of `NSWorkspace.shared.frontmostApplication` —
+/// the system's "currently active app". The TS side cross-checks
+/// the snapshot's first entry against this value and warns when
+/// they diverge. That divergence is the smoking gun for the
+/// "picker chose Claude when cursor was over Library" class of
+/// bug: CGWindowList's z-order can lag the actual frontmost-app
+/// state, or transparent windows can sit at CGWindowList z=0
+/// while another app's window is visually on top.
+///
+/// `frontmostPid` is null when no app is reported as frontmost
+/// (e.g. a brief macOS transition state). In that case the TS
+/// side leaves the snapshot order untouched and emits no warning.
+struct WindowListSnapshot: Encodable {
+    let windows: [WindowInfo]
+    let frontmostPid: Int?
+    let frontmostBundleId: String?
+}
+
+let frontmostApp = NSWorkspace.shared.frontmostApplication
+let snapshot = WindowListSnapshot(
+    windows: collectWindows(),
+    frontmostPid: frontmostApp.map { Int($0.processIdentifier) },
+    frontmostBundleId: frontmostApp?.bundleIdentifier
+)
+
 let encoder = JSONEncoder()
 encoder.outputFormatting = []
-let data = try encoder.encode(collectWindows())
+let data = try encoder.encode(snapshot)
 FileHandle.standardOutput.write(data)

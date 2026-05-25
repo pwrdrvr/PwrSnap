@@ -22,7 +22,7 @@ import { getPreloadPath } from "../window";
 import {
   activateApp,
   boundsApproxEqual,
-  listWindows,
+  listWindowsSnapshot,
   selfPidSet,
   type WindowInfo
 } from "./window-list";
@@ -389,16 +389,18 @@ export async function pickRegion(
       win.webContents.send(SELECTOR_WINDOW_LIST_CHANNEL, payload);
     }, 50);
   };
-  const windowListPromise = listWindows()
-    .then((rawSnapshot) => {
+  const windowListPromise = listWindowsSnapshot()
+    .then((snapshot) => {
       if (!acceptingWindowList) return;
       if (selectorVisible && pendingResolver !== windowListResolver) return;
       const prepared = prepareWindowListPayload({
-        rawSnapshot,
+        rawSnapshot: snapshot.windows,
         targetDisplay,
         displayCursor,
         ourPids,
-        selectorWindow: win
+        selectorWindow: win,
+        frontmostPid: snapshot.frontmostPid,
+        frontmostBundleId: snapshot.frontmostBundleId
       });
       lastSnapshot = prepared.snapshot;
       previousAppPid = prepared.previousAppPid;
@@ -564,12 +566,27 @@ function prepareWindowListPayload(args: {
   displayCursor: { x: number; y: number };
   ourPids: Set<number>;
   selectorWindow: BrowserWindow;
+  /** pid reported by `NSWorkspace.shared.frontmostApplication` at
+   *  snapshot time. `null` on non-darwin platforms or when the
+   *  envelope wasn't produced by a frontmost-aware helper build. */
+  frontmostPid: number | null;
+  /** bundle id companion to `frontmostPid` — included in the
+   *  mismatch warning for legibility. */
+  frontmostBundleId: string | null;
 }): {
   snapshot: WindowInfo[];
   previousAppPid: number | null;
   payload: SelectorWindowListPayload;
 } {
-  const { rawSnapshot, targetDisplay, displayCursor, ourPids, selectorWindow } = args;
+  const {
+    rawSnapshot,
+    targetDisplay,
+    displayCursor,
+    ourPids,
+    selectorWindow,
+    frontmostPid,
+    frontmostBundleId
+  } = args;
   const displayBounds = targetDisplay.bounds;
   const snapshot = rawSnapshot.filter(
     (w) => !isSelectorOverlayWindow(w, displayBounds, ourPids, selectorWindow)
@@ -671,6 +688,32 @@ function prepareWindowListPayload(args: {
       ` raw=${rawSnapshot.length} onDisplay=${onThisDisplay.length}` +
       ` meaningful=${meaningful.length} kept=${localized.length}`
   );
+
+  // Diagnostic: warn when CGWindowList's z=0 disagrees with the
+  // system's frontmost-app pid. Background: the snap picker's hit-
+  // test trusts CGWindowList's "front-to-back" ordering — `findWindowAt`
+  // walks the list and returns the first window containing the
+  // cursor. When CGWindowList z=0 doesn't match the actual frontmost
+  // app, the picker can snap to a window the user perceives as
+  // "behind" the visually-on-top window (e.g. cursor over the Library
+  // gets reported as snapping to Claude). This is the smoking gun for
+  // that class of bug — see the "window-picker selecting wrong z-order"
+  // investigation in the dock-icon fix PR for the full story.
+  //
+  // Skipped when frontmostPid is null (non-darwin or pre-envelope
+  // helper) or the snapshot is empty.
+  if (frontmostPid !== null && snapshot.length > 0) {
+    const topWindow = snapshot[0]!;
+    if (topWindow.pid !== frontmostPid) {
+      log.warn(
+        `snap candidates: CGWindowList z=0 (pid=${topWindow.pid} app=${topWindow.appName ?? "?"}` +
+          ` window=${topWindow.windowId}) disagrees with NSWorkspace.frontmostApplication` +
+          ` (pid=${frontmostPid} bundle=${frontmostBundleId ?? "?"}) — the snap picker may` +
+          ` choose a window the user perceives as behind the visually-on-top one`
+      );
+    }
+  }
+
   log.debug("snap candidates detail", {
     display: {
       id: targetDisplay.id,
@@ -684,6 +727,10 @@ function prepareWindowListPayload(args: {
       isSimpleFullScreen: selectorWindow.isSimpleFullScreen()
     },
     ourPids: Array.from(ourPids),
+    frontmost: {
+      pid: frontmostPid,
+      bundleId: frontmostBundleId
+    },
     candidates: localized.map((c) => ({
       z: c.zIndex,
       id: c.windowId,

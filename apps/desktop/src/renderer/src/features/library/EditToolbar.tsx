@@ -555,6 +555,7 @@ export function EditToolbar({
             <ToolButton
               tool={t}
               active={toolState.activeTool === t.id}
+              popoverOpen={popoverTool === t.id}
               onClick={(e) => handleToolClick(t.id, e)}
               onCaretClick={(e) => {
                 // Pointer + crop have no style block; suppress the
@@ -687,6 +688,7 @@ export function EditToolbar({
 function ToolButton({
   tool,
   active,
+  popoverOpen = false,
   onClick,
   onCaretClick,
   showCaret,
@@ -694,13 +696,23 @@ function ToolButton({
 }: {
   tool: { id: Tool; label: string; key: string; icon: ReactElement };
   active: boolean;
+  /** True when this tool's style popover is currently open. Rotates
+   *  the caret ▲ to indicate the open state — matches the convention
+   *  every dropdown menu in the OS UI follows. */
+  popoverOpen?: boolean;
   onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onCaretClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   showCaret: boolean;
   buttonRef: (el: HTMLButtonElement | null) => void;
 }): ReactElement {
   return (
-    <span className="psl__et-tool-wrap">
+    <span
+      className={
+        "psl__et-tool-wrap" +
+        (active ? " is-active" : "") +
+        (popoverOpen ? " is-popover-open" : "")
+      }
+    >
       <button
         type="button"
         ref={buttonRef}
@@ -716,8 +728,9 @@ function ToolButton({
       {showCaret && active && (
         <button
           type="button"
-          className="psl__et-caret"
+          className={"psl__et-caret" + (popoverOpen ? " is-open" : "")}
           aria-label={`${tool.label} style options`}
+          aria-expanded={popoverOpen}
           data-testid={`tool-caret-${tool.id}`}
           onClick={onCaretClick}
           // Stop pointerdown so the toolbar's own

@@ -49,6 +49,9 @@ export interface DraftStyle {
   /** Rect-tool only — render the live-drag rect as a filled fill
    *  rather than a stroke-only outline. */
   filled?: boolean;
+  /** Highlight-tool only — CSS mix-blend-mode for the live-drag
+   *  preview. Mirrors the persisted overlay's `blend` field. */
+  highlightBlend?: "multiply" | "screen" | "overlay";
 }
 
 export function OverlaySvg({
@@ -152,6 +155,7 @@ export function OverlaySvg({
           rect={data.rect}
           color={data.color}
           opacity={data.opacity}
+          blend={data.blend}
         />
       ))}
       {rects.map(({ row, data }) => (
@@ -228,7 +232,12 @@ export function OverlaySvg({
       {draft?.kind === "rect-drag" && liveRect !== null && (
         <>
           {draft.tool === "highlight" && (
-            <HighlightGlyph rect={liveRect} color={draftStyle?.color} isDraft />
+            <HighlightGlyph
+              rect={liveRect}
+              color={draftStyle?.color}
+              blend={draftStyle?.highlightBlend}
+              isDraft
+            />
           )}
           {draft.tool === "rect" && (
             <RectGlyph
@@ -600,6 +609,7 @@ function HighlightGlyph({
   rect,
   color,
   opacity,
+  blend,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
@@ -609,6 +619,16 @@ function HighlightGlyph({
   /** Optional 0..1 opacity. Legacy rows fall back to the marker-pen
    *  default (0.32 applied, 0.45 draft). */
   opacity?: number | undefined;
+  /** CSS mix-blend-mode for the highlight rect. Mirrors the
+   *  HighlightOverlay's optional `blend` field — `multiply` darkens
+   *  the area below (classic marker-pen look on light bg), `screen`
+   *  brightens (good for dark UI), `overlay` combines both for
+   *  high-contrast emphasis. Legacy rows without blend fall back to
+   *  `multiply` (the historical hardcoded behavior was implicit
+   *  multiply via fill+opacity, even though no actual blend-mode
+   *  was set — this default keeps existing captures looking the
+   *  same). */
+  blend?: "multiply" | "screen" | "overlay" | undefined;
   isDraft?: boolean;
 }): ReactElement {
   // Legacy marker yellow + opacity tunings preserved as defaults for
@@ -625,6 +645,12 @@ function HighlightGlyph({
       : isDraft
       ? 0.45
       : 0.32;
+  // Resolved blend mode for the CSS mix-blend-mode attribute on the
+  // <rect>. SVG 2 supports mix-blend-mode via the `style` attribute;
+  // Chromium honors it on individual SVG children, so the highlight
+  // rect blends only with the canvas below — NOT with other overlays
+  // (which sit in the same SVG and don't have blend modes applied).
+  const resolvedBlend = blend ?? "multiply";
   return (
     <rect
       x={rect.x}
@@ -634,6 +660,7 @@ function HighlightGlyph({
       fill={baseHex}
       fillOpacity={fillOpacity}
       stroke="none"
+      style={{ mixBlendMode: resolvedBlend }}
     />
   );
 }

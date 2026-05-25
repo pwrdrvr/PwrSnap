@@ -21,6 +21,7 @@ import type { OverlayRow } from "@pwrsnap/shared";
 
 import {
   arrowSvgForV2,
+  highlightBlendModeForV2,
   highlightSvgForV2,
   rasterizeSvgForV2,
   rectSvgForV2,
@@ -50,14 +51,19 @@ export async function buildCompositeLayersForV2(
           canvasHeightPx
         )
       ];
-    case "highlight":
-      return [
-        await rasterizeSvgForV2(
-          highlightSvgForV2(data, canvasWidthPx, canvasHeightPx),
-          canvasWidthPx,
-          canvasHeightPx
-        )
-      ];
+    case "highlight": {
+      // Blend mode is applied at the sharp composite step (libvips
+      // `blend: 'multiply' | 'screen' | 'overlay'`), not in the SVG —
+      // resvg's mix-blend-mode handling is unreliable, and the SVG
+      // background is transparent anyway so any in-SVG blend would
+      // resolve against nothing. Mirrors v1 buildCompositeLayers.
+      const layer = await rasterizeSvgForV2(
+        highlightSvgForV2(data, canvasWidthPx, canvasHeightPx),
+        canvasWidthPx,
+        canvasHeightPx
+      );
+      return [{ ...layer, blend: highlightBlendModeForV2(data) }];
+    }
     case "text":
       return [
         await rasterizeSvgForV2(

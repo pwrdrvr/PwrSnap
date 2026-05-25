@@ -181,6 +181,10 @@ function resolveDraftStyleForActiveTool(
         filled: activeStyle.style.filled
       };
     case "highlight":
+      return {
+        color: resolveToolColor(activeStyle.style.color),
+        highlightBlend: activeStyle.style.blend
+      };
     case "text":
       return { color: resolveToolColor(activeStyle.style.color) };
     default:

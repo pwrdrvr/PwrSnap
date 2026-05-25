@@ -32,6 +32,9 @@ import {
   readArrowEndStyle,
   readArrowStemStyle,
   readBlurStyle,
+  readHighlightBlend,
+  readHighlightColor,
+  readHighlightOpacity,
   readOverlayThickness,
   readRectFilled
 } from "@pwrsnap/shared";
@@ -271,10 +274,18 @@ async function buildCompositeLayers(
       return [await rasterize(arrowSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "rect":
       return [await rasterize(rectSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "highlight":
-      return [
-        await rasterize(highlightSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)
-      ];
+    case "highlight": {
+      // Highlight blend modes (multiply / screen / overlay) only take
+      // effect at the sharp composite step — the rasterized SVG alone
+      // would produce flat "over" compositing. Attach blend to the
+      // OverlayOptions after rasterize.
+      const layer = await rasterize(
+        highlightSvg(data, imageWidthPx, imageHeightPx),
+        imageWidthPx,
+        imageHeightPx
+      );
+      return [{ ...layer, blend: highlightBlendMode(data) }];
+    }
     case "text":
       return [await rasterize(textSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "blur": {
@@ -557,9 +568,32 @@ function highlightSvg(
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
+  // Honor the row's `color` + `opacity` (legacy rows fall back to
+  // yellow + 0.32 via the shared read helpers — matches the renderer's
+  // HighlightGlyph defaults). The blend mode is NOT applied in the
+  // SVG — resvg doesn't honor `mix-blend-mode` reliably, and even if
+  // it did, the blend would happen between the highlight rect and the
+  // SVG background (transparent), not against the photo below. We
+  // attach `blend` to the sharp composite layer instead; see the
+  // `case "highlight"` branch in buildCompositeLayers /
+  // buildCompositeLayersForV2.
+  const fillHex = readHighlightColor(data);
+  const fillOpacity = readHighlightOpacity(data);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="rgba(255, 220, 80, 0.32)" />
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillHex}" fill-opacity="${fillOpacity}" />
 </svg>`;
+}
+
+/** Resolve a highlight row's blend mode to the sharp/libvips
+ *  composite `blend` option string. The schema's blend values
+ *  (`multiply` / `screen` / `overlay`) map 1:1 to libvips blend
+ *  modes — sharp accepts them verbatim. Exported via
+ *  `highlightBlendForV2` below so the v2 vector compositor stays
+ *  in lockstep. */
+function highlightBlendMode(
+  data: Extract<OverlayRow["data"], { kind: "highlight" }>
+): "multiply" | "screen" | "overlay" {
+  return readHighlightBlend(data);
 }
 
 /* ----------------------------- Text ----------------------------- */
@@ -700,6 +734,10 @@ export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
 export const rectSvgForV2 = rectSvg;
 export const highlightSvgForV2 = highlightSvg;
+/** Maps a highlight overlay row to the sharp composite `blend` option
+ *  string. Used by the v2 vector compositor to keep the bake's blend
+ *  behavior identical to v1's. */
+export const highlightBlendModeForV2 = highlightBlendMode;
 export const textSvgForV2 = textSvg;
 /** Internal blur-layer builder, exported for unit tests so the bake
  *  paths for gaussian / pixelate / redact can be asserted in

@@ -1306,11 +1306,40 @@ function TextGlyph({
   const fontSize = sizePx / shortSide;
   const accent =
     color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
+  // Compensate for the outer SVG's `preserveAspectRatio="none"` on a
+  // viewBox of `0 0 1 1`. With "none", X and Y axes scale independently
+  // to fill the canvas — so a glyph at font-size F user-units ends up
+  // rendering at F×canvasH CSS tall AND glyph-aspect×F×canvasW CSS wide.
+  // On a landscape capture (e.g. 2880×1920) that stretches text 1.5×
+  // wider per glyph than HTML at the same font-size, producing the
+  // "draft input looks tiny, commit jumps bigger" mismatch the user
+  // reported.
+  //
+  // Fix: scale text glyphs in X by H/W in the local user space, then
+  // let the viewport stretch take it the rest of the way. Net X scale
+  // becomes (H/W) × canvasW = canvasH (since aspect is preserved on
+  // the canvas), matching Y. The text now renders isotropically at
+  // canvasH/60 CSS px on both axes — identical to the bake's natural
+  // (square-coords) viewBox and the HTML draft input's font-size math.
+  //
+  // The transform also positions the text origin so we don't move the
+  // anchor: translate FIRST to put the glyph at (point.x, point.y) in
+  // viewBox coords, THEN scale around that origin. Inside the wrapper,
+  // each <text> uses x=0,y=0 so its left/top edge sits exactly on the
+  // anchor.
+  //
+  // Only TextGlyph needs this. Rect / arrow / highlight all describe
+  // rectangular shapes whose stretch IS the desired behavior — a
+  // normalized rect fills the canvas rect at any aspect. Text is the
+  // only glyph where the natural-aspect rendering matters.
+  const aspectCompensation = imageHeightPx / imageWidthPx;
   return (
-    <g>
+    <g
+      transform={`translate(${point.x} ${point.y}) scale(${aspectCompensation} 1)`}
+    >
       <text
-        x={point.x}
-        y={point.y}
+        x={0}
+        y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         fontSize={fontSize}
         fontWeight={600}
@@ -1323,8 +1352,8 @@ function TextGlyph({
         {body}
       </text>
       <text
-        x={point.x}
-        y={point.y}
+        x={0}
+        y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         fontSize={fontSize}
         fontWeight={600}

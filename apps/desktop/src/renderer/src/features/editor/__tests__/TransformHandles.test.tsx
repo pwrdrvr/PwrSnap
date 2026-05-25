@@ -108,6 +108,10 @@ function textRow(): OverlayRow {
 interface HarnessProps {
   selectedOverlay: OverlayRow;
   onGeometryChange?: (g: GeometryUpdate) => void;
+  /** Optional live-preview hook fired on every pointermove during a
+   *  drag. Threaded through to TransformHandles so tests can assert
+   *  on the in-progress geometry stream. */
+  onGeometryDrag?: (g: GeometryUpdate) => void;
   onDragStart?: (row: OverlayRow) => void;
   onDragEnd?: () => void;
 }
@@ -121,6 +125,7 @@ async function render(props: HarnessProps): Promise<HTMLElement> {
       createElement(TransformHandles, {
         selectedOverlay: props.selectedOverlay,
         onGeometryChange: props.onGeometryChange ?? (() => undefined),
+        onGeometryDrag: props.onGeometryDrag,
         onDragStart: props.onDragStart,
         onDragEnd: props.onDragEnd
       } as Parameters<typeof TransformHandles>[0])
@@ -175,16 +180,33 @@ function firePointer(
   });
 }
 
+/** Count of the resize / endpoint / anchor handles, excluding the
+ *  transparent body-hit rect (added by the drag-to-move work). The
+ *  body shares the `transform-handle-` testid prefix so a raw
+ *  `[data-testid^="transform-handle-"]` selector matches it too; this
+ *  helper filters it out so the existing per-kind asserts stay
+ *  focused on the resize surface. */
+function countResizeHandles(): number {
+  const all = document.querySelectorAll('[data-testid^="transform-handle-"]');
+  let n = 0;
+  for (const el of Array.from(all)) {
+    if (el.getAttribute("data-testid") !== "transform-handle-body") n += 1;
+  }
+  return n;
+}
+
 describe("TransformHandles", () => {
   test("rect: renders 8 handles (4 corners + 4 edges)", async () => {
     await render({ selectedOverlay: rectRow() });
-    const handles = document.querySelectorAll('[data-testid^="transform-handle-"]');
-    expect(handles.length).toBe(8);
+    expect(countResizeHandles()).toBe(8);
     // Verify each handle kind is present.
     for (const k of ["nw", "ne", "se", "sw", "n", "e", "s", "w"]) {
       const h = document.querySelector(`[data-testid="transform-handle-${k}"]`);
       expect(h, `missing ${k} handle`).not.toBeNull();
     }
+    // Body-hit rect for drag-to-move sits alongside the 8 resize
+    // handles for rect-shaped layers.
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
   test("highlight: 8 handles (rect/highlight/blur share the rect layout)", async () => {
@@ -196,7 +218,8 @@ describe("TransformHandles", () => {
       }
     };
     await render({ selectedOverlay: hl });
-    expect(document.querySelectorAll('[data-testid^="transform-handle-"]').length).toBe(8);
+    expect(countResizeHandles()).toBe(8);
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
   test("blur: 8 handles", async () => {
@@ -208,20 +231,29 @@ describe("TransformHandles", () => {
       }
     };
     await render({ selectedOverlay: blur });
-    expect(document.querySelectorAll('[data-testid^="transform-handle-"]').length).toBe(8);
+    expect(countResizeHandles()).toBe(8);
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
   test("arrow: renders 2 endpoint handles", async () => {
     await render({ selectedOverlay: arrowRow() });
-    expect(document.querySelectorAll('[data-testid^="transform-handle-"]').length).toBe(2);
+    expect(countResizeHandles()).toBe(2);
     expect(document.querySelector('[data-testid="transform-handle-arrow-from"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="transform-handle-arrow-to"]')).not.toBeNull();
+    // Body-hit rect for drag-to-move (translates both endpoints by
+    // the same delta). Arrow's body spans the bounding box of the
+    // from→to segment.
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
   test("text: renders 1 anchor handle", async () => {
     await render({ selectedOverlay: textRow() });
-    expect(document.querySelectorAll('[data-testid^="transform-handle-"]').length).toBe(1);
+    expect(countResizeHandles()).toBe(1);
     expect(document.querySelector('[data-testid="transform-handle-anchor"]')).not.toBeNull();
+    // Text gets a body-hit too — a small grabbable box around the
+    // anchor point so drag-to-move works without grabbing the
+    // anchor handle itself.
+    expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
   test("rect SE corner drag → onGeometryChange fires with new rect", async () => {
@@ -335,6 +367,143 @@ describe("TransformHandles", () => {
     if (geom.kind === "arrow") {
       expect(geom.to.x).toBe(1);
       expect(geom.to.y).toBe(0);
+    }
+  });
+
+  test("arrow endpoint drag fires onGeometryDrag every pointermove with live geometry", async () => {
+    // Live-preview plumbing: TransformHandles must emit
+    // onGeometryDrag (NOT just onGeometryChange) so the parent can
+    // paint the arrow at the in-progress endpoint while the user
+    // drags. Without this the painted glyph stays at the pre-drag
+    // position and the user sees "the line vanishes" while dragging
+    // the handle.
+    const onGeometryChange = vi.fn();
+    const onGeometryDrag = vi.fn();
+    await render({
+      selectedOverlay: arrowRow(),
+      onGeometryChange,
+      onGeometryDrag
+    });
+    const toHandle = document.querySelector(
+      '[data-testid="transform-handle-arrow-to"]'
+    )!;
+    firePointer(toHandle, "pointerdown", 800, 800);
+    firePointer(toHandle, "pointermove", 600, 600);
+    firePointer(toHandle, "pointermove", 500, 500);
+    firePointer(toHandle, "pointermove", 400, 400);
+    firePointer(toHandle, "pointerup", 400, 400);
+    // Three pointermoves → three onGeometryDrag calls.
+    expect(onGeometryDrag.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // Last drag call should reflect the most recent pointer position.
+    const lastDrag = onGeometryDrag.mock.calls.at(-1)?.[0] as GeometryUpdate;
+    if (lastDrag.kind === "arrow") {
+      expect(lastDrag.to.x).toBeCloseTo(0.4, 3);
+      expect(lastDrag.to.y).toBeCloseTo(0.4, 3);
+      // `from` stays put — only the dragged endpoint moves.
+      expect(lastDrag.from.x).toBeCloseTo(0.2, 3);
+      expect(lastDrag.from.y).toBeCloseTo(0.2, 3);
+    }
+    // onGeometryChange fires exactly once at pointerup.
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (commit.kind === "arrow") {
+      expect(commit.to.x).toBeCloseTo(0.4, 3);
+      expect(commit.to.y).toBeCloseTo(0.4, 3);
+    }
+  });
+
+  test("body drag translates an arrow by the pointer delta (both endpoints shift)", async () => {
+    // Drag-to-move: pointerdown on the body-hit rect translates
+    // the entire layer by the cursor delta. For arrows that means
+    // BOTH `from` and `to` shift by the same vector — neither
+    // endpoint stays put.
+    const onGeometryChange = vi.fn();
+    const onGeometryDrag = vi.fn();
+    await render({
+      selectedOverlay: arrowRow(),
+      onGeometryChange,
+      onGeometryDrag
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Initial arrow: from=(0.2,0.2), to=(0.8,0.8). Pointerdown at
+    // (500, 500) — anywhere inside the body — then drag to (600,500)
+    // → delta = (+0.1, 0). Expected new from=(0.3,0.2), to=(0.9,0.8).
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 600, 500);
+    firePointer(body, "pointerup", 600, 500);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (commit.kind === "arrow") {
+      expect(commit.from.x).toBeCloseTo(0.3, 3);
+      expect(commit.from.y).toBeCloseTo(0.2, 3);
+      expect(commit.to.x).toBeCloseTo(0.9, 3);
+      expect(commit.to.y).toBeCloseTo(0.8, 3);
+    }
+    // Live preview also fires.
+    expect(onGeometryDrag.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("body drag translates a rect by the pointer delta (w/h unchanged)", async () => {
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Initial rect: x=0.1, y=0.1, w=0.4, h=0.3. Drag delta = (+0.2, +0.1).
+    // Expected: x=0.3, y=0.2, w=0.4, h=0.3.
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointermove", 500, 400);
+    firePointer(body, "pointerup", 500, 400);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (commit.kind === "rect") {
+      expect(commit.rect.x).toBeCloseTo(0.3, 3);
+      expect(commit.rect.y).toBeCloseTo(0.2, 3);
+      expect(commit.rect.w).toBeCloseTo(0.4, 3);
+      expect(commit.rect.h).toBeCloseTo(0.3, 3);
+    }
+  });
+
+  test("body drag clamps so the layer cannot leave [0,1]", async () => {
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Initial rect: x=0.1, y=0.1, w=0.4, h=0.3. Try to drag way
+    // off-canvas (delta = (-5000px, -5000px)). The clamp should pin
+    // x and y to 0 (so w+h remain inside [0,1]).
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointermove", -5000, -5000);
+    firePointer(body, "pointerup", -5000, -5000);
+    const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (commit.kind === "rect") {
+      expect(commit.rect.x).toBeCloseTo(0, 3);
+      expect(commit.rect.y).toBeCloseTo(0, 3);
+      expect(commit.rect.w).toBeCloseTo(0.4, 3);
+      expect(commit.rect.h).toBeCloseTo(0.3, 3);
+    }
+  });
+
+  test("body drag on text translates the anchor point", async () => {
+    const onGeometryChange = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Initial point: (0.5, 0.5). Drag from (600,600) → (700,500),
+    // delta = (+0.1, -0.1). Expected new point: (0.6, 0.4).
+    firePointer(body, "pointerdown", 600, 600);
+    firePointer(body, "pointermove", 700, 500);
+    firePointer(body, "pointerup", 700, 500);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (commit.kind === "text") {
+      expect(commit.point.x).toBeCloseTo(0.6, 3);
+      expect(commit.point.y).toBeCloseTo(0.4, 3);
     }
   });
 

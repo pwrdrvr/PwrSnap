@@ -11,16 +11,18 @@
 // is exactly what we want for a faithful live preview that matches
 // what the sharp bake produces on export.
 
-import type { ReactElement } from "react";
+import { useMemo, type ReactElement } from "react";
 import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
 import { readBlurStyle } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
+import type { GeometryUpdate } from "./useCaptureModel";
 import "./BlurOverlays.css";
 
 export function BlurOverlays({
   overlays,
   draft,
-  blurStyle
+  blurStyle,
+  liveOverride = null
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
@@ -29,8 +31,29 @@ export function BlurOverlays({
    *  committed. Committed overlays read their own style off
    *  `row.data.style`. */
   blurStyle: BlurStyle;
+  /** Live-drag geometry override (same shape as OverlaySvg's).
+   *  When the matching row is a blur and the override's geometry
+   *  is `kind: "rect"`, the blur item renders at the overridden
+   *  rect so a TransformHandles drag visually moves / resizes the
+   *  blur in real time. */
+  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
 }): ReactElement {
-  const blurs = overlays.flatMap((row) =>
+  const effectiveOverlays = useMemo(() => {
+    if (liveOverride === null) return overlays;
+    const geom = liveOverride.geometry;
+    if (geom.kind !== "rect") return overlays;
+    // Hoist the narrowed geometry into a local so the closure below
+    // preserves the discriminator — TS doesn't carry refinement across
+    // the `.map` callback.
+    const overrideRect = geom.rect;
+    const overrideLayerId = liveOverride.layerId;
+    return overlays.map((row) => {
+      if (row.id !== overrideLayerId) return row;
+      if (row.data.kind !== "blur") return row;
+      return { ...row, data: { ...row.data, rect: overrideRect } };
+    });
+  }, [liveOverride, overlays]);
+  const blurs = effectiveOverlays.flatMap((row) =>
     row.data.kind === "blur" ? [{ row, data: row.data }] : []
   );
   const liveRect =

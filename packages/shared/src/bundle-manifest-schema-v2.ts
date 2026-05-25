@@ -172,7 +172,14 @@ export const BlurEffect = z.object({
   // Radius capped at 200 — a 200-px blur on a 32k canvas is
   // already ludicrous; anything larger is almost certainly an
   // attacker probing sharp.
-  radius_px: FiniteNumber.positive().lte(200)
+  radius_px: FiniteNumber.positive().lte(200),
+  // Render style — gaussian smear (the historic default), chunky
+  // mosaic pixelation, or solid-fill redaction. Mirrors v1
+  // BlurOverlay's `style` field. Optional for back-compat with v2
+  // bundles produced before Phase 3.4 landed; readers fall back to
+  // "gaussian" via DEFAULT_BLUR_STYLE so legacy rows render the
+  // same as they always did.
+  style: z.enum(["gaussian", "pixelate", "redact"]).optional()
 });
 export type BlurEffect = z.infer<typeof BlurEffect>;
 
@@ -237,7 +244,27 @@ export type BundleDocumentV2 = z.infer<typeof BundleDocumentV2>;
 // V2 ZIP entry allowlist — per-version prefix validator
 // --------------------------------------------------------------------
 
-const V2_FIXED_ENTRIES = new Set(["manifest.json", "document.json", "composite.png"]);
+// Recognized v2 bundle entries. `composite_thumbnail.jpg` replaced
+// the legacy `composite.png` in the PR #90 era — the packer in
+// bundle-store.ts (writeV2Bundle / repackV2Bundle) writes the smaller
+// JPEG thumbnail and intentionally does NOT write the full-resolution
+// composite.png anymore ("readers reconstruct the full-res; the
+// macOS Thumbnail Extension reads composite_thumbnail.jpg").
+//
+// The thumbnail is OPTIONAL — small images skip it entirely — so it
+// lives in the allowlist (treated as valid when present) but is
+// absent from the missing-check below.
+//
+// We keep `composite.png` in the allowlist for back-compat with
+// historic bundles that still have it sitting around; the legacy-
+// bundle migration's Pass C rewrites those bundles to drop it, but
+// until the user opens or repacks each one, the entry persists.
+const V2_FIXED_ENTRIES = new Set([
+  "manifest.json",
+  "document.json",
+  "composite.png",
+  "composite_thumbnail.jpg"
+]);
 const V2_PATTERNS: readonly RegExp[] = [
   /^sources\/[0-9a-f]{64}\.png$/,
   /^layers\/[A-Za-z0-9_-]{16}\.png$/
@@ -290,7 +317,14 @@ export function validateBundleZipEntryNamesV2(names: readonly string[]): BundleE
     }
   }
 
-  const missing = ["manifest.json", "document.json", "composite.png"].filter(
+  // Required entries: just the two JSON descriptors. The composite
+  // (full-res `composite.png` OR thumbnail `composite_thumbnail.jpg`)
+  // used to live here; the packer dropped composite.png in PR #90 and
+  // thumbnail is intentionally optional ("omitted for small images"),
+  // so neither is required for validation. Readers fall back to
+  // reconstructing the composite from sources/* + document.json
+  // layers when neither thumbnail nor composite is present.
+  const missing = ["manifest.json", "document.json"].filter(
     (n) => !seen.has(n)
   );
 

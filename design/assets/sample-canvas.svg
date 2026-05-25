@@ -1,0 +1,166 @@
+<svg viewBox="0 0 2246 1496" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="2246" height="1496" fill="#000000"></rect>
+<rect x="0" y="0" width="2246" height="50" fill="#15110b"></rect>
+<circle cx="36" cy="25" r="9" fill="#ff5f57"></circle>
+<circle cx="68" cy="25" r="9" fill="#febc2e"></circle>
+<circle cx="100" cy="25" r="9" fill="#28c840"></circle>
+<text font-family="Geist, sans-serif" x="194" y="32" font-size="18" font-weight="500" fill="#f5efe3">PwrAgnt</text>
+<circle cx="1110" cy="25" r="2" fill="#f5efe3" opacity="0.55"></circle>
+
+<rect x="0" y="50" width="740" height="1446" fill="#0a0a0a"></rect>
+<line x1="740" y1="50" x2="740" y2="1496" stroke="#26221b"></line>
+
+<text font-family="Geist, sans-serif" x="40" y="118" font-size="32" font-weight="700" fill="#ff8a1f">PwrAgnt</text>
+<text font-family="Geist Mono, monospace" x="40" y="158" font-size="18" fill="#8c857a">/ github/Pw</text>
+<text font-family="Geist Mono, monospace" x="200" y="158" font-size="18" fill="#8c857a"># main</text>
+<rect x="460" y="100" width="46" height="46" rx="9" fill="none" stroke="#26221b"></rect>
+<circle cx="483" cy="123" r="9" fill="none" stroke="#f5efe3" opacity="0.65" stroke-width="2"></circle>
+<rect x="525" y="100" width="160" height="46" rx="9" fill="none" stroke="#ff8a1f"></rect>
+<text font-family="Geist, sans-serif" x="605" y="129" text-anchor="middle" font-size="17" font-weight="600" fill="#ff8a1f">New thread</text>
+
+<text font-family="Geist, sans-serif" x="100" y="262" font-size="20" font-weight="500" fill="#8c857a">Inbox</text>
+<text font-family="Geist, sans-serif" x="320" y="262" font-size="20" font-weight="500" fill="#8c857a">Recents</text>
+<rect x="450" y="232" width="226" height="48" rx="9" fill="none" stroke="#ff8a1f"></rect>
+<text font-family="Geist, sans-serif" x="563" y="262" text-anchor="middle" font-size="20" font-weight="600" fill="#ff8a1f">Directories</text>
+
+<g><rect x="40" y="320" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 333 L75 333 L78 338 L86 338 L86 354 L46 354 L46 333 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="350" font-size="20" font-weight="600" fill="#f5efe3">microapps-app-release</text>
+<path d="M675 336 L687 348 L699 336" fill="none" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+<rect x="475" y="325" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M484 341 h14 M491 334 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path></g>
+<g><rect x="40" y="410" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 423 L75 423 L78 428 L86 428 L86 444 L46 444 L46 423 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="440" font-size="20" font-weight="600" fill="#f5efe3">microapps-core</text>
+<path d="M675 426 L687 438 L699 426" fill="none" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+<rect x="475" y="415" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M484 431 h14 M491 424 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path></g>
+<g><rect x="40" y="500" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 513 L75 513 L78 518 L86 518 L86 534 L46 534 L46 513 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="530" font-size="20" font-weight="600" fill="#f5efe3">microapps-pwrdrvr</text>
+<path d="M675 516 L687 528 L699 516" fill="none" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+<rect x="475" y="505" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M484 521 h14 M491 514 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path></g>
+<g><rect x="40" y="590" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 603 L75 603 L78 608 L86 608 L86 624 L46 624 L46 603 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="620" font-size="20" font-weight="600" fill="#f5efe3">openclaw</text>
+<path d="M675 606 L687 618 L699 606" fill="none" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+<rect x="475" y="595" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M484 611 h14 M491 604 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path></g>
+<g><rect x="40" y="680" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 693 L75 693 L78 698 L86 698 L86 714 L46 714 L46 693 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="710" font-size="20" font-weight="600" fill="#f5efe3">openclaw-app-server</text>
+<path d="M675 696 L687 708 L699 696" fill="none" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+<rect x="475" y="685" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M484 701 h14 M491 694 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path></g>
+
+<rect x="40" y="755" width="42" height="42" rx="3" fill="#15110b" stroke="#26221b"></rect>
+<path d="M55 768 L75 768 L78 773 L86 773 L86 789 L46 789 L46 768 Z" fill="none" stroke="#f5efe3" opacity="0.7" stroke-width="1.6"></path>
+<text font-family="Geist, sans-serif" x="106" y="785" font-size="20" font-weight="600" fill="#f5efe3">PwrAgnt</text>
+<rect x="466" y="763" width="32" height="28" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="482" y="784" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">1</text>
+<path d="M515 765 L527 777 L539 765" fill="none" stroke="#f5efe3" opacity="0.8" stroke-width="2" stroke-linecap="round"></path>
+<rect x="685" y="763" width="32" height="32" rx="6" fill="none" stroke="#26221b"></rect>
+<path d="M694 779 h14 M701 772 v14" stroke="#8c857a" stroke-width="2" stroke-linecap="round"></path>
+
+<rect x="56" y="828" width="660" height="200" rx="10" fill="rgba(255,138,31,0.05)" stroke="#ff8a1f" stroke-width="1.5"></rect>
+<circle cx="86" cy="858" r="9" fill="#ff8a1f"></circle>
+<text font-family="Geist, sans-serif" x="110" y="864" font-size="22" font-weight="700" fill="#f5efe3">Telegram resume menu not clearing</text>
+<text font-family="Geist, sans-serif" x="680" y="862" text-anchor="end" font-size="16" font-weight="500" fill="#8c857a">now</text>
+<rect x="86" y="888" width="106" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="139" y="911" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">OpenAI</text>
+<rect x="202" y="888" width="118" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="261" y="911" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">worktree</text>
+<rect x="130" y="935" width="460" height="36" rx="6" fill="rgba(132,206,114,0.07)" stroke="#84ce72" stroke-opacity="0.4"></rect>
+<circle cx="148" cy="953" r="4" fill="#84ce72"></circle>
+<path d="M147 953 v-6 M147 947 a3 3 0 1 1 6 0" fill="none" stroke="#84ce72" stroke-width="1.4"></path>
+<text font-family="Geist Mono, monospace" x="166" y="960" font-size="17" font-weight="600" fill="#84ce72">fix/telegram-topic-resume-picker</text>
+
+<text font-family="Geist, sans-serif" x="56" y="1020" font-size="22" font-weight="700" fill="#f5efe3">Messaging - Debouncing</text>
+<text font-family="Geist, sans-serif" x="680" y="1018" text-anchor="end" font-size="16" font-weight="500" fill="#8c857a">1h</text>
+<rect x="56" y="1040" width="106" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="109" y="1063" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">OpenAI</text>
+<rect x="172" y="1040" width="118" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="231" y="1063" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">worktree</text>
+<rect x="130" y="1115" width="510" height="36" rx="6" fill="rgba(132,206,114,0.07)" stroke="#84ce72" stroke-opacity="0.4"></rect>
+<circle cx="148" cy="1133" r="4" fill="#84ce72"></circle>
+<path d="M147 1133 v-6 M147 1127 a3 3 0 1 1 6 0" fill="none" stroke="#84ce72" stroke-width="1.4"></path>
+<text font-family="Geist Mono, monospace" x="166" y="1140" font-size="17" font-weight="600" fill="#84ce72">fix/messaging-turn-admission-debouncing</text>
+
+<text font-family="Geist, sans-serif" x="56" y="1200" font-size="22" font-weight="700" fill="#f5efe3">Messaging Streaming Responses OAI</text>
+<text font-family="Geist, sans-serif" x="680" y="1198" text-anchor="end" font-size="16" font-weight="500" fill="#8c857a">3h</text>
+<rect x="56" y="1220" width="106" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="109" y="1243" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">OpenAI</text>
+<rect x="172" y="1220" width="118" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="231" y="1243" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">worktree</text>
+<rect x="130" y="1295" width="480" height="36" rx="6" fill="rgba(132,206,114,0.07)" stroke="#84ce72" stroke-opacity="0.4"></rect>
+<circle cx="148" cy="1313" r="4" fill="#84ce72"></circle>
+<path d="M147 1313 v-6 M147 1307 a3 3 0 1 1 6 0" fill="none" stroke="#84ce72" stroke-width="1.4"></path>
+<text font-family="Geist Mono, monospace" x="166" y="1320" font-size="17" font-weight="600" fill="#84ce72">feat/messaging-streaming-responses-oai</text>
+
+<text font-family="Geist, sans-serif" x="56" y="1382" font-size="22" font-weight="700" fill="#f5efe3">Branch Naming / PR Creation</text>
+<text font-family="Geist, sans-serif" x="680" y="1380" text-anchor="end" font-size="16" font-weight="500" fill="#8c857a">4h</text>
+<rect x="56" y="1402" width="106" height="36" rx="6" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="109" y="1425" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">OpenAI</text>
+
+<text font-family="Geist, sans-serif" x="780" y="138" font-size="26" font-weight="700" fill="#f5efe3">Telegram resume menu not clearing</text>
+<rect x="1320" y="108" width="120" height="40" rx="6" fill="#15110b" stroke="#ff8a1f" stroke-opacity="0.7"></rect>
+<text font-family="Geist, sans-serif" x="1380" y="135" text-anchor="middle" font-size="17" font-weight="600" fill="#ff8a1f">OpenAI</text>
+<rect x="1450" y="108" width="146" height="40" rx="6" fill="#15110b" stroke="#ff8a1f" stroke-opacity="0.7"></rect>
+<text font-family="Geist, sans-serif" x="1523" y="135" text-anchor="middle" font-size="17" font-weight="600" fill="#ff8a1f">Full Access</text>
+<path d="M2180 122 h36 M2180 134 h36 M2180 146 h36" stroke="#f5efe3" stroke-width="2" opacity="0.7" stroke-linecap="round"></path>
+
+<rect x="780" y="190" width="1380" height="730" rx="10" fill="#15110b" stroke="#ff8a1f" stroke-opacity="0.4"></rect>
+<text font-family="Geist, sans-serif" x="800" y="244" font-size="19" fill="#8c857a">This complements the prior runtime catch in</text>
+<text font-family="Geist Mono, monospace" x="1295" y="244" font-size="18" font-weight="600" fill="#ff8a1f">4da9e15</text>
+<text font-family="Geist, sans-serif" x="1397" y="244" font-size="19" fill="#8c857a">, so the path is now covered at both layers.</text>
+<circle cx="810" cy="296" r="3" fill="#8c857a"></circle><text font-family="Geist, sans-serif" x="836" y="304" font-size="19" fill="#f5efe3">runtime listener failures are caught and logged</text>
+<circle cx="810" cy="350" r="3" fill="#8c857a"></circle><text font-family="Geist, sans-serif" x="836" y="358" font-size="19" fill="#f5efe3">Telegram polling middleware failures are caught by grammY instead of printing &#34;No error handler was set!&#34;</text>
+<text font-family="Geist, sans-serif" x="836" y="386" font-size="19" fill="#8c857a">and stopping the bot</text>
+<text font-family="Geist, sans-serif" x="800" y="446" font-size="19" fill="#f5efe3">Verified:</text>
+<circle cx="810" cy="490" r="3" fill="#8c857a"></circle><rect x="836" y="475" width="900" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="497" font-size="16" font-weight="600" fill="#f5efe3">pnpm test apps/desktop/src/main/__tests__/telegram-adapter.test.ts</text>
+<circle cx="810" cy="544" r="3" fill="#8c857a"></circle><rect x="836" y="529" width="930" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="551" font-size="16" font-weight="600" fill="#f5efe3">pnpm test apps/desktop/src/main/__tests__/messaging-runtime.test.ts</text>
+<circle cx="810" cy="598" r="3" fill="#8c857a"></circle><rect x="836" y="583" width="780" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="605" font-size="16" font-weight="600" fill="#f5efe3">pnpm --filter @pwragnt/messaging-provider-telegram typecheck</text>
+<circle cx="810" cy="652" r="3" fill="#8c857a"></circle><rect x="836" y="637" width="430" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="659" font-size="16" font-weight="600" fill="#f5efe3">pnpm --filter @pwragnt/desktop typecheck</text>
+<circle cx="810" cy="706" r="3" fill="#8c857a"></circle><rect x="836" y="691" width="280" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="713" font-size="16" font-weight="600" fill="#f5efe3">pnpm lint:boundaries</text>
+<circle cx="810" cy="760" r="3" fill="#8c857a"></circle><rect x="836" y="745" width="200" height="28" rx="4" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="850" y="767" font-size="16" font-weight="600" fill="#f5efe3">git diff --check</text>
+<text font-family="Geist, sans-serif" x="800" y="844" font-size="19" font-weight="600" fill="#f5efe3">Worktree is clean.</text>
+
+<text font-family="Geist, sans-serif" x="780" y="975" font-size="17" fill="#f5efe3">Edited 2 files, +56, -0</text>
+<text font-family="Geist, sans-serif" x="2150" y="975" text-anchor="end" font-size="17" fill="#8c857a">May 2, 10:29 PM</text>
+<path d="M2120 970 L2128 980 L2136 970" fill="none" stroke="#8c857a" stroke-width="2"></path>
+<text font-family="Geist, sans-serif" x="780" y="1030" font-size="17" fill="#f5efe3">Worked for 3m 17s</text>
+<text font-family="Geist, sans-serif" x="908" y="1030" font-size="17" fill="#8c857a">v</text>
+<text font-family="Geist, sans-serif" x="780" y="1090" font-size="17" fill="#f5efe3">Worked for 3m 17s</text>
+<text font-family="Geist, sans-serif" x="908" y="1090" font-size="17" fill="#8c857a">v</text>
+
+<rect x="780" y="1180" width="1380" height="288" rx="10" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist Mono, monospace" x="800" y="1212" font-size="14" font-weight="600" fill="#8c857a" letter-spacing="0.12em">REPLY</text>
+<text font-family="Geist, sans-serif" x="800" y="1262" font-size="19" fill="#8c857a">Reply to this thread</text>
+<rect x="800" y="1336" width="98" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="849" y="1359" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">OpenAI</text>
+<rect x="910" y="1336" width="130" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="975" y="1359" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">Full Access</text>
+<rect x="1052" y="1336" width="120" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="1112" y="1359" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">Worktree</text>
+<rect x="1184" y="1336" width="118" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="1243" y="1359" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">GPT-5.5</text>
+<rect x="1314" y="1336" width="106" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="1367" y="1359" text-anchor="middle" font-size="16" font-weight="600" fill="#f5efe3">high</text>
+<rect x="800" y="1396" width="118" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="828" y="1419" font-size="15" font-weight="600" fill="#8c857a">V</text>
+<text font-family="Geist, sans-serif" x="877" y="1419" text-anchor="middle" font-size="15" font-weight="600" fill="#f5efe3">VS Code</text>
+<rect x="930" y="1396" width="116" height="36" rx="5" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="956" y="1419" font-size="15" font-weight="600" fill="#8c857a">G</text>
+<text font-family="Geist, sans-serif" x="1005" y="1419" text-anchor="middle" font-size="15" font-weight="600" fill="#f5efe3">Ghostty</text>
+<circle cx="1900" cy="1414" r="20" fill="none" stroke="#ff8a1f" stroke-width="3" stroke-dasharray="63 63" transform="rotate(-90 1900 1414)"></circle>
+<text font-family="Geist, sans-serif" x="1950" y="1420" font-size="17" font-weight="600" fill="#ff8a1f">51%</text>
+<rect x="2010" y="1390" width="138" height="46" rx="7" fill="#15110b" stroke="#26221b"></rect>
+<text font-family="Geist, sans-serif" x="2079" y="1420" text-anchor="middle" font-size="17" font-weight="600" fill="#8c857a">Send</text>
+</svg>

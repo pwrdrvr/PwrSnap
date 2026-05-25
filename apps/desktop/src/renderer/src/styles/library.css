@@ -2182,14 +2182,34 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
-.psl__et-btn:hover {
-  background: var(--bg-panel-hover);
-  color: var(--text-primary);
+/* Tool button hover — solid `--accent` fill regardless of active
+   state. Strong unambiguous "this is clickable" signal that reads
+   instantly. Text + key chip flip to `--button-text-on-accent`
+   (black on tangerine dark; white on deepened tangerine in light
+   theme) so they stay legible on the saturated bg. Same idiom as
+   the primary buttons elsewhere in the chrome (Quick Capture, Use
+   draft, etc.). */
+.psl__et-btn:hover,
+.psl__et-btn.is-active:hover {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
 }
+/* Key chip inverts on hover so the letter stays visible on the
+   solid-accent bg. Border + bg become a translucent overlay of the
+   foreground color (10% / 4% of the button-text-on-accent token). */
+.psl__et-btn:hover .psl__et-btn-key,
+.psl__et-btn.is-active:hover .psl__et-btn-key {
+  color: var(--button-text-on-accent);
+  border-color: color-mix(in srgb, var(--button-text-on-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--button-text-on-accent) 8%, transparent);
+}
+/* Active styling lives on the WRAPPER (`.psl__et-tool-wrap.is-active`)
+   below, not on the inner button, so the accent-soft box spans both
+   the main button AND the caret as one visually unified control. The
+   button just contributes color when active; background + border come
+   from the wrap. */
 .psl__et-btn.is-active {
-  background: var(--accent-soft);
   color: var(--accent-bright);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 .psl__et-btn-key {
   display: inline-flex;
@@ -2208,6 +2228,122 @@
 .psl__et-btn.is-active .psl__et-btn-key {
   color: var(--accent-bright);
   border-color: var(--accent-border);
+}
+/* Tool-button + caret pairing. The caret is ALWAYS rendered for
+   styled tools — clicking it activates the tool + opens the style
+   popover in one click. Always-on means no layout shift on activate
+   (the previous "render caret only when active" version made
+   neighboring tools jump as the active tool's caret appeared).
+   When the tool is ALSO active, the wrap + caret get the accent box;
+   when inactive, the caret stays present but subdued. */
+.psl__et-tool-wrap {
+  display: inline-flex;
+  align-items: stretch;
+  position: relative;
+  border-radius: 6px;
+}
+.psl__et-tool-wrap.is-active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+/* When the wrap is active, kill the main button's own border-radius
+   on the right so it joins the caret flush. */
+.psl__et-tool-wrap.is-active .psl__et-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.psl__et-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  flex: 0 0 auto;
+  transition: background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+/* Caret hover — same solid-accent idiom as the main button so the
+   two halves of the unified box respond to hover identically. */
+.psl__et-caret:hover {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+/* When the tool is active, the caret sits INSIDE the unified accent
+   box. Subtle accent-border separator on its left makes the two
+   zones (icon vs caret) feel like distinct sub-controls within one
+   control. Right side joins the wrap's border-radius. */
+.psl__et-caret.is-tool-active {
+  color: var(--accent-bright);
+  border-left: 1px solid color-mix(in srgb, var(--accent-border) 60%, transparent);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.psl__et-caret.is-tool-active:hover {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+/* Open state — accent-filled "I'm controlling an open popover" look.
+   Chevron rotates 180° so it points UP (matches every native dropdown
+   menu pattern when expanded). Applies whether the tool is active or
+   not (clicking the caret on an inactive tool activates AND opens). */
+.psl__et-caret.is-open {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.psl__et-caret.is-open svg {
+  transform: rotate(180deg);
+}
+/* Suppress the focus-visible ring on the caret. It's a sub-control of
+   the main button and the parent tool-wrap's active state is the
+   visible signal. Without this, the caret flashes a focus outline
+   whenever the renderer's focus shuffles transiently (notably during
+   the Cmd+Shift+C screenshot global-hotkey route, which briefly
+   reshuffles focus across all top-level windows). */
+.psl__et-caret:focus,
+.psl__et-caret:focus-visible {
+  outline: none;
+}
+.psl__et-caret svg {
+  width: 7px;
+  height: 5px;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+/* "+ Add label" matching-text affordance — chip that pops near a
+   freshly-placed arrow's tail. Positioned via `position: fixed`
+   inline-styled coords from EditToolbar's matchingTextStyle memo.
+   8s auto-dismiss is handled by useEditorToolState's internal timer. */
+.psl__et-matching-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-border);
+  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
+  color: var(--accent-bright);
+  border-radius: 14px;
+  cursor: pointer;
+  font: 600 11px/1 var(--font-mono);
+  letter-spacing: 0.03em;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+}
+.psl__et-matching-text:hover {
+  background: var(--accent-soft);
+}
+.psl__et-matching-text > span:first-child {
+  font-size: 14px;
+  line-height: 1;
 }
 
 /* DetailRail layout — fixed 360px column grid-column 3 in focus +

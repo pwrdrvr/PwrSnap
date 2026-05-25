@@ -22,6 +22,7 @@ import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import type { CopyPreset } from "../shared/CopyButton";
 import type { Tool } from "../editor/editor-tools";
+import { useEditorToolState } from "../editor/useEditorToolState";
 import { DEFAULT_BLUR_STYLE, type BlurStyle } from "@pwrsnap/shared";
 import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
@@ -701,16 +702,30 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return visibleRecords[i]?.id ?? null;
   }, [visibleRecords, selectedIdx]);
 
-  // Lifted tool state — owned by Library so the chromeless Editor
-  // (inside <Stage>) and the floating <EditToolbar> share a single
-  // source of truth. Resets to "pointer" on every mode change so a
-  // user who pressed R in Focus doesn't accidentally drag-rect on a
-  // filmstrip click after Esc → Reel (julik concern #3, plan
-  // resolved decision: option A — predictable beats clever).
-  const [tool, setTool] = useState<Tool>("pointer");
+  // Lifted tool state — Phase 3.2: Library owns the single
+  // `useEditorToolState` instance so the chromeless Editor (inside
+  // <Stage>) and the floating <EditToolbar> share ONE hook. Pre-lift,
+  // each component instantiated its own copy: EditToolbar's hook
+  // owned the popover (where style picks landed), Editor's hook owned
+  // the persistOverlay style reads, and the two never crossed — so
+  // picking "red" in the popover never made the arrow red. Lifting
+  // here flows the hook into both surfaces via Stage props.
+  //
+  // The hook depends on `captureId` for matching-text affordance
+  // resets. Use the selected record id, sentinel-guarded so the hook
+  // is stable when nothing is selected (grid mode).
+  const liftedToolState = useEditorToolState({
+    captureId: selectedRecordId ?? "__library_no_capture__"
+  });
+  const tool = liftedToolState.activeTool;
+  const setTool = liftedToolState.setActiveTool;
+  // Resets to "pointer" on every mode change so a user who pressed R
+  // in Focus doesn't accidentally drag-rect on a filmstrip click
+  // after Esc → Reel (julik concern #3, plan resolved decision:
+  // option A — predictable beats clever).
   useEffect(() => {
     setTool("pointer");
-  }, [view.kind]);
+  }, [view.kind, setTool]);
   // Lifted blur-style state — same shape as `tool`. Persists across
   // mode changes (Focus ↔ Reel) and across capture navigations so
   // the user doesn't have to re-pick their style every time. Doesn't
@@ -1648,6 +1663,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           nextRecordId={nextRecordId}
           tool={tool}
           onToolChange={setTool}
+          toolState={liftedToolState}
           blurStyle={blurStyle}
           onBlurStyleChange={setBlurStyle}
           {...(view.kind === "reel"

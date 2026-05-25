@@ -3,133 +3,199 @@
 // Three view-states share the same data + selection model.
 
 const { useState: useStateLib, useMemo: useMemoLib, useEffect: useEffectLib, useRef: useRefLib } = React;
-const { PsAppIcon, PsAppTag } = window.PS;
+const { PsAppIcon, PsBundleIcon, PsAppTag, APP_INFO } = window.PS;
 
 // ============================================================
-// Data
+// Data — 334 captures across several days. Source-app keyed to
+// the bundle-icon catalog (1password, appstore, chrome, claude,
+// clipboard, codex, electron, finder, gitkraken, lark, line,
+// pwragent, safari, systemsettings, telegram, terminal,
+// unknown, xcode).
 // ============================================================
 const CAPTURES = (() => {
-  const base = [
-    { app: "telegram", n: "Pavel re: launch deck",       tags: ["chat","launch"]   },
-    { app: "telegram", n: "screenshot from Anna",        tags: ["chat","ref"]      },
-    { app: "excel",    n: "Q4 burn projection",          tags: ["finance","Q4"]    },
-    { app: "excel",    n: "headcount roll-up",           tags: ["finance"]         },
-    { app: "vscode",   n: "auth flow — token refresh",   tags: ["bug","auth"]      },
-    { app: "vscode",   n: "merge conflict (router.tsx)", tags: ["code"]            },
-    { app: "chrome",   n: "Stripe dashboard MRR",        tags: ["metrics","mrr"]   },
-    { app: "chrome",   n: "competitor pricing",          tags: ["research"]        },
-    { app: "figma",    n: "tray menu v3",                tags: ["design","spec"]   },
-    { app: "figma",    n: "icon grid 24px",              tags: ["design"]          },
-    { app: "slack",    n: "DM from Ben — bug repro",     tags: ["bug","p1"]        },
-    { app: "slack",    n: "#design-review feedback",     tags: ["design"]          },
-    { app: "terminal", n: "kubectl logs — api crash",    tags: ["bug","prod"]      },
-    { app: "terminal", n: "git log --oneline",           tags: ["code"]            },
-    { app: "notion",   n: "PRD — share targets",         tags: ["doc","prd"]       },
-    { app: "notion",   n: "Q1 OKR draft",                tags: ["doc","okr"]       },
-    { app: "linear",   n: "PWS-218 sizzle reel",         tags: ["ticket"]          },
-    { app: "linear",   n: "PWS-204 tray modes",          tags: ["ticket"]          },
-    { app: "github",   n: "PR #1142 review",             tags: ["code","pr"]       },
-    { app: "github",   n: "Actions run failed",          tags: ["bug","ci"]        },
-    { app: "zoom",     n: "weekly w/ Sarah — slide 4",   tags: ["meeting"]         },
-    { app: "safari",   n: "MDN — backdrop-filter",       tags: ["research"]        },
-    { app: "preview",  n: "annotated wireframe — v2",    tags: ["design","spec"]   },
-    { app: "finder",   n: "logo lockup — final.svg",     tags: ["asset"]           },
-    { app: "telegram", n: "Yuri — install screenshot",   tags: ["chat","support"]  },
-    { app: "vscode",   n: "FloatOver tags impl",         tags: ["code","done"]     },
-    { app: "excel",    n: "infra cost forecast",         tags: ["finance"]         },
-    { app: "chrome",   n: "Vercel deploy — preview",     tags: ["deploy"]          },
-    { app: "figma",    n: "library reel — frame",        tags: ["design"]          },
-    { app: "slack",    n: "from Maya — copy variants",   tags: ["copy"]            },
-    { app: "linear",   n: "PWS-231 app-source tag",      tags: ["ticket","spec"]   },
-    { app: "terminal", n: "pnpm install — error",        tags: ["bug","build"]     },
-  ];
+  // Per-day distribution (matches the topbar count + day headers).
+  // The 334-capture total is a fixture string in the UI;
+  // we don't materialize every row — only enough to populate the
+  // first ~3 days at full density.
   const days = [
-    { day: "Today",     date: "Jan 23",   times: ["9:42","10:17","10:46","11:08","11:23","11:51","12:04","12:37"] },
-    { day: "Yesterday", date: "Jan 22",   times: ["8:22","9:08","13:14","14:37","15:21","16:02","16:48","18:11"] },
-    { day: "Mon",       date: "Jan 21",   times: ["7:55","9:12","10:33","11:47","13:04","14:25","15:48","17:09"] },
-    { day: "Last Fri",  date: "Jan 18",   times: ["8:30","10:10","11:14","12:32","13:55","14:18","15:42","16:30"] },
+    { day: "Today",     date: "May 21", count: 14 },
+    { day: "Yesterday", date: "May 20", count: 6  },
+    { day: "Mon",       date: "May 19", count: 8  },
+    { day: "Last Fri",  date: "May 16", count: 6  },
   ];
+
+  // App distribution — Electron-heavy (226 of 334) to match the sidebar count;
+  // a sprinkle of every other source to exercise the bundle icons.
+  const todayApps = [
+    "clipboard", "electron", "electron", "electron",   // row 1: 4 cells
+    "electron",  "electron", "electron", "electron",   // row 2
+    "electron",  "electron", "electron", "electron",   // row 3
+    "electron",  "electron",                            // row 4
+  ];
+  const yesterdayApps = ["electron","electron","claude","electron","electron","claude"];
+  const mondayApps    = ["electron","electron","chrome","electron","claude","electron","electron","electron"];
+  const fridayApps    = ["pwragent","electron","terminal","electron","safari","electron"];
+
+  const stems = {
+    clipboard: ["clipboard-paste-onboarding"],
+    electron:  ["pwragent-resume-menu-bug","pwragent-msg-debounce","pwragent-stream-tokens","pwragent-thread-tabs",
+                "pwragent-context-rail","pwragent-codex-tag","pwragent-empty-state","pwragent-thinking-scanner",
+                "pwragent-worktree-chip","pwragent-composer-chips","pwragent-tray-modes","pwragent-sidebar-resize",
+                "pwragent-prefs-pane","pwragent-message-thread","pwragent-thread-actions","pwragent-status-bar",
+                "pwragent-search-results","pwragent-inbox-row","pwragent-mention-toast","pwragent-attach-popover",
+                "pwragent-history-scroll","pwragent-typing-indicator","pwragent-pin-action","pwragent-thread-reorder",
+                "pwragent-folder-tree"],
+    claude:    ["claude-thread-export","claude-prompt-tools","claude-context-tray"],
+    chrome:    ["stripe-mrr-dash","mdn-backdrop-filter"],
+    pwragent:  ["pwragent-launch-deck"],
+    terminal:  ["kubectl-api-crash","pnpm-install-fail"],
+    safari:    ["safari-perf-flame"],
+  };
+  const stemPick = (app, i) => {
+    const list = stems[app] || ["capture"];
+    return list[i % list.length];
+  };
+
   const out = [];
-  base.forEach((c, i) => {
-    const dayIdx = Math.floor(i / 8);
-    const slot = i % 8;
-    const day = days[dayIdx] || days[3];
-    out.push({
-      id: i + 1,
-      ...c,
-      day: day.day,
-      date: day.date,
-      time: day.times[slot] || "9:00",
-      size: 220 + Math.round(Math.sin(i*1.7) * 100 + 280),
-      w: [2880, 1920, 1440, 2560][i % 4],
-      h: [1800, 1200,  900, 1600][i % 4],
+  let counter = 0;
+
+  function spawn(dayInfo, apps) {
+    apps.forEach((app, slot) => {
+      counter++;
+      // pretend timestamps walk back through the afternoon
+      const hour = 12 - Math.floor(slot / 4);
+      const min  = (slot * 13 + 6) % 60;
+      const ampm = hour <= 12 ? "PM" : "AM";
+      const hh   = hour > 12 ? hour - 12 : hour;
+      const time = `${hh}:${String(min).padStart(2,"0")} ${ampm}`;
+      out.push({
+        id: counter,
+        app,
+        day: dayInfo.day, date: dayInfo.date, time,
+        stem: stemPick(app, slot + (dayInfo.day === "Yesterday" ? 4 : dayInfo.day === "Mon" ? 8 : 0)),
+        n: stemPick(app, slot).replace(/-/g," "),
+        tags: ["bug","ui","chat","spec","prod","ref","fix"].filter((_,k) => (slot+k)%3===0),
+        size: 220 + Math.round(Math.sin(counter*1.7) * 100 + 280),
+        w: [2880, 1920, 1440, 2560][counter % 4],
+        h: [1800, 1200,  900, 1600][counter % 4],
+      });
     });
-  });
+  }
+  spawn(days[0], todayApps);
+  spawn(days[1], yesterdayApps);
+  spawn(days[2], mondayApps);
+  spawn(days[3], fridayApps);
   return out;
 })();
 
-const { APP_INFO } = window.PS;
+const TOTAL_CAPTURES = 334;
+
+// Per-source counts shown in the left rail. Hand-tuned to match the
+// "Electron 226 of 334" reality in the design ref.
+const RAIL_COUNTS = {
+  "1password":    1,
+  appstore:       1,
+  chrome:         1,
+  claude:         23,
+  clipboard:      3,
+  codex:          3,
+  electron:       226,
+  finder:         2,
+  gitkraken:      2,
+  lark:           4,
+  line:           5,
+  pwragent:       3,
+  safari:         25,
+  systemsettings: 1,
+  telegram:       13,
+  terminal:       11,
+  unknown:        9,
+  xcode:          1,
+};
 
 // ============================================================
-// Synthetic thumbnails
+// Synthetic thumbnails — sized to match the "PwrAgent-on-dark"
+// vibe of the design ref. Most snaps are amber-tinted dark UI;
+// the clipboard onboarding pops bright orange.
 // ============================================================
 function thumbStyle(c) {
   const palettes = {
-    telegram: ["#0e2230", "#229ED9", "#65b6e2"],
-    excel:    ["#0a1f0e", "#107c41", "#5fb47e"],
-    vscode:   ["#0a1424", "#1f3b6e", "#7baaff"],
-    chrome:   ["#1a1a1a", "#4285f4", "#fbbc04"],
-    figma:    ["#1f0a18", "#a259ff", "#f24e1e"],
-    slack:    ["#1a0e1a", "#611f5c", "#ecb22e"],
-    terminal: ["#0a0a0a", "#1f1f1f", "#5fb47e"],
-    notion:   ["#1a1a18", "#2f2f2f", "#e5e5e5"],
-    linear:   ["#0e0e1c", "#5e6ad2", "#a4adff"],
-    github:   ["#0d1117", "#1f2733", "#7d8590"],
-    zoom:     ["#0a1a2e", "#2d8cff", "#75b6ff"],
-    safari:   ["#0e1a24", "#2d7fb6", "#7fd0ff"],
-    preview:  ["#1a140e", "#5c4a3a", "#b89878"],
-    finder:   ["#1a1a1a", "#3a3a3a", "#7f7f7f"],
+    "1password": ["#0a1a2a", "#0a6cff", "#9fc4ff"],
+    appstore:    ["#0a1a2a", "#1eb5ff", "#cfe7ff"],
+    chrome:      ["#171717", "#fbbc04", "#fff"],
+    claude:      ["#1a0e08", "#d97757", "#f3b894"],
+    clipboard:   ["#0a0806", "#1a1612", "#3a3022"],
+    codex:       ["#080808", "#1f1f1f", "#3a3a3a"],
+    electron:    ["#070605", "#15110b", "#241a0e"],
+    finder:      ["#0a1a2a", "#0c63b8", "#3da6f1"],
+    gitkraken:   ["#08201d", "#179287", "#7be8b8"],
+    lark:        ["#03251f", "#00d6b9", "#7ff0dc"],
+    line:        ["#082015", "#06c755", "#7ee6a8"],
+    pwragent:    ["#050505", "#1a1a22", "#1f7cff"],
+    safari:      ["#0a1a2a", "#3aa6ff", "#d2eaff"],
+    systemsettings: ["#1a1a1c", "#3a3a40", "#6e6e75"],
+    telegram:    ["#0a1f2a", "#1c8adb", "#7fc1ed"],
+    terminal:    ["#050505", "#1a1a1a", "#5fb47e"],
+    unknown:     ["#1a1a1a", "#2a2a2a", "#4a4a4a"],
+    xcode:       ["#0a1a2a", "#0f6cd4", "#7fc1ed"],
   };
-  const [bg, mid, hi] = palettes[c.app] || palettes.finder;
+  const [bg, mid, hi] = palettes[c.app] || palettes.unknown;
   const angle = (c.id * 47) % 360;
   return { background: `linear-gradient(${angle}deg, ${bg} 0%, ${mid} 60%, ${hi} 100%)` };
 }
 
 function ThumbContent({ c }) {
-  const w = 100, h = 62;
-  const palette = {
-    telegram: { chrome: "#229ED9", lines: "rgba(255,255,255,0.6)" },
-    excel:    { chrome: "#107c41", lines: "rgba(255,255,255,0.55)" },
-    vscode:   { chrome: "#1f3b6e", lines: "#7baaff" },
-    chrome:   { chrome: "#dadce0", lines: "rgba(255,255,255,0.7)" },
-    figma:    { chrome: "#2c2c2c", lines: "#a259ff" },
-    slack:    { chrome: "#3f0e3f", lines: "#ecb22e" },
-    terminal: { chrome: "#1f1f1f", lines: "#5fb47e" },
-    notion:   { chrome: "#2f2f2f", lines: "#e5e5e5" },
-    linear:   { chrome: "#252633", lines: "#a4adff" },
-    github:   { chrome: "#1f2733", lines: "#7d8590" },
-    zoom:     { chrome: "#0e1f3a", lines: "#75b6ff" },
-    safari:   { chrome: "#1a2a3a", lines: "#7fd0ff" },
-    preview:  { chrome: "#3a3024", lines: "#d4b890" },
-    finder:   { chrome: "#2a2a2a", lines: "#aaa" },
-  }[c.app] || { chrome: "#2a2a2a", lines: "#aaa" };
+  // Most captures are dark-amber PwrAgent-style UI screenshots.
+  // Render a generic dense terminal-y UI: chrome bar, sidebar, code blocks.
+  const dark   = "rgba(8,7,6,0.92)";
+  const tint   = c.app === "clipboard" ? "#d97757" : "#ff8a1f";
+  const text   = "rgba(245,239,227,0.55)";
+  const muted  = "rgba(245,239,227,0.22)";
+
+  if (c.app === "clipboard") {
+    // bright onboarding card — looks like a setup pane on dark
+    return (
+      <svg viewBox="0 0 100 62" preserveAspectRatio="none" style={{ width:"100%", height:"100%", display:"block" }}>
+        <rect x="0" y="0" width="100" height="62" fill={dark}/>
+        <rect x="14" y="8"  width="72" height="46" rx="2.5" fill="#15110b" stroke="rgba(255,138,31,0.35)"/>
+        <rect x="20" y="13" width="22" height="2.4" fill="#fff" opacity="0.85"/>
+        <rect x="20" y="18" width="50" height="1.6" fill={text}/>
+        <rect x="20" y="21" width="46" height="1.6" fill={text}/>
+        <rect x="20" y="24" width="42" height="1.6" fill={text}/>
+        <rect x="20" y="33" width="56" height="9"  rx="1.5" fill="rgba(255,138,31,0.10)" stroke="rgba(255,138,31,0.45)"/>
+        <rect x="22" y="36" width="20" height="2"  fill="#ff8a1f"/>
+        <rect x="58" y="47" width="14" height="4"  rx="1.2" fill="#ff8a1f"/>
+        <rect x="22" y="47" width="10" height="2"  fill={muted}/>
+      </svg>
+    );
+  }
+  // generic dark UI screenshot
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height: "100%", display: "block" }}>
-      <rect x="0" y="0" width={w} height={h} fill={palette.chrome} opacity="0.32"/>
-      <rect x="0" y="0" width={w} height="6" fill={palette.chrome} opacity="0.92"/>
-      <circle cx="3" cy="3" r="1" fill="#ff5f57"/>
-      <circle cx="6.5" cy="3" r="1" fill="#febc2e"/>
-      <circle cx="10" cy="3" r="1" fill="#28c840"/>
-      <rect x="0" y="6" width="22" height={h-6} fill={palette.chrome} opacity="0.5"/>
-      {[0,1,2,3,4].map(i => <rect key={i} x="3" y={10+i*7} width="16" height="2.6" fill={palette.lines} opacity={0.18 + (c.id+i)%3*0.08}/>)}
-      {Array.from({length: 6}).map((_,i) => {
-        const ww = 30 + ((c.id*7 + i*13) % 40);
-        return <rect key={i} x="26" y={11+i*7} width={ww} height="2.4" fill={palette.lines} opacity={0.32 - i*0.025}/>;
-      })}
-      <rect x="26" y="40" width="64" height="18" fill={palette.lines} opacity="0.08" stroke={palette.lines} strokeOpacity="0.3" strokeWidth="0.4"/>
-      <rect x="29" y="44" width="22" height="2.4" fill={palette.lines} opacity="0.4"/>
-      <rect x="29" y="49" width="40" height="1.8" fill={palette.lines} opacity="0.25"/>
-      <rect x="29" y="52.5" width="34" height="1.8" fill={palette.lines} opacity="0.25"/>
+    <svg viewBox="0 0 100 62" preserveAspectRatio="none" style={{ width:"100%", height:"100%", display:"block" }}>
+      <rect x="0" y="0" width="100" height="62" fill={dark}/>
+      <rect x="0" y="0" width="100" height="5" fill="rgba(20,17,13,0.95)"/>
+      <circle cx="3" cy="2.5" r="0.8" fill="#ff5f57"/>
+      <circle cx="6" cy="2.5" r="0.8" fill="#febc2e"/>
+      <circle cx="9" cy="2.5" r="0.8" fill="#28c840"/>
+      <rect x="0" y="5" width="22" height="57" fill="rgba(20,17,13,0.92)"/>
+      <rect x="2" y="9"  width="18" height="1.6" fill={tint} opacity="0.85"/>
+      {[0,1,2,3,4,5].map(i => (
+        <rect key={i} x="3" y={14+i*4} width={12 + (i*7+c.id)%6} height="1.4" fill={text} opacity={0.32 + (i%3)*0.1}/>
+      ))}
+      {/* messages */}
+      <rect x="26" y="8" width="68" height="1.8" fill={tint} opacity="0.6"/>
+      <rect x="26" y="11" width="50" height="1.2" fill={muted}/>
+      <rect x="26" y="17" width="68" height="12" rx="1" fill="rgba(255,138,31,0.05)" stroke="rgba(255,138,31,0.18)"/>
+      <rect x="28" y="20" width="50" height="1.4" fill={text}/>
+      <rect x="28" y="23" width="56" height="1.2" fill={text} opacity="0.7"/>
+      <rect x="28" y="26" width="42" height="1.2" fill={text} opacity="0.7"/>
+      <rect x="26" y="32" width="68" height="10" rx="1" fill="rgba(20,17,13,0.7)" stroke={muted}/>
+      <rect x="28" y="35" width="40" height="1.2" fill={text} opacity="0.7"/>
+      <rect x="28" y="38" width="54" height="1.2" fill={text} opacity="0.6"/>
+      <rect x="26" y="45" width="68" height="10" rx="1" fill="rgba(255,138,31,0.04)" stroke="rgba(255,138,31,0.14)"/>
+      <rect x="28" y="48" width="38" height="1.2" fill={text} opacity="0.7"/>
+      <rect x="28" y="51" width="48" height="1.2" fill={text} opacity="0.6"/>
+      <circle cx="86" cy="51" r="0.9" fill={tint}/>
     </svg>
   );
 }
@@ -140,9 +206,9 @@ function Thumb({ c, withAnnotation = false }) {
       <ThumbContent c={c} />
       {withAnnotation && (
         <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 100 62" preserveAspectRatio="none">
-          <rect x="48" y="34" width="22" height="9" fill="none" stroke="#e8743a" strokeWidth="0.6"/>
-          <path d="M48 34 L 30 22" stroke="#e8743a" strokeWidth="0.5"/>
-          <circle cx="30" cy="22" r="1.6" fill="#e8743a"/>
+          <rect x="48" y="34" width="22" height="9" fill="none" stroke="#ff8a1f" strokeWidth="0.6"/>
+          <path d="M48 34 L 30 22" stroke="#ff8a1f" strokeWidth="0.5"/>
+          <circle cx="30" cy="22" r="1.6" fill="#ff8a1f"/>
         </svg>
       )}
     </div>
@@ -159,56 +225,136 @@ function groupByDay(items) {
 }
 
 // ============================================================
-// Edit toolbar — the in-canvas one (was hiding in the sidebar)
+// Edit toolbar — labeled buttons w/ bracketed key hints.
+// Picks up the affordance the user has been sketching: each tool
+// reads as `LABEL [K]` with the key in a bracket-chip beside its name.
+// Left edge is a drag handle (move the toolbar). Right edge is the
+// Zoom dropdown (Fit / 100% / custom).
 // ============================================================
 const EDIT_TOOLS = [
-  { id: "select",    name: "Select",    key: "V", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m4 3 6 17 3-7 7-3z"/></svg> },
-  { id: "crop",      name: "Crop",      key: "C", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 2v16h16M2 6h16v16"/></svg> },
+  { id: "pointer",   name: "Pointer",   key: "V", icon: <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="0.5"><path d="m6 3 12 8-5 1.4 3 7-2.6 1.1-3-7L6 17Z"/></svg> },
   { id: "arrow",     name: "Arrow",     key: "A", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M5 19 19 5M19 5h-7M19 5v7"/></svg> },
   { id: "rect",      name: "Rect",      key: "R", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="4" width="16" height="16"/></svg> },
-  { id: "highlight", name: "Highlight", key: "H", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M9 14 4 19v2h2l5-5"/><path d="M14 9 19 4l3 3-5 5"/><path d="M9 14l5 5"/></svg> },
-  { id: "text",      name: "Text",      key: "T", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 6h14M12 6v14M9 20h6"/></svg> },
-  { id: "blur",      name: "Blur",      key: "B", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="7" cy="12" r="2"/><circle cx="13" cy="8" r="2"/><circle cx="17" cy="14" r="2"/><circle cx="11" cy="17" r="2"/></svg> },
+  { id: "highlight", name: "Highlight", key: "H", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m9 14-5 5v2h2l5-5"/><path d="M14 9 19 4l3 3-5 5"/><path d="M9 14l5 5"/></svg> },
+  { id: "blur",      name: "Blur",      key: "B", icon: <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="4.5"/></svg> },
+  { id: "text",      name: "Text",      key: "T", icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 6h14M12 6v14M9 20h6"/></svg> },
 ];
 
-const STROKE_COLORS = ["#e8743a", "#f4d35e", "#6dba7e", "#6b9ad8", "#e85a3a", "#f5efe3"];
+const BLUR_MODES = [
+  { id: "soft",     name: "Soft blur", desc: "Gaussian smear — good for hiding text while keeping the shape",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/></svg> },
+  { id: "pixelate", name: "Pixelate",  desc: "Chunky mosaic — the classic censored look",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="3" height="3"/><rect x="10" y="6" width="3" height="3"/><rect x="14" y="6" width="3" height="3"/><rect x="6" y="10" width="3" height="3"/><rect x="14" y="10" width="3" height="3"/><rect x="6" y="14" width="3" height="3"/><rect x="10" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg> },
+  { id: "redact",   name: "Redact",    desc: "Solid black bar — privacy with zero info leak",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="10" width="16" height="4" rx="0.5"/></svg> },
+];
 
-function EditToolbar({ tool, setTool, color, setColor }) {
+const ZOOM_PRESETS = [
+  { id: "fit",   label: "Fit",   pct: 57,  kbd: "⌘0" },
+  { id: "100",   label: "100%",  pct: 100, kbd: "⌘1" },
+];
+
+function ZoomMenu({ zoom, setZoom, onClose }) {
+  const [val, setVal] = useStateLib(zoom.pct);
+  return (
+    <div className="psl__zoom-menu" onClick={(e) => e.stopPropagation()}>
+      {ZOOM_PRESETS.map((p) => (
+        <button key={p.id} className={"psl__zoom-row" + (zoom.id === p.id ? " is-active" : "")} onClick={() => { setZoom({ id: p.id, pct: p.pct }); onClose(); }}>
+          <span className="psl__zoom-check">{zoom.id === p.id ? "✓" : ""}</span>
+          <span className="psl__zoom-label">{p.label}</span>
+          <span className="psl__zoom-pct">{p.pct}%</span>
+          <span className="psl__zoom-kbd">{p.kbd}</span>
+        </button>
+      ))}
+      <div className="psl__zoom-custom">
+        <button className="psl__zoom-step" onClick={() => setVal(Math.max(10, val-5))}>−</button>
+        <div className="psl__zoom-input-wrap">
+          <input type="number" value={val} onChange={(e) => setVal(parseInt(e.target.value,10) || 0)} />
+          <span>%</span>
+        </div>
+        <button className="psl__zoom-step" onClick={() => setVal(Math.min(400, val+5))}>+</button>
+      </div>
+      <div className="psl__zoom-hint">
+        <span><kbd>⌘</kbd>+scroll cursor zoom</span>
+        <span>· two-finger scroll pans</span>
+      </div>
+    </div>
+  );
+}
+
+function BlurMenu({ mode, setMode, onClose }) {
+  return (
+    <div className="psl__blur-menu" onClick={(e) => e.stopPropagation()}>
+      {BLUR_MODES.map((m) => (
+        <button key={m.id} className={"psl__blur-row" + (mode === m.id ? " is-active" : "")} onClick={() => { setMode(m.id); onClose(); }}>
+          <span className="psl__blur-check">{mode === m.id ? "✓" : ""}</span>
+          <span className="psl__blur-icon">{m.icon}</span>
+          <span className="psl__blur-body">
+            <span className="psl__blur-name">{m.name}</span>
+            <span className="psl__blur-desc">{m.desc}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EditToolbar({ tool, setTool }) {
+  const [zoom, setZoom] = useStateLib({ id: "fit", pct: 57 });
+  const [blurMode, setBlurMode] = useStateLib("soft");
+  const [showZoom, setShowZoom] = useStateLib(false);
+  const [showBlurMenu, setShowBlurMenu] = useStateLib(false);
+
   return (
     <div className="psl__edit-toolbar" onClick={(e) => e.stopPropagation()}>
-      {EDIT_TOOLS.map((t, i) => (
-        <React.Fragment key={t.id}>
-          {i === 1 && <span className="psl__et-sep" />}
-          <button
-            className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
-            onClick={() => setTool(t.id)}
-            title={t.name}
-          >
-            {t.icon}
-            <span>{t.name}</span>
-            <span className="psl__et-btn-key">{t.key}</span>
-          </button>
-        </React.Fragment>
-      ))}
-      <span className="psl__et-sep" />
-      <div className="psl__et-swatch">
-        {STROKE_COLORS.map((c) => (
-          <button
-            key={c}
-            style={{ background: c }}
-            className={color === c ? "is-active" : ""}
-            onClick={() => setColor(c)}
-            aria-label={`color ${c}`}
-          />
-        ))}
+      {/* drag handle */}
+      <span className="psl__et-drag" title="Drag toolbar">
+        <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="2.5" cy="3"  r="1.1"/><circle cx="7.5" cy="3"  r="1.1"/><circle cx="2.5" cy="7"  r="1.1"/><circle cx="7.5" cy="7"  r="1.1"/><circle cx="2.5" cy="11" r="1.1"/><circle cx="7.5" cy="11" r="1.1"/></svg>
+      </span>
+
+      {EDIT_TOOLS.map((t) => {
+        const isActive = tool === t.id;
+        const isBlur = t.id === "blur";
+        return (
+          <div key={t.id} className="psl__et-cell">
+            <button
+              className={"psl__et-btn" + (isActive ? " is-active" : "")}
+              onClick={() => {
+                setTool(t.id);
+                if (isBlur && !showBlurMenu) setShowBlurMenu(true);
+                else setShowBlurMenu(false);
+              }}
+              title={t.name}
+            >
+              <span className="psl__et-ico">{t.icon}</span>
+              <span className="psl__et-label">{t.name}</span>
+              <span className="psl__et-key">{t.key}</span>
+            </button>
+            {isBlur && showBlurMenu && (
+              <BlurMenu mode={blurMode} setMode={setBlurMode} onClose={() => setShowBlurMenu(false)} />
+            )}
+          </div>
+        );
+      })}
+
+      <button className="psl__et-btn psl__et-btn--bare" title="Reset annotations">
+        <span className="psl__et-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 4v6h6"/><path d="M4 10a8 8 0 1 1 2 5"/></svg>
+        </span>
+        <span className="psl__et-label">Reset</span>
+      </button>
+
+      <div className="psl__et-cell">
+        <button
+          className={"psl__et-btn psl__et-zoom" + (showZoom ? " is-active" : "")}
+          onClick={() => setShowZoom(!showZoom)}
+        >
+          <span className="psl__et-zoom-text">{zoom.id === "fit" ? "Fit" : "100%"}</span>
+          <span className="psl__et-zoom-pct">({zoom.pct}%)</span>
+          <svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor"><path d="M0 0h9L4.5 6Z"/></svg>
+        </button>
+        {showZoom && <ZoomMenu zoom={zoom} setZoom={setZoom} onClose={() => setShowZoom(false)} />}
       </div>
-      <span className="psl__et-sep" />
-      <button className="psl__et-btn" title="Magic — Codex auto-annotate">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="m4 20 12-12M14 4h2v2M20 8h2v2M18 14h2v2"/></svg>
-      </button>
-      <button className="psl__et-btn" title="Undo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M3 12h12a4 4 0 1 1 0 8h-3"/><path d="m7 8-4 4 4 4"/></svg>
-      </button>
     </div>
   );
 }
@@ -255,10 +401,71 @@ function CopyRow({ srcW, srcH }) {
 }
 
 // ============================================================
-// Right-pane body (used in focus mode + reel mode)
-// Shows metadata, AI caption, L/M/H copy, secondary actions
+// AI-suggestion row — one suggested field with ✓ / ✗ buttons.
+// Pattern: dotted accent border (proposed, not committed), the
+// agent-tinted text color, and inline accept/reject so the user
+// can promote a suggestion into the real field in one click.
+// ============================================================
+function AiSuggestion({ label, value, onAccept, onReject, multiline = false }) {
+  return (
+    <div className="psl__ai-row">
+      <div className="psl__ai-row-hdr">
+        <span className="psl__ai-row-label">{label}</span>
+        <div className="psl__ai-row-actions">
+          <button className="psl__ai-acc" title="Accept (↵)" onClick={onAccept}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 5 5 9-11"/></svg>
+          </button>
+          <button className="psl__ai-rej" title="Reject (⌫)" onClick={onReject}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m5 5 14 14M19 5 5 19"/></svg>
+          </button>
+        </div>
+      </div>
+      <div className={"psl__ai-row-value" + (multiline ? " is-multi" : "")}>{value}</div>
+    </div>
+  );
+}
+
+// ============================================================
+// Detail rail — title / description / filename-stem / tags
+// with a co-located AI-processing card showing accept/reject
+// per suggestion.
 // ============================================================
 function DetailRail({ current }) {
+  // Mock suggested values the agent has proposed for this capture.
+  // In the live app these come from the Codex post-capture pipeline.
+  const ai = {
+    title: current.app === "clipboard"
+      ? "Onboarding — name & log in to your tasteful profile"
+      : "Resume menu doesn't clear after picking a thread",
+    description: current.app === "clipboard"
+      ? "Final step of clipboard's onboarding — tasteful-profile setup with a Continue CTA. Screenshot used to confirm copy alignment."
+      : "The resume dropdown stays mounted after the user picks an option, so a second click is needed to dismiss it. Repro on macOS, PwrAgent 0.4.2.",
+    tags: current.app === "clipboard"
+      ? ["onboarding","copy","clipboard"]
+      : ["bug","resume","ui","p1"],
+  };
+
+  const [title, setTitle] = useStateLib(`${current.stem.replace(/-/g, " ")}`);
+  const [desc, setDesc] = useStateLib("");
+  const [tags, setTags] = useStateLib(["screenshot"]);
+  const [aiOpen, setAiOpen] = useStateLib({ title: true, description: true, tags: true });
+
+  function accept(field) {
+    if (field === "title") setTitle(ai.title);
+    if (field === "description") setDesc(ai.description);
+    if (field === "tags") setTags(Array.from(new Set([...tags, ...ai.tags])));
+    setAiOpen({ ...aiOpen, [field]: false });
+  }
+  function reject(field) { setAiOpen({ ...aiOpen, [field]: false }); }
+  function acceptAll() {
+    setTitle(ai.title); setDesc(ai.description);
+    setTags(Array.from(new Set([...tags, ...ai.tags])));
+    setAiOpen({ title: false, description: false, tags: false });
+  }
+
+  const filename = `pwrsnap-${current.day === "Today" ? "2026-05-21" : "2026-05-20"}-${current.stem}`;
+  const anyOpen = aiOpen.title || aiOpen.description || aiOpen.tags;
+
   return (
     <aside className="psl__focus-rail">
       <div className="psl__right-tabs">
@@ -267,43 +474,117 @@ function DetailRail({ current }) {
         <button className="psl__right-tab">OCR</button>
       </div>
       <div className="psl__right-body">
-        <div className="psl__detail-meta">
-          <input className="psl__detail-name" defaultValue={current.n} />
-          <div className="psl__detail-row">
-            <span><b>{current.w}×{current.h}</b></span>
-            <span>{current.size} KB</span>
-            <span>PNG</span>
-            <span>{current.day} · {current.time}</span>
+
+        {/* TITLE */}
+        <div className="psl__df">
+          <label className="psl__df-label">Title</label>
+          <input
+            className="psl__df-input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Untitled capture"
+          />
+        </div>
+
+        {/* DESCRIPTION */}
+        <div className="psl__df">
+          <label className="psl__df-label">Description</label>
+          <textarea
+            className="psl__df-textarea"
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            placeholder="Add a description…"
+            rows={3}
+          />
+        </div>
+
+        {/* FILENAME STEM */}
+        <div className="psl__df">
+          <div className="psl__df-label-row">
+            <label className="psl__df-label">Filename stem</label>
+            <span className="psl__df-suffix">.png · {current.size} KB</span>
           </div>
-          <div className="psl__detail-tags">
-            <PsAppTag app={current.app} name={APP_INFO[current.app].name} />
-            {current.tags.map((t) => <span key={t} className="ps-tag">{t}</span>)}
-            <span className="ps-tag is-suggest">+ codex</span>
+          <input
+            className="psl__df-input is-mono"
+            defaultValue={filename}
+          />
+          <div className="psl__df-help">Used for export & clipboard reference. Date prefix locked.</div>
+        </div>
+
+        {/* TAGS */}
+        <div className="psl__df">
+          <label className="psl__df-label">Tags</label>
+          <div className="psl__df-tags">
+            <PsAppTag app={current.app} name={APP_INFO[current.app].name} size="sm" />
+            {tags.map((t) => (
+              <span key={t} className="ps-tag is-removable">
+                {t}
+                <button onClick={() => setTags(tags.filter((x) => x !== t))} aria-label={`remove ${t}`}>
+                  <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="m1 1 6 6M7 1 1 7"/></svg>
+                </button>
+              </span>
+            ))}
+            <button className="ps-tag is-add">+ tag</button>
           </div>
         </div>
 
-        <div className="psl__ai-card">
-          <div className="psl__ai-card-hdr">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m12 2 2.5 5 5.5.5-4 4 1 5.5-5-3-5 3 1-5.5-4-4 5.5-.5z"/></svg>
-            Codex caption
-            <small>haiku-4.5 · 1.4s</small>
-          </div>
-          <div className="psl__ai-card-text">
-            <b>{APP_INFO[current.app].name}</b> capture showing <b>{current.tags.join(", ")}</b>. Highlighted region likely the <b>error toast at column G37</b>. Suggest tagging <b>finance</b>, <b>Q4</b>.
-          </div>
-          <div className="psl__ai-card-actions">
-            <button className="psl__chip-btn">Regenerate</button>
-            <button className="psl__chip-btn">Apply tags</button>
-            <button className="psl__chip-btn">Copy as alt-text</button>
-          </div>
-        </div>
+        {/* AI SUGGESTIONS */}
+        {anyOpen && (
+          <div className="psl__ai-card">
+            <div className="psl__ai-card-hdr">
+              <span className="psl__ai-card-hdr-l">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 2.2 5.4 5.8.4-4.4 3.8 1.4 5.6L12 14.6 6.9 17.2l1.4-5.6L4 7.8l5.8-.4L12 2Z"/></svg>
+                Codex suggestions
+              </span>
+              <small>haiku-4.5 · 1.4s</small>
+            </div>
 
-        {/* L/M/H copy buttons — the FloatOver concept brought in here */}
+            {aiOpen.title && (
+              <AiSuggestion
+                label="Title"
+                value={ai.title}
+                onAccept={() => accept("title")}
+                onReject={() => reject("title")}
+              />
+            )}
+            {aiOpen.description && (
+              <AiSuggestion
+                label="Description"
+                value={ai.description}
+                onAccept={() => accept("description")}
+                onReject={() => reject("description")}
+                multiline
+              />
+            )}
+            {aiOpen.tags && (
+              <AiSuggestion
+                label="Tags"
+                value={
+                  <span className="psl__ai-tag-row">
+                    {ai.tags.map((t) => <span key={t} className="ps-tag is-suggest">+ {t}</span>)}
+                  </span>
+                }
+                onAccept={() => accept("tags")}
+                onReject={() => reject("tags")}
+              />
+            )}
+
+            <div className="psl__ai-card-foot">
+              <button className="psl__ai-all" onClick={acceptAll}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 5 5 9-11"/></svg>
+                Accept all
+              </button>
+              <button className="psl__chip-btn">Regenerate</button>
+            </div>
+          </div>
+        )}
+
+        {/* L/M/H copy buttons */}
         <div>
-          <div style={{ font: "600 9px/1 var(--font-sans)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-muted)", marginBottom: 7, display: "flex", alignItems: "center", gap: 6 }}>
+          <div className="psl__rail-section-hdr">
             Copy to clipboard
-            <span style={{ flex: 1, height: 1, background: "var(--border-subtle)" }} />
-            <span style={{ font: "500 9px/1 var(--font-mono)", textTransform: "none", letterSpacing: 0 }}>scaled, not blind</span>
+            <span className="psl__rail-section-line" />
+            <span className="psl__rail-section-meta">scaled, not blind</span>
           </div>
           <CopyRow srcW={current.w} srcH={current.h} />
         </div>
@@ -331,14 +612,13 @@ function DetailRail({ current }) {
 // ============================================================
 function FocusStage({ current, onClose, onPrev, onNext, posLabel }) {
   const [tool, setTool] = useStateLib("rect");
-  const [color, setColor] = useStateLib("#e8743a");
 
   return (
     <div className="psl__focus" onClick={onClose}>
       <div className="psl__focus-stage" onClick={(e) => e.stopPropagation()}>
         <div className="psl__stage-meta">
           <PsAppTag app={current.app} name={APP_INFO[current.app].name} size="sm" />
-          <b>{current.n}</b>
+          <b>{current.stem.replace(/-/g," ")}</b>
           <span>· {current.day} {current.time}</span>
           <span>· {current.w}×{current.h}</span>
         </div>
@@ -365,7 +645,7 @@ function FocusStage({ current, onClose, onPrev, onNext, posLabel }) {
           <Thumb c={current} withAnnotation />
         </div>
 
-        <EditToolbar tool={tool} setTool={setTool} color={color} setColor={setColor} />
+        <EditToolbar tool={tool} setTool={setTool} />
       </div>
       <DetailRail current={current} />
     </div>
@@ -377,7 +657,6 @@ function FocusStage({ current, onClose, onPrev, onNext, posLabel }) {
 // ============================================================
 function ReelBody({ visible, selected, setSelected, current, posLabel }) {
   const [tool, setTool] = useStateLib("rect");
-  const [color, setColor] = useStateLib("#e8743a");
   const grouped = groupByDay(visible);
   const reelRef = useRefLib(null);
 
@@ -401,8 +680,8 @@ function ReelBody({ visible, selected, setSelected, current, posLabel }) {
                     onClick={() => setSelected(c.id)}
                   >
                     <Thumb c={c} />
-                    <span className="psl__frame-num">{c.time}</span>
-                    <span className="psl__frame-app"><PsAppIcon app={c.app} size={8} /></span>
+                    <span className="psl__frame-num">{c.time.replace(" PM","").replace(" AM","")}</span>
+                    <span className="psl__frame-app"><PsBundleIcon app={c.app} size={10} /></span>
                   </button>
                 ))}
               </div>
@@ -414,7 +693,7 @@ function ReelBody({ visible, selected, setSelected, current, posLabel }) {
       <div className="psl__stage">
         <div className="psl__stage-meta">
           <PsAppTag app={current.app} name={APP_INFO[current.app].name} size="sm" />
-          <b>{current.n}</b>
+          <b>{current.stem.replace(/-/g," ")}</b>
         </div>
         <div className="psl__stage-pos"><b>{posLabel.idx}</b> / {posLabel.total}</div>
 
@@ -443,7 +722,7 @@ function ReelBody({ visible, selected, setSelected, current, posLabel }) {
           <Thumb c={current} withAnnotation />
         </div>
 
-        <EditToolbar tool={tool} setTool={setTool} color={color} setColor={setColor} />
+        <EditToolbar tool={tool} setTool={setTool} />
       </div>
     </div>
   );
@@ -452,8 +731,8 @@ function ReelBody({ visible, selected, setSelected, current, posLabel }) {
 // ============================================================
 // Main Library
 // ============================================================
-function Library({ initialView = "grid", initialSelected = 5, initialOpen = false, initialApp = "all" }) {
-  const [view, setView] = useStateLib(initialView);          // "grid" | "reel"
+function Library({ initialView = "grid", initialSelected = 1, initialOpen = false, initialApp = "all" }) {
+  const [view, setView] = useStateLib(initialView);
   const [selected, setSelected] = useStateLib(initialSelected);
   const [activeApp, setActiveApp] = useStateLib(initialApp);
   const [focusOpen, setFocusOpen] = useStateLib(initialOpen);
@@ -491,86 +770,93 @@ function Library({ initialView = "grid", initialSelected = 5, initialOpen = fals
     if (next) setSelected(next.id);
   };
 
+  // App order in the rail — alphabetical-ish to match the design ref
+  const railApps = Object.keys(APP_INFO);
+
   return (
     <div className="psl" style={{ position: "relative" }}>
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
-            <span style={{ display: "inline-flex", width: 22, height: 22, alignItems: "center", justifyContent: "center", border: "1px solid var(--accent-border)", borderRadius: 5, background: "var(--bg-panel-elevated)", color: "var(--accent)" }}>
-              <PsAppIcon app="any" size={12} />
+            <span className="psl__title-mark">
+              <PsAppIcon app="pwrsnap" size={14} />
             </span>
-            Pwr<span className="a">Snap</span>
+            <span className="psl__wordmark">Pwr<span className="a">Snap</span></span>
           </div>
-          <span className="psl__count">{CAPTURES.length} captures</span>
+          <span className="psl__count">{TOTAL_CAPTURES} captures</span>
         </div>
         <div className="psl__topbar-c">
           <div className="psl__view">
-            <button className={"psl__view-btn" + (view==="grid"?" is-active":"")} onClick={() => { setView("grid"); setFocusOpen(false); }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-              Grid
-            </button>
             <button className={"psl__view-btn" + (view==="reel"?" is-active":"")} onClick={() => { setView("reel"); setFocusOpen(false); }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="6" width="4" height="12"/><rect x="10" y="6" width="4" height="12"/><rect x="17" y="6" width="4" height="12"/></svg>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="6" width="4" height="12"/><rect x="10" y="6" width="4" height="12"/><rect x="17" y="6" width="4" height="12"/></svg>
               Reel
+            </button>
+            <button className={"psl__view-btn" + (view==="grid"?" is-active":"")} onClick={() => { setView("grid"); setFocusOpen(false); }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+              Grid
             </button>
           </div>
         </div>
         <div className="psl__topbar-r">
-          <div className="psl__search-wrap">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-            <input className="psl__search" placeholder="Search captures, tags, OCR…" defaultValue="" />
-          </div>
+          <button className="psl__icon-btn" title="Settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .4 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-1.8-.4 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.4l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.7 1.7 0 0 0 .4-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.4-1.8l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.7 1.7 0 0 0 1.8.4H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.4l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.7 1.7 0 0 0-.4 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+          </button>
           <button className="psl__chip-btn psl__chip-btn--accent" style={{ height: 28 }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M5 12h14M12 5v14"/></svg>
-            New snap · ⌘⇧P
+            Quick Capture · <span className="psl__hk">⌘⇧C</span>
           </button>
         </div>
       </header>
 
       <aside className="psl__left">
-        <div className="psl__left-section">Library</div>
+        <div className="psl__left-section-row">
+          <span className="psl__left-section">Library</span>
+          <button className="psl__rail-collapse" title="Collapse sidebar">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="m15 6-6 6 6 6"/></svg>
+          </button>
+        </div>
         <button className={"psl__nav" + (activeApp==="all"?" is-active":"")} onClick={()=>setActiveApp("all")}>
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>
           <span className="psl__nav-label">All Captures</span>
-          <span className="psl__nav-count">{CAPTURES.length}</span>
+          <span className="psl__nav-count">{TOTAL_CAPTURES}</span>
         </button>
         <button className="psl__nav">
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
           <span className="psl__nav-label">Today</span>
-          <span className="psl__nav-count">8</span>
+          <span className="psl__nav-count">14</span>
         </button>
         <button className="psl__nav">
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 4l1 16h12l1-16"/><path d="M9 4V2h6v2"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 4l1 16h12l1-16"/><path d="M9 4V2h6v2"/></svg></span>
           <span className="psl__nav-label">Trash</span>
-          <span className="psl__nav-count">14</span>
+          <span className="psl__nav-count">2</span>
         </button>
 
         <div className="psl__left-section">Source App</div>
-        {Object.entries(APP_INFO).map(([app, info]) => (
+        {railApps.map((app) => (
           <button
             key={app}
             className={"psl__nav" + (activeApp===app?" is-active":"")}
             onClick={()=>setActiveApp(app)}
           >
-            <span className="psl__nav-icon"><PsAppIcon app={app} size={11} /></span>
-            <span className="psl__nav-label">{info.name}</span>
-            <span className="psl__nav-count">{CAPTURES.filter(c=>c.app===app).length}</span>
+            <span className="psl__nav-icon psl__nav-icon--bundle"><PsBundleIcon app={app} size={18} /></span>
+            <span className="psl__nav-label">{APP_INFO[app].name}</span>
+            <span className="psl__nav-count">{RAIL_COUNTS[app] ?? 0}</span>
           </button>
         ))}
 
         <div className="psl__left-section">Smart Filters</div>
         <button className="psl__nav">
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 2 9 9l-7 1 5 5-1 7 6-3 6 3-1-7 5-5-7-1z"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 2 9 9l-7 1 5 5-1 7 6-3 6 3-1-7 5-5-7-1z"/></svg></span>
           <span className="psl__nav-label">Pinned</span>
           <span className="psl__nav-count">6</span>
         </button>
         <button className="psl__nav">
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0Z"/><path d="m9 12 2 2 4-4"/></svg></span>
           <span className="psl__nav-label">Bug repros</span>
           <span className="psl__nav-count">5</span>
         </button>
         <button className="psl__nav">
-          <span className="psl__nav-icon"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></span>
+          <span className="psl__nav-icon psl__nav-icon--mono"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></svg></span>
           <span className="psl__nav-label">Has annotations</span>
           <span className="psl__nav-count">11</span>
         </button>
@@ -585,26 +871,20 @@ function Library({ initialView = "grid", initialSelected = 5, initialOpen = fals
                 <div className="psl__day-hdr">
                   <span className="psl__day-hdr-label">{g.day}</span>
                   <span className="psl__day-hdr-meta">{g.date} · {g.items.length} captures</span>
-                  <span className="psl__day-hdr-line" />
                 </div>
                 <div className="psl__grid">
                   {g.items.map((c) => (
                     <div
                       key={c.id}
-                      className={"psl__cell" + (c.id === selected && focusOpen ? " is-was-open" : "")}
+                      className={"psl__cell" + (c.id === selected && focusOpen ? " is-was-open" : "") + (c.id === selected ? " is-selected" : "")}
                       onClick={() => openFocus(c.id)}
                     >
                       <div className="psl__cell-thumb">
                         <Thumb c={c} />
                         <span className="psl__cell-time">{c.time}</span>
-                        <span className="psl__cell-app"><span className="psl__app-dot"><PsAppIcon app={c.app} size={10} /></span></span>
-                      </div>
-                      <div className="psl__cell-meta">
-                        <div className="psl__cell-name">{c.n}</div>
-                        <div className="psl__cell-tags">
+                        <span className="psl__cell-app">
                           <PsAppTag app={c.app} name={APP_INFO[c.app].name} size="sm" />
-                          {c.tags.slice(0,1).map((t) => <span key={t} className="ps-tag is-sm">{t}</span>)}
-                        </div>
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -635,12 +915,12 @@ function Library({ initialView = "grid", initialSelected = 5, initialOpen = fals
 
       <footer className="psl__status">
         <div className="psl__status-l">
-          <span><span className="a">●</span> 3.2 GB local · <b>iCloud sync</b></span>
+          <span><span className="a">●</span> 145 MB snaps</span>
           <span>Codex auto-tag <b>on</b></span>
         </div>
         <div className="psl__status-r">
-          <span>{view === "grid" && !focusOpen ? "↵ open · " : "esc close · ← → navigate · "}⌘⇧P new · ⌘L library · ⌘K search</span>
-          <span><b>v0.4.2</b></span>
+          <span>⌘⇧C new · ⌘L library</span>
+          <span><b>v0.0.1</b></span>
         </div>
       </footer>
     </div>

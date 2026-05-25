@@ -85,7 +85,7 @@ function TrayMenubar({ children }) {
         <span>🔋 92%</span>
         <span>📶</span>
         <span className="tray-menubar__pwrsnap">
-          <span className="tray-menubar__pwrsnap-mark"><PsAppIcon app="any" size={11} /></span>
+          <span className="tray-menubar__pwrsnap-mark"><PsAppIcon app="pwrsnap" size={11} /></span>
           <span className="tray-menubar__pwrsnap-dot" />
         </span>
         <span style={{ color: "var(--text-primary)" }}>Tue 9:42</span>
@@ -100,7 +100,7 @@ function TrayMenu({ activeMode = "region" }) {
     <div className="ps-tray" data-screen-label="Tray Menu">
       <div className="ps-tray__hdr">
         <div className="ps-tray__brand">
-          <PsAppIcon app="any" size={14} />
+          <PsAppIcon app="pwrsnap" size={14} />
           <span className="ps-tray__brand-name">Pwr<span className="a">Snap</span></span>
         </div>
         <div className="ps-tray__hdr-actions">
@@ -132,7 +132,7 @@ function TrayMenu({ activeMode = "region" }) {
         <span className="ps-tray__quick-hk">
           <TrayKbd>⌘</TrayKbd>
           <TrayKbd>⇧</TrayKbd>
-          <TrayKbd>P</TrayKbd>
+          <TrayKbd>C</TrayKbd>
         </span>
       </button>
 

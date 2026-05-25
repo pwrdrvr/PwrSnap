@@ -18,37 +18,107 @@
 //     a file-management action, not an editing tool, and DetailRail's
 //     "File" button already covers it.
 //
+// v2 editor refresh (Phase 1, task #10) adds:
+//   • `useEditorToolState` — drives sticky tool mode, per-tool style
+//     memory, the shared COLOR slot, and the matching-text affordance
+//     lifecycle. The hook is window-scoped: this Library window's
+//     EditToolbar owns its own hook instance, the standalone Editor
+//     window owns its own. Style memory persists across both via
+//     Settings; the active-tool state stays local.
+//   • Caret button on each styled tool button (arrow / text / rect /
+//     blur / highlight) → opens the unified `ToolStylePopover`
+//     anchored to that button. Blur was folded into the same popover
+//     in the v2 editor refresh (Phase 3.2 follow-up); the bespoke
+//     <BlurMenu> with its labeled rows + hint copy is gone.
+//   • Crop tool — renders `<CropTool>` over the chromeless Editor's
+//     canvas when activeTool === "crop". On ↵ commit, dispatches a
+//     `crop` overlay through the same `overlays:upsert` IPC.
+//   • Matching-text affordance — when the user places an arrow and
+//     Settings has matchingText.enabled = true, a "+ Add label" chip
+//     pops near the arrow's tail. Click it → tool flips to text with
+//     the arrow's color preserved (shared COLOR slot already covers
+//     the propagation).
+//   • ⌥-click on a tool button → single-shot mode (place one
+//     annotation, return to pointer).
+//
+// Library Focus is intentionally chromeless — we do NOT wrap in
+// `EditorChrome`. The activity bar / Info / Chat / Tool Config panels
+// belong to the standalone Editor window only; Library has its own
+// `DetailRail` for capture metadata and we don't want two competing
+// surfaces. Per the v2 editor plan §"Library Focus is chromeless".
+//
 // ⌘Z / ⌘⇧Z undo+redo bindings are wired by the chromeless Editor's
 // useUndoRedo hook (window-level keydown listener) — no visible
 // buttons in this floating toolbar yet because the undo state lives
 // inside Editor and exposing it here would need a Library-level lift.
 
-import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
-import type { BlurStyle } from "@pwrsnap/shared";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement
+} from "react";
+import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
 import { TOOLS, type Tool } from "../editor/editor-tools";
 import type { ZoomApi } from "../editor/Editor";
 import { ZoomMenu } from "../editor/ZoomMenu";
-import { BlurMenu } from "../editor/BlurMenu";
-import { dispatch, subscribe } from "../../lib/pwrsnap";
+import {
+  useEditorToolState,
+  isStyledTool,
+  type UseEditorToolStateReturn
+} from "../editor/useEditorToolState";
+import {
+  ToolStylePopover,
+  type StyledToolKind,
+  type ToolStylePopoverStyle
+} from "../editor/ToolStylePopover";
+import { useCaptureModel } from "../editor/useCaptureModel";
+import { dispatch } from "../../lib/pwrsnap";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
+
+/** Sentinel passed to `useEditorToolState` when no capture is selected
+ *  yet. The hook only uses captureId to reset the matching-text
+ *  affordance on capture switches; a stable sentinel keeps the hook
+ *  from re-firing its cleanup on every render before a capture loads. */
+const NO_CAPTURE_SENTINEL = "__no_capture__";
 
 export type EditToolbarProps = {
   readonly tool: Tool;
   readonly onChange: (next: Tool) => void;
+  /** Phase 3.2 lift: optional shared hook from Library. When passed,
+   *  this toolbar uses the parent's `useEditorToolState` instance
+   *  instead of instantiating its own — popover style picks land in
+   *  the same hook that the chromeless Editor's persistOverlay reads
+   *  from. The tests still mount EditToolbar standalone (no parent
+   *  hook) and rely on the internal-hook fallback. */
+  readonly toolState?: UseEditorToolStateReturn;
   /** Required for the Reset button. Optional in the type so Stage
    *  can still render the toolbar before a record selects (rare;
    *  Reset is disabled when undefined). */
   readonly captureId?: string;
+  /** Source image pixel dimensions. Kept for callsite compatibility
+   *  (Stage still passes them); EditToolbar no longer renders its
+   *  own <CropTool> overlay — the chromeless Editor owns that, with
+   *  the correct canvas coordinate space. See Phase 3.2 fix in
+   *  Stage.tsx + Editor.tsx. */
+  readonly sourceWidth?: number;
+  readonly sourceHeight?: number;
   /** Editor's current zoom snapshot — `null` until the Editor mounts
    *  and reports its first scale, or after unmount. When null the
    *  zoom indicator is hidden (no useful state to show). */
   readonly zoom?: ZoomApi;
-  /** Current blur style + setter. The BlurMenu replaces the plain
-   *  Blur tool button in the toolbar; users click to switch to the
-   *  Blur tool AND open a style picker (gaussian / pixelate /
-   *  redact). Library owns the state so the choice persists across
-   *  capture navigations. */
+  /** Current blur style + setter. Legacy v1-string-shaped mode
+   *  (gaussian / pixelate / redact). Library owns the state so the
+   *  choice survives Focus ↔ Reel ↔ Grid transitions; Editor reads
+   *  it for the live drag draft and the v1 commit pipeline. Post-
+   *  BlurMenu-fold the toolbar no longer mutates this directly —
+   *  the unified ToolStylePopover writes to `toolState`'s blur
+   *  block and an effect mirrors `toolState.activeStyle.style.mode`
+   *  back into `onBlurStyleChange` so the prop pair stays in sync.  */
   readonly blurStyle: BlurStyle;
   readonly onBlurStyleChange: (style: BlurStyle) => void;
 };
@@ -66,7 +136,13 @@ function clamp(value: number, min: number, max: number): number {
 export function EditToolbar({
   tool,
   onChange,
+  toolState: toolStateProp,
   captureId,
+  // Held in the prop type but no longer consumed — the crop overlay
+  // lives in the chromeless Editor now (see EditToolbarProps comment).
+  // Discard explicitly so noUnusedParameters doesn't flag them.
+  sourceWidth: _sourceWidth,
+  sourceHeight: _sourceHeight,
   zoom,
   blurStyle,
   onBlurStyleChange
@@ -87,32 +163,171 @@ export function EditToolbar({
     setResetArmedAt(null);
   }, [captureId]);
 
-  // Self-track the overlay count via overlays:list + the existing
-  // events:overlays:changed broadcast. Editor fetches the same data
-  // separately for rendering; both paths converge on the same view.
-  const [overlayCount, setOverlayCount] = useState(0);
+  // ---- v2 tool-state hook ----------------------------------------
+  //
+  // Phase 3.2 lift: when the parent (Library) provides `toolStateProp`,
+  // use it directly so the chromeless Editor and this toolbar share
+  // ONE hook instance. Pre-lift, EditToolbar always instantiated its
+  // own copy, so popover style picks landed in the toolbar's hook and
+  // never reached Editor's persistOverlay (which read its own dormant
+  // hook). The standalone fallback hook below preserves the test
+  // harness's contract (tests mount EditToolbar without a parent
+  // hook) and the legacy non-Library callsite (if any).
+  //
+  // Always call the hook (rules of hooks) so the fallback is stable
+  // across re-renders even when toolStateProp toggles between defined
+  // and undefined.
+  const fallbackToolState = useEditorToolState({
+    captureId: captureId ?? NO_CAPTURE_SENTINEL,
+    initialTool: tool
+  });
+  const toolState = toolStateProp ?? fallbackToolState;
+
+  // Bidirectional sync between the Library-owned `tool` prop and the
+  // hook's `activeTool`. Library uses the prop to reset to "pointer"
+  // on view.kind change (Focus ↔ Reel ↔ Grid); the hook drives
+  // matching-text + single-shot resets internally. We honor whichever
+  // side is the most recent source of truth.
+  //
+  // Prop → hook: when the parent pushes a new tool (e.g. view.kind
+  // reset), mirror it into the hook. Guard against feedback loops by
+  // skipping when the hook already matches.
+  const lastPropToolRef = useRef<Tool>(tool);
+  useEffect(() => {
+    if (tool === lastPropToolRef.current) return;
+    lastPropToolRef.current = tool;
+    if (toolState.activeTool !== tool) {
+      toolState.setActiveTool(tool);
+    }
+  }, [tool, toolState]);
+  // Hook → prop: when our own UI changes activeTool (button click,
+  // single-shot expiry, matching-text → text flip), inform the
+  // parent so the chromeless Editor receives the new tool too. The
+  // initial render's `useEditorToolState` returns the prop's tool,
+  // so this only fires on real transitions.
+  useEffect(() => {
+    if (toolState.activeTool === tool) return;
+    lastPropToolRef.current = toolState.activeTool;
+    onChange(toolState.activeTool);
+  }, [toolState.activeTool, tool, onChange]);
+
+  // After folding BlurMenu into ToolStylePopover, the popover writes
+  // blur picks through `toolState.setStyleField("blur", "mode", …)`
+  // — but the legacy `blurStyle` / `onBlurStyleChange` prop pair is
+  // still threaded through Library → Stage → Editor for the live drag
+  // draft (Editor only owns the v1-string-shaped blur style for the
+  // commit pipeline + BlurOverlays rendering). Mirror the hook's blur
+  // mode out to the legacy prop whenever blur is the active tool so
+  // a popover pick lands in both surfaces consistently.
+  useEffect(() => {
+    if (toolState.activeStyle.tool !== "blur") return;
+    const mode = toolState.activeStyle.style.mode;
+    if (mode !== blurStyle) onBlurStyleChange(mode);
+  }, [toolState.activeStyle, blurStyle, onBlurStyleChange]);
+
+  // Phase 2 task #14: shared data through useCaptureModel. The hook
+  // owns the dispatch + cancel-safety + broadcast-driven refetch for
+  // both v1 (overlays) and v2 (layers) — EditToolbar reads the result
+  // for both `overlayCount` and the fresh-placement detection that
+  // feeds `onAnnotationPlaced`. We always call the hook (rules of
+  // hooks) with a sentinel when no capture is selected.
+  const model = useCaptureModel(captureId ?? NO_CAPTURE_SENTINEL);
+
+  // Resolve to a uniform OverlayRow[] view. v1 returns it natively;
+  // v2 captures (Phase 2 read-only) get back-projected via the same
+  // shape Editor uses. EditToolbar reads `data.kind` to feed
+  // describePlacement, which is overlay-shaped — projecting keeps the
+  // call site format-agnostic. When the hook is loading / errored /
+  // sentinel-mounted, the list is empty.
+  const overlayRows: OverlayRow[] = useMemo(() => {
+    if (captureId === undefined) return [];
+    if (model.kind !== "loaded") return [];
+    if (model.format === 1) return model.overlays;
+    // v2: re-shape vector + blur-effect layers back into OverlayRow
+    // shape. EditToolbar only needs id + data.kind + created_at +
+    // source for placement detection, all of which carry through.
+    const rows: OverlayRow[] = [];
+    for (const layer of model.layers) {
+      if (layer.kind === "vector") {
+        rows.push({
+          id: layer.id,
+          capture_id: captureId,
+          data: layer.shape,
+          schema_version: 1,
+          source: layer.source,
+          ai_run_id: layer.ai_run_id,
+          z_index: layer.z_index,
+          rejected_at: layer.rejected_at,
+          applied_at: layer.applied_at,
+          superseded_by: layer.superseded_by,
+          created_at: layer.created_at
+        });
+      }
+    }
+    return rows;
+  }, [captureId, model]);
+
+  // Detect freshly-placed overlays so we can feed the hook's
+  // `onAnnotationPlaced` (drives matching-text affordance). Rows
+  // unseen since the last render that came from "user" source are
+  // placements; we pick the most-recent one chronologically.
+  //
+  // Initial-load convention: the FIRST model resolution after mount
+  // (or after a capture switch) is the seed — its rows go into the
+  // seen-set silently. Subsequent updates compare against the seed
+  // and any rows that appear after that point are placements.
+  //
+  // Stash a stable reference to onAnnotationPlaced so the effect
+  // doesn't re-bind every render (the hook returns a fresh callback
+  // when localStyles change).
+  const onAnnotationPlacedRef = useRef(toolState.onAnnotationPlaced);
+  useLayoutEffect(() => {
+    onAnnotationPlacedRef.current = toolState.onAnnotationPlaced;
+  });
+  const lastSeenRowIdsRef = useRef<Set<string>>(new Set());
+  /** Captures we've already seeded (first model resolution recorded).
+   *  Comparing against captureId on each effect tick distinguishes:
+   *    • capture switch → reset seed
+   *    • first load for this capture → seed silently (no placement)
+   *    • subsequent loads → diff for placements */
+  const seededCaptureRef = useRef<string | null>(null);
   useEffect(() => {
     if (captureId === undefined) {
-      setOverlayCount(0);
-      return undefined;
+      lastSeenRowIdsRef.current = new Set();
+      seededCaptureRef.current = null;
+      return;
     }
-    let cancelled = false;
-    const refetch = async (): Promise<void> => {
-      const result = await dispatch("overlays:list", { captureId });
-      if (cancelled || !result.ok) return;
-      setOverlayCount(result.value.length);
-    };
-    void refetch();
-    const unsubscribe = subscribe("events:overlays:changed", (payload) => {
-      const p = payload as { captureId?: string };
-      if (p.captureId !== undefined && p.captureId !== captureId) return;
-      void refetch();
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [captureId]);
+    const nextIds = new Set(overlayRows.map((r) => r.id));
+    const isFirstLoadForCapture = seededCaptureRef.current !== captureId;
+    if (isFirstLoadForCapture) {
+      // Seed silently — whatever the initial load contains is the
+      // baseline, not a placement.
+      lastSeenRowIdsRef.current = nextIds;
+      seededCaptureRef.current = captureId;
+      return;
+    }
+    // Subsequent updates — diff against the seen-set.
+    const fresh = overlayRows.filter(
+      (r) =>
+        !lastSeenRowIdsRef.current.has(r.id) && r.source === "user"
+    );
+    if (fresh.length > 0) {
+      // Pick the most recently created row; created_at is ISO so
+      // string comparison sorts chronologically.
+      const newest = [...fresh].sort((a, b) =>
+        b.created_at.localeCompare(a.created_at)
+      )[0];
+      if (newest !== undefined) {
+        const placement = describePlacement(newest);
+        if (placement !== null) {
+          onAnnotationPlacedRef.current(placement);
+        }
+      }
+    }
+    lastSeenRowIdsRef.current = nextIds;
+  }, [captureId, overlayRows]);
+
+  const overlayCount = overlayRows.length;
   // Persist to module-level on every change so a remount picks up
   // the same position.
   useEffect(() => {
@@ -196,104 +411,344 @@ export function EditToolbar({
           transform: "none"
         };
 
+  // ---- Tool button anchors + popover state ----------------------
+  //
+  // Each styled tool button holds a ref so its caret can anchor the
+  // ToolStylePopover. We keep refs in a Map keyed by tool id so the
+  // single useState for `popoverTool` resolves to the correct anchor
+  // at render time. Blur is included since the v2 editor refresh
+  // folded the bespoke <BlurMenu> into the unified popover.
+  const buttonRefs = useRef<Map<Tool, HTMLButtonElement | null>>(new Map());
+  const [popoverTool, setPopoverTool] = useState<StyledToolKind | null>(null);
+  // Pinned ref for whichever button currently anchors the popover.
+  // Updated when popoverTool changes; the popover reads from it via
+  // its `anchorRef` prop.
+  const popoverAnchorRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    if (popoverTool === null) {
+      popoverAnchorRef.current = null;
+      return;
+    }
+    popoverAnchorRef.current = buttonRefs.current.get(popoverTool) ?? null;
+  }, [popoverTool]);
+  // Close the popover when the active tool stops matching the
+  // popover's tool (e.g. user clicked a different tool). Keep it
+  // open while only `tool` changes via prop sync that matches.
+  useEffect(() => {
+    if (popoverTool === null) return;
+    if (toolState.activeTool !== popoverTool) {
+      setPopoverTool(null);
+    }
+  }, [toolState.activeTool, popoverTool]);
+
+  // ---- Tool click + caret handlers ------------------------------
+
+  const handleToolClick = (
+    t: Tool,
+    event: React.MouseEvent<HTMLButtonElement>
+  ): void => {
+    // ⌥-click → single-shot mode (legacy affordance: place ONE
+    // annotation, then return to pointer). Holding Option signals
+    // "I just want this one, don't stick."
+    const singleShot = event.altKey;
+    toolState.setActiveTool(t, { singleShot });
+    // Selecting a different tool while the popover is open closes it.
+    // Selecting the SAME tool again toggles the popover (matches the
+    // VS Code "click the active tab to peek details" affordance).
+    if (popoverTool !== null && popoverTool !== t) {
+      setPopoverTool(null);
+    }
+  };
+
+  const handleCaretClick = (
+    t: StyledToolKind,
+    event: React.MouseEvent<HTMLButtonElement>
+  ): void => {
+    event.stopPropagation();
+    // Activate the tool and open the popover. If the popover is
+    // already open for this tool, the caret click is a toggle (close).
+    toolState.setActiveTool(t);
+    setPopoverTool((prev) => (prev === t ? null : t));
+  };
+
+  // ---- Matching-text affordance positioning ---------------------
+  //
+  // The hook stores the affordance's anchorPoint in normalized [0,1]
+  // image coords (the same space overlay rects use). We translate to
+  // viewport coords via the canvas rect so the chip can be positioned
+  // with `position: fixed`. The chip auto-dismisses inside the hook
+  // after 8s.
+  const matchingTextStyle = useMemo<React.CSSProperties | null>(() => {
+    if (toolState.matchingText.kind !== "available") return null;
+    const canvas = document.querySelector<HTMLElement>(".editor-canvas");
+    if (canvas === null) return null;
+    const rect = canvas.getBoundingClientRect();
+    const { x, y } = toolState.matchingText.anchorPoint;
+    // Anchor 10px BELOW the arrow tail (matches the design's offset).
+    const left = rect.left + x * rect.width;
+    const top = rect.top + y * rect.height + 10;
+    return {
+      position: "fixed",
+      left,
+      top,
+      transform: "translate(-50%, 0)",
+      zIndex: 6
+    };
+  }, [toolState.matchingText]);
+
   return (
-    <div
-      ref={toolbarRef}
-      className={"psl__edit-toolbar" + (position === null ? "" : " is-positioned")}
-      role="toolbar"
-      aria-label="Annotation tools"
-      style={style}
-      // Stop pointer-down from bubbling to the canvas behind. Without
-      // this, clicking a tool button inside the canvas's pointer-down
-      // area would also fire the canvas's drag-to-draw handler — the
-      // "I clicked Rect and accidentally drew on the canvas" bug
-      // class julik flagged. mousedown (not click) because the canvas
-      // listens for pointerdown for drag-start. Plan §5
-      // (in-canvas-toolbar pattern).
-      onMouseDown={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
+    <>
+      <div
+        ref={toolbarRef}
+        className={"psl__edit-toolbar" + (position === null ? "" : " is-positioned")}
+        role="toolbar"
+        aria-label="Annotation tools"
+        style={style}
+        // Stop pointer-down from bubbling to the canvas behind. Without
+        // this, clicking a tool button inside the canvas's pointer-down
+        // area would also fire the canvas's drag-to-draw handler — the
+        // "I clicked Rect and accidentally drew on the canvas" bug
+        // class julik flagged. mousedown (not click) because the canvas
+        // listens for pointerdown for drag-start. Plan §5
+        // (in-canvas-toolbar pattern).
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="psl__et-grip"
+          aria-label="Drag toolbar (double-click to reset)"
+          title="Drag to move · double-click to reset"
+          onPointerDown={onGripPointerDown}
+          onPointerMove={onGripPointerMove}
+          onPointerUp={onGripPointerUp}
+          onDoubleClick={onGripDoubleClick}
+        >
+          <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+            <circle cx="2.5" cy="2.5" r="1.1" />
+            <circle cx="7.5" cy="2.5" r="1.1" />
+            <circle cx="2.5" cy="7" r="1.1" />
+            <circle cx="7.5" cy="7" r="1.1" />
+            <circle cx="2.5" cy="11.5" r="1.1" />
+            <circle cx="7.5" cy="11.5" r="1.1" />
+          </svg>
+        </button>
+        <span className="psl__et-sep" aria-hidden="true" />
+        {TOOLS.map((t, i) => (
+          <Fragment key={t.id}>
+            {/* Vertical separator after the first tool (Pointer) —
+                divides the "select / inspect" tool from the "draw"
+                tools. Mirrors the design's separator placement; the
+                design also has a separator before color swatches +
+                magic wand + undo, but those clusters aren't rendered
+                in this phase. */}
+            {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
+            {/* Blur uses the SAME ToolButton + caret pattern as every
+                other styled tool. Earlier shape branched blur through
+                a bespoke <BlurMenu> with labeled rows and hint copy —
+                folded into the unified ToolStylePopover (Phase 3.2
+                follow-up) so a single popover shell drives every
+                styled tool. The popover's BlurBody covers the same
+                gaussian / pixelate / redact choice as the old menu,
+                plus the Auto / Custom radius control that the menu
+                never exposed. */}
+            <ToolButton
+              tool={t}
+              active={toolState.activeTool === t.id}
+              popoverOpen={popoverTool === t.id}
+              onClick={(e) => handleToolClick(t.id, e)}
+              onCaretClick={(e) => {
+                // Pointer + crop have no style block; suppress the
+                // caret button entirely (handled inside ToolButton).
+                if (!isStyledTool(t.id)) return;
+                handleCaretClick(t.id as StyledToolKind, e);
+              }}
+              showCaret={isStyledTool(t.id)}
+              buttonRef={(el) => {
+                buttonRefs.current.set(t.id, el);
+              }}
+            />
+          </Fragment>
+        ))}
+        <span className="psl__et-sep" aria-hidden="true" />
+        <ResetButton
+          captureId={captureId}
+          overlayCount={overlayCount}
+          armed={resetArmedAt !== null}
+          onArm={() => setResetArmedAt(Date.now())}
+          onConfirm={async () => {
+            if (captureId === undefined) return;
+            setResetArmedAt(null);
+            // Format-branch — Phase 3 doctor migrates captures to v2 on
+            // first edit-open, and the bus-side gates refuse cross-
+            // format IPC (v2 captures → `overlays:list` returns
+            // Result.err `v2_capture_use_layers_ipc`). Before this fix
+            // Reset silently no-op'd on every doctored capture.
+            const recordRes = await dispatch("library:byId", { id: captureId });
+            if (!recordRes.ok || recordRes.value === null) return;
+            const isV2 = recordRes.value.bundle_format_version >= 2;
+            if (isV2) {
+              const list = await dispatch("layers:list", { captureId });
+              if (!list.ok) return;
+              // Skip the synthesized root group + raster source; just
+              // delete user-facing annotation layers. Sequential per
+              // the same broadcast / edits_version reasoning as v1.
+              for (const node of list.value) {
+                if (node.kind === "group" || node.kind === "raster") continue;
+                // eslint-disable-next-line no-await-in-loop
+                await dispatch("layers:delete", { id: node.id });
+              }
+            } else {
+              const list = await dispatch("overlays:list", { captureId });
+              if (!list.ok) return;
+              // Sequentially — the overlays handler updates app_stats /
+              // edits_version per row + broadcasts. Parallel deletes
+              // would race those side-effects.
+              for (const row of list.value) {
+                // eslint-disable-next-line no-await-in-loop
+                await dispatch("overlays:delete", { id: row.id });
+              }
+            }
+          }}
+        />
+        {zoom !== null && zoom !== undefined && (
+          <>
+            <span className="psl__et-sep" aria-hidden="true" />
+            <ZoomMenu zoom={zoom} />
+          </>
+        )}
+      </div>
+
+      {/* Tool style popover — anchored to whichever button last
+          opened it. ToolStylePopover handles its own click-outside /
+          Escape dismissal. */}
+      {popoverTool !== null && toolState.activeStyle.tool === popoverTool && (
+        <ToolStylePopover
+          anchorRef={popoverAnchorRef}
+          tool={popoverTool}
+          style={
+            // activeStyle is a discriminated union; we've gated on
+            // tool ≡ popoverTool above so the cast is sound.
+            (toolState.activeStyle as { style: ToolStylePopoverStyle }).style
+          }
+          onClose={() => setPopoverTool(null)}
+          onStyleFieldChange={(field, value) => {
+            // The hook's generic signature is type-safe; the popover's
+            // string-keyed callback is necessarily looser. Cast via
+            // unknown so TS doesn't have to prove every field/value
+            // pair across the 5 tool kinds.
+            (
+              toolState.setStyleField as unknown as (
+                tool: StyledToolKind,
+                field: string,
+                value: unknown
+              ) => void
+            )(popoverTool, field, value);
+          }}
+        />
+      )}
+
+      {/* Crop overlay used to render here too — Phase 3.2 fix:
+          removed the duplicate. The chromeless Editor renders <CropTool>
+          inside its own .editor-canvas via canvasRef (positioned
+          absolute; inset: 0). That's the correct coord space; the
+          EditToolbar's old copy was anchored to a window-level
+          querySelector of `.editor-canvas` and re-renders made it
+          drift, AND it duplicated the HUD because both copies were
+          mounted. The toolbar still owns the user-facing "click Crop"
+          tool button — but the OVERLAY itself stays inside the editor
+          where the canvas's positioning context lives. */}
+
+      {/* Matching-text affordance — "+ Add label" chip that pops near
+          a just-placed arrow's tail. Clicking it transitions the hook
+          to "armed" + flips tool to text; placing one text overlay
+          returns the tool to arrow with style preserved. */}
+      {toolState.matchingText.kind === "available" && matchingTextStyle !== null && (
+        <button
+          type="button"
+          className="psl__et-matching-text"
+          data-testid="matching-text-affordance"
+          style={matchingTextStyle}
+          onClick={() => {
+            toolState.clickMatchingTextAffordance();
+          }}
+        >
+          <span aria-hidden="true">+</span>
+          <span>Add label</span>
+        </button>
+      )}
+    </>
+  );
+}
+
+/** Tool button + optional caret affordance. Caret is rendered for
+ *  styled tools (arrow / text / rect / highlight); pointer + crop
+ *  have no style block so no caret. Click the body → activate tool.
+ *  Click the caret → activate + open ToolStylePopover. */
+function ToolButton({
+  tool,
+  active,
+  popoverOpen = false,
+  onClick,
+  onCaretClick,
+  showCaret,
+  buttonRef
+}: {
+  tool: { id: Tool; label: string; key: string; icon: ReactElement };
+  active: boolean;
+  /** True when this tool's style popover is currently open. Rotates
+   *  the caret ▲ to indicate the open state — matches the convention
+   *  every dropdown menu in the OS UI follows. */
+  popoverOpen?: boolean;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onCaretClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  showCaret: boolean;
+  buttonRef: (el: HTMLButtonElement | null) => void;
+}): ReactElement {
+  return (
+    <span
+      className={
+        "psl__et-tool-wrap" +
+        (active ? " is-active" : "") +
+        (popoverOpen ? " is-popover-open" : "")
+      }
     >
       <button
         type="button"
-        className="psl__et-grip"
-        aria-label="Drag toolbar (double-click to reset)"
-        title="Drag to move · double-click to reset"
-        onPointerDown={onGripPointerDown}
-        onPointerMove={onGripPointerMove}
-        onPointerUp={onGripPointerUp}
-        onDoubleClick={onGripDoubleClick}
+        ref={buttonRef}
+        className={"psl__et-btn" + (active ? " is-active" : "")}
+        onClick={onClick}
+        title={`${tool.label} (${tool.key})`}
+        data-tool={tool.id}
       >
-        <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
-          <circle cx="2.5" cy="2.5" r="1.1" />
-          <circle cx="7.5" cy="2.5" r="1.1" />
-          <circle cx="2.5" cy="7" r="1.1" />
-          <circle cx="7.5" cy="7" r="1.1" />
-          <circle cx="2.5" cy="11.5" r="1.1" />
-          <circle cx="7.5" cy="11.5" r="1.1" />
-        </svg>
+        {tool.icon}
+        <span>{tool.label}</span>
+        <span className="psl__et-btn-key">{tool.key}</span>
       </button>
-      <span className="psl__et-sep" aria-hidden="true" />
-      {TOOLS.map((t, i) => (
-        <Fragment key={t.id}>
-          {/* Vertical separator after the first tool (Pointer) —
-              divides the "select / inspect" tool from the "draw"
-              tools. Mirrors the design's separator placement; the
-              design also has a separator before color swatches +
-              magic wand + undo, but those clusters aren't rendered
-              in this phase. */}
-          {i === 1 && <span className="psl__et-sep" aria-hidden="true" />}
-          {t.id === "blur" ? (
-            // Blur gets a popover so the user can pick a style
-            // (gaussian / pixelate / redact). Same click target
-            // also activates the Blur tool, so a single click both
-            // selects + opens the picker.
-            <BlurMenu
-              tool={tool}
-              onChange={onChange}
-              blurStyle={blurStyle}
-              onBlurStyleChange={onBlurStyleChange}
-            />
-          ) : (
-            <button
-              type="button"
-              className={"psl__et-btn" + (tool === t.id ? " is-active" : "")}
-              onClick={() => onChange(t.id)}
-              title={`${t.label} (${t.key})`}
-            >
-              {t.icon}
-              <span>{t.label}</span>
-              <span className="psl__et-btn-key">{t.key}</span>
-            </button>
-          )}
-        </Fragment>
-      ))}
-      <span className="psl__et-sep" aria-hidden="true" />
-      <ResetButton
-        captureId={captureId}
-        overlayCount={overlayCount}
-        armed={resetArmedAt !== null}
-        onArm={() => setResetArmedAt(Date.now())}
-        onConfirm={async () => {
-          if (captureId === undefined) return;
-          setResetArmedAt(null);
-          const list = await dispatch("overlays:list", { captureId });
-          if (!list.ok) return;
-          // Sequentially — the overlays handler updates app_stats /
-          // edits_version per row + broadcasts. Parallel deletes would
-          // race those side-effects.
-          for (const row of list.value) {
-            // eslint-disable-next-line no-await-in-loop
-            await dispatch("overlays:delete", { id: row.id });
+      {showCaret && (
+        <button
+          type="button"
+          className={
+            "psl__et-caret" +
+            (active ? " is-tool-active" : "") +
+            (popoverOpen ? " is-open" : "")
           }
-        }}
-      />
-      {zoom !== null && zoom !== undefined && (
-        <>
-          <span className="psl__et-sep" aria-hidden="true" />
-          <ZoomMenu zoom={zoom} />
-        </>
+          aria-label={`${tool.label} style options`}
+          aria-expanded={popoverOpen}
+          data-testid={`tool-caret-${tool.id}`}
+          onClick={onCaretClick}
+          // Stop pointerdown so the toolbar's own
+          // stopPropagation->canvas guard doesn't have to special-case
+          // this child; otherwise React's event ordering puts the
+          // click handler on the toolbar root after this one.
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <svg width="8" height="6" viewBox="0 0 8 6" fill="currentColor" aria-hidden="true">
+            <path d="M0 0h8L4 6z" />
+          </svg>
+        </button>
       )}
-    </div>
+    </span>
   );
 }
 
@@ -336,4 +791,34 @@ function ResetButton({
       </span>
     </button>
   );
+}
+
+/** Translate a freshly-placed OverlayRow into the placement shape
+ *  `useEditorToolState.onAnnotationPlaced` expects. For arrows we
+ *  hand the hook the tail point (`from`) in normalized coords so the
+ *  matching-text affordance can anchor below the arrow's origin —
+ *  that's where users instinctively want the label, per the design.
+ *  Returns null for overlay kinds the hook doesn't recognize (e.g.
+ *  legacy `step` overlays). */
+function describePlacement(
+  row: OverlayRow
+): { tool: Tool; anchorPoint?: { x: number; y: number } } | null {
+  const o = row.data;
+  switch (o.kind) {
+    case "arrow":
+      return { tool: "arrow", anchorPoint: { x: o.from.x, y: o.from.y } };
+    case "rect":
+      return { tool: "rect" };
+    case "highlight":
+      return { tool: "highlight" };
+    case "blur":
+      return { tool: "blur" };
+    case "text":
+      return { tool: "text" };
+    case "crop":
+      return { tool: "crop" };
+    case "step":
+      // Step overlays don't map to a v2 tool — ignore.
+      return null;
+  }
 }

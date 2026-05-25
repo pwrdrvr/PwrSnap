@@ -25,8 +25,20 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import type { OverlayRow } from "@pwrsnap/shared";
-import { computeArrowGeometry, readBlurStyle } from "@pwrsnap/shared";
+import type { ArrowEndStyle, ArrowStemStyle, OverlayRow } from "@pwrsnap/shared";
+import {
+  computeArrowGeometry,
+  readArrowDoubleEnded,
+  readArrowEndStyle,
+  readArrowStemStyle,
+  readBlurStyle,
+  readHighlightBlend,
+  readHighlightColor,
+  readHighlightOpacity,
+  readOverlayThickness,
+  readRectFilled,
+  readTextWeight
+} from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
 import { getMainLogger } from "../log";
@@ -174,9 +186,27 @@ export async function compose(req: RenderRequest): Promise<RenderResult> {
     intermediateRaw !== null
       ? sharp(bufForResize, { raw: intermediateRaw })
       : sharp(bufForResize);
+
+  // Resize-kernel selection. The default (lanczos3) is the right call
+  // for photographic content — sharp edges, good anti-aliasing. But
+  // pixelate blur overlays are baked into the source-resolution
+  // composite as crisp mosaic blocks (`kernel: "nearest"` in
+  // blurLayer()); a subsequent lanczos3 downscale to thumbnail width
+  // smooths those blocks back out so the library grid renders the
+  // pixelate looking like a gaussian blur. Detect a pixelate overlay
+  // and downgrade to `nearest` for that capture's downscale — the
+  // pixelate blocks survive intact, and the rest of the image gets a
+  // slightly harsher (but still legible) thumbnail. Only applies when
+  // an actual downscale is happening; equal-width renders are
+  // pass-through.
+  const hasPixelate = overlays.some(
+    (row) => row.data.kind === "blur" && readBlurStyle(row.data) === "pixelate"
+  );
+  const downscaling = req.width < srcWidthPx;
   const sized = resizePipeline.resize({
     width: req.width,
-    withoutEnlargement: true
+    withoutEnlargement: true,
+    ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
 
   // Do not pass `effort` to Sharp's PNG encoder here: in Sharp, PNG
@@ -245,10 +275,18 @@ async function buildCompositeLayers(
       return [await rasterize(arrowSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "rect":
       return [await rasterize(rectSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "highlight":
-      return [
-        await rasterize(highlightSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)
-      ];
+    case "highlight": {
+      // Highlight blend modes (multiply / screen / overlay) only take
+      // effect at the sharp composite step — the rasterized SVG alone
+      // would produce flat "over" compositing. Attach blend to the
+      // OverlayOptions after rasterize.
+      const layer = await rasterize(
+        highlightSvg(data, imageWidthPx, imageHeightPx),
+        imageWidthPx,
+        imageHeightPx
+      );
+      return [{ ...layer, blend: highlightBlendMode(data) }];
+    }
     case "text":
       return [await rasterize(textSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "blur": {
@@ -308,38 +346,165 @@ function arrowSvg(
   imageWidthPx: number,
   imageHeightPx: number
 ): string {
-  const geom = computeArrowGeometry({
+  const endStyle = readArrowEndStyle(data);
+  const stemStyle = readArrowStemStyle(data);
+  const doubleEnded = readArrowDoubleEnded(data);
+  const headGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
     imageHeightPx
   });
-
-  const fromPx = pxOf(geom.from, imageWidthPx, imageHeightPx);
-  const baseCenterPx = pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
-  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
-  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
-  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  // Mirrored geometry for the tail-end head — same algorithm with
+  // from/to swapped. Keeps the head triangle's proportions identical
+  // at both ends instead of trying to reflect points by hand and
+  // getting the perpendicular sign wrong on slanted arrows.
+  const tailGeom = doubleEnded
+    ? computeArrowGeometry({
+        from: data.to,
+        to: data.from,
+        imageWidthPx,
+        imageHeightPx
+      })
+    : null;
 
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  // Apply the thickness override to the geometry-derived stroke.
+  // `readOverlayThickness` returns a multiple of `auto` for the
+  // preset buckets; numeric values pass through verbatim.
+  const strokeWidthPx = readOverlayThickness(data.thickness, headGeom.strokeWidthPx);
   // White outline always drawn (per plan §"Smart arrow algorithm"):
   // legibility on busy images. The outline is a slightly thicker
   // pass underneath the accent.
-  const outlineWidth = Math.max(1.5, geom.strokeWidthPx * 0.25);
+  const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
 
-  const headPolygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+  // Stem endpoints depend on the head style (see live editor's
+  // `stemEndpointFor` — keep this in sync). Filled / open triangles
+  // hand off to the head at baseCenter; line / dot terminate at the
+  // apex (`to`) and the head paints over the stem end.
+  const stemEndAtTo = stemEndpointPx(endStyle, headGeom, imageWidthPx, imageHeightPx);
+  const stemEndAtFrom = tailGeom !== null
+    ? stemEndpointPx(endStyle, tailGeom, imageWidthPx, imageHeightPx)
+    : pxOf(headGeom.from, imageWidthPx, imageHeightPx);
+
+  // Stem dash pattern — pixel-space (since this SVG's viewBox is in
+  // image pixels). dotted uses round caps so dots look like dots.
+  // The SAME pattern is applied to the halo line below so the halo's
+  // on/off rhythm lines up with the colored stem — without that, a
+  // dashed colored stem over a solid halo shows solid-white ghost
+  // dashes through the gaps.
+  const stemDashAttr = stemDashAttr_PixelSpace(stemStyle, strokeWidthPx);
+
+  const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
+  const head = arrowHeadSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor);
+  const haloTail = tailGeom !== null
+    ? arrowHeadHaloSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx)
+    : "";
+  const headTail = tailGeom !== null
+    ? arrowHeadSvg(endStyle, tailGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor)
+    : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linecap="round" stroke-linejoin="round">
-    <line x1="${fromPx.x}" y1="${fromPx.y}" x2="${baseCenterPx.x}" y2="${baseCenterPx.y}"
-          stroke="white" stroke-width="${geom.strokeWidthPx + outlineWidth * 2}" fill="none" />
-    <polygon points="${headPolygon}"
-             fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />
-    <line x1="${fromPx.x}" y1="${fromPx.y}" x2="${baseCenterPx.x}" y2="${baseCenterPx.y}"
-          stroke="${fillColor}" stroke-width="${geom.strokeWidthPx}" fill="none" />
-    <polygon points="${headPolygon}" fill="${fillColor}" />
+  <g stroke-linejoin="round">
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />
+    ${halo}
+    ${haloTail}
+    <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
+          stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round"${stemDashAttr} fill="none" />
+    ${head}
+    ${headTail}
   </g>
 </svg>`;
+}
+
+/** Pixel-space stem endpoint for the bake. Mirror of OverlaySvg's
+ *  `stemEndpointFor` — kept in sync so the live preview and the bake
+ *  put the stem in the same place relative to each head style. */
+function stemEndpointPx(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): { x: number; y: number } {
+  switch (style) {
+    case "filled-triangle":
+    case "open-triangle":
+      return pxOf(geom.baseCenter, imageWidthPx, imageHeightPx);
+    case "line":
+    case "dot":
+      return pxOf(geom.to, imageWidthPx, imageHeightPx);
+  }
+}
+
+/** SVG `stroke-dasharray` attribute fragment (including the leading
+ *  space) for the bake's pixel-space SVG buffer. Returns "" for
+ *  solid so the line element stays clean. */
+function stemDashAttr_PixelSpace(style: ArrowStemStyle, strokeWidthPx: number): string {
+  switch (style) {
+    case "solid":
+      return "";
+    case "dashed":
+      return ` stroke-dasharray="${strokeWidthPx * 4} ${strokeWidthPx * 2}"`;
+    case "dotted":
+      // 0.01px "on" + round cap → renders as a dot of diameter ≈ stroke.
+      return ` stroke-dasharray="${strokeWidthPx * 0.01} ${strokeWidthPx * 1.8}"`;
+  }
+}
+
+function arrowHeadHaloSvg(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number,
+  outlineWidth: number,
+  strokeWidthPx: number
+): string {
+  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
+  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
+  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  switch (style) {
+    case "filled-triangle":
+    case "open-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+    }
+    case "line":
+      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
+    case "dot": {
+      const r = strokeWidthPx * 1.5;
+      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r + outlineWidth}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" />`;
+    }
+  }
+}
+
+function arrowHeadSvg(
+  style: ArrowEndStyle,
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number,
+  strokeWidthPx: number,
+  fillColor: string
+): string {
+  const toPx = pxOf(geom.to, imageWidthPx, imageHeightPx);
+  const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
+  const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
+  switch (style) {
+    case "filled-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="${fillColor}" />`;
+    }
+    case "open-triangle": {
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="none" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linejoin="round" />`;
+    }
+    case "line":
+      return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="${fillColor}" stroke-width="${strokeWidthPx}" stroke-linecap="round" />`;
+    case "dot": {
+      const r = strokeWidthPx * 1.5;
+      return `<circle cx="${toPx.x}" cy="${toPx.y}" r="${r}" fill="${fillColor}" />`;
+    }
+  }
 }
 
 function pxOf(
@@ -362,9 +527,26 @@ function rectSvg(
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  const strokeWidthPx = clamp(shortSidePx / 220, 4, 14);
+  const autoStrokeWidthPx = clamp(shortSidePx / 220, 4, 14);
+  // Numeric thickness values are stored as normalized fractions in
+  // the overlay row; multiply by the short side here to land in
+  // pixel space. Preset buckets scale `autoStrokeWidthPx` directly.
+  const strokeWidthPx =
+    typeof data.thickness === "number"
+      ? data.thickness * shortSidePx
+      : readOverlayThickness(data.thickness, autoStrokeWidthPx);
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  const filled = readRectFilled(data);
+
+  if (filled) {
+    // Solid fill — single rect, no stroke / halo. A halo around a
+    // solid fill would just visually expand the same color outward
+    // by a stroke-width without adding contrast.
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />
+</svg>`;
+  }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
@@ -387,9 +569,32 @@ function highlightSvg(
   const yPx = data.rect.y * imageHeightPx;
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
+  // Honor the row's `color` + `opacity` (legacy rows fall back to
+  // yellow + 0.32 via the shared read helpers — matches the renderer's
+  // HighlightGlyph defaults). The blend mode is NOT applied in the
+  // SVG — resvg doesn't honor `mix-blend-mode` reliably, and even if
+  // it did, the blend would happen between the highlight rect and the
+  // SVG background (transparent), not against the photo below. We
+  // attach `blend` to the sharp composite layer instead; see the
+  // `case "highlight"` branch in buildCompositeLayers /
+  // buildCompositeLayersForV2.
+  const fillHex = readHighlightColor(data);
+  const fillOpacity = readHighlightOpacity(data);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="rgba(255, 220, 80, 0.32)" />
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillHex}" fill-opacity="${fillOpacity}" />
 </svg>`;
+}
+
+/** Resolve a highlight row's blend mode to the sharp/libvips
+ *  composite `blend` option string. The schema's blend values
+ *  (`multiply` / `screen` / `overlay`) map 1:1 to libvips blend
+ *  modes — sharp accepts them verbatim. Exported via
+ *  `highlightBlendForV2` below so the v2 vector compositor stays
+ *  in lockstep. */
+function highlightBlendMode(
+  data: Extract<OverlayRow["data"], { kind: "highlight" }>
+): "multiply" | "screen" | "overlay" {
+  return readHighlightBlend(data);
 }
 
 /* ----------------------------- Text ----------------------------- */
@@ -402,22 +607,48 @@ function textSvg(
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  // Two sizes per the schema: small ≈ 1.7%, large ≈ 3.3% of short-side.
-  const fontSizePx = data.size === "large" ? shortSidePx / 30 : shortSidePx / 60;
+  // Three buckets, ~1.7× ratios — must match
+  // apps/desktop/src/renderer/src/features/editor/OverlaySvg.tsx's
+  // TextGlyph or the live preview and the export will disagree.
+  //   small  ≈ shortSide / 50
+  //   medium ≈ shortSide / 30
+  //   large  ≈ shortSide / 18
+  const fontSizePx =
+    data.size === "large"
+      ? shortSidePx / 18
+      : data.size === "medium"
+        ? shortSidePx / 30
+        : shortSidePx / 50;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
-  // Black halo via paint-order. xml-escape the body so user input
-  // can't break out of the SVG.
-  const escaped = escapeXml(data.body);
+  // Multi-line: split body on "\n" and emit one tspan per line, each
+  // advancing the baseline by 1.2em. dominant-baseline="central" puts
+  // the first line's glyph center on the click point (matches the
+  // editor's click-to-center UX) — the v1 default was "hanging" which
+  // put the click at the TOP of the text, causing it to appear below
+  // the cursor on commit. The renderer (TextGlyph) does the same.
+  // xml-escape each line so user input can't break out of the SVG.
+  const lines = data.body
+    .split("\n")
+    .map((line, i) => {
+      const dy = i === 0 ? "0em" : "1.2em";
+      return `<tspan x="${xPx}" dy="${dy}">${escapeXml(line)}</tspan>`;
+    })
+    .join("");
+  // Resolve weight via the shared helper — legacy rows (no weight)
+  // fall back to 600 (the historical hardcoded value) so old captures
+  // bake identically. New rows from the popover land "regular" → 400
+  // or "bold" → 700.
+  const fontWeight = readTextWeight(data);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
-        font-weight="600"
+        font-weight="${fontWeight}"
         fill="${accent}"
         stroke="rgba(0,0,0,0.7)"
         stroke-width="${fontSizePx * 0.08}"
         paint-order="stroke"
-        dominant-baseline="hanging">${escaped}</text>
+        dominant-baseline="central">${lines}</text>
 </svg>`;
 }
 
@@ -530,6 +761,10 @@ export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
 export const rectSvgForV2 = rectSvg;
 export const highlightSvgForV2 = highlightSvg;
+/** Maps a highlight overlay row to the sharp composite `blend` option
+ *  string. Used by the v2 vector compositor to keep the bake's blend
+ *  behavior identical to v1's. */
+export const highlightBlendModeForV2 = highlightBlendMode;
 export const textSvgForV2 = textSvg;
 /** Internal blur-layer builder, exported for unit tests so the bake
  *  paths for gaussian / pixelate / redact can be asserted in

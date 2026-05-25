@@ -24,11 +24,18 @@ export type DraftRect = {
 
 export type DraftText = {
   kind: "text";
-  /** Anchor point (top-left of the text box). */
+  /** Anchor point. With dominantBaseline="central", this is the
+   *  vertical center of the first line; horizontally the left edge. */
   xn: number;
   yn: number;
   /** Live-typed body. Persisted on commit (Enter / blur). */
   body: string;
+  /** When set, the draft is RE-EDITING an existing text overlay (the
+   *  user double-clicked it). commitText writes back to this overlay's
+   *  id via the `updateOverlay` dispatch op instead of creating a new
+   *  row. When undefined, the draft is a fresh text placement and
+   *  commit creates a new overlay. */
+  editingId?: string;
 };
 
 export type Draft = DraftArrow | DraftRect | DraftText;

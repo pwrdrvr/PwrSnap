@@ -244,6 +244,49 @@ export function updateCaptureBundleAfterRepack(
   ).run({ id: captureId, ...fields });
 }
 
+/**
+ * Update the canvas dimensions (width_px, height_px) of a capture and
+ * bump its edits_version atomically. Returns the PREVIOUS dims so the
+ * caller can stash them for undo. Returns null if no row matched.
+ *
+ * Used by `bundle:updateCanvasDimensions` for the v2-native crop op
+ * (Option A from the v2-editor plan): cropping doesn't rewrite the
+ * source raster bytes — it just shrinks the canvas the compositor
+ * paints into. The next scheduled repack reads the new dims from
+ * the captures row when building the bundle manifest.
+ */
+export function updateCaptureCanvasDimensions(
+  captureId: string,
+  fields: { widthPx: number; heightPx: number }
+): { widthPx: number; heightPx: number } | null {
+  const db = getDb();
+  const tx = db.transaction((): { widthPx: number; heightPx: number } | null => {
+    const row = db
+      .prepare<[string], { width_px: number; height_px: number }>(
+        `SELECT width_px, height_px FROM captures WHERE id = ?`
+      )
+      .get(captureId);
+    if (row === undefined) return null;
+    db.prepare<{
+      id: string;
+      width_px: number;
+      height_px: number;
+    }>(
+      `UPDATE captures
+          SET width_px = @width_px,
+              height_px = @height_px,
+              edits_version = edits_version + 1
+        WHERE id = @id`
+    ).run({
+      id: captureId,
+      width_px: fields.widthPx,
+      height_px: fields.heightPx
+    });
+    return { widthPx: row.width_px, heightPx: row.height_px };
+  });
+  return tx();
+}
+
 export function getCaptureById(id: string): CaptureRecord | null {
   const db = getDb();
   const row = db.prepare("SELECT * FROM captures WHERE id = ?").get(id) as CaptureRow | undefined;

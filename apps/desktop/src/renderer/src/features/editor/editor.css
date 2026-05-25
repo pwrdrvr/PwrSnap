@@ -58,6 +58,18 @@
   min-height: 0;
   padding: 0;
 }
+/* In-chrome mode — wrapped by <EditorChrome>. Mirrors the 'full'
+   chrome layout (titlebar + canvas + toolbar) but takes 100% of the
+   parent (.pse-chrome__viewport) instead of 100vh so the chrome's
+   activity bar + sidebar share the row with the editor without
+   overflow. */
+.editor-root.is-in-chrome {
+  height: 100%;
+  min-height: 0;
+}
+.editor-root.is-in-chrome .editor-canvas-wrap {
+  min-height: 0;
+}
 
 .editor-titlebar {
   /* Macros titleBarStyle:'hiddenInset' eats the top 28px for traffic
@@ -182,6 +194,21 @@
   pointer-events: none;
 }
 
+/* Phase 3.5 — transform handles drawn over the selected overlay.
+   The container is event-transparent (pointer-events: none); only
+   the individual handles catch pointerdown so a click outside any
+   handle falls through to the canvas's draw/select handlers. */
+.editor-transform-handle {
+  background: var(--surface-highlight);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  z-index: 5;
+}
+.editor-transform-handle:hover {
+  background: var(--accent);
+}
+
 .editor-toolbar {
   display: flex;
   justify-content: space-between;
@@ -266,4 +293,1162 @@
 }
 .editor-error {
   color: var(--danger-text);
+}
+
+/* ============================================================
+   TOOL STYLE POPOVER (Phase 1)
+   Outer shell rendered once with kind-conditional body inside.
+   Anchored absolutely beside the active toolbar tool button.
+   Mirrors design/src/editor.css `.pse__` conventions with the
+   slightly-shorter `pse-` prefix used by Phase 1 runtime CSS.
+   ============================================================ */
+
+.pse-popover-root {
+  /* Inline positioning is set via React state — top/left/width come
+     from computeAnchorPosition. zIndex sits above the canvas + toolbar
+     but below modals (which use 2000+). */
+  pointer-events: auto;
+}
+
+.pse-popover-measure {
+  /* Outer inline-block measurer per AGENTS.md "Tray + float-over
+     popover sizing — outer inline-block measurer". The wrapper is
+     content-sized by layout so any future ResizeObserver consumer
+     reads the unclipped height regardless of the styled box's
+     overflow rules. */
+}
+
+.pse-popover {
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
+  font: 500 12px/1.4 var(--font-sans);
+  overflow: hidden;
+}
+
+.pse-popover-coachmark {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-border);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* Phase 3.5 — header strip shown when the popover is editing a
+   selected overlay (rather than the active tool's defaults). The ×
+   button clears the selection — caller wires through to the
+   selection model. */
+.pse-popover-selected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font: 600 11px/1.4 var(--font-sans);
+}
+.pse-popover-clear-selection {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 500 14px/1 var(--font-sans);
+}
+.pse-popover-clear-selection:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.pse-popover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.pse-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pse-field-label {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.pse-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pse-sw {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 0;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  padding: 0;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.pse-sw:hover {
+  transform: scale(1.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pse-sw:hover {
+    transform: none;
+  }
+}
+
+.pse-sw.is-on {
+  outline-color: var(--accent);
+}
+
+.pse-sw[data-color="white"] {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.pse-custom-btn {
+  height: 24px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.pse-custom-btn:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.pse-color-dialog {
+  /* Hidden by default; opened via showModal(). Native dialog sizing. */
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+
+.pse-color-dialog::backdrop {
+  background: var(--bg-overlay);
+}
+
+.pse-seg {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  gap: 0;
+}
+
+.pse-seg-btn {
+  flex: 1;
+  height: 24px;
+  padding: 0 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: 600 11px/1 var(--font-sans);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.pse-seg-btn.is-on {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.pse-icon-row {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.pse-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.pse-icon-btn.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.pse-stem-btn {
+  width: 48px;
+}
+
+.pse-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pse-checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.pse-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pse-slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.pse-slider-val {
+  min-width: 36px;
+  text-align: right;
+  font: 600 11px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.pse-numeric-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pse-numeric-row input[type="number"] {
+  width: 64px;
+  height: 26px;
+  padding: 0 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-mono);
+}
+
+.pse-numeric-unit {
+  font: 600 11px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+/* v2 editor refresh — shared editor styles file.
+ *
+ * Owns styles for the cross-cutting v2-editor surfaces that don't
+ * fit inside the legacy `features/editor/editor.css` (the latter is
+ * tied to the Phase 1 toolbar + canvas layout). New v2-only surfaces
+ * (CropTool, right activity-bar shell, ToolStylePopover, …) land
+ * here so the legacy file stays narrow and we can grep the new
+ * surface area in one place.
+ *
+ * Class prefix: `.pse-` (single dash). Mirrors the `.pse__` (double-
+ * underscore) BEM convention in design/src/editor.css but flattens
+ * to single segments for the smaller surface area of these
+ * tool-overlay components.
+ */
+
+/* ------------------------------------------------------------------ */
+/* CropTool — 8-handle resize overlay + rule-of-thirds + HUD          */
+/* ------------------------------------------------------------------ */
+
+.pse-crop {
+  /* Position absolutely over the canvas. Parent supplies the
+     positioning context (canvas wrapper). The overlay spans the
+     full canvas rect; the crop selection is a nested element. */
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  /* Crosshair suggests redrawing when clicking outside the rect;
+     the rect interior overrides via cursor: move. */
+  cursor: crosshair;
+  /* Keep above the canvas image but below toolbars/menus. */
+  z-index: 5;
+  user-select: none;
+}
+
+/* The four dim rects around the crop selection. Each one is sized
+   by the React component to cover one side of the canvas around the
+   selection. 50% black opacity per design spec. */
+.pse-crop-dim {
+  position: absolute;
+  background: color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  pointer-events: none;
+}
+
+.pse-crop-rect {
+  position: absolute;
+  border: 1px solid var(--text-primary);
+  cursor: move;
+  /* Transparent so the underlying canvas image shows through. */
+  background: transparent;
+  /* Keep the border crisp on retina. */
+  box-sizing: border-box;
+}
+
+/* Rule-of-thirds guides — 4 lines (2 horizontal at 33%/67%, 2
+   vertical at 33%/67%). Only rendered while dragging — the React
+   component conditionally renders the markup. */
+.pse-crop-guide {
+  position: absolute;
+  background: color-mix(in srgb, var(--surface-highlight) 50%, transparent);
+  pointer-events: none;
+}
+.pse-crop-guide.is-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+.pse-crop-guide.is-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+/* Handles — 8x8 visible square, 16x16 hit area via negative inset
+   on the ::after pseudo. White fill with the same border-radius as
+   the rect for visual coherence. */
+.pse-crop-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--shadow-base) 40%, transparent);
+  box-sizing: border-box;
+  /* The handle's `left`/`top` are set inline by React to align with
+     the rect boundary; the translate centers it on that boundary. */
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+/* Expand the hit area to 16x16 without growing the visible glyph. */
+.pse-crop-handle::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+.pse-crop-handle.is-nw { cursor: nwse-resize; }
+.pse-crop-handle.is-ne { cursor: nesw-resize; }
+.pse-crop-handle.is-se { cursor: nwse-resize; }
+.pse-crop-handle.is-sw { cursor: nesw-resize; }
+.pse-crop-handle.is-n  { cursor: ns-resize; }
+.pse-crop-handle.is-s  { cursor: ns-resize; }
+.pse-crop-handle.is-w  { cursor: ew-resize; }
+.pse-crop-handle.is-e  { cursor: ew-resize; }
+
+/* HUD — sized W×H + aspect ratio. Positioned 4px inside the
+   top-left of the crop rect; pinned font so it doesn't reflow
+   with theme typography. */
+.pse-crop-hud {
+  position: absolute;
+  top: var(--space-1);
+  left: var(--space-1);
+  padding: 2px 6px;
+  background: var(--bg-overlay);
+  color: var(--text-primary);
+  font: 500 11px/1.2 var(--font-mono);
+  border-radius: 3px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Apply / Cancel cluster — visible commit + cancel affordance.
+   Position is set inline by React (relative to the crop rect's
+   computed corner) so it follows the selection without a second
+   ResizeObserver. Cluster sits above the dim layer + handles and
+   catches its own pointer events so clicks don't fall through to
+   the rect's drag handler. */
+.pse-crop-actions {
+  position: absolute;
+  display: inline-flex;
+  gap: var(--space-1);
+  pointer-events: auto;
+}
+
+.pse-crop-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  user-select: none;
+  /* Drop shadow so the buttons remain legible over a busy crop
+     interior (light photo content can wash out the cancel button
+     otherwise). Tokens-only — matches the editor toolbar's depth
+     vocabulary. */
+  box-shadow: var(--shadow-sm);
+}
+
+/* Apply Crop — primary action, tangerine accent fill with
+   button-text-on-accent foreground. Mirrors PwrSnap's existing
+   primary-button vocabulary (see tokens.css `--button-text-on-accent`). */
+.pse-crop-action.is-apply {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--button-text-on-accent);
+}
+.pse-crop-action.is-apply:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.pse-crop-action.is-apply:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+/* Cancel — secondary action, panel surface with hairline border. */
+.pse-crop-action.is-cancel {
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+.pse-crop-action.is-cancel:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+.pse-crop-action.is-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Shortcut chip inside each action button. Same vocabulary as
+   `.editor-tool-key` so the in-rect cluster matches the toolbar's
+   shortcut hint styling without re-inventing it. */
+.pse-crop-action-kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
+  border-radius: 3px;
+  font: 600 10px/1 var(--font-mono);
+  color: inherit;
+}
+/* On the accent-filled Apply button, derive the chip from the
+   button-text-on-accent token so it stays legible on the bright fill
+   without baking a literal hex. */
+.pse-crop-action.is-apply .pse-crop-action-kbd {
+  background: color-mix(in srgb, var(--button-text-on-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--button-text-on-accent) 22%, transparent);
+}
+
+/* ------------------------------------------------------------------ */
+/* EditorChrome — activity bar + collapsible/poppable right panel.    */
+/* ------------------------------------------------------------------ */
+/* Wraps the chromeless Editor viewport in the standalone Editor      */
+/* window. The activity bar (38px) lives at the right edge; the panel */
+/* area (320px when pinned, content-sized capped at 380px when hover- */
+/* popped) docks to the LEFT of the activity bar.                     */
+/*                                                                    */
+/* Pinned mode lays out the panel beside the viewport so the viewport */
+/* reflows (grid column shrinks). Hover-popped mode uses              */
+/* position: absolute so the viewport stays put — popping open a      */
+/* panel must not shift what the user is editing.                     */
+/*                                                                    */
+/* Inline-block measurer pattern: the hover-popped panel's outer      */
+/* wrapper carries `display: inline-block; width: max-content;        */
+/* max-width: 380px;` so its size derives from content, not from a    */
+/* self-measurement loop inside the `overflow: hidden` styled         */
+/* container. See AGENTS.md "Tray + float-over popover sizing" for    */
+/* the rationale.                                                     */
+
+.pse-chrome {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  grid-template-rows: 1fr;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+}
+
+.pse-chrome__viewport {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Pinned panel — laid out beside the viewport. */
+.pse-chrome__panel--pinned {
+  grid-column: 2;
+  grid-row: 1;
+  width: 320px;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition:
+    width var(--pse-panel-slide-dur) var(--pse-panel-slide-ease),
+    opacity var(--pse-panel-slide-dur) var(--pse-panel-slide-ease);
+}
+
+/* Activity bar — always visible right-edge icon strip. */
+.pse-chrome__activity {
+  grid-column: 3;
+  grid-row: 1;
+  width: 38px;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 2px;
+  user-select: none;
+  z-index: 2;
+}
+.pse-chrome__activity-spacer {
+  flex: 1;
+}
+
+.pse-chrome__act {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.pse-chrome__act:hover:not(.is-disabled) {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+.pse-chrome__act:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.pse-chrome__act.is-active {
+  color: var(--accent-bright);
+  background: var(--bg-row-active);
+  border-color: var(--accent-border);
+}
+.pse-chrome__act.is-active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.pse-chrome__act.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pse-chrome__act-ico {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pse-chrome__act-ico svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Hover-popped panel — absolutely positioned overlay so the viewport
+   doesn't reflow. Anchored to the right edge of the activity bar. */
+.pse-chrome__panel-wrap {
+  position: absolute;
+  top: 0;
+  right: 38px;
+  bottom: 0;
+  z-index: 3;
+  pointer-events: auto;
+}
+.pse-chrome__panel--hover {
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  width: 100%;
+  transform-origin: top right;
+  animation: pse-chrome-pop-in var(--pse-panel-slide-dur) var(--pse-panel-slide-ease) both;
+}
+
+.pse-chrome__panel-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+@keyframes pse-chrome-pop-in {
+  from { opacity: 0; transform: translateX(4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Respect reduced-motion: no slide / fade — instant switch. The
+   `.is-reduced-motion` class is set by React (via matchMedia()) so
+   the rule fires even when the @media query is faked-out for tests. */
+@media (prefers-reduced-motion: reduce) {
+  .pse-chrome__panel--pinned,
+  .pse-chrome__panel--hover {
+    transition: none;
+    animation: none;
+  }
+}
+.pse-chrome.is-reduced-motion .pse-chrome__panel--pinned,
+.pse-chrome.is-reduced-motion .pse-chrome__panel--hover {
+  transition: none;
+  animation: none;
+}
+
+/* ====================================================================
+   Right-sidebar panels (Phase 1 task #7): InfoPanel + ToolConfigPanel.
+   Both render inside `.pse-chrome__panel-body`, so they assume a
+   scroll container with `overflow: auto` already exists upstream.
+   Padding + typography live here so the panels look identical whether
+   they're shown via the pinned-mode lane or the hover-popped overlay.
+   ==================================================================== */
+
+.pse-info-panel,
+.pse-tool-config {
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.pse-info-title,
+.pse-tool-config-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pse-info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pse-info-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pse-info-value {
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.pse-info-loading,
+.pse-info-error {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.pse-info-error {
+  /* `--danger` is the semantic token already defined in tokens.css for
+     error text on dark surfaces; theme-overridden for light mode. */
+  color: var(--danger);
+}
+
+.pse-info-app {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pse-info-app-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  object-fit: contain;
+  display: block;
+}
+
+.pse-info-app-icon--fallback {
+  background: var(--bg-panel-hover);
+  border: 1px solid var(--border-default);
+}
+
+.pse-info-app-name {
+  font-weight: 500;
+}
+
+.pse-info-kind {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--bg-panel-hover);
+  color: var(--text-muted);
+}
+.pse-info-kind.is-video {
+  /* `--accent-soft` is the 12%-alpha derivative defined in tokens.css.
+     Lands close to the 15% the InfoPanel agent originally wanted and
+     stays theme-aware in light mode where --accent deepens. */
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.pse-info-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pse-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--bg-panel-hover);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+
+.pse-info-description {
+  display: block;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.pse-tool-config-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 0;
+}
+
+.pse-tool-config-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ====================================================================
+   Phase 1 v2 editor refresh — Editor.tsx integration styles.
+   ==================================================================== */
+
+/* Toolbar caret — small ▾ glyph that appears on the right edge of
+   the active styled tool's button. Click opens ToolStylePopover. */
+.pse-tool-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  color: var(--text-muted);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.pse-tool-caret:hover {
+  color: var(--accent-bright);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.editor-toolbar-tools button.is-active .pse-tool-caret {
+  color: var(--text-secondary);
+}
+
+/* Matching-text affordance — "+ Add label" button popped near the
+   tail of a just-placed arrow. The button auto-hides via the hook's
+   8s timer + cancel sites; layout-wise it sits absolutely inside the
+   canvas overlay layer so the anchorPoint coordinate space matches
+   the canvas's display pixels. */
+.pse-affordance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  color: var(--accent-bright);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  z-index: 6;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow-base) 35%, transparent);
+}
+.pse-affordance:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.pse-affordance:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Right-sidebar panel stubs — Chat (Phase 7) + Help. Both render
+   inside .pse-chrome__panel-body which supplies scroll + padding;
+   the stub is just a lightweight typographic body. */
+.pse-panel-stub {
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pse-panel-stub p {
+  margin: 0 0 12px 0;
+}
+.pse-panel-stub p:last-child {
+  margin-bottom: 0;
+}
+
+/* ============================================================
+   V1 → V2 DOCTOR BANNER (Phase 3)
+   Floating banner anchored top-center over the editor canvas.
+   Rendered while the per-capture doctor is running ("upgrading")
+   or after it parks ("view_only"). Hidden in all other states.
+   Visual language matches LegacyMigrationBanner (black-elevated +
+   accent-tinted) but anchored top-center over the editor canvas.
+   ============================================================ */
+
+.pse-v1v2-banner {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 280px;
+  max-width: 480px;
+  padding: 10px 14px;
+
+  background: color-mix(in srgb, var(--bg-panel-elevated) 92%, transparent);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+
+  color: var(--text-primary);
+  font: 500 12px/1.35 var(--font-sans, system-ui);
+
+  box-shadow:
+    0 1px 0 0 color-mix(in srgb, var(--text-primary) 4%, transparent) inset,
+    0 12px 32px -8px color-mix(in srgb, var(--shadow-base) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shadow-base) 40%, transparent),
+    0 0 24px -6px var(--accent-shadow);
+
+  animation: pse-v1v2-banner-slide-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* The view-only variant uses the danger token instead of accent so
+   the user reads "warning, attention needed" rather than "in
+   progress, please wait." */
+.pse-v1v2-banner--view-only {
+  border-color: var(--danger-border, var(--border-default));
+  box-shadow:
+    0 1px 0 0 color-mix(in srgb, var(--text-primary) 4%, transparent) inset,
+    0 12px 32px -8px color-mix(in srgb, var(--shadow-base) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--shadow-base) 40%, transparent);
+}
+
+@keyframes pse-v1v2-banner-slide-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pse-v1v2-banner {
+    animation: none;
+  }
+  .pse-v1v2-banner__spinner {
+    animation: none;
+  }
+}
+
+.pse-v1v2-banner__spinner {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  animation: pse-v1v2-banner-spin 0.85s linear infinite;
+}
+
+@keyframes pse-v1v2-banner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pse-v1v2-banner__warn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--danger-text, var(--accent));
+  color: var(--bg-app);
+  font: 700 12px/1 var(--font-sans, system-ui);
+}
+
+.pse-v1v2-banner__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pse-v1v2-banner__label {
+  color: var(--text-primary);
+  font: 500 12px/1.35 var(--font-sans, system-ui);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pse-v1v2-banner__hint {
+  color: var(--text-secondary);
+  font: 400 11px/1.3 var(--font-sans, system-ui);
+}
+
+.pse-v1v2-banner__hint code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.pse-v1v2-banner__retry {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm, 4px);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-primary);
+  font: 500 11px/1.2 var(--font-sans, system-ui);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.pse-v1v2-banner__retry:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.pse-v1v2-banner__retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Phase 5 multi-image paste/drop ------------------------------- */
+
+/* Drop-target outline on the canvas-wrap while a Finder drag
+   hovers. Subtle accent-tinted border + soft inner glow so the
+   user sees the wrap as a valid drop zone without it competing
+   with the active drawing tool. */
+.editor-canvas-wrap.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* "Pasting…" affordance — lives at the click point during the
+   ~50-300ms worker decode. Auto-clears when the dispatch
+   resolves. Pill shape, accent-tinted background, mono font so
+   it's clearly an in-flight indicator. */
+.pse-pasting-affordance {
+  z-index: 6;
+  padding: 6px 12px;
+  border-radius: var(--radius-md, 6px);
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-elevated));
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-mono, ui-monospace, monospace);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+  pointer-events: none;
+  animation: pse-pasting-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pse-pasting-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+/* Paste/drop error toast — sticks at the bottom-center of the
+   editor canvas-wrap. 3.5s auto-clear lives in the React effect
+   (see EditorLoaded's pasteNotice timer). */
+.pse-paste-notice {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  padding: 8px 14px;
+  border-radius: var(--radius-md, 6px);
+  font: 500 12px/1.3 var(--font-sans, system-ui);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--shadow-base) 35%, transparent);
+  max-width: 480px;
+}
+
+.pse-paste-notice.is-error {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.pse-paste-notice.is-info {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   ToolStylePopover — rich mode-row picker (blur)
+   ------------------------------------------------------------
+   Stacked card rows used by the blur tool's mode picker
+   (gaussian / pixelate / redact). Brought back from the pre-fold
+   BlurMenu — the unified popover initially flattened the picker
+   into a compact segmented control and lost the "labeled card +
+   icon + hint copy" affordance. Each row carries a per-mode
+   glyph on the left, the mode name + a short descriptive hint
+   on the right. Selected row uses the same accent-soft /
+   accent border idiom as the icon-radio groups above so it
+   reads as "checked" without a separate checkmark column.
+   ============================================================ */
+
+.pse-mode-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pse-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.pse-mode-row:hover {
+  background: var(--bg-panel-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.pse-mode-row.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
+
+.pse-mode-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.pse-mode-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pse-mode-row-label {
+  font: 600 12px/1.2 var(--font-sans);
+  color: currentColor;
+}
+
+.pse-mode-row-hint {
+  font: 500 10.5px/1.3 var(--font-sans);
+  color: var(--text-muted);
+  white-space: normal;
+}
+
+.pse-mode-row.is-on .pse-mode-row-hint {
+  color: color-mix(in srgb, var(--accent-bright) 70%, transparent);
 }

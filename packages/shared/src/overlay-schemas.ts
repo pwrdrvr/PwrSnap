@@ -10,6 +10,41 @@
 
 import { z } from "zod";
 
+/** Thickness preset shared by ArrowOverlay + RectOverlay. Mirrors the
+ *  `ToolSizePreset` value space in `protocol.ts` (the editor's tool-
+ *  style memory) — picking "large" in the popover writes "large" into
+ *  the overlay row. Numeric escape hatch (px-equivalent fraction)
+ *  reserved for future power-user controls; pre-Phase 3.x rows omit
+ *  the field entirely and render at the auto-derived stroke. */
+export const OverlayThickness = z.union([
+  z.literal("auto"),
+  z.literal("small"),
+  z.literal("medium"),
+  z.literal("large"),
+  z.number().positive().max(1)
+]);
+export type OverlayThickness = z.infer<typeof OverlayThickness>;
+
+/** Multiplier table for thickness presets — applied to the
+ *  auto-derived stroke fraction. medium ≡ auto so the user can pick a
+ *  symmetric S/M/L stack without surprising the default. Numeric
+ *  values pass through directly as the stroke fraction. */
+export function readOverlayThickness(
+  thickness: OverlayThickness | undefined,
+  autoFraction: number
+): number {
+  if (thickness === undefined || thickness === "auto") return autoFraction;
+  if (typeof thickness === "number") return thickness;
+  switch (thickness) {
+    case "small":
+      return autoFraction * 0.5;
+    case "medium":
+      return autoFraction;
+    case "large":
+      return autoFraction * 2;
+  }
+}
+
 const NormalizedScalar = z.number().min(0).max(1);
 const NormalizedPoint = z.object({
   x: NormalizedScalar,
@@ -22,25 +57,128 @@ const NormalizedRect = z.object({
   h: NormalizedScalar
 });
 
+/** Arrow head/end glyph. New in Phase 1 of the v2 editor refresh —
+ *  existing arrows without this field render as `"filled-triangle"`
+ *  (the legacy behavior). Renderer reads via `readArrowEndStyle`. */
+export const ArrowEndStyle = z.enum(["filled-triangle", "open-triangle", "line", "dot"]);
+export type ArrowEndStyle = z.infer<typeof ArrowEndStyle>;
+export const DEFAULT_ARROW_END_STYLE: ArrowEndStyle = "filled-triangle";
+
+/** Arrow stem stroke. Solid is the legacy default. Dashed/dotted are
+ *  new in Phase 1. */
+export const ArrowStemStyle = z.enum(["solid", "dashed", "dotted"]);
+export type ArrowStemStyle = z.infer<typeof ArrowStemStyle>;
+export const DEFAULT_ARROW_STEM_STYLE: ArrowStemStyle = "solid";
+
 export const ArrowOverlay = z.object({
   kind: z.literal("arrow"),
   from: NormalizedPoint,
   to: NormalizedPoint,
   /** "auto" derives stroke + color from image short-side; explicit hex overrides. */
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
-  label: z.string().max(80).optional()
+  label: z.string().max(80).optional(),
+  /** Phase 1 v2-editor refresh — optional for back-compat. Legacy rows
+   *  rendered through `readArrowEndStyle` / `readArrowStemStyle` get
+   *  the pre-Phase-1 defaults. */
+  endStyle: ArrowEndStyle.optional(),
+  stemStyle: ArrowStemStyle.optional(),
+  /** When true, render the same end glyph at both endpoints. Legacy
+   *  rows omit this field (rendered as single-ended). */
+  doubleEnded: z.boolean().optional(),
+  /** Optional stroke-thickness override. Maps through
+   *  `readOverlayThickness` to a stroke fraction; missing / "auto"
+   *  preserves the legacy short-side-derived stroke. */
+  thickness: OverlayThickness.optional()
 });
+
+/** Mirror of readBlurStyle — applies the legacy default for arrows
+ *  drawn before the endStyle field existed. Keeps the renderer from
+ *  repeating the `?? "filled-triangle"` fallback at every paint site. */
+export function readArrowEndStyle(
+  data: { endStyle?: ArrowEndStyle | undefined }
+): ArrowEndStyle {
+  return data.endStyle ?? DEFAULT_ARROW_END_STYLE;
+}
+
+export function readArrowStemStyle(
+  data: { stemStyle?: ArrowStemStyle | undefined }
+): ArrowStemStyle {
+  return data.stemStyle ?? DEFAULT_ARROW_STEM_STYLE;
+}
+
+export function readArrowDoubleEnded(
+  data: { doubleEnded?: boolean | undefined }
+): boolean {
+  return data.doubleEnded ?? false;
+}
 
 export const RectOverlay = z.object({
   kind: z.literal("rect"),
   rect: NormalizedRect,
-  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
+  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
+  /** Optional stroke-thickness override (see ArrowOverlay.thickness). */
+  thickness: OverlayThickness.optional(),
+  /** When true, the rect renders as a solid fill in the resolved color
+   *  rather than the default stroke-only outline. Optional for back-
+   *  compat: legacy rows render as outline-only. */
+  filled: z.boolean().optional()
 });
+
+export function readRectFilled(data: { filled?: boolean | undefined }): boolean {
+  return data.filled ?? false;
+}
+
+/** Blend mode for highlight overlays. Mirrors `HighlightBlendMode` in
+ *  `protocol.ts` (the popover/settings preference type) — same value
+ *  space by design so the picker writes verbatim into the row. The zod
+ *  schema lives here as the runtime source-of-truth for the on-disk
+ *  row; the type alias is re-imported from protocol below. */
+export const HighlightBlendModeSchema = z.enum(["multiply", "screen", "overlay"]);
+type HighlightBlendMode = z.infer<typeof HighlightBlendModeSchema>;
+export const DEFAULT_HIGHLIGHT_BLEND_MODE: HighlightBlendMode = "multiply";
+export const DEFAULT_HIGHLIGHT_COLOR_HEX = "#facc15";
+export const DEFAULT_HIGHLIGHT_OPACITY = 0.3;
 
 export const HighlightOverlay = z.object({
   kind: z.literal("highlight"),
-  rect: NormalizedRect
+  rect: NormalizedRect,
+  /** Phase 3.1 v2-editor refresh — optional for back-compat. Legacy
+   *  rows (which had only `rect`) render with the historical yellow
+   *  default via `readHighlightColor`. Either an "auto" sentinel (use
+   *  legacy yellow) or an explicit hex from the popover swatches. */
+  color: z
+    .union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)])
+    .optional(),
+  /** 0..1 opacity. Optional for back-compat; default applied via
+   *  `readHighlightOpacity`. */
+  opacity: z.number().min(0).max(1).optional(),
+  /** CSS-style blend mode. Optional for back-compat. */
+  blend: HighlightBlendModeSchema.optional()
 });
+
+/** Mirrors `readBlurStyle` / `readArrowEndStyle`: applies the legacy
+ *  yellow default for highlight rows drawn before the color field
+ *  existed. Renderers should ALWAYS read through this helper rather
+ *  than touching `data.color` directly, so legacy rows render
+ *  identically before and after the schema bump. */
+export function readHighlightColor(data: {
+  color?: "auto" | string | undefined;
+}): string {
+  if (data.color === undefined || data.color === "auto") {
+    return DEFAULT_HIGHLIGHT_COLOR_HEX;
+  }
+  return data.color;
+}
+
+export function readHighlightOpacity(data: { opacity?: number | undefined }): number {
+  return data.opacity ?? DEFAULT_HIGHLIGHT_OPACITY;
+}
+
+export function readHighlightBlend(
+  data: { blend?: HighlightBlendMode | undefined }
+): HighlightBlendMode {
+  return data.blend ?? DEFAULT_HIGHLIGHT_BLEND_MODE;
+}
 
 /** How the blur region renders: a soft Gaussian smear, a chunky
  *  mosaic / pixelation, or a solid opaque "redaction" box. All three
@@ -76,10 +214,42 @@ export const TextOverlay = z.object({
   kind: z.literal("text"),
   point: NormalizedPoint,
   body: z.string().max(2000),
-  /** Two sizes — small / large — derived from image short-side at render time. */
-  size: z.union([z.literal("small"), z.literal("large")]).default("small"),
+  /** Three sizes — small / medium / large — derived from image short-side
+   *  at render time. The ratio between buckets is intentionally ~1.7×
+   *  so they're visually distinct (the original v1 schema only had
+   *  small/large at a 2× ratio, which mapped popover "medium" to "large"
+   *  silently; users couldn't tell their picks apart). "medium" is a
+   *  back-compatible addition: legacy rows with size="small"|"large"
+   *  parse unchanged, and the renderer keeps its historical sizes for
+   *  those buckets — only "medium" lands as a new in-between value. */
+  size: z
+    .union([z.literal("small"), z.literal("medium"), z.literal("large")])
+    .default("medium"),
+  /** Glyph weight. Optional for back-compat — legacy rows (no weight
+   *  field) render at the historical "bold" weight (600) the bake
+   *  hardcoded, so existing captures look identical pre/post upgrade.
+   *  New rows from the popover carry an explicit "regular" or "bold".
+   *  The popover always offered this control, but pre-fix nothing
+   *  honored it — every draft, every committed glyph, every export
+   *  rendered at 600 regardless of pick. */
+  weight: z.union([z.literal("regular"), z.literal("bold")]).optional(),
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
 });
+
+/** Map the optional `weight` field to a CSS font-weight number.
+ *  Legacy rows (no weight) fall back to the historical 600 (semi-bold)
+ *  the bake/render used to hardcode — keeps existing captures looking
+ *  unchanged. New rows resolve "regular" → 400, "bold" → 700.
+ *  Renderers (TextGlyph in OverlaySvg, textSvg in compose.ts, and
+ *  TextDraftInput) all read through this helper so the weight is
+ *  resolved in exactly one place. */
+export function readTextWeight(data: {
+  weight?: "regular" | "bold" | undefined;
+}): number {
+  if (data.weight === "regular") return 400;
+  if (data.weight === "bold") return 700;
+  return 600;
+}
 
 export const StepOverlay = z.object({
   kind: z.literal("step"),

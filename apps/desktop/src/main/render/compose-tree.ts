@@ -124,9 +124,26 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
 
   // Final pass: resize + encode. Single PNG encode at the very end,
   // not per-layer — preserves v1's two-pass discipline.
+  //
+  // Resize-kernel selection mirrors v1 compose.ts: when ANY blur
+  // effect layer in the tree uses `style: "pixelate"`, the source-
+  // resolution composite has crisp mosaic blocks baked in via
+  // `kernel: "nearest"`. A subsequent lanczos3 downscale to library-
+  // thumbnail width smooths those blocks back out (pixelate ends up
+  // looking like a gaussian blur in the grid). Detect pixelate and
+  // downgrade the downscale kernel to `nearest` so the blocks
+  // survive intact.
+  const hasPixelate = layers.some(
+    (node) =>
+      node.kind === "effect" &&
+      node.effect.type === "blur" &&
+      (node.effect.style ?? "gaussian") === "pixelate"
+  );
+  const downscaling = req.width < req.canvasWidthPx;
   const sized = sharp(accumulator, { raw: canvasInfo }).resize({
     width: req.width,
-    withoutEnlargement: true
+    withoutEnlargement: true,
+    ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
   const outputBuf =
     req.format === "png"
@@ -228,13 +245,61 @@ async function compositeRasterOntoAccumulator(
     layerInputInfo = { width: targetW, height: targetH, channels: 4 };
   }
 
-  // Apply opacity by multiplying alpha channel. Cheap pass through
-  // sharp's `linear` op when opacity < 1; skip otherwise.
+  // Clip the source raster to the canvas bounds before compositing.
+  // sharp.composite refuses inputs larger than the destination ("Image
+  // to composite must have same dimensions or smaller"). When the
+  // canvas was cropped (Phase 3.5 v2-crop op shrinks canvas_dimensions
+  // without modifying the raster source), the raster IS larger than
+  // the canvas. Real user hit this on 8nnmKLuUpBI4K8fl. Fix: extract
+  // just the in-canvas region of the raster + reset its placement to
+  // the corresponding corner of the canvas.
+  const sourceW = layerInputInfo?.width ?? node.natural_width_px;
+  const sourceH = layerInputInfo?.height ?? node.natural_height_px;
+  const visibleLeft = Math.max(0, -tx);
+  const visibleTop = Math.max(0, -ty);
+  const visibleRight = Math.min(sourceW, canvasInfo.width - tx);
+  const visibleBottom = Math.min(sourceH, canvasInfo.height - ty);
+  const visibleW = visibleRight - visibleLeft;
+  const visibleH = visibleBottom - visibleTop;
+  if (visibleW <= 0 || visibleH <= 0) {
+    // Layer is entirely off-canvas after the crop — nothing to paint.
+    return accumulator;
+  }
+
+  // Only run extract when the source actually exceeds the canvas (the
+  // common identity-transform case stays a single sharp pipeline).
+  const needsExtract =
+    visibleLeft > 0 ||
+    visibleTop > 0 ||
+    visibleW < sourceW ||
+    visibleH < sourceH;
+
+  let extractedInput: Buffer = layerInput;
+  let extractedRaw: sharp.OverlayOptions["raw"] | undefined = layerInputInfo;
+  if (needsExtract) {
+    const extractPipeline =
+      layerInputInfo !== undefined
+        ? sharp(layerInput, { raw: layerInputInfo })
+        : sharp(layerInput);
+    const extractedBuf = await extractPipeline
+      .extract({
+        left: visibleLeft,
+        top: visibleTop,
+        width: visibleW,
+        height: visibleH
+      })
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    extractedInput = extractedBuf;
+    extractedRaw = { width: visibleW, height: visibleH, channels: 4 };
+  }
+
   const composite: sharp.OverlayOptions = {
-    input: layerInput,
-    top: ty,
-    left: tx,
-    ...(layerInputInfo !== undefined ? { raw: layerInputInfo } : {})
+    input: extractedInput,
+    top: ty + visibleTop,
+    left: tx + visibleLeft,
+    ...(extractedRaw !== undefined ? { raw: extractedRaw } : {})
   };
 
   // sharp.composite accepts raw RGBA accumulator + overlay layer.
@@ -336,14 +401,50 @@ async function applyEffectOntoAccumulator(
 
   let operated: Buffer;
   if (node.effect.type === "blur") {
-    // sharp's blur(sigma) Gaussian blur. radius_px is interpreted as
-    // sigma (sharp's convention). Clamp to sharp's documented range.
-    const sigma = Math.max(0.3, Math.min(1000, node.effect.radius_px));
-    operated = await sharp(extracted, { raw: extractedInfo })
-      .blur(sigma)
-      .ensureAlpha()
-      .raw()
-      .toBuffer();
+    // Phase 3.4 — branch on the optional `style` field added to the
+    // v2 BlurEffect schema. Legacy v2 bundles without it fall back to
+    // gaussian (the historic default). Mirrors the three modes v1's
+    // compose.ts bake supports — see apps/desktop/src/main/render/
+    // compose.ts:463-506 for the canonical implementation.
+    const style = node.effect.style ?? "gaussian";
+
+    if (style === "redact") {
+      // Solid opaque black fill. No need to consult the extracted
+      // source — just synthesize a same-sized raw RGBA buffer.
+      const buf = Buffer.alloc(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        buf[i * 4] = 0;
+        buf[i * 4 + 1] = 0;
+        buf[i * 4 + 2] = 0;
+        buf[i * 4 + 3] = 255;
+      }
+      operated = buf;
+    } else if (style === "pixelate") {
+      // Mosaic: resize down to a coarse grid (bicubic averaging) then
+      // back up with nearest-neighbor so the blocks stay sharp. Block
+      // size = 1/16 of the short side, floored at 4 px so tiny rects
+      // don't smooth out.
+      const shortSide = Math.min(w, h);
+      const blockSizePx = Math.max(4, Math.round(shortSide / 16));
+      const downW = Math.max(1, Math.floor(w / blockSizePx));
+      const downH = Math.max(1, Math.floor(h / blockSizePx));
+      operated = await sharp(extracted, { raw: extractedInfo })
+        .resize(downW, downH)
+        .resize(w, h, { kernel: "nearest" })
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
+    } else {
+      // gaussian (default) — sharp's blur(sigma). radius_px is
+      // interpreted as sigma (sharp's convention). Clamp to sharp's
+      // documented range.
+      const sigma = Math.max(0.3, Math.min(1000, node.effect.radius_px));
+      operated = await sharp(extracted, { raw: extractedInfo })
+        .blur(sigma)
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
+    }
   } else {
     // Highlight: tint the rect with the chosen color at the given
     // opacity, composited over the extracted region. Simpler than

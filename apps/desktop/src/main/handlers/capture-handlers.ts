@@ -755,13 +755,12 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // v2 layer-tree bundle is opt-in via PWRSNAP_BUNDLE_V2=1 (see
-  // feature-flags.ts). Default path writes a v1 bundle so the
-  // existing overlays:* IPC keeps working — the editor's only
-  // annotation surface today. The read path in coordinator.ts
-  // handles both formats transparently, so existing v2 captures
-  // (written before this gate landed, or by users with the flag on)
-  // render correctly regardless of where the flag sits now.
+  // New captures land as v2 layer-tree bundles by default; the
+  // PWRSNAP_BUNDLE_V2 env var (see feature-flags.ts) is a debug
+  // escape hatch — set it to "0" to force the legacy v1 write path.
+  // The read path in coordinator.ts handles both formats
+  // transparently, so existing v1 captures continue to render and
+  // get promoted to v2 by the lazy doctor on first edit-open.
   //
   // devicePixelRatio threads through both write paths so PR #48's
   // clipboard-paste flow (which passes 1, since pasted bytes aren't

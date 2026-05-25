@@ -550,7 +550,197 @@ export type Settings = {
      *  back so we don't nag on subsequent launches. */
     lastRoutedPermissionFingerprint: string;
   };
+  /** v2 editor user preferences — tool style defaults (sticky-mode
+   *  memory), one-time coachmark flags, matching-text affordance gate,
+   *  right-sidebar pin/last-panel state. Lives behind the same Settings
+   *  substrate as every other field; renderers patch via SettingsPatch
+   *  and re-fetch on `events:settings:changed` (see AGENTS.md "Settings
+   *  substrate"). Added per docs/plans/2026-05-23-001-feat-v2-editor-
+   *  plan.md Phase 1. */
+  editor: EditorSettings;
 };
+
+// ---- Editor user preferences (Phase 1) ----------------------------------
+
+/** Eight named annotation swatches the tool color picker exposes. Each
+ *  resolves to a `--swatch-*` CSS custom property in tokens.css; the
+ *  "accent" entry derives from the theme-aware `--accent` so the brand
+ *  swatch deepens to the WCAG-AA tangerine on light theme. The popover
+ *  also accepts arbitrary hex strings via the "Custom…" affordance,
+ *  hence the `string` widening in `ToolColor`. */
+export type ColorToken =
+  | "red"
+  | "yellow"
+  | "green"
+  | "blue"
+  | "gray"
+  | "black"
+  | "white"
+  | "accent";
+
+export const COLOR_TOKENS = [
+  "red",
+  "yellow",
+  "green",
+  "blue",
+  "gray",
+  "black",
+  "white",
+  "accent"
+] as const satisfies readonly ColorToken[];
+
+export function isColorToken(value: unknown): value is ColorToken {
+  return typeof value === "string" && (COLOR_TOKENS as readonly string[]).includes(value);
+}
+
+/** Either a named swatch OR a free-form CSS color string (hex / rgb /
+ *  hsl). The renderer maps `ColorToken` to `var(--swatch-<name>)` at
+ *  paint time; arbitrary strings pass through unchanged so the OS
+ *  color-picker can write any value the user lands on. */
+export type ToolColor = ColorToken | string;
+
+/** "auto" picks a sensible default per tool kind (scaled with capture
+ *  resolution); the preset buckets give the user three quick taps for
+ *  thicker / thinner. Numeric values are the explicit-px escape hatch
+ *  reserved for future power-user controls. */
+export type ToolSizePreset = "auto" | "small" | "medium" | "large";
+
+// Arrow end + stem style names are defined as zod enums in overlay-
+// schemas.ts (the runtime source of truth for what gets persisted on
+// disk in an overlay row). Re-export the types here so consumers of
+// Settings.editor see them as part of the protocol surface without
+// having to know about the schema barrel. The Settings preference and
+// the on-disk overlay field share the same value space by design —
+// picking "open-triangle" in the popover writes "open-triangle" into
+// the overlay row.
+export type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
+import type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
+export type TextFontWeight = "regular" | "bold";
+export type BlurEffectMode = "gaussian" | "pixelate" | "redact";
+
+/** Discriminated so "auto" never coexists with a numeric value (zod
+ *  rejects the mixed shape; downstream renderers match on `mode` for
+ *  exhaustive switching). */
+export type BlurRadiusSetting = { mode: "auto" } | { mode: "px"; value: number };
+
+export type HighlightBlendMode = "multiply" | "screen" | "overlay";
+
+export type ArrowToolStyle = {
+  color: ToolColor;
+  thickness: ToolSizePreset | number;
+  endStyle: ArrowEndStyle;
+  stemStyle: ArrowStemStyle;
+  doubleEnded: boolean;
+};
+
+export type TextToolStyle = {
+  color: ToolColor;
+  fontSize: ToolSizePreset | number;
+  weight: TextFontWeight;
+};
+
+export type RectToolStyle = {
+  color: ToolColor;
+  thickness: ToolSizePreset | number;
+  filled: boolean;
+};
+
+export type BlurToolStyle = {
+  mode: BlurEffectMode;
+  radius: BlurRadiusSetting;
+};
+
+export type HighlightToolStyle = {
+  color: ToolColor;
+  /** 0..1; renderer clamps. The popover exposes preset stops 0.2/0.3/0.6. */
+  opacity: number;
+  blend: HighlightBlendMode;
+};
+
+/** Per-tool style memory. The "active" tool's style is window-scoped
+ *  React state for the editor session; these are the DEFAULTS that get
+ *  read at editor-open and written at editor-close (or on a 500ms
+ *  debounce, whichever fires first). Cross-window broadcasts do NOT
+ *  trigger live re-application — opening a second editor inherits the
+ *  current default, but ongoing work in another window keeps its
+ *  in-session styles. See plan §"Tool state is window-scoped (active)
+ *  + Settings-backed (defaults)". */
+export type EditorToolStyles = {
+  arrow: ArrowToolStyle;
+  text: TextToolStyle;
+  rect: RectToolStyle;
+  blur: BlurToolStyle;
+  highlight: HighlightToolStyle;
+};
+
+/** One-time UI hint flags. `stoplightSeen` flips true the first time
+ *  the user opens any tool style popover and the 3s stoplight palette
+ *  micro-coachmark dismisses; never shown again in any popover. Mirror
+ *  pattern: any future "did the user see X once?" lives here. */
+export type EditorCoachmarks = {
+  stoplightSeen: boolean;
+};
+
+/** Matching-text affordance gate. Default ON; the user can disable it
+ *  from Settings → Editor (Phase 1.5 surface, not blocking) if the
+ *  "+ Add label" affordance after arrow placement feels intrusive for
+ *  their workflow. */
+export type EditorMatchingText = {
+  enabled: boolean;
+};
+
+export type EditorSidebarPanel = "info" | "chat" | "toolConfig" | "help";
+
+export const EDITOR_SIDEBAR_PANELS = [
+  "info",
+  "chat",
+  "toolConfig",
+  "help"
+] as const satisfies readonly EditorSidebarPanel[];
+
+export function isEditorSidebarPanel(value: unknown): value is EditorSidebarPanel {
+  return (
+    typeof value === "string" &&
+    (EDITOR_SIDEBAR_PANELS as readonly string[]).includes(value)
+  );
+}
+
+/** Right-edge activity bar persistence. `pinned` keeps the chosen
+ *  panel open across editor sessions; `lastSelectedPanel` is what
+ *  re-opens when the user re-pins. Hover-pop behavior is rendered
+ *  the same regardless. */
+export type EditorSidebarSettings = {
+  pinned: boolean;
+  lastSelectedPanel: EditorSidebarPanel;
+};
+
+export type EditorSettings = {
+  toolStyles: EditorToolStyles;
+  coachmarks: EditorCoachmarks;
+  matchingText: EditorMatchingText;
+  sidebar: EditorSidebarSettings;
+};
+
+// ---- Chat message content (Phase 7 prep, exported only) ----------------
+//
+// Defined here so Phase 7's `chat-schemas.ts` zod definitions and the
+// renderer's chat panel can share the same discriminated-union shape.
+// Phase 1 does NOT reference these — kept so the protocol surface stays
+// a single source of truth as later phases land.
+
+export type ChatMessageContent =
+  | { kind: "text"; text: string }
+  | { kind: "tool_call"; toolName: string; argsJson: string; callId: string }
+  | {
+      kind: "tool_result";
+      callId: string;
+      resultJson: string;
+      /** True for tool failures the AI saw and (typically) self-corrected
+       *  from. Stored so the chat panel can render a subtle "AI's last
+       *  call was rejected — retrying" indicator without inferring it
+       *  from a parse of resultJson. */
+      isError?: boolean;
+    };
 
 /** Theme preference. `"system"` resolves to dark/light via the
  *  renderer's `matchMedia("(prefers-color-scheme: light)")`. */
@@ -586,6 +776,22 @@ export type SettingsPatch = {
   appearance?: Partial<Settings["appearance"]>;
   updates?: Partial<Settings["updates"]>;
   recording?: Partial<Settings["recording"]>;
+  /** Editor preferences are deep-nested (toolStyles per tool kind),
+   *  so the patch type drops one level deeper than the other branches.
+   *  Each leaf style is `Partial<>` so a swatch click can ship just the
+   *  changed field rather than re-echoing the full style block. */
+  editor?: {
+    toolStyles?: {
+      arrow?: Partial<ArrowToolStyle>;
+      text?: Partial<TextToolStyle>;
+      rect?: Partial<RectToolStyle>;
+      blur?: Partial<BlurToolStyle>;
+      highlight?: Partial<HighlightToolStyle>;
+    };
+    coachmarks?: Partial<EditorCoachmarks>;
+    matchingText?: Partial<EditorMatchingText>;
+    sidebar?: Partial<EditorSidebarSettings>;
+  };
 };
 
 // ---- App update (auto-updater) types ----
@@ -636,6 +842,51 @@ export type AppUpdateInstallResult =
 export type LegacyBundleMigrationProgress =
   | { status: "running"; total: number; done: number; failed: number }
   | { status: "complete"; total: number; done: number; failed: number };
+
+/**
+ * Progress payload for `events:v1-to-v2-doctor:progress`. Fired by the
+ * v1 → v2 bundle doctor (apps/desktop/src/main/persistence/
+ * v1-to-v2-doctor.ts) for both the boot-time reconcile sweep AND
+ * per-capture lazy upgrades. Editor toolbar consumes this to show the
+ * "Upgrading…" banner during a doctor run; library banner reports
+ * boot-time progress.
+ *
+ * Two scopes share the channel:
+ *   • Boot-time sweep — fired once at run start (with total), throttled
+ *     per row, once at completion.
+ *   • Per-capture lazy — fired at start (`captureId` set, `total: 1`),
+ *     once at success or failure.
+ *
+ * The `captureId` field disambiguates per-capture events from the
+ * boot-time global progress (captureId === null in the latter).
+ * Mirrors the LegacyBundleMigrationProgress shape so the renderer
+ * can reuse the same banner component.
+ */
+export type V1ToV2DoctorProgress =
+  | {
+      status: "running";
+      captureId: string | null;
+      total: number;
+      done: number;
+      failed: number;
+    }
+  | {
+      status: "complete";
+      captureId: string | null;
+      total: number;
+      done: number;
+      failed: number;
+    }
+  | {
+      /** Per-capture failure event. `captureId` set; `errorCode`
+       *  carries the structured error envelope so the editor banner
+       *  can offer a Retry button bound to the right capture. */
+      status: "failed";
+      captureId: string;
+      errorCode: string;
+      attempts: number;
+      parked: boolean;
+    };
 
 export type AppUpdateReleaseInfo = {
   version?: string;
@@ -836,6 +1087,50 @@ export type Commands = {
     res: LegacyBundleMigrationProgress | null;
   };
 
+  // ---- v1 → v2 bundle doctor ----
+  /** Trigger the per-capture v1 → v2 bundle doctor for `captureId`.
+   *  Idempotent: returns `{ migrated: false, reason: "already_v2" }`
+   *  if the bundle on disk is already v2 (reads the bundle manifest,
+   *  not the DB row — heals mid-crash gaps where the row claims v1
+   *  but the bundle is already v2). Per-capture retry budget (5
+   *  attempts); after exhaustion the row parks and the editor renders
+   *  read-only with a Retry button that calls `v1ToV2:retry`.
+   *
+   *  Atomic ordering inside the implementation:
+   *    1. atomicWriteBundle(tempPath, v2_bytes) + fsync
+   *    2. BEGIN IMMEDIATE
+   *       INSERT INTO layers (...);
+   *       UPDATE captures SET bundle_format_version=2, bundle_path=tempPath, ...;
+   *       COMMIT
+   *    3. rename(tempPath → finalBundlePath) + dir-fsync
+   *    4. DELETE FROM overlays WHERE capture_id = ?
+   *
+   *  Each step is independently recoverable; `reconcileV1ToV2OnBoot`
+   *  heals any mid-step crash.
+   */
+  "v1ToV2:upgrade": {
+    req: { captureId: string };
+    res: { migrated: boolean; reason?: "already_v2" | "parked" | "no_bundle" };
+  };
+  /** Cached-snapshot reader for the v1 → v2 doctor. Same race-safe
+   *  pattern as `migration:status` — late-mounting renderers query
+   *  this once on mount to pick up the current state, then subscribe
+   *  to `events:v1-to-v2-doctor:progress` for updates. Returns null
+   *  if no doctor activity has happened this session. */
+  "v1ToV2:status": {
+    req: Record<string, never>;
+    res: V1ToV2DoctorProgress | null;
+  };
+  /** Clear a parked capture's retry budget so the doctor can re-attempt
+   *  on next user open. Sets `v1_to_v2_attempts = 0` and clears
+   *  `v1_to_v2_last_failed_at` + `v1_to_v2_last_error_code`. Bound to
+   *  the Retry button on the editor's "Couldn't upgrade — read-only
+   *  view" banner. */
+  "v1ToV2:retry": {
+    req: { captureId: string };
+    res: void;
+  };
+
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
   "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };
@@ -876,6 +1171,27 @@ export type Commands = {
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
 
+  // ---- canvas (v2 captures only) ----
+  /** Update the canvas dimensions of a v2 capture. Writes the new
+   *  `width_px`/`height_px` to the `captures` row, bumps `edits_version`
+   *  so the doctor knows the bundle needs a re-pack, and broadcasts
+   *  `events:captures:changed` + `events:overlays:changed` so any open
+   *  editor + library window re-fetches the new dims.
+   *
+   *  This is the v2-native crop semantic — Option A from the plan:
+   *  data-layer only, source raster bytes are preserved. Layers whose
+   *  absolute coords fall outside the new canvas still exist; the
+   *  compositor clips them at canvas bounds. A future undo can grow
+   *  the canvas back to original dims and the layers come back fully.
+   *
+   *  Refuses v1 captures (use overlays:upsert with a CropOverlay).
+   *  Refuses widths/heights ≤ 0 and any that exceed the source raster's
+   *  natural dimensions (can't "crop bigger" than what was captured). */
+  "bundle:updateCanvasDimensions": {
+    req: { captureId: string; widthPx: number; heightPx: number };
+    res: { previousWidthPx: number; previousHeightPx: number };
+  };
+
   // ---- copy / share ----
   "clipboard:copy": { req: { captureId: string; preset: RenderPreset }; res: void };
   /** Render (or reuse) the cache file at `preset` and write its POSIX
@@ -906,6 +1222,41 @@ export type Commands = {
   "clipboard:pasteLayerFragment": {
     req: { captureId: string; parentId?: string | null };
     res: { insertedLayerIds: string[]; fallbackUsedPng: boolean };
+  };
+
+  // ---- editor (v2 only) ----
+  /** Phase 5: paste a raster image from the system clipboard as a new
+   *  raster layer on the target capture. Mirrors the 5-defense pipeline
+   *  from `clipboard:pasteLayerFragment` (size cap, sha256, sharp probe,
+   *  dimension cap, sanitized errors). sharp decode + sha256 runs in a
+   *  worker thread so the IPC main thread doesn't block on multi-MB
+   *  PNGs. If `positionXn`/`positionYn` are provided, the new layer's
+   *  transform translates so its top-left lands at that normalized
+   *  canvas point; otherwise it lands at the canvas center.
+   *
+   *  Returns the inserted layer's id so the renderer can select it.
+   *  Refuses v1 captures (`v1_capture_use_v2`). */
+  "editor:pasteImageAsLayer": {
+    req: {
+      captureId: string;
+      positionXn?: number;
+      positionYn?: number;
+    };
+    res: { layerId: string };
+  };
+  /** Phase 5: Finder drag-drop equivalent of `editor:pasteImageAsLayer`.
+   *  Caller hands a filesystem path; the handler runs `assertSafePastedFile`
+   *  (symlink + privileged-dir reject) and then the same worker-backed
+   *  decode + sha256 pipeline. Path strings never leak back to the renderer
+   *  on rejection — sanitized error codes only. */
+  "editor:dropImageAsLayer": {
+    req: {
+      captureId: string;
+      filePath: string;
+      positionXn?: number;
+      positionYn?: number;
+    };
+    res: { layerId: string };
   };
 
   // ---- settings ----

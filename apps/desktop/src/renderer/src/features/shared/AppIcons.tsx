@@ -255,6 +255,40 @@ function isResolvableBundleId(bundleId: string | undefined): bundleId is string 
   return /^[A-Za-z0-9._-]+$/.test(bundleId);
 }
 
+/** Clipboard glyph for paste-from-clipboard captures
+ *  (`com.pwrsnap.clipboard` synthetic bundle id). Visually distinct
+ *  from the procedural / extracted-app icons so the user immediately
+ *  reads "this came from the clipboard, not from a running app." */
+function ClipboardGlyph({ size }: { size: number }): ReactElement {
+  // Pad slightly so the clipboard fits inside the same tile chrome
+  // the extracted-icon path gets (~80% of tile, matching the
+  // AppIcon's `renderSize = min(22, max(size + 5, 14))` ratio).
+  const renderSize = Math.min(22, Math.max(size + 5, 14));
+  return (
+    <svg
+      className="ps-app-icon-img"
+      width={renderSize}
+      height={renderSize}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ display: "block", color: "var(--text-secondary)" }}
+    >
+      {/* Clipboard body */}
+      <rect x="6" y="4" width="12" height="17" rx="2" />
+      {/* Clip / clasp at the top */}
+      <rect x="9" y="2" width="6" height="4" rx="1" />
+      {/* Two horizontal lines hinting at "pasted content" */}
+      <line x1="9" y1="11" x2="15" y2="11" />
+      <line x1="9" y1="15" x2="13" y2="15" />
+    </svg>
+  );
+}
+
 function FallbackGlyph({
   app,
   size,
@@ -268,6 +302,13 @@ function FallbackGlyph({
   if (known !== undefined) return known(size);
   return <ProceduralIcon size={size} label={initialsFor(name, app)} />;
 }
+
+/** PwrSnap-synthetic bundle ids that don't correspond to a real
+ *  installed macOS app. Renderer skips the `pwrsnap-app-icon://`
+ *  fetch entirely for these and renders a domain-specific glyph.
+ *  Keep this set in lockstep with `SYNTHETIC_BUNDLE_IDS` in
+ *  `apps/desktop/src/main/app-icons/app-icon-cache.ts`. */
+const CLIPBOARD_BUNDLE_ID = "com.pwrsnap.clipboard";
 
 export function AppIcon({
   app,
@@ -288,6 +329,14 @@ export function AppIcon({
   bundleId?: string | undefined;
 }): ReactElement {
   const [imageFailed, setImageFailed] = useState(false);
+
+  // PwrSnap-synthetic clipboard bundle id — there's no installed .app
+  // to extract from, so render a clipboard glyph directly. Skipping
+  // the `pwrsnap-app-icon://` fetch saves an IPC roundtrip + the
+  // failed-image-handler render flicker.
+  if (bundleId === CLIPBOARD_BUNDLE_ID) {
+    return <ClipboardGlyph size={size} />;
+  }
 
   if (isResolvableBundleId(bundleId) && !imageFailed) {
     // Real bundle icons get a small density bump over the hand-drawn

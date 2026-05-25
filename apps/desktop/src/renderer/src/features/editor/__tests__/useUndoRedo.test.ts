@@ -23,7 +23,11 @@ vi.mock("../../../lib/pwrsnap", () => ({
   dispatch: (...args: unknown[]) => dispatchMock(...args)
 }));
 
-import { useUndoRedo, type UseUndoRedoResult } from "../useUndoRedo";
+import {
+  useUndoRedo,
+  type UndoRedoDispatchEdit,
+  type UseUndoRedoResult
+} from "../useUndoRedo";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -251,6 +255,369 @@ describe("useUndoRedo", () => {
 
     // Verify the applyingRef was set + cleared cleanly (not left true).
     expect(applyingRef.current).toBe(false);
+  });
+
+  test("v2 capture: recordCreate with node → undo routes through dispatchEdit (layers:delete)", async () => {
+    let api: UseUndoRedoResult | null = null;
+    // Spy dispatcher — every call lands here; the hook never touches
+    // the bus directly when dispatchEdit is provided.
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async () => ({
+      ok: true,
+      value: { kind: "delete" }
+    }));
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_v2",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const row = makeRow("layer_A");
+    // Cast to BundleLayerNode-shaped fixture; the hook only reads .id
+    // off the node, so a minimal shape is enough for this assertion.
+    const node = {
+      id: "layer_A",
+      kind: "vector",
+      parent_id: null,
+      shape: row.data,
+      name: "Arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: row.applied_at,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: row.created_at
+    } as unknown as Parameters<NonNullable<typeof api>["recordCreate"]>[1] extends infer T
+      ? T extends { node?: infer N } | undefined
+        ? N
+        : never
+      : never;
+    act(() => {
+      api!.recordCreate(row, { node });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // The hook MUST go through dispatchEdit — NOT touch the bus
+    // directly with overlays:* (which would be refused on v2).
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(dispatchEdit).toHaveBeenCalledTimes(1);
+    expect(dispatchEdit.mock.calls[0]?.[0]).toEqual({
+      kind: "delete",
+      id: "layer_A"
+    });
+  });
+
+  test("v2 capture: undo + redo create round-trips through layers:upsert with original node", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "delete")
+        return { ok: true, value: { kind: "delete" } };
+      if (op.kind === "upsert" && "node" in op)
+        return {
+          ok: true,
+          value: {
+            kind: "upsert",
+            artifact: { format: 2, node: op.node }
+          }
+        };
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_v2",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const row = makeRow("layer_B");
+    const node = {
+      id: "layer_B",
+      kind: "vector",
+      parent_id: null,
+      shape: row.data,
+      name: "Arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: row.applied_at,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: row.created_at
+    } as never;
+
+    act(() => {
+      api!.recordCreate(row, { node });
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+    await act(async () => {
+      await api!.redo();
+    });
+
+    // Redo must dispatch an upsert with the ORIGINAL node (not a v1
+    // overlay) so layers:upsert lands a structurally-identical layer.
+    const upsertCalls = dispatchEdit.mock.calls.filter(
+      (c) => (c[0] as { kind: string }).kind === "upsert"
+    );
+    expect(upsertCalls.length).toBe(1);
+    expect((upsertCalls[0]?.[0] as { node: { id: string } }).node.id).toBe(
+      "layer_B"
+    );
+  });
+
+  test("recordCrop + undo dispatches crop with the previous-dims-normalized rect", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "crop") {
+        return {
+          ok: true,
+          value: {
+            kind: "crop",
+            artifact: { previousWidthPx: 0, previousHeightPx: 0 }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_v2",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    // Record a crop: pre-crop canvas 1000x1000, post-crop 500x500
+    // (user cropped to 50%×50%).
+    act(() => {
+      api!.recordCrop({
+        rect: { x: 0, y: 0, w: 0.5, h: 0.5 },
+        previousWidthPx: 1000,
+        previousHeightPx: 1000,
+        newWidthPx: 500,
+        newHeightPx: 500
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // Undo: restore previous dims. The dispatcher interprets `rect.w *
+    // currentCanvasWidth` as the new width. Current canvas after the
+    // crop is 500; restoring 1000 means rect.w = 1000/500 = 2.
+    const cropCalls = dispatchEdit.mock.calls.filter(
+      (c) => (c[0] as { kind: string }).kind === "crop"
+    );
+    expect(cropCalls.length).toBe(1);
+    const sent = cropCalls[0]?.[0] as { rect: { w: number; h: number } };
+    expect(sent.rect.w).toBe(2);
+    expect(sent.rect.h).toBe(2);
+  });
+
+  test("recordGeometry + undo dispatches updateGeometry with previousGeometry", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateGeometry") {
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow(`fresh-${Math.random()}`) }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordGeometry({
+        currentIdRef,
+        previousGeometry: {
+          kind: "arrow",
+          from: { x: 0, y: 0 },
+          to: { x: 0.5, y: 0.5 }
+        },
+        nextGeometry: {
+          kind: "arrow",
+          from: { x: 0, y: 0 },
+          to: { x: 1, y: 1 }
+        }
+      });
+    });
+    expect(api!.canUndo).toBe(true);
+    expect(api!.canRedo).toBe(false);
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // Undo should dispatch updateGeometry with the PREVIOUS geometry
+    // against the chain's CURRENT id.
+    expect(dispatchEdit).toHaveBeenCalledTimes(1);
+    const call = dispatchEdit.mock.calls[0]?.[0] as {
+      kind: string;
+      layerId: string;
+      geometry: { kind: string; to: { x: number } };
+    };
+    expect(call.kind).toBe("updateGeometry");
+    expect(call.layerId).toBe("ov_post");
+    expect(call.geometry.kind).toBe("arrow");
+    expect(call.geometry.to.x).toBeCloseTo(0.5);
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+  });
+
+  test("recordGeometry + undo + redo round-trips through updateGeometry; currentIdRef follows new ids", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let idCounter = 0;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateGeometry") {
+        idCounter += 1;
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow(`replay-${idCounter}`) }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordGeometry({
+        currentIdRef,
+        previousGeometry: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0.5, y: 0.5 } },
+        nextGeometry: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }
+      });
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+    // After undo, the chain id has been re-anchored to the freshly-
+    // inserted replay row. The id should NOT be `ov_post` anymore.
+    expect(currentIdRef.current).toBe("replay-1");
+    await act(async () => {
+      await api!.redo();
+    });
+    expect(currentIdRef.current).toBe("replay-2");
+    // Total dispatches: 1 undo + 1 redo = 2 updateGeometry calls.
+    expect(dispatchEdit).toHaveBeenCalledTimes(2);
+  });
+
+  test("recordStyle + undo dispatches updateOverlay with previousPatch", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateOverlay") {
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow("fresh") }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordStyle({
+        currentIdRef,
+        previousPatch: { kind: "rect", color: "auto" },
+        nextPatch: { kind: "rect", color: "#ff0000" }
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    const call = dispatchEdit.mock.calls[0]?.[0] as {
+      kind: string;
+      layerId: string;
+      patch: { color: string };
+    };
+    expect(call.kind).toBe("updateOverlay");
+    expect(call.layerId).toBe("ov_post");
+    expect(call.patch.color).toBe("auto");
   });
 
   test("MAX_DEPTH caps the past stack (older ops drop off the back)", async () => {

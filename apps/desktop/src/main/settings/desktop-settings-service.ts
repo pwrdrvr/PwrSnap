@@ -9,14 +9,33 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
   AppearanceTheme,
+  ArrowEndStyle,
+  ArrowStemStyle,
+  ArrowToolStyle,
+  BlurEffectMode,
+  BlurRadiusSetting,
+  BlurToolStyle,
   CodexTestResult,
   DesktopCodexCandidateSource as SharedCodexCandidateSource,
   DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
   DesktopCodexDiscoverySnapshot as SharedCodexSnapshot,
+  EditorCoachmarks,
+  EditorMatchingText,
+  EditorSettings,
+  EditorSidebarPanel,
+  EditorSidebarSettings,
+  EditorToolStyles,
+  HighlightBlendMode,
+  HighlightToolStyle,
+  RectToolStyle,
   Settings,
-  SettingsPatch
+  SettingsPatch,
+  TextFontWeight,
+  TextToolStyle,
+  ToolColor,
+  ToolSizePreset
 } from "@pwrsnap/shared";
-import { isAppearanceTheme } from "@pwrsnap/shared";
+import { isAppearanceTheme, isColorToken, isEditorSidebarPanel } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
   discoverCodexCommands,
@@ -98,6 +117,73 @@ export function defaultSettings(): Settings {
       includeSystemAudio: false,
       includeMicrophone: false,
       lastRoutedPermissionFingerprint: ""
+    },
+    editor: defaultEditorSettings()
+  };
+}
+
+/** Default tool style memory + sidebar state for the v2 editor (Phase 1).
+ *  Pulled into its own function because the editor block is materially
+ *  bigger than the other sections AND parseV1 re-uses these as the
+ *  fallback when an older file lacks the `editor` field entirely. */
+function defaultEditorSettings(): EditorSettings {
+  return {
+    toolStyles: {
+      // Default to the brand accent (tangerine) rather than picking a
+      // stoplight color — neutral choice for a first-time user who
+      // hasn't established a personal pattern yet. The shared-COLOR-
+      // slot pattern means the first swatch they pick will propagate
+      // across all tools.
+      arrow: {
+        color: "accent",
+        thickness: "auto",
+        endStyle: "filled-triangle",
+        stemStyle: "solid",
+        doubleEnded: false
+      },
+      text: {
+        color: "accent",
+        fontSize: "auto",
+        weight: "regular"
+      },
+      rect: {
+        color: "accent",
+        thickness: "auto",
+        filled: false
+      },
+      blur: {
+        mode: "gaussian",
+        radius: { mode: "auto" }
+      },
+      highlight: {
+        // Yellow is the canonical highlight color (same as a yellow
+        // marker on paper); not part of the cross-tool shared COLOR
+        // slot because highlight is the one tool whose semantic is
+        // "color = visual emphasis" rather than "color = severity".
+        color: "yellow",
+        opacity: 0.3,
+        blend: "multiply"
+      }
+    },
+    coachmarks: {
+      // Flips true the first time the user opens any tool style popover
+      // and the 3s stoplight micro-coachmark auto-dismisses.
+      stoplightSeen: false
+    },
+    matchingText: {
+      // "+ Add label" affordance appears after arrow placement by
+      // default. User can disable from Settings → Editor if it feels
+      // intrusive for their workflow.
+      enabled: true
+    },
+    sidebar: {
+      // Default to collapsed (hover-pop only) so a first-time user
+      // sees the chromeless v1-equivalent editor; the moment they
+      // click an activity bar icon, the panel pins. lastSelectedPanel
+      // defaults to "toolConfig" so re-pinning lands on the most
+      // immediately-useful surface.
+      pinned: false,
+      lastSelectedPanel: "toolConfig"
     }
   };
 }
@@ -138,6 +224,155 @@ function pickMode(value: unknown): "auto" | "pinned" {
 
 function pickAppearanceTheme(value: unknown, fallback: AppearanceTheme): AppearanceTheme {
   return isAppearanceTheme(value) ? value : fallback;
+}
+
+function pickNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+// ---- Editor settings picks (Phase 1) ----------------------------------
+
+function pickToolColor(value: unknown, fallback: ToolColor): ToolColor {
+  if (isColorToken(value)) return value;
+  if (typeof value === "string") return value;
+  return fallback;
+}
+
+function pickToolSizePreset(value: unknown, fallback: ToolSizePreset | number): ToolSizePreset | number {
+  if (value === "auto" || value === "small" || value === "medium" || value === "large") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return fallback;
+}
+
+function pickArrowEndStyle(value: unknown, fallback: ArrowEndStyle): ArrowEndStyle {
+  if (value === "filled-triangle" || value === "open-triangle" || value === "line" || value === "dot") return value;
+  return fallback;
+}
+
+function pickArrowStemStyle(value: unknown, fallback: ArrowStemStyle): ArrowStemStyle {
+  if (value === "solid" || value === "dashed" || value === "dotted") return value;
+  return fallback;
+}
+
+function pickTextFontWeight(value: unknown, fallback: TextFontWeight): TextFontWeight {
+  if (value === "regular" || value === "bold") return value;
+  return fallback;
+}
+
+function pickBlurEffectMode(value: unknown, fallback: BlurEffectMode): BlurEffectMode {
+  if (value === "gaussian" || value === "pixelate" || value === "redact") return value;
+  return fallback;
+}
+
+function pickBlurRadiusSetting(value: unknown, fallback: BlurRadiusSetting): BlurRadiusSetting {
+  if (!isRecord(value)) return fallback;
+  if (value.mode === "auto") return { mode: "auto" };
+  if (value.mode === "px" && typeof value.value === "number" && Number.isFinite(value.value) && value.value > 0) {
+    return { mode: "px", value: value.value };
+  }
+  return fallback;
+}
+
+function pickHighlightBlendMode(value: unknown, fallback: HighlightBlendMode): HighlightBlendMode {
+  if (value === "multiply" || value === "screen" || value === "overlay") return value;
+  return fallback;
+}
+
+function pickEditorSidebarPanel(value: unknown, fallback: EditorSidebarPanel): EditorSidebarPanel {
+  return isEditorSidebarPanel(value) ? value : fallback;
+}
+
+function parseArrowToolStyle(raw: unknown, defaults: ArrowToolStyle): ArrowToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    color: pickToolColor(raw.color, defaults.color),
+    thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
+    endStyle: pickArrowEndStyle(raw.endStyle, defaults.endStyle),
+    stemStyle: pickArrowStemStyle(raw.stemStyle, defaults.stemStyle),
+    doubleEnded: pickBoolean(raw.doubleEnded, defaults.doubleEnded)
+  };
+}
+
+function parseTextToolStyle(raw: unknown, defaults: TextToolStyle): TextToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    color: pickToolColor(raw.color, defaults.color),
+    fontSize: pickToolSizePreset(raw.fontSize, defaults.fontSize),
+    weight: pickTextFontWeight(raw.weight, defaults.weight)
+  };
+}
+
+function parseRectToolStyle(raw: unknown, defaults: RectToolStyle): RectToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    color: pickToolColor(raw.color, defaults.color),
+    thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
+    filled: pickBoolean(raw.filled, defaults.filled)
+  };
+}
+
+function parseBlurToolStyle(raw: unknown, defaults: BlurToolStyle): BlurToolStyle {
+  if (!isRecord(raw)) return defaults;
+  return {
+    mode: pickBlurEffectMode(raw.mode, defaults.mode),
+    radius: pickBlurRadiusSetting(raw.radius, defaults.radius)
+  };
+}
+
+function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): HighlightToolStyle {
+  if (!isRecord(raw)) return defaults;
+  // Clamp opacity to [0,1] so a corrupt file can't render a fully-
+  // opaque highlight that hides the underlying image.
+  const opacityRaw = pickNumber(raw.opacity, defaults.opacity);
+  const opacity = Math.min(1, Math.max(0, opacityRaw));
+  return {
+    color: pickToolColor(raw.color, defaults.color),
+    opacity,
+    blend: pickHighlightBlendMode(raw.blend, defaults.blend)
+  };
+}
+
+function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): EditorToolStyles {
+  if (!isRecord(raw)) return defaults;
+  return {
+    arrow: parseArrowToolStyle(raw.arrow, defaults.arrow),
+    text: parseTextToolStyle(raw.text, defaults.text),
+    rect: parseRectToolStyle(raw.rect, defaults.rect),
+    blur: parseBlurToolStyle(raw.blur, defaults.blur),
+    highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight)
+  };
+}
+
+function parseEditorCoachmarks(raw: unknown, defaults: EditorCoachmarks): EditorCoachmarks {
+  if (!isRecord(raw)) return defaults;
+  return {
+    stoplightSeen: pickBoolean(raw.stoplightSeen, defaults.stoplightSeen)
+  };
+}
+
+function parseEditorMatchingText(raw: unknown, defaults: EditorMatchingText): EditorMatchingText {
+  if (!isRecord(raw)) return defaults;
+  return {
+    enabled: pickBoolean(raw.enabled, defaults.enabled)
+  };
+}
+
+function parseEditorSidebar(raw: unknown, defaults: EditorSidebarSettings): EditorSidebarSettings {
+  if (!isRecord(raw)) return defaults;
+  return {
+    pinned: pickBoolean(raw.pinned, defaults.pinned),
+    lastSelectedPanel: pickEditorSidebarPanel(raw.lastSelectedPanel, defaults.lastSelectedPanel)
+  };
+}
+
+function parseEditorSettings(raw: unknown, defaults: EditorSettings): EditorSettings {
+  if (!isRecord(raw)) return defaults;
+  return {
+    toolStyles: parseEditorToolStyles(raw.toolStyles, defaults.toolStyles),
+    coachmarks: parseEditorCoachmarks(raw.coachmarks, defaults.coachmarks),
+    matchingText: parseEditorMatchingText(raw.matchingText, defaults.matchingText),
+    sidebar: parseEditorSidebar(raw.sidebar, defaults.sidebar)
+  };
 }
 
 function parseV1(raw: unknown): Settings | null {
@@ -210,7 +445,13 @@ function parseV1(raw: unknown): Settings | null {
         recording.lastRoutedPermissionFingerprint,
         defaults.recording.lastRoutedPermissionFingerprint
       )
-    }
+    },
+    // `editor.*` landed in the v2-editor refresh (docs/plans/2026-05-23-
+    // 001). Older files won't have it; parseEditorSettings falls through
+    // to defaults for any missing nested field so the in-memory shape
+    // is always complete and the next write rewrites the file with the
+    // full block. No `schemaVersion` bump per the additive convention.
+    editor: parseEditorSettings(raw.editor, defaults.editor)
   };
 }
 
@@ -541,7 +782,41 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     general: mergeSection(current.general, patch.general),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),
-    recording: mergeSection(current.recording, patch.recording)
+    recording: mergeSection(current.recording, patch.recording),
+    editor: mergeEditor(current.editor, patch.editor)
+  };
+}
+
+/** Editor merge is one level deeper than the flat-shallow mergeSection
+ *  because toolStyles is itself an object keyed by tool kind. Without
+ *  this, a swatch click that ships `editor: { toolStyles: { arrow: {
+ *  color: "red" } } }` would clobber text/rect/blur/highlight styles.
+ *  The leaf style blocks (arrow/text/rect/blur/highlight) DO merge
+ *  shallowly because each leaf field is independently replaceable. */
+function mergeEditor(
+  current: EditorSettings,
+  patch: SettingsPatch["editor"]
+): EditorSettings {
+  if (patch === undefined) return current;
+  return {
+    toolStyles: mergeToolStyles(current.toolStyles, patch.toolStyles),
+    coachmarks: mergeSection(current.coachmarks, patch.coachmarks),
+    matchingText: mergeSection(current.matchingText, patch.matchingText),
+    sidebar: mergeSection(current.sidebar, patch.sidebar)
+  };
+}
+
+function mergeToolStyles(
+  current: EditorToolStyles,
+  patch: NonNullable<SettingsPatch["editor"]>["toolStyles"]
+): EditorToolStyles {
+  if (patch === undefined) return current;
+  return {
+    arrow: mergeSection(current.arrow, patch.arrow),
+    text: mergeSection(current.text, patch.text),
+    rect: mergeSection(current.rect, patch.rect),
+    blur: mergeSection(current.blur, patch.blur),
+    highlight: mergeSection(current.highlight, patch.highlight)
   };
 }
 

@@ -8,42 +8,41 @@ origin: docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md
 
 # Bundle format v2 — multi-source canvas + layer tree + contextual effects
 
-## Shipping Status — Option A (experimental, opt-in)
+## Shipping Status — v2 is the default
 
-**As of 2026-05-12** the v2 data layer (Phases 1–5) is merged behind
-an experimental feature flag. New captures default to **v1 bundle
-writes** so the existing `overlays:*` IPC keeps working — the editor's
-only annotation surface today. The v2 write path lives but is gated:
+**As of 2026-05-24** v2 is the default for new captures. The flip
+happened as v2-editor §Phase 6 (moved up before Phases 4-5 so the
+v2-only feature work — smart blur, multi-image — would ship against
+a real v2 install base instead of dogfood-only).
 
-- Flag: `PWRSNAP_BUNDLE_V2=1` env var (see
-  [apps/desktop/src/main/feature-flags.ts](../../apps/desktop/src/main/feature-flags.ts))
-- Default: **off** (v1 write path)
+- Source of truth: [apps/desktop/src/main/feature-flags.ts](../../apps/desktop/src/main/feature-flags.ts)
+- Default: **on** (v2 write path); the lazy v1→v2 doctor wraps
+  existing v1 captures on first edit-open.
+- Escape hatch: `PWRSNAP_BUNDLE_V2=0` forces the legacy v1 write
+  path. Debug-only — used for bisecting v2-codepath regressions.
 - Read path: **always dual-format** — both v1 and v2 captures render
   correctly via `coordinator.ts:resolveCacheFile` branching on
   `record.bundle_format_version`.
 - Clipboard `copyLayerFragment` / `pasteLayerFragment`: refuse v1
-  captures (correct — non-default users never see them); ignore the
-  flag for receive-side validation because flag state is per-instance.
+  captures (paste targets the v2 layer tree; v1 captures will be
+  promoted by the doctor on first edit-open and only then accept a
+  fragment paste).
 
-### What still blocks promoting v2 to the default
+### Rollout history
 
-1. **Layer-editor UI in the renderer.** The editor calls only
-   `overlays:upsert` today. With v2 captures, overlays IPC refuses
-   (correct), so annotation breaks. Needs: layer panel, multi-image
-   canvas drag-drop, effect palette.
-2. **v1 → v2 doctor promotion.** Users with existing v1 captures need
-   a one-shot wrap that produces an equivalent layer tree (single
-   raster + per-overlay vector/effect siblings).
-3. **Phase 6 E2E specs.** No round-trip coverage of capture → edit →
-   repack → reload on v2 yet. `clipboard-layer-fragment.spec.ts` not
-   written (5-defense layers exercised only at the zod-schema level).
-4. **Cross-instance UTI roundtrip verification.** The macOS UTI write
-   and read have not been validated against a packaged second
-   PwrSnap instance.
+The original gate (2026-05-12) shipped Phases 1–5 of the v2 data
+layer behind `PWRSNAP_BUNDLE_V2=1` while the renderer still only
+spoke `overlays:upsert`. The blockers to flipping the default were:
 
-Promotion path (in order): land layer-editor UI → land v1→v2 doctor
-→ ship Phase 6 specs → flip default in `isV2WriteEnabled()` → add
-Settings → Experimental UI toggle backed by the same getter.
+1. Layer-editor UI in the renderer (resolved by v2-editor Phases
+   1-3 + 6 — dual-dispatch on `bundle_format_version`).
+2. v1→v2 doctor promotion (resolved by v2-editor Phase 3 — lazy
+   wrap on first edit-open).
+3. Phase 6 E2E specs covering capture → edit → repack → reload.
+4. Cross-instance UTI roundtrip verification.
+
+The flip landed with the env var inverted: `=0` is now the escape
+hatch instead of `=1` being the opt-in.
 
 ## Enhancement Summary
 

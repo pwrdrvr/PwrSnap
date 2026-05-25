@@ -25,9 +25,11 @@ import {
 } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerEditorHandlers } from "./handlers/editor-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { registerLayersHandlers } from "./handlers/layers-handlers";
+import { registerV1ToV2DoctorHandlers } from "./handlers/v1-to-v2-doctor-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
@@ -61,6 +63,7 @@ import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance
 import { persistCaptureFromTemp, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
+import { reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
@@ -795,6 +798,8 @@ export function bootstrapApp(): void {
     registerRecordingHandlers();
     registerStorageHandlers();
     registerLayersHandlers();
+    registerV1ToV2DoctorHandlers();
+    registerEditorHandlers();
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates
@@ -1079,6 +1084,18 @@ export function bootstrapApp(): void {
     // free (filtered by `bundle_path IS NULL`).
     void runLegacyBundleMigration().catch((err: unknown) => {
       log.warn("legacy-bundle migration failed at boot", {
+        message: err instanceof Error ? err.message : String(err)
+      });
+    });
+    // v1 → v2 doctor reconcile sweep — heals any partial states from
+    // a previous boot's mid-doctor crash (orphan temp files, DB-says-
+    // v2-but-bundle-says-v1 mismatches, orphan overlays rows for v2
+    // captures). Runs AFTER `runLegacyBundleMigration` above on purpose
+    // — we don't want to sweep half-wrapped legacy bundles. Per-capture
+    // lazy upgrades fire from the renderer via `v1ToV2:upgrade` when
+    // the user opens a v1 capture for editing.
+    void reconcileV1ToV2OnBoot().catch((err: unknown) => {
+      log.warn("v1 → v2 doctor reconcile sweep failed at boot", {
         message: err instanceof Error ? err.message : String(err)
       });
     });

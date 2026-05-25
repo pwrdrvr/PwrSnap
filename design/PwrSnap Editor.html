@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — v2 Layer Editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="stylesheet" href="src/library.css" />
+<link rel="stylesheet" href="src/editor.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/design-canvas.jsx"></script>
+<script type="text/babel" src="src/AppIcons.jsx"></script>
+<script type="text/babel" src="src/Editor.jsx"></script>
+<script type="text/babel" src="src/EditorPanels.jsx"></script>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { PsAppTag, PsAppIcon, APP_INFO } = window.PS;
+const {
+  LAYER_TREE, CHAT_HISTORY, CAPTURE_META, LAYER_ICONS,
+  EditorChrome, EditorToolbar, EditorCanvas, ActivityBar,
+  PanelHost, ChatMessage, ChatPanel,
+  CANVAS_W, CANVAS_H,
+} = window.PSE;
+
+const CAPTURE_SRC = "assets/sample-canvas.svg";
+
+// ============================================================
+// Top-level Editor — composes the shell + canvas + panels.
+// Stateful: tool, panel, selectedLayer, layer visibility.
+// ============================================================
+function Editor({
+  initialPanel = "chat",
+  initialTool = "pointer",
+  initialSelected = null,
+  initialPinned = true,
+  initialAiFresh = "run_a8c2",
+  bar = "right",
+  showMigration = false,
+  dropTarget = null,
+  undoBanner = null,
+  cropZoom,                 // null = default 0.52 zoom; or { x, y, w, h } in canvas px for close-up
+  hideToolbar = false,
+}) {
+  const [tool, setTool] = React.useState(initialTool);
+  const [panel, setPanel] = React.useState(initialPanel);
+  const [pinned, setPinned] = React.useState(initialPinned);
+  const [selectedId, setSelectedId] = React.useState(initialSelected);
+  const [layers, setLayers] = React.useState(LAYER_TREE);
+
+  const toggleVis = (id) => {
+    setLayers(layers.map(L => L.id === id ? { ...L, visible: !L.visible } : L));
+  };
+
+  const selectedLayer = layers.find(L => L.id === selectedId) || null;
+
+  // Crop zoom: render only a region of the canvas at higher scale
+  // — used for close-up shots of interactions.
+  let zoom = 0.52;
+  let canvasNode;
+  if (cropZoom) {
+    canvasNode = <CroppedCanvas crop={cropZoom} layers={layers} selectedId={selectedId}
+                                 setSelectedId={setSelectedId} aiFresh={initialAiFresh}
+                                 dropTarget={dropTarget} />;
+  } else {
+    canvasNode = (
+      <EditorCanvas capSrc={CAPTURE_SRC}
+                    layers={layers} selectedId={selectedId} setSelectedId={setSelectedId}
+                    aiFresh={initialAiFresh}
+                    showDropTarget={dropTarget?.box} dropMessage={dropTarget?.label}
+                    zoom={zoom} />
+    );
+  }
+
+  return (
+    <div className={"pse" + (bar === "left" ? " is-left-bar" : "")}
+         style={panel ? {} : { gridTemplateColumns: "1fr auto" }}>
+      <EditorChrome filename={CAPTURE_META.filename + ".pwrsnap"} dirty layerCount={layers.length} />
+      {!hideToolbar && <EditorToolbar tool={tool} setTool={setTool}
+                                       undoLabel={undoBanner} />}
+      {hideToolbar && <div style={{ gridRow: 2, gridColumn: "1 / -1", height: 0 }} />}
+      <div className="pse__canvas-wrap" style={hideToolbar ? { gridRow: "2 / 4" } : {}}>
+        {canvasNode}
+        {showMigration && (
+          <div className="pse__migrate">
+            <span className="pse__migrate-spinner" />
+            <span>Upgrading capture to <b>v2 · layer tree</b>… <span style={{ color: "var(--text-muted)" }}>~0.4s</span></span>
+          </div>
+        )}
+        <div className="pse__floor">
+          <span className="a">●</span> <b>v2</b> · all edits saved · <span>bundle re-packed 2s ago</span>
+        </div>
+      </div>
+      {panel
+        ? <PanelHost active={panel}
+                     pinned={pinned} onPin={() => setPinned(!pinned)} onClose={() => setPanel(null)}
+                     layers={layers} selectedId={selectedId} setSelectedId={setSelectedId} onToggleVis={toggleVis}
+                     selectedLayer={selectedLayer}
+                     onUndoRun={() => {}} />
+        : null}
+      <ActivityBar active={panel} setActive={setPanel} layerCount={layers.length} />
+    </div>
+  );
+}
+
+// ============================================================
+// CroppedCanvas — render a sub-rectangle of the canvas at a
+// larger scale. Used for "smart-blur drag" and "paste-image"
+// close-ups so the interaction reads clearly.
+// ============================================================
+function CroppedCanvas({ crop, layers, selectedId, setSelectedId, aiFresh, dropTarget }) {
+  // crop = { x, y, w, h } in canvas px. We render the FULL canvas inside a
+  // viewport-sized wrapper but offset/scaled so `crop` fills the viewport.
+  const viewportW = 920;
+  const viewportH = 580;
+  const scale = Math.min(viewportW / crop.w, viewportH / crop.h);
+  const fullW = CANVAS_W * scale;
+  const fullH = CANVAS_H * scale;
+  const offX = -crop.x * scale + (viewportW - crop.w * scale) / 2;
+  const offY = -crop.y * scale + (viewportH - crop.h * scale) / 2;
+
+  const ordered = [...layers].reverse();
+  return (
+    <div style={{
+      width: viewportW, height: viewportH,
+      position: "relative", overflow: "hidden",
+      background: "#ffffff",
+      boxShadow: "0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px var(--border-strong)",
+    }}>
+      <div style={{
+        position: "absolute",
+        left: offX, top: offY,
+        width: fullW, height: fullH,
+      }}>
+        <img src={CAPTURE_SRC} alt="" draggable={false}
+             style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+                      objectFit: "cover", pointerEvents: "none", userSelect: "none" }}/>
+        <div style={{ position: "absolute", inset: 0 }}>
+          {ordered.map((L) => (
+            <window.PSE_CanvasLayer key={L.id} layer={L} selectedId={selectedId}
+                                    aiFresh={aiFresh} onSelect={setSelectedId} />
+          ))}
+          {dropTarget?.box && (
+            <div className="pse__drop-target" style={{
+              left: (dropTarget.box.x / CANVAS_W * 100) + "%",
+              top:  (dropTarget.box.y / CANVAS_H * 100) + "%",
+              width:  (dropTarget.box.w / CANVAS_W * 100) + "%",
+              height: (dropTarget.box.h / CANVAS_H * 100) + "%",
+            }}>
+              {dropTarget.label}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Notes panel (design rationale)
+// ============================================================
+function Notes() {
+  const eyebrow = { font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "16px 0 6px" };
+  const muted   = { font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--text-muted)", margin: "16px 0 6px" };
+  const ul      = { font: "400 12.5px/1.55 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 18, margin: "0 0 8px" };
+  const p       = { font: "400 13px/1.5 var(--font-sans)", color: "var(--text-secondary)", margin: "0 0 12px" };
+  return (
+    <div style={{
+      width: "100%", height: "100%", padding: 32,
+      background: "var(--bg-app)",
+      border: "1px solid var(--border-subtle)",
+      borderRadius: 12,
+      overflow: "auto",
+      fontFamily: "var(--font-sans)",
+    }}>
+      <h2 style={{ font: "700 22px/1.15 var(--font-display)", color: "var(--text-primary)", margin: "0 0 6px", letterSpacing: "-0.01em" }}>
+        v2 Layer Editor — design system
+      </h2>
+      <p style={{ ...p, marginTop: 4 }}>
+        v1 on day one. Layer tree underneath. AI uses the same primitives as the renderer. The activity bar is the progressive-disclosure surface; a new user sees a tiny strip and can ignore it.
+      </p>
+
+      <div style={eyebrow}>① Shell — 4 zones</div>
+      <ul style={ul}>
+        <li><b style={{color:"var(--text-primary)"}}>Title bar</b> · standard macOS chrome + v2 badge + Copy/Done. Filename ends <code style={{font:"600 11px/1 var(--font-mono)"}}>.pwrsnap</code> (the bundle, not a PNG).</li>
+        <li><b style={{color:"var(--text-primary)"}}>Toolbar</b> · same six tools as v1 plus undo/redo. Hotkeys carry forward unchanged.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Canvas</b> · the document. Image base + layer overlays. Drag-anywhere pan, ⌘+scroll cursor zoom. No layer-panel ghost-toggle on the canvas itself.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Right-edge strip</b> · 38px, four icons: <b>Info · Chat · Layers · Style</b>. Always there, always tiny.</li>
+      </ul>
+
+      <div style={eyebrow}>② Sidebar mechanics</div>
+      <ul style={ul}>
+        <li><b style={{color:"var(--text-primary)"}}>Collapsed by default</b>. Click an icon to expand-and-pin; the canvas resizes inward.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Hover-pop-out</b> (~200ms delay) for a quick glance — overlays the canvas, auto-hides on mouse-out. Pin button inside the panel header converts a pop-out into a sticky panel.</li>
+        <li>Each panel header carries the pin toggle (filled = pinned) and a close (Esc).</li>
+        <li>Last-selected panel is remembered per-window. Reopening the editor lands back in the same configuration.</li>
+      </ul>
+
+      <div style={eyebrow}>③ AI is one click away</div>
+      <ul style={ul}>
+        <li>The <b style={{color:"var(--text-primary)"}}>Chat</b> icon is second in the strip, with an unread badge when Codex has placed layers since you last looked. Discoverable without being in-your-face.</li>
+        <li>Codex sees the capture image + flat layer tree. Replies are inline; the "Codex added N layers" card collapses the batch into a single Undo step (one <code style={{font:"600 11px/1 var(--font-mono)"}}>ai_run_id</code>).</li>
+        <li>Fresh AI layers pulse amber for ~1.8s, then settle — same affordance, no consent gate. <i>Hybrid review flow:</i> instant-with-flag, undo always available.</li>
+      </ul>
+
+      <div style={eyebrow}>④ Layers are real</div>
+      <ul style={ul}>
+        <li>The base capture is locked at the bottom of the tree. Pasted rasters become unlocked image layers. Vector/effect annotations sit above.</li>
+        <li>The <b style={{color:"var(--text-primary)"}}>source</b> chip on each row (you / codex / capture) makes provenance visible — and supports filters like "hide all AI annotations" once we ship them.</li>
+        <li>Effect layers carry friendly names (<i>"Blur — branch fix/telegram-…"</i>), not <code style={{font:"600 11px/1 var(--font-mono)"}}>effect_layer_0x4b</code>. Codex writes those names; the user can rename.</li>
+      </ul>
+
+      <div style={eyebrow}>⑤ Smart blur</div>
+      <ul style={ul}>
+        <li>The blur is a <b style={{color:"var(--text-primary)"}}>sample-below</b> effect layer, not a baked region. Drag it and the pixels under it shift; the blur re-samples on every render.</li>
+        <li>Visible feedback while dragging: a faint amber outline on the dragged blur — confirms "this is the live region," doesn't shout.</li>
+      </ul>
+
+      <div style={eyebrow}>⑥ Multi-image is opportunistic</div>
+      <ul style={ul}>
+        <li>⌘V pastes; Finder drag drops; both land as raster layers. <b style={{color:"var(--text-primary)"}}>No "Add Image" button</b> — the toolbar stays single-canvas-coded.</li>
+        <li>Drop affordance: a dashed amber rectangle at the drop point. Lands centered on the cursor; can be dragged after.</li>
+      </ul>
+
+      <div style={eyebrow}>⑦ Migration</div>
+      <ul style={ul}>
+        <li>Lazy, per-capture, on first editor open. v1 bundles get upgraded in place — overlay array → vector layers; canvas dims → base raster.</li>
+        <li>UI: brief amber spinner toast under the toolbar. Sub-second on disk; no consent prompt.</li>
+        <li>Atomic + idempotent. Failure leaves v1 intact and surfaces a view-only fallback.</li>
+      </ul>
+
+      <div style={muted}>Style vs inline split</div>
+      <ul style={ul}>
+        <li><b style={{color:"var(--text-primary)"}}>Inline toolbar</b>: tool selection + undo/redo + zoom. That's it.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Style panel</b>: the selected layer's color · stroke · blur mode · blend · opacity. Per-layer, not per-tool. Empty when nothing is selected.</li>
+      </ul>
+    </div>
+  );
+}
+
+// ============================================================
+// App
+// ============================================================
+function App() {
+  return (
+    <DesignCanvas projectName="PwrSnap" deliverable="v2 Layer Editor">
+
+      {/* ────────────────────────────────────────────────────────
+          ① HERO — Chat with Codex, mid-conversation, AI just
+          placed four layers. The user sees the canvas update +
+          the in-chat "Codex added 4 layers · Undo" card.
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="hero" title="① Default state · Chat panel · AI just placed 4 layers">
+        <DCArtboard id="hero-chat" label="Hero · Chat with Codex (pinned) · fresh AI layers pulse amber" width={1440} height={900}>
+          <Editor
+            initialPanel="chat"
+            initialPinned={true}
+            initialAiFresh="run_a8c2"
+            undoBanner="Undo Codex suggestion (5 layers)"
+          />
+        </DCArtboard>
+        <DCArtboard id="hero-notes" label="Design notes" width={520} height={900}>
+          <Notes />
+        </DCArtboard>
+      </DCSection>
+
+      {/* ────────────────────────────────────────────────────────
+          ② Layers panel — the structured-data win for AI consumers.
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="panels" title="② Each panel — Info · Layers · Style">
+        <DCArtboard id="panel-layers" label="Layers · the v2 tree · sources visible · top = front" width={1440} height={900}>
+          <Editor initialPanel="layers" initialSelected="lyr_blur_branch_a" initialAiFresh={null}/>
+        </DCArtboard>
+
+        <DCArtboard id="panel-info" label="Info · capture metadata + v2 bundle status" width={1440} height={900}>
+          <Editor initialPanel="info" initialAiFresh={null} />
+        </DCArtboard>
+
+        <DCArtboard id="panel-style" label="Style · selected: Blur — sample-below effect" width={1440} height={900}>
+          <Editor initialPanel="style" initialSelected="lyr_blur_branch_a" initialAiFresh={null} />
+        </DCArtboard>
+
+        <DCArtboard id="panel-style-arrow" label="Style · selected: Arrow — Send button" width={1440} height={900}>
+          <Editor initialPanel="style" initialSelected="lyr_arrow_send" initialTool="arrow" initialAiFresh={null}/>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ────────────────────────────────────────────────────────
+          ③ COLLAPSED — looks ~like v1; the icon strip is the only
+          right-edge chrome a new user sees.
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="collapsed" title="③ Collapsed · what a new user sees on day one">
+        <DCArtboard id="collapsed-default" label="Sidebar collapsed · ~v1 surface" width={1440} height={900}>
+          <Editor initialPanel={null} initialAiFresh={null} />
+        </DCArtboard>
+      </DCSection>
+
+      {/* ────────────────────────────────────────────────────────
+          ④ MIGRATION — first open of a v1 capture
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="migrate" title="④ v1 → v2 migration · first open of a legacy capture">
+        <DCArtboard id="migrate-upgrading" label="Brief amber toast · ~0.4s · no consent prompt" width={1440} height={900}>
+          <Editor initialPanel={null} initialAiFresh={null} showMigration={true} />
+        </DCArtboard>
+      </DCSection>
+
+      {/* ────────────────────────────────────────────────────────
+          ⑤ Alt layout · activity bar on left
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="alt" title="⑤ Alternate · activity bar on LEFT (VS Code parity)">
+        <DCArtboard id="alt-left-bar" label="Left-bar layout · same primitives, mirrored" width={1440} height={900}>
+          <Editor initialPanel="chat" initialAiFresh={null} bar="left" />
+        </DCArtboard>
+      </DCSection>
+
+      {/* ────────────────────────────────────────────────────────
+          ⑥ Chat-driven flow — focused close-up of the conversation
+          ──────────────────────────────────────────────────────── */}
+      <DCSection id="chat-deep" title="⑥ Chat-driven flow · the AI primitives surface">
+        <DCArtboard id="chat-isolated" label="Chat alone · per-capture history · placed-layers card" width={420} height={920}>
+          <ChatIsolated />
+        </DCArtboard>
+        <DCArtboard id="chat-notes" label="What Codex sees + what it returns" width={520} height={920}>
+          <ChatProtocolNotes />
+        </DCArtboard>
+      </DCSection>
+
+    </DesignCanvas>
+  );
+}
+
+// Standalone chat panel — its own artboard, full height, no editor chrome
+function ChatIsolated() {
+  return (
+    <div className="pse__panel" style={{ width: "100%", height: "100%", borderLeft: 0 }}>
+      <ChatPanel pinned={true} onPin={() => {}} onClose={() => {}} />
+    </div>
+  );
+}
+
+function ChatProtocolNotes() {
+  const lbl = { font: "700 9px/1 var(--font-sans)", letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--accent-bright)", margin: "0 0 6px" };
+  const k = { font: "600 10px/1 var(--font-mono)", color: "var(--text-secondary)" };
+  const v = { font: "500 11px/1.4 var(--font-mono)", color: "var(--text-primary)" };
+  return (
+    <div style={{ width: "100%", height: "100%", padding: 28, background: "var(--bg-app)", borderRadius: 12, border: "1px solid var(--border-subtle)", overflow: "auto", fontFamily: "var(--font-sans)" }}>
+      <h3 style={{ font: "700 18px/1.2 var(--font-display)", color: "var(--text-primary)", margin: "0 0 12px", letterSpacing: "-0.01em" }}>
+        Chat — what crosses the wire
+      </h3>
+
+      <div style={lbl}>Codex sees</div>
+      <pre style={{ ...v, background: "var(--bg-input)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: 12, margin: "0 0 16px", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+{`{
+  "capture": {
+    "id": "cap_9c4f7e3a",
+    "image":  <png bytes — 2246×1496>,
+    "layers": [
+      { "id":"lyr_base", "kind":"raster", "geom":{ "x":0,"y":0,"w":2246,"h":1496 }, "locked":true },
+      { "id":"lyr_highlight_thread", "kind":"effect",
+        "sub":"highlight", "source":"you",
+        "geom":{ "x":56,"y":800,"w":540,"h":165 } }
+    ]
+  },
+  "history": [ { "role":"user", "body":"..." } ]
+}`}
+      </pre>
+
+      <div style={lbl}>Codex replies with</div>
+      <pre style={{ ...v, background: "var(--bg-input)", border: "1px solid var(--border-subtle)", borderRadius: 6, padding: 12, margin: "0 0 16px", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
+{`{
+  "reply": "Done. Added four layers...",
+  "ai_run_id": "run_a8c2",
+  "tool_calls": [
+    { "fn":"layers:upsert",
+      "args":{ "kind":"effect","sub":"blur",
+               "name":"Blur — branch fix/telegram-…",
+               "geom":{"x":130,"y":935,"w":460,"h":36},
+               "style":{"mode":"soft","radius":6} } },
+    { "fn":"layers:upsert", ... },
+    { "fn":"layers:upsert", ... },
+    { "fn":"layers:upsert",
+      "args":{ "kind":"vector","sub":"arrow",
+               "name":"Arrow — Send button",
+               "geom":{"from":{"x":1840,"y":1340},
+                       "to":{"x":2080,"y":1395}},
+               "style":{"stroke":"#ff8a1f","width":6} } }
+  ]
+}`}
+      </pre>
+
+      <div style={lbl}>Why this shape</div>
+      <ul style={{ font: "400 12.5px/1.5 var(--font-sans)", color: "var(--text-secondary)", paddingLeft: 16, margin: 0 }}>
+        <li><b style={{color:"var(--text-primary)"}}>Same IPC the renderer uses.</b> No AI-only API. <code style={{font:"600 10px/1 var(--font-mono)"}}>layers:upsert</code> is the documented contract.</li>
+        <li><b style={{color:"var(--text-primary)"}}>Absolute canvas px.</b> No normalization math; Codex reasons about positions directly.</li>
+        <li><b style={{color:"var(--text-primary)"}}>One <code style={{font:"600 10px/1 var(--font-mono)"}}>ai_run_id</code>, one undo step.</b> All four layers collapse to a single "Undo Codex suggestion."</li>
+        <li><b style={{color:"var(--text-primary)"}}>Source field</b> is the only thing distinguishing AI layers from yours at runtime — they obey the same transform/select/delete primitives.</li>
+      </ul>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

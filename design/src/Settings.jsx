@@ -60,7 +60,7 @@ function TitleBar({ here }) {
     <header className="pss__titlebar">
       <span className="pss__lights"><span /><span /><span /></span>
       <span className="pss__title-brand">
-        <PsAppIcon app="any" size={14} />
+        <PsAppIcon app="pwrsnap" size={14} />
         <span>Pwr<span className="a">Snap</span></span>
       </span>
       <span className="pss__title-crumb">
@@ -408,7 +408,7 @@ function HotkeysPage() {
           <div className="pss__main-eyebrow">General</div>
           <h1 className="pss__main-title">Hotkeys</h1>
           <p className="pss__main-sub">
-            PwrSnap is keyboard-first. ⌘⇧P is the global "smart" trigger that fires whatever
+            PwrSnap is keyboard-first. ⌘⇧C is the global "smart" trigger that fires whatever
             capture mode is set as Quick Capture; the rest jump straight to a specific mode.
           </p>
         </div>
@@ -420,7 +420,7 @@ function HotkeysPage() {
 
       <Card eyebrow="CAPTURE" title="Global capture shortcuts">
         <Row label="Quick Capture" sub="The smart trigger. Picks region, window, or full-screen based on the cursor." tag="global">
-          <Hk keys={["⌘","⇧","P"]} />
+          <Hk keys={["⌘","⇧","C"]} />
         </Row>
         <Row label="Region" sub="Drag a marquee on any display." tag="global">
           <Hk keys={["⌘","⇧","R"]} />

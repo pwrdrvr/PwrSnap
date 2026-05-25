@@ -35,13 +35,18 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  ArrowToolStyle,
   BlurStyle,
+  BlurToolStyle,
   BundleLayerNode,
   CaptureRecord,
+  HighlightToolStyle,
   Overlay,
   OverlayRow,
   PwrSnapError,
+  RectToolStyle,
   Result,
+  TextToolStyle,
   ToolSizePreset
 } from "@pwrsnap/shared";
 import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
@@ -54,12 +59,13 @@ import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
 import {
   useCaptureModel,
   type EditOpResult,
+  type GeometryUpdate,
   type LayerEditOp,
   type OverlayEditOp
 } from "./useCaptureModel";
 import { useEnsureV2, type EnsureV2State } from "./useEnsureV2";
 import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
-import { OverlaySvg, type DraftStyle } from "./OverlaySvg";
+import { OverlaySvg, TransformHandles, type DraftStyle } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { ZoomMenu } from "./ZoomMenu";
@@ -83,6 +89,8 @@ import {
   type DraftRect,
   type DraftText
 } from "./editor-types";
+import { usePasteImage, type PasteImagePosition } from "./usePasteImage";
+import { useDropImage } from "./useDropImage";
 import "./editor.css";
 
 /** Three structural shapes for the editor:
@@ -171,6 +179,128 @@ function resolveDraftStyleForActiveTool(
     default:
       return undefined;
   }
+}
+
+/** Phase 3.5 — extract a GeometryUpdate from an overlay's `data`,
+ *  used by the transform-handles flow to record the PRE-DRAG geometry
+ *  on the undo stack. Returns null for kinds without drag-handle
+ *  semantics in this slice (crop — has its own overlay tool). */
+function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
+  if (data.kind === "arrow") {
+    return { kind: "arrow", from: data.from, to: data.to };
+  }
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    return { kind: "rect", rect: data.rect };
+  }
+  if (data.kind === "text") {
+    return { kind: "text", point: data.point };
+  }
+  if (data.kind === "step") {
+    return { kind: "step", point: data.point };
+  }
+  return null;
+}
+
+/** Phase 3.5 — derive the popover header text + the popover's
+ *  styled-tool kind from a selected overlay. The mapping is direct
+ *  (rect/highlight/blur all surface as their own tool kind in the
+ *  popover); returns null when the selected overlay has no popover
+ *  surface (e.g. crop / step). */
+function selectedOverlayToStyledTool(
+  data: Overlay
+): { tool: StyledToolKind; label: string } | null {
+  switch (data.kind) {
+    case "arrow":
+      return { tool: "arrow", label: "arrow" };
+    case "rect":
+      return { tool: "rect", label: "rectangle" };
+    case "highlight":
+      return { tool: "highlight", label: "highlight" };
+    case "blur":
+      return { tool: "blur", label: "blur" };
+    case "text":
+      return { tool: "text", label: "text" };
+    default:
+      // step, crop — no popover surface in Phase 3.5.
+      return null;
+  }
+}
+
+/** Phase 3.5 — project the SELECTED overlay's `data` into the tool-
+ *  style shape the popover reads. The overlay carries a SUBSET of
+ *  the tool-style fields (e.g. arrow has color/endStyle/stemStyle/
+ *  doubleEnded but no `thickness`; the v1 schema doesn't store
+ *  thickness on the row). Defaults are filled in from the active-
+ *  tool memory so the popover doesn't render with empty selections.
+ *  Returns null when the overlay kind doesn't have a styled
+ *  surface. */
+function selectedOverlayToToolStyle(
+  data: Overlay,
+  defaults: {
+    arrow: ArrowToolStyle;
+    text: TextToolStyle;
+    rect: RectToolStyle;
+    blur: BlurToolStyle;
+    highlight: HighlightToolStyle;
+  }
+):
+  | { tool: "arrow"; style: ArrowToolStyle }
+  | { tool: "text"; style: TextToolStyle }
+  | { tool: "rect"; style: RectToolStyle }
+  | { tool: "blur"; style: BlurToolStyle }
+  | { tool: "highlight"; style: HighlightToolStyle }
+  | null {
+  if (data.kind === "arrow") {
+    return {
+      tool: "arrow",
+      style: {
+        ...defaults.arrow,
+        color: data.color ?? defaults.arrow.color,
+        endStyle: data.endStyle ?? defaults.arrow.endStyle,
+        stemStyle: data.stemStyle ?? defaults.arrow.stemStyle,
+        doubleEnded: data.doubleEnded ?? defaults.arrow.doubleEnded
+      }
+    };
+  }
+  if (data.kind === "rect") {
+    return {
+      tool: "rect",
+      style: {
+        ...defaults.rect,
+        color: data.color ?? defaults.rect.color
+      }
+    };
+  }
+  if (data.kind === "highlight") {
+    return {
+      tool: "highlight",
+      style: {
+        ...defaults.highlight,
+        ...(data.color !== undefined ? { color: data.color } : {}),
+        ...(data.opacity !== undefined ? { opacity: data.opacity } : {}),
+        ...(data.blend !== undefined ? { blend: data.blend } : {})
+      }
+    };
+  }
+  if (data.kind === "blur") {
+    return {
+      tool: "blur",
+      style: {
+        ...defaults.blur,
+        ...(data.style !== undefined ? { mode: data.style } : {})
+      }
+    };
+  }
+  if (data.kind === "text") {
+    return {
+      tool: "text",
+      style: {
+        ...defaults.text,
+        color: data.color ?? defaults.text.color
+      }
+    };
+  }
+  return null;
 }
 
 /** Map a text tool's `fontSize` preset (auto / small / medium / large)
@@ -1109,6 +1239,7 @@ export function Editor({
       ensureV2State={ensureV2.state}
       onEnsureV2Retry={ensureV2.retry}
       selectedLayerId={selectedLayerId}
+      setSelectedLayerId={setSelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
       modelFormat={model.format}
       dispatchEdit={dispatchEditErased}
@@ -1147,6 +1278,7 @@ function EditorLoaded({
   ensureV2State,
   onEnsureV2Retry,
   selectedLayerId,
+  setSelectedLayerId,
   deleteSelectedRef,
   modelFormat,
   dispatchEdit
@@ -1209,6 +1341,11 @@ function EditorLoaded({
    *  null if nothing selected. Drives the selection outline glyph in
    *  OverlaySvg. */
   selectedLayerId: string | null;
+  /** Phase 3.5 — geometry/style updates land as delete-plus-insert
+   *  (id changes on every cycle). EditorLoaded reads this setter to
+   *  re-anchor the selection on the new id after a successful
+   *  updateGeometry / updateOverlay dispatch. */
+  setSelectedLayerId: (id: string | null) => void;
   /** Outer Editor's keyboard handler reads this for Delete/Backspace.
    *  EditorLoaded populates it with a format-aware deleter (v1 →
    *  overlays:delete, v2 → layers:delete). */
@@ -1324,6 +1461,121 @@ function EditorLoaded({
       deleteSelectedRef.current = null;
     };
   }, [deleteSelectedRef, dispatchEdit]);
+
+  // ----- Phase 3.5: transform handles + selected-style editing -----
+  //
+  // Resolve the currently-selected overlay row for the handles.
+  const selectedOverlayForHandles: OverlayRow | null =
+    selectedLayerId === null
+      ? null
+      : overlays.find((r) => r.id === selectedLayerId) ?? null;
+
+  // Pre-drag snapshot — stashed on pointerdown so the geometry undo
+  // entry can record the PRE-DRAG geometry alongside the post-drag
+  // result. Cleared on drag end (whether or not the drag committed).
+  const preDragRef = useRef<OverlayRow | null>(null);
+
+  const onHandleDragStart = useCallback((row: OverlayRow): void => {
+    preDragRef.current = row;
+  }, []);
+
+  const onHandleDragEnd = useCallback((): void => {
+    // Don't clear here — the geometry handler reads preDragRef AFTER
+    // onDragEnd fires (the order is onGeometryChange → onDragEnd).
+    // Cleared at the end of onHandleGeometryChange instead.
+  }, []);
+
+  const onHandleGeometryChange = useCallback(
+    (geometry: GeometryUpdate): void => {
+      const preDrag = preDragRef.current;
+      preDragRef.current = null;
+      if (preDrag === null) return;
+      void (async (): Promise<void> => {
+        const result = await dispatchEdit({
+          kind: "updateGeometry",
+          layerId: preDrag.id,
+          geometry
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("updateGeometry failed", result.error);
+          return;
+        }
+        if (result.value.kind !== "update") return;
+        const artifact = result.value.artifact;
+        const newId =
+          artifact.format === 1 ? artifact.row.id : artifact.node.id;
+        // Re-anchor the selection on the new id so the handles + the
+        // selection outline follow the freshly-inserted row.
+        setSelectedLayerId(newId);
+        // Record on the undo stack — capture both the PRE and POST
+        // geometry, with a chain-id ref so subsequent undo/redo cycles
+        // can track the new ids.
+        if (!undoApplyingRef.current) {
+          const previousGeometry = overlayDataToGeometry(preDrag.data);
+          if (previousGeometry !== null) {
+            undo.recordGeometry({
+              currentIdRef: { current: newId },
+              previousGeometry,
+              nextGeometry: geometry
+            });
+          }
+        }
+      })();
+    },
+    [dispatchEdit, setSelectedLayerId, undo, undoApplyingRef]
+  );
+
+  // Selected-overlay style edit handler — dispatched when the popover
+  // is in selected-overlay mode (selectedOverlay is set). Mirrors the
+  // geometry handler: dispatchEdit + re-anchor selection + record on
+  // the undo stack.
+  const onSelectedStyleFieldChange = useCallback(
+    (field: string, value: unknown): void => {
+      const current = selectedOverlayForHandles;
+      if (current === null) return;
+      // Project the (field, value) pair into a single-field overlay
+      // patch. The patch's kind matches the current overlay's kind so
+      // the dispatcher's kind-match guard accepts it.
+      const patch: Partial<Overlay> = {
+        kind: current.data.kind,
+        [field]: value
+      } as Partial<Overlay>;
+      void (async (): Promise<void> => {
+        const result = await dispatchEdit({
+          kind: "updateOverlay",
+          layerId: current.id,
+          patch
+        });
+        if (!result.ok) {
+          // eslint-disable-next-line no-console
+          console.error("updateOverlay failed", result.error);
+          return;
+        }
+        if (result.value.kind !== "update") return;
+        const artifact = result.value.artifact;
+        const newId =
+          artifact.format === 1 ? artifact.row.id : artifact.node.id;
+        setSelectedLayerId(newId);
+        if (!undoApplyingRef.current) {
+          // Capture the pre-edit value of the SAME field so undo
+          // restores it. For nested objects the caller is expected to
+          // pass a whole-object replacement — same shallow-merge
+          // semantics as the dispatcher.
+          const previousPatch: Partial<Overlay> = {
+            kind: current.data.kind,
+            [field]: (current.data as Record<string, unknown>)[field]
+          } as Partial<Overlay>;
+          undo.recordStyle({
+            currentIdRef: { current: newId },
+            previousPatch,
+            nextPatch: patch
+          });
+        }
+      })();
+    },
+    [dispatchEdit, selectedOverlayForHandles, setSelectedLayerId, undo, undoApplyingRef]
+  );
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
   useEffect(() => {
@@ -1496,6 +1748,118 @@ function EditorLoaded({
     zoom.canvasStyle?.transform
   ]);
 
+  // -------------------- Phase 5 paste/drop image as raster layer ---
+  //
+  // Multi-image paste + Finder drop. v2 captures only. ⌘V on the canvas
+  // routes through usePasteImage; HTML5 drag-drop on the canvas-wrap
+  // routes through useDropImage. Both surface a transient notice on
+  // success/failure via `pasteNotice` state; v1 captures get a
+  // friendly "Only v2 captures support multi-image" message rather
+  // than a silent no-op.
+  //
+  // The "Pasting…" affordance is positioned by `pastingAt` (canvas-px
+  // coords). Cleared when the dispatch resolves or rejects.
+  const [pastingAt, setPastingAt] =
+    useState<PasteImagePosition | null>(null);
+  const [pasteNotice, setPasteNotice] =
+    useState<{ text: string; tone: "error" | "info" } | null>(null);
+  // Auto-clear the notice after a short window so it doesn't linger.
+  useEffect(() => {
+    if (pasteNotice === null) return;
+    const timer = setTimeout(() => setPasteNotice(null), 3500);
+    return () => clearTimeout(timer);
+  }, [pasteNotice]);
+
+  const formatPasteError = useCallback((error: { code: string; message: string }): string => {
+    // Map a handful of bus codes to user-friendly copy; fall back to
+    // the raw message for unrecognized codes (defensive against a
+    // future code we haven't surfaced yet).
+    switch (error.code) {
+      case "v1_capture_use_v2":
+        return "Only v2 captures support multi-image";
+      case "no_image":
+        return "Clipboard doesn't contain an image";
+      case "image_too_large":
+        return "Image too large to paste (max 32 MiB)";
+      case "image_invalid_dimensions":
+        return "Image dimensions invalid or exceed cap";
+      case "image_decode_failed":
+        return "Image failed to decode";
+      case "image_read_failed":
+        return "Image bytes unreadable";
+      case "unsafe_symlink":
+      case "unsafe_not_regular_file":
+      case "unsafe_privileged_path":
+      case "unsafe_stat_failed":
+        return "Invalid file";
+      case "drop_not_image":
+        return "Only image files supported";
+      case "drop_path_unavailable":
+        return "Dropped file path unavailable";
+      default:
+        return error.message;
+    }
+  }, []);
+
+  const paste = usePasteImage({
+    captureId: record.id,
+    bundleFormatVersion: record.bundle_format_version,
+    onPastingChange: setPastingAt,
+    onError: (error) => {
+      setPasteNotice({ text: formatPasteError(error), tone: "error" });
+    }
+  });
+
+  const drop = useDropImage({
+    captureId: record.id,
+    bundleFormatVersion: record.bundle_format_version,
+    canvasEl: canvasRef.current,
+    onError: (error) => {
+      setPasteNotice({ text: formatPasteError(error), tone: "error" });
+    }
+  });
+
+  // Bind ⌘V on the document. We're already inside the editor's
+  // keyboard event chain (the outer Editor function handles tool
+  // shortcuts), but those handlers explicitly skip ⌘-modified keys.
+  // Adding a dedicated listener here keeps the paste path independent
+  // of the tool-shortcut handler.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      // ⌘V (macOS) / Ctrl+V (others). Both modifiers in the same
+      // condition because Electron normalizes macOS Command to metaKey.
+      if (e.key !== "v") return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      // Don't hijack ⌘V from text inputs / contenteditable elements —
+      // the user is pasting into a text field, not the canvas.
+      const target = e.target as HTMLElement | null;
+      if (
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable === true
+      ) {
+        return;
+      }
+      e.preventDefault();
+      // Default position: canvas center. The keyboard-triggered path
+      // doesn't have a click point.
+      const canvas = canvasRef.current;
+      let position: PasteImagePosition | undefined;
+      if (canvas !== null) {
+        const rect = canvas.getBoundingClientRect();
+        position = {
+          xn: 0.5,
+          yn: 0.5,
+          canvasPx: { x: rect.width / 2, y: rect.height / 2 }
+        };
+      }
+      void paste.pasteFromClipboard(position);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paste, canvasRef]);
+
   // -------------------- ToolStylePopover anchor + open state -------
   //
   // The popover anchors to a DOM ref provided by the toolbar's active
@@ -1627,11 +1991,16 @@ function EditorLoaded({
         className={
           "editor-canvas-wrap" +
           (wantPan ? " is-pannable" : "") +
-          (zoom.isPanning ? " is-panning" : "")
+          (zoom.isPanning ? " is-panning" : "") +
+          (drop.isDragOver ? " is-drop-target" : "")
         }
         onPointerDown={wantPan ? zoom.onPanPointerDown : undefined}
         onPointerMove={wantPan ? zoom.onPanPointerMove : undefined}
         onPointerUp={wantPan ? zoom.onPanPointerUp : undefined}
+        onDragOver={drop.onDragOver}
+        onDragLeave={drop.onDragLeave}
+        onDrop={(e) => void drop.onDrop(e)}
+        data-testid="editor-canvas-wrap"
       >
         <div
           ref={canvasRef}
@@ -1686,6 +2055,19 @@ function EditorLoaded({
             imageHeightPx={record.height_px}
             selectedLayerId={selectedLayerId}
           />
+          {/* Phase 3.5 — transform handles rendered on top of OverlaySvg
+              so the selected overlay can be resized/moved via drag. The
+              handles sit in their own absolute-positioned layer (HTML
+              divs, not SVG) so they receive pointer events without
+              fighting the OverlaySvg's pointer-events: none. */}
+          {selectedOverlayForHandles !== null && (
+            <TransformHandles
+              selectedOverlay={selectedOverlayForHandles}
+              onGeometryChange={onHandleGeometryChange}
+              onDragStart={onHandleDragStart}
+              onDragEnd={onHandleDragEnd}
+            />
+          )}
           {draft?.kind === "text" && (
             <TextDraftInput
               draft={draft}
@@ -1730,6 +2112,23 @@ function EditorLoaded({
               + Add label
             </button>
           )}
+          {/* Phase 5 "Pasting…" affordance. Lives at the click point
+              while the worker decodes + writes. Auto-clears when the
+              dispatch resolves. */}
+          {pastingAt !== null && (
+            <div
+              className="pse-pasting-affordance"
+              data-testid="paste-pasting-affordance"
+              style={{
+                position: "absolute",
+                left: pastingAt.canvasPx.x,
+                top: pastingAt.canvasPx.y,
+                transform: "translate(-50%, -50%)"
+              }}
+            >
+              Pasting…
+            </div>
+          )}
         </div>
         {/* v1 → v2 lazy doctor banner. Anchored to the canvas-wrap so
             it overlays the editor canvas; returns null in
@@ -1738,6 +2137,20 @@ function EditorLoaded({
           state={ensureV2State}
           onRetry={onEnsureV2Retry}
         />
+        {/* Phase 5 paste/drop notice. Surfaces user-friendly errors
+            (v1-only, oversize, decode failure, symlink reject) for a
+            short window. Auto-clears after 3.5s via the timer effect
+            in the outer component. */}
+        {pasteNotice !== null && (
+          <div
+            className={`pse-paste-notice is-${pasteNotice.tone}`}
+            data-testid="paste-notice"
+            role="status"
+            aria-live="polite"
+          >
+            {pasteNotice.text}
+          </div>
+        )}
       </div>
 
       {chrome !== "chromeless" && (
@@ -1793,12 +2206,69 @@ function EditorLoaded({
 
       {/* Popover anchored to the active styled tool's button. Re-mounted
           on tool change so the popover internals rebind to the new
-          anchor + style shape. */}
-      {chrome === "full" &&
-        !isControlled &&
-        popoverOpen &&
-        styledActiveTool !== null &&
-        toolState.activeStyle.tool === styledActiveTool && (
+          anchor + style shape.
+
+          Phase 3.5 — when an overlay is selected, the popover switches
+          to "selected-overlay" mode: it reads the style from the
+          selected overlay's data (projected through
+          selectedOverlayToToolStyle) and writes through
+          onSelectedStyleFieldChange (which routes to
+          dispatchEdit({kind: "updateOverlay"})). The header strip
+          reads "Editing this <tool>" with an × to clear selection. */}
+      {(() => {
+        if (chrome !== "full" || isControlled || !popoverOpen) return null;
+        // Selected-overlay mode takes precedence: if an overlay is
+        // selected AND it maps to a styled tool, render that style.
+        if (selectedOverlayForHandles !== null) {
+          const projection = selectedOverlayToToolStyle(
+            selectedOverlayForHandles.data,
+            {
+              arrow: toolState.activeStyle.tool === "arrow"
+                ? toolState.activeStyle.style
+                : { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false },
+              text: toolState.activeStyle.tool === "text"
+                ? toolState.activeStyle.style
+                : { color: "accent", fontSize: "auto", weight: "regular" },
+              rect: toolState.activeStyle.tool === "rect"
+                ? toolState.activeStyle.style
+                : { color: "accent", thickness: "auto", filled: false },
+              blur: toolState.activeStyle.tool === "blur"
+                ? toolState.activeStyle.style
+                : { mode: "gaussian", radius: { mode: "auto" } },
+              highlight: toolState.activeStyle.tool === "highlight"
+                ? toolState.activeStyle.style
+                : { color: "yellow", opacity: 0.3, blend: "multiply" }
+            }
+          );
+          if (projection === null) return null;
+          const labelInfo = selectedOverlayToStyledTool(
+            selectedOverlayForHandles.data
+          );
+          return (
+            <ToolStylePopover
+              anchorRef={popoverAnchorRef}
+              tool={projection.tool}
+              style={projection.style}
+              onClose={() => setPopoverOpen(false)}
+              onStyleFieldChange={(field, value) => {
+                onSelectedStyleFieldChange(field, value);
+              }}
+              selectedOverlayLabel={labelInfo?.label ?? projection.tool}
+              onClearSelection={() => {
+                setSelectedLayerId(null);
+                setPopoverOpen(false);
+              }}
+            />
+          );
+        }
+        // Active-tool mode (existing behavior).
+        if (
+          styledActiveTool === null ||
+          toolState.activeStyle.tool !== styledActiveTool
+        ) {
+          return null;
+        }
+        return (
           <ToolStylePopover
             anchorRef={popoverAnchorRef}
             tool={styledActiveTool}
@@ -1827,7 +2297,8 @@ function EditorLoaded({
               )(styledActiveTool, field, value);
             }}
           />
-        )}
+        );
+      })()}
     </div>
   );
 

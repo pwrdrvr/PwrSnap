@@ -37,6 +37,16 @@ import { BundleLayerNode } from "./bundle-manifest-schema-v2";
 export const CLIPBOARD_FRAGMENT_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Phase 5 multi-image paste/drop: per-image size cap for
+ * `editor:pasteImageAsLayer` / `editor:dropImageAsLayer`. 32 MiB sits
+ * comfortably above a 4K screenshot (~25 MiB worst-case RGBA PNG) and
+ * below the worker-thread heap budget — anything larger is almost
+ * certainly an attacker probing OOM or a user dragging in something
+ * pathological (multi-page TIFF, raw camera dump).
+ */
+export const PASTE_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
  * Hard upper bound on layer count per paste. Mirrors the bundle
  * document's 4096 cap (BundleDocumentV2.layers). A malicious payload
  * with 100k+ adversarial parent_id chains would otherwise stall the

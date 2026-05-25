@@ -51,8 +51,10 @@ import { dispatch } from "../../lib/pwrsnap";
 import type {
   CropRect,
   EditOpResult,
+  GeometryUpdate,
   LayerEditOp,
-  OverlayEditOp
+  OverlayEditOp,
+  OverlayPatch
 } from "./useCaptureModel";
 
 /**
@@ -96,6 +98,32 @@ export type EditOp =
        *  crop op as `rect.w/h × currentCanvasDims`. */
       newWidthPx: number;
       newHeightPx: number;
+    }
+  /** Phase 3.5 — drag of an existing overlay's transform handle, or
+   *  edit of its style via the popover. The update IPC is implemented
+   *  as delete-plus-insert (the overlays/layers surface is INSERT-only
+   *  + id-collision-on-upsert respectively), so each undo/redo cycle
+   *  also lands a fresh id. We track that via `currentIdRef` — a
+   *  mutable id pointer kept inside the EditOp so the next undo/redo
+   *  call targets the latest live row in the chain.
+   *
+   *  `previousGeometry` / `nextGeometry` carry the pre/post-edit
+   *  geometry; undo replays the previous, redo replays the next. Same
+   *  shape for style edits via `previousPatch` / `nextPatch`.
+   *
+   *  Both kinds use the format-aware dispatcher's `updateGeometry` /
+   *  `updateOverlay` verbs — no direct bus access from this hook. */
+  | {
+      kind: "geometry";
+      currentIdRef: { current: string };
+      previousGeometry: GeometryUpdate;
+      nextGeometry: GeometryUpdate;
+    }
+  | {
+      kind: "style";
+      currentIdRef: { current: string };
+      previousPatch: OverlayPatch;
+      nextPatch: OverlayPatch;
     };
 
 const MAX_DEPTH = 100;
@@ -139,6 +167,28 @@ export type UseUndoRedoResult = {
     previousHeightPx: number;
     newWidthPx: number;
     newHeightPx: number;
+  }) => void;
+  /** Phase 3.5 — record a geometry change (transform-handle drag).
+   *  `previousGeometry` is the PRE-DRAG geometry, `nextGeometry` is
+   *  the POST-DRAG geometry. `currentIdRef` is a mutable id pointer
+   *  the hook updates after each undo/redo cycle (the update IPC mints
+   *  a fresh id on every replay). Caller initializes it with the
+   *  post-edit overlay id (typically `result.value.artifact.row.id`
+   *  or `.node.id`). The caller is responsible for updating the
+   *  selection model to follow `currentIdRef.current` on undo/redo. */
+  recordGeometry: (entry: {
+    currentIdRef: { current: string };
+    previousGeometry: GeometryUpdate;
+    nextGeometry: GeometryUpdate;
+  }) => void;
+  /** Phase 3.5 — record a style change from the selected-overlay
+   *  popover edit. `previousPatch` reverts to the pre-edit state;
+   *  `nextPatch` is the patch the user just applied. Same id-chain
+   *  semantics as `recordGeometry`. */
+  recordStyle: (entry: {
+    currentIdRef: { current: string };
+    previousPatch: OverlayPatch;
+    nextPatch: OverlayPatch;
   }) => void;
   /** Open a coalescing bracket. Every recordCreate/recordDelete made
    *  between this call and `endInteraction(token)` collapses into one
@@ -363,6 +413,36 @@ export function useUndoRedo(opts: {
     [push]
   );
 
+  const recordGeometry = useCallback(
+    (entry: {
+      currentIdRef: { current: string };
+      previousGeometry: GeometryUpdate;
+      nextGeometry: GeometryUpdate;
+    }) =>
+      push({
+        kind: "geometry",
+        currentIdRef: entry.currentIdRef,
+        previousGeometry: entry.previousGeometry,
+        nextGeometry: entry.nextGeometry
+      }),
+    [push]
+  );
+
+  const recordStyle = useCallback(
+    (entry: {
+      currentIdRef: { current: string };
+      previousPatch: OverlayPatch;
+      nextPatch: OverlayPatch;
+    }) =>
+      push({
+        kind: "style",
+        currentIdRef: entry.currentIdRef,
+        previousPatch: entry.previousPatch,
+        nextPatch: entry.nextPatch
+      }),
+    [push]
+  );
+
   const beginInteraction = useCallback(
     (opKind: string, layerId: string): InteractionToken => {
       // Fresh object identity per call so an interaction can't be
@@ -468,47 +548,108 @@ export function useUndoRedo(opts: {
         await dispatch("overlays:delete", { id: op.row.id });
         return;
       }
-      // crop
-      // direction === "undo" → restore previousWidth/Height by
-      // dispatching a crop op whose normalized rect, when multiplied
-      // by the CURRENT (post-crop) canvas dims, lands on the previous
-      // canvas dims.
-      // direction === "redo" → re-apply the original normalized rect
-      // against the (currently restored) previous canvas — produces
-      // newWidth/newHeight again.
-      if (dispatchEdit === null) {
-        // v1 fallback can't crop a v2 capture — and the legacy code
-        // path was overlays:upsert with a CropOverlay which doesn't
-        // change canvas dims anyway. Best we can do is replay the
-        // original rect as a v1 CropOverlay; on undo that's a no-op
-        // for canvas, on redo we re-insert the crop overlay.
-        if (direction === "undo") return;
-        await dispatch("overlays:upsert", {
-          captureId,
-          overlay: { kind: "crop", rect: op.rect }
-        });
+      if (op.kind === "crop") {
+        // direction === "undo" → restore previousWidth/Height by
+        // dispatching a crop op whose normalized rect, when multiplied
+        // by the CURRENT (post-crop) canvas dims, lands on the previous
+        // canvas dims.
+        // direction === "redo" → re-apply the original normalized rect
+        // against the (currently restored) previous canvas — produces
+        // newWidth/newHeight again.
+        if (dispatchEdit === null) {
+          // v1 fallback can't crop a v2 capture — and the legacy code
+          // path was overlays:upsert with a CropOverlay which doesn't
+          // change canvas dims anyway. Best we can do is replay the
+          // original rect as a v1 CropOverlay; on undo that's a no-op
+          // for canvas, on redo we re-insert the crop overlay.
+          if (direction === "undo") return;
+          await dispatch("overlays:upsert", {
+            captureId,
+            overlay: { kind: "crop", rect: op.rect }
+          });
+          return;
+        }
+        if (direction === "undo") {
+          // The dispatcher interprets `rect.w * currentCanvasWidth` as
+          // the new width. Currently the canvas is `newWidthPx` wide;
+          // we want to restore `previousWidthPx`. So rect.w =
+          // previousWidthPx / newWidthPx. Same for height. (Same model
+          // for v1 crop overlay — re-storing as a normalized rect of
+          // the previous dims.)
+          const rectW =
+            op.newWidthPx > 0 ? op.previousWidthPx / op.newWidthPx : 1;
+          const rectH =
+            op.newHeightPx > 0 ? op.previousHeightPx / op.newHeightPx : 1;
+          await dispatchEdit({
+            kind: "crop",
+            rect: { x: 0, y: 0, w: rectW, h: rectH }
+          });
+          return;
+        }
+        // redo — current canvas is back at previousWidthPx/Height after
+        // the prior undo. Re-apply the original normalized rect.
+        await dispatchEdit({ kind: "crop", rect: op.rect });
         return;
       }
-      if (direction === "undo") {
-        // The dispatcher interprets `rect.w * currentCanvasWidth` as
-        // the new width. Currently the canvas is `newWidthPx` wide;
-        // we want to restore `previousWidthPx`. So rect.w =
-        // previousWidthPx / newWidthPx. Same for height. (Same model
-        // for v1 crop overlay — re-storing as a normalized rect of
-        // the previous dims.)
-        const rectW =
-          op.newWidthPx > 0 ? op.previousWidthPx / op.newWidthPx : 1;
-        const rectH =
-          op.newHeightPx > 0 ? op.previousHeightPx / op.newHeightPx : 1;
-        await dispatchEdit({
-          kind: "crop",
-          rect: { x: 0, y: 0, w: rectW, h: rectH }
+      if (op.kind === "geometry") {
+        // Phase 3.5 — dispatch updateGeometry against the chain's
+        // CURRENT id (the post-edit id from the last cycle). The
+        // dispatcher delete-plus-inserts a new row; we capture the
+        // fresh id and write it back onto currentIdRef so the next
+        // undo/redo targets the latest live row.
+        if (dispatchEdit === null) return;
+        const targetGeometry =
+          direction === "undo" ? op.previousGeometry : op.nextGeometry;
+        const result = await dispatchEdit({
+          kind: "updateGeometry",
+          layerId: op.currentIdRef.current,
+          geometry: targetGeometry
         });
+        if (
+          result.ok &&
+          result.value.kind === "update" &&
+          result.value.artifact.format === 1
+        ) {
+          op.currentIdRef.current = result.value.artifact.row.id;
+        } else if (
+          result.ok &&
+          result.value.kind === "update" &&
+          result.value.artifact.format === 2
+        ) {
+          op.currentIdRef.current = result.value.artifact.node.id;
+        }
         return;
       }
-      // redo — current canvas is back at previousWidthPx/Height after
-      // the prior undo. Re-apply the original normalized rect.
-      await dispatchEdit({ kind: "crop", rect: op.rect });
+      if (op.kind === "style") {
+        // Phase 3.5 — same chain-id semantics as geometry above; verb
+        // is updateOverlay.
+        if (dispatchEdit === null) return;
+        const targetPatch =
+          direction === "undo" ? op.previousPatch : op.nextPatch;
+        const result = await dispatchEdit({
+          kind: "updateOverlay",
+          layerId: op.currentIdRef.current,
+          patch: targetPatch
+        });
+        if (
+          result.ok &&
+          result.value.kind === "update" &&
+          result.value.artifact.format === 1
+        ) {
+          op.currentIdRef.current = result.value.artifact.row.id;
+        } else if (
+          result.ok &&
+          result.value.kind === "update" &&
+          result.value.artifact.format === 2
+        ) {
+          op.currentIdRef.current = result.value.artifact.node.id;
+        }
+        return;
+      }
+      // Exhaustiveness check — any new EditOp kind without a branch
+      // here surfaces at compile time.
+      const _exhaustive: never = op;
+      void _exhaustive;
     },
     [captureId]
   );
@@ -571,6 +712,8 @@ export function useUndoRedo(opts: {
     recordCreate,
     recordDelete,
     recordCrop,
+    recordGeometry,
+    recordStyle,
     beginInteraction,
     endInteraction,
     undo,

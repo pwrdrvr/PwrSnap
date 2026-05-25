@@ -955,6 +955,216 @@ describe("useCaptureModel", () => {
     consoleWarn.mockRestore();
   });
 
+  test("13a. v1 dispatchEdit: updateGeometry → overlays:delete + overlays:upsert with merged data", async () => {
+    const record = makeRecord("cap_1", 1);
+    const existing = makeOverlayRow("ov_orig", "cap_1");
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
+      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ov_orig",
+      geometry: {
+        kind: "arrow",
+        from: { x: 0.3, y: 0.3 },
+        to: { x: 0.9, y: 0.9 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("update");
+    if (r.value.kind !== "update") throw new Error("unreachable");
+    expect(r.value.artifact.format).toBe(1);
+    // overlays:delete on the original id, then overlays:upsert with
+    // the merged geometry.
+    const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:delete");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.[1]).toEqual({ id: "ov_orig" });
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upserts.length).toBe(1);
+    const sentOverlay = (upserts[0]?.[1] as { overlay: { kind: string; from: { x: number }; to: { x: number } } }).overlay;
+    expect(sentOverlay.kind).toBe("arrow");
+    expect(sentOverlay.from.x).toBeCloseTo(0.3);
+    expect(sentOverlay.to.x).toBeCloseTo(0.9);
+  });
+
+  test("13b. v1 dispatchEdit: updateGeometry refuses on missing layerId", async () => {
+    const record = makeRecord("cap_1", 1);
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "missing",
+      geometry: { kind: "rect", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.error.code).toBe("layer_not_found");
+  });
+
+  test("13c. v1 dispatchEdit: updateOverlay → overlays:delete + overlays:upsert with patched data", async () => {
+    const record = makeRecord("cap_1", 1);
+    const existing = makeOverlayRow("ov_orig", "cap_1");
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
+      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ov_orig",
+      patch: { kind: "arrow", color: "#ff0000" }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upserts.length).toBe(1);
+    const sentOverlay = (upserts[0]?.[1] as { overlay: { color: string } }).overlay;
+    expect(sentOverlay.color).toBe("#ff0000");
+  });
+
+  test("13d. v2 dispatchEdit: updateGeometry → layers:delete + layers:upsert with merged vector shape", async () => {
+    const record = makeRecord("cap_2", 2);
+    const arrowOverlay = {
+      kind: "arrow" as const,
+      from: { x: 0.1, y: 0.1 },
+      to: { x: 0.5, y: 0.5 },
+      color: "auto" as const
+    };
+    const vectorLayer: BundleLayerNode = {
+      id: "ly_orig",
+      parent_id: null,
+      name: "Arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: arrowOverlay
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_orig",
+      geometry: {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.2 },
+        to: { x: 0.9, y: 0.9 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.kind).toBe("update");
+    if (r.value.kind !== "update") throw new Error("unreachable");
+    expect(r.value.artifact.format).toBe(2);
+    const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "layers:delete");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.[1]).toEqual({ id: "ly_orig" });
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(upserts.length).toBe(1);
+    const sentLayer = (upserts[0]?.[1] as { layer: BundleLayerNode }).layer;
+    expect(sentLayer.kind).toBe("vector");
+    if (sentLayer.kind === "vector" && sentLayer.shape.kind === "arrow") {
+      expect(sentLayer.shape.from.x).toBeCloseTo(0.2);
+      expect(sentLayer.shape.to.x).toBeCloseTo(0.9);
+    }
+    // The new layer has a different id from the original (delete+insert).
+    expect(sentLayer.id).not.toBe("ly_orig");
+  });
+
   test("12. invalid bundle_format_version (99) returns error", async () => {
     const record = makeRecord("cap_weird", 99);
     dispatchMock.mockImplementation((name: string) => {

@@ -194,6 +194,21 @@
   pointer-events: none;
 }
 
+/* Phase 3.5 — transform handles drawn over the selected overlay.
+   The container is event-transparent (pointer-events: none); only
+   the individual handles catch pointerdown so a click outside any
+   handle falls through to the canvas's draw/select handlers. */
+.editor-transform-handle {
+  background: var(--surface-highlight);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow-base) 50%, transparent);
+  z-index: 5;
+}
+.editor-transform-handle:hover {
+  background: var(--accent);
+}
+
 .editor-toolbar {
   display: flex;
   justify-content: space-between;
@@ -323,6 +338,40 @@
   color: var(--text-primary);
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+/* Phase 3.5 — header strip shown when the popover is editing a
+   selected overlay (rather than the active tool's defaults). The ×
+   button clears the selection — caller wires through to the
+   selection model. */
+.pse-popover-selected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font: 600 11px/1.4 var(--font-sans);
+}
+.pse-popover-clear-selection {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 500 14px/1 var(--font-sans);
+}
+.pse-popover-clear-selection:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
 }
 
 .pse-popover-body {
@@ -1173,4 +1222,70 @@
 .pse-v1v2-banner__retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Phase 5 multi-image paste/drop ------------------------------- */
+
+/* Drop-target outline on the canvas-wrap while a Finder drag
+   hovers. Subtle accent-tinted border + soft inner glow so the
+   user sees the wrap as a valid drop zone without it competing
+   with the active drawing tool. */
+.editor-canvas-wrap.is-drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* "Pasting…" affordance — lives at the click point during the
+   ~50-300ms worker decode. Auto-clears when the dispatch
+   resolves. Pill shape, accent-tinted background, mono font so
+   it's clearly an in-flight indicator. */
+.pse-pasting-affordance {
+  z-index: 6;
+  padding: 6px 12px;
+  border-radius: var(--radius-md, 6px);
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-elevated));
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-mono, ui-monospace, monospace);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--shadow-base) 30%, transparent);
+  pointer-events: none;
+  animation: pse-pasting-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pse-pasting-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+/* Paste/drop error toast — sticks at the bottom-center of the
+   editor canvas-wrap. 3.5s auto-clear lives in the React effect
+   (see EditorLoaded's pasteNotice timer). */
+.pse-paste-notice {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  padding: 8px 14px;
+  border-radius: var(--radius-md, 6px);
+  font: 500 12px/1.3 var(--font-sans, system-ui);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--shadow-base) 35%, transparent);
+  max-width: 480px;
+}
+
+.pse-paste-notice.is-error {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.pse-paste-notice.is-info {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
 }

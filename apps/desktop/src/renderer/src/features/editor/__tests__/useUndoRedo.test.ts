@@ -450,6 +450,176 @@ describe("useUndoRedo", () => {
     expect(sent.rect.h).toBe(2);
   });
 
+  test("recordGeometry + undo dispatches updateGeometry with previousGeometry", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateGeometry") {
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow(`fresh-${Math.random()}`) }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordGeometry({
+        currentIdRef,
+        previousGeometry: {
+          kind: "arrow",
+          from: { x: 0, y: 0 },
+          to: { x: 0.5, y: 0.5 }
+        },
+        nextGeometry: {
+          kind: "arrow",
+          from: { x: 0, y: 0 },
+          to: { x: 1, y: 1 }
+        }
+      });
+    });
+    expect(api!.canUndo).toBe(true);
+    expect(api!.canRedo).toBe(false);
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // Undo should dispatch updateGeometry with the PREVIOUS geometry
+    // against the chain's CURRENT id.
+    expect(dispatchEdit).toHaveBeenCalledTimes(1);
+    const call = dispatchEdit.mock.calls[0]?.[0] as {
+      kind: string;
+      layerId: string;
+      geometry: { kind: string; to: { x: number } };
+    };
+    expect(call.kind).toBe("updateGeometry");
+    expect(call.layerId).toBe("ov_post");
+    expect(call.geometry.kind).toBe("arrow");
+    expect(call.geometry.to.x).toBeCloseTo(0.5);
+    expect(api!.canUndo).toBe(false);
+    expect(api!.canRedo).toBe(true);
+  });
+
+  test("recordGeometry + undo + redo round-trips through updateGeometry; currentIdRef follows new ids", async () => {
+    let api: UseUndoRedoResult | null = null;
+    let idCounter = 0;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateGeometry") {
+        idCounter += 1;
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow(`replay-${idCounter}`) }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordGeometry({
+        currentIdRef,
+        previousGeometry: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0.5, y: 0.5 } },
+        nextGeometry: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }
+      });
+    });
+    await act(async () => {
+      await api!.undo();
+    });
+    // After undo, the chain id has been re-anchored to the freshly-
+    // inserted replay row. The id should NOT be `ov_post` anymore.
+    expect(currentIdRef.current).toBe("replay-1");
+    await act(async () => {
+      await api!.redo();
+    });
+    expect(currentIdRef.current).toBe("replay-2");
+    // Total dispatches: 1 undo + 1 redo = 2 updateGeometry calls.
+    expect(dispatchEdit).toHaveBeenCalledTimes(2);
+  });
+
+  test("recordStyle + undo dispatches updateOverlay with previousPatch", async () => {
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "updateOverlay") {
+        return {
+          ok: true,
+          value: {
+            kind: "update",
+            artifact: { format: 1, row: makeRow("fresh") }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe2(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_1",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe2));
+
+    const currentIdRef = { current: "ov_post" };
+    act(() => {
+      api!.recordStyle({
+        currentIdRef,
+        previousPatch: { kind: "rect", color: "auto" },
+        nextPatch: { kind: "rect", color: "#ff0000" }
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    const call = dispatchEdit.mock.calls[0]?.[0] as {
+      kind: string;
+      layerId: string;
+      patch: { color: string };
+    };
+    expect(call.kind).toBe("updateOverlay");
+    expect(call.layerId).toBe("ov_post");
+    expect(call.patch.color).toBe("auto");
+  });
+
   test("MAX_DEPTH caps the past stack (older ops drop off the back)", async () => {
     let api: UseUndoRedoResult | null = null;
     render(

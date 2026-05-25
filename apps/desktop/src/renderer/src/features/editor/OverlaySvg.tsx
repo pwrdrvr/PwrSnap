@@ -8,7 +8,7 @@
 // Extracted from Editor.tsx as part of the v1 polish round so the
 // Editor file itself stays focused on state/handlers/effects.
 
-import { useMemo, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ArrowEndStyle, ArrowStemStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
@@ -17,6 +17,7 @@ import {
   readArrowStemStyle
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
+import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -617,6 +618,396 @@ function SelectionOutline({
     </g>
   );
 }
+
+// ---- TransformHandles (Phase 3.5) ----------------------------------
+//
+// Drag handles drawn over the selected overlay's bounding box. Lives
+// outside the OverlaySvg's <svg> because the SVG sets
+// `pointer-events: none`; this HTML overlay sits ON TOP of the canvas
+// and absorbs pointerdown/move/up to drive geometry updates.
+//
+// Handle layouts per overlay kind:
+//   • rect / highlight / blur: 8 handles (4 corners + 4 edge mids)
+//   • arrow: 2 endpoint handles (one at `from`, one at `to`)
+//   • text: 4 corner handles (move-only — no font-size resize today)
+//   • step: 1 handle at the anchor point (move only)
+//
+// Each handle uses setPointerCapture so the drag continues even when
+// the cursor leaves the handle div. The component reads the current
+// overlay shape on pointerdown, then dispatches a fresh
+// onGeometryChange on pointerup with the final geometry.
+
+/** Style preset shared by every drag handle. Drawn as a small white
+ *  square with an accent border + subtle shadow so it pops against
+ *  both bright and dark images. */
+const HANDLE_SIZE_PX = 10;
+
+type HandleKind =
+  // Corner handles (rect / text)
+  | "nw" | "ne" | "se" | "sw"
+  // Edge midpoint handles (rect only)
+  | "n" | "e" | "s" | "w"
+  // Arrow endpoints
+  | "arrow-from" | "arrow-to"
+  // Single anchor point (text-move, step)
+  | "anchor";
+
+interface HandleDescriptor {
+  /** Stable identifier — also used in data-testid. */
+  kind: HandleKind;
+  /** Normalized [0,1] position in image coords. */
+  xn: number;
+  yn: number;
+  /** CSS cursor for hover/drag. */
+  cursor: string;
+}
+
+function cornerCursor(kind: "nw" | "ne" | "se" | "sw"): string {
+  return kind === "nw" || kind === "se" ? "nwse-resize" : "nesw-resize";
+}
+
+function edgeCursor(kind: "n" | "e" | "s" | "w"): string {
+  return kind === "n" || kind === "s" ? "ns-resize" : "ew-resize";
+}
+
+/** Compute handle positions for a given overlay. Returns null for
+ *  overlay kinds that don't expose drag handles in Phase 3.5 (crop —
+ *  has its own CropTool overlay). */
+function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null {
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    const { x, y, w, h } = data.rect;
+    return [
+      { kind: "nw", xn: x, yn: y, cursor: cornerCursor("nw") },
+      { kind: "ne", xn: x + w, yn: y, cursor: cornerCursor("ne") },
+      { kind: "se", xn: x + w, yn: y + h, cursor: cornerCursor("se") },
+      { kind: "sw", xn: x, yn: y + h, cursor: cornerCursor("sw") },
+      { kind: "n", xn: x + w / 2, yn: y, cursor: edgeCursor("n") },
+      { kind: "e", xn: x + w, yn: y + h / 2, cursor: edgeCursor("e") },
+      { kind: "s", xn: x + w / 2, yn: y + h, cursor: edgeCursor("s") },
+      { kind: "w", xn: x, yn: y + h / 2, cursor: edgeCursor("w") }
+    ];
+  }
+  if (data.kind === "arrow") {
+    return [
+      { kind: "arrow-from", xn: data.from.x, yn: data.from.y, cursor: "move" },
+      { kind: "arrow-to", xn: data.to.x, yn: data.to.y, cursor: "move" }
+    ];
+  }
+  if (data.kind === "text") {
+    // Text uses a single anchor handle for move-only semantics (no
+    // resize via corners in this slice). The anchor sits at the
+    // overlay's `point` — same position as the rendered glyph's
+    // top-left.
+    return [
+      { kind: "anchor", xn: data.point.x, yn: data.point.y, cursor: "move" }
+    ];
+  }
+  if (data.kind === "step") {
+    return [
+      { kind: "anchor", xn: data.point.x, yn: data.point.y, cursor: "move" }
+    ];
+  }
+  // crop — no handles (CropTool owns its own UI).
+  return null;
+}
+
+/** Geometry update for the active drag, derived from the descriptor's
+ *  handle kind and a fresh pointer position. */
+function geometryFromDrag(
+  data: OverlayRow["data"],
+  handle: HandleKind,
+  newXn: number,
+  newYn: number
+): GeometryUpdate | null {
+  // Clamp the new position to [0,1] so the user can't drag a handle
+  // off the canvas (the underlying schemas reject out-of-range values).
+  const cx = Math.max(0, Math.min(1, newXn));
+  const cy = Math.max(0, Math.min(1, newYn));
+
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    const { x, y, w, h } = data.rect;
+    let nx = x;
+    let ny = y;
+    let nw = w;
+    let nh = h;
+    // Corner / edge resize. Each handle pins the OPPOSITE edge(s) and
+    // moves its own edge to the new pointer position.
+    switch (handle) {
+      case "nw":
+        nw = x + w - cx;
+        nh = y + h - cy;
+        nx = cx;
+        ny = cy;
+        break;
+      case "ne":
+        nw = cx - x;
+        nh = y + h - cy;
+        ny = cy;
+        break;
+      case "se":
+        nw = cx - x;
+        nh = cy - y;
+        break;
+      case "sw":
+        nw = x + w - cx;
+        nh = cy - y;
+        nx = cx;
+        break;
+      case "n":
+        nh = y + h - cy;
+        ny = cy;
+        break;
+      case "e":
+        nw = cx - x;
+        break;
+      case "s":
+        nh = cy - y;
+        break;
+      case "w":
+        nw = x + w - cx;
+        nx = cx;
+        break;
+      default:
+        return null;
+    }
+    // Normalize negative width/height by flipping rect coords. Users
+    // who drag a corner past the opposite edge get a "flip" effect.
+    if (nw < 0) {
+      nx += nw;
+      nw = -nw;
+    }
+    if (nh < 0) {
+      ny += nh;
+      nh = -nh;
+    }
+    // Minimum size — keep at least 0.005 in normalized units so the
+    // overlay doesn't collapse to a zero-area sliver the user can't
+    // grab again.
+    const MIN = 0.005;
+    if (nw < MIN) nw = MIN;
+    if (nh < MIN) nh = MIN;
+    return { kind: "rect", rect: { x: nx, y: ny, w: nw, h: nh } };
+  }
+  if (data.kind === "arrow") {
+    if (handle === "arrow-from") {
+      return { kind: "arrow", from: { x: cx, y: cy }, to: data.to };
+    }
+    if (handle === "arrow-to") {
+      return { kind: "arrow", from: data.from, to: { x: cx, y: cy } };
+    }
+    return null;
+  }
+  if (data.kind === "text") {
+    if (handle !== "anchor") return null;
+    return { kind: "text", point: { x: cx, y: cy } };
+  }
+  if (data.kind === "step") {
+    if (handle !== "anchor") return null;
+    return { kind: "step", point: { x: cx, y: cy } };
+  }
+  return null;
+}
+
+/** Drag-handles overlay rendered ON TOP of the OverlaySvg. Receives
+ *  pointer events (its container has pointer-events: auto) and
+ *  dispatches geometry updates as the user drags.
+ *
+ *  The component renders ONE absolute-positioned div per handle. On
+ *  pointerdown we capture the pointer + the initial overlay snapshot.
+ *  Pointermove updates a local "live geometry" used to redraw the
+ *  handles in-place during the drag — without dispatching an IPC per
+ *  frame. Pointerup commits the final geometry through
+ *  onGeometryChange. */
+export function TransformHandles({
+  selectedOverlay,
+  onGeometryChange,
+  onDragStart,
+  onDragEnd
+}: {
+  selectedOverlay: OverlayRow;
+  /** Called once at pointerup with the final geometry. Caller is
+   *  responsible for routing this through dispatchEdit (which is
+   *  format-aware) and updating the selection model to follow the
+   *  new layer id. */
+  onGeometryChange: (geometry: GeometryUpdate) => void;
+  /** Called on pointerdown with the PRE-DRAG overlay row so the
+   *  caller can stash it for undo. Optional — when omitted, undo
+   *  for moves/resizes won't be recorded. */
+  onDragStart?: (preDragOverlay: OverlayRow) => void;
+  /** Called after onGeometryChange settles (whether or not the drag
+   *  was committed). Lets the caller release any drag-related state
+   *  (interaction bracket, hover affordance, etc.). */
+  onDragEnd?: () => void;
+}): ReactElement | null {
+  // Live geometry during the drag — used to render the handles in
+  // their new positions before the round-trip lands. Falls back to
+  // the overlay's persisted data when not dragging.
+  const [liveData, setLiveData] = useState<OverlayRow["data"] | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Pointerdown snapshot: the data we use to interpret subsequent
+  // pointermove deltas. Kept in a ref since pointermove fires faster
+  // than React state can keep up.
+  const dragStartDataRef = useRef<OverlayRow["data"] | null>(null);
+  const dragHandleRef = useRef<HandleKind | null>(null);
+
+  // When the selected overlay changes (different layer, broadcast
+  // refetch), drop any stale live geometry.
+  useEffect(() => {
+    setLiveData(null);
+    dragStartDataRef.current = null;
+    dragHandleRef.current = null;
+  }, [selectedOverlay.id]);
+
+  const data = liveData ?? selectedOverlay.data;
+  const handles = useMemo(() => handlesForOverlay(data), [data]);
+
+  // Translate a pointer event's client coordinates back into normalized
+  // [0,1] image coords. Uses the container's bounding rect — which
+  // matches the canvas's rect since this overlay is absolute-positioned
+  // to inset:0.
+  const clientToNormalized = useCallback(
+    (clientX: number, clientY: number): { xn: number; yn: number } | null => {
+      const el = containerRef.current;
+      if (el === null) return null;
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const xn = (clientX - rect.left) / rect.width;
+      const yn = (clientY - rect.top) / rect.height;
+      return { xn, yn };
+    },
+    []
+  );
+
+  const onPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>, handle: HandleKind): void => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      (event.target as HTMLElement).setPointerCapture(event.pointerId);
+      dragStartDataRef.current = selectedOverlay.data;
+      dragHandleRef.current = handle;
+      onDragStart?.(selectedOverlay);
+    },
+    [onDragStart, selectedOverlay]
+  );
+
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      const startData = dragStartDataRef.current;
+      const handle = dragHandleRef.current;
+      if (startData === null || handle === null) return;
+      const pt = clientToNormalized(event.clientX, event.clientY);
+      if (pt === null) return;
+      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn);
+      if (geometry === null) return;
+      // Project the geometry onto a fresh data snapshot for live render.
+      const merged = applyGeometryLocally(startData, geometry);
+      if (merged !== null) setLiveData(merged);
+    },
+    [clientToNormalized]
+  );
+
+  const onPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      const startData = dragStartDataRef.current;
+      const handle = dragHandleRef.current;
+      dragStartDataRef.current = null;
+      dragHandleRef.current = null;
+      if (startData === null || handle === null) return;
+      (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+      const pt = clientToNormalized(event.clientX, event.clientY);
+      if (pt === null) {
+        setLiveData(null);
+        onDragEnd?.();
+        return;
+      }
+      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn);
+      if (geometry !== null) {
+        onGeometryChange(geometry);
+      }
+      // Don't immediately clear liveData — wait for the refetch to land
+      // so we don't blink to the pre-drag position. The useEffect on
+      // selectedOverlay.id above clears it when the new layer arrives.
+      onDragEnd?.();
+    },
+    [clientToNormalized, onDragEnd, onGeometryChange]
+  );
+
+  if (handles === null) return null;
+
+  return (
+    <div
+      ref={containerRef}
+      className="editor-transform-handles"
+      data-testid="transform-handles"
+      style={{
+        position: "absolute",
+        inset: 0,
+        // Container itself is event-transparent — only the handles
+        // themselves catch pointer events. That way a click outside
+        // any handle falls through to the canvas's pointer handlers
+        // (which handle selection / drawing).
+        pointerEvents: "none"
+      }}
+    >
+      {handles.map((h) => (
+        <div
+          key={h.kind}
+          className="editor-transform-handle"
+          data-testid={`transform-handle-${h.kind}`}
+          data-handle-kind={h.kind}
+          role="button"
+          aria-label={`Resize handle ${h.kind}`}
+          tabIndex={-1}
+          onPointerDown={(e) => onPointerDown(e, h.kind)}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          style={{
+            position: "absolute",
+            left: `${h.xn * 100}%`,
+            top: `${h.yn * 100}%`,
+            width: HANDLE_SIZE_PX,
+            height: HANDLE_SIZE_PX,
+            // Center the handle on the geometric point.
+            transform: "translate(-50%, -50%)",
+            cursor: h.cursor,
+            pointerEvents: "auto"
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Local mirror of `applyGeometryToOverlay` — used to update the
+ *  in-component liveData during pointermove without round-tripping
+ *  through useCaptureModel. Kept in this file to avoid a circular
+ *  import (useCaptureModel already imports things from here implicitly
+ *  via the dispatcher; OverlaySvg should remain a leaf). */
+function applyGeometryLocally(
+  data: OverlayRow["data"],
+  geometry: GeometryUpdate
+): OverlayRow["data"] | null {
+  switch (geometry.kind) {
+    case "arrow":
+      if (data.kind !== "arrow") return null;
+      return { ...data, from: geometry.from, to: geometry.to };
+    case "rect":
+      if (data.kind !== "rect" && data.kind !== "highlight" && data.kind !== "blur") {
+        return null;
+      }
+      return { ...data, rect: geometry.rect };
+    case "text":
+      if (data.kind !== "text") return null;
+      return { ...data, point: geometry.point };
+    case "step":
+      if (data.kind !== "step") return null;
+      return { ...data, point: geometry.point };
+  }
+}
+
+// Suppress unused-symbol churn for the geometry types we re-export.
+export type { GeometryUpdate, NormalizedPoint, NormalizedRect };
 
 function TextGlyph({
   point,

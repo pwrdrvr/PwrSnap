@@ -25,6 +25,7 @@ import {
 } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerEditorHandlers } from "./handlers/editor-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { registerLayersHandlers } from "./handlers/layers-handlers";
@@ -798,6 +799,7 @@ export function bootstrapApp(): void {
     registerStorageHandlers();
     registerLayersHandlers();
     registerV1ToV2DoctorHandlers();
+    registerEditorHandlers();
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates

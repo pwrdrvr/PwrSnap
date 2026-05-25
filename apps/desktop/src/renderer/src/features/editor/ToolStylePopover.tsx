@@ -92,6 +92,18 @@ export interface ToolStylePopoverProps {
   /** Style change callback. The parent wires this through to
    *  `setStyleField(tool, field, value)` on `useEditorToolState`. */
   onStyleFieldChange<F extends string, V>(field: F, value: V): void;
+  /** Phase 3.5 — when set, the popover edits the SELECTED OVERLAY's
+   *  style instead of the active tool's defaults. A header strip
+   *  appears at the top reading "Editing this <tool>" with an × to
+   *  clear the selection. The style picker still reads from the
+   *  `style` prop (caller passes the selected overlay's data) and
+   *  writes through `onStyleFieldChange` — the caller routes the
+   *  field/value pair into `dispatchEdit({kind: "updateOverlay"})`
+   *  in selected-overlay mode. */
+  selectedOverlayLabel?: string;
+  /** Click handler for the header × button. Caller clears the
+   *  selection. Required when `selectedOverlayLabel` is set. */
+  onClearSelection?: () => void;
 }
 
 // ---- Constants ------------------------------------------------------
@@ -241,7 +253,16 @@ function styleHasColor(
 // ---- Component ------------------------------------------------------
 
 export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | null {
-  const { anchorRef, tool, style, onClose, onStyleFieldChange } = props;
+  const {
+    anchorRef,
+    tool,
+    style,
+    onClose,
+    onStyleFieldChange,
+    selectedOverlayLabel,
+    onClearSelection
+  } = props;
+  const isSelectedMode = selectedOverlayLabel !== undefined;
 
   const settingsValue = useSettings();
   const stoplightSeen =
@@ -410,6 +431,23 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
         style={{ display: "inline-block", width: "100%" }}
       >
         <div className="pse-popover">
+          {isSelectedMode && (
+            <div
+              className="pse-popover-selected-header"
+              data-testid="popover-selected-header"
+            >
+              <span>Editing this {selectedOverlayLabel}</span>
+              <button
+                type="button"
+                className="pse-popover-clear-selection"
+                data-testid="popover-clear-selection"
+                aria-label="Clear selection"
+                onClick={() => onClearSelection?.()}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {coachmarkVisible && (
             // Coachmark element. Two data-testids: `coachmark-strip`
             // is the original, used by unit tests under

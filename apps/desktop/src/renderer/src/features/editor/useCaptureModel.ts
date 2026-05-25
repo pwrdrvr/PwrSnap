@@ -21,6 +21,7 @@
 // docs/plans/2026-05-23-001-feat-v2-editor-plan.md Phase 2.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { nanoid } from "nanoid";
 import {
   err,
   type BundleLayerNode,
@@ -31,6 +32,63 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
+
+// ---- Geometry / patch op types -------------------------------------
+//
+// Phase 3.5 — transform handles + selected-layer style editing. The
+// editor needs two new dispatchEdit verbs on top of the existing
+// upsert / delete / replace / crop set:
+//
+//   • updateGeometry — drag the selected overlay's handles. Merges a
+//     kind-specific positional/size patch into the overlay's
+//     data.{from,to,rect,point}. v1 → overlays:upsert (insert-only
+//     surface, but with the same row id the dispatcher re-uses to
+//     replace via INSERT … ON CONFLICT semantics on the main side).
+//     v2 → for vector kinds, merge into shape.data.* via layers:upsert
+//     (same id round-trip); for blur effects, update clip_rect via
+//     layers:upsert.
+//
+//   • updateOverlay — generic style patch dispatched by the selected-
+//     layer style editor (popover writes through this when an overlay
+//     is selected). Same dispatch shape as updateGeometry — fetch row
+//     → merge patch into data.* → upsert with the original id.
+//
+// Both ops require the layer to ALREADY EXIST. The dispatcher first
+// reads the current overlay/layer from the in-memory state (no IPC
+// round-trip — the model has it cached), merges the patch, and
+// re-dispatches the upsert. The events:overlays:changed broadcast
+// triggers refetch and the renderer paints the new state.
+
+/** Normalized [0,1]² point. Same shape as the on-disk Overlay's
+ *  `from`/`to`/`point` fields. */
+export type NormalizedPoint = { readonly x: number; readonly y: number };
+
+/** Normalized [0,1]² rect — same shape as `CropRect`. Re-aliased here
+ *  so call sites that update rectangular geometry can use a name that
+ *  matches their intent. */
+export type NormalizedRect = {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+};
+
+/** Kind-tagged geometry update. The dispatcher narrows on `kind` to
+ *  pick which Overlay fields to merge. Mirrors the OverlayKind taxonomy
+ *  but compressed — rect/highlight/blur all use the same { rect } update
+ *  because they all carry a `data.rect` field; text uses { point };
+ *  arrow uses both endpoints; step uses { point }. */
+export type GeometryUpdate =
+  | { readonly kind: "arrow"; readonly from: NormalizedPoint; readonly to: NormalizedPoint }
+  | { readonly kind: "rect"; readonly rect: NormalizedRect }
+  | { readonly kind: "text"; readonly point: NormalizedPoint }
+  | { readonly kind: "step"; readonly point: NormalizedPoint };
+
+/** Generic patch applied to the overlay's `data.*` JSON. Only the
+ *  fields present in the patch overwrite — every other field is left
+ *  alone. The dispatcher does a shallow merge; nested objects (e.g.
+ *  arrow.from) should be replaced wholesale, not deep-merged. */
+export type OverlayPatch = Partial<Overlay>;
 
 // ---- Public types ---------------------------------------------------
 
@@ -120,7 +178,21 @@ export type OverlayEditOp =
    *  v1 doesn't physically crop the source — the rect is stored for
    *  downstream consumers (export, baked composite) that may honor it
    *  in a future slice. */
-  | { kind: "crop"; rect: CropRect };
+  | { kind: "crop"; rect: CropRect }
+  /** Phase 3.5 — drag the selected overlay's transform handles. The
+   *  dispatcher reads the current row from the cached state, merges
+   *  the geometry patch into `data.*` (kind-aware), and re-upserts
+   *  through overlays:upsert with the SAME id so the row is replaced
+   *  rather than duplicated. Refuses when `layerId` doesn't resolve
+   *  (likely a stale selection after a delete-broadcast race). */
+  | { kind: "updateGeometry"; layerId: string; geometry: GeometryUpdate }
+  /** Phase 3.5 — generic style/data patch for the selected overlay.
+   *  Used by the popover when an overlay is selected (the popover
+   *  edits the SELECTED overlay's style, not the active tool's
+   *  defaults). Same dispatch shape as updateGeometry — fetch row,
+   *  shallow-merge `patch` into `data.*`, re-upsert with the original
+   *  id. */
+  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch };
 
 export type LayerEditOp =
   | { kind: "upsert"; node: BundleLayerNode }
@@ -137,7 +209,18 @@ export type LayerEditOp =
    *  Off-origin crops would also require translating every layer's
    *  transform; Phase 4-5 layers that on once the editor exposes
    *  positional crops. For now `w × h` defines the new canvas size. */
-  | { kind: "crop"; rect: CropRect };
+  | { kind: "crop"; rect: CropRect }
+  /** Phase 3.5 — same semantic as the v1 op, applied to a v2 layer.
+   *  For vector kinds, the dispatcher merges the geometry patch into
+   *  `shape.*` (the on-disk v1 Overlay shape carried verbatim under
+   *  the v2 VectorLayer); for blur/highlight effects, it updates
+   *  `clip_rect` (renormalized to absolute canvas pixels). */
+  | { kind: "updateGeometry"; layerId: string; geometry: GeometryUpdate }
+  /** Phase 3.5 — generic style/data patch applied to a v2 layer. For
+   *  vector kinds, merges into `shape.*`; for effect kinds, merges
+   *  the relevant style fields into `effect.*` (e.g. blur style /
+   *  highlight opacity). */
+  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch };
 
 export type CaptureModelLoading = {
   kind: "loading";
@@ -154,11 +237,14 @@ export type CaptureModelError = {
  *  without restating the op kind. `delete` resolves with `undefined`
  *  artifact (nothing to surface). `upsert` resolves with the fresh
  *  row/layer; `crop` resolves with the previous canvas dims (so the
- *  undo stack can stash them and reverse on ⌘Z). */
+ *  undo stack can stash them and reverse on ⌘Z). `update` (geometry
+ *  + style) resolves with the PRE-PATCH row/layer so the undo stack
+ *  can stash it for inverse replay on ⌘Z. */
 export type EditOpResult =
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
-  | { kind: "crop"; artifact: EditCropArtifact };
+  | { kind: "crop"; artifact: EditCropArtifact }
+  | { kind: "update"; artifact: EditUpsertArtifact };
 
 export type CaptureModelV1 = {
   kind: "loaded";
@@ -418,6 +504,146 @@ function layerNodeToLayerView(node: BundleLayerNode): LayerView {
   }
 }
 
+// ---- Geometry / patch merge helpers --------------------------------
+//
+// Phase 3.5 — shared by the v1 (overlay) and v2 (layer) dispatchers.
+// The functions are intentionally pure and exported so the unit tests
+// can assert behavior directly without spinning the full hook.
+
+/** Apply a GeometryUpdate to an Overlay's geometry fields. Returns
+ *  the merged Overlay, or null if the geometry kind doesn't match the
+ *  overlay kind (caller surfaces a typed error). */
+export function applyGeometryToOverlay(
+  overlay: Overlay,
+  geometry: GeometryUpdate
+): Overlay | null {
+  switch (geometry.kind) {
+    case "arrow":
+      if (overlay.kind !== "arrow") return null;
+      return { ...overlay, from: geometry.from, to: geometry.to };
+    case "rect":
+      if (
+        overlay.kind !== "rect" &&
+        overlay.kind !== "highlight" &&
+        overlay.kind !== "blur"
+      ) {
+        return null;
+      }
+      return { ...overlay, rect: geometry.rect };
+    case "text":
+      if (overlay.kind !== "text") return null;
+      return { ...overlay, point: geometry.point };
+    case "step":
+      if (overlay.kind !== "step") return null;
+      return { ...overlay, point: geometry.point };
+  }
+}
+
+/** Apply a generic patch to an Overlay's data. The patch is shallow-
+ *  merged into the overlay. Returns null if the patch kind mismatches
+ *  the overlay kind (defense against the caller handing an arrow
+ *  patch to a rect). */
+export function applyPatchToOverlay(
+  overlay: Overlay,
+  patch: OverlayPatch
+): Overlay | null {
+  if (patch.kind !== undefined && patch.kind !== overlay.kind) {
+    return null;
+  }
+  // Shallow merge — the patch's fields overwrite, every other field
+  // is preserved verbatim. Cast through `unknown` to bypass the
+  // discriminated-union narrowing since we've already verified the
+  // kind compatibility above.
+  return { ...overlay, ...patch } as Overlay;
+}
+
+/** Apply a GeometryUpdate to a BundleLayerNode. For vector layers
+ *  we update the underlying `shape` (which carries the v1 Overlay
+ *  shape verbatim). For blur/highlight effect layers, geometry
+ *  updates target `clip_rect` — renormalized to absolute canvas
+ *  pixels (the v2 EffectLayer.clip_rect contract). Returns a fresh
+ *  node with a NEW id since the IPC surface requires the delete-
+ *  plus-insert pair (the same-id insert collides on PRIMARY KEY).
+ *  Returns null if the geometry kind doesn't fit the layer kind. */
+export function applyGeometryToLayer(
+  layer: BundleLayerNode,
+  geometry: GeometryUpdate,
+  canvas: { width: number; height: number }
+): BundleLayerNode | null {
+  if (layer.kind === "vector") {
+    const merged = applyGeometryToOverlay(layer.shape, geometry);
+    if (merged === null) return null;
+    // Fresh id (the old layer is deleted in the same op).
+    return { ...layer, id: nanoid(16), shape: merged };
+  }
+  if (layer.kind === "effect") {
+    // Only rect-shaped geometry maps onto an effect's clip_rect.
+    if (geometry.kind !== "rect") return null;
+    return {
+      ...layer,
+      id: nanoid(16),
+      clip_rect: {
+        x: geometry.rect.x * canvas.width,
+        y: geometry.rect.y * canvas.height,
+        w: geometry.rect.w * canvas.width,
+        h: geometry.rect.h * canvas.height
+      }
+    };
+  }
+  // group / raster: no Phase 3.5 surface.
+  return null;
+}
+
+/** Apply a generic OverlayPatch to a BundleLayerNode. Vector layers
+ *  merge into `shape`; effect layers project the patch's relevant
+ *  fields into `effect.*` (blur style currently). Returns a fresh
+ *  node with a new id (delete-plus-insert pattern); returns null
+ *  when the patch doesn't fit the layer kind. */
+export function applyPatchToLayer(
+  layer: BundleLayerNode,
+  patch: OverlayPatch,
+  canvas: { width: number; height: number }
+): BundleLayerNode | null {
+  if (layer.kind === "vector") {
+    const merged = applyPatchToOverlay(layer.shape, patch);
+    if (merged === null) return null;
+    return { ...layer, id: nanoid(16), shape: merged };
+  }
+  if (layer.kind === "effect") {
+    // Map blur-overlay style patches onto effect.style.
+    // (Highlight effect updates aren't in the v3.5 surface yet —
+    // ToolStylePopover for selected highlights still routes through
+    // overlays:upsert in v1; the v2 highlight effect doesn't have a
+    // popover surface in this slice.)
+    if (patch.kind === "blur" && layer.effect.type === "blur") {
+      const styleUpdate = patch.style;
+      const effect = layer.effect;
+      const newEffect: typeof effect = {
+        ...effect,
+        ...(styleUpdate !== undefined ? { style: styleUpdate } : {})
+      };
+      // Apply rect part if present (treat as geometry).
+      const next: BundleLayerNode = {
+        ...layer,
+        id: nanoid(16),
+        effect: newEffect,
+        clip_rect:
+          patch.rect !== undefined
+            ? {
+                x: patch.rect.x * canvas.width,
+                y: patch.rect.y * canvas.height,
+                w: patch.rect.w * canvas.width,
+                h: patch.rect.h * canvas.height
+              }
+            : layer.clip_rect
+      };
+      return next;
+    }
+    return null;
+  }
+  return null;
+}
+
 // ---- The hook -------------------------------------------------------
 
 export function useCaptureModel(captureId: string): CaptureModel {
@@ -531,6 +757,20 @@ export function useCaptureModel(captureId: string): CaptureModel {
     recordRef.current = state.record;
   }
 
+  // Phase 3.5 — always-fresh refs to the loaded overlays/layers so the
+  // updateGeometry / updateOverlay dispatchers can read the CURRENT row
+  // shape without an IPC round-trip (the model already has it cached).
+  // Same rationale as `recordRef` above — we want the dispatchEdit
+  // reference identity to stay stable across refetches.
+  const overlaysRef = useRef<OverlayRow[]>([]);
+  const layersRef = useRef<BundleLayerNode[]>([]);
+  if (state.kind === "v1") {
+    overlaysRef.current = state.overlays;
+  }
+  if (state.kind === "v2") {
+    layersRef.current = state.layers;
+  }
+
   // v1 edit dispatcher.
   const dispatchEditV1 = useCallback(
     async (op: OverlayEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
@@ -599,6 +839,94 @@ export function useCaptureModel(captureId: string): CaptureModel {
                 previousWidthPx: record?.width_px ?? 0,
                 previousHeightPx: record?.height_px ?? 0
               }
+            }
+          };
+        }
+        case "updateGeometry": {
+          // Phase 3.5 — fetch the current row, merge the geometry patch
+          // into data.*, then DELETE the original + INSERT the merged
+          // overlay. The overlays IPC surface is INSERT-only (no UPDATE
+          // verb; see overlays-handlers.ts), so the visible "edit-in-
+          // place" semantic is implemented as a soft-delete-plus-insert
+          // pair. The new row has a fresh id; the caller updates its
+          // selection model from the artifact. Returns the new row in
+          // the artifact (`format: 1`); the inverse for undo is captured
+          // by the caller stashing the PREVIOUS row separately.
+          const current = overlaysRef.current.find(
+            (r) => r.id === op.layerId
+          );
+          if (current === undefined) {
+            return err({
+              kind: "validation",
+              code: "layer_not_found",
+              message: `updateGeometry: no overlay with id ${op.layerId}`
+            });
+          }
+          const merged = applyGeometryToOverlay(current.data, op.geometry);
+          if (merged === null) {
+            return err({
+              kind: "validation",
+              code: "geometry_kind_mismatch",
+              message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to overlay kind ${current.data.kind}`
+            });
+          }
+          // Delete first, then insert. If the insert fails, the delete
+          // already landed — the caller sees a missing overlay and the
+          // user can redraw. Failing the other order (insert + delete)
+          // would leave duplicate overlays on the canvas on partial
+          // failure, which is worse.
+          const delResult = await dispatch("overlays:delete", {
+            id: op.layerId
+          });
+          if (!delResult.ok) return err(delResult.error);
+          const insResult = await dispatch("overlays:upsert", {
+            captureId,
+            overlay: merged
+          });
+          if (!insResult.ok) return err(insResult.error);
+          return {
+            ok: true,
+            value: {
+              kind: "update",
+              artifact: { format: 1, row: insResult.value }
+            }
+          };
+        }
+        case "updateOverlay": {
+          // Phase 3.5 — generic style patch on the selected overlay.
+          // Same delete-plus-insert pattern as updateGeometry above.
+          const current = overlaysRef.current.find(
+            (r) => r.id === op.layerId
+          );
+          if (current === undefined) {
+            return err({
+              kind: "validation",
+              code: "layer_not_found",
+              message: `updateOverlay: no overlay with id ${op.layerId}`
+            });
+          }
+          const merged = applyPatchToOverlay(current.data, op.patch);
+          if (merged === null) {
+            return err({
+              kind: "validation",
+              code: "patch_kind_mismatch",
+              message: `updateOverlay: patch kind does not match overlay kind ${current.data.kind}`
+            });
+          }
+          const delResult = await dispatch("overlays:delete", {
+            id: op.layerId
+          });
+          if (!delResult.ok) return err(delResult.error);
+          const insResult = await dispatch("overlays:upsert", {
+            captureId,
+            overlay: merged
+          });
+          if (!insResult.ok) return err(insResult.error);
+          return {
+            ok: true,
+            value: {
+              kind: "update",
+              artifact: { format: 1, row: insResult.value }
             }
           };
         }
@@ -687,6 +1015,105 @@ export function useCaptureModel(captureId: string): CaptureModel {
                 previousWidthPx: result.value.previousWidthPx,
                 previousHeightPx: result.value.previousHeightPx
               }
+            }
+          };
+        }
+        case "updateGeometry": {
+          // Phase 3.5 — v2 mirror of the v1 update path. layers:upsert
+          // inserts a fresh row keyed on `node.id` (collision on the
+          // same id), so the visible "edit-in-place" semantic is again
+          // a delete-plus-insert pair. The new node carries a fresh id
+          // (mintFreshLayerId) so the insert succeeds. Vector layers
+          // merge into `shape.*`; effect layers (blur/highlight) merge
+          // into `clip_rect` (renormalized to absolute canvas pixels
+          // per the v2 EffectLayer.clip_rect contract).
+          const record = recordRef.current;
+          if (record === null) {
+            return err({
+              kind: "validation",
+              code: "record_not_loaded",
+              message: "updateGeometry: record not loaded"
+            });
+          }
+          const current = layersRef.current.find((l) => l.id === op.layerId);
+          if (current === undefined) {
+            return err({
+              kind: "validation",
+              code: "layer_not_found",
+              message: `updateGeometry: no layer with id ${op.layerId}`
+            });
+          }
+          const merged = applyGeometryToLayer(current, op.geometry, {
+            width: record.width_px,
+            height: record.height_px
+          });
+          if (merged === null) {
+            return err({
+              kind: "validation",
+              code: "geometry_kind_mismatch",
+              message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to layer kind ${current.kind}`
+            });
+          }
+          const delResult = await dispatch("layers:delete", { id: op.layerId });
+          if (!delResult.ok) return err(delResult.error);
+          const insResult = await dispatch("layers:upsert", {
+            captureId,
+            layer: merged
+          });
+          if (!insResult.ok) return err(insResult.error);
+          return {
+            ok: true,
+            value: {
+              kind: "update",
+              artifact: { format: 2, node: insResult.value }
+            }
+          };
+        }
+        case "updateOverlay": {
+          // Phase 3.5 — v2 mirror of v1 updateOverlay. For vector
+          // layers we merge into `shape`; for effect layers the
+          // semantic patch maps onto `effect.*` (blur style /
+          // highlight opacity etc.). Same delete-plus-insert pattern
+          // as updateGeometry.
+          const record = recordRef.current;
+          if (record === null) {
+            return err({
+              kind: "validation",
+              code: "record_not_loaded",
+              message: "updateOverlay: record not loaded"
+            });
+          }
+          const current = layersRef.current.find((l) => l.id === op.layerId);
+          if (current === undefined) {
+            return err({
+              kind: "validation",
+              code: "layer_not_found",
+              message: `updateOverlay: no layer with id ${op.layerId}`
+            });
+          }
+          const merged = applyPatchToLayer(current, op.patch, {
+            width: record.width_px,
+            height: record.height_px
+          });
+          if (merged === null) {
+            return err({
+              kind: "validation",
+              code: "patch_kind_mismatch",
+              message: `updateOverlay: patch does not apply to layer kind ${current.kind}`
+            });
+          }
+          const delResult = await dispatch("layers:delete", { id: op.layerId });
+          if (!delResult.ok) return err(delResult.error);
+          const insResult = await dispatch("layers:upsert", {
+            captureId,
+            layer: merged
+          });
+          if (!insResult.ok) return err(insResult.error);
+          return {
+            ok: true,
+            value: {
+              kind: "update",
+              artifact: { format: 2, node: insResult.value }
             }
           };
         }

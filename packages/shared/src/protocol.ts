@@ -1224,6 +1224,41 @@ export type Commands = {
     res: { insertedLayerIds: string[]; fallbackUsedPng: boolean };
   };
 
+  // ---- editor (v2 only) ----
+  /** Phase 5: paste a raster image from the system clipboard as a new
+   *  raster layer on the target capture. Mirrors the 5-defense pipeline
+   *  from `clipboard:pasteLayerFragment` (size cap, sha256, sharp probe,
+   *  dimension cap, sanitized errors). sharp decode + sha256 runs in a
+   *  worker thread so the IPC main thread doesn't block on multi-MB
+   *  PNGs. If `positionXn`/`positionYn` are provided, the new layer's
+   *  transform translates so its top-left lands at that normalized
+   *  canvas point; otherwise it lands at the canvas center.
+   *
+   *  Returns the inserted layer's id so the renderer can select it.
+   *  Refuses v1 captures (`v1_capture_use_v2`). */
+  "editor:pasteImageAsLayer": {
+    req: {
+      captureId: string;
+      positionXn?: number;
+      positionYn?: number;
+    };
+    res: { layerId: string };
+  };
+  /** Phase 5: Finder drag-drop equivalent of `editor:pasteImageAsLayer`.
+   *  Caller hands a filesystem path; the handler runs `assertSafePastedFile`
+   *  (symlink + privileged-dir reject) and then the same worker-backed
+   *  decode + sha256 pipeline. Path strings never leak back to the renderer
+   *  on rejection — sanitized error codes only. */
+  "editor:dropImageAsLayer": {
+    req: {
+      captureId: string;
+      filePath: string;
+      positionXn?: number;
+      positionYn?: number;
+    };
+    res: { layerId: string };
+  };
+
   // ---- settings ----
   "settings:read": { req: Record<string, never>; res: Settings };
   "settings:write": { req: SettingsPatch; res: Settings };

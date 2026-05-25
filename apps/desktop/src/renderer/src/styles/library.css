@@ -2182,15 +2182,20 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
-/* `:not(.is-active)` so an active button's hover doesn't paint over
-   the wrap's accent-soft fill (which lives on `.psl__et-tool-wrap.
-   is-active`). Without this exclusion, hovering the just-clicked
-   active tool would obscure the orange highlight on the icon/label
-   half of the wrap while leaving the caret half visible — looking
-   like only the caret was active. */
+/* Inactive tool button hover — neutral panel-hover (the "this tool
+   is clickable" hint for tools you haven't picked). */
 .psl__et-btn:not(.is-active):hover {
   background: var(--bg-panel-hover);
   color: var(--text-primary);
+}
+/* Active tool button hover — accent-tint OVER the wrap's accent-soft
+   gives a subtle darken-the-icon-area-on-hover hint without obscuring
+   the unified box. Tells the user "yes you can click here too" — a
+   second click toggles the style popover (or activates single-shot
+   on ⌥-click). The caret half has its own hover rule below; both
+   halves now respond independently inside the unified box. */
+.psl__et-btn.is-active:hover {
+  background: var(--accent-tint);
 }
 /* Active styling lives on the WRAPPER (`.psl__et-tool-wrap.is-active`)
    below, not on the inner button, so the accent-soft box spans both

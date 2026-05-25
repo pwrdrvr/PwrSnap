@@ -39,8 +39,8 @@ import { getMainLogger } from "../log";
 const log = getMainLogger("pwrsnap:recording-permissions");
 
 /** Recorder backend identity feeds the fingerprint so a future
- *  backend swap (ScreenCaptureKit → CoreAudio Tap, RecordKit, …)
- *  re-routes the user once to confirm the new permission surface. */
+ *  backend swap (e.g. ScreenCaptureKit → CoreAudio Tap) re-routes
+ *  the user once to confirm the new permission surface. */
 const RECORDER_BACKEND = "screencapturekit" as const;
 
 /** Minimum macOS version that exposes ScreenCaptureKit's

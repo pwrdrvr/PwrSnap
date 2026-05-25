@@ -507,7 +507,7 @@ Build a Swift helper that renders the toast as an `NSPanel` with `.nonactivating
 
 Pros: bulletproof. macOS-native.
 
-Cons: third native helper (after window-list, future RecordKit). Adds Swift+Objective-C maintenance. The web tooling we have (Electron + React) already handles 95% of the case. The remaining 5% is solvable in pure JS via Solutions 1–4.
+Cons: third native helper (after window-list and the hand-rolled `PwrSnapRecorder` Swift binary that shipped for Phase 5 video). Adds Swift+Objective-C maintenance. The web tooling we have (Electron + React) already handles 95% of the case. The remaining 5% is solvable in pure JS via Solutions 1–4.
 
 **Rejected.**
 

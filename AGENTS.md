@@ -54,6 +54,47 @@
   its `:root` palette in [design/ds/colors_and_type.css](design/ds/colors_and_type.css)
   and [apps/desktop/src/renderer/src/styles/tokens.css](apps/desktop/src/renderer/src/styles/tokens.css).
 
+## Dependency licensing — what we ship and what we even look at
+
+PwrSnap is **MIT** licensed. The
+[scripts/check-package-license-policy.mjs](scripts/check-package-license-policy.mjs)
+gate covers what we **ship**; this section covers what we even **look at**.
+
+### Hard rule: do not read source for restrictively-licensed projects
+
+If a project's license is source-available-but-not-open-source — anything
+with commercial-use restrictions, no-derivatives clauses, no-competition
+clauses, employee-count or revenue tiers, the Business Source License (BSL)
+until it converts, the Server Side Public License (SSPL), the Commons
+Clause, or any custom license that isn't on the always-allowed list below
+— do **not**:
+
+- Add it as a runtime or build dependency.
+- Clone, browse, or open its source repository.
+- Reference its public API shape, file layout, schema, or implementation
+  patterns from prior knowledge.
+- Translate its docs/examples into PwrSnap code.
+
+This protects PwrSnap from contamination claims. Even line-of-sight to
+restricted source can create derivative-work exposure when we later ship a
+feature in the same domain. If you've previously read a now-banned
+project's source, **don't write PwrSnap code in the same domain from
+memory** — note the conflict and ask before proceeding.
+
+### Currently banned (do-not-look list)
+
+| Project | License | Why |
+|---|---|---|
+| **Remotion** (`remotion`, `@remotion/*`) | Remotion License (source-available, commercial-use restricted) | Initial Phase 6 sizzle-reel plan referenced it; retracted on license review. Do not browse [github.com/remotion-dev/remotion](https://github.com/remotion-dev/remotion), do not `npm install` it, do not copy patterns from its docs into PwrSnap. Phase 6 composition engine is now an open research item — see plan §"Phase 6". |
+
+Extend this table whenever a new candidate hits the same problem class.
+
+### Always-allowed licenses
+
+MIT, BSD (2-clause / 3-clause), Apache-2.0, MPL-2.0, ISC, 0BSD, Unlicense,
+CC0. Anything else: **pause and confirm with the user** before reading the
+project's source or adding the dep.
+
 ## Codex App Server is the AI brain
 
 **All AI features in PwrSnap go through the user's installed Codex CLI / Codex
@@ -143,8 +184,8 @@ ships, the v1→v2 doctor lands, and Phase 6 E2E specs are green. See
   `exactOptionalPropertyTypes`.
 - **Renderers stay sandboxed.** Every `BrowserWindow` is created with
   `contextIsolation: true, sandbox: true, nodeIntegration: false`. The Phase 6
-  Remotion player runs in a sandboxed renderer; render orchestration runs in
-  a Node child process. Lifecycle test enforces.
+  sizzle-composer preview player runs in a sandboxed renderer; render
+  orchestration runs in a Node child process. Lifecycle test enforces.
 - **Result-pattern for cross-process errors.** Electron `invoke` strips
   `instanceof`. All command handlers return `Result<Res, PwrSnapError>` —
   `{ ok: false, error: { kind, code, message, cause? } }`.

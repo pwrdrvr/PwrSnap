@@ -357,13 +357,40 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
   // so the pass-1 measurement captures the new tool's content at
   // open.
   useLayoutEffect(() => {
-    const anchor = anchorRef.current;
-    if (anchor === null) return;
-    const recompute = (popoverHeight: number | null): void => {
+    // `recompute` re-reads anchorRef.current on EVERY call (rather
+    // than closing over the value at effect start) so the retry
+    // below — and any later measure / ResizeObserver fire — picks up
+    // the anchor once the parent eventually sets it. This is the
+    // critical difference from the earlier shape, which closed over
+    // `anchor` at the top of the effect and returned early if it was
+    // null, leaving the popover stuck at `visibility: hidden`
+    // forever.
+    const recompute = (popoverHeight: number | null): boolean => {
+      const anchor = anchorRef.current;
+      if (anchor === null) return false;
       setPosition(computeAnchorPosition(anchor, POPOVER_WIDTH_PX, popoverHeight));
+      return true;
     };
-    // Pass 1 — no height yet.
-    recompute(null);
+    // Pass 1 — no height yet. React commits child useLayoutEffects
+    // BEFORE parent useLayoutEffects (children-first order). Our
+    // parent (EditToolbar) sets `popoverAnchorRef.current` in its OWN
+    // layout effect, which runs AFTER ours on first mount — so
+    // anchorRef.current is `null` here on the very first popover open.
+    // If that's the case, retry on the next animation frame: by then
+    // the parent's effect has fired and the ref is set. RAF still
+    // lands before the browser paints (rAF callbacks run after layout
+    // effects but before paint), so there's no visible flicker —
+    // critical because we initialize `position` with
+    // `visibility: hidden` to keep the popover out of the parent's
+    // flex flow on first paint (commit 3a610b6a — fixes the editor-
+    // image-jump on chevron open).
+    let retryRaf: number | null = null;
+    if (!recompute(null)) {
+      retryRaf = requestAnimationFrame(() => {
+        retryRaf = null;
+        recompute(null);
+      });
+    }
     const measure = (): void => {
       const el = measureRef.current;
       if (el === null) return;
@@ -376,7 +403,7 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     // gives the renderer one paint cycle to lay out the body before
     // we read getBoundingClientRect — otherwise we'd read 0 in some
     // synchronous renders before layout has flushed.
-    const raf = requestAnimationFrame(measure);
+    const measureRaf = requestAnimationFrame(measure);
     // Re-measure on content changes (rare; covers the blur "Custom…"
     // expansion + the coachmark dismissing at 3s). Guard for jsdom test
     // environments that don't ship a ResizeObserver — measurement
@@ -387,7 +414,8 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     const onResize = (): void => measure();
     window.addEventListener("resize", onResize);
     return () => {
-      cancelAnimationFrame(raf);
+      if (retryRaf !== null) cancelAnimationFrame(retryRaf);
+      cancelAnimationFrame(measureRaf);
       ro?.disconnect();
       window.removeEventListener("resize", onResize);
     };

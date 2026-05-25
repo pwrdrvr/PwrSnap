@@ -2132,16 +2132,39 @@ function EditorLoaded({
           onPointerUp={wantPan ? undefined : onPointerUp}
           data-tool={tool}
         >
-          {/* Phase 3.6 — the <img> renders at the SOURCE natural dims
-              (the raster file inside the bundle) and the parent
-              .editor-canvas (sized to canvas / record dims via
-              useZoomPan) clips via overflow:hidden. Before this the
-              <img> stretched to 100% of the canvas — after a crop that
-              squashed the full source into the smaller canvas box,
-              hiding the crop visually. Now after a crop the editor
-              shows only the visible portion (top-left for now; off-
-              origin crops follow in Phase 4-5 once the layer-editor
-              UI ships negative-translate for the raster transform). */}
+          {/* Phase 3.6 — the <img> is sized so the SOURCE raster's
+              natural pixels map 1:1 to canvas CSS pixels regardless of
+              the current Fit/Actual/custom zoom level. The trick is to
+              size the img to `(source / canvas) × 100%` of its parent
+              and let the default object-fit (fill) scale the image
+              content to that box. The parent `.editor-canvas` clips
+              via `overflow: hidden`.
+
+              Why the percentage trick works for crop view:
+                • No crop  → source == canvas → img is 100% × 100% →
+                  natural image fills canvas exactly.
+                • Crop     → source > canvas → img is e.g. 200% × 200%
+                  of canvas → natural image's top-left fills the canvas
+                  area; the rest overflows and is clipped.
+
+              Why we must NOT add `objectFit: "none"`: that tells the
+              browser to ignore the box size and render the image
+              content at its natural pixel resolution. The img box
+              would still scale with zoom (it's % of the canvas), but
+              the rasterized content inside it would stay at native
+              pixels and overflow as the canvas shrinks — so Fit zoom
+              would show only the top-left of a HUGE image (this bug
+              regressed once during the Phase 3.6 crop-view work; the
+              symptom is a 2880×1920 capture displaying its top-left
+              ~640px at Fit-73% instead of the whole thing scaled
+              down). The default object-fit (fill) makes the image
+              content respect the box, which is the behavior every
+              zoom level expects.
+
+              Off-origin crops (Phase 4-5) will translate the img via
+              `transform: translate(...)` driven by the raster layer's
+              transform — not via objectPosition (which only fires
+              when object-fit ≠ fill). */}
           <img
             src={captureSrcUrl(record.id)}
             alt={record.source_app_name ?? "Capture"}
@@ -2150,9 +2173,7 @@ function EditorLoaded({
             data-testid="editor-image"
             style={{
               width: `${(sourceWidthPx / record.width_px) * 100}%`,
-              height: `${(sourceHeightPx / record.height_px) * 100}%`,
-              objectFit: "none",
-              objectPosition: "0 0"
+              height: `${(sourceHeightPx / record.height_px) * 100}%`
             }}
           />
           {/* HTML blur layer between the <img> and the SVG so

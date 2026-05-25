@@ -8,11 +8,61 @@ deepened_at: 2026-05-03
 
 # PwrSnap full feature buildout
 
+## Amendment — 2026-05-25: Remotion retracted; RecordKit superseded by hand-rolled Swift helper
+
+Two prescriptive dependencies named in the original plan have been
+withdrawn. Both kinds of withdrawal happen — preserving them as guidance
+would mislead a future implementer — so each section that referenced them
+has been rewritten.
+
+### Remotion (Phase 6 composition engine) — retracted on license grounds
+
+Remotion ships under a source-available, commercial-use-restricted
+custom license that conflicts with PwrSnap's MIT distribution model —
+see [AGENTS.md §"Dependency licensing"](../../AGENTS.md). The do-not-look
+rule extends beyond `npm install`: we cannot read Remotion's source, copy
+patterns from its docs, or translate examples into PwrSnap code.
+
+What changed in the plan:
+
+- **Phase 6 composition engine is now an open research item.** The Phase 6
+  section below preserves the engine-independent shape (lazy-loaded compose
+  mode, `child_process.fork`-driven render orchestration, ReelSpec schema,
+  AI voice, contextIsolation invariant, crash recovery) but replaces every
+  Remotion-specific prescription with a "TBD on engine selection" note.
+- **Bundle Layout & Signing table** loses the Remotion-Chrome and
+  Remotion-bundled-ffmpeg rows; whatever Phase 6 engine we land on will
+  bring its own rows.
+- **Phase 5 hover-scrub** no longer plans to share Remotion's bundled
+  ffmpeg. Candidate replacement is in-renderer WebCodecs (e.g.
+  [mediabunny](https://mediabunny.dev) — MPL-2.0, OSI-compliant) — but
+  this is a research item, not a commitment.
+
+Engine-candidate research must verify the license is on the always-allowed
+list in [AGENTS.md](../../AGENTS.md) **before** any source is opened.
+
+### `@nonstrict/recordkit` (Phase 5 video capture) — superseded by hand-rolled Swift helper
+
+Phase 5 video capture shipped without RecordKit. The implementation lives
+at [apps/desktop/native/recorder/main.swift](../../apps/desktop/native/recorder/main.swift),
+a hand-rolled Swift binary that wraps **ScreenCaptureKit** (screen +
+optional system audio) and **AVCaptureSession** (optional microphone),
+writes H.264/AAC `.mp4` directly to disk, and speaks stdin/stdout
+JSON-RPC to the main process via
+[apps/desktop/src/main/recording/recording-service.ts](../../apps/desktop/src/main/recording/recording-service.ts).
+
+What changed in the plan: every prescriptive `@nonstrict/recordkit`
+reference has been replaced with the as-built description. The Bundle
+Layout & Signing row reflects the actual helper binary. If RecordKit ever
+becomes interesting again (e.g. for features the hand-rolled helper
+doesn't cover), the candidate must go through the same license check as
+any other new dep — see [AGENTS.md §"Dependency licensing"](../../AGENTS.md).
+
 ## Enhancement Summary
 
 **Deepened on:** 2026-05-03 (same day as authorship; ultrathink + deepen-plan).
 **Sections enhanced:** every phase, plus three new top-level sections (Cross-cutting primitives, Native artifact bundle, Agent control plane).
-**Research probes used:** macOS capture stack 2026, better-sqlite3 + Electron 41, sharp pipeline on Apple Silicon, Electron IPC for image data, Codex/Responses API 2026, Remotion-in-Electron, TCC permissions, safeStorage vs Keychain, presenter background-removal, tray popover patterns.
+**Research probes used:** macOS capture stack 2026, better-sqlite3 + Electron 41, sharp pipeline on Apple Silicon, Electron IPC for image data, Codex/Responses API 2026, sizzle-reel composition engines (Phase 6 — engine TBD; see Amendment 2026-05-25), TCC permissions, safeStorage vs Keychain, presenter background-removal, tray popover patterns.
 **Review agents used:** architecture-strategist, security-sentinel, performance-oracle, data-integrity-guardian, code-simplicity-reviewer, agent-native-reviewer, pattern-recognition-specialist, kieran-typescript-reviewer, julik-frontend-races-reviewer.
 
 ### Key Improvements (load-bearing — change the shape of Phase 1)
@@ -25,17 +75,17 @@ deepened_at: 2026-05-03
 6. ~~**Local sensitive-data pre-pass *gates* clipboard.**~~ **REVERSED.** Per the founder, *all* sensitive-data review goes through Codex App Server (Phase 4) — not a local regex/Luhn pre-pass. The Phase 1 MVP ships **without** clipboard-blocking sensitive-data scanning; the founder accepts the leak risk on a single-user dev machine until Phase 4 lands. Phase 4 introduces Codex-driven sensitive-data review as a DynamicToolCall pipeline, applied synchronously before the float-over becomes interactive (Codex thread is ephemeral and subprocess is pre-warmed, so latency lands ~1–2s vs. the 4–8s the security review feared). The "every AI feature goes through Codex" schtick takes precedence over the local-scan safety-floor. See item #10. (founder override of security review)
 7. **Schema gets every UNIQUE/index/cascade it was missing.** `captures.sha256 UNIQUE`, `capture_tags(capture_id, tag_id) UNIQUE`, `tag_destinations(tag_id, destination_id) UNIQUE`, `tags(label, kind) UNIQUE`, `render_cache(capture_id, render_inputs_hash, format) UNIQUE`, `uploads(capture_id, destination_id) UNIQUE` (idempotent retries), partial index for the timeline-by-app-and-date hot path. `PRAGMA foreign_keys = ON` and explicit `ON DELETE CASCADE`/`RESTRICT`. AI-suggestion lifecycle gains `rejected_at` + `superseded_by` + `ai_run_id` so analytics has a denominator. Soft-delete moves files to `<root>/.trash/` atomically; GC just `rm -rf` after 14d. (data-integrity)
 8. **TypeScript discipline before any feature lands.** `exactOptionalPropertyTypes: true` in `tsconfig.base.json`, single `packages/shared/src/protocol.ts` typed channel registry as the lockstep source of truth (mapped types over preload + main + RPC), Zod for `Overlay` discriminated union with runtime validation at every IPC boundary (Codex injects overlays — never trust LLM structured output without a runtime validator), `useSyncExternalStore` for the live-query hook (StrictMode-safe), Result-pattern for cross-process errors (`invoke` strips `instanceof`). (TS review)
-9. **`screencapture(1)` CLI stays for stills; `@nonstrict/recordkit` for Phase 5 video.** Don't switch the still path to ScreenCaptureKit — for one-shot region the CLI is faster cold (~70ms) than SCKit's framework-load (~120ms). For video, RecordKit is actively maintained and Electron-first; don't hand-roll a Swift helper unless you outgrow it. (capture research)
+9. **`screencapture(1)` CLI stays for stills; hand-rolled Swift helper for Phase 5 video.** Don't switch the still path to ScreenCaptureKit — for one-shot region the CLI is faster cold (~70ms) than SCKit's framework-load (~120ms). For video, the as-built path is [apps/desktop/native/recorder/main.swift](../../apps/desktop/native/recorder/main.swift) (ScreenCaptureKit + AVCaptureSession, stdin/stdout JSON-RPC); the original plan named `@nonstrict/recordkit` but that prescription has been retracted — see Amendment 2026-05-25. (capture research)
 10. **All AI in PwrSnap goes through Codex App Server.** *(Strategic correction — replaces an earlier deepening note that said "use direct OpenAI Responses API for Phase 4." That framing was technically clean but wrong on brand: "Codex brings the smarts" is the schtick across PwrDrvr products.)* PwrSnap connects to the user's locally-installed Codex CLI / Codex Desktop instance over stdio JSON-RPC for every AI feature — annotate / describe / tag / filename / sensitive-data review (Phase 4), voice describe (Phase 5+), sizzle-reel composition (Phase 6). The Codex protocol v2 already carries `ContentItem` + `ImageDetail` (image input), `DynamicToolCall*` + `DynamicToolSpec` (structured output via tool calls), `Skill*` / `Hook*` / `McpServer*` (extensibility), `ThreadRealtime*` (voice), `ServiceTier` (flex / default), and multi-provider routing — so one-shot fan-out becomes "ephemeral thread → turn with image content → DynamicToolCall response → close thread", and we automatically inherit Codex's MCP integration, skills, hooks, and provider abstraction.
    PwrSnap is an App Server **client** only, never an implementation. Discovery + version-listing (Settings → AI shows every detected Codex binary, picks newest by default) lifts patterns from PwrAgnt's `apps/desktop/src/main/settings/codex-discovery.ts`. The `json-rpc.ts` (260 LOC) and `stdio-transport.ts` (96 LOC) modules from PwrAgnt are clean enough to lift directly; PwrAgnt's 4279-LOC `client.ts` is tightly coupled to thread-lifecycle / workspace / review concepts and is *not* lifted — PwrSnap's `apps/desktop/src/main/ai/codex-client.ts` is fresh, ~500–800 LOC, focused only on ephemeral thread + DynamicToolCall fan-out + long-lived threads for the user-facing AI surface.
 11. **Auto-update is missing entirely — add it in Phase 3.** Mirror PwrAgnt's `electron-updater` pattern. Without it, the Electron/sharp/better-sqlite3 vulnerability that lands next year leaves every user permanently exposed. (security)
-12. **Native artifact bundle layout — design the signing table now, append-rows later.** `better-sqlite3.node`, `sharp` `@img/sharp-darwin-arm64` + `@img/sharp-libvips-darwin-arm64`, the Phase 5 RecordKit/AVFoundation helper, and the eventual `chromium-headless-shell` for Remotion all need explicit `asarUnpack`, hardened-runtime entitlements, and notarization rows. Plan the Bundle Layout & Signing section in Phase 1 (only sqlite + sharp present) so Phase 3/5/6 just append. (architecture)
+12. **Native artifact bundle layout — design the signing table now, append-rows later.** `better-sqlite3.node`, `sharp` `@img/sharp-darwin-arm64` + `@img/sharp-libvips-darwin-arm64`, the Phase 5 `PwrSnapRecorder` Swift helper (ScreenCaptureKit + AVCaptureSession), and whatever native binaries the Phase 6 composition engine drags in (TBD on engine selection) all need explicit `asarUnpack`, hardened-runtime entitlements, and notarization rows. Plan the Bundle Layout & Signing section in Phase 1 (only sqlite + sharp present) so Phase 3/5/6 just append. (architecture)
 
 ### New Considerations Discovered
 
 - **DNS-rebinding** for the local HTTP server (Phase 7) — token-in-URL alone is insufficient. HMAC-signed URLs scoped to `(capture_id, width, exp)`, validate `Host:` header is exactly `127.0.0.1:51729`, reject foreign Origins.
 - **safeStorage trust model.** Industry consensus over keytar in 2026 (keytar archived March 2026); but the encrypted blob is *not* portable across reinstalls (Migration Assistant survives, fresh reinstall doesn't). Plan re-auth as the recovery path; surface "Reconnect" when decrypt fails.
-- **Remotion does *not* require contextIsolation: false.** The Player runs in a sandboxed renderer; `renderMedia` runs in a Node child process. Drop the planned regression — the renderer never needs Node access. Lazy-download the Chrome Headless Shell on first reel render (~180MB).
+- **Phase 6 composition does *not* require contextIsolation: false.** Whichever engine we land on (TBD per Amendment 2026-05-25), the player-style preview component is pure React/DOM and runs in a sandboxed renderer; the heavy frame-render path runs in a Node child process. Drop any planned regression — no renderer needs Node access. Heavy assets the engine drags in (headless browser, native codecs, etc.) should be lazy-downloaded on first reel render, not bundled into the .app.
 - **Apple Vision PersonSegmentation `.balanced`** beats Mediapipe Selfie Segmentation on Apple Silicon: ~5–8ms/frame at 1080p on the ANE, vs ~30–60% of one P-core for Mediapipe. Use Vision via a Swift helper. ProRes 4444 with alpha for editor delivery; VP9-alpha for live preview.
 - **Tray popover convention shift:** drop `transparent: true`, switch `vibrancy` from `under-window` to `popover` (matches Raycast/Linear NSPopover), ship a real 16×16/@2x template PNG (template images adapt to dark/light/accent menubars; `setTitle("P")` does not).
 - **`overlay_set_hash` was under-specified.** Cache key needs: format, target_width, color_profile, *applied-overlay subset filter* (Phase 2's "copy renders only `applied_at != null`" rule), canonical JSON of overlays ordered by `(z_index, id)`. Becomes `render_inputs_hash`. Recompute lazily via a monotonic `captures.overlays_version` int — never per drag-frame.
@@ -93,13 +143,13 @@ The founder's stream-of-consciousness already proposed this: *"the scrubber for 
 - **Browse mode** (default) — day-grouped grid, like the current wireframe.
 - **Inspect mode** (single-click in reel or grid) — selected item zooms to fill the canvas; right-rail Detail/Codex content collapses into a thin meta strip under the image; ESC returns to Browse.
 - **Edit mode** (E key or click toolbar in Inspect) — same canvas, but tool palette becomes a floating toolbar over the image; right rail surfaces an Overlays list (one row per annotation, click to focus, x to delete).
-- **Sizzle compose mode** (in Phase 6) — center becomes a Remotion-style timeline; reel still pinned at top so you can drag frames down into the composition.
+- **Sizzle compose mode** (in Phase 6) — center becomes a video-composition timeline (engine TBD); reel still pinned at top so you can drag frames down into the composition.
 
 Concretely this means refactoring the current `.psl` grid from `220px 1fr 360px / 52px 1fr 32px` into `220px 1fr / 52px 1fr 32px` plus a slide-in right drawer (340px) that opens contextually. The reel sits inside the center column at the top, fixed-height (116px). Time order is preserved by construction — the reel's source-of-truth is `captures.captured_at DESC` and we never edit that field.
 
 This also fixes the founder's "history eats your spot" complaint: there's no separate history-browser screen to *exit*, because the reel is always present and your selection doesn't change the order of anything.
 
-**Refinement (architecture review):** model modes as a discriminated union with a `ModeProvider` per mode, each owning its own selection-model, keymap, and right-rail. `Library.tsx` becomes the chrome (reel + drawer host); each mode lives under `features/library/modes/{browse,inspect,edit,compose}/` and the Compose-mode bundle (Remotion) is lazy-loaded so it stays out of Phase 1.
+**Refinement (architecture review):** model modes as a discriminated union with a `ModeProvider` per mode, each owning its own selection-model, keymap, and right-rail. `Library.tsx` becomes the chrome (reel + drawer host); each mode lives under `features/library/modes/{browse,inspect,edit,compose}/` and the Compose-mode bundle (composition engine TBD) is lazy-loaded so it stays out of Phase 1.
 
 ### Decision 3 — Single command bus, multiple transports (the agent-native seam)
 
@@ -164,7 +214,7 @@ These are the scaffolds that retrofitting in Phase 4 would be a brutal week. All
 
 ### 1. AbortController everywhere
 
-Every command handler accepts an `AbortSignal` from `command-bus`. Every async hop (sharp ops, fetch to Codex, fetch to S3/Drive, child-process Remotion render) re-checks `signal.aborted` between hops. Cancellation is keyed by `captureId` in main; dismissal/delete aborts.
+Every command handler accepts an `AbortSignal` from `command-bus`. Every async hop (sharp ops, fetch to Codex, fetch to S3/Drive, Phase 6 child-process video render) re-checks `signal.aborted` between hops. Cancellation is keyed by `captureId` in main; dismissal/delete aborts.
 
 ```ts
 // main/render/compose.ts
@@ -216,10 +266,9 @@ Every native binary inside the .app needs a row in this table by Phase 1. Phases
 | `sharp` darwin-arm64 + libvips dylibs | 1 | `node_modules/@img/sharp-darwin-arm64/`, `node_modules/@img/sharp-libvips-darwin-arm64/` | yes | `com.apple.security.cs.disable-library-validation`, `cs.allow-unsigned-executable-memory` | inherit + `codesign --force --deep` every dylib in afterPack | universal builds drop one arch (sharp#3622); ship arm64-only |
 | Local HTTP server bind | 1 | n/a | n/a | `com.apple.security.network.server` (only if non-loopback; 127.0.0.1 alone doesn't need it) | n/a | only add server entitlement in Phase 7 if you ever bind beyond loopback |
 | Swift app-source helper (NSWorkspace bridge) | 3 | `Contents/Resources/PwrSnapAppInfo` | n/a | sign with parent Team ID | own notarize entry | called via `child_process` |
-| `@nonstrict/recordkit` helper bundle | 5 | bundled | follow RecordKit docs | own `NSScreenCaptureUsageDescription` plist | own notarize entry | TCC prompt attaches to parent if helper signed with same Team ID |
+| `PwrSnapRecorder` Swift helper | 5 | `Contents/Resources/PwrSnapRecorder` (built from [apps/desktop/native/recorder/main.swift](../../apps/desktop/native/recorder/main.swift)) | n/a | sign with parent Team ID, own `NSScreenCaptureUsageDescription` + `NSMicrophoneUsageDescription` plists | own notarize entry | wraps SCKit + AVCaptureSession; stdin/stdout JSON-RPC; TCC prompt attaches to parent if helper signed with same Team ID |
 | Apple Vision presenter helper (Swift) | 5 | `Contents/Resources/PwrSnapPresenter` | n/a | sign with parent Team ID, `cs.allow-jit` if needed | own notarize entry | runs `VNGeneratePersonSegmentationRequest`; emits BGRA+alpha over UDS |
-| Chromium Headless Shell (Remotion) | 6 | `~/Library/Application Support/PwrSnap/remotion-chrome/` | n/a | `cs.allow-jit`, `cs.allow-unsigned-executable-memory` | sign in afterSign | lazy-downloaded on first reel render; ~180MB |
-| Bundled ffmpeg (Remotion 4.x ships its own) | 6 | inside `@remotion/renderer` | yes | `cs.allow-unsigned-executable-memory` | sign in afterSign | do NOT also add ffmpeg-static — Remotion ships its own |
+| Phase 6 composition-engine native artifacts | 6 | TBD | TBD | TBD (likely `cs.allow-jit`, `cs.allow-unsigned-executable-memory` if a headless browser or JIT'd codec is involved) | sign in afterSign | engine selection is open per Amendment 2026-05-25; whatever lands brings its own rows here. Prefer lazy-download over bundling for anything >50MB. |
 
 Hard rules: do **not** add `com.apple.security.cs.allow-dyld-environment-variables` or `inherit` entitlements anywhere. The helpers must be *separately* signed binaries, not loaded as dylibs into the parent. Every helper that touches screen/mic/cam needs its own usage-description plist or TCC prompts attach to the wrong identity.
 
@@ -238,7 +287,7 @@ Hard rules: do **not** add `com.apple.security.cs.allow-dyld-environment-variabl
 | Float-over renderer | same bundle, `#stage=float-over` | Bottom-right toast post-capture |
 | Region-selector renderer | same bundle, `#stage=region` (new) | Frameless transparent fullscreen overlay during capture |
 | Editor renderer | same bundle, `#stage=editor` (Phase 5+) | Optionally separate window for video editing |
-| Sizzle composer renderer | same bundle, `#stage=compose` (Phase 6) | Remotion preview + timeline |
+| Sizzle composer renderer | same bundle, `#stage=compose` (Phase 6) | Video-composition preview + timeline (engine TBD) |
 
 Stage routing already exists in [App.tsx](apps/desktop/src/renderer/src/App.tsx) via `window.location.hash`. New stages plug into that switch.
 
@@ -290,8 +339,8 @@ apps/desktop/src/
 │   │   ├── suggest.ts            ← annotate/blur/tag/filename pipelines
 │   │   ├── phash-cache.ts        ← perceptual-hash cache for re-captures
 │   │   └── transcribe.ts         ← Whisper passthrough
-│   ├── video/                    ← Phase 5+ (RecordKit + Vision presenter helper)
-│   ├── sizzle/                   ← Phase 6+ (Remotion in Node child process)
+│   ├── recording/                ← Phase 5 (PwrSnapRecorder Swift helper over JSON-RPC)
+│   ├── sizzle/                   ← Phase 6+ (composition engine TBD, runs in a Node child process)
 │   └── auto-updater.ts           ← Phase 3 (lifted from PwrAgnt's pattern)
 └── renderer/src/
     ├── App.tsx                   ← stage router (exists)
@@ -304,7 +353,7 @@ apps/desktop/src/
     │   │   │   ├── browse/       ← grid (Phase 1)
     │   │   │   ├── inspect/      ← zoomed canvas (Phase 2)
     │   │   │   ├── edit/         ← edit-mode body + tool palette (Phase 2)
-    │   │   │   └── compose/      ← lazy-loaded; Remotion player (Phase 6)
+    │   │   │   └── compose/      ← lazy-loaded; composition-engine preview (Phase 6, engine TBD)
     │   │   └── useLibrary.ts     ← useSyncExternalStore over command-bus events
     │   ├── float-over/           ← exists
     │   ├── tray/                 ← exists
@@ -858,10 +907,10 @@ Acceptance:
 
 #### Phase 5: Video capture + presenter cam (Weeks 11–14)
 
-**Goal:** SnagIt-and-Camtasia-tier video. Three independently editable channels. Don't re-implement what RecordKit + Apple Vision already do.
+**Goal:** SnagIt-and-Camtasia-tier video. Three independently editable channels. Use Apple's first-party frameworks (ScreenCaptureKit, AVFoundation, Vision) directly via Swift helpers.
 
 Tasks:
-- [ ] **Screen + audio capture: `@nonstrict/recordkit`.** Actively maintained in 2026 (0.71.x), Electron-first, wraps SCKit + audio + mouse/keyboard. Don't hand-roll a Swift helper for this — RecordKit is the path of least resistance. Avoid `node-mac-recorder` (sporadic) and `ElectronCaptureKit` (demo-grade).
+- [ ] **Screen + audio capture: hand-rolled Swift helper.** Shipped as [apps/desktop/native/recorder/main.swift](../../apps/desktop/native/recorder/main.swift) — `PwrSnapRecorder` wraps **ScreenCaptureKit** (screen + optional system audio) and **AVCaptureSession** (optional microphone), writes a single H.264/AAC `.mp4` to disk, and speaks stdin/stdout JSON-RPC to [recording-service.ts](../../apps/desktop/src/main/recording/recording-service.ts). The original plan named `@nonstrict/recordkit`; that prescription was retracted after the helper was built (see Amendment 2026-05-25). Avoid `node-mac-recorder` (sporadic) and `ElectronCaptureKit` (demo-grade).
 - [ ] **Presenter cam: Apple Vision in a Swift helper.** `VNGeneratePersonSegmentationRequest` at `.balanced` (~5–8ms/frame at 1080p on the ANE; vs Mediapipe at 30–60% of one P-core). Helper bundle at `Contents/Resources/PwrSnapPresenter`, signed with parent Team ID, owns its own `NSCameraUsageDescription`. Pipeline: `AVCaptureSession` → `VNImageRequestHandler` → `AVAssetWriter` writing **ProRes 4444 with alpha** directly to disk. Helper exposes start/stop/status over a Unix domain socket. Electron only orchestrates; never touches pixels. Defer WebGPU/ONNX (BiRefNet/RVM) cross-platform path.
 - [ ] **Three independently editable channels** in `<root>/captures/<id>/`:
   - `screen.mov` — HEVC via VideoToolbox.
@@ -870,7 +919,7 @@ Tasks:
   - `manifest.json` — start timestamps in `mach_absolute_time → CMTime` for sub-frame sync.
   `captures` row gets `kind='video'`; new `video_channels` table tracks per-file metadata.
 - [ ] **Live preview** uses VP9 WebM with `alpha_mode: 'premultiplied'` via `MediaRecorder` — fine for the in-window preview, never the final asset.
-- [ ] **Library video cards.** Hover-scrub: decode N keyframes via the bundled ffmpeg (NB: in Phase 6 Remotion ships its own ffmpeg; share that binary across video + sizzle to avoid double-shipping).
+- [ ] **Library video cards.** Hover-scrub: decode N keyframes from the captured `.mp4`. Two viable paths to evaluate: (a) in-renderer WebCodecs (e.g. [mediabunny](https://mediabunny.dev), MPL-2.0 — zero native binary, sandbox-clean, hardware-accelerated on Apple Silicon) or (b) a bundled ffmpeg helper signed alongside `PwrSnapRecorder`. Pick whichever doesn't bloat the .app and survives the Bundle Layout & Signing table. The Phase 6 engine is no longer assumed to drag in an ffmpeg we can share.
 - [ ] **Editor for video.** Reuses the Library shell; center pane becomes a 3-track timeline (screen / presenter / audio). Each track: mute, replace, retrim, rerecord. Save = bake into `output.mp4` cached under the capture root, never overwriting source channels (overlay-as-data principle extends to video tracks).
 - [ ] **Energy budget.** Default presenter to `.balanced`. Surface `.fast` as "Battery saver" in Settings → Capture. Reserve `.accurate` for post-processing only.
 - [ ] **Tray recording state.** Swap to a second template image with a filled dot during recording. Use `tray.setTitle(' ●')` (Unicode dot renders in accent color on Sonoma+). Kill recording from tray right-click menu.
@@ -886,18 +935,55 @@ Acceptance:
 
 #### Phase 6: Sizzle-reel composer (Weeks 15–18)
 
-**Goal:** Select tagged assets, voice-describe, hand off to Remotion + AI voices, get a polished video. **No regression of contextIsolation.**
+**Goal:** Select tagged assets, voice-describe, hand off to the composition
+engine + AI voices, get a polished video. **No regression of
+contextIsolation.**
+
+> **Engine selection is open** (per Amendment 2026-05-25). The original
+> plan named Remotion; that prescription has been retracted on license
+> grounds — see [AGENTS.md §"Dependency licensing"](../../AGENTS.md) for
+> the do-not-look policy. Phase 6 cannot start until an OSI-permissively
+> licensed composition path is chosen and validated. Candidate
+> directions (not commitments): a React-driven Canvas/WebGL renderer
+> wired to WebCodecs (e.g. [mediabunny](https://mediabunny.dev),
+> MPL-2.0) for encode; a `<canvas>`-per-frame loop driven by
+> `requestAnimationFrame` in a worker; a hand-rolled scene graph + AVFoundation
+> encode via a Swift helper. Each candidate must pass a license check and a
+> rough proof-of-concept before its assumptions are folded back into this
+> section.
+
+The shape below is engine-independent — the trust boundary, the IPC
+contract, the AI flow, and the persistence model all hold regardless of
+which engine ships.
 
 Tasks:
-- [ ] **Boundary correction.** The original plan said "Remotion runs in a renderer with `contextIsolation: false`." That's wrong — `@remotion/player` is pure React/DOM and does NOT need Node access. The boundary is:
-  - **Renderer** (`webPreferences: contextIsolation: true, sandbox: true`) hosts `<Player>` for scrubbing/preview only.
-  - **Main / Node child process** runs `@remotion/renderer renderMedia(...)`. Spawned via `child_process.fork`, IPC over typed channel.
-  Keep the trust boundary intact across all renderers.
-- [ ] **Compose mode** under `features/library/modes/compose/` — lazy-loaded so the bundle stays out of Phase 1–5. Reel stays at top; center is the Remotion `<Player>`; right drawer holds description box, voice provider picker, music track placeholder.
-- [ ] **Chrome Headless Shell — lazy-download.** `renderMedia` spawns a separate headless Chrome (~150–180MB), not Electron's own Chromium. Don't bundle: ship JS only (~15MB) and use `ensureBrowser({ onProgress })` from `@remotion/renderer` to fetch into `app.getPath('userData')/remotion-chrome` on first reel render. UX: "Preparing video engine… 180MB."
-- [ ] **ffmpeg.** Remotion 4.x ships its own ffmpeg in `@remotion/renderer`. **Do not also add `ffmpeg-static`** — double-shipping. Phase 5's video also borrows this ffmpeg via a small wrapper.
-- [ ] **Codesigning.** Both the Chrome Headless Shell and Remotion's bundled ffmpeg need `codesign --force --deep` in `afterSign`, hardened-runtime entitlements `cs.allow-jit` and `cs.allow-unsigned-executable-memory`. Land these as rows in the Bundle Layout & Signing table.
-- [ ] **Composition templates.** `apps/desktop/resources/remotion-templates/` — typed React components with Zod schemas:
+- [ ] **Engine selection.** Pre-Phase-6 spike. Verify license against
+  [AGENTS.md §"Dependency licensing"](../../AGENTS.md). Validate that the
+  engine can run inside a sandboxed renderer (preview) AND inside a Node
+  child process (render). Re-open this Phase 6 section with concrete
+  prescriptions once the engine is chosen.
+- [ ] **Trust boundary — invariant.** Whichever engine lands, the boundary is:
+  - **Renderer** (`webPreferences: contextIsolation: true, sandbox: true`)
+    hosts the player/preview component for scrubbing only.
+  - **Main / Node child process** runs the heavy frame-render + encode
+    path. Spawned via `child_process.fork`, IPC over typed channel.
+  No window in the app gets `contextIsolation: false`. The `BrowserWindow`
+  lifecycle test asserts this and must continue to pass through Phase 6.
+- [ ] **Compose mode** under `features/library/modes/compose/` —
+  lazy-loaded so the bundle stays out of Phase 1–5. Reel stays at top;
+  center is the engine's preview component; right drawer holds description
+  box, voice provider picker, music track placeholder.
+- [ ] **Heavy assets — lazy-download, not bundled.** If the chosen engine
+  needs a headless browser, native codec sidecar, model weights, or
+  ffmpeg, fetch into `app.getPath('userData')/<engine>/` on first reel
+  render with a "Preparing video engine… <size>" progress UI. Anything
+  >50MB does not ship in the .app.
+- [ ] **Codesigning.** Whatever native artifacts the engine drags in get
+  `codesign --force --deep` in `afterSign` plus hardened-runtime
+  entitlements appropriate to the artifact. Append rows to the Bundle
+  Layout & Signing table when the engine is selected.
+- [ ] **Composition templates.** Engine-independent shape: typed React (or
+  engine-equivalent) components with Zod schemas:
   ```tsx
   // templates/carousel.tsx
   export const carouselSchema = z.object({
@@ -906,7 +992,9 @@ Tasks:
   });
   export const Carousel: React.FC<z.infer<typeof carouselSchema>> = ({ shots, voiceover }) => { /* ... */ };
   ```
-  Register all templates in a single `Root.tsx` with static `<Composition>` definitions. User assets flow in via `inputProps`. **Do not dynamically generate `<Composition>`** — it breaks deterministic-frame caching.
+  Static composition registry — user assets flow in via typed
+  `inputProps`. **Do not dynamically generate compositions** — it breaks
+  deterministic-frame caching regardless of engine.
 - [ ] **AI composition spec.** LLM emits:
   ```ts
   type ReelSpec = {
@@ -922,11 +1010,12 @@ Tasks:
 - [ ] **Render orchestration in main.** `child_process.fork` a Node renderer subprocess. Throttled progress via `webContents.send` (every 100ms):
   ```ts
   const send = throttle((p) => win.webContents.send(`reel:progress:${id}`, p), 100);
-  await renderMedia({ composition, codec: 'h264', onProgress: send, concurrency: 'half' });
+  // engine-specific render call here; must accept an AbortSignal and an onProgress callback
   ```
-  `concurrency: 'half'` so renderMedia doesn't starve the UI.
+  Cap concurrency to ~half of `os.cpus().length` so the renderer doesn't
+  starve the UI.
 - [ ] **Cancellation + crash recovery.** Window close → `child.kill('SIGTERM')`, `SIGKILL` after 2s. Persist render state to a `reel_renders` table so quit-during-render resumes from the last keyframe instead of restarting.
-- [ ] **Renderer separation.** Compose-mode renderer is its own tsconfig project ref; cannot import `@pwrsnap/shared` runtime, only `import type` (TypeScript reviewer's recommendation). This walls off Remotion-specific deps from the rest of the app.
+- [ ] **Renderer separation.** Compose-mode renderer is its own tsconfig project ref; cannot import `@pwrsnap/shared` runtime, only `import type` (TypeScript reviewer's recommendation). This walls off engine-specific deps from the rest of the app.
 
 Acceptance:
 - [ ] First reel render shows a "Preparing video engine… 180MB" progress UI; subsequent renders skip the download.
@@ -1088,13 +1177,13 @@ The agent-native parity invariant is enforced by `pnpm test:parity`: every UI co
 |---|---|---|---|
 | **Sensitive data leaks via clipboard before Codex returns** (Phase 4) | High | **Critical** | Codex sensitive-data DynamicToolCall pipeline is gating: float-over does not become interactive and clipboard ops do not fire until the call returns. Codex subprocess pre-warmed and pool'd to keep latency ~1–2s. **Phase 1 intentionally ships without any gating** — single-user dev-machine risk profile per founder override. |
 | **Local HTTP server attacked via DNS rebinding** | Med | High | HMAC-signed URLs scoped to `(capture_id, width, exp)`; `Host:` header validation; `Cache-Control: private, no-store`; bind 127.0.0.1 only. Validated by integration test #12. |
-| **Compose renderer regression** (the original plan disabled `contextIsolation` for Remotion) | High if not caught | **Critical** | Phase 6 corrects the boundary: Player runs in a sandboxed renderer; renderMedia in a Node child process. `BrowserWindow` lifecycle test asserts no window has `contextIsolation: false`. |
+| **Compose renderer regression** (an earlier draft of the plan proposed disabling `contextIsolation` for the composition engine) | High if not caught | **Critical** | Phase 6 boundary is engine-independent: preview component runs in a sandboxed renderer; heavy render path runs in a Node child process. `BrowserWindow` lifecycle test asserts no window has `contextIsolation: false`. |
 | **Auto-update absent** = users stuck-vulnerable to future Electron/sharp/sqlite CVEs | High over time | High | Phase 3 wires `electron-updater` lifted from PwrAgnt. Signed `latest.yml`, staged rollout, verified-signature-only auto-install. |
 | TCC permission UX is confusing on first run | High | Med | `permissions.ts` + Settings → Permissions panel with deep-link to `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`. Detect mid-session revocation by classifying capture errors. |
 | `sharp` / `better-sqlite3` packaging fails under ASAR + notarization | Med | High | Bundle Layout & Signing table enumerates `asarUnpack` rules + entitlements + afterPack `codesign --force --deep`. Pin `sharp@0.34+` and `better-sqlite3@12.6+`. CI builds against macos-latest + macos-13. |
 | Codex API costs blow up under heavy capture | Med | Med | Per-pipeline concurrency caps, 250ms post-capture debounce, daily $ cap, auto-downgrade to nano under load, pHash cache for re-captures, `service_tier: "flex"`. Validated by integration test #9. |
 | **safeStorage credentials don't survive reinstall** | High | Med (recoverable) | Plan re-auth as the recovery path. On decrypt failure, transition record to `needs_reauth` instead of crashing. Document in Settings → Storage that "Reconnect" may be needed after macOS migration. |
-| Remotion bundling bloats the .app | Med | Med | Lazy-download Chrome Headless Shell on first reel render via `ensureBrowser({ onProgress })`. Base install ~15MB JS only. |
+| Phase 6 composition engine bloats the .app | Med | Med | Whatever engine is chosen, anything >50MB lazy-downloads into `userData/<engine>/` on first reel render with a progress UI. Base install stays JS-only. |
 | Background-removal quality is poor on M-class | Low (Vision is solid) | Low | Use `.balanced` by default; expose `.fast` as Battery saver; reserve `.accurate` for post-processing. Ship "passthrough" channel as escape hatch. |
 | Smart-arrow color choice looks wrong on busy backgrounds | Low | Med | Always draw a 1px white outline around the accent stroke. Ship a debug-flag "explain this arrow" affordance. |
 | **Race conditions in capture/dismiss/copy** flow ship as user-visible flakes | High if not designed in | Med | AbortController + per-window state machines + single keydown dispatcher are Phase 1 primitives, not Phase 4 retrofits. Frontend-races review caught this. |
@@ -1149,8 +1238,8 @@ Solo founder + Claude. ~4 months of part-time engineering to reach Phase 6. MVP 
 **Capture stack:**
 - `screencapture(1)` man page — Phase 1 CLI; ~70–120ms cold per capture-research.
 - [SCScreenshotManager — Apple Developer](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager).
-- [@nonstrict/recordkit on npm](https://www.npmjs.com/package/@nonstrict/recordkit) — actively maintained 2026, Electron-first; the path for Phase 5.
 - [A look at ScreenCaptureKit on macOS Sonoma — Nonstrict](https://nonstrict.eu/blog/2023/a-look-at-screencapturekit-on-macos-sonoma/) — explains the SCKit perf regression in Sonoma that informed the "keep CLI for stills" decision.
+- The original plan also cited `@nonstrict/recordkit` as the Phase 5 path; that prescription was retracted after the hand-rolled Swift helper shipped — see Amendment 2026-05-25.
 - [WWDC22: Take ScreenCaptureKit to the next level](https://developer.apple.com/videos/play/wwdc2022/10155/).
 
 **TCC permissions:**
@@ -1189,9 +1278,14 @@ Solo founder + Claude. ~4 months of part-time engineering to reach Phase 6. MVP 
 **Background removal (Phase 5):**
 - [VNGeneratePersonSegmentationRequest](https://developer.apple.com/documentation/vision/vngeneratepersonsegmentationrequest) — Apple Vision, ANE-accelerated.
 
-**Remotion (Phase 6):**
-- [Remotion docs](https://www.remotion.dev/docs/) — bundles its own ffmpeg in 4.x; no `ffmpeg-static` needed.
-- [`@remotion/renderer` ensureBrowser](https://www.remotion.dev/docs/renderer/ensure-browser) — lazy-download Chrome Headless Shell.
+**Phase 6 composition engine (engine TBD):**
+- Engine selection is an open research item — see Amendment 2026-05-25 at
+  the top of this document and the do-not-look policy in
+  [AGENTS.md §"Dependency licensing"](../../AGENTS.md). The original plan
+  referenced Remotion; that dependency has been retracted and its docs
+  must not be opened. Candidate replacements with permissive licenses
+  (e.g. [mediabunny](https://mediabunny.dev), MPL-2.0, for WebCodecs-based
+  encode) are valid research targets but not commitments.
 
 **Tray (Phase 1 refinements):**
 - [Electron `Tray` API](https://www.electronjs.org/docs/latest/api/tray).

@@ -207,7 +207,13 @@ export function OverlaySvg({
       {selectedLayerId !== null && (() => {
         const sel = effectiveOverlays.find((r) => r.id === selectedLayerId);
         if (sel === undefined) return null;
-        return <SelectionOutline data={sel.data} />;
+        return (
+          <SelectionOutline
+            data={sel.data}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+          />
+        );
       })()}
 
       {/* Drafts (live-drag preview) rendered last so they're on top.
@@ -672,9 +678,13 @@ function HighlightGlyph({
  *  coords. The outline is a glyph (not interactive); the pointerdown
  *  handler in Editor.tsx owns selection clear / re-select. */
 function SelectionOutline({
-  data
+  data,
+  imageWidthPx,
+  imageHeightPx
 }: {
   data: OverlayRow["data"];
+  imageWidthPx: number;
+  imageHeightPx: number;
 }): ReactElement | null {
   // Derive a normalized bounding box for each overlay kind.
   let box: { x: number; y: number; w: number; h: number } | null = null;
@@ -689,14 +699,58 @@ function SelectionOutline({
     // the user's annotation as a misleading box. Return null.
     return null;
   } else if (data.kind === "text") {
-    // Small fixed box around the text anchor point. The actual
-    // rendered glyph extends to the right/down; a tight box would
-    // miss most of the glyph. Approximate at 12% width × 4% height.
+    // Compute the actual text bounding box rather than the old
+    // hardcoded `{w: 0.12, h: 0.04}` approximation. The old box:
+    //   • was always the same size regardless of body length or
+    //     font size — wider than 1-char text, narrower than long
+    //     bodies;
+    //   • was anchored top-left at (point.x - 0.005, point.y - 0.005),
+    //     which made sense when TextGlyph used dominantBaseline="hanging"
+    //     (anchor at glyph top) but is wrong now that we use "central"
+    //     (anchor at first-line vertical center). The text was painting
+    //     OUTSIDE the top of the box, with the box's vertical center
+    //     down where the second-line center would be.
+    //
+    // Now: dimension based on font-size, body length, and line count,
+    // matching TextGlyph's render math exactly.
+    const shortSide = Math.min(imageWidthPx, imageHeightPx);
+    const sizePx =
+      data.size === "large"
+        ? shortSide / 18
+        : data.size === "medium"
+          ? shortSide / 30
+          : shortSide / 50;
+    // Font-size in normalized viewBox units (matches TextGlyph).
+    const fontSize = sizePx / shortSide;
+    const lines = data.body.split("\n");
+    const lineCount = Math.max(1, lines.length);
+    // Width of longest line. ~0.55 average advance / em for Apple
+    // system fonts at the rendered weight — enough to envelope the
+    // text without sitting too far past the trailing glyph.
+    const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
+    const charAdvance = 0.55;
+    const naturalWidth = maxChars * fontSize * charAdvance;
+    // TextGlyph applies `scale(H/W, 1)` to compensate for the outer
+    // SVG's preserveAspectRatio="none" X-stretch. SelectionOutline
+    // sits outside that <g>, so its rects are stretched non-uniformly.
+    // To match the rendered text's CSS extent, the user-space width
+    // we draw must be scaled by `H/W` — same compensation TextGlyph
+    // uses for its glyphs.
+    const aspectComp = imageHeightPx / imageWidthPx;
+    const w = naturalWidth * aspectComp;
+    // Vertical extent: first line's center is at point.y (central
+    // baseline). Top of first line at point.y - fontSize/2. Each
+    // subsequent line advances by 1.2 × fontSize (`dy="1.2em"` per
+    // tspan). Bottom of last line at:
+    //   point.y - fontSize/2 + (lineCount-1) × 1.2 × fontSize + fontSize
+    //   = point.y + fontSize × (lineCount × 1.2 - 0.7)
+    // Total height = fontSize × (lineCount × 1.2 - 0.2).
+    const h = fontSize * (lineCount * 1.2 - 0.2);
     box = {
-      x: Math.max(0, data.point.x - 0.005),
-      y: Math.max(0, data.point.y - 0.005),
-      w: 0.12,
-      h: 0.04
+      x: data.point.x,
+      y: data.point.y - fontSize / 2,
+      w,
+      h
     };
   } else if (data.kind === "crop") {
     box = data.rect;

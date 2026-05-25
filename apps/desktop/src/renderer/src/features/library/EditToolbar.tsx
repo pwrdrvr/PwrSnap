@@ -725,10 +725,14 @@ function ToolButton({
         <span>{tool.label}</span>
         <span className="psl__et-btn-key">{tool.key}</span>
       </button>
-      {showCaret && active && (
+      {showCaret && (
         <button
           type="button"
-          className={"psl__et-caret" + (popoverOpen ? " is-open" : "")}
+          className={
+            "psl__et-caret" +
+            (active ? " is-tool-active" : "") +
+            (popoverOpen ? " is-open" : "")
+          }
           aria-label={`${tool.label} style options`}
           aria-expanded={popoverOpen}
           data-testid={`tool-caret-${tool.id}`}

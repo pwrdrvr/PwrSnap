@@ -2212,12 +2212,13 @@
   color: var(--accent-bright);
   border-color: var(--accent-border);
 }
-/* Tool-button + caret pairing. The wrapper is the single visually-
-   unified control: it carries the active-state background + accent
-   border, and the children (main button + caret) sit transparent on
-   top. The caret only renders when the tool is active (see
-   EditToolbar.tsx) so the wrapper is layout-neutral the rest of the
-   time. */
+/* Tool-button + caret pairing. The caret is ALWAYS rendered for
+   styled tools — clicking it activates the tool + opens the style
+   popover in one click. Always-on means no layout shift on activate
+   (the previous "render caret only when active" version made
+   neighboring tools jump as the active tool's caret appeared).
+   When the tool is ALSO active, the wrap + caret get the accent box;
+   when inactive, the caret stays present but subdued. */
 .psl__et-tool-wrap {
   display: inline-flex;
   align-items: stretch;
@@ -2228,9 +2229,8 @@
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent-border);
 }
-/* When the wrap is active AND the caret is showing, kill the main
-   button's own border-radius on the right so it joins the caret
-   flush. Likewise the caret's left edge. */
+/* When the wrap is active, kill the main button's own border-radius
+   on the right so it joins the caret flush. */
 .psl__et-tool-wrap.is-active .psl__et-btn {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
@@ -2239,29 +2239,45 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
+  width: 14px;
   height: 36px;
   padding: 0;
   border: 0;
-  /* Subtle divider between the icon area and the caret area so the
-     two zones read as distinct sub-controls inside the unified box. */
-  border-left: 1px solid color-mix(in srgb, var(--accent-border) 60%, transparent);
   background: transparent;
-  color: var(--accent-bright);
+  color: var(--text-muted);
   cursor: pointer;
-  border-top-right-radius: 6px;
-  border-bottom-right-radius: 6px;
+  border-radius: 6px;
   flex: 0 0 auto;
   transition: background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
     transform var(--dur-fast) var(--ease-out);
 }
+/* Inactive caret hover — subtle, matches the main button's neutral
+   hover. Signals "this is clickable" without dominating. */
 .psl__et-caret:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+/* When the tool is active, the caret sits INSIDE the unified accent
+   box. Subtle accent-border separator on its left makes the two
+   zones (icon vs caret) feel like distinct sub-controls within one
+   control. Right side joins the wrap's border-radius. */
+.psl__et-caret.is-tool-active {
+  color: var(--accent-bright);
+  border-left: 1px solid color-mix(in srgb, var(--accent-border) 60%, transparent);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+.psl__et-caret.is-tool-active:hover {
   background: var(--accent-tint);
   color: var(--accent-strong);
 }
 /* Open state — accent-filled "I'm controlling an open popover" look.
    Chevron rotates 180° so it points UP (matches every native dropdown
-   menu pattern when expanded). */
+   menu pattern when expanded). Applies whether the tool is active or
+   not (clicking the caret on an inactive tool activates AND opens). */
 .psl__et-caret.is-open {
   background: var(--accent-soft);
   color: var(--accent-strong);

@@ -1226,6 +1226,34 @@ export function Editor({
     op: OverlayEditOp | LayerEditOp
   ) => Promise<Result<EditOpResult, PwrSnapError>>;
 
+  // Source raster natural dims — separate from the capture's
+  // `width_px`/`height_px` which are the CANVAS (cropped) dims for v2.
+  // Without this, the editor's <img> would scale the full source into
+  // the cropped canvas box, hiding the crop visually (aspect-preserved
+  // squash looks identical at auto-fit zoom — real user hit exactly
+  // this on 8nnmKLuUpBI4K8fl).
+  //
+  // v1: there's no separate source vs canvas — record dims ARE source
+  // dims. Crop in v1 writes a CropOverlay; the bake honors it but the
+  // editor's source-PNG URL stays full-size. v1 didn't have this
+  // problem because v1 captures don't change their record dims on crop.
+  //
+  // v2: scan model.layers for the root raster's natural dims. The
+  // doctor + native-create paths always seed exactly one raster at
+  // canvas-fits-source dims. Fall back to record dims if we can't find
+  // one (shouldn't happen for a healthy v2 capture).
+  let sourceWidthPx = model.record.width_px;
+  let sourceHeightPx = model.record.height_px;
+  if (model.format === 2) {
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        sourceWidthPx = layer.natural_width_px;
+        sourceHeightPx = layer.natural_height_px;
+        break;
+      }
+    }
+  }
+
   return (
     <EditorLoaded
       record={model.record}
@@ -1259,6 +1287,8 @@ export function Editor({
       deleteSelectedRef={deleteSelectedRef}
       modelFormat={model.format}
       dispatchEdit={dispatchEditErased}
+      sourceWidthPx={sourceWidthPx}
+      sourceHeightPx={sourceHeightPx}
     />
   );
 }
@@ -1297,7 +1327,9 @@ function EditorLoaded({
   setSelectedLayerId,
   deleteSelectedRef,
   modelFormat,
-  dispatchEdit
+  dispatchEdit,
+  sourceWidthPx,
+  sourceHeightPx
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -1376,6 +1408,12 @@ function EditorLoaded({
   dispatchEdit: (
     op: OverlayEditOp | LayerEditOp
   ) => Promise<Result<EditOpResult, PwrSnapError>>;
+  /** Source raster's natural dimensions, distinct from the capture's
+   *  `width_px`/`height_px` which are the CANVAS (cropped) dims for v2.
+   *  Editor's <img> renders at source dims; canvas wrap clips to canvas
+   *  dims so the crop is visually reflected. */
+  sourceWidthPx: number;
+  sourceHeightPx: number;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -2090,12 +2128,28 @@ function EditorLoaded({
           onPointerUp={wantPan ? undefined : onPointerUp}
           data-tool={tool}
         >
+          {/* Phase 3.6 — the <img> renders at the SOURCE natural dims
+              (the raster file inside the bundle) and the parent
+              .editor-canvas (sized to canvas / record dims via
+              useZoomPan) clips via overflow:hidden. Before this the
+              <img> stretched to 100% of the canvas — after a crop that
+              squashed the full source into the smaller canvas box,
+              hiding the crop visually. Now after a crop the editor
+              shows only the visible portion (top-left for now; off-
+              origin crops follow in Phase 4-5 once the layer-editor
+              UI ships negative-translate for the raster transform). */}
           <img
             src={captureSrcUrl(record.id)}
             alt={record.source_app_name ?? "Capture"}
             draggable={false}
             className="editor-image"
             data-testid="editor-image"
+            style={{
+              width: `${(sourceWidthPx / record.width_px) * 100}%`,
+              height: `${(sourceHeightPx / record.height_px) * 100}%`,
+              objectFit: "none",
+              objectPosition: "0 0"
+            }}
           />
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures

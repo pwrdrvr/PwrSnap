@@ -60,6 +60,22 @@ const PERMANENT_MISS: ReadonlySet<string> = new Set<string>([
   "unknown"
 ]);
 
+/** PwrSnap-synthetic bundle ids — captures that didn't come from an
+ *  identifiable running macOS app, so a Launch Services lookup would
+ *  always miss. These are expected to be unresolvable, so we
+ *  short-circuit BEFORE the extract call to skip both the miss log
+ *  and the IPC roundtrip to the Swift helper. The renderer's
+ *  `AppIcon` component renders a domain-specific glyph for each
+ *  (e.g., a clipboard for `com.pwrsnap.clipboard`).
+ *
+ *  Currently:
+ *    • `com.pwrsnap.clipboard` — paste-from-clipboard captures
+ *      (PR #48). Stamped by `capture-handlers.ts` when ingesting
+ *      an image from the clipboard. */
+const SYNTHETIC_BUNDLE_IDS: ReadonlySet<string> = new Set<string>([
+  "com.pwrsnap.clipboard"
+]);
+
 const inFlight = new Map<string, Promise<string | null>>();
 const negativeCache = new Map<string, number>();
 let rootEnsured = false;
@@ -153,6 +169,18 @@ export async function getAppIconPath(bundleId: string): Promise<string | null> {
 
   const existing = inFlight.get(bundleId);
   if (existing !== undefined) return existing;
+
+  // PwrSnap-synthetic bundle ids — captures that didn't come from an
+  // identifiable running app (e.g., `com.pwrsnap.clipboard` for
+  // paste-from-clipboard captures, PR #48). No installed `.app`
+  // exists for these, so the macOS Launch Services lookup would
+  // always miss. Short-circuit BEFORE the extract call so we don't
+  // log a "miss" line for what's actually expected. The renderer's
+  // `AppIcon` component has its own UI affordance for these (see
+  // apps/desktop/src/renderer/src/features/shared/AppIcons.tsx).
+  if (SYNTHETIC_BUNDLE_IDS.has(bundleId)) {
+    return null;
+  }
 
   const work = (async (): Promise<string | null> => {
     try {

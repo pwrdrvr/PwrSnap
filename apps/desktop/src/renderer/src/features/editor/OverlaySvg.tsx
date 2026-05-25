@@ -673,6 +673,56 @@ function HighlightGlyph({
   );
 }
 
+/** Normalized [0,1] bounding box for a text overlay's rendered glyph
+ *  extent. Used by BOTH the dashed SelectionOutline AND the
+ *  TransformHandles' drag-to-move body-hit rect — keeping them in
+ *  lockstep is what made the post-`dominantBaseline="central"` switch
+ *  work: the outline hugs the glyphs and the user's drag-anywhere-
+ *  on-the-text behavior covers the same area.
+ *
+ *  Math mirrors TextGlyph's render:
+ *    • fontSize = sizePx / shortSide, where sizePx is the bucket
+ *      (small=shortSide/50, medium=/30, large=/18)
+ *    • Width: longest line × fontSize × 0.55 (avg em-advance for SF
+ *      Pro), then × `imageH/imageW` to compensate for the outer SVG's
+ *      preserveAspectRatio="none" X-stretch (same scaleX(H/W) the
+ *      TextGlyph wrapper uses on the glyphs themselves).
+ *    • Height: fontSize × (lineCount × 1.2 - 0.2) — accounts for
+ *      `dy="1.2em"` between tspans and the central-baseline split
+ *      of the first line.
+ *    • Anchor: point.x (left edge), point.y - fontSize/2 (top edge
+ *      of first line; central baseline puts the line's center on
+ *      point.y).
+ */
+function textBoundsBox(
+  data: Extract<OverlayRow["data"], { kind: "text" }>,
+  imageWidthPx: number,
+  imageHeightPx: number
+): { x: number; y: number; w: number; h: number } {
+  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  const sizePx =
+    data.size === "large"
+      ? shortSide / 18
+      : data.size === "medium"
+        ? shortSide / 30
+        : shortSide / 50;
+  const fontSize = sizePx / shortSide;
+  const lines = data.body.split("\n");
+  const lineCount = Math.max(1, lines.length);
+  const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  const charAdvance = 0.55;
+  const naturalWidth = maxChars * fontSize * charAdvance;
+  const aspectComp = imageHeightPx / imageWidthPx;
+  const w = naturalWidth * aspectComp;
+  const h = fontSize * (lineCount * 1.2 - 0.2);
+  return {
+    x: data.point.x,
+    y: data.point.y - fontSize / 2,
+    w,
+    h
+  };
+}
+
 /** Phase 3.2 selection outline. Draws a 1px accent dashed rectangle
  *  around the selected overlay's bounding box, in normalized [0,1]
  *  coords. The outline is a glyph (not interactive); the pointerdown
@@ -699,59 +749,7 @@ function SelectionOutline({
     // the user's annotation as a misleading box. Return null.
     return null;
   } else if (data.kind === "text") {
-    // Compute the actual text bounding box rather than the old
-    // hardcoded `{w: 0.12, h: 0.04}` approximation. The old box:
-    //   • was always the same size regardless of body length or
-    //     font size — wider than 1-char text, narrower than long
-    //     bodies;
-    //   • was anchored top-left at (point.x - 0.005, point.y - 0.005),
-    //     which made sense when TextGlyph used dominantBaseline="hanging"
-    //     (anchor at glyph top) but is wrong now that we use "central"
-    //     (anchor at first-line vertical center). The text was painting
-    //     OUTSIDE the top of the box, with the box's vertical center
-    //     down where the second-line center would be.
-    //
-    // Now: dimension based on font-size, body length, and line count,
-    // matching TextGlyph's render math exactly.
-    const shortSide = Math.min(imageWidthPx, imageHeightPx);
-    const sizePx =
-      data.size === "large"
-        ? shortSide / 18
-        : data.size === "medium"
-          ? shortSide / 30
-          : shortSide / 50;
-    // Font-size in normalized viewBox units (matches TextGlyph).
-    const fontSize = sizePx / shortSide;
-    const lines = data.body.split("\n");
-    const lineCount = Math.max(1, lines.length);
-    // Width of longest line. ~0.55 average advance / em for Apple
-    // system fonts at the rendered weight — enough to envelope the
-    // text without sitting too far past the trailing glyph.
-    const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
-    const charAdvance = 0.55;
-    const naturalWidth = maxChars * fontSize * charAdvance;
-    // TextGlyph applies `scale(H/W, 1)` to compensate for the outer
-    // SVG's preserveAspectRatio="none" X-stretch. SelectionOutline
-    // sits outside that <g>, so its rects are stretched non-uniformly.
-    // To match the rendered text's CSS extent, the user-space width
-    // we draw must be scaled by `H/W` — same compensation TextGlyph
-    // uses for its glyphs.
-    const aspectComp = imageHeightPx / imageWidthPx;
-    const w = naturalWidth * aspectComp;
-    // Vertical extent: first line's center is at point.y (central
-    // baseline). Top of first line at point.y - fontSize/2. Each
-    // subsequent line advances by 1.2 × fontSize (`dy="1.2em"` per
-    // tspan). Bottom of last line at:
-    //   point.y - fontSize/2 + (lineCount-1) × 1.2 × fontSize + fontSize
-    //   = point.y + fontSize × (lineCount × 1.2 - 0.7)
-    // Total height = fontSize × (lineCount × 1.2 - 0.2).
-    const h = fontSize * (lineCount * 1.2 - 0.2);
-    box = {
-      x: data.point.x,
-      y: data.point.y - fontSize / 2,
-      w,
-      h
-    };
+    box = textBoundsBox(data, imageWidthPx, imageHeightPx);
   } else if (data.kind === "crop") {
     box = data.rect;
   }
@@ -871,13 +869,15 @@ function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null 
     ];
   }
   if (data.kind === "text") {
-    // Text uses a single anchor handle for move-only semantics (no
-    // resize via corners in this slice). The anchor sits at the
-    // overlay's `point` — same position as the rendered glyph's
-    // top-left.
-    return [
-      { kind: "anchor", xn: data.point.x, yn: data.point.y, cursor: "move" }
-    ];
+    // No standalone anchor handle for text — the 10×10 px white
+    // square at point.{x,y} looked like a stray checkbox to users
+    // ("what is that thing inside the box?") and was redundant with
+    // the body-hit rect that already catches drag-to-move across the
+    // entire bounding box. The dashed SelectionOutline communicates
+    // "this is selected"; the transparent body-hit rect (sized via
+    // `textBoundsBox` — same math as the outline) catches drag and
+    // double-click. No extra glyph needed.
+    return [];
   }
   if (data.kind === "step") {
     return [
@@ -1053,12 +1053,19 @@ function geometryFromDrag(
  *  the cursor overlaps both. */
 export function TransformHandles({
   selectedOverlay,
+  imageWidthPx,
+  imageHeightPx,
   onGeometryChange,
   onGeometryDrag,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  onRequestEdit
 }: {
   selectedOverlay: OverlayRow;
+  /** Source dims for kind-specific bounding-box math (text). Rect /
+   *  arrow / blur / highlight ignore these. */
+  imageWidthPx: number;
+  imageHeightPx: number;
   /** Called once at pointerup with the final geometry. Caller is
    *  responsible for routing this through dispatchEdit (which is
    *  format-aware) and updating the selection model to follow the
@@ -1080,6 +1087,12 @@ export function TransformHandles({
    *  was committed). Lets the caller release any drag-related state
    *  (interaction bracket, hover affordance, etc.). */
   onDragEnd?: () => void;
+  /** Called when the user double-clicks the body-hit rect of a TEXT
+   *  overlay. Caller should open the TextDraftInput at the overlay's
+   *  position, pre-filled with the existing body, and replace (not
+   *  duplicate) the overlay on commit. Optional — when omitted, the
+   *  text just isn't editable after first placement. */
+  onRequestEdit?: (overlay: OverlayRow) => void;
 }): ReactElement | null {
   // Live geometry during the drag — used to render the handles in
   // their new positions before the round-trip lands. Falls back to
@@ -1110,7 +1123,10 @@ export function TransformHandles({
   // Bounding box for the body-hit rect, computed from the same
   // `data` snapshot the handles use so the body follows during a
   // live drag.
-  const bodyBox = useMemo(() => bodyBoxForOverlay(data), [data]);
+  const bodyBox = useMemo(
+    () => bodyBoxForOverlay(data, imageWidthPx, imageHeightPx),
+    [data, imageWidthPx, imageHeightPx]
+  );
 
   // Translate a pointer event's client coordinates back into normalized
   // [0,1] image coords. Uses the container's bounding rect — which
@@ -1223,18 +1239,34 @@ export function TransformHandles({
           data-testid="transform-handle-body"
           data-handle-kind="body"
           role="button"
-          aria-label="Move layer"
+          aria-label={selectedOverlay.data.kind === "text" ? "Move or double-click to edit text" : "Move layer"}
           tabIndex={-1}
           onPointerDown={(e) => onPointerDown(e, "body")}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          // Double-click on a TEXT overlay re-opens the draft input
+          // with the existing body pre-filled. The caller's
+          // onRequestEdit handler is responsible for removing /
+          // replacing the existing overlay so the user doesn't end
+          // up with two copies. Non-text kinds ignore the dblclick
+          // — there's nothing equivalent to "edit the body" for an
+          // arrow or rect.
+          onDoubleClick={
+            selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
+              ? (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onRequestEdit(selectedOverlay);
+                }
+              : undefined
+          }
           style={{
             position: "absolute",
             left: `${bodyBox.x * 100}%`,
             top: `${bodyBox.y * 100}%`,
             width: `${bodyBox.w * 100}%`,
             height: `${bodyBox.h * 100}%`,
-            cursor: "move",
+            cursor: selectedOverlay.data.kind === "text" ? "text" : "move",
             pointerEvents: "auto",
             // Transparent — the body is a hit target only. Painting
             // is owned by OverlaySvg / BlurOverlays.
@@ -1283,7 +1315,9 @@ export function TransformHandles({
  *  anchor point (big enough to be grabbable, small enough not to
  *  swallow neighboring clicks). */
 function bodyBoxForOverlay(
-  data: OverlayRow["data"]
+  data: OverlayRow["data"],
+  imageWidthPx: number,
+  imageHeightPx: number
 ): { x: number; y: number; w: number; h: number } | null {
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     return data.rect;
@@ -1298,13 +1332,22 @@ function bodyBoxForOverlay(
     if (w < 0.001 && h < 0.001) return null;
     return { x, y, w, h };
   }
-  if (data.kind === "text" || data.kind === "step") {
-    // Approximate the text glyph extent for a grabbable body. The
-    // selection outline uses the same size constants.
-    const w = 0.12;
-    const h = 0.04;
-    const x = Math.max(0, Math.min(1 - w, data.point.x));
-    const y = Math.max(0, Math.min(1 - h, data.point.y));
+  if (data.kind === "text") {
+    // Text body-hit rect uses the same bounds as the dashed
+    // SelectionOutline (`textBoundsBox`) so drag-to-move catches
+    // pointer events EVERYWHERE the user sees text — not a fixed-
+    // size approximation that missed multi-line bodies or long
+    // single-line text. The hit rect is fully transparent; the only
+    // user-visible affordance is the SelectionOutline above.
+    return textBoundsBox(data, imageWidthPx, imageHeightPx);
+  }
+  if (data.kind === "step") {
+    // Step keeps its small approximate box — no body length to
+    // measure; rendered as a circle at the anchor point.
+    const w = 0.06;
+    const h = 0.06;
+    const x = Math.max(0, Math.min(1 - w, data.point.x - w / 2));
+    const y = Math.max(0, Math.min(1 - h, data.point.y - h / 2));
     return { x, y, w, h };
   }
   return null;

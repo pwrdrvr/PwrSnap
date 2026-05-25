@@ -1109,12 +1109,68 @@ export function Editor({
       color:
         textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
     };
+    const editingId = draft.editingId;
     setDraft(null);
+    if (editingId !== undefined) {
+      // Re-edit path: the user double-clicked an existing text
+      // overlay, edited the body, hit Enter. Write back to the
+      // SAME overlay id via the format-aware updateOverlay op —
+      // preserves the overlay's position, size, color, and weight
+      // (those came from the popover when it was first placed) and
+      // only updates the typed body. dispatchEdit routes through
+      // both v1 (overlays:update) and v2 (layers:updateOverlay).
+      await dispatchEditErased({
+        kind: "updateOverlay",
+        layerId: editingId,
+        patch: { kind: "text", body }
+      });
+      return;
+    }
     const wrote = await persistOverlay(overlay);
     if (wrote && !isControlled) {
       effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
   }
+
+  /** Phase 3.6 — double-click an existing text overlay to re-open
+   *  the draft input with the body pre-filled. The handler:
+   *    • flips the active tool to "text" so commit + Escape behave
+   *      consistently (the canvas's pointer handler also expects
+   *      `tool === "text"` for keyboard-Escape to clear the draft)
+   *    • clears any current selection so the user doesn't see both
+   *      the dashed outline AND the new in-place input
+   *    • seeds the draft with the existing overlay's position, body,
+   *      and `editingId` so commitText knows to write BACK to this
+   *      row rather than create a new one
+   *  The existing overlay stays rendered behind the draft input —
+   *  that's fine because the input is the SAME font / color / weight
+   *  / position via the resolved tool style + textBoundsBox math.
+   *  The user just sees their cursor land on the text and the
+   *  caret blink there. */
+  const onRequestEditOverlay = useCallback(
+    (overlay: OverlayRow): void => {
+      if (overlay.data.kind !== "text") return;
+      setSelectedLayerId(null);
+      effectiveToolState.setActiveTool("text");
+      setDraft({
+        kind: "text",
+        xn: overlay.data.point.x,
+        yn: overlay.data.point.y,
+        body: overlay.data.body,
+        editingId: overlay.id
+      });
+      // Focus the textarea once it mounts. queueMicrotask gives React
+      // one paint cycle to render the input before we focus it.
+      queueMicrotask(() => {
+        textInputRef.current?.focus();
+        // Place caret at end so additions append rather than
+        // overwriting from the start.
+        const t = textInputRef.current;
+        if (t !== null) t.setSelectionRange(t.value.length, t.value.length);
+      });
+    },
+    [effectiveToolState]
+  );
 
   // Keyboard shortcuts: tool selection + Esc cancels drag.
   //
@@ -1305,6 +1361,7 @@ export function Editor({
       dispatchEdit={dispatchEditErased}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
+      onRequestEditOverlay={onRequestEditOverlay}
     />
   );
 }
@@ -1345,7 +1402,8 @@ function EditorLoaded({
   modelFormat,
   dispatchEdit,
   sourceWidthPx,
-  sourceHeightPx
+  sourceHeightPx,
+  onRequestEditOverlay
 }: {
   record: CaptureRecord;
   overlays: OverlayRow[];
@@ -1430,6 +1488,11 @@ function EditorLoaded({
    *  dims so the crop is visually reflected. */
   sourceWidthPx: number;
   sourceHeightPx: number;
+  /** Phase 3.6 — caller-provided handler for double-click on a TEXT
+   *  overlay. Opens the draft input pre-filled with the existing
+   *  body; commit replaces the overlay's body rather than creating
+   *  a new one. */
+  onRequestEditOverlay: (overlay: OverlayRow) => void;
 }) {
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
@@ -2228,10 +2291,13 @@ function EditorLoaded({
           {selectedOverlayForHandles !== null && (
             <TransformHandles
               selectedOverlay={selectedOverlayForHandles}
+              imageWidthPx={record.width_px}
+              imageHeightPx={record.height_px}
               onGeometryChange={onHandleGeometryChange}
               onGeometryDrag={onHandleGeometryDrag}
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
+              onRequestEdit={onRequestEditOverlay}
             />
           )}
           {draft?.kind === "text" &&

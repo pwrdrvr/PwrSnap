@@ -124,6 +124,8 @@ async function render(props: HarnessProps): Promise<HTMLElement> {
     root?.render(
       createElement(TransformHandles, {
         selectedOverlay: props.selectedOverlay,
+        imageWidthPx: 1920,
+        imageHeightPx: 1080,
         onGeometryChange: props.onGeometryChange ?? (() => undefined),
         onGeometryDrag: props.onGeometryDrag,
         onDragStart: props.onDragStart,
@@ -246,13 +248,19 @@ describe("TransformHandles", () => {
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
-  test("text: renders 1 anchor handle", async () => {
+  test("text: no anchor handle (drag uses the body-hit rect only)", async () => {
+    // The standalone anchor handle was a 10×10 white square at the
+    // glyph's anchor point — users mistook it for a checkbox and it
+    // was redundant with the body-hit rect that already catches
+    // drag-to-move across the entire bounding box. Now text has just
+    // the body-hit rect (sized to the actual text bounds via
+    // `textBoundsBox`); the dashed SelectionOutline shows the user
+    // what's selected.
     await render({ selectedOverlay: textRow() });
-    expect(countResizeHandles()).toBe(1);
-    expect(document.querySelector('[data-testid="transform-handle-anchor"]')).not.toBeNull();
-    // Text gets a body-hit too — a small grabbable box around the
-    // anchor point so drag-to-move works without grabbing the
-    // anchor handle itself.
+    expect(countResizeHandles()).toBe(0);
+    expect(document.querySelector('[data-testid="transform-handle-anchor"]')).toBeNull();
+    // Body-hit rect IS present — drag-to-move + double-click-to-edit
+    // both go through it.
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
@@ -331,17 +339,23 @@ describe("TransformHandles", () => {
     }
   });
 
-  test("text anchor drag → onGeometryChange fires with new point", async () => {
+  test("text body drag → onGeometryChange fires with translated point", async () => {
+    // After removing the standalone anchor handle, dragging text
+    // goes through the body-hit rect (which now covers the actual
+    // text glyph extents via `textBoundsBox`). Same end result:
+    // the overlay's `point` translates by the pointer delta.
     const onGeometryChange = vi.fn();
     await render({
       selectedOverlay: textRow(),
       onGeometryChange
     });
-    const anchor = document.querySelector('[data-testid="transform-handle-anchor"]')!;
-    // Initial point: (0.5, 0.5). Drag to (0.3, 0.7).
-    firePointer(anchor, "pointerdown", 500, 500);
-    firePointer(anchor, "pointermove", 300, 700);
-    firePointer(anchor, "pointerup", 300, 700);
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Initial point: (0.5, 0.5). Drag delta (-0.2, +0.2) → new point
+    // (0.3, 0.7). The body translation uses `geometryFromDrag`'s
+    // body branch which subtracts startPt from newPt.
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 300, 700);
+    firePointer(body, "pointerup", 300, 700);
     expect(onGeometryChange).toHaveBeenCalledTimes(1);
     const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
     if (geom.kind === "text") {
@@ -522,6 +536,8 @@ describe("TransformHandles", () => {
       root?.render(
         createElement(TransformHandles, {
           selectedOverlay: cropOverlay,
+          imageWidthPx: 1920,
+          imageHeightPx: 1080,
           onGeometryChange: () => undefined
         } as Parameters<typeof TransformHandles>[0])
       );

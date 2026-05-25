@@ -112,6 +112,48 @@ function isE2E(): boolean {
 }
 
 /**
+ * Re-claim the Dock icon when the Library window is alive but the
+ * activation policy has drifted to Accessory (NSUIElement). Safe to
+ * call any time; a no-op when Library is closed (the dock-icon-tied-
+ * to-Library invariant means no icon should exist) or when the dock
+ * is already visible.
+ *
+ * Why this exists: `activateApp(otherPid)` (in capture-handlers.ts)
+ * deactivates PwrSnap to return the user to whichever app was
+ * frontmost before they triggered a capture. With our floating-level
+ * panels (focus-sink, tray, float-over) in the window list, AppKit
+ * periodically demotes our activation policy to Accessory as a
+ * side-effect of that deactivation — which strips the Dock icon and
+ * orphans the Library window (alive but unreachable from the Dock or
+ * ⌘-Tab). The pre-existing `focus` handler on the Library window only
+ * recovered when the Library itself re-focused, but once PwrSnap is
+ * Accessory, clicking the Library doesn't re-focus PwrSnap (Accessory
+ * apps don't auto-activate on window click) — so the recovery never
+ * fired and the user was stuck.
+ *
+ * Calling `app.dock.show()` re-asserts Regular activation policy
+ * WITHOUT activating PwrSnap (no focus theft from whatever app the
+ * user is currently typing in). The Dock icon comes back, the
+ * Library becomes reachable again via the Dock, and the user's
+ * keyboard focus in Claude / Terminal / etc. is preserved.
+ *
+ * The `installDevelopmentDockIcon` call inside
+ * `showDockWithDevelopmentIcon` paints the dev/prod icon — no-op in
+ * packaged builds, but harmless to call either way.
+ */
+export function reclaimDockIconIfLibraryAlive(options: { force?: boolean } = {}): void {
+  if (process.platform !== "darwin") return;
+  // Production E2E runs skip dock-icon claiming entirely (the
+  // Playwright Electron binary shouldn't grab a Dock icon during
+  // tests). The dedicated bug-fix spec opts in via `force: true` to
+  // exercise the reclaim logic against a deliberately-stripped dock.
+  if (isE2E() && options.force !== true) return;
+  if (libraryWindow === null || libraryWindow.isDestroyed()) return;
+  if (app.dock?.isVisible() === true) return;
+  showDockWithDevelopmentIcon();
+}
+
+/**
  * Return the live singleton Library window, or null when no library is
  * currently open. Callers that want to ENSURE the library exists
  * should use `createMainWindow()` (idempotent) instead.

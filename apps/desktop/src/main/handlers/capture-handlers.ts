@@ -49,6 +49,7 @@ import {
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
+import { reclaimDockIconIfLibraryAlive } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
@@ -169,6 +170,13 @@ export function registerCaptureHandlers(): void {
       hideSelector();
       if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
         await activateApp(selection.previousAppPid);
+        // activateApp deactivates PwrSnap to return focus to the
+        // previous app. With our floating-level panels in the window
+        // list, AppKit can demote our activation policy to Accessory
+        // as a side-effect, which strips the Dock icon and orphans
+        // the Library. Re-assert Regular policy without yanking focus
+        // from the previous app (app.dock.show() doesn't activate).
+        reclaimDockIconIfLibraryAlive();
       }
       return err({
         kind: "capture",
@@ -245,6 +253,12 @@ export function registerCaptureHandlers(): void {
       void releaseSnapshot(screenSnapshotId);
       if (previousAppPid !== null) {
         await activateApp(previousAppPid);
+        // See cancel branch above + reclaimDockIconIfLibraryAlive in
+        // window.ts. activateApp deactivates PwrSnap; with our
+        // floating panels in the window list AppKit demotes us to
+        // Accessory and the Dock icon goes away. Re-assert Regular
+        // immediately so the Library stays reachable via the Dock.
+        reclaimDockIconIfLibraryAlive();
       }
     }
   });

@@ -9,12 +9,19 @@
 // Editor file itself stays focused on state/handlers/effects.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import type { ArrowEndStyle, ArrowStemStyle, OverlayRow } from "@pwrsnap/shared";
+import type {
+  ArrowEndStyle,
+  ArrowStemStyle,
+  OverlayRow,
+  OverlayThickness
+} from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
   readArrowDoubleEnded,
   readArrowEndStyle,
-  readArrowStemStyle
+  readArrowStemStyle,
+  readOverlayThickness,
+  readRectFilled
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -36,6 +43,12 @@ export interface DraftStyle {
   /** When true, the live-drag preview renders the end glyph at both
    *  endpoints (mirrored at the tail). */
   doubleEnded?: boolean;
+  /** Optional thickness preset / fraction. Same mapping as the
+   *  persisted overlay field — see `readOverlayThickness`. */
+  thickness?: OverlayThickness;
+  /** Rect-tool only — render the live-drag rect as a filled fill
+   *  rather than a stroke-only outline. */
+  filled?: boolean;
 }
 
 export function OverlaySvg({
@@ -44,7 +57,8 @@ export function OverlaySvg({
   draftStyle,
   imageWidthPx,
   imageHeightPx,
-  selectedLayerId = null
+  selectedLayerId = null,
+  liveOverride = null
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
@@ -58,25 +72,54 @@ export function OverlaySvg({
    *  glyph is drawn over that overlay's bounding box so the user can
    *  see what they've selected and confirm before Delete/Backspace. */
   selectedLayerId?: string | null;
+  /** Live-drag geometry override. When set, the row whose id matches
+   *  `layerId` is rendered with the overridden geometry instead of
+   *  its persisted `data.*` fields — so e.g. an arrow's endpoint
+   *  visibly follows the cursor during a TransformHandles drag,
+   *  rather than staying at its old position until pointerup commits.
+   *  Cleared by the parent on drag end. The selection outline also
+   *  follows the override (drawn from the overridden box). */
+  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
 }): ReactElement {
   // Blur overlays render outside this SVG via <BlurOverlays> — HTML
   // divs with backdrop-filter, so the live preview ACTUALLY blurs
   // the underlying image. SVG <filter> can blur SVG content but
   // can't reach behind itself to blur a sibling <img>.
   const viewBox = "0 0 1 1";
+  // Project the live-drag override (if any) onto the matching row's
+  // `data`. Every downstream split reads from `effectiveOverlays`
+  // so the override participates uniformly in the kind-buckets and
+  // the selection outline below. TransformHandles fires
+  // `onGeometryDrag` on every pointermove, the parent stashes the
+  // result here, and the painted glyph follows the cursor — without
+  // this the underlying arrow / rect stays at its pre-drag position
+  // and the user sees "the line vanishes" until pointerup.
+  const effectiveOverlays = useMemo(() => {
+    if (liveOverride === null) return overlays;
+    return overlays.map((row) => {
+      if (row.id !== liveOverride.layerId) return row;
+      const merged = applyGeometryLocally(row.data, liveOverride.geometry);
+      if (merged === null) return row;
+      return { ...row, data: merged };
+    });
+  }, [liveOverride, overlays]);
   const arrows = useMemo(
     () =>
-      overlays.flatMap((row) => (row.data.kind === "arrow" ? [{ row, data: row.data }] : [])),
-    [overlays]
+      effectiveOverlays.flatMap((row) =>
+        row.data.kind === "arrow" ? [{ row, data: row.data }] : []
+      ),
+    [effectiveOverlays]
   );
   const rects = useMemo(
     () =>
-      overlays.flatMap((row) => (row.data.kind === "rect" ? [{ row, data: row.data }] : [])),
-    [overlays]
+      effectiveOverlays.flatMap((row) =>
+        row.data.kind === "rect" ? [{ row, data: row.data }] : []
+      ),
+    [effectiveOverlays]
   );
   const highlights = useMemo(
     () =>
-      overlays.flatMap((row) =>
+      effectiveOverlays.flatMap((row) =>
         row.data.kind === "highlight"
           ? [
               {
@@ -86,12 +129,14 @@ export function OverlaySvg({
             ]
           : []
       ),
-    [overlays]
+    [effectiveOverlays]
   );
   const texts = useMemo(
     () =>
-      overlays.flatMap((row) => (row.data.kind === "text" ? [{ row, data: row.data }] : [])),
-    [overlays]
+      effectiveOverlays.flatMap((row) =>
+        row.data.kind === "text" ? [{ row, data: row.data }] : []
+      ),
+    [effectiveOverlays]
   );
 
   // Live-rect for rect/highlight/blur drags, computed once so all
@@ -114,6 +159,8 @@ export function OverlaySvg({
           key={row.id}
           rect={data.rect}
           color={data.color}
+          thickness={data.thickness}
+          filled={readRectFilled(data)}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -129,6 +176,7 @@ export function OverlaySvg({
           endStyle={readArrowEndStyle(data)}
           stemStyle={readArrowStemStyle(data)}
           doubleEnded={readArrowDoubleEnded(data)}
+          thickness={data.thickness}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -151,7 +199,7 @@ export function OverlaySvg({
           outline around its bounding box. Out of scope: handle glyphs
           and color-of-selected-glyph editing (Phase 4). */}
       {selectedLayerId !== null && (() => {
-        const sel = overlays.find((r) => r.id === selectedLayerId);
+        const sel = effectiveOverlays.find((r) => r.id === selectedLayerId);
         if (sel === undefined) return null;
         return <SelectionOutline data={sel.data} />;
       })()}
@@ -171,6 +219,7 @@ export function OverlaySvg({
           endStyle={draftStyle?.endStyle}
           stemStyle={draftStyle?.stemStyle}
           doubleEnded={draftStyle?.doubleEnded}
+          thickness={draftStyle?.thickness}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
           isDraft
@@ -185,6 +234,8 @@ export function OverlaySvg({
             <RectGlyph
               rect={liveRect}
               color={draftStyle?.color}
+              thickness={draftStyle?.thickness}
+              filled={draftStyle?.filled ?? false}
               imageWidthPx={imageWidthPx}
               imageHeightPx={imageHeightPx}
               isDraft
@@ -207,6 +258,7 @@ function ArrowGlyph({
   endStyle,
   stemStyle,
   doubleEnded = false,
+  thickness,
   isDraft = false
 }: {
   fromXn: number;
@@ -231,6 +283,9 @@ function ArrowGlyph({
   stemStyle?: ArrowStemStyle | undefined;
   /** When true, mirror the same end glyph at the `from` endpoint. */
   doubleEnded?: boolean | undefined;
+  /** Optional stroke-thickness override. "auto"/undefined falls back
+   *  to the geometry-derived stroke fraction (legacy behavior). */
+  thickness?: OverlayThickness | undefined;
   isDraft?: boolean;
 }): ReactElement {
   const resolvedEndStyle: ArrowEndStyle = endStyle ?? "filled-triangle";
@@ -252,7 +307,9 @@ function ArrowGlyph({
         imageHeightPx
       })
     : null;
-  const stroke = headGeom.strokeFraction;
+  // Apply the user's thickness override (small/medium/large/numeric)
+  // on top of the geometry-derived auto stroke. medium ≡ auto.
+  const stroke = readOverlayThickness(thickness, headGeom.strokeFraction);
   const outline = Math.max(stroke * 0.25, 0.0015);
   // Resolution: explicit color → use it; "auto" / undefined → fall back
   // to the theme accent token. Draft variant uses --accent-strong for
@@ -282,9 +339,12 @@ function ArrowGlyph({
 
   return (
     <g strokeLinejoin="round">
-      {/* Stem halo — solid white under-stroke regardless of stem
-          style. Drawing the halo dashed would let the dark image
-          show through the gaps and defeat the legibility purpose. */}
+      {/* Stem halo — white under-stroke for legibility on busy
+          backgrounds. Mirrors the SAME dash pattern as the colored
+          stem so the gaps line up: a dashed colored stem over a
+          solid halo would show solid-white "ghost" dashes through
+          the gaps. With matching dash patterns the halo just widens
+          each dash, never fills the gaps. */}
       <line
         x1={fromPoint.x}
         y1={fromPoint.y}
@@ -293,6 +353,7 @@ function ArrowGlyph({
         stroke="white"
         strokeWidth={stroke + outline * 2}
         strokeLinecap="round"
+        strokeDasharray={dashStem ?? undefined}
         fill="none"
       />
       {/* Head halo at the `to` endpoint. */}
@@ -462,6 +523,8 @@ function RectGlyph({
   imageWidthPx,
   imageHeightPx,
   color,
+  thickness,
+  filled = false,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
@@ -469,13 +532,20 @@ function RectGlyph({
   imageHeightPx: number;
   /** See ArrowGlyph.color for the resolution rationale. Same shape. */
   color?: "auto" | string | undefined;
+  /** Optional stroke-thickness override. See ArrowGlyph.thickness. */
+  thickness?: OverlayThickness | undefined;
+  /** When true, the rect renders as a solid fill in `accent` rather
+   *  than a stroke-only outline. The halo (white under-stroke) is
+   *  skipped because a filled rect already reads at full contrast. */
+  filled?: boolean | undefined;
   isDraft?: boolean;
 }): ReactElement {
   // Stroke width scaled by image short-side, like the arrow's. We
   // compute via computeArrowGeometry across the diagonal so the
   // stroke matches the arrow's visual weight on the same image.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const strokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
+  const autoStrokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
+  const strokeFraction = readOverlayThickness(thickness, autoStrokeFraction);
   const outline = Math.max(strokeFraction * 0.25, 0.0015);
   const accent =
     color !== undefined && color !== "auto"
@@ -483,6 +553,23 @@ function RectGlyph({
       : isDraft
       ? "var(--accent-strong, #ffa33d)"
       : "var(--accent, #ff8a1f)";
+  if (filled) {
+    // Solid fill — single rect, no halo. The fill IS the glyph; a
+    // halo around a solid fill would just shrink-wrap the same color
+    // and add nothing.
+    return (
+      <g>
+        <rect
+          x={rect.x}
+          y={rect.y}
+          width={rect.w}
+          height={rect.h}
+          fill={accent}
+          stroke="none"
+        />
+      </g>
+    );
+  }
   return (
     <g>
       <rect
@@ -650,7 +737,12 @@ type HandleKind =
   // Arrow endpoints
   | "arrow-from" | "arrow-to"
   // Single anchor point (text-move, step)
-  | "anchor";
+  | "anchor"
+  // Interior body — drag-to-move (translates entire layer). Not a
+  // resize handle; rendered as a transparent rect under the resize
+  // handles so resize-handle pointerdowns take priority via z-order
+  // + stopPropagation.
+  | "body";
 
 interface HandleDescriptor {
   /** Stable identifier — also used in data-testid. */
@@ -712,13 +804,63 @@ function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null 
 }
 
 /** Geometry update for the active drag, derived from the descriptor's
- *  handle kind and a fresh pointer position. */
+ *  handle kind and a fresh pointer position. The `startPt` argument
+ *  is the pointer position at pointerdown — used by the `body`
+ *  handle to compute a translation delta. Resize handles ignore it. */
 function geometryFromDrag(
   data: OverlayRow["data"],
   handle: HandleKind,
   newXn: number,
-  newYn: number
+  newYn: number,
+  startPt: { xn: number; yn: number }
 ): GeometryUpdate | null {
+  // Body-translate: shift every coordinate by the pointer delta from
+  // pointerdown, clamping so no part of the layer escapes the canvas.
+  // The translation is computed against the PRE-DRAG `data` snapshot,
+  // so successive pointermoves don't compound drift.
+  if (handle === "body") {
+    const dx = newXn - startPt.xn;
+    const dy = newYn - startPt.yn;
+    if (data.kind === "arrow") {
+      // Clamp the delta so neither endpoint leaves [0,1]. Compute
+      // the tightest min/max delta across both endpoints, then clamp.
+      const minDx = -Math.min(data.from.x, data.to.x);
+      const maxDx = 1 - Math.max(data.from.x, data.to.x);
+      const minDy = -Math.min(data.from.y, data.to.y);
+      const maxDy = 1 - Math.max(data.from.y, data.to.y);
+      const ddx = Math.max(minDx, Math.min(maxDx, dx));
+      const ddy = Math.max(minDy, Math.min(maxDy, dy));
+      return {
+        kind: "arrow",
+        from: { x: data.from.x + ddx, y: data.from.y + ddy },
+        to: { x: data.to.x + ddx, y: data.to.y + ddy }
+      };
+    }
+    if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+      const { x, y, w, h } = data.rect;
+      const ddx = Math.max(-x, Math.min(1 - (x + w), dx));
+      const ddy = Math.max(-y, Math.min(1 - (y + h), dy));
+      return { kind: "rect", rect: { x: x + ddx, y: y + ddy, w, h } };
+    }
+    if (data.kind === "text") {
+      const ddx = Math.max(-data.point.x, Math.min(1 - data.point.x, dx));
+      const ddy = Math.max(-data.point.y, Math.min(1 - data.point.y, dy));
+      return {
+        kind: "text",
+        point: { x: data.point.x + ddx, y: data.point.y + ddy }
+      };
+    }
+    if (data.kind === "step") {
+      const ddx = Math.max(-data.point.x, Math.min(1 - data.point.x, dx));
+      const ddy = Math.max(-data.point.y, Math.min(1 - data.point.y, dy));
+      return {
+        kind: "step",
+        point: { x: data.point.x + ddx, y: data.point.y + ddy }
+      };
+    }
+    return null;
+  }
+
   // Clamp the new position to [0,1] so the user can't drag a handle
   // off the canvas (the underlying schemas reject out-of-range values).
   const cx = Math.max(0, Math.min(1, newXn));
@@ -812,15 +954,22 @@ function geometryFromDrag(
  *  pointer events (its container has pointer-events: auto) and
  *  dispatches geometry updates as the user drags.
  *
- *  The component renders ONE absolute-positioned div per handle. On
- *  pointerdown we capture the pointer + the initial overlay snapshot.
- *  Pointermove updates a local "live geometry" used to redraw the
- *  handles in-place during the drag — without dispatching an IPC per
- *  frame. Pointerup commits the final geometry through
- *  onGeometryChange. */
+ *  The component renders ONE absolute-positioned div per handle PLUS
+ *  a transparent body-hit rect under them. On pointerdown we capture
+ *  the pointer + the initial overlay snapshot. Pointermove fires
+ *  `onGeometryDrag` on every move so the parent can paint a live
+ *  preview of the in-progress geometry (the arrow stretches as you
+ *  drag its endpoint; the rect translates as you drag its body).
+ *  Pointerup commits the final geometry through `onGeometryChange`.
+ *
+ *  Hit precedence: handles render on top of the body (higher
+ *  zIndex + later in DOM order). The handle's `stopPropagation` on
+ *  pointerdown also blocks the body's pointerdown from firing when
+ *  the cursor overlaps both. */
 export function TransformHandles({
   selectedOverlay,
   onGeometryChange,
+  onGeometryDrag,
   onDragStart,
   onDragEnd
 }: {
@@ -830,6 +979,14 @@ export function TransformHandles({
    *  format-aware) and updating the selection model to follow the
    *  new layer id. */
   onGeometryChange: (geometry: GeometryUpdate) => void;
+  /** Called on EVERY pointermove with the in-progress geometry —
+   *  used by the parent to render a live preview overlay so the
+   *  arrow / rect visually stretches as the user drags. The
+   *  geometry is the same shape the eventual `onGeometryChange`
+   *  will fire. Optional; when omitted, only the handles themselves
+   *  show live motion (the underlying glyph stays at its pre-drag
+   *  position until commit). */
+  onGeometryDrag?: (geometry: GeometryUpdate) => void;
   /** Called on pointerdown with the PRE-DRAG overlay row so the
    *  caller can stash it for undo. Optional — when omitted, undo
    *  for moves/resizes won't be recorded. */
@@ -849,6 +1006,10 @@ export function TransformHandles({
   // than React state can keep up.
   const dragStartDataRef = useRef<OverlayRow["data"] | null>(null);
   const dragHandleRef = useRef<HandleKind | null>(null);
+  // Pointer position at pointerdown (normalized [0,1] coords). The
+  // body-translate path reads this to compute a translation delta
+  // against the start data snapshot. Resize handles ignore it.
+  const dragStartPtRef = useRef<{ xn: number; yn: number } | null>(null);
 
   // When the selected overlay changes (different layer, broadcast
   // refetch), drop any stale live geometry.
@@ -856,10 +1017,15 @@ export function TransformHandles({
     setLiveData(null);
     dragStartDataRef.current = null;
     dragHandleRef.current = null;
+    dragStartPtRef.current = null;
   }, [selectedOverlay.id]);
 
   const data = liveData ?? selectedOverlay.data;
   const handles = useMemo(() => handlesForOverlay(data), [data]);
+  // Bounding box for the body-hit rect, computed from the same
+  // `data` snapshot the handles use so the body follows during a
+  // live drag.
+  const bodyBox = useMemo(() => bodyBoxForOverlay(data), [data]);
 
   // Translate a pointer event's client coordinates back into normalized
   // [0,1] image coords. Uses the container's bounding rect — which
@@ -886,34 +1052,46 @@ export function TransformHandles({
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
       dragStartDataRef.current = selectedOverlay.data;
       dragHandleRef.current = handle;
+      const startPt = clientToNormalized(event.clientX, event.clientY);
+      dragStartPtRef.current = startPt ?? { xn: 0, yn: 0 };
       onDragStart?.(selectedOverlay);
     },
-    [onDragStart, selectedOverlay]
+    [clientToNormalized, onDragStart, selectedOverlay]
   );
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>): void => {
       const startData = dragStartDataRef.current;
       const handle = dragHandleRef.current;
-      if (startData === null || handle === null) return;
+      const startPt = dragStartPtRef.current;
+      if (startData === null || handle === null || startPt === null) return;
       const pt = clientToNormalized(event.clientX, event.clientY);
       if (pt === null) return;
-      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn);
+      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn, startPt);
       if (geometry === null) return;
       // Project the geometry onto a fresh data snapshot for live render.
       const merged = applyGeometryLocally(startData, geometry);
       if (merged !== null) setLiveData(merged);
+      // Fire onGeometryDrag every move so the parent can paint a
+      // live preview of the in-progress geometry (the arrow stretches
+      // as the user drags an endpoint, the rect translates as the
+      // body is dragged). Parent reads this into `draftGeometry`
+      // state and threads it through OverlaySvg / BlurOverlays as
+      // `liveOverride`.
+      onGeometryDrag?.(geometry);
     },
-    [clientToNormalized]
+    [clientToNormalized, onGeometryDrag]
   );
 
   const onPointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>): void => {
       const startData = dragStartDataRef.current;
       const handle = dragHandleRef.current;
+      const startPt = dragStartPtRef.current;
       dragStartDataRef.current = null;
       dragHandleRef.current = null;
-      if (startData === null || handle === null) return;
+      dragStartPtRef.current = null;
+      if (startData === null || handle === null || startPt === null) return;
       (event.target as HTMLElement).releasePointerCapture(event.pointerId);
       const pt = clientToNormalized(event.clientX, event.clientY);
       if (pt === null) {
@@ -921,7 +1099,7 @@ export function TransformHandles({
         onDragEnd?.();
         return;
       }
-      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn);
+      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn, startPt);
       if (geometry !== null) {
         onGeometryChange(geometry);
       }
@@ -944,12 +1122,41 @@ export function TransformHandles({
         position: "absolute",
         inset: 0,
         // Container itself is event-transparent — only the handles
-        // themselves catch pointer events. That way a click outside
-        // any handle falls through to the canvas's pointer handlers
-        // (which handle selection / drawing).
+        // themselves (and the body-hit rect) catch pointer events.
+        // That way a click outside any catcher falls through to the
+        // canvas's pointer handlers (selection / drawing).
         pointerEvents: "none"
       }}
     >
+      {/* Body-hit rect rendered FIRST (handles paint on top + take
+          pointerdown priority via stopPropagation). Transparent;
+          catches pointer events; cursor `move`. Drag translates the
+          entire layer. */}
+      {bodyBox !== null && (
+        <div
+          className="editor-transform-body"
+          data-testid="transform-handle-body"
+          data-handle-kind="body"
+          role="button"
+          aria-label="Move layer"
+          tabIndex={-1}
+          onPointerDown={(e) => onPointerDown(e, "body")}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          style={{
+            position: "absolute",
+            left: `${bodyBox.x * 100}%`,
+            top: `${bodyBox.y * 100}%`,
+            width: `${bodyBox.w * 100}%`,
+            height: `${bodyBox.h * 100}%`,
+            cursor: "move",
+            pointerEvents: "auto",
+            // Transparent — the body is a hit target only. Painting
+            // is owned by OverlaySvg / BlurOverlays.
+            background: "transparent"
+          }}
+        />
+      )}
       {handles.map((h) => (
         <div
           key={h.kind}
@@ -971,12 +1178,51 @@ export function TransformHandles({
             // Center the handle on the geometric point.
             transform: "translate(-50%, -50%)",
             cursor: h.cursor,
-            pointerEvents: "auto"
+            pointerEvents: "auto",
+            // Keep handles above the body-hit rect so resize-handle
+            // pointerdowns win over body pointerdowns when the cursor
+            // overlaps both.
+            zIndex: 1
           }}
         />
       ))}
     </div>
   );
+}
+
+/** Compute the normalized [0,1] bounding box used as the body-hit
+ *  rect for drag-to-move. Returns null for layer kinds that have no
+ *  body-translate surface (crop has its own tool). The arrow's box
+ *  bounds the segment from `from` to `to`; rect-shaped layers use
+ *  their rect directly; text and step use a small box around the
+ *  anchor point (big enough to be grabbable, small enough not to
+ *  swallow neighboring clicks). */
+function bodyBoxForOverlay(
+  data: OverlayRow["data"]
+): { x: number; y: number; w: number; h: number } | null {
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    return data.rect;
+  }
+  if (data.kind === "arrow") {
+    const x = Math.min(data.from.x, data.to.x);
+    const y = Math.min(data.from.y, data.to.y);
+    const w = Math.abs(data.to.x - data.from.x);
+    const h = Math.abs(data.to.y - data.from.y);
+    // Don't bother with a body for a zero-length arrow (the endpoint
+    // handles overlap and there's nothing to "drag the middle of").
+    if (w < 0.001 && h < 0.001) return null;
+    return { x, y, w, h };
+  }
+  if (data.kind === "text" || data.kind === "step") {
+    // Approximate the text glyph extent for a grabbable body. The
+    // selection outline uses the same size constants.
+    const w = 0.12;
+    const h = 0.04;
+    const x = Math.max(0, Math.min(1 - w, data.point.x));
+    const y = Math.max(0, Math.min(1 - h, data.point.y));
+    return { x, y, w, h };
+  }
+  return null;
 }
 
 /** Local mirror of `applyGeometryToOverlay` — used to update the

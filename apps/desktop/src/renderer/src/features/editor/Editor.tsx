@@ -161,18 +161,25 @@ function resolveDraftStyleForActiveTool(
 ): DraftStyle | undefined {
   switch (activeStyle.tool) {
     case "arrow":
-      // Thread the user's picked endStyle / stemStyle / doubleEnded
-      // through so the live drag preview matches what the commit will
-      // produce. Without this the draft renders a filled-triangle +
-      // solid stem regardless of the popover pick, and only the
-      // committed overlay flips to the right variant on mouseup.
+      // Thread the user's picked endStyle / stemStyle / doubleEnded /
+      // thickness through so the live drag preview matches what the
+      // commit will produce. Without this the draft renders a filled-
+      // triangle + solid stem + auto thickness regardless of the
+      // popover pick, and only the committed overlay flips to the
+      // right variant on mouseup.
       return {
         color: resolveToolColor(activeStyle.style.color),
         endStyle: activeStyle.style.endStyle,
         stemStyle: activeStyle.style.stemStyle,
-        doubleEnded: activeStyle.style.doubleEnded
+        doubleEnded: activeStyle.style.doubleEnded,
+        thickness: activeStyle.style.thickness
       };
     case "rect":
+      return {
+        color: resolveToolColor(activeStyle.style.color),
+        thickness: activeStyle.style.thickness,
+        filled: activeStyle.style.filled
+      };
     case "highlight":
     case "text":
       return { color: resolveToolColor(activeStyle.style.color) };
@@ -258,7 +265,8 @@ function selectedOverlayToToolStyle(
         color: data.color ?? defaults.arrow.color,
         endStyle: data.endStyle ?? defaults.arrow.endStyle,
         stemStyle: data.stemStyle ?? defaults.arrow.stemStyle,
-        doubleEnded: data.doubleEnded ?? defaults.arrow.doubleEnded
+        doubleEnded: data.doubleEnded ?? defaults.arrow.doubleEnded,
+        thickness: data.thickness ?? defaults.arrow.thickness
       }
     };
   }
@@ -267,7 +275,9 @@ function selectedOverlayToToolStyle(
       tool: "rect",
       style: {
         ...defaults.rect,
-        color: data.color ?? defaults.rect.color
+        color: data.color ?? defaults.rect.color,
+        thickness: data.thickness ?? defaults.rect.thickness,
+        filled: data.filled ?? defaults.rect.filled
       }
     };
   }
@@ -853,6 +863,7 @@ export function Editor({
         arrowOverlay.endStyle = arrowStyleSrc.endStyle;
         arrowOverlay.stemStyle = arrowStyleSrc.stemStyle;
         arrowOverlay.doubleEnded = arrowStyleSrc.doubleEnded;
+        arrowOverlay.thickness = arrowStyleSrc.thickness;
       }
       // Capture the arrow tail in canvas-px so the matching-text
       // affordance can position itself; this lookup needs the live
@@ -894,7 +905,7 @@ export function Editor({
           effectiveToolState.activeStyle.tool === "rect"
             ? effectiveToolState.activeStyle.style
             : null;
-        overlay = {
+        const rectOverlay: Extract<Overlay, { kind: "rect" }> = {
           kind: "rect",
           rect,
           color:
@@ -902,6 +913,11 @@ export function Editor({
               ? resolveToolColor(rectStyleSrc.color)
               : "auto"
         };
+        if (rectStyleSrc !== null) {
+          rectOverlay.thickness = rectStyleSrc.thickness;
+          rectOverlay.filled = rectStyleSrc.filled;
+        }
+        overlay = rectOverlay;
       } else if (placedKind === "highlight") {
         const hlStyleSrc =
           effectiveToolState.activeStyle.tool === "highlight"
@@ -1475,21 +1491,53 @@ function EditorLoaded({
   // result. Cleared on drag end (whether or not the drag committed).
   const preDragRef = useRef<OverlayRow | null>(null);
 
+  // Live-drag preview state — populated on every pointermove from
+  // TransformHandles so OverlaySvg + BlurOverlays can paint the
+  // selected overlay at the in-progress geometry. Cleared once
+  // dispatchEdit settles (or immediately on failure / cancel).
+  // Without this the underlying glyph stays at its pre-drag
+  // position while the handle is dragged — the user sees the bbox
+  // outline + handle move but the painted glyph "vanishes" until
+  // commit re-anchors it (the bug we're fixing).
+  const [draftGeometry, setDraftGeometry] = useState<
+    { layerId: string; geometry: GeometryUpdate } | null
+  >(null);
+
   const onHandleDragStart = useCallback((row: OverlayRow): void => {
     preDragRef.current = row;
   }, []);
 
   const onHandleDragEnd = useCallback((): void => {
-    // Don't clear here — the geometry handler reads preDragRef AFTER
-    // onDragEnd fires (the order is onGeometryChange → onDragEnd).
-    // Cleared at the end of onHandleGeometryChange instead.
+    // Don't clear preDragRef here — the geometry handler reads it
+    // AFTER onDragEnd fires (the order is onGeometryChange → onDragEnd).
+    // Cleared at the end of onHandleGeometryChange instead. The live
+    // override is ALSO cleared by the geometry handler once
+    // dispatchEdit resolves, so the override doesn't blink back to
+    // the pre-drag position between drag-end and the broadcast refetch.
   }, []);
+
+  const onHandleGeometryDrag = useCallback(
+    (geometry: GeometryUpdate): void => {
+      // Stash the in-progress geometry against the currently-dragged
+      // overlay's id so OverlaySvg / BlurOverlays can paint it. Read
+      // the id from the pre-drag snapshot rather than selectedLayerId
+      // so a stray selection-change broadcast mid-drag can't repoint
+      // the override at the wrong row.
+      const preDrag = preDragRef.current;
+      if (preDrag === null) return;
+      setDraftGeometry({ layerId: preDrag.id, geometry });
+    },
+    []
+  );
 
   const onHandleGeometryChange = useCallback(
     (geometry: GeometryUpdate): void => {
       const preDrag = preDragRef.current;
       preDragRef.current = null;
-      if (preDrag === null) return;
+      if (preDrag === null) {
+        setDraftGeometry(null);
+        return;
+      }
       void (async (): Promise<void> => {
         const result = await dispatchEdit({
           kind: "updateGeometry",
@@ -1499,15 +1547,30 @@ function EditorLoaded({
         if (!result.ok) {
           // eslint-disable-next-line no-console
           console.error("updateGeometry failed", result.error);
+          // Drop the live override on failure so the canvas snaps
+          // back to the persisted (pre-drag) geometry rather than
+          // strand the user with a ghost preview.
+          setDraftGeometry(null);
           return;
         }
-        if (result.value.kind !== "update") return;
+        if (result.value.kind !== "update") {
+          setDraftGeometry(null);
+          return;
+        }
         const artifact = result.value.artifact;
         const newId =
           artifact.format === 1 ? artifact.row.id : artifact.node.id;
         // Re-anchor the selection on the new id so the handles + the
         // selection outline follow the freshly-inserted row.
         setSelectedLayerId(newId);
+        // Drop the live override now that the new row id is known.
+        // The events:overlays:changed (or v2's events:layers:changed)
+        // broadcast refetches the row list with the persisted
+        // geometry, so the override is no longer load-bearing.
+        // Clearing here avoids a brief flash where the override
+        // (keyed by the OLD id) lingers against a list that no
+        // longer contains that row.
+        setDraftGeometry(null);
         // Record on the undo stack — capture both the PRE and POST
         // geometry, with a chain-id ref so subsequent undo/redo cycles
         // can track the new ids.
@@ -2039,7 +2102,12 @@ function EditorLoaded({
               the image behind. Lives separately from OverlaySvg
               because SVG <filter> can blur SVG content but not a
               sibling raster <img>. */}
-          <BlurOverlays overlays={overlays} draft={draft} blurStyle={blurStyle} />
+          <BlurOverlays
+            overlays={overlays}
+            draft={draft}
+            blurStyle={blurStyle}
+            liveOverride={draftGeometry}
+          />
           <OverlaySvg
             overlays={overlays}
             draft={draft}
@@ -2054,16 +2122,23 @@ function EditorLoaded({
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
             selectedLayerId={selectedLayerId}
+            liveOverride={draftGeometry}
           />
           {/* Phase 3.5 — transform handles rendered on top of OverlaySvg
               so the selected overlay can be resized/moved via drag. The
               handles sit in their own absolute-positioned layer (HTML
               divs, not SVG) so they receive pointer events without
-              fighting the OverlaySvg's pointer-events: none. */}
+              fighting the OverlaySvg's pointer-events: none.
+              `onGeometryDrag` fires on every pointermove so the parent
+              can paint the selected glyph at the in-progress geometry
+              (via `liveOverride` above) — without this, the painted
+              glyph stays at its pre-drag position and the user only
+              sees the handles + bbox outline move during the drag. */}
           {selectedOverlayForHandles !== null && (
             <TransformHandles
               selectedOverlay={selectedOverlayForHandles}
               onGeometryChange={onHandleGeometryChange}
+              onGeometryDrag={onHandleGeometryDrag}
               onDragStart={onHandleDragStart}
               onDragEnd={onHandleDragEnd}
             />

@@ -11,17 +11,13 @@
 // (endStyle × stemStyle × doubleEnded) combination.
 
 import { describe, expect, test } from "vitest";
+import type { OverlayRow } from "@pwrsnap/shared";
 import { arrowSvgForV2 } from "../compose";
 
 const W = 800;
 const H = 600;
 
-function baseArrow(): {
-  kind: "arrow";
-  from: { x: number; y: number };
-  to: { x: number; y: number };
-  color: "auto" | string;
-} {
+function baseArrow(): Extract<OverlayRow["data"], { kind: "arrow" }> {
   return {
     kind: "arrow",
     from: { x: 0.2, y: 0.5 },
@@ -138,15 +134,88 @@ describe("arrowSvg (bake) — stemStyle variants", () => {
     expect(on / off).toBeLessThan(0.05);
   });
 
-  test("halo stem stays SOLID even when the colored stem is dashed (legibility)", () => {
+  test("halo stem mirrors the colored stem's dash pattern when dashed", () => {
+    // The halo MUST carry the same dash pattern as the colored stem.
+    // A solid halo with a dashed colored stem shows solid-white
+    // "ghost" dashes through the gaps — looks like white dashes
+    // against the background and defeats the dashed visual.
     const svg = arrowSvgForV2({ ...baseArrow(), stemStyle: "dashed" }, W, H);
-    // The first <line> is the halo (stroke="white"); it must NOT carry
-    // stroke-dasharray or the underlying image bleeds through the
-    // gaps.
+    const lines = svg.match(/<line[^/]+\/>/g) ?? [];
+    const haloLine = lines.find((l) => l.includes('stroke="white"'));
+    const coloredLine = lines.find((l) => !l.includes('stroke="white"'));
+    expect(haloLine).toBeDefined();
+    expect(coloredLine).toBeDefined();
+    const haloDash = haloLine!.match(/stroke-dasharray="([^"]+)"/);
+    const coloredDash = coloredLine!.match(/stroke-dasharray="([^"]+)"/);
+    expect(haloDash).not.toBeNull();
+    expect(coloredDash).not.toBeNull();
+    expect(haloDash![1]).toBe(coloredDash![1]);
+  });
+
+  test("halo stem mirrors the colored stem's dash pattern when dotted", () => {
+    const svg = arrowSvgForV2({ ...baseArrow(), stemStyle: "dotted" }, W, H);
+    const lines = svg.match(/<line[^/]+\/>/g) ?? [];
+    const haloLine = lines.find((l) => l.includes('stroke="white"'));
+    const coloredLine = lines.find((l) => !l.includes('stroke="white"'));
+    const haloDash = haloLine!.match(/stroke-dasharray="([^"]+)"/);
+    const coloredDash = coloredLine!.match(/stroke-dasharray="([^"]+)"/);
+    expect(haloDash).not.toBeNull();
+    expect(coloredDash).not.toBeNull();
+    expect(haloDash![1]).toBe(coloredDash![1]);
+  });
+
+  test("halo stem stays solid when the colored stem is solid", () => {
+    // Sanity — no spurious dasharray gets stamped on the halo when
+    // there's no dash pattern to mirror.
+    const svg = arrowSvgForV2(baseArrow(), W, H);
     const lines = svg.match(/<line[^/]+\/>/g) ?? [];
     const haloLine = lines.find((l) => l.includes('stroke="white"'));
     expect(haloLine).toBeDefined();
     expect(haloLine).not.toContain("stroke-dasharray");
+  });
+});
+
+describe("arrowSvg (bake) — thickness", () => {
+  test("auto / undefined falls back to the legacy geometry stroke", () => {
+    const baseline = arrowSvgForV2(baseArrow(), W, H);
+    const explicit = arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H);
+    expect(explicit).toBe(baseline);
+  });
+
+  test("thickness 'large' renders ~2× the auto stroke width", () => {
+    const autoSvg = arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H);
+    const largeSvg = arrowSvgForV2({ ...baseArrow(), thickness: "large" }, W, H);
+    // Pull the colored stem's stroke-width from each (matches
+    // `stroke="#ff8a1f"`; the halo is `stroke="white"`).
+    const autoStroke = Number(
+      autoSvg
+        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
+        ?.[1] ?? ""
+    );
+    const largeStroke = Number(
+      largeSvg
+        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
+        ?.[1] ?? ""
+    );
+    expect(autoStroke).toBeGreaterThan(0);
+    expect(largeStroke).toBeGreaterThan(0);
+    expect(largeStroke / autoStroke).toBeCloseTo(2, 1);
+  });
+
+  test("thickness 'small' renders ~0.5× the auto stroke width", () => {
+    const autoSvg = arrowSvgForV2({ ...baseArrow(), thickness: "auto" }, W, H);
+    const smallSvg = arrowSvgForV2({ ...baseArrow(), thickness: "small" }, W, H);
+    const autoStroke = Number(
+      autoSvg
+        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
+        ?.[1] ?? ""
+    );
+    const smallStroke = Number(
+      smallSvg
+        .match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)
+        ?.[1] ?? ""
+    );
+    expect(smallStroke / autoStroke).toBeCloseTo(0.5, 1);
   });
 });
 

@@ -10,6 +10,41 @@
 
 import { z } from "zod";
 
+/** Thickness preset shared by ArrowOverlay + RectOverlay. Mirrors the
+ *  `ToolSizePreset` value space in `protocol.ts` (the editor's tool-
+ *  style memory) — picking "large" in the popover writes "large" into
+ *  the overlay row. Numeric escape hatch (px-equivalent fraction)
+ *  reserved for future power-user controls; pre-Phase 3.x rows omit
+ *  the field entirely and render at the auto-derived stroke. */
+export const OverlayThickness = z.union([
+  z.literal("auto"),
+  z.literal("small"),
+  z.literal("medium"),
+  z.literal("large"),
+  z.number().positive().max(1)
+]);
+export type OverlayThickness = z.infer<typeof OverlayThickness>;
+
+/** Multiplier table for thickness presets — applied to the
+ *  auto-derived stroke fraction. medium ≡ auto so the user can pick a
+ *  symmetric S/M/L stack without surprising the default. Numeric
+ *  values pass through directly as the stroke fraction. */
+export function readOverlayThickness(
+  thickness: OverlayThickness | undefined,
+  autoFraction: number
+): number {
+  if (thickness === undefined || thickness === "auto") return autoFraction;
+  if (typeof thickness === "number") return thickness;
+  switch (thickness) {
+    case "small":
+      return autoFraction * 0.5;
+    case "medium":
+      return autoFraction;
+    case "large":
+      return autoFraction * 2;
+  }
+}
+
 const NormalizedScalar = z.number().min(0).max(1);
 const NormalizedPoint = z.object({
   x: NormalizedScalar,
@@ -49,7 +84,11 @@ export const ArrowOverlay = z.object({
   stemStyle: ArrowStemStyle.optional(),
   /** When true, render the same end glyph at both endpoints. Legacy
    *  rows omit this field (rendered as single-ended). */
-  doubleEnded: z.boolean().optional()
+  doubleEnded: z.boolean().optional(),
+  /** Optional stroke-thickness override. Maps through
+   *  `readOverlayThickness` to a stroke fraction; missing / "auto"
+   *  preserves the legacy short-side-derived stroke. */
+  thickness: OverlayThickness.optional()
 });
 
 /** Mirror of readBlurStyle — applies the legacy default for arrows
@@ -76,8 +115,18 @@ export function readArrowDoubleEnded(
 export const RectOverlay = z.object({
   kind: z.literal("rect"),
   rect: NormalizedRect,
-  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
+  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
+  /** Optional stroke-thickness override (see ArrowOverlay.thickness). */
+  thickness: OverlayThickness.optional(),
+  /** When true, the rect renders as a solid fill in the resolved color
+   *  rather than the default stroke-only outline. Optional for back-
+   *  compat: legacy rows render as outline-only. */
+  filled: z.boolean().optional()
 });
+
+export function readRectFilled(data: { filled?: boolean | undefined }): boolean {
+  return data.filled ?? false;
+}
 
 /** Blend mode for highlight overlays. Mirrors `HighlightBlendMode` in
  *  `protocol.ts` (the popover/settings preference type) — same value

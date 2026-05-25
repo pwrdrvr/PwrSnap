@@ -128,29 +128,140 @@ describe("OverlaySvg ArrowGlyph — stemStyle", () => {
     expect(dashedLines.length).toBe(0);
   });
 
-  test("dashed stem applies stroke-dasharray to the colored stem only", async () => {
+  test("dashed stem applies the same stroke-dasharray to halo AND colored stem", async () => {
+    // Bug fix: previously the halo was solid while the colored stem
+    // was dashed; the gaps showed the solid-white halo through, which
+    // looked like white dashes against the background. Halo now
+    // mirrors the colored dash so gaps stay transparent.
     const svg = await renderOverlaySvg([arrowRow({ stemStyle: "dashed" })]);
     const dashedLines = Array.from(svg.querySelectorAll("line")).filter(
       (l) => l.hasAttribute("stroke-dasharray")
     );
-    // Exactly one: the colored stem. The halo stem stays solid.
-    expect(dashedLines.length).toBe(1);
-    const dashed = dashedLines[0]!;
-    expect(dashed.getAttribute("stroke")).not.toBe("white");
+    // Two: the white halo stem + the colored stem. They share the
+    // same dasharray.
+    expect(dashedLines.length).toBe(2);
+    const haloDashed = dashedLines.find((l) => l.getAttribute("stroke") === "white");
+    const coloredDashed = dashedLines.find((l) => l.getAttribute("stroke") !== "white");
+    expect(haloDashed).toBeDefined();
+    expect(coloredDashed).toBeDefined();
+    expect(haloDashed!.getAttribute("stroke-dasharray")).toBe(
+      coloredDashed!.getAttribute("stroke-dasharray")
+    );
   });
 
-  test("dotted stem applies stroke-dasharray with a tiny on-pattern", async () => {
+  test("dotted stem applies stroke-dasharray with a tiny on-pattern, mirrored to halo", async () => {
     const svg = await renderOverlaySvg([arrowRow({ stemStyle: "dotted" })]);
     const dashedLines = Array.from(svg.querySelectorAll("line")).filter(
       (l) => l.hasAttribute("stroke-dasharray")
     );
-    expect(dashedLines.length).toBe(1);
+    // Halo + colored stem both carry the dot pattern.
+    expect(dashedLines.length).toBe(2);
     const pattern = dashedLines[0]!.getAttribute("stroke-dasharray")!;
     const [onStr, offStr] = pattern.split(/\s+/);
     const on = Number(onStr);
     const off = Number(offStr);
     expect(on).toBeLessThan(off);
     expect(on / off).toBeLessThan(0.05);
+    // Halo + colored share the exact same pattern.
+    expect(dashedLines[1]!.getAttribute("stroke-dasharray")).toBe(pattern);
+  });
+});
+
+describe("OverlaySvg ArrowGlyph — thickness", () => {
+  test("undefined thickness falls back to the auto stroke", async () => {
+    const svg = await renderOverlaySvg([arrowRow()]);
+    const coloredStem = Array.from(svg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    );
+    expect(coloredStem).toBeDefined();
+    expect(Number(coloredStem!.getAttribute("stroke-width"))).toBeGreaterThan(0);
+  });
+
+  test("thickness 'large' renders ~2× the auto stroke width", async () => {
+    const autoSvg = await renderOverlaySvg([arrowRow({ thickness: "auto" })]);
+    const largeSvg = await renderOverlaySvg([arrowRow({ thickness: "large" })]);
+    const autoStem = Array.from(autoSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    const largeStem = Array.from(largeSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    const autoW = Number(autoStem.getAttribute("stroke-width"));
+    const largeW = Number(largeStem.getAttribute("stroke-width"));
+    expect(largeW / autoW).toBeCloseTo(2, 1);
+  });
+
+  test("thickness 'small' renders ~0.5× the auto stroke width", async () => {
+    const autoSvg = await renderOverlaySvg([arrowRow({ thickness: "auto" })]);
+    const smallSvg = await renderOverlaySvg([arrowRow({ thickness: "small" })]);
+    const autoStem = Array.from(autoSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    const smallStem = Array.from(smallSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    expect(
+      Number(smallStem.getAttribute("stroke-width")) /
+        Number(autoStem.getAttribute("stroke-width"))
+    ).toBeCloseTo(0.5, 1);
+  });
+});
+
+function rectRow(
+  data: Partial<Extract<OverlayRow["data"], { kind: "rect" }>> = {}
+): OverlayRow {
+  return {
+    id: "rect_test_1",
+    capture_id: "cap_1",
+    data: {
+      kind: "rect",
+      rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+      color: "auto",
+      ...data
+    },
+    schema_version: 1,
+    created_at: "2026-05-24T00:00:00Z",
+    applied_at: "2026-05-24T00:00:00Z",
+    rejected_at: null,
+    superseded_by: null,
+    ai_run_id: null,
+    source: "user",
+    z_index: 0
+  };
+}
+
+describe("OverlaySvg RectGlyph — filled", () => {
+  test("legacy rect (no filled field) renders outline-only (halo + colored rect)", async () => {
+    const svg = await renderOverlaySvg([rectRow()]);
+    const rects = svg.querySelectorAll("rect");
+    expect(rects.length).toBe(2);
+    Array.from(rects).forEach((r) => {
+      expect(r.getAttribute("fill")).toBe("none");
+    });
+  });
+
+  test("filled:true renders ONE rect with the resolved color as fill", async () => {
+    const svg = await renderOverlaySvg([rectRow({ filled: true, color: "#00ff00" })]);
+    const rects = svg.querySelectorAll("rect");
+    expect(rects.length).toBe(1);
+    expect(rects[0]!.getAttribute("fill")).toBe("#00ff00");
+    expect(rects[0]!.getAttribute("stroke")).toBe("none");
+  });
+});
+
+describe("OverlaySvg RectGlyph — thickness", () => {
+  test("thickness 'large' renders ~2× the auto stroke width", async () => {
+    const autoSvg = await renderOverlaySvg([rectRow({ thickness: "auto" })]);
+    const largeSvg = await renderOverlaySvg([rectRow({ thickness: "large" })]);
+    const autoStroke = Array.from(autoSvg.querySelectorAll("rect")).find(
+      (r) => r.getAttribute("stroke") !== "white" && r.getAttribute("stroke") !== "none"
+    )!;
+    const largeStroke = Array.from(largeSvg.querySelectorAll("rect")).find(
+      (r) => r.getAttribute("stroke") !== "white" && r.getAttribute("stroke") !== "none"
+    )!;
+    const autoW = Number(autoStroke.getAttribute("stroke-width"));
+    const largeW = Number(largeStroke.getAttribute("stroke-width"));
+    expect(largeW / autoW).toBeCloseTo(2, 1);
   });
 });
 

@@ -31,7 +31,9 @@ import {
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
-  readBlurStyle
+  readBlurStyle,
+  readOverlayThickness,
+  readRectFilled
 } from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
@@ -355,11 +357,14 @@ function arrowSvg(
     : null;
 
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  // Apply the thickness override to the geometry-derived stroke.
+  // `readOverlayThickness` returns a multiple of `auto` for the
+  // preset buckets; numeric values pass through verbatim.
+  const strokeWidthPx = readOverlayThickness(data.thickness, headGeom.strokeWidthPx);
   // White outline always drawn (per plan §"Smart arrow algorithm"):
   // legibility on busy images. The outline is a slightly thicker
   // pass underneath the accent.
-  const outlineWidth = Math.max(1.5, headGeom.strokeWidthPx * 0.25);
-  const strokeWidthPx = headGeom.strokeWidthPx;
+  const outlineWidth = Math.max(1.5, strokeWidthPx * 0.25);
 
   // Stem endpoints depend on the head style (see live editor's
   // `stemEndpointFor` — keep this in sync). Filled / open triangles
@@ -372,6 +377,10 @@ function arrowSvg(
 
   // Stem dash pattern — pixel-space (since this SVG's viewBox is in
   // image pixels). dotted uses round caps so dots look like dots.
+  // The SAME pattern is applied to the halo line below so the halo's
+  // on/off rhythm lines up with the colored stem — without that, a
+  // dashed colored stem over a solid halo shows solid-white ghost
+  // dashes through the gaps.
   const stemDashAttr = stemDashAttr_PixelSpace(stemStyle, strokeWidthPx);
 
   const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
@@ -386,7 +395,7 @@ function arrowSvg(
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
-          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" fill="none" />
+          stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round"${stemDashAttr} fill="none" />
     ${halo}
     ${haloTail}
     <line x1="${stemEndAtFrom.x}" y1="${stemEndAtFrom.y}" x2="${stemEndAtTo.x}" y2="${stemEndAtTo.y}"
@@ -506,9 +515,26 @@ function rectSvg(
   const wPx = data.rect.w * imageWidthPx;
   const hPx = data.rect.h * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  const strokeWidthPx = clamp(shortSidePx / 220, 4, 14);
+  const autoStrokeWidthPx = clamp(shortSidePx / 220, 4, 14);
+  // Numeric thickness values are stored as normalized fractions in
+  // the overlay row; multiply by the short side here to land in
+  // pixel space. Preset buckets scale `autoStrokeWidthPx` directly.
+  const strokeWidthPx =
+    typeof data.thickness === "number"
+      ? data.thickness * shortSidePx
+      : readOverlayThickness(data.thickness, autoStrokeWidthPx);
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
+  const filled = readRectFilled(data);
+
+  if (filled) {
+    // Solid fill — single rect, no stroke / halo. A halo around a
+    // solid fill would just visually expand the same color outward
+    // by a stroke-width without adding contrast.
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />
+</svg>`;
+  }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round">

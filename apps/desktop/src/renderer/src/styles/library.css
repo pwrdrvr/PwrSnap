@@ -2182,20 +2182,26 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
-/* Inactive tool button hover — neutral panel-hover (the "this tool
-   is clickable" hint for tools you haven't picked). */
-.psl__et-btn:not(.is-active):hover {
-  background: var(--bg-panel-hover);
-  color: var(--text-primary);
-}
-/* Active tool button hover — accent-tint OVER the wrap's accent-soft
-   gives a subtle darken-the-icon-area-on-hover hint without obscuring
-   the unified box. Tells the user "yes you can click here too" — a
-   second click toggles the style popover (or activates single-shot
-   on ⌥-click). The caret half has its own hover rule below; both
-   halves now respond independently inside the unified box. */
+/* Tool button hover — solid `--accent` fill regardless of active
+   state. Strong unambiguous "this is clickable" signal that reads
+   instantly. Text + key chip flip to `--button-text-on-accent`
+   (black on tangerine dark; white on deepened tangerine in light
+   theme) so they stay legible on the saturated bg. Same idiom as
+   the primary buttons elsewhere in the chrome (Quick Capture, Use
+   draft, etc.). */
+.psl__et-btn:hover,
 .psl__et-btn.is-active:hover {
-  background: var(--accent-tint);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+/* Key chip inverts on hover so the letter stays visible on the
+   solid-accent bg. Border + bg become a translucent overlay of the
+   foreground color (10% / 4% of the button-text-on-accent token). */
+.psl__et-btn:hover .psl__et-btn-key,
+.psl__et-btn.is-active:hover .psl__et-btn-key {
+  color: var(--button-text-on-accent);
+  border-color: color-mix(in srgb, var(--button-text-on-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--button-text-on-accent) 8%, transparent);
 }
 /* Active styling lives on the WRAPPER (`.psl__et-tool-wrap.is-active`)
    below, not on the inner button, so the accent-soft box spans both
@@ -2263,11 +2269,11 @@
     color var(--dur-fast) var(--ease-out),
     transform var(--dur-fast) var(--ease-out);
 }
-/* Inactive caret hover — subtle, matches the main button's neutral
-   hover. Signals "this is clickable" without dominating. */
+/* Caret hover — same solid-accent idiom as the main button so the
+   two halves of the unified box respond to hover identically. */
 .psl__et-caret:hover {
-  background: var(--bg-panel-hover);
-  color: var(--text-primary);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
 }
 /* When the tool is active, the caret sits INSIDE the unified accent
    box. Subtle accent-border separator on its left makes the two
@@ -2282,8 +2288,8 @@
   border-bottom-right-radius: 6px;
 }
 .psl__et-caret.is-tool-active:hover {
-  background: var(--accent-tint);
-  color: var(--accent-strong);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
 }
 /* Open state — accent-filled "I'm controlling an open popover" look.
    Chevron rotates 180° so it points UP (matches every native dropdown

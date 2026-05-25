@@ -652,11 +652,13 @@ function SelectionOutline({
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     box = data.rect;
   } else if (data.kind === "arrow") {
-    const x = Math.min(data.from.x, data.to.x);
-    const y = Math.min(data.from.y, data.to.y);
-    const w = Math.abs(data.to.x - data.from.x);
-    const h = Math.abs(data.to.y - data.from.y);
-    box = { x, y, w, h };
+    // No bounding box for arrows. An axis-aligned rect drawn around the
+    // arrow's extents is the WRONG shape (the arrow itself is a line,
+    // not a rect) — it just adds visual noise. The TransformHandles
+    // component renders 2 endpoint handles (`from` + `to`) which
+    // already communicate "this arrow is selected" without redrawing
+    // the user's annotation as a misleading box. Return null.
+    return null;
   } else if (data.kind === "text") {
     // Small fixed box around the text anchor point. The actual
     // rendered glyph extends to the right/down; a tight box would

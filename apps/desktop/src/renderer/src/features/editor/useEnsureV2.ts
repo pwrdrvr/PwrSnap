@@ -105,6 +105,16 @@ export function useEnsureV2(opts: UseEnsureV2Options): UseEnsureV2Return {
           setState({ status: "ready" });
           return;
         }
+        if (value.reason === "no_bundle") {
+          // Pre-bundle-storage legacy capture: the captures row has
+          // `legacy_src_path` (a loose PNG/WebP) but no bundle file
+          // for the doctor to repack. There's nothing to migrate, the
+          // capture renders fine via the v1 read path. Treat as ready
+          // so the toolbar enables. Pre-fix the doctor returned an
+          // error for this case which locked the editor in view_only.
+          setState({ status: "ready" });
+          return;
+        }
         if (value.reason === "parked") {
           setState({
             status: "view_only",

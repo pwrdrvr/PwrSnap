@@ -145,8 +145,9 @@ type DoctorCaptureRow = {
 export async function migrateBundleV1ToV2(
   captureId: string
 ): Promise<
-  Result<{ migrated: boolean; reason?: "already_v2" | "parked" }, PwrSnapError>
+  Result<{ migrated: boolean; reason?: "already_v2" | "parked" | "no_bundle" }, PwrSnapError>
 > {
+  log.info("v1-to-v2-doctor: enter", { captureId });
   const db = getDb();
   const row = db
     .prepare<[string], DoctorCaptureRow>(
@@ -156,6 +157,7 @@ export async function migrateBundleV1ToV2(
     )
     .get(captureId);
   if (row === undefined) {
+    log.warn("v1-to-v2-doctor: capture not found in DB", { captureId });
     return err(
       pwrSnapError(
         "persistence",
@@ -165,22 +167,43 @@ export async function migrateBundleV1ToV2(
     );
   }
   if (row.bundle_path === null) {
-    return err(
-      pwrSnapError(
-        "persistence",
-        "no_bundle_path",
-        `v1-to-v2-doctor: capture ${captureId} has no bundle on disk`
-      )
-    );
+    // Pre-bundle-storage legacy captures: rows that predate migration
+    // 0007_bundle_storage have no bundle file on disk. They carry only
+    // `legacy_src_path` (a path to a loose PNG/WebP file) and render
+    // fine in the editor via the v1 read path. There's nothing for the
+    // doctor to upgrade — there's no bundle to repack — so this is a
+    // no-op success, NOT an error.
+    //
+    // Pre-fix this branch returned err("no_bundle_path"). The renderer's
+    // useEnsureV2 maps any error → view_only, which locked the toolbar
+    // for legacy captures (and for every E2E test fixture that seeds via
+    // `seedCapture` without writing a bundle — that's how this bug was
+    // caught). The renderer now treats `reason: "no_bundle"` as the same
+    // terminal state as `already_v2` / `migrated: true` — ready, toolbar
+    // enabled, view unchanged.
+    log.info("v1-to-v2-doctor: skip (no bundle on disk; legacy capture)", {
+      captureId,
+      bundleFormatVersion: row.bundle_format_version
+    });
+    return ok({ migrated: false, reason: "no_bundle" });
   }
 
   // Step 1: Read the manifest. Authoritative for "is this v1 or v2?" —
   // the DB row's bundle_format_version is a cached projection and may
   // lag behind reality after a mid-crash gap.
+  log.info("v1-to-v2-doctor: step 1 (read manifest)", {
+    captureId,
+    bundlePath: row.bundle_path
+  });
   let manifest: BundleManifestV1 | BundleManifestV2;
   try {
     manifest = await readBundleManifest(row.bundle_path);
   } catch (cause) {
+    log.warn("v1-to-v2-doctor: manifest read failed", {
+      captureId,
+      bundlePath: row.bundle_path,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
     return err(
       pwrSnapError(
         "persistence",
@@ -194,13 +217,27 @@ export async function migrateBundleV1ToV2(
     // Already-v2 case. If the DB row still says v1, the boot-time
     // reconcile will heal it on next boot; we don't touch it here
     // so the doctor's response stays a pure short-circuit.
+    log.info("v1-to-v2-doctor: short-circuit (already v2 on disk)", {
+      captureId,
+      dbVersion: row.bundle_format_version
+    });
     return ok({ migrated: false, reason: "already_v2" });
   }
 
   // Step 2: Retry budget.
   if (row.v1_to_v2_attempts >= MAX_ATTEMPTS) {
+    log.warn("v1-to-v2-doctor: parked (retry budget exhausted)", {
+      captureId,
+      attempts: row.v1_to_v2_attempts,
+      maxAttempts: MAX_ATTEMPTS
+    });
     return ok({ migrated: false, reason: "parked" });
   }
+  log.info("v1-to-v2-doctor: step 2 (within retry budget)", {
+    captureId,
+    attemptsBefore: row.v1_to_v2_attempts,
+    maxAttempts: MAX_ATTEMPTS
+  });
 
   // Step 3: Bump v1_to_v2_attempts in a standalone TX so any
   // crash in steps 4-10 still counts toward the budget.
@@ -221,11 +258,16 @@ export async function migrateBundleV1ToV2(
 
   try {
     // Step 4: Read v1 overlays + source dims.
+    log.info("v1-to-v2-doctor: step 4 (read v1 overlays)", { captureId });
     const { readBundleOverlays } = await import("./bundle-store");
     const overlaysJson = await readBundleOverlays(row.bundle_path);
     const sourceDims = { width: row.width_px, height: row.height_px };
 
     // Step 5: Build the v2 document (pure function).
+    log.info("v1-to-v2-doctor: step 5 (synthesize v2 document)", {
+      captureId,
+      overlayCount: overlaysJson.overlays.length
+    });
     const v2Document = synthesizeV2DocumentFromV1Overlays(
       overlaysJson,
       manifest,
@@ -269,11 +311,19 @@ export async function migrateBundleV1ToV2(
       )
     };
 
+    log.info("v1-to-v2-doctor: step 6a (build composite thumbnail)", {
+      captureId,
+      sourceBytes: sourceBytes.length
+    });
     const thumbnailJpg = await buildCompositeThumbnail(sourceBytes, {
       width_px: row.width_px,
       height_px: row.height_px
     });
 
+    log.info("v1-to-v2-doctor: step 6b (pack v2 bundle)", {
+      captureId,
+      thumbnailBytes: thumbnailJpg?.length ?? 0
+    });
     const bundleBytes = await packBundleV2({
       manifest: v2Manifest,
       document: documentWithRealSha,
@@ -282,6 +332,11 @@ export async function migrateBundleV1ToV2(
       thumbnailJpg
     });
 
+    log.info("v1-to-v2-doctor: step 6c (atomic write temp bundle)", {
+      captureId,
+      tempPath,
+      bundleBytes: bundleBytes.length
+    });
     await atomicWriteBundle(tempPath, bundleBytes);
 
     // Step 7: BEGIN IMMEDIATE — write the layer tree + flip the
@@ -289,6 +344,10 @@ export async function migrateBundleV1ToV2(
     // so a crash between step 7 and step 8 leaves a DB row whose
     // bundle_path points at a file that may or may not exist after
     // step 8's rename. The boot-time reconcile sweep heals.
+    log.info("v1-to-v2-doctor: step 7 (DB transaction — insert layers + flip version)", {
+      captureId,
+      layerCount: documentWithRealSha.layers.length
+    });
     const { insertLayerTreeForCapture } = await import("./layers-repo");
     const writeTx = db.transaction(() => {
       insertLayerTreeForCapture(captureId, documentWithRealSha.layers);
@@ -304,6 +363,11 @@ export async function migrateBundleV1ToV2(
     // Step 8: rename temp → final, then UPDATE captures.bundle_path
     // back to final. If the rename fails the DB still points at the
     // temp file; reconcile detects via existsSync and reverts.
+    log.info("v1-to-v2-doctor: step 8 (rename temp → final)", {
+      captureId,
+      tempPath,
+      finalPath
+    });
     await rename(tempPath, finalPath);
     db.prepare<[string, string]>(
       `UPDATE captures SET bundle_path = ? WHERE id = ?`

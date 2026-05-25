@@ -1110,7 +1110,7 @@ export type Commands = {
    */
   "v1ToV2:upgrade": {
     req: { captureId: string };
-    res: { migrated: boolean; reason?: "already_v2" | "parked" };
+    res: { migrated: boolean; reason?: "already_v2" | "parked" | "no_bundle" };
   };
   /** Cached-snapshot reader for the v1 → v2 doctor. Same race-safe
    *  pattern as `migration:status` — late-mounting renderers query

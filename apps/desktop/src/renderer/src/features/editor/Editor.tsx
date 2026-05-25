@@ -2095,9 +2095,15 @@ function EditorLoaded({
   // which causes the compositor to clip the next composite to the
   // new canvas size.
   //
-  // Crop is sticky — DO NOT change tools after commit; the user can
-  // re-position by re-entering the crop tool or move on by picking
-  // another tool themselves.
+  // Crop exits to pointer on commit (mirrors the cancel path below
+  // and Photoshop/Cleanshot/Skitch's behavior — every other crop
+  // tool dismisses on Apply). Pre-fix the crop was deliberately
+  // "sticky" — the assumption was the user might re-crop several
+  // times — but that's wrong in practice: after Apply, the canvas
+  // has SHRUNK, and the now-stale crop rect renders over the
+  // smaller canvas in a confusing way (the post-commit screenshot in
+  // pwrdrvr/PwrSnap#109 shows exactly this). Users who want to
+  // re-crop pick the Crop tool again, which is the cheap path.
   const onCropCommit = useCallback(
     (rect: { x: number; y: number; w: number; h: number }): void => {
       void (async (): Promise<void> => {
@@ -2135,6 +2141,18 @@ function EditorLoaded({
         if (!isControlled) {
           toolState.onAnnotationPlaced({ tool: "crop" });
         }
+        // Exit crop mode so the HUD, handles, and rule-of-thirds grid
+        // dismiss. Without this the post-Apply screenshot in #109
+        // shows the cropped (smaller) canvas with the old crop rect
+        // still painted on top — confusing because the rect coords
+        // refer to the OLD canvas dims and don't match anything the
+        // user sees now. setTool guards against the controlled mode
+        // already (onChange wrapper). Skip during undo replay so a
+        // ⌘Z of a crop doesn't yank the user out of whatever tool
+        // they're currently on.
+        if (!undoApplyingRef.current) {
+          setTool("pointer");
+        }
       })();
     },
     [
@@ -2143,13 +2161,16 @@ function EditorLoaded({
       dispatchEdit,
       recordCropRef,
       toolState,
-      undoApplyingRef
+      undoApplyingRef,
+      setTool
     ]
   );
 
   const onCropCancel = useCallback((): void => {
     // Switching to pointer feels like "I'm done cropping" without
     // wedging the user on the crop tool. Mirrors Photoshop's behavior.
+    // Same exit target as `onCropCommit` so Cancel and Apply share
+    // the same end-state.
     setTool("pointer");
   }, [setTool]);
 

@@ -245,13 +245,61 @@ async function compositeRasterOntoAccumulator(
     layerInputInfo = { width: targetW, height: targetH, channels: 4 };
   }
 
-  // Apply opacity by multiplying alpha channel. Cheap pass through
-  // sharp's `linear` op when opacity < 1; skip otherwise.
+  // Clip the source raster to the canvas bounds before compositing.
+  // sharp.composite refuses inputs larger than the destination ("Image
+  // to composite must have same dimensions or smaller"). When the
+  // canvas was cropped (Phase 3.5 v2-crop op shrinks canvas_dimensions
+  // without modifying the raster source), the raster IS larger than
+  // the canvas. Real user hit this on 8nnmKLuUpBI4K8fl. Fix: extract
+  // just the in-canvas region of the raster + reset its placement to
+  // the corresponding corner of the canvas.
+  const sourceW = layerInputInfo?.width ?? node.natural_width_px;
+  const sourceH = layerInputInfo?.height ?? node.natural_height_px;
+  const visibleLeft = Math.max(0, -tx);
+  const visibleTop = Math.max(0, -ty);
+  const visibleRight = Math.min(sourceW, canvasInfo.width - tx);
+  const visibleBottom = Math.min(sourceH, canvasInfo.height - ty);
+  const visibleW = visibleRight - visibleLeft;
+  const visibleH = visibleBottom - visibleTop;
+  if (visibleW <= 0 || visibleH <= 0) {
+    // Layer is entirely off-canvas after the crop — nothing to paint.
+    return accumulator;
+  }
+
+  // Only run extract when the source actually exceeds the canvas (the
+  // common identity-transform case stays a single sharp pipeline).
+  const needsExtract =
+    visibleLeft > 0 ||
+    visibleTop > 0 ||
+    visibleW < sourceW ||
+    visibleH < sourceH;
+
+  let extractedInput: Buffer = layerInput;
+  let extractedRaw: sharp.OverlayOptions["raw"] | undefined = layerInputInfo;
+  if (needsExtract) {
+    const extractPipeline =
+      layerInputInfo !== undefined
+        ? sharp(layerInput, { raw: layerInputInfo })
+        : sharp(layerInput);
+    const extractedBuf = await extractPipeline
+      .extract({
+        left: visibleLeft,
+        top: visibleTop,
+        width: visibleW,
+        height: visibleH
+      })
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+    extractedInput = extractedBuf;
+    extractedRaw = { width: visibleW, height: visibleH, channels: 4 };
+  }
+
   const composite: sharp.OverlayOptions = {
-    input: layerInput,
-    top: ty,
-    left: tx,
-    ...(layerInputInfo !== undefined ? { raw: layerInputInfo } : {})
+    input: extractedInput,
+    top: ty + visibleTop,
+    left: tx + visibleLeft,
+    ...(extractedRaw !== undefined ? { raw: extractedRaw } : {})
   };
 
   // sharp.composite accepts raw RGBA accumulator + overlay layer.

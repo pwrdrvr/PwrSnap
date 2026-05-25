@@ -174,6 +174,25 @@ export function registerLayersHandlers(): void {
       });
     }
 
+    // Minimum-canvas-dim guard. Without this, a user clicking Crop
+    // repeatedly (each crop sized to a normalized [0,1] rect of the
+    // CURRENT canvas) multiplicatively shrinks dims toward zero —
+    // 1116 * 0.6 = 670; * 0.6 = 402; … → 1. At 1×1 the bundle still
+    // has its full-resolution raster source but the canvas is one
+    // pixel, so compose-tree fails with "Image to composite must
+    // have same dimensions or smaller". Real user hit this on
+    // 8nnmKLuUpBI4K8fl (DB needed manual SQL repair). 32px is the
+    // CropTool's UI min anyway, so anything smaller is either a
+    // bug or a repeated-crop misadventure.
+    const MIN_CANVAS_DIM_PX = 32;
+    if (req.widthPx < MIN_CANVAS_DIM_PX || req.heightPx < MIN_CANVAS_DIM_PX) {
+      return err({
+        kind: "validation",
+        code: "canvas_below_minimum",
+        message: `canvas dimensions ${req.widthPx}x${req.heightPx} below minimum ${MIN_CANVAS_DIM_PX}px on either axis`
+      });
+    }
+
     // Find the source raster's natural dimensions — the canvas can't
     // exceed them (no pixels to fill). We look up the single root
     // raster layer in the live tree; v2 captures always have at least

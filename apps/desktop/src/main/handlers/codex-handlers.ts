@@ -30,7 +30,7 @@ import {
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
 import { getCaptureById } from "../persistence/captures-repo";
-import { effectiveSrcPathFor } from "../persistence/source-store";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
   acceptAllDrafts,
   acceptDescription,
@@ -163,10 +163,14 @@ export function registerCodexHandlers(params?: {
     });
     const enrichment = setLatestEnrichmentRun(capture.id, run.id);
     broadcastAiRunUpdated({ run, enrichment });
+    // Resolve the on-disk source path before handing off to the
+    // background enrichment task — re-extracts from the bundle when
+    // the per-capture cache file has been wiped (Storage → Clear/Trim).
+    const sourcePath = await ensureEffectiveSrcPath(capture);
     void runCaptureEnrichment({
       runId: run.id,
       captureId: capture.id,
-      sourcePath: effectiveSrcPathFor(capture),
+      sourcePath,
       metadata: {
         sourceAppName: capture.source_app_name,
         sourceAppBundleId: capture.source_app_bundle_id,

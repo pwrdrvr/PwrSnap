@@ -12,12 +12,22 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   capturesRoot: "",
-  trashRoot: ""
+  trashRoot: "",
+  cacheRoot: "",
+  readBundleEntry: vi.fn(),
+  readSourceFromBundle: vi.fn()
 }));
 
 vi.mock("../paths", () => ({
   getCapturesRoot: () => mocks.capturesRoot,
-  getTrashRoot: () => mocks.trashRoot
+  getTrashRoot: () => mocks.trashRoot,
+  getCacheRoot: () => mocks.cacheRoot,
+  getCacheSourcePath: (id: string) => join(mocks.cacheRoot, id, "source.png")
+}));
+
+vi.mock("../bundle-store", () => ({
+  readBundleEntry: (...args: unknown[]) => mocks.readBundleEntry(...args),
+  readSourceFromBundle: (...args: unknown[]) => mocks.readSourceFromBundle(...args)
 }));
 
 vi.mock("../../log", () => ({
@@ -36,8 +46,12 @@ beforeEach(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-source-store-"));
   mocks.capturesRoot = join(tempRoot, "captures");
   mocks.trashRoot = join(tempRoot, ".trash");
+  mocks.cacheRoot = join(tempRoot, "render-cache");
   await mkdir(mocks.capturesRoot, { recursive: true });
   await mkdir(mocks.trashRoot, { recursive: true });
+  await mkdir(mocks.cacheRoot, { recursive: true });
+  mocks.readBundleEntry.mockReset();
+  mocks.readSourceFromBundle.mockReset();
 });
 
 afterEach(async () => {
@@ -133,5 +147,120 @@ describe("source-store extension generalization", () => {
     expect(stored.byteSize).toBe("video-bytes".length);
     // sha256 is deterministic over the content
     expect(stored.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
+  test("v1 bundle: re-extracts source.png from bundle when cache missing", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+    const fakeBundleBytes = Buffer.from("v1-source-png-bytes");
+    mocks.readBundleEntry.mockResolvedValue(fakeBundleBytes);
+    const cachePath = join(mocks.cacheRoot, "cap-v1", "source.png");
+    expect(existsSync(cachePath)).toBe(false);
+
+    const returned = await ensureEffectiveSrcPath({
+      id: "cap-v1",
+      legacy_src_path: null,
+      bundle_path: "/fake/bundle.pwrsnap",
+      bundle_format_version: 1,
+      sha256: "sha-not-used-for-v1",
+      deleted_at: null
+    });
+
+    expect(returned).toBe(cachePath);
+    expect(existsSync(cachePath)).toBe(true);
+    expect(await readFile(cachePath)).toEqual(fakeBundleBytes);
+    expect(mocks.readBundleEntry).toHaveBeenCalledWith("/fake/bundle.pwrsnap", "source.png");
+    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
+  });
+
+  test("v2 bundle: re-extracts via readSourceFromBundle keyed by record.sha256", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+    const fakeBundleBytes = Buffer.from("v2-source-png-bytes");
+    mocks.readSourceFromBundle.mockResolvedValue(fakeBundleBytes);
+    const cachePath = join(mocks.cacheRoot, "cap-v2", "source.png");
+
+    const returned = await ensureEffectiveSrcPath({
+      id: "cap-v2",
+      legacy_src_path: null,
+      bundle_path: "/fake/bundle.pwrsnap",
+      bundle_format_version: 2,
+      sha256: "abc123",
+      deleted_at: null
+    });
+
+    expect(returned).toBe(cachePath);
+    expect(existsSync(cachePath)).toBe(true);
+    expect(await readFile(cachePath)).toEqual(fakeBundleBytes);
+    expect(mocks.readSourceFromBundle).toHaveBeenCalledWith("/fake/bundle.pwrsnap", "abc123");
+    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
+  });
+
+  test("cache already present: no re-extract, no bundle read", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+    const cachePath = join(mocks.cacheRoot, "cap-warm", "source.png");
+    await mkdir(join(mocks.cacheRoot, "cap-warm"), { recursive: true });
+    await writeFile(cachePath, "existing-bytes");
+
+    const returned = await ensureEffectiveSrcPath({
+      id: "cap-warm",
+      legacy_src_path: null,
+      bundle_path: "/fake/bundle.pwrsnap",
+      bundle_format_version: 1,
+      deleted_at: null
+    });
+
+    expect(returned).toBe(cachePath);
+    expect(await readFile(cachePath, "utf8")).toBe("existing-bytes");
+    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
+    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
+  });
+
+  test("soft-deleted record: returns trash path without bundle round-trip", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+    const legacyPath = join(mocks.capturesRoot, "deleted.png");
+
+    const returned = await ensureEffectiveSrcPath({
+      id: "deleted",
+      legacy_src_path: legacyPath,
+      bundle_path: "/fake/bundle.pwrsnap",
+      bundle_format_version: 1,
+      deleted_at: "2026-05-18T00:00:00Z"
+    });
+
+    expect(returned).toBe(join(mocks.trashRoot, "deleted.png"));
+    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
+    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
+  });
+
+  test("legacy non-bundle record: returns legacy_src_path without bundle read", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+    const legacyPath = join(mocks.capturesRoot, "legacy.png");
+
+    const returned = await ensureEffectiveSrcPath({
+      id: "legacy",
+      legacy_src_path: legacyPath,
+      bundle_path: null,
+      deleted_at: null
+    });
+
+    expect(returned).toBe(legacyPath);
+    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
+    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
+  });
+
+  test("v2 bundle without sha256: throws rather than producing a bogus path", async () => {
+    const { ensureEffectiveSrcPath } = await import("../source-store");
+
+    await expect(
+      ensureEffectiveSrcPath({
+        id: "cap-v2-broken",
+        legacy_src_path: null,
+        bundle_path: "/fake/bundle.pwrsnap",
+        bundle_format_version: 2,
+        deleted_at: null
+      })
+    ).rejects.toThrow(/sha256 missing/);
+    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
   });
 });

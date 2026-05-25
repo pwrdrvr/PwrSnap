@@ -60,7 +60,7 @@ import { migrateLegacyCaptureSources } from "./persistence/capture-source-mainte
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { sweepBundleTrash } from "./persistence/bundle-store";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
-import { effectiveSrcPathFor, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
+import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
@@ -611,8 +611,10 @@ const protocolResolver: ProtocolResolver = {
     // Soft-deleted records resolve through their trash file
     // (`<userData>/.trash/<id>.png`) so the Trash view's thumbnails +
     // Focus image keep working — the user can see what they're about
-    // to restore or permanently delete.
-    return effectiveSrcPathFor(record);
+    // to restore or permanently delete. Bundle-backed live captures
+    // lazy-extract source.png from the bundle if the per-capture
+    // cache file has been wiped (Storage → Clear/Trim, manual rm).
+    return await ensureEffectiveSrcPath(record);
   },
   async cacheFile(req) {
     return resolveCacheFile(req);

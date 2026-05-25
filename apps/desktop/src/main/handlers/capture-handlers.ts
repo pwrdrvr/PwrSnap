@@ -51,7 +51,7 @@ import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
-import { effectiveSrcPathFor, putCaptureSource } from "../persistence/source-store";
+import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
 import { persistCaptureFromTemp, persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { isV2WriteEnabled } from "../feature-flags";
 import { getMainLogger } from "../log";
@@ -347,7 +347,7 @@ export function registerCaptureHandlers(): void {
       const presetFile = await renderPresetFile(record, req.preset);
       const icon = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: effectiveSrcPathFor(record),
+        srcPath: await ensureEffectiveSrcPath(record),
         imageWidthPx: record.width_px,
         imageHeightPx: record.height_px,
         width: Math.min(DRAG_ICON_WIDTH, record.width_px),
@@ -668,7 +668,7 @@ async function renderPresetFile(
   const scale = Math.min(1, targetWidth / Math.max(1, record.width_px));
   const result = await renderViaCoordinator({
     captureId: record.id,
-    srcPath: effectiveSrcPathFor(record),
+    srcPath: await ensureEffectiveSrcPath(record),
     imageWidthPx: record.width_px,
     imageHeightPx: record.height_px,
     width: targetWidth,

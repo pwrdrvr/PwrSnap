@@ -15,7 +15,7 @@ import { compose, type RenderRequest, type RenderResult } from "./compose";
 import { composeV2 } from "./compose-tree";
 import { getCaptureById } from "../persistence/captures-repo";
 import { listLiveOverlays } from "../persistence/overlays-repo";
-import { effectiveSrcPathFor } from "../persistence/source-store";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import { computeRenderHash } from "./overlay-hash";
 
 const inFlight = new Map<string, Promise<RenderResult>>();
@@ -94,7 +94,7 @@ export async function resolveCacheFile(req: {
 
   const result = await renderViaCoordinator({
     captureId: req.captureId,
-    srcPath: effectiveSrcPathFor(record),
+    srcPath: await ensureEffectiveSrcPath(record),
     imageWidthPx: record.width_px,
     imageHeightPx: record.height_px,
     width: req.width,

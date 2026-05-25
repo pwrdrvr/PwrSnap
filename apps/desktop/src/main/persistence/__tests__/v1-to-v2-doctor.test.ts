@@ -73,7 +73,10 @@ vi.mock("../bundle-store", () => ({
   atomicWriteBundle: vi.fn(),
   assertSafeBundleFile: vi.fn().mockResolvedValue(undefined),
   awaitInFlightRepack: vi.fn().mockResolvedValue(undefined),
-  buildCompositeThumbnail: vi.fn().mockResolvedValue(null)
+  // Always-Buffer return (post fix/preview-thumbnail-fallback). The
+  // doctor never inspects the buffer contents, only passes it through
+  // to packBundleV2, so an empty buffer is a fine stand-in.
+  buildCompositeThumbnail: vi.fn().mockResolvedValue(Buffer.alloc(0))
 }));
 
 // BrowserWindow needs a stub so emitProgress doesn't crash in

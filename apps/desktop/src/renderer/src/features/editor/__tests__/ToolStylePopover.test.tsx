@@ -305,6 +305,76 @@ describe("ToolStylePopover", () => {
     expect(popover.querySelector('[data-testid="swatch-red"]')).toBeNull();
   });
 
+  test("2a. blur mode picker is a rich 3-row picker (icon + label + hint), not a flat segmented control", () => {
+    // Regression test: an earlier fold collapsed the rich BlurMenu
+    // (labeled rows with icons + descriptive hints) into a plain
+    // segmented control. User flagged this as a quality regression —
+    // restored under fix(desktop) "restore rich blur mode picker in
+    // ToolStylePopover". The shape this test pins:
+    //
+    //   - The Mode field group contains a `role="radiogroup"` with
+    //     exactly three `role="radio"` buttons (one per BlurEffectMode).
+    //   - Each row carries an aria-label matching its display label
+    //     (Gaussian / Pixelate / Redact).
+    //   - Each row renders its descriptive hint copy as visible text.
+    //   - The selected row reflects `aria-checked="true"`; the others
+    //     `aria-checked="false"`.
+    //   - A click on a non-selected row fires
+    //     `onStyleFieldChange("mode", <id>)`.
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "blur",
+        style: DEFAULT_BLUR_STYLE,
+        onStyleFieldChange: onChange
+      })
+    );
+    const popover = queryPopover();
+    const modeGroup = popover.querySelector(
+      '[data-testid="blur-mode"] [role="radiogroup"]'
+    );
+    expect(modeGroup, "blur mode radiogroup missing").not.toBeNull();
+    const rows = modeGroup!.querySelectorAll('[role="radio"]');
+    expect(rows.length).toBe(3);
+
+    // Per-row aria-label + hint copy.
+    const expected: ReadonlyArray<{
+      testid: string;
+      label: string;
+      hint: string;
+    }> = [
+      { testid: "blur-mode-gaussian", label: "Gaussian", hint: "Soft Gaussian smear" },
+      { testid: "blur-mode-pixelate", label: "Pixelate", hint: "Chunky mosaic blocks" },
+      { testid: "blur-mode-redact", label: "Redact", hint: "Solid black for privacy" }
+    ];
+    for (const { testid, label, hint } of expected) {
+      const row = popover.querySelector(`[data-testid="${testid}"]`);
+      expect(row, `mode row missing: ${testid}`).not.toBeNull();
+      expect(row!.getAttribute("aria-label")).toBe(label);
+      expect(row!.getAttribute("role")).toBe("radio");
+      expect(row!.textContent ?? "").toContain(label);
+      expect(row!.textContent ?? "").toContain(hint);
+    }
+
+    // Default fixture has mode=gaussian → that row is checked, others not.
+    const gaussianRow = popover.querySelector(
+      '[data-testid="blur-mode-gaussian"]'
+    );
+    const pixelateRow = popover.querySelector(
+      '[data-testid="blur-mode-pixelate"]'
+    );
+    const redactRow = popover.querySelector(
+      '[data-testid="blur-mode-redact"]'
+    );
+    expect(gaussianRow?.getAttribute("aria-checked")).toBe("true");
+    expect(pixelateRow?.getAttribute("aria-checked")).toBe("false");
+    expect(redactRow?.getAttribute("aria-checked")).toBe("false");
+
+    // Click pixelate → onStyleFieldChange("mode", "pixelate").
+    fireClick(pixelateRow!);
+    expect(onChange).toHaveBeenCalledWith("mode", "pixelate");
+  });
+
   test("3. color row present for arrow/text/rect/highlight", () => {
     for (const tool of ["arrow", "text", "rect", "highlight"] as const) {
       const style: ToolStylePopoverStyle =

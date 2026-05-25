@@ -34,6 +34,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FC,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type RefObject
@@ -156,10 +157,38 @@ const TEXT_WEIGHTS: ReadonlyArray<{ id: TextFontWeight; label: string }> = [
   { id: "bold", label: "Bold" }
 ];
 
-const BLUR_MODES: ReadonlyArray<{ id: BlurEffectMode; label: string }> = [
-  { id: "gaussian", label: "Gaussian" },
-  { id: "pixelate", label: "Pixelate" },
-  { id: "redact", label: "Redact" }
+/** Blur mode picker — full rich-card shape (icon + label + hint copy)
+ *  rather than a compact segmented control. Brought back from the pre-
+ *  fold BlurMenu after the unified-popover refactor flattened it into
+ *  a plain segmented row and "felt worse." Each entry pairs a per-mode
+ *  glyph component with its label and a short hint describing what the
+ *  blur actually does. Selected state mirrors the swatch / icon-row
+ *  `.is-on` idiom used elsewhere in the popover (accent border +
+ *  accent-soft background). */
+const BLUR_MODES: ReadonlyArray<{
+  id: BlurEffectMode;
+  label: string;
+  hint: string;
+  Icon: FC;
+}> = [
+  {
+    id: "gaussian",
+    label: "Gaussian",
+    hint: "Soft Gaussian smear",
+    Icon: GaussianBlurIcon
+  },
+  {
+    id: "pixelate",
+    label: "Pixelate",
+    hint: "Chunky mosaic blocks",
+    Icon: PixelateIcon
+  },
+  {
+    id: "redact",
+    label: "Redact",
+    hint: "Solid black for privacy",
+    Icon: RedactIcon
+  }
 ];
 
 const BLEND_MODES: ReadonlyArray<{ id: HighlightBlendMode; label: string }> = [
@@ -706,13 +735,44 @@ function BlurBody({ style, onStyleFieldChange }: BlurBodyProps): ReactElement {
   const customValue = style.radius.mode === "px" ? style.radius.value : 0;
   return (
     <>
-      <Segmented
-        label="Mode"
-        testid="blur-mode"
-        options={BLUR_MODES}
-        value={style.mode}
-        onChange={(v) => onStyleFieldChange("mode", v)}
-      />
+      {/* Mode picker — rich rows (icon + label + hint), one per mode.
+          Brought back from the pre-fold BlurMenu after the unified
+          popover initially collapsed it into a flat segmented control.
+          Each row is a `role="radio"` button so screen readers + the
+          test suite can target the same control surface as the other
+          icon-radio groups. */}
+      <FieldGroup label="Mode" testid="blur-mode">
+        <div
+          className="pse-mode-rows"
+          role="radiogroup"
+          aria-label="Blur mode"
+        >
+          {BLUR_MODES.map((opt) => {
+            const Icon = opt.Icon;
+            const active = opt.id === style.mode;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                aria-label={opt.label}
+                data-testid={`blur-mode-${opt.id}`}
+                className={"pse-mode-row" + (active ? " is-on" : "")}
+                onClick={() => onStyleFieldChange("mode", opt.id)}
+              >
+                <span className="pse-mode-row-icon" aria-hidden="true">
+                  <Icon />
+                </span>
+                <span className="pse-mode-row-body">
+                  <span className="pse-mode-row-label">{opt.label}</span>
+                  <span className="pse-mode-row-hint">{opt.hint}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </FieldGroup>
       <FieldGroup label="Radius" testid="blur-radius">
         <div className="pse-seg" role="radiogroup" aria-label="Radius mode">
           <button
@@ -1023,6 +1083,55 @@ function DotIcon(): ReactElement {
     <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
       <line x1="1" y1="7" x2="15" y2="7" stroke="currentColor" strokeWidth="2" />
       <circle cx="17" cy="7" r="2.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ---- Blur mode icons ------------------------------------------------
+//
+// One glyph per BlurEffectMode. Kept as inline SVG (rather than the
+// Unicode glyphs from the brief) so the icons scale with currentColor
+// + look crisp at retina without depending on the renderer's font
+// fallback chain. Each component is self-contained and uses unique
+// gradient ids via `useId()` where needed (gaussian) so multiple
+// instances rendered in the same DOM don't share a `url(#…)` ref.
+
+function GaussianBlurIcon(): ReactElement {
+  const gradId = useId();
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <defs>
+        <radialGradient id={gradId} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.95" />
+          <stop offset="60%" stopColor="currentColor" stopOpacity="0.5" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <rect x="1" y="1" width="18" height="18" rx="3" fill={`url(#${gradId})`} />
+    </svg>
+  );
+}
+
+function PixelateIcon(): ReactElement {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">
+      <rect x="1" y="1" width="5" height="5" />
+      <rect x="7.5" y="1" width="5" height="5" opacity="0.55" />
+      <rect x="14" y="1" width="5" height="5" />
+      <rect x="1" y="7.5" width="5" height="5" opacity="0.55" />
+      <rect x="7.5" y="7.5" width="5" height="5" />
+      <rect x="14" y="7.5" width="5" height="5" opacity="0.55" />
+      <rect x="1" y="14" width="5" height="5" />
+      <rect x="7.5" y="14" width="5" height="5" opacity="0.55" />
+      <rect x="14" y="14" width="5" height="5" />
+    </svg>
+  );
+}
+
+function RedactIcon(): ReactElement {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true">
+      <rect x="1" y="6" width="18" height="8" rx="1.5" />
     </svg>
   );
 }

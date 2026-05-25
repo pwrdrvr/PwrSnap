@@ -686,6 +686,87 @@
   white-space: nowrap;
 }
 
+/* Apply / Cancel cluster — visible commit + cancel affordance.
+   Position is set inline by React (relative to the crop rect's
+   computed corner) so it follows the selection without a second
+   ResizeObserver. Cluster sits above the dim layer + handles and
+   catches its own pointer events so clicks don't fall through to
+   the rect's drag handler. */
+.pse-crop-actions {
+  position: absolute;
+  display: inline-flex;
+  gap: var(--space-1);
+  pointer-events: auto;
+}
+
+.pse-crop-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  user-select: none;
+  /* Drop shadow so the buttons remain legible over a busy crop
+     interior (light photo content can wash out the cancel button
+     otherwise). Tokens-only — matches the editor toolbar's depth
+     vocabulary. */
+  box-shadow: var(--shadow-sm);
+}
+
+/* Apply Crop — primary action, tangerine accent fill with
+   button-text-on-accent foreground. Mirrors PwrSnap's existing
+   primary-button vocabulary (see tokens.css `--button-text-on-accent`). */
+.pse-crop-action.is-apply {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--button-text-on-accent);
+}
+.pse-crop-action.is-apply:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.pse-crop-action.is-apply:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+/* Cancel — secondary action, panel surface with hairline border. */
+.pse-crop-action.is-cancel {
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+}
+.pse-crop-action.is-cancel:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-panel-hover);
+}
+.pse-crop-action.is-cancel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Shortcut chip inside each action button. Same vocabulary as
+   `.editor-tool-key` so the in-rect cluster matches the toolbar's
+   shortcut hint styling without re-inventing it. */
+.pse-crop-action-kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-primary) 18%, transparent);
+  border-radius: 3px;
+  font: 600 10px/1 var(--font-mono);
+  color: inherit;
+}
+/* On the accent-filled Apply button, derive the chip from the
+   button-text-on-accent token so it stays legible on the bright fill
+   without baking a literal hex. */
+.pse-crop-action.is-apply .pse-crop-action-kbd {
+  background: color-mix(in srgb, var(--button-text-on-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--button-text-on-accent) 22%, transparent);
+}
+
 /* ------------------------------------------------------------------ */
 /* EditorChrome — activity bar + collapsible/poppable right panel.    */
 /* ------------------------------------------------------------------ */

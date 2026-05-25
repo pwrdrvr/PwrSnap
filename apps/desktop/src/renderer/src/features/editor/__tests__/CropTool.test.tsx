@@ -397,4 +397,71 @@ describe("CropTool", () => {
     // formatter is the contract under test here.
     expect(formatHud(1000, 333)).toBe("1000 × 333 · 3.003:1");
   });
+
+  // -------------------------------------- visible action cluster tests
+  //
+  // The Apply Crop + Cancel buttons inside the overlay are the
+  // discoverable alternative to the ⌘↩ / Esc keyboard shortcuts.
+  // They MUST fire the same callbacks as the keyboard accelerators
+  // and MUST NOT initiate a rect drag when clicked (the buttons stop
+  // pointerdown propagation).
+
+  test("Apply button click → onCommit called with normalized rect", async () => {
+    const { onCommit } = await renderCropTool({ sourceWidth: 1000, sourceHeight: 800 });
+    const applyBtn = container!.querySelector('[data-testid="crop-apply"]') as HTMLButtonElement | null;
+    expect(applyBtn).not.toBeNull();
+    await act(async () => {
+      applyBtn!.click();
+    });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    const arg = onCommit.mock.calls[0]![0];
+    // Default 60% centered rect on 1000×800 → (0.2, 0.2, 0.6, 0.6).
+    expect(arg.x).toBeCloseTo(0.2);
+    expect(arg.y).toBeCloseTo(0.2);
+    expect(arg.w).toBeCloseTo(0.6);
+    expect(arg.h).toBeCloseTo(0.6);
+  });
+
+  test("Cancel button click → onCancel called", async () => {
+    const { onCancel, onCommit } = await renderCropTool({
+      sourceWidth: 1000,
+      sourceHeight: 800
+    });
+    const cancelBtn = container!.querySelector('[data-testid="crop-cancel"]') as HTMLButtonElement | null;
+    expect(cancelBtn).not.toBeNull();
+    await act(async () => {
+      cancelBtn!.click();
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  test("Apply button pointerdown does NOT initiate a rect drag", async () => {
+    // If propagation weren't stopped, pressing on the button would
+    // start an "interior" drag on the parent rect. We verify by
+    // moving the pointer after a press and observing the rect's
+    // layout stays put.
+    await renderCropTool({ sourceWidth: 1000, sourceHeight: 800 });
+    const applyBtn = container!.querySelector('[data-testid="crop-apply"]') as HTMLButtonElement | null;
+    expect(applyBtn).not.toBeNull();
+    const before = getRectLayout();
+    await pointerDown(applyBtn!, 700, 200);
+    await pointerMove(applyBtn!, 800, 300);
+    await pointerUp(applyBtn!, 800, 300);
+    const after = getRectLayout();
+    expect(after.left).toBeCloseTo(before.left);
+    expect(after.top).toBeCloseTo(before.top);
+    expect(after.width).toBeCloseTo(before.width);
+    expect(after.height).toBeCloseTo(before.height);
+  });
+
+  test("overlay root is focused on mount (so Enter/Esc reach the window listener)", async () => {
+    await renderCropTool({ sourceWidth: 1000, sourceHeight: 800 });
+    const overlay = container!.querySelector('[data-testid="crop-tool"]') as HTMLElement | null;
+    expect(overlay).not.toBeNull();
+    expect(overlay!.getAttribute("tabindex")).toBe("-1");
+    // jsdom respects programmatic focus; document.activeElement should
+    // be the overlay after the mount-time .focus() call.
+    expect(document.activeElement).toBe(overlay);
+  });
 });

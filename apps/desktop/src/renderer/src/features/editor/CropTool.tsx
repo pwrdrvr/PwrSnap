@@ -30,6 +30,24 @@
 //   • Enter → onCommit(normalized)
 //   • Click outside canvas (and not on a handle) → onCancel
 //
+// Discoverable commit/cancel:
+//   • The overlay also renders a visible button cluster (Apply Crop +
+//     Cancel) anchored to the rect — for users who don't know the
+//     keyboard shortcuts or whose focus is somewhere else when they
+//     finish dragging. Clicking the buttons fires the same callbacks
+//     as the keyboard shortcuts. The buttons stop pointerdown
+//     propagation so clicking them does not start a rect drag.
+//   • Position: inside the rect's top-right when there's room, else
+//     anchored just below the rect (bottom-right). Keeps the cluster
+//     visible regardless of how small / how-near-the-top-edge the
+//     selection becomes.
+//   • The overlay root is `tabIndex=-1` and is focused on mount so
+//     the window-level keydown listener catches Enter / Escape even
+//     when the user hasn't clicked anywhere yet. Without this, focus
+//     stays on the canvas SVG (or wherever it was when the tool was
+//     activated) and IME / form-control / menubar focus consumers
+//     would swallow Enter before the document-level listener saw it.
+//
 // See plan: docs/plans/2026-05-23-001-feat-v2-editor-plan.md §"Phase 1".
 
 import {
@@ -343,6 +361,50 @@ export function CropTool(props: CropToolProps): ReactElement | null {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // -------------------- focus the overlay on mount
+  //
+  // The window-level keydown listener above catches Enter / Escape
+  // regardless of focus in theory — but in practice, focus on a text
+  // input, a contenteditable region, or a focused menubar item routes
+  // Enter through that consumer first and the keydown can be
+  // `preventDefault`'d before bubbling. The CropTool's job is to feel
+  // committable right after the user activates it, so we own focus
+  // explicitly on mount.
+  //
+  // `tabIndex={-1}` on the overlay root + `.focus()` here parks focus
+  // on a non-interactive element that has no native key bindings of
+  // its own. The user's next Enter / Escape reliably hits the window
+  // listener; the cluster's buttons can still be clicked or
+  // tab-focused independently.
+  useEffect(() => {
+    overlayRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // -------------------- button click handlers (commit / cancel)
+  //
+  // Mirror the keyboard handlers but read from current state (not
+  // `propsRef`) so React batches the click → state-update path the
+  // same as it does for other interactions. Stop propagation on
+  // pointerdown so the click doesn't initiate a rect drag.
+  const commitNormalized = useCallback((): void => {
+    const { rect: r, sourceWidth: sw, sourceHeight: sh } = propsRef.current;
+    if (sw <= 0 || sh <= 0) return;
+    propsRef.current.onCommit({
+      x: r.x / sw,
+      y: r.y / sh,
+      w: r.w / sw,
+      h: r.h / sh
+    });
+  }, []);
+
+  const onActionPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>): void => {
+      // Don't let the parent rect's onPointerDown start a drag.
+      e.stopPropagation();
+    },
+    []
+  );
+
   // -------------------- click outside canvas → cancel
   useEffect(() => {
     const onDocPointerDown = (e: PointerEvent): void => {
@@ -426,6 +488,51 @@ export function CropTool(props: CropToolProps): ReactElement | null {
     height: dispH
   };
 
+  // Action-cluster placement: inside the rect's top-right when the
+  // rect is large enough to comfortably host the cluster, otherwise
+  // anchored just below the rect (bottom-right corner). Final fallback
+  // if the rect is near the canvas's bottom edge and there's no room
+  // below either: pin above the rect instead.
+  //
+  // Numbers tuned to the cluster's intrinsic height (~32px) + a small
+  // breathing margin. Kept here (not in CSS) so the renderer makes the
+  // anchor decision based on the geometry it already computed.
+  const CLUSTER_MIN_RECT_WIDTH = 200;
+  const CLUSTER_MIN_RECT_HEIGHT = 80;
+  const CLUSTER_OUTSIDE_GAP = 8;
+  const CLUSTER_APPROX_HEIGHT = 32;
+  const fitsInside =
+    dispW >= CLUSTER_MIN_RECT_WIDTH && dispH >= CLUSTER_MIN_RECT_HEIGHT;
+  const hasRoomBelow =
+    dispY + dispH + CLUSTER_OUTSIDE_GAP + CLUSTER_APPROX_HEIGHT <= ch;
+  const hasRoomAbove = dispY - CLUSTER_OUTSIDE_GAP - CLUSTER_APPROX_HEIGHT >= 0;
+  const clusterStyle: CSSProperties = fitsInside
+    ? {
+        // Inside top-right of the rect, indented by the same gap used
+        // outside so the cluster doesn't hug the border or overlap the
+        // HUD (which sits at top-left).
+        right: cw - (dispX + dispW) + CLUSTER_OUTSIDE_GAP,
+        top: dispY + CLUSTER_OUTSIDE_GAP
+      }
+    : hasRoomBelow
+      ? {
+          right: cw - (dispX + dispW),
+          top: dispY + dispH + CLUSTER_OUTSIDE_GAP
+        }
+      : hasRoomAbove
+        ? {
+            right: cw - (dispX + dispW),
+            top: dispY - CLUSTER_OUTSIDE_GAP - CLUSTER_APPROX_HEIGHT
+          }
+        : {
+            // Worst case (tiny canvas, rect spans nearly the full
+            // height): pin inside top-right anyway — handles + dim
+            // remain functional, the cluster overlays a sliver of the
+            // crop area but stays clickable.
+            right: cw - (dispX + dispW) + CLUSTER_OUTSIDE_GAP,
+            top: dispY + CLUSTER_OUTSIDE_GAP
+          };
+
   // Handles: position the center of each on the corresponding rect
   // boundary. The CSS rule applies translate(-50%, -50%) so the
   // glyph centers on these coords.
@@ -445,6 +552,12 @@ export function CropTool(props: CropToolProps): ReactElement | null {
       ref={overlayRef}
       className="pse-crop"
       data-testid="crop-tool"
+      // Non-tabbable but programmatically focusable so the mount-time
+      // .focus() lands on this element (and not on the canvas or some
+      // ambient focused control), which ensures the window-level
+      // keydown listener above sees Enter / Escape before any other
+      // consumer can preventDefault them.
+      tabIndex={-1}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
@@ -505,6 +618,44 @@ export function CropTool(props: CropToolProps): ReactElement | null {
           onPointerDown={onHandlePointerDown(h)}
         />
       ))}
+
+      {/* Visible commit / cancel cluster — discoverable alternative
+          to the ⌘↩ / Esc keyboard shortcuts. Anchored by `clusterStyle`
+          (computed above based on rect geometry). Buttons stop
+          pointerdown propagation so clicking them doesn't initiate a
+          rect drag on the parent. */}
+      <div
+        className="pse-crop-actions"
+        data-testid="crop-actions"
+        style={clusterStyle}
+      >
+        <button
+          type="button"
+          className="pse-crop-action is-cancel"
+          data-testid="crop-cancel"
+          onPointerDown={onActionPointerDown}
+          onClick={onCancel}
+          aria-label="Cancel crop"
+        >
+          <span className="pse-crop-action-label">Cancel</span>
+          <span className="pse-crop-action-kbd" aria-hidden="true">
+            Esc
+          </span>
+        </button>
+        <button
+          type="button"
+          className="pse-crop-action is-apply"
+          data-testid="crop-apply"
+          onPointerDown={onActionPointerDown}
+          onClick={commitNormalized}
+          aria-label="Apply crop"
+        >
+          <span className="pse-crop-action-label">Apply Crop</span>
+          <span className="pse-crop-action-kbd" aria-hidden="true">
+            {"⌘↵"}
+          </span>
+        </button>
+      </div>
     </div>
   );
 }

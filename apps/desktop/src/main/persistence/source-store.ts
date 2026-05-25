@@ -245,6 +245,12 @@ export async function ensureEffectiveSrcPath(record: {
   return path;
 }
 
+// Monotonic counter for tmp-file suffixes. Date.now() alone has
+// millisecond resolution and two concurrent re-extracts in the same
+// tick would collide on `tmp-<pid>-<ms>`; this counter makes the
+// suffix unique within the process regardless of clock granularity.
+let tmpCounter = 0;
+
 async function rematerializeBundleSource(
   record: {
     id: string;
@@ -274,10 +280,11 @@ async function rematerializeBundleSource(
 
   await mkdir(dirname(cacheSourcePath), { recursive: true });
   // Atomic write — concurrent compose() calls reading the same path
-  // never see a partial file. PID + ts in the tmp name lets two
-  // re-extracts for the same capture coexist without one stomping
-  // the other's tmp file.
-  const tmp = `${cacheSourcePath}.tmp-${process.pid}-${Date.now()}`;
+  // never see a partial file. PID + monotonic counter in the tmp name
+  // lets two re-extracts for the same capture coexist without one
+  // stomping the other's tmp file.
+  tmpCounter += 1;
+  const tmp = `${cacheSourcePath}.tmp-${process.pid}-${tmpCounter}`;
   await writeFile(tmp, bytes);
   await rename(tmp, cacheSourcePath);
 

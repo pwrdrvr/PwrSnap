@@ -58,7 +58,8 @@ import {
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
-import { sweepBundleTrash } from "./persistence/bundle-store";
+import { persistCaptureFromTemp, sweepBundleTrash } from "./persistence/bundle-store";
+import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
@@ -934,6 +935,18 @@ export function bootstrapApp(): void {
         // recording (which would need TCC permission + a Mac).
         seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
           insertVideoMetadata(input),
+        // Seed a real bundle-backed capture by running the production
+        // persistCaptureFromTemp pipeline — packs `.pwrsnap`, writes
+        // the per-capture source.png cache under <userData>/render-cache/<id>/.
+        // Specs that need to exercise bundle-vs-legacy code paths
+        // (clear-render-cache recovery, v1 read paths, etc.) seed
+        // through here instead of the row-only `seedCapture` helper.
+        persistBundleCapture: (input: Parameters<typeof persistCaptureFromTemp>[0]) =>
+          persistCaptureFromTemp(input),
+        // Resolve a capture's expected on-disk source.png cache path.
+        // Specs use this to assert the file was created at capture
+        // time, wiped by Clear, and re-materialized on the next read.
+        getCacheSourcePathFor: (captureId: string) => getCacheSourcePath(captureId),
         // Drive the float-over state machine directly. Used by
         // float-over-visibility.spec.ts to assert the toast actually
         // reaches isVisible:true and stays there past the auto-dismiss

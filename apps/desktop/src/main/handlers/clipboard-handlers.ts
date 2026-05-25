@@ -53,7 +53,7 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getCaptureById } from "../persistence/captures-repo";
-import { effectiveSrcPathFor } from "../persistence/source-store";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
   readSourceFromBundle,
   scheduleRepack
@@ -89,7 +89,7 @@ export function registerClipboardHandlers(): void {
     try {
       const result = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: effectiveSrcPathFor(record),
+        srcPath: await ensureEffectiveSrcPath(record),
         imageWidthPx: record.width_px,
         imageHeightPx: record.height_px,
         width: targetWidth,
@@ -150,7 +150,7 @@ export function registerClipboardHandlers(): void {
     try {
       const result = await renderViaCoordinator({
         captureId: record.id,
-        srcPath: effectiveSrcPathFor(record),
+        srcPath: await ensureEffectiveSrcPath(record),
         imageWidthPx: record.width_px,
         imageHeightPx: record.height_px,
         width: targetWidth,
@@ -267,7 +267,7 @@ export function registerClipboardHandlers(): void {
       try {
         const renderResult = await renderViaCoordinator({
           captureId: record.id,
-          srcPath: effectiveSrcPathFor(record),
+          srcPath: await ensureEffectiveSrcPath(record),
           imageWidthPx: record.width_px,
           imageHeightPx: record.height_px,
           width: record.width_px,

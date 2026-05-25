@@ -10,7 +10,14 @@ import {
   err,
   ok
 } from "@pwrsnap/shared";
-import type { AiRunSnapshot, CaptureEnrichment, PwrSnapError, Result, Settings } from "@pwrsnap/shared";
+import type {
+  AiRunSnapshot,
+  CaptureEnrichment,
+  CaptureRecord,
+  PwrSnapError,
+  Result,
+  Settings
+} from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
 import {
   prepareEnrichmentImage,
@@ -30,7 +37,7 @@ import {
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
 import { getCaptureById } from "../persistence/captures-repo";
-import { effectiveSrcPathFor } from "../persistence/source-store";
+import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
   acceptAllDrafts,
   acceptDescription,
@@ -163,10 +170,15 @@ export function registerCodexHandlers(params?: {
     });
     const enrichment = setLatestEnrichmentRun(capture.id, run.id);
     broadcastAiRunUpdated({ run, enrichment });
+    // Source-path resolution (re-extracting source.png from the
+    // bundle when Storage → Clear/Trim wiped the per-capture cache)
+    // happens INSIDE runCaptureEnrichment so the extraction cost
+    // doesn't block the bus dispatch and any extraction failure
+    // flows through the same failAiRun + broadcast path as every
+    // other enrichment error — no zombie "run started" state.
     void runCaptureEnrichment({
       runId: run.id,
-      captureId: capture.id,
-      sourcePath: effectiveSrcPathFor(capture),
+      capture,
       metadata: {
         sourceAppName: capture.source_app_name,
         sourceAppBundleId: capture.source_app_bundle_id,
@@ -318,8 +330,7 @@ export function registerCodexHandlers(params?: {
 
 async function runCaptureEnrichment(params: {
   runId: string;
-  captureId: string;
-  sourcePath: string;
+  capture: CaptureRecord;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
   /**
@@ -332,6 +343,7 @@ async function runCaptureEnrichment(params: {
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
 }): Promise<void> {
+  const captureId = params.capture.id;
   const startedAt = performance.now();
   const abortController = new AbortController();
   const abortFromContext = (): void => abortController.abort();
@@ -345,8 +357,16 @@ async function runCaptureEnrichment(params: {
     const running = markAiRunRunning(params.runId);
     broadcastAiRunUpdated({
       run: running,
-      enrichment: getCaptureEnrichment(params.captureId)
+      enrichment: getCaptureEnrichment(captureId)
     });
+
+    // Resolve the on-disk source path now, inside the try block —
+    // bundle-backed captures lazy-re-extract source.png when the
+    // per-capture cache file has been wiped (Storage → Clear/Trim).
+    // A failure here flows through the catch below as a failed run
+    // with a clear message, not as an unhandled rejection that
+    // leaves the broadcast in a "started" zombie state.
+    const sourcePath = await ensureEffectiveSrcPath(params.capture);
 
     const metadata: CaptureEnrichmentPromptMetadata = { ...params.metadata };
     let imagePaths: string[];
@@ -358,7 +378,7 @@ async function runCaptureEnrichment(params: {
       ) {
         throw new Error("video capture enrichment requires duration metadata");
       }
-      prepared = await prepareEnrichmentVideoFrames(params.sourcePath, {
+      prepared = await prepareEnrichmentVideoFrames(sourcePath, {
         durationSec: metadata.videoDurationSec,
         abortSignal: abortController.signal
       });
@@ -368,7 +388,7 @@ async function runCaptureEnrichment(params: {
       }));
       imagePaths = prepared.frames.map((frame) => frame.path);
     } else {
-      prepared = await prepareEnrichmentImage(params.sourcePath, {
+      prepared = await prepareEnrichmentImage(sourcePath, {
         abortSignal: abortController.signal
       });
       imagePaths = [prepared.path];
@@ -396,12 +416,12 @@ async function runCaptureEnrichment(params: {
         settings.ai.autoAcceptSuggestions === true;
     } catch (error) {
       log.warn("settings read failed during enrichment completion", {
-        captureId: params.captureId,
+        captureId,
         message: error instanceof Error ? error.message : String(error)
       });
     }
     storeCompletedEnrichment({
-      captureId: params.captureId,
+      captureId,
       aiRunId: params.runId,
       result: response.result,
       autoAccept
@@ -409,7 +429,7 @@ async function runCaptureEnrichment(params: {
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({
       run: completed,
-      enrichment: getCaptureEnrichment(params.captureId)
+      enrichment: getCaptureEnrichment(captureId)
     });
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
@@ -423,12 +443,12 @@ async function runCaptureEnrichment(params: {
         );
     broadcastAiRunUpdated({
       run,
-      enrichment: getCaptureEnrichment(params.captureId)
+      enrichment: getCaptureEnrichment(captureId)
     });
     if (!isAbort) {
       log.warn("capture enrichment failed", {
         runId: params.runId,
-        captureId: params.captureId,
+        captureId,
         message: error instanceof Error ? error.message : String(error)
       });
     }

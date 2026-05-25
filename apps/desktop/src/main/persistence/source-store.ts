@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { nanoid } from "nanoid";
 import sharp from "sharp";
@@ -192,6 +192,108 @@ export function effectiveSrcPathFor(record: {
     );
   }
   return record.legacy_src_path;
+}
+
+/**
+ * Like {@link effectiveSrcPathFor}, but for bundle-backed live captures
+ * also makes sure the per-capture cached `source.png` exists on disk —
+ * re-extracting from the bundle if it's been deleted. Use this in any
+ * path that's about to hand the returned path to sharp / fs.read* /
+ * Codex / clipboard / render-coordinator.
+ *
+ * Why this exists: the cached source.png lives at
+ * `<userData>/render-cache/<id>/source.png` (see {@link getCacheSourcePath}),
+ * which is under the same root that Settings → Storage → "Clear" and
+ * "Trim" wipe. Without this lazy re-extract, every bundle-backed
+ * capture in the library breaks after a wipe — thumbnails 500, copies
+ * paste as un-decodable, drag-out fails — until the user reimports.
+ * The bundle is the durable source of truth; this cache file is just
+ * a sharp-friendly accelerator and is intentionally safe to delete.
+ *
+ * No-op (returns the path unmodified) for:
+ *   • soft-deleted captures — resolved to `<trash>/<id><ext>` outside
+ *     render-cache; wipes don't touch them.
+ *   • legacy non-bundle captures — resolved to
+ *     `~/Documents/PwrSnap/<id>.png` outside render-cache.
+ *
+ * Re-extract is atomic via tmp + rename so concurrent renders never
+ * observe a half-written file. Concurrent re-extracts for the same
+ * capture race harmlessly — both write the same bytes.
+ */
+export async function ensureEffectiveSrcPath(record: {
+  id: string;
+  legacy_src_path: string | null;
+  bundle_path?: string | null;
+  bundle_format_version?: number;
+  sha256?: string;
+  deleted_at: string | null;
+}): Promise<string> {
+  const path = effectiveSrcPathFor(record);
+  if (record.deleted_at !== null) return path;
+  if (record.bundle_path === null || record.bundle_path === undefined) return path;
+  if (existsSync(path)) return path;
+
+  await rematerializeBundleSource(
+    {
+      id: record.id,
+      bundlePath: record.bundle_path,
+      bundleFormatVersion: record.bundle_format_version ?? 1,
+      sha256: record.sha256
+    },
+    path
+  );
+  return path;
+}
+
+// Monotonic counter for tmp-file suffixes. Date.now() alone has
+// millisecond resolution and two concurrent re-extracts in the same
+// tick would collide on `tmp-<pid>-<ms>`; this counter makes the
+// suffix unique within the process regardless of clock granularity.
+let tmpCounter = 0;
+
+async function rematerializeBundleSource(
+  record: {
+    id: string;
+    bundlePath: string;
+    bundleFormatVersion: number;
+    sha256: string | undefined;
+  },
+  cacheSourcePath: string
+): Promise<void> {
+  // Lazy import to avoid a top-of-module dependency on bundle-store
+  // (and the yauzl/sharp surface it pulls in) just for the cold path.
+  const { readBundleEntry, readSourceFromBundle } = await import("./bundle-store");
+
+  let bytes: Buffer;
+  if (record.bundleFormatVersion >= 2) {
+    // v2 stores sources at `sources/<sha>.png`, keyed by content hash.
+    // The original capture's source bytes match `captures.sha256`.
+    if (record.sha256 === undefined || record.sha256.length === 0) {
+      throw new Error(
+        `source-store: cannot re-extract v2 source for ${record.id} — record.sha256 missing`
+      );
+    }
+    bytes = await readSourceFromBundle(record.bundlePath, record.sha256);
+  } else {
+    bytes = await readBundleEntry(record.bundlePath, "source.png");
+  }
+
+  await mkdir(dirname(cacheSourcePath), { recursive: true });
+  // Atomic write — concurrent compose() calls reading the same path
+  // never see a partial file. PID + monotonic counter in the tmp name
+  // lets two re-extracts for the same capture coexist without one
+  // stomping the other's tmp file.
+  tmpCounter += 1;
+  const tmp = `${cacheSourcePath}.tmp-${process.pid}-${tmpCounter}`;
+  await writeFile(tmp, bytes);
+  await rename(tmp, cacheSourcePath);
+
+  log.info("re-extracted bundle source to cache", {
+    captureId: record.id,
+    cacheSourcePath,
+    bytes: bytes.length,
+    bundleFormatVersion: record.bundleFormatVersion
+  });
 }
 
 /**

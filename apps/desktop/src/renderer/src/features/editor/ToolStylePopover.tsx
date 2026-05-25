@@ -309,7 +309,29 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
   // outer inline-block wrapper rather than the styled inner box (which
   // carries `overflow: hidden`) to avoid the clip-loop feedback bug.
   const measureRef = useRef<HTMLDivElement | null>(null);
-  const [position, setPosition] = useState<CSSProperties>({});
+  // IMPORTANT: the initial state MUST carry `position: fixed`. Earlier
+  // this was `useState({})`, which meant the very first render painted
+  // the popover root at `position: static` — it participated in the
+  // `.psl__stage-wrap` flex layout for ONE commit before the layout
+  // effect below set `position: fixed`. That flow participation stole
+  // horizontal space from the `.psl__stage-img` flex sibling, which
+  // shrank `.editor-canvas-wrap`, which fired useZoomPan's
+  // ResizeObserver, which recomputed Fit at a smaller size — visible
+  // to the user as the editor image jumping every time the chevron
+  // opened.
+  //
+  // `visibility: hidden` keeps the popover invisible until the layout
+  // effect measures the anchor and emits the real `{top, left}`. After
+  // measurement, setPosition REPLACES the whole object with the
+  // computeAnchorPosition return (which doesn't include visibility),
+  // so the popover becomes visible at the final position in the same
+  // commit — no second flash.
+  const [position, setPosition] = useState<CSSProperties>({
+    position: "fixed",
+    top: 0,
+    left: 0,
+    visibility: "hidden"
+  });
   // Coachmark visibility — shown only when settings says so AND only
   // on this open's lifecycle (set during mount effect; cleared at
   // 3s via auto-dismiss timer).

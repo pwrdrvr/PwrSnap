@@ -21,7 +21,8 @@ import {
   readArrowEndStyle,
   readArrowStemStyle,
   readOverlayThickness,
-  readRectFilled
+  readRectFilled,
+  readTextWeight
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -191,6 +192,7 @@ export function OverlaySvg({
           point={data.point}
           body={data.body}
           size={data.size}
+          weight={readTextWeight(data)}
           color={data.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
@@ -1288,6 +1290,7 @@ function TextGlyph({
   point,
   body,
   size,
+  weight,
   imageWidthPx,
   imageHeightPx,
   color
@@ -1295,6 +1298,11 @@ function TextGlyph({
   point: { x: number; y: number };
   body: string;
   size: "small" | "medium" | "large";
+  /** Resolved CSS font-weight number — pass through `readTextWeight`
+   *  from `@pwrsnap/shared` so the legacy fallback (600) and the
+   *  popover values (regular=400, bold=700) all funnel through one
+   *  place. */
+  weight: number;
   imageWidthPx: number;
   imageHeightPx: number;
   /** See ArrowGlyph.color. */
@@ -1360,7 +1368,7 @@ function TextGlyph({
         y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         fontSize={fontSize}
-        fontWeight={600}
+        fontWeight={weight}
         fill="white"
         stroke="rgba(0,0,0,0.6)"
         strokeWidth={fontSize * 0.08}
@@ -1378,7 +1386,7 @@ function TextGlyph({
         y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
         fontSize={fontSize}
-        fontWeight={600}
+        fontWeight={weight}
         fill={accent}
         dominantBaseline="central"
       >

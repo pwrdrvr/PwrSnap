@@ -36,7 +36,8 @@ import {
   readHighlightColor,
   readHighlightOpacity,
   readOverlayThickness,
-  readRectFilled
+  readRectFilled,
+  readTextWeight
 } from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
 import { listLiveOverlays } from "../persistence/overlays-repo";
@@ -633,11 +634,16 @@ function textSvg(
       return `<tspan x="${xPx}" dy="${dy}">${escapeXml(line)}</tspan>`;
     })
     .join("");
+  // Resolve weight via the shared helper — legacy rows (no weight)
+  // fall back to 600 (the historical hardcoded value) so old captures
+  // bake identically. New rows from the popover land "regular" → 400
+  // or "bold" → 700.
+  const fontWeight = readTextWeight(data);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
-        font-weight="600"
+        font-weight="${fontWeight}"
         fill="${accent}"
         stroke="rgba(0,0,0,0.7)"
         stroke-width="${fontSizePx * 0.08}"

@@ -49,7 +49,7 @@ import type {
   TextToolStyle,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { DEFAULT_BLUR_STYLE } from "@pwrsnap/shared";
+import { DEFAULT_BLUR_STYLE, readTextWeight } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { resolveToolColor } from "./resolveToolColor";
@@ -1100,7 +1100,12 @@ export function Editor({
       point: { x: draft.xn, y: draft.yn },
       body,
       size:
-        textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "small",
+        textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "medium",
+      // Persist the user's regular/bold pick into the row. Pre-fix this
+      // wasn't written at all — the schema didn't even carry weight —
+      // so every committed glyph rendered at the hardcoded 600. Now
+      // the popover's "weight" field actually changes what gets baked.
+      ...(textStyleSrc !== null ? { weight: textStyleSrc.weight } : {}),
       color:
         textStyleSrc !== null ? resolveToolColor(textStyleSrc.color) : "auto"
     };
@@ -2254,7 +2259,12 @@ function EditorLoaded({
               const size =
                 textStyleSrc !== null
                   ? resolveTextSize(textStyleSrc.fontSize)
-                  : "small";
+                  : "medium";
+              // Resolve the draft's font-weight via the SAME helper
+              // commitText and TextGlyph use, so the live preview can't
+              // diverge from the commit. Legacy/missing weight falls
+              // back to 600 (historical hardcoded value).
+              const weight = readTextWeight({ weight: textStyleSrc?.weight });
               return (
                 <TextDraftInput
                   draft={draft}
@@ -2264,6 +2274,7 @@ function EditorLoaded({
                   canvasRef={canvasRef}
                   colorHex={colorHex}
                   size={size}
+                  weight={weight}
                   onChange={(body) => setDraft({ ...draft, body })}
                   onCommit={() => void commitText()}
                   onCancel={() => setDraft(null)}

@@ -225,8 +225,31 @@ export const TextOverlay = z.object({
   size: z
     .union([z.literal("small"), z.literal("medium"), z.literal("large")])
     .default("medium"),
+  /** Glyph weight. Optional for back-compat — legacy rows (no weight
+   *  field) render at the historical "bold" weight (600) the bake
+   *  hardcoded, so existing captures look identical pre/post upgrade.
+   *  New rows from the popover carry an explicit "regular" or "bold".
+   *  The popover always offered this control, but pre-fix nothing
+   *  honored it — every draft, every committed glyph, every export
+   *  rendered at 600 regardless of pick. */
+  weight: z.union([z.literal("regular"), z.literal("bold")]).optional(),
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
 });
+
+/** Map the optional `weight` field to a CSS font-weight number.
+ *  Legacy rows (no weight) fall back to the historical 600 (semi-bold)
+ *  the bake/render used to hardcode — keeps existing captures looking
+ *  unchanged. New rows resolve "regular" → 400, "bold" → 700.
+ *  Renderers (TextGlyph in OverlaySvg, textSvg in compose.ts, and
+ *  TextDraftInput) all read through this helper so the weight is
+ *  resolved in exactly one place. */
+export function readTextWeight(data: {
+  weight?: "regular" | "bold" | undefined;
+}): number {
+  if (data.weight === "regular") return 400;
+  if (data.weight === "bold") return 700;
+  return 600;
+}
 
 export const StepOverlay = z.object({
   kind: z.literal("step"),

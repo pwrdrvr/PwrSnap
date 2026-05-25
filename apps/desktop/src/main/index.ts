@@ -73,7 +73,7 @@ import {
   prewarmTrayWindow,
   showTrayPopoverForE2E
 } from "./tray";
-import { createMainWindow, findMainLibraryWindow } from "./window";
+import { createMainWindow, findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "./window";
 import {
   handleSecondInstanceArgv,
   processQueuedOpenFiles,
@@ -1012,6 +1012,60 @@ export function bootstrapApp(): void {
         // real macOS NSAppleEvents from Playwright.
         triggerOpenFile: (bundlePath: string) => {
           handleSecondInstanceArgv([bundlePath]);
+        },
+        // Dock-icon test surface (dock-lifecycle.spec.ts). The
+        // capture flow's `activateApp(previousAppPid)` deactivates
+        // PwrSnap and, with our floating panels in the window list,
+        // AppKit demotes our activation policy to Accessory —
+        // stripping the Dock icon and orphaning the Library. These
+        // helpers let the spec simulate the strip + reclaim cycle
+        // without needing the real screencapture pipeline (which
+        // requires TCC permission Playwright doesn't have).
+        //
+        // `forceReclaimDockIcon` runs the same code production calls
+        // after every activateApp — `reclaimDockIconIfLibraryAlive`
+        // — with the E2E early-out bypassed. Used to assert the
+        // recovery actually re-shows the Dock when the activation
+        // policy has drifted to Accessory.
+        dockIsVisible: () => app.dock?.isVisible() ?? false,
+        // `app.dock.show()` returns a Promise that resolves when
+        // AppKit has finished the policy write. Awaiting it inside
+        // the bridge means the test's `await dockShow(app)` doesn't
+        // race the Cocoa run loop.
+        dockShow: async () => {
+          if (process.platform !== "darwin") return;
+          await app.dock?.show();
+        },
+        // `app.dock.hide()` is synchronous (calls setActivationPolicy
+        // directly), but the visibility flip is observed on the next
+        // run-loop tick. The spec's `expectDockVisible` polls, so we
+        // don't need an explicit wait here.
+        dockHide: () => {
+          if (process.platform !== "darwin") return;
+          app.dock?.hide();
+        },
+        forceReclaimDockIcon: () => reclaimDockIconIfLibraryAlive({ force: true }),
+        // Library lifecycle helpers for the dock-lifecycle spec.
+        // `getLibraryState` returns presence + visibility so the spec
+        // can confirm "Library still exists" after a strip — the bug
+        // is that the Library exists but is unreachable, not that
+        // it's closed. `ensureLibrary` opens it idempotently for
+        // tests that need a Library present.
+        getLibraryState: (): {
+          exists: boolean;
+          visible: boolean;
+          focused: boolean;
+        } => {
+          const win = findMainLibraryWindow();
+          if (win === null) return { exists: false, visible: false, focused: false };
+          return {
+            exists: true,
+            visible: win.isVisible(),
+            focused: win.isFocused()
+          };
+        },
+        ensureLibrary: () => {
+          createMainWindow();
         }
       };
       (globalThis as unknown as { __PWRSNAP_TEST__: typeof testBridge }).__PWRSNAP_TEST__ =
@@ -1043,6 +1097,30 @@ export function bootstrapApp(): void {
       if (!main.isVisible()) main.show();
       main.focus();
     });
+
+    // Defense-in-depth Dock-icon recovery. The capture flow re-claims
+    // the Dock icon right after every `activateApp(...)` call (see
+    // capture-handlers.ts), but anything else that deactivates PwrSnap
+    // while our floating-level panels are in the window list — a
+    // future feature that activates another app, a macOS Mission
+    // Control transition, a Stage Manager re-tile — can trip the same
+    // AppKit demotion path and strip the Dock icon. Whenever PwrSnap
+    // becomes inactive, if the Library still exists we re-assert
+    // Regular activation policy on the next tick (we let the
+    // deactivation settle first; calling app.dock.show() inside the
+    // event handler can race with AppKit's policy write).
+    //
+    // setImmediate keeps us off the current Cocoa run-loop tick. The
+    // re-claim is guarded by both `findMainLibraryWindow() !== null`
+    // and `app.dock.isVisible() === false`, so steady-state inactive
+    // apps with no Library aren't churned.
+    if (process.platform === "darwin" && !isE2E) {
+      app.on("did-resign-active", () => {
+        setImmediate(() => {
+          reclaimDockIconIfLibraryAlive();
+        });
+      });
+    }
   });
 
   app.on("window-all-closed", () => {

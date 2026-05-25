@@ -513,6 +513,51 @@ export async function pickRegion(
   return result;
 }
 
+/**
+ * Decide which app pid (if any) the capture flow should re-activate
+ * after a commit or cancel. Pure function, exported for unit testing.
+ *
+ * Returns `null` when one of OUR pids owns the topmost window in the
+ * snapshot — i.e. the user was already inside PwrSnap (Library,
+ * Settings, an edit window). Re-activating any other app in that case
+ * is wrong for two reasons:
+ *
+ *   1. It sends the Library to the background even though the user
+ *      explicitly had it foreground when they triggered the capture.
+ *   2. The activate call deactivates PwrSnap as a side-effect, and
+ *      with our persistent floating-level panels in the window list
+ *      AppKit periodically demotes our activation policy to Accessory
+ *      (NSUIElement). The Dock icon vanishes and the Library window
+ *      gets orphaned — alive, but unreachable via Dock or ⌘-Tab
+ *      because the app is no longer Regular.
+ *
+ * Returns the topmost non-PwrSnap pid otherwise — exactly the
+ * historical behavior. The "first non-ours, front-to-back" walk
+ * matches `listWindows`' z-order-descending output (index 0 =
+ * frontmost), so we restore the app the user had ACTIVE before they
+ * opened the tray popover or pressed the global hotkey.
+ *
+ * The snapshot must already have selector-overlay self-windows
+ * filtered out (see isSelectorOverlayWindow) — those would otherwise
+ * always be at the top and short-circuit the "top is ours" check.
+ */
+export function decidePreviousAppPid(
+  snapshot: readonly WindowInfo[],
+  ourPids: ReadonlySet<number>
+): number | null {
+  if (snapshot.length === 0) return null;
+  // Topmost overall window in the filtered snapshot. If it's ours,
+  // the user was inside PwrSnap and there's no "previous app" to
+  // restore.
+  if (ourPids.has(snapshot[0]!.pid)) return null;
+  // First (and therefore topmost) non-ours window. Matches the prior
+  // behavior for the common case where the user was in Claude /
+  // Terminal / Slack / etc. and triggered a capture via global
+  // hotkey or tray.
+  const topNonOurs = snapshot.find((w) => !ourPids.has(w.pid));
+  return topNonOurs?.pid ?? null;
+}
+
 function prepareWindowListPayload(args: {
   rawSnapshot: WindowInfo[];
   targetDisplay: Display;
@@ -530,11 +575,18 @@ function prepareWindowListPayload(args: {
     (w) => !isSelectorOverlayWindow(w, displayBounds, ourPids, selectorWindow)
   );
 
-  // Snapshot the previously-frontmost app's pid. We intentionally
-  // skip our own pid for restoration so hiding the selector doesn't
-  // raise the Library unless the user explicitly opens it.
-  const topNonOurs = snapshot.find((w) => !ourPids.has(w.pid));
-  const previousAppPid = topNonOurs?.pid ?? null;
+  // Snapshot the previously-frontmost app's pid. See
+  // `decidePreviousAppPid` for the full rationale — the short version
+  // is: if one of OUR windows (Library, Settings, edit window) was the
+  // topmost window in z-order, the user was already in PwrSnap, so we
+  // skip the post-capture activateApp call. Activating any other app
+  // in that case yanks the Library out from under the user AND, as a
+  // side-effect of the deactivation through our floating-level panels,
+  // demotes PwrSnap's activation policy to Accessory (NSUIElement),
+  // which strips the Dock icon and orphans the Library. See
+  // capture-handlers.ts for the matching dock-reclaim guard on the
+  // OTHER branch (when previousAppPid IS set legitimately).
+  const previousAppPid = decidePreviousAppPid(snapshot, ourPids);
 
   // Step 1: keep windows that overlap the active display. Anything
   // entirely on another monitor is irrelevant to this selector.

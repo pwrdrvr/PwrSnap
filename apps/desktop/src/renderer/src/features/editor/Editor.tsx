@@ -2201,18 +2201,47 @@ function EditorLoaded({
               onDragEnd={onHandleDragEnd}
             />
           )}
-          {draft?.kind === "text" && (
-            <TextDraftInput
-              draft={draft}
-              inputRef={textInputRef}
-              imageWidthPx={record.width_px}
-              imageHeightPx={record.height_px}
-              canvasRef={canvasRef}
-              onChange={(body) => setDraft({ ...draft, body })}
-              onCommit={() => void commitText()}
-              onCancel={() => setDraft(null)}
-            />
-          )}
+          {draft?.kind === "text" &&
+            (() => {
+              // Resolve the active text style the same way commitText
+              // does, so the in-canvas input renders at the eventual
+              // committed glyph's color + size. Without this, the
+              // draft used a hardcoded `--accent-bright` + `small`
+              // size regardless of what the user picked — they typed
+              // tiny orange text, committed, and watched it become
+              // large dark-blue text on a different baseline. The two
+              // must match.
+              const textStyleSrc =
+                toolState.activeStyle.tool === "text"
+                  ? toolState.activeStyle.style
+                  : null;
+              const resolvedColor =
+                textStyleSrc !== null
+                  ? resolveToolColor(textStyleSrc.color)
+                  : "auto";
+              const colorHex =
+                resolvedColor === "auto"
+                  ? "var(--accent, #ff8a1f)"
+                  : resolvedColor;
+              const size =
+                textStyleSrc !== null
+                  ? resolveTextSize(textStyleSrc.fontSize)
+                  : "small";
+              return (
+                <TextDraftInput
+                  draft={draft}
+                  inputRef={textInputRef}
+                  imageWidthPx={record.width_px}
+                  imageHeightPx={record.height_px}
+                  canvasRef={canvasRef}
+                  colorHex={colorHex}
+                  size={size}
+                  onChange={(body) => setDraft({ ...draft, body })}
+                  onCommit={() => void commitText()}
+                  onCancel={() => setDraft(null)}
+                />
+              );
+            })()}
           {tool === "crop" && (
             <CropTool
               captureId={record.id}

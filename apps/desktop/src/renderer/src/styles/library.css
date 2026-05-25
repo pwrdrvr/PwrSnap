@@ -2182,7 +2182,13 @@
   background: var(--border-subtle);
   margin: 0 4px;
 }
-.psl__et-btn:hover {
+/* `:not(.is-active)` so an active button's hover doesn't paint over
+   the wrap's accent-soft fill (which lives on `.psl__et-tool-wrap.
+   is-active`). Without this exclusion, hovering the just-clicked
+   active tool would obscure the orange highlight on the icon/label
+   half of the wrap while leaving the caret half visible — looking
+   like only the caret was active. */
+.psl__et-btn:not(.is-active):hover {
   background: var(--bg-panel-hover);
   color: var(--text-primary);
 }

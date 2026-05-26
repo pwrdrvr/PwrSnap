@@ -111,22 +111,23 @@ export function readOverlayThickness(
     // shortSidePx is provided we expand to absolute units; otherwise
     // fall through verbatim (legacy "fraction in, fraction out").
     //
-    // Dev-time footgun guard: numeric thickness should be ≤ 1 (it's a
+    // Footgun guard: numeric thickness should be ≤ 1 (it's a
     // normalized fraction). A value > 1 strongly suggests a caller
     // accidentally passed a PIXEL stroke into the legacy two-arg
     // form and is going to multiply by shortSide somewhere downstream
     // — producing a stroke wider than the image. Warn (but still
     // return the value) so the broken render doesn't propagate
-    // silently. Skipped in production builds; the check is purely
-    // for catching call-site mistakes during development.
-    if (
-      thickness > 1 &&
-      shortSidePx === undefined &&
-      typeof process !== "undefined" &&
-      process.env?.NODE_ENV !== "production"
-    ) {
-      // eslint-disable-next-line no-console
-      console.warn(
+    // silently.
+    //
+    // packages/shared is environment-agnostic (`"types": []` in the
+    // tsconfig — no Node, no DOM lib), so we can't reference
+    // `console` or `process` directly. Route through `globalThis`
+    // with an inline cast: console is present in both Node and
+    // browser; if some exotic runtime lacks it, the optional-chain
+    // falls back to a silent no-op rather than throwing.
+    if (thickness > 1 && shortSidePx === undefined) {
+      const con = (globalThis as { console?: { warn(msg: string): void } }).console;
+      con?.warn(
         `[readOverlayThickness] numeric thickness=${thickness} (> 1) passed without shortSidePx — ` +
           `did you mean to pass shortSidePx? Numeric thickness is a normalized [0,1] fraction; ` +
           `pixel values must go through the three-arg form.`

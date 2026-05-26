@@ -315,10 +315,7 @@ export async function migrateBundleV1ToV2(
       captureId,
       sourceBytes: sourceBytes.length
     });
-    const thumbnailJpg = await buildCompositeThumbnail(sourceBytes, {
-      width_px: row.width_px,
-      height_px: row.height_px
-    });
+    const thumbnailJpg = await buildCompositeThumbnail(sourceBytes);
 
     log.info("v1-to-v2-doctor: step 6b (pack v2 bundle)", {
       captureId,

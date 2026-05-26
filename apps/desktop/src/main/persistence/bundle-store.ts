@@ -225,10 +225,10 @@ export type PackBundleArgs = {
   /**
    * Low-resolution composite thumbnail (max 1024px long edge,
    * JPEG quality 80) written as `composite_thumbnail.jpg`. Generated
-   * by `buildCompositeThumbnail(compositePng, dims)`, which now
-   * always returns a Buffer (it used to return null for tiny captures
-   * but that left v2 bundles with no Finder/Quick-Look thumbnail —
-   * see the function's comment for the full why).
+   * by `buildCompositeThumbnail(compositePng)`, which now always
+   * returns a Buffer (it used to return null for tiny captures but
+   * that left v2 bundles with no Finder/Quick-Look thumbnail — see
+   * the function's comment for the full why).
    *
    * Optional in the type signature because some migration code paths
    * (legacy bundle rewrites that don't have the composite bytes
@@ -254,7 +254,18 @@ export type PackBundleArgs = {
  * blocking when Finder upscales for Cover Flow / column previews.
  */
 export const COMPOSITE_THUMBNAIL_MAX_DIM_PX = 1024;
-const COMPOSITE_THUMBNAIL_JPEG_QUALITY = 80;
+// JPEG quality 90 (was 80 pre always-write). Why bumped: with the
+// size-skip optimization removed, even very small sources now go
+// through JPEG encoding at their natural dimensions (no resize
+// smoothing first). q80 introduces visible ringing around sharp
+// edges — text, icons, UI chrome — which are EXACTLY what
+// screenshots contain. q90 keeps file size in the same ballpark
+// (≈10% increase for natural photos, less for already-clean PNG
+// content) while eliminating most visible artifacts. The thumbnail
+// is sized for Finder icons + Quick Look first-pass renders;
+// readers downstream of those still bake the full-res composite
+// from sources/* via sharp when they need pixel fidelity.
+const COMPOSITE_THUMBNAIL_JPEG_QUALITY = 90;
 
 /**
  * Generate a JPEG thumbnail of the composite for the in-bundle
@@ -262,12 +273,13 @@ const COMPOSITE_THUMBNAIL_JPEG_QUALITY = 80;
  * null.
  *
  * Pre-fix this returned `null` for any source already at-or-below
- * `COMPOSITE_THUMBNAIL_MAX_DIM_PX` (1024). The skip was a perf /
- * size optimization: re-encoding a tiny PNG to JPEG-quality-80
- * could nominally BLOAT the bundle. In practice JPEG-quality-80
- * compresses tiny screenshots well too (often smaller than the
- * source PNG), so the worst case is a few extra KB per bundle —
- * way cheaper than what we were paying with the skip:
+ * `COMPOSITE_THUMBNAIL_MAX_DIM_PX` (1024) and took a `dims`
+ * parameter for the size-check decision. The skip was a perf /
+ * size optimization: re-encoding a tiny PNG to JPEG could nominally
+ * BLOAT the bundle. In practice JPEG-q90 compresses tiny
+ * screenshots well too (often smaller than the source PNG), so the
+ * worst case is a few extra KB per bundle — way cheaper than what
+ * we were paying with the skip:
  *
  *   • The Finder Thumbnail Extension's fallback chain ends in
  *     `composite_thumbnail.jpg → composite.png → source.png →
@@ -285,10 +297,12 @@ const COMPOSITE_THUMBNAIL_JPEG_QUALITY = 80;
  * otherwise upscale on `width:` for a request larger than the source.
  * For sources already smaller than the cap, the output is sized at
  * the source's natural dimensions (no upscale), just JPEG-encoded.
+ *
+ * sharp infers source dimensions from the buffer's PNG header, so
+ * no caller-side dim hint is needed.
  */
 export async function buildCompositeThumbnail(
-  compositePng: Buffer,
-  _dims: { width_px: number; height_px: number }
+  compositePng: Buffer
 ): Promise<Buffer> {
   // Resize the long edge to COMPOSITE_THUMBNAIL_MAX_DIM_PX; the short
   // edge is computed by sharp from the source aspect ratio. `fit:
@@ -957,12 +971,10 @@ export async function persistCaptureFromTemp(
   };
 
   // Initial bundle has no overlays — composite would be byte-identical
-  // to source. Generate a thumbnail from the source bytes; small
-  // captures (≤ 1024px long edge) skip the thumbnail entirely.
-  const thumbnailJpg = await buildCompositeThumbnail(buf, {
-    width_px: widthPx,
-    height_px: heightPx
-  });
+  // to source. Generate a thumbnail from the source bytes; always
+  // written (post-PR-#111 the size-skip is gone, so Finder + Quick
+  // Look have something to render for v2 bundles).
+  const thumbnailJpg = await buildCompositeThumbnail(buf);
 
   const { bundlePath } = await writeBundle({
     outputDir,
@@ -1161,10 +1173,7 @@ async function runRepack(captureId: string): Promise<void> {
       bundle_modified_at: now
     };
 
-    const thumbnailJpg = await buildCompositeThumbnail(compositePng, {
-      width_px: record.width_px,
-      height_px: record.height_px
-    });
+    const thumbnailJpg = await buildCompositeThumbnail(compositePng);
 
     const bundleBuf = await packBundle({
       manifest,
@@ -1355,10 +1364,7 @@ export async function persistCaptureFromTempV2(
   // the thumbnail is built from the source PNG directly.
   const bundlePath = join(outputDir, `${filenameStem}.pwrsnap`);
 
-  const thumbnailJpg = await buildCompositeThumbnail(buf, {
-    width_px: widthPx,
-    height_px: heightPx
-  });
+  const thumbnailJpg = await buildCompositeThumbnail(buf);
 
   const bundleBuf = await packBundleV2({
     manifest,
@@ -1492,10 +1498,7 @@ async function runRepackV2(captureId: string): Promise<void> {
       ai_runs: []
     };
 
-    const thumbnailJpg = await buildCompositeThumbnail(compositePng, {
-      width_px: record.width_px,
-      height_px: record.height_px
-    });
+    const thumbnailJpg = await buildCompositeThumbnail(compositePng);
 
     const bundleBuf = await packBundleV2({
       manifest,

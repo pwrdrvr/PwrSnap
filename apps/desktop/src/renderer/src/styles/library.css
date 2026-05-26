@@ -1283,7 +1283,10 @@
      edges sliding over" visual bug. */
   min-width: 0;
 }
-.psl__right-footer > *,
+/* Intentionally specific (named-class) selectors rather than a
+   universal `>* ` — the universal version was redundant with these
+   two and added scope drift risk for any future footer child that
+   needs its own min-width. */
 .psl__right-footer .psl__copy-row,
 .psl__right-footer .psl__action-row {
   min-width: 0;

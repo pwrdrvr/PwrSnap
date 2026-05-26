@@ -282,4 +282,56 @@ describe("LayoutToggleButtons", () => {
     expect(filledRectsPrimary?.length).toBe(1);
     expect(filledRectsSecondary?.length).toBe(0);
   });
+
+  test("Primary chip carves a LEFT strip, secondary carves a RIGHT strip (asymmetric)", async () => {
+    // Regression coverage for the "indistinguishable left/right chips"
+    // bug — the original 3-column glyph drew the same outline for
+    // both chips and only differed in which interior column got
+    // filled. From two feet away the chips looked identical even
+    // closed. The fix: each chip has ONE off-center divider,
+    // primary at x=8 (left strip) and secondary at x=16 (right
+    // strip). This test asserts the divider's path so a regression
+    // back to a symmetric design — which would pass the fill-count
+    // assertion above — fails here.
+    const { el } = await renderToggles();
+    const primarySvg = el
+      .querySelector('[data-testid="layout-toggle-primary"]')
+      ?.querySelector("svg");
+    const secondarySvg = el
+      .querySelector('[data-testid="layout-toggle-secondary"]')
+      ?.querySelector("svg");
+
+    // Primary chip MUST have a divider at x=8 and MUST NOT have one
+    // at x=16.
+    expect(primarySvg?.querySelector('path[d="M8 4v16"]')).not.toBeNull();
+    expect(primarySvg?.querySelector('path[d="M16 4v16"]')).toBeNull();
+
+    // Secondary chip is the mirror.
+    expect(secondarySvg?.querySelector('path[d="M16 4v16"]')).not.toBeNull();
+    expect(secondarySvg?.querySelector('path[d="M8 4v16"]')).toBeNull();
+  });
+
+  test("Filled strip x-coordinate matches the chip's side (open state)", async () => {
+    // Belt-and-braces on the asymmetric design: when open, the
+    // filled rect must sit on the SAME side as the divider, not the
+    // opposite one. A subtle implementation slip ("oh I'll just
+    // swap the rect coords") would surface as "primary chip's open
+    // state fills the RIGHT strip" — not caught by the divider
+    // assertion alone.
+    const { el } = await renderToggles({
+      primaryOpen: true,
+      secondaryOpen: true
+    });
+    const primaryFill = el
+      .querySelector('[data-testid="layout-toggle-primary"]')
+      ?.querySelector('rect[fill="currentColor"]');
+    const secondaryFill = el
+      .querySelector('[data-testid="layout-toggle-secondary"]')
+      ?.querySelector('rect[fill="currentColor"]');
+
+    // Primary filled strip starts at x=3 (inside the outer frame's
+    // left edge); secondary starts at x=16 (just past its divider).
+    expect(primaryFill?.getAttribute("x")).toBe("3");
+    expect(secondaryFill?.getAttribute("x")).toBe("16");
+  });
 });

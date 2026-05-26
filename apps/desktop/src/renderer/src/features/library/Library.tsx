@@ -274,36 +274,54 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // rail without crossing component boundaries or routing through
   // Settings broadcasts. Seeded once from `settings:read`; each user
   // write also fires `settings:write` so the choice survives relaunch.
+  //
+  // `settingsHydrated` gates the data-right attribute below — without
+  // it, a fresh launch paints with the in-memory default (pinned:
+  // true) for the ~50ms before settings:read resolves, then snaps to
+  // the user's saved choice. Worth a flag to avoid the visual stutter.
   const [rightPinned, setRightPinnedState] = useState<boolean>(true);
   const [rightActiveTab, setRightActiveTabState] =
     useState<LibrarySidebarTab>("info");
-  const rightSettingsReadDoneRef = useRef<boolean>(false);
+  const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
   useEffect(() => {
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
       if (cancelled) return;
-      if (rightSettingsReadDoneRef.current) return;
-      if (!result.ok) return;
+      if (!result.ok) {
+        // Even on read failure we mark hydrated — the in-memory
+        // defaults are what the user gets, and we don't want the
+        // rail to stay invisible forever.
+        setSettingsHydrated(true);
+        return;
+      }
       const rail = (result.value as Settings | undefined)?.library
         ?.detailRail;
-      if (rail === undefined) return;
-      setRightPinnedState(rail.pinned);
-      setRightActiveTabState(rail.lastSelectedTab);
-      rightSettingsReadDoneRef.current = true;
+      if (rail !== undefined) {
+        setRightPinnedState(rail.pinned);
+        setRightActiveTabState(rail.lastSelectedTab);
+      }
+      setSettingsHydrated(true);
     });
     return () => {
       cancelled = true;
     };
   }, []);
+  // The setters use the functional `setState((prev) => …)` form so
+  // they have stable identity (no closure-over-current-value
+  // dependency). Toggle callbacks then depend only on the stable
+  // setters and are themselves stable — which means the
+  // LayoutToggleButtons' window-level keydown listener attaches
+  // ONCE on mount instead of re-attaching every time the pin state
+  // flips. Same shape across `setRightPinned`, `setRightActiveTab`,
+  // and their two toggle siblings; see code-review thread on PR
+  // #122 for the perf concern this addresses.
   const setRightPinned = useCallback((next: boolean): void => {
-    rightSettingsReadDoneRef.current = true;
     setRightPinnedState(next);
     void dispatch("settings:write", {
       library: { detailRail: { pinned: next } }
     });
   }, []);
   const setRightActiveTab = useCallback((next: LibrarySidebarTab): void => {
-    rightSettingsReadDoneRef.current = true;
     setRightActiveTabState(next);
     void dispatch("settings:write", {
       library: { detailRail: { lastSelectedTab: next } }
@@ -313,8 +331,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     setLeftPinned((v) => !v);
   }, []);
   const toggleRightPinned = useCallback((): void => {
-    setRightPinned(!rightPinned);
-  }, [rightPinned, setRightPinned]);
+    setRightPinnedState((prev) => {
+      const next = !prev;
+      void dispatch("settings:write", {
+        library: { detailRail: { pinned: next } }
+      });
+      return next;
+    });
+  }, []);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
@@ -1426,7 +1450,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       className="psl"
       data-mode={view.kind}
       data-left={leftState}
-      data-right={rightPinned ? "pinned" : "collapsed"}
+      // `data-right` controls the right column width (38px collapsed
+      // vs 360px pinned) AND the footer/overflow rules. In Grid mode
+      // DetailRail returns null, so the column is 0 either way and
+      // emitting the attribute would just confuse readers. Likewise,
+      // skip it until settings:read resolves so the rail doesn't
+      // paint at the wrong width for ~50ms on cold start.
+      data-right={
+        !settingsHydrated || view.kind === "grid"
+          ? undefined
+          : rightPinned
+            ? "pinned"
+            : "collapsed"
+      }
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">

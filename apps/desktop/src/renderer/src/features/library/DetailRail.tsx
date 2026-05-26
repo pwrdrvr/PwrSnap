@@ -91,33 +91,37 @@ export function DetailRail({
     record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
-  // Active tab + pin state. Two operating modes:
-  //   • Controlled — Library owns the state, threads it through props
-  //     (`pinned` + `onPinChange`, `activeTab` + `onActiveTabChange`).
-  //     The Library's top-bar layout toggle drives the rail without
-  //     cross-component plumbing or broadcast subscriptions.
-  //   • Uncontrolled — props omitted; the rail falls back to local
-  //     state seeded once from Settings. Covers DetailRail consumers
-  //     outside the Library shell (existing tests, future surfaces).
+  // Active tab + pin state. The pin pair and the tab pair are
+  // controlled INDEPENDENTLY — a caller can control just the pin
+  // (e.g. drive it from a title-bar toggle) while letting the rail
+  // own which tab is active, or vice versa. The previous
+  // all-or-nothing `isControlled` check silently degraded a partial
+  // pass to fully-uncontrolled, which was a footgun: passing
+  // `pinned` without `onPinChange` made the prop a no-op. Independent
+  // pairs match React's standard controlled-input idiom (`value` +
+  // `onChange` per input).
   //
-  // Both modes write through `settings:write` so the choice survives
-  // relaunches. The hook fires uniformly across both modes (Rules of
-  // Hooks); the early returns below gate RENDERING, not state setup.
+  // Pair coherence is checked at dev-time: passing one half of a
+  // pair without the other emits a console.warn so a caller that
+  // intended to control sees the bug instead of silent fallback.
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
   const initialReadDoneRef = useRef<boolean>(false);
-  const isControlled =
-    pinnedProp !== undefined &&
-    onPinChange !== undefined &&
-    activeTabProp !== undefined &&
-    onActiveTabChange !== undefined;
-  const pinned = isControlled ? pinnedProp : localPinned;
-  const activeTab = isControlled ? activeTabProp : localActiveTab;
 
+  const isPinControlled =
+    pinnedProp !== undefined && onPinChange !== undefined;
+  const isTabControlled =
+    activeTabProp !== undefined && onActiveTabChange !== undefined;
+  const pinned = isPinControlled ? pinnedProp : localPinned;
+  const activeTab = isTabControlled ? activeTabProp : localActiveTab;
+
+  // Skip the settings read entirely when BOTH pairs are controlled —
+  // the parent owns the truth and handles its own hydration. When
+  // either pair is uncontrolled the rail still owns that half's
+  // state and reads it from Settings on mount.
+  const fullyControlled = isPinControlled && isTabControlled;
   useEffect(() => {
-    // Skip the read entirely in controlled mode — the parent already
-    // owns the truth and handles its own settings hydration.
-    if (isControlled) return undefined;
+    if (fullyControlled) return undefined;
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
       if (cancelled) return;
@@ -132,18 +136,45 @@ export function DetailRail({
       const rail = (result.value as Settings | undefined)?.library
         ?.detailRail;
       if (rail === undefined) return;
-      setLocalPinned(rail.pinned);
-      setLocalActiveTab(rail.lastSelectedTab);
+      // Only hydrate the halves we still own.
+      if (!isPinControlled) setLocalPinned(rail.pinned);
+      if (!isTabControlled) setLocalActiveTab(rail.lastSelectedTab);
       initialReadDoneRef.current = true;
     });
     return () => {
       cancelled = true;
     };
-  }, [isControlled]);
+  }, [fullyControlled, isPinControlled, isTabControlled]);
+
+  // Dev-only coherence warning. We catch:
+  //   • `pinned` without `onPinChange` (or vice versa)
+  //   • `activeTab` without `onActiveTabChange` (or vice versa)
+  // Each is a likely bug — the caller probably intended to control
+  // that pair and forgot the handler half. We log once per mismatch
+  // transition; React StrictMode's double-invoke is harmless here
+  // because the log message is informational, not a side effect.
+  useEffect(() => {
+    const pinHalf = pinnedProp !== undefined;
+    const pinHandler = onPinChange !== undefined;
+    if (pinHalf !== pinHandler) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[DetailRail] partial pin control — pass both `pinned` and `onPinChange` together (or neither)"
+      );
+    }
+    const tabHalf = activeTabProp !== undefined;
+    const tabHandler = onActiveTabChange !== undefined;
+    if (tabHalf !== tabHandler) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[DetailRail] partial tab control — pass both `activeTab` and `onActiveTabChange` together (or neither)"
+      );
+    }
+  }, [pinnedProp, onPinChange, activeTabProp, onActiveTabChange]);
 
   const writePinned = useCallback(
     (next: boolean): void => {
-      if (isControlled) {
+      if (isPinControlled) {
         onPinChange?.(next);
         return;
       }
@@ -153,12 +184,12 @@ export function DetailRail({
         library: { detailRail: { pinned: next } }
       });
     },
-    [isControlled, onPinChange]
+    [isPinControlled, onPinChange]
   );
 
   const writeActiveTab = useCallback(
     (next: SidebarTab): void => {
-      if (isControlled) {
+      if (isTabControlled) {
         onActiveTabChange?.(next);
         return;
       }
@@ -168,7 +199,7 @@ export function DetailRail({
         library: { detailRail: { lastSelectedTab: next } }
       });
     },
-    [isControlled, onActiveTabChange]
+    [isTabControlled, onActiveTabChange]
   );
 
   useEffect(() => {

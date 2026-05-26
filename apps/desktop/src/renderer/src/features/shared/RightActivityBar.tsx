@@ -45,10 +45,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode
 } from "react";
+import { isPrimaryAccel } from "./keyboard";
 
 export interface RightActivityTab<Id extends string> {
   readonly id: Id;
@@ -139,13 +139,6 @@ function isHeadingTowardPanel(
     projectedY >= rect.top - 24 &&
     projectedY <= rect.bottom + 24
   );
-}
-
-function isPrimaryAccel(event: ReactKeyboardEvent | KeyboardEvent): boolean {
-  if (typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform)) {
-    return event.metaKey === true;
-  }
-  return event.ctrlKey === true;
 }
 
 export function RightActivityBar<Id extends string>(

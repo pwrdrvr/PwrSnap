@@ -809,6 +809,101 @@ describe("DetailRail", () => {
     ).toBe("true");
   });
 
+  test("controlled mode: pin and tab pairs are independently controllable", async () => {
+    // Pass ONLY the pin pair. The tab pair stays local-state-only —
+    // a controlled pin caller (e.g. Library's title-bar toggle)
+    // doesn't have to also take over tab persistence.
+    const onPinChange = vi.fn();
+    installFakeApi(enrichment({ ocrText: "x" }));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange
+          // intentionally omit activeTab + onActiveTabChange
+        })
+      );
+      await Promise.resolve();
+    });
+    // Pin pair is controlled: clicking the active tab routes through
+    // the parent's onPinChange, not local state.
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(onPinChange).toHaveBeenLastCalledWith(false);
+
+    // Tab pair is uncontrolled: clicking the OCR tab updates local
+    // state and the rail re-renders with OCR active.
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-ocr"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    // OCR tab is now selected (local state moved). Pin remains
+    // whatever the controlled prop says — still true, since the
+    // parent didn't re-render.
+    expect(
+      container?.querySelector('[data-testid="psl-right-tab-ocr"]')?.getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+  });
+
+  test("partial control (pinned without onPinChange) warns via console.warn", async () => {
+    // The "controlled" contract requires BOTH halves of a pair. The
+    // previous all-or-nothing isControlled silently degraded a
+    // half-passed caller to fully-uncontrolled — the user-facing
+    // symptom would be "I passed pinned=false but the rail is still
+    // open". We now warn loudly during dev so the bug surfaces.
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      const msg = args.map((a) => String(a)).join(" ");
+      warnings.push(msg);
+    };
+
+    try {
+      installFakeApi(enrichment());
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "focus",
+              selectedRecordId: record.id,
+              returnAnchor: { scrollTop: 0, cellId: record.id }
+            } as LibraryView,
+            record,
+            pinned: true
+            // intentionally omit onPinChange to trigger the warning
+          })
+        );
+        await Promise.resolve();
+      });
+      const pinPartial = warnings.find((m) =>
+        m.includes("partial pin control")
+      );
+      expect(pinPartial).toBeDefined();
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
   test("controlled mode: clicking active tab fires onPinChange(false), not local state", async () => {
     const onPinChange = vi.fn();
     installFakeApi(enrichment());

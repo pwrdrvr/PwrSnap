@@ -1,21 +1,20 @@
 // LayoutToggleButtons — VS Code-style title-bar layout chips.
 //
 // Two buttons that toggle the primary (left) and secondary (right)
-// side bars of a window. Same visual language as VS Code's title-bar
-// layout controls:
-//
-//   • Three columns drawn inside the icon: outer-left, center,
-//     outer-right.
-//   • When the bar is OPEN, its column is filled with the active
-//     accent fill.
-//   • When the bar is CLOSED, its column is just an outline.
+// side bars of a window. The glyph for each chip is asymmetric: the
+// primary chip carves a thin strip on the LEFT of an outer rounded
+// rect, the secondary chip mirrors it on the RIGHT. When the bar is
+// open, that strip fills with the accent color; when closed, only
+// the outline remains. The divider position alone tells the user
+// which chip is which — even before they read the fill state. Same
+// pattern Apple and VS Code use.
 //
 // Keyboard shortcuts:
 //   • ⌘B / ⌃B — toggle primary (left)
 //   • ⌘⌥B / ⌃⌥B — toggle secondary (right)
 //
-// Both shortcuts respect the same "in-editable-element bail" rule the
-// editor's keyboard handler uses — typing in a search box or textarea
+// Both shortcuts respect the canonical "in-editable-element bail"
+// rule via shared/keyboard.ts — typing in a search box or textarea
 // must not steal the chord.
 //
 // The component itself is presentational. The parent owns the
@@ -24,6 +23,7 @@
 // (Library top bar today; potentially the Editor's titlebar tomorrow).
 
 import { useEffect, type ReactElement } from "react";
+import { isEditableTarget, isPrimaryAccel } from "./keyboard";
 
 export interface LayoutToggleButtonsProps {
   /** Whether the primary (left) bar is currently open. */
@@ -42,23 +42,6 @@ export interface LayoutToggleButtonsProps {
   /** When true, the window-level keydown listener is NOT installed —
    *  for callers that own keyboard handling at a higher level. */
   readonly disableHotkeys?: boolean;
-}
-
-function isPrimaryAccel(event: KeyboardEvent): boolean {
-  if (typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform)) {
-    return event.metaKey === true;
-  }
-  return event.ctrlKey === true;
-}
-
-function isEditableTarget(event: KeyboardEvent): boolean {
-  const target = event.target as HTMLElement | null;
-  if (target === null) return false;
-  return (
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.isContentEditable === true
-  );
 }
 
 export function LayoutToggleButtons({

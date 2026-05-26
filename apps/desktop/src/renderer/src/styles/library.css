@@ -443,10 +443,22 @@
 }
 /* DetailRail occupies its own 360px column in Focus + Reel modes.
    In Grid mode the column stays at 0 (DetailRail returns null
-   internally). Phase B/C of the library three-state plan. */
+   internally). Phase B/C of the library three-state plan.
+
+   When the user unpins the rail via the title-bar layout toggle
+   (data-right="collapsed"), the column shrinks to just the
+   activity-bar's width (38px) so the center pane reclaims the space.
+   The hover-popped panel still anchors to the bar's left edge, so
+   unpinning isn't a "lose access to Info/OCR/Chat" gesture — it
+   just hides the always-on panel and lets the user peek/pin by
+   clicking an icon. */
 .psl[data-mode="focus"],
 .psl[data-mode="reel"] {
   --right-col: 360px;
+}
+.psl[data-mode="focus"][data-right="collapsed"],
+.psl[data-mode="reel"][data-right="collapsed"] {
+  --right-col: 38px;
 }
 /* Collapsed left bar — only the 36px spine sticks out. Peek state
    reuses the same column width; the panel itself slides on as an

@@ -11,10 +11,12 @@ import {
 import type {
   CaptureRecord,
   LibraryCursor,
+  LibrarySidebarTab,
   PwrSnapError,
   Res,
   Result,
-  ScrollProbeRequest
+  ScrollProbeRequest,
+  Settings
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
@@ -35,6 +37,8 @@ import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
+import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
+import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -264,6 +268,53 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       leftHideTimerRef.current = undefined;
     }, 200);
   }, []);
+
+  // Right-rail (DetailRail) pin + active-tab state. Lifted to the
+  // Library level so the title-bar LayoutToggleButtons can drive the
+  // rail without crossing component boundaries or routing through
+  // Settings broadcasts. Seeded once from `settings:read`; each user
+  // write also fires `settings:write` so the choice survives relaunch.
+  const [rightPinned, setRightPinnedState] = useState<boolean>(true);
+  const [rightActiveTab, setRightActiveTabState] =
+    useState<LibrarySidebarTab>("info");
+  const rightSettingsReadDoneRef = useRef<boolean>(false);
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:read", {}).then((result) => {
+      if (cancelled) return;
+      if (rightSettingsReadDoneRef.current) return;
+      if (!result.ok) return;
+      const rail = (result.value as Settings | undefined)?.library
+        ?.detailRail;
+      if (rail === undefined) return;
+      setRightPinnedState(rail.pinned);
+      setRightActiveTabState(rail.lastSelectedTab);
+      rightSettingsReadDoneRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const setRightPinned = useCallback((next: boolean): void => {
+    rightSettingsReadDoneRef.current = true;
+    setRightPinnedState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { pinned: next } }
+    });
+  }, []);
+  const setRightActiveTab = useCallback((next: LibrarySidebarTab): void => {
+    rightSettingsReadDoneRef.current = true;
+    setRightActiveTabState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { lastSelectedTab: next } }
+    });
+  }, []);
+  const toggleLeftPinned = useCallback((): void => {
+    setLeftPinned((v) => !v);
+  }, []);
+  const toggleRightPinned = useCallback((): void => {
+    setRightPinned(!rightPinned);
+  }, [rightPinned, setRightPinned]);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
@@ -1371,7 +1422,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
-    <div className="psl" data-mode={view.kind} data-left={leftState}>
+    <div
+      className="psl"
+      data-mode={view.kind}
+      data-left={leftState}
+      data-right={rightPinned ? "pinned" : "collapsed"}
+    >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -1430,6 +1486,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               defaultValue=""
             />
           </div>
+          {/* VS Code-style layout chips — toggle the primary (left)
+              and secondary (right) side bars from the title bar. Same
+              visual language as `Toggle Primary Side Bar (⌘B)` /
+              `Toggle Secondary Side Bar (⌘⌥B)`. The component owns
+              the keyboard chord; clicks flip the parent state which
+              also persists to Settings via setRightPinned. */}
+          <LayoutToggleButtons
+            primaryOpen={leftPinned}
+            secondaryOpen={rightPinned}
+            onTogglePrimary={toggleLeftPinned}
+            onToggleSecondary={toggleRightPinned}
+            testIdPrefix="psl-layout-toggle"
+          />
           {/* Settings gear — opens the Settings window. Sits just
               left of Quick Capture so the right side reads as
               "configure · capture". */}
@@ -1818,7 +1887,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           focus + reel modes. Lives in the third grid column
           (`grid-template-columns: 220px 1fr 360px` when
           data-mode is focus/reel, collapsed to 0 in grid mode). */}
-      <DetailRail view={view} record={selectedRecord} copyPulses={copyPulses} />
+      <DetailRail
+        view={view}
+        record={selectedRecord}
+        copyPulses={copyPulses}
+        pinned={rightPinned}
+        onPinChange={setRightPinned}
+        activeTab={rightActiveTab}
+        onActiveTabChange={setRightActiveTab}
+      />
 
       <footer className="psl__status">
         <div className="psl__status-l">

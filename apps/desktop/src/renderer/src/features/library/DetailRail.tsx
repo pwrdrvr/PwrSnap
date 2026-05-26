@@ -64,24 +64,60 @@ export type DetailRailProps = {
   readonly view: LibraryView;
   readonly record: CaptureRecord | null;
   readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
+  /** Controlled pin state — when both `pinned` and `onPinChange` are
+   *  provided the rail is "controlled" by the parent (Library top-bar
+   *  layout toggle owns the truth + settings persistence). When
+   *  omitted, the rail falls back to its own local state seeded from
+   *  Settings on mount. Symmetric prop pattern to the Editor's
+   *  controlled mode. */
+  readonly pinned?: boolean;
+  readonly onPinChange?: (next: boolean) => void;
+  /** Controlled active-tab — same shape as `pinned`. */
+  readonly activeTab?: LibrarySidebarTab;
+  readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
 };
 
-export function DetailRail({ view, record, copyPulses }: DetailRailProps): ReactElement | null {
+export function DetailRail({
+  view,
+  record,
+  copyPulses,
+  pinned: pinnedProp,
+  onPinChange,
+  activeTab: activeTabProp,
+  onActiveTabChange
+}: DetailRailProps): ReactElement | null {
   const renderMetrics = usePresetRenderMetrics(
     record?.id ?? null,
     record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
-  // Active tab + pin state — seeded from Settings on first mount,
-  // then user-driven. Each user write also fires `settings:write` so
-  // the choice survives relaunches. Same per-window source-of-truth
-  // pattern EditorChrome uses (cross-window broadcasts are
-  // deliberately ignored so Window B can't stomp Window A mid-edit).
-  const [activeTab, setActiveTab] = useState<SidebarTab>("info");
-  const [pinned, setPinned] = useState<boolean>(true);
+  // Active tab + pin state. Two operating modes:
+  //   • Controlled — Library owns the state, threads it through props
+  //     (`pinned` + `onPinChange`, `activeTab` + `onActiveTabChange`).
+  //     The Library's top-bar layout toggle drives the rail without
+  //     cross-component plumbing or broadcast subscriptions.
+  //   • Uncontrolled — props omitted; the rail falls back to local
+  //     state seeded once from Settings. Covers DetailRail consumers
+  //     outside the Library shell (existing tests, future surfaces).
+  //
+  // Both modes write through `settings:write` so the choice survives
+  // relaunches. The hook fires uniformly across both modes (Rules of
+  // Hooks); the early returns below gate RENDERING, not state setup.
+  const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
+  const [localPinned, setLocalPinned] = useState<boolean>(true);
   const initialReadDoneRef = useRef<boolean>(false);
+  const isControlled =
+    pinnedProp !== undefined &&
+    onPinChange !== undefined &&
+    activeTabProp !== undefined &&
+    onActiveTabChange !== undefined;
+  const pinned = isControlled ? pinnedProp : localPinned;
+  const activeTab = isControlled ? activeTabProp : localActiveTab;
 
   useEffect(() => {
+    // Skip the read entirely in controlled mode — the parent already
+    // owns the truth and handles its own settings hydration.
+    if (isControlled) return undefined;
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
       if (cancelled) return;
@@ -96,30 +132,44 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
       const rail = (result.value as Settings | undefined)?.library
         ?.detailRail;
       if (rail === undefined) return;
-      setPinned(rail.pinned);
-      setActiveTab(rail.lastSelectedTab);
+      setLocalPinned(rail.pinned);
+      setLocalActiveTab(rail.lastSelectedTab);
       initialReadDoneRef.current = true;
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isControlled]);
 
-  const writePinned = useCallback((next: boolean): void => {
-    initialReadDoneRef.current = true;
-    setPinned(next);
-    void dispatch("settings:write", {
-      library: { detailRail: { pinned: next } }
-    });
-  }, []);
+  const writePinned = useCallback(
+    (next: boolean): void => {
+      if (isControlled) {
+        onPinChange?.(next);
+        return;
+      }
+      initialReadDoneRef.current = true;
+      setLocalPinned(next);
+      void dispatch("settings:write", {
+        library: { detailRail: { pinned: next } }
+      });
+    },
+    [isControlled, onPinChange]
+  );
 
-  const writeActiveTab = useCallback((next: SidebarTab): void => {
-    initialReadDoneRef.current = true;
-    setActiveTab(next);
-    void dispatch("settings:write", {
-      library: { detailRail: { lastSelectedTab: next } }
-    });
-  }, []);
+  const writeActiveTab = useCallback(
+    (next: SidebarTab): void => {
+      if (isControlled) {
+        onActiveTabChange?.(next);
+        return;
+      }
+      initialReadDoneRef.current = true;
+      setLocalActiveTab(next);
+      void dispatch("settings:write", {
+        library: { detailRail: { lastSelectedTab: next } }
+      });
+    },
+    [isControlled, onActiveTabChange]
+  );
 
   useEffect(() => {
     if (record === null) {

@@ -1,0 +1,60 @@
+/* LayoutToggleButtons — VS Code-style layout chips.
+   Visual style:
+   - Tightly packed pair, no border between them — they read as one
+     controller.
+   - The chip's "open" state shows an accent-tinted fill on the
+     appropriate column inside the icon.
+   - Hover: subtle background hint, no shape shift (per VS Code).
+   - Focus: ring matches the rest of the renderer's focus convention.
+*/
+
+.lyt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.lyt-toggle__chip {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 80ms ease, background 80ms ease, border-color 80ms ease;
+}
+
+.lyt-toggle__chip:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+
+.lyt-toggle__chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Open state — the chip's icon column shows an accent-tinted fill.
+   We tint the chip's `currentColor` so the LayoutGlyph's fill picks
+   it up via `fill="currentColor"`. */
+.lyt-toggle__chip.is-open {
+  color: var(--accent-bright);
+}
+.lyt-toggle__chip.is-open:hover {
+  color: var(--accent-bright);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+/* Closed state stays muted; the user's eye is drawn to the open chip. */
+.lyt-toggle__chip.is-closed {
+  color: var(--text-muted);
+}

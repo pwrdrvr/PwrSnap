@@ -754,6 +754,93 @@ describe("DetailRail", () => {
     }
   });
 
+  test("controlled mode: parent's pinned + activeTab props win over local state", async () => {
+    // When Library threads `pinned` + `onPinChange` + `activeTab` +
+    // `onActiveTabChange` in, the rail is controlled by Library — its
+    // own local state and settings:read effect are bypassed. The
+    // title-bar LayoutToggleButtons and the rail then share a single
+    // source of truth without cross-component broadcasts.
+    const onPinChange = vi.fn();
+    const onActiveTabChange = vi.fn();
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange,
+          activeTab: "ocr",
+          onActiveTabChange
+        })
+      );
+      await Promise.resolve();
+    });
+
+    // OCR tab is active (parent set it via prop).
+    const ocrTab = container.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.getAttribute("aria-selected")).toBe("true");
+
+    // Click chat tab → onActiveTabChange fires, local state does NOT
+    // hold the new value (parent owns it).
+    const chatTab = container.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    await act(async () => {
+      chatTab?.click();
+      await Promise.resolve();
+    });
+    expect(onActiveTabChange).toHaveBeenCalledWith("chat");
+    // Active tab is still "ocr" because the parent hasn't re-rendered
+    // with the new value yet (test never updates the props).
+    expect(
+      container.querySelector('[data-testid="psl-right-tab-ocr"]')?.getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+  });
+
+  test("controlled mode: clicking active tab fires onPinChange(false), not local state", async () => {
+    const onPinChange = vi.fn();
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange,
+          activeTab: "info",
+          onActiveTabChange: vi.fn()
+        })
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(onPinChange).toHaveBeenLastCalledWith(false);
+  });
+
   test("Chat tab opens the ChatPanel surface", async () => {
     const { el } = await renderDetailRail(enrichment());
     const chatTab = el.querySelector<HTMLButtonElement>(

@@ -612,11 +612,16 @@
 
 .pse-crop-rect {
   position: absolute;
-  border: 1px solid var(--text-primary);
   cursor: move;
   /* Transparent so the underlying canvas image shows through. */
   background: transparent;
-  /* Keep the border crisp on retina. */
+  /* The visible boundary indicator is an `outline` set INLINE in
+     CropTool.tsx (see pwrdrvr/PwrSnap#110). Outline draws OUTSIDE
+     the box without consuming layout pixels — so the rect's pixel
+     bounds equal exactly the kept region. The previous
+     `border: 1px solid` with box-sizing: border-box drew the line
+     INSIDE the rect and the user perceived the kept area as ~1
+     CSS px smaller than what was actually committed. */
   box-sizing: border-box;
 }
 
@@ -678,8 +683,10 @@
   top: var(--space-1);
   left: var(--space-1);
   padding: 2px 6px;
-  background: var(--bg-overlay);
-  color: var(--text-primary);
+  /* background + color set INLINE in CropTool.tsx for theme-
+     independent contrast against arbitrary image content
+     (pwrdrvr/PwrSnap#110). Don't add background/color rules here
+     or they'll race the inline declarations. */
   font: 500 11px/1.2 var(--font-mono);
   border-radius: 3px;
   pointer-events: none;

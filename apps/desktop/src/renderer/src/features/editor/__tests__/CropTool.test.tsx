@@ -464,4 +464,72 @@ describe("CropTool", () => {
     // be the overlay after the mount-time .focus() call.
     expect(document.activeElement).toBe(overlay);
   });
+
+  // ---------------- pwrdrvr/PwrSnap#110 visual contracts ---------------
+  //
+  // After-fixes screenshots showed two UX problems the user flagged
+  // directly: (1) the visible 1px crop-rect line was drawn INSIDE the
+  // rect's pixel bounds (via `border + box-sizing: border-box`), making
+  // it ambiguous whether the 1px line counted as "kept" or "cropped";
+  // (2) the W×H HUD used theme tokens that disappeared into a black
+  // image when the user was in light theme (text dark, background ~32%
+  // black-on-black = invisible).
+  //
+  // These tests pin the visual contract via INLINE style assertions so
+  // a JSDOM render can verify them without a real layout engine.
+
+  test("rect visible boundary uses CSS outline (drawn OUTSIDE the rect's pixel bounds), not border (drawn INSIDE)", async () => {
+    // Outline draws JUST OUTSIDE the box without consuming any pixels
+    // inside. The rect's left/top/width/height encode EXACTLY the
+    // kept region; the visible indicator sits in the dim area. Pre-
+    // fix used `border: 1px solid` with box-sizing: border-box, which
+    // visibly ate the outermost 1px of the rect — the user perceived
+    // the kept region as ~1 CSS px smaller than what got committed.
+    await renderCropTool();
+    const rect = container?.querySelector(
+      '[data-testid="crop-rect"]'
+    ) as HTMLElement | null;
+    expect(rect).not.toBeNull();
+    if (rect === null) throw new Error("unreachable");
+    // Inline `outline` style — testable via the .style property.
+    // The exact value is a CSS shorthand; assert the key parts.
+    const outline = rect.style.outline;
+    expect(outline, "rect must have an inline outline declaration").not.toBe("");
+    expect(outline, "outline must be dashed (per user spec)").toMatch(/dashed/);
+    expect(outline, "outline must be 1px thick (crisp, not chunky)").toMatch(/(^|\s)1px(\s|$)/);
+    // Outline-offset 0 keeps the outline flush against the rect's
+    // edge — drawn on the OUTSIDE of the box, not floating away.
+    expect(rect.style.outlineOffset).toBe("0px");
+    // CRITICAL: no `border` (1px+) on the inline style. The CSS
+    // class might still declare a thin chrome border for, e.g.,
+    // border-radius, but the *inline* style is the source of truth
+    // for the kept-region boundary indicator.
+    const border = rect.style.border;
+    expect(border, "rect must NOT have an inline border that encroaches on kept pixels").not.toMatch(/^\s*\d+px/);
+  });
+
+  test("HUD has a theme-independent high-contrast inline background (visible on any image)", async () => {
+    // Pre-fix the HUD inherited theme tokens (--bg-overlay,
+    // --text-primary). In LIGHT theme those resolve to a ~32%
+    // black scrim + near-black text — invisible on a black image
+    // (which is what the user was cropping). Theme-independent
+    // inline colors fix the entire bug class.
+    await renderCropTool();
+    const hud = container?.querySelector(
+      '[data-testid="crop-hud"]'
+    ) as HTMLElement | null;
+    expect(hud).not.toBeNull();
+    if (hud === null) throw new Error("unreachable");
+    // Dark scrim — high enough opacity to read text against the
+    // brightest possible image content.
+    expect(hud.style.backgroundColor).toBe("rgba(0, 0, 0, 0.85)");
+    // White text — pure white (not bone) so contrast is maximal
+    // against the dark scrim regardless of theme.
+    expect(hud.style.color).toBe("rgb(255, 255, 255)");
+    // Subtle 1px white inset shadow for definition against light
+    // images (where the dark scrim alone could blend in at the
+    // edges).
+    expect(hud.style.boxShadow).toContain("inset");
+    expect(hud.style.boxShadow).toContain("rgba(255, 255, 255");
+  });
 });

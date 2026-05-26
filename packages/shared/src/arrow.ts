@@ -84,8 +84,27 @@ export type ArrowGeometry = {
 const STROKE_DIVISOR = 220;
 const STROKE_MIN_PX = 4;
 const STROKE_MAX_PX = 14;
-const HEAD_LENGTH_RATIO = 3.5;
-const HEAD_WIDTH_RATIO = 2.6;
+/**
+ * Head proportions, length:width ≈ 5:3 ≈ 1.67:1 ≈ golden ratio. Same
+ * neighborhood as PowerPoint / Word / Keynote default annotation
+ * arrows, which is the visual grammar most users have already
+ * internalized from Office.
+ *
+ * Pre-2026-05 these were 3.5 / 2.6 (length:width ≈ 1.35:1), which
+ * read as a squat / chunky "modern UI" arrow — visibly different from
+ * Office and noticeably worse on Large thickness where the head
+ * looked stubby next to the doubled stem. The longer-thinner shape
+ * also gives the head more room before the stem stroke starts to
+ * crowd the open-triangle's hollow.
+ *
+ * NOT pinned per-overlay yet: changing these constants re-renders
+ * every historical arrow at next load. The plan is to fold ratios
+ * into a snapshotted `arrowStyleVersion` on the overlay row so old
+ * captures stay frozen at the ratios they were drawn with — see the
+ * comment block at the bottom of this file.
+ */
+const HEAD_LENGTH_RATIO = 5;
+const HEAD_WIDTH_RATIO = 3;
 /**
  * Long arrows traversing a large fraction of the image need a thicker
  * stroke to avoid looking like a hair, especially on tall-skinny or
@@ -219,3 +238,25 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
+
+// -- TODO: persist style version per overlay ----------------------
+//
+// The constants above (`STROKE_DIVISOR`, `STROKE_MIN_PX`,
+// `STROKE_MAX_PX`, `HEAD_LENGTH_RATIO`, `HEAD_WIDTH_RATIO`,
+// `LENGTH_DIVISOR`, `SHORT_ARROW_STROKE_MIN_PX`) are global —
+// changing them retroactively re-renders every historical arrow at
+// next load, in both the live editor and library thumbnails. The
+// first time we tweaked head proportions (3.5/2.6 → 5/3) we
+// accepted that, but it's not a habit we want.
+//
+// Better: snapshot a `styleVersion: number` on each `ArrowOverlay`
+// at commit time, and look up the ratios by version inside
+// `computeArrowGeometry`. Legacy rows without the field render at
+// v1 (the historical 3.5/2.6 set); newly drawn arrows go in at the
+// current version. The same parameter table can later host new
+// fields (different stem-stroke curve, alternative head families)
+// without invalidating existing captures.
+//
+// Out of scope for the current visual-fix pass; do this before the
+// next ratio change, not as part of it. See ArrowOverlay schema in
+// `overlay-schemas.ts`.

@@ -56,8 +56,13 @@ describe("computeArrowGeometry", () => {
       to: { x: 0.8, y: 0.5 },
       ...SQUARE_2K
     });
-    expect(geom.headLengthPx).toBeCloseTo(geom.strokeWidthPx * 3.5, 5);
-    expect(geom.headWidthPx).toBeCloseTo(geom.strokeWidthPx * 2.6, 5);
+    // Length:width = 5:3 ≈ golden ratio. PowerPoint / Word /
+    // Keynote default annotation arrows live in the same zone, which
+    // is the visual grammar PwrSnap viewers have already learned.
+    // Pre-2026-05 this was 3.5/2.6 (≈1.35:1) — too squat, especially
+    // at Large where the head was visibly stubby vs the doubled stem.
+    expect(geom.headLengthPx).toBeCloseTo(geom.strokeWidthPx * 5, 5);
+    expect(geom.headWidthPx).toBeCloseTo(geom.strokeWidthPx * 3, 5);
   });
 
   it("places the base of the head behind `to` along the arrow direction", () => {
@@ -264,7 +269,7 @@ describe("computeArrowGeometry", () => {
 
     it("short-arrow correction still applies when override is too big for the arrow", () => {
       // 0.02 normalized × 2000 px = 40 px arrow. Force a 50-px stroke
-      // override → head length would be 50 × 3.5 = 175 px, way past
+      // override → head length would be 50 × 5 = 250 px, way past
       // the arrow's 40-px length. The correction must shrink head +
       // stroke together so the head fits.
       const geom = computeArrowGeometry({

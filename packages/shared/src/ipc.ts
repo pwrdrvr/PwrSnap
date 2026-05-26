@@ -153,7 +153,8 @@ export const EVENT_CHANNELS = {
    * One-way send — gated by an awaiter on the main side that
    * resolves on the matching `perfMark` arrival.
    */
-  perfScrollProbeRequest: "events:perf:scrollProbe:request"
+  perfScrollProbeRequest: "events:perf:scrollProbe:request",
+  sizzleRenderProgress: "events:sizzle:render:progress"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

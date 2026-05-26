@@ -283,6 +283,24 @@ export function AIProvidersPage(): ReactElement {
           </div>
         </Row>
       </Card>
+
+      <Card eyebrow="PROVIDER" title="OpenAI (Sizzle Reels voiceover)">
+        <Row
+          label="API Key"
+          sub="OpenAI API key. Used by the Sizzle Reels composer for text-to-speech voiceover. Stored in the system keychain via Electron safeStorage."
+          tag="keychain"
+        >
+          <GrokKeyControl
+            status={secrets?.openaiApiKey ?? null}
+            onReplace={async (value) => {
+              await replaceSecret("openaiApiKey", value);
+            }}
+            onClear={async () => {
+              await clearSecret("openaiApiKey");
+            }}
+          />
+        </Row>
+      </Card>
     </>
   );
 }

@@ -410,7 +410,62 @@ export function isSettingsPage(value: unknown): value is SettingsPage {
 
 /** Every secret the app persists. Plaintext values never cross the IPC
  *  boundary — the renderer only ever sees the status shape below. */
-export type DesktopSettingsSecretName = "grokApiKey";
+export type DesktopSettingsSecretName = "grokApiKey" | "openaiApiKey";
+
+export type SizzleTtsProvider = "openai" | "xai";
+export type SizzleTtsModel = "tts-1" | "tts-1-hd";
+export type SizzleVoice =
+  | "alloy"
+  | "echo"
+  | "fable"
+  | "onyx"
+  | "nova"
+  | "shimmer";
+
+export const SIZZLE_VOICES = [
+  "alloy",
+  "echo",
+  "fable",
+  "onyx",
+  "nova",
+  "shimmer"
+] as const satisfies readonly SizzleVoice[];
+
+export type SizzleScene = {
+  id: string;
+  captureId: string;
+  scriptLine: string;
+  durationOverrideSec: number | null;
+};
+
+export type SizzleProject = {
+  id: string;
+  name: string;
+  createdAt: string;
+  modifiedAt: string;
+  scenes: SizzleScene[];
+  voice: SizzleVoice;
+  ttsModel: SizzleTtsModel;
+  ttsProvider: SizzleTtsProvider;
+  resolution: "1080p" | "720p";
+  outputPath: string | null;
+  lastRenderedAt: string | null;
+};
+
+export type SizzleRenderProgressPhase =
+  | "tts"
+  | "compose"
+  | "encode"
+  | "done"
+  | "failed";
+
+export type SizzleRenderProgressEvent = {
+  projectId: string;
+  phase: SizzleRenderProgressPhase;
+  message: string;
+  ratio: number;
+  error?: { code: string; message: string };
+};
 
 export type SecretStatus = {
   configured: boolean;
@@ -1544,6 +1599,23 @@ export type Commands = {
   "codex:sensitiveScan": { req: { captureId: string }; res: { runId: string } };
   "codex:cancel": { req: { runId: string }; res: void };
   "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
+
+  "sizzle:open": { req: { projectId?: string }; res: void };
+  "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
+  "sizzle:create": { req: { name: string }; res: SizzleProject };
+  "sizzle:update": {
+    req: {
+      id: string;
+      patch: Partial<Omit<SizzleProject, "id" | "createdAt">>;
+    };
+    res: SizzleProject;
+  };
+  "sizzle:delete": { req: { id: string }; res: void };
+  "sizzle:render": {
+    req: { id: string };
+    res: { outputPath: string; durationSec: number };
+  };
+  "sizzle:revealOutput": { req: { id: string }; res: void };
 };
 
 export type CommandName = keyof Commands;

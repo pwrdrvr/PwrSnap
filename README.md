@@ -1,14 +1,18 @@
 # PwrSnap
 
-**Your screenshots run through your own local AI. Nothing leaves your laptop.**
+**Capture stays on your laptop until you opt in. Enable AI and your captures
+ride your existing OpenAI Codex install — no new cloud provider, no new
+account.**
 
 A macOS-first capture + library app with global hotkeys for region, window,
 and full-screen snaps. A float-over toast that copies a Low / Med / High
 render to the clipboard in one click. A menu-bar tray that surfaces the last
 capture for instant re-copy or edit. And — because the AI brain is the
 Codex CLI / Codex Desktop you already have installed — annotation, smart
-filenames, descriptions, and sensitive-data review without any third-party
-API calls, accounts, or telemetry.
+filenames, descriptions, and sensitive-data review go through your existing
+OpenAI Codex plan, billed to the AI cloud provider you've already set Codex
+up with. No new cloud provider for PwrSnap to talk to, no new account to
+manage, no telemetry.
 
 <p>
   <a href="https://github.com/pwrdrvr/PwrSnap/releases/latest/download/PwrSnap.dmg">
@@ -40,19 +44,25 @@ API calls, accounts, or telemetry.
 - **Menu-bar surface for the last snap.** The tray popover always shows
   the most recent capture with an Edit button and quick re-copy. One
   click away from anywhere on the OS, no Library window needed.
-- **AI runs on your laptop, through the Codex you already have.** PwrSnap
+- **AI rides the Codex you already have, on your existing plan.** PwrSnap
   is a Codex App Server *client* — it talks stdio JSON-RPC to your local
   Codex CLI / Codex Desktop install for annotation, description
   generation, smart filenames, sensitive-data scan, and (Phase 5+) voice
-  describe. No direct OpenAI / Anthropic / xAI calls. Settings → AI
-  Providers auto-discovers every Codex binary on the system and lets you
-  pin a specific path.
+  describe. The image-bearing turns then hit whichever AI cloud provider
+  Codex is set to talk to (OpenAI by default — Codex itself is an OpenAI
+  product — but Codex can be configured to route elsewhere), billed to
+  the plan you already have with that provider through Codex. PwrSnap
+  itself opens no new account, holds no API key of its own, and never
+  calls a model provider directly. Settings → AI Providers auto-discovers
+  every Codex binary on the system and lets you pin a specific path.
 - **Local-first and quiet.** Captures land under
   `~/Library/Application Support/PwrSnap/` as SQLite (WAL) plus a
   content-addressed source store. Secrets are encrypted at rest via
   Electron `safeStorage` (macOS Keychain backend); the renderer only
   ever sees a `{ configured, lastSetAt }` shape — plaintext never crosses
-  the IPC boundary. No telemetry, no account, no cloud sync.
+  the IPC boundary. No telemetry. No PwrSnap-owned account, no
+  PwrSnap-owned cloud sync. (AI features, when enabled, do ride your
+  existing OpenAI Codex plan — see the AI bullet above.)
 
 The longer-form pitch is at **[pwrsnap.com](https://pwrsnap.com)**;
 operator setup + feature reference at

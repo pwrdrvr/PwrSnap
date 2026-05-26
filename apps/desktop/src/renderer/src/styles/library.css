@@ -1245,18 +1245,26 @@
    show/hide, so the user never loses the keep-using-the-snap controls
    to a UI mode toggle.
 
-   The top region clips so a hover-pop's overlay panel stays anchored
-   within the rail; without this clip an over-tall panel (e.g. Chat
-   with lots of messages) would bleed past the aside's right edge. */
+   The top region clips VERTICALLY (a chat with lots of messages must
+   not bleed below the aside) but allows HORIZONTAL overflow — when
+   the rail is collapsed, the hover-pop panel anchors to the activity
+   bar's left edge and renders leftward INTO the canvas area. With
+   horizontal clipping enabled, that popped panel would be invisible
+   the moment the column shrinks past its content width.
+
+   `.psl__right` has overflow:hidden from its base rule; we relax
+   that to overflow-y:hidden, overflow-x:visible here so the
+   hover-pop can escape leftward when needed. */
 .psl__right--vertical {
   display: grid;
   grid-template-rows: 1fr auto;
   min-height: 0;
+  overflow: visible;
 }
 .psl__right-content {
   position: relative;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .psl__right-footer {
   border-top: 1px solid var(--border-subtle);
@@ -1265,6 +1273,20 @@
   flex-direction: column;
   gap: 10px;
   background: var(--bg-sidebar);
+  /* Children of `.psl__copy-row` (grid 1fr 1fr 1fr) and
+     `.psl__action-row` (flex 1) carry min-content widths large
+     enough to force the rail wider than its grid column when the
+     column collapses to 38px. `min-width: 0` here lets the flex/
+     grid children shrink past their content width — without it the
+     footer's L/M/H copy buttons + action row would bleed past the
+     aside's right edge on collapse, surfacing as the "copy button
+     edges sliding over" visual bug. */
+  min-width: 0;
+}
+.psl__right-footer > *,
+.psl__right-footer .psl__copy-row,
+.psl__right-footer .psl__action-row {
+  min-width: 0;
 }
 .psl__right-body--chat {
   /* Chat carries its own composer footer; let it stretch to the panel
@@ -1274,6 +1296,21 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/* When the user collapses the rail via the title-bar layout toggle,
+   the panel + footer disappear and only the 38px activity bar
+   remains pinned to the right edge. The bar itself stays clickable
+   so the user can hover-pop / re-pin without first showing the
+   panel. */
+.psl[data-right="collapsed"] .psl__right-footer {
+  display: none;
+}
+.psl[data-right="collapsed"] .psl__right {
+  /* Clip the vertical axis to keep the bar from overshooting the
+     row, but allow horizontal overflow so the hover-pop panel can
+     paint INTO the canvas area to the left of the rail. */
+  overflow: visible;
 }
 
 .psl__right-tabs {

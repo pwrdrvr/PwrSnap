@@ -387,40 +387,8 @@ export function CropTool(props: CropToolProps): ReactElement | null {
   // same as it does for other interactions. Stop propagation on
   // pointerdown so the click doesn't initiate a rect drag.
   const commitNormalized = useCallback((): void => {
-    const { rect: r, sourceWidth: sw, sourceHeight: sh, canvasRect: cr } = propsRef.current;
+    const { rect: r, sourceWidth: sw, sourceHeight: sh } = propsRef.current;
     if (sw <= 0 || sh <= 0) return;
-    // Observability for pwrdrvr/PwrSnap#110 "right-edge drift" — the
-    // user reports their drawn rect's right edge ends up further
-    // right than they intended. Three quantities determine whether
-    // the drag → source-pixel translation is correct:
-    //
-    //   • sourceWidth / sourceHeight (props from Editor — should be
-    //     record.width_px / record.height_px)
-    //   • canvasRect.width / canvasRect.height (the canvas's display
-    //     CSS dims at drag time)
-    //   • rect (the user's drawn rect in source-pixel coords)
-    //
-    // If canvasRect's aspect doesn't match sourceWidth/sourceHeight's
-    // aspect, viewportToSource's scaling is non-uniform and the user's
-    // perceived drag end differs from the committed coords. Logging
-    // all three lets us see if there's an aspect mismatch.
-    // eslint-disable-next-line no-console
-    console.log("[crop-tool] commit", {
-      rect: r,
-      source: { w: sw, h: sh, aspect: sw / sh },
-      canvasRect: cr === null ? null : {
-        w: cr.width,
-        h: cr.height,
-        aspect: cr.width / cr.height,
-        left: cr.left,
-        top: cr.top
-      },
-      committedNorm: { x: r.x / sw, y: r.y / sh, w: r.w / sw, h: r.h / sh },
-      committedSourcePx: {
-        rightEdge: r.x + r.w,
-        bottomEdge: r.y + r.h
-      }
-    });
     propsRef.current.onCommit({
       x: r.x / sw,
       y: r.y / sh,

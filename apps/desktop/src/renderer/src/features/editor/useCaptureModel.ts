@@ -1188,49 +1188,11 @@ export function useCaptureModel(captureId: string): CaptureModel {
             (l): l is BundleLayerNode & { kind: "vector" } =>
               l.kind === "vector" && l.shape.kind !== "crop"
           );
-          // Observability for #110 crop-as-viewport: if the user
-          // reports "text moved with the crop" we need to confirm
-          // (a) this dispatcher ran at all, and (b) we saw the
-          // expected pre-crop vector layers. Without this log the
-          // bug class is indistinguishable from "dev app running
-          // stale code". Trace-level so production binaries don't
-          // spam unless explicitly opted in.
-          // eslint-disable-next-line no-console
-          console.log("[crop-dispatch v2]", {
-            captureId,
-            cropRect: op.rect,
-            preCropCanvas: { w: record.width_px, h: record.height_px },
-            newCanvas: { w: newWidth, h: newHeight },
-            vectorsBeforeCropCount: vectorsBeforeCrop.length,
-            vectorKinds: vectorsBeforeCrop.map((l) => l.shape.kind)
-          });
           for (const layer of vectorsBeforeCrop) {
             const transformed = inverseTransformOverlayByCrop(
               layer.shape,
               op.rect
             );
-            // eslint-disable-next-line no-console
-            console.log("[crop-dispatch v2] transform", {
-              id: layer.id,
-              kind: layer.shape.kind,
-              before:
-                layer.shape.kind === "text" || layer.shape.kind === "step"
-                  ? layer.shape.point
-                  : layer.shape.kind === "arrow"
-                    ? { from: layer.shape.from, to: layer.shape.to }
-                    : "rect" in layer.shape
-                      ? layer.shape.rect
-                      : null,
-              after:
-                transformed !== null &&
-                (transformed.kind === "text" || transformed.kind === "step")
-                  ? transformed.point
-                  : transformed !== null && transformed.kind === "arrow"
-                    ? { from: transformed.from, to: transformed.to }
-                    : transformed !== null && "rect" in transformed
-                      ? transformed.rect
-                      : null
-            });
             // Always delete the OLD vector layer — it's at pre-crop
             // coords that don't apply to the new canvas.
             // eslint-disable-next-line no-await-in-loop
@@ -1292,24 +1254,6 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // top-left crops (no behavior change for that case).
           const offsetXPx = op.rect.x * record.width_px;
           const offsetYPx = op.rect.y * record.height_px;
-          // Observability for PR #110 off-origin crop bug — confirms
-          // the dispatcher decided to (or skipped) translating the
-          // raster. Pre-fix this branch didn't exist, so the absence
-          // of these log lines is the smoke test for "running stale
-          // build vs my fix". A fresh build shows ONE OF:
-          //   skip (edge-aligned): { offset: { x: 0, y: 0 } }
-          //   active (off-origin): { offset: {...}, rasterCount: N }
-          //   active but no raster: { rasterCount: 0 } — would be a bug
-          // eslint-disable-next-line no-console
-          console.log("[crop-dispatch v2] step 0.5 raster-translate", {
-            offsetXPx,
-            offsetYPx,
-            willTranslate: offsetXPx !== 0 || offsetYPx !== 0,
-            rasterCount: layersRef.current.filter((l) => l.kind === "raster").length,
-            rasterTransformsBefore: layersRef.current
-              .filter((l) => l.kind === "raster")
-              .map((l) => ({ id: l.id, transform: l.transform }))
-          });
           if (offsetXPx !== 0 || offsetYPx !== 0) {
             const rasterLayers = layersRef.current.filter(
               (l): l is BundleLayerNode & { kind: "raster" } => l.kind === "raster"

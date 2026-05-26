@@ -990,6 +990,204 @@ describe("text overlay sizing — bake honors source shortSide across crops (pwr
   });
 });
 
+// ---------------------------------------------------------------------
+// Out-of-canvas overlay coords (pwrdrvr/PwrSnap#110 schema widening).
+//
+// `NormalizedScalar` was widened from `.min(0).max(1)` to `.finite()`
+// so an overlay whose source-pixel position is outside the cropped
+// viewport (e.g. a text typed at point.x=0.95 on a 2880-wide canvas
+// that's then cropped to 60% width → new point.x ≈ 1.58) can persist
+// as DATA in the layer tree. The renderer (SVG overflow:hidden) and
+// the bake (sharp composite) clip at the canvas boundary at paint
+// time — but no test currently pins the "schema permits, paint clips"
+// contract end-to-end. This block does.
+//
+// Without this test, a future tightening of the schema OR a regression
+// in the bake's clip math could let an out-of-canvas rect paint
+// arbitrary pixels past the canvas right edge and ship unnoticed.
+// ---------------------------------------------------------------------
+
+async function seedV2CaptureWithOutOfCanvasRect(id: string): Promise<void> {
+  // 400×300 canvas + raster, with a vector rect whose x=1.05 (i.e.,
+  // its LEFT edge is already past the right edge of the canvas).
+  // CORRECT behavior: the export PNG shows no red pixels at all —
+  // the rect is wholly outside the visible canvas.
+  // BUG behavior (if the schema clamped or the bake mis-clipped):
+  // some red bleeds onto the canvas's right edge or wraps around.
+  const sourcePng = await makeSourcePng();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const bundlePath = join(workDir, "captures", `${id}.pwrsnap`);
+  const flatPngPath = join(workDir, "captures", `${id}.png`);
+  await writeFile(flatPngPath, sourcePng);
+  const now = new Date().toISOString();
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: { width_px: SOURCE_WIDTH, height_px: SOURCE_HEIGHT },
+    paired_png_filename: `${id}.png`,
+    created_at: now,
+    bundle_modified_at: now
+  };
+  const rootGroupId = "grp_oob_test_xx0";
+  const rasterId = "ras_oob_test_xx0";
+  const overlayId = "vec_oob_test_xx0";
+  const common = {
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+  const layers: BundleLayerNode[] = [
+    {
+      ...common,
+      id: rootGroupId,
+      kind: "group",
+      parent_id: null,
+      z_index: 0,
+      collapsed: false
+    },
+    {
+      ...common,
+      id: rasterId,
+      kind: "raster",
+      parent_id: rootGroupId,
+      z_index: 0,
+      source_ref: { kind: "embedded", sha256: sourceSha },
+      natural_width_px: SOURCE_WIDTH,
+      natural_height_px: SOURCE_HEIGHT
+    },
+    {
+      ...common,
+      id: overlayId,
+      kind: "vector",
+      parent_id: rootGroupId,
+      z_index: 1,
+      shape: {
+        kind: "rect",
+        // Entirely past the right edge: x = 1.05 means the rect's
+        // left edge starts at source pixel 1.05 × 400 = 420 — 20 px
+        // past the canvas's right edge (at 400). w = 0.2 = 80 px.
+        // Schema accepts (.finite() — out-of-canvas coords are
+        // legitimate post-#110); the BAKE must clip and emit no red.
+        rect: { x: 1.05, y: 0.166666, w: 0.2, h: 0.333333 },
+        color: OVERLAY_COLOR_HEX,
+        filled: true
+      }
+    }
+  ];
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 1,
+    layers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sourceSha, sourcePng]]),
+    layerBytes: new Map(),
+    thumbnailJpg
+  });
+  await writeFile(bundlePath, bundleBuf);
+  getDb()
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at, source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio, byte_size,
+        sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', @captured_at, NULL, NULL,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
+        2, @ev,
+        @w, @h, 2.0, @bs,
+        @sha, @ev, NULL
+      )`
+    )
+    .run({
+      id,
+      captured_at: now,
+      bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
+      ev: 1,
+      w: SOURCE_WIDTH,
+      h: SOURCE_HEIGHT,
+      bs: bundleBuf.length,
+      sha: sourceSha
+    });
+  insertLayerTreeForCapture(id, layers);
+}
+
+/** Scan every pixel of the PNG and return the count that match the
+ *  overlay's red hue. Lets the test prove the entire canvas is free
+ *  of the overlay color when it should be clipped, not just one
+ *  sampled point. */
+async function totalRedPixelCount(pngBytes: Buffer): Promise<number> {
+  const { data, info } = await sharp(pngBytes)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  let count = 0;
+  for (let i = 0; i < data.length; i += channels) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    // Same "red-ish" tolerance as `pngHasRedInOverlayRegion` —
+    // overlay color #ff5f57 ± resize-blur slack.
+    if (r > 180 && g < 160 && b < 160) count += 1;
+  }
+  return count;
+}
+
+describe("schema-permits + paint-clips: out-of-canvas overlay coords don't bleed past canvas edge", () => {
+  test("v2 capture with rect at x=1.05 (entirely past right edge): bake produces ZERO red pixels", async () => {
+    // The contract pwrdrvr/PwrSnap#110's schema widening relies on:
+    // overlays can persist out-of-canvas coords, and the renderer
+    // + bake clip them at the canvas boundary. Without this test,
+    // a future bake-pipeline refactor that forgot to clip — or a
+    // sharp.composite call that wraps coords modulo canvas dim
+    // (Sharp doesn't do this, but a future migration to a
+    // different rasterizer might) — would silently ship a buggy
+    // export where a "hidden" annotation paints arbitrary canvas
+    // pixels.
+    //
+    // The seeded rect is entirely past the canvas's right edge
+    // (left edge at canvas x=420; canvas right edge is x=400).
+    // No red pixels should appear anywhere in the exported PNG.
+    const captureId = "t_oob_rect_clip_x00";
+    await seedV2CaptureWithOutOfCanvasRect(captureId);
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+
+    const last = clipboardCaptured.at(-1);
+    if (last === undefined || last.kind !== "writeImage") {
+      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
+    }
+    const redCount = await totalRedPixelCount(last.bytes);
+    expect(
+      redCount,
+      "An overlay rect entirely outside the canvas must NOT paint a single pixel of overlay color. If red pixels appear, the bake's composite is either wrapping the rect coords modulo canvas dim or failing to clip — either way the schema's widening to .finite() would be exposing a real bug."
+    ).toBe(0);
+  });
+});
+
 function idForCell(surfaceName: string, variantName: string): string {
   // Captures table + BundleManifestV1/V2 cap capture_id at 32 chars.
   // Derive a short, stable id from a sha256 of the cell coordinates

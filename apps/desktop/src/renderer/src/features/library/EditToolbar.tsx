@@ -127,8 +127,26 @@ export type EditToolbarProps = {
 /** Module-level position store. Lives across mounts (Stage may
  *  unmount the toolbar when the user toggles into Reel/Grid view),
  *  but resets each app launch because the module is fresh. `null`
- *  means "use the default CSS bottom-center position." */
+ *  means "use the default CSS bottom-center position."
+ *
+ *  Coordinate space is stage-relative — offsets in pixels from the
+ *  top-left of `.psl__stage-wrap`, NOT the viewport. Storing stage-
+ *  relative coords means a saved position automatically survives
+ *  sidebar resizes, window resizes, and Focus ↔ Reel transitions
+ *  (each shifts the stage origin in viewport coords but leaves the
+ *  toolbar's intent — "X pixels inside the stage" — intact). The
+ *  re-clamp effect (useLayoutEffect below) re-evaluates against
+ *  current stage dimensions on every resize so a position that
+ *  fitted in a wide stage gets pulled back into a narrower one
+ *  instead of stranding the toolbar off-screen. */
 let savedPosition: { x: number; y: number } | null = null;
+
+/** Minimum gap between the toolbar's edges and the stage's edges
+ *  during drag + re-clamp. Small enough that the user can park the
+ *  toolbar pretty much anywhere inside the stage, large enough that
+ *  the rounded-corner toolbar doesn't visually kiss the stage's
+ *  scroll-shadow / border. */
+const DRAG_MARGIN_PX = 8;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -376,17 +394,79 @@ export function EditToolbar({
     savedPosition = position;
   }, [position]);
 
+  // Re-clamp the saved position when the stage rect or the toolbar's
+  // rendered size changes. Without this, narrowing the window (or
+  // expanding the Library sidebar, or flipping the toolbar into its
+  // 2-row wrap configuration) could strand the toolbar partly outside
+  // the stage. The effect attaches a ResizeObserver to both the stage
+  // and the toolbar itself; the setter uses a functional updater +
+  // value-equality guard so an observation that doesn't shift the
+  // position is a no-op (no extra renders, no observer loop).
+  //
+  // Dep is `position !== null` (not `position`) so the observer is
+  // attached/detached only when the toolbar transitions in and out of
+  // its custom-positioned state — every drag tick reuses the same
+  // observer rather than thrashing one per render.
+  const isPositioned = position !== null;
+  useLayoutEffect(() => {
+    if (!isPositioned) return;
+    const toolbar = toolbarRef.current;
+    if (toolbar === null) return;
+    const stageEl = getStageEl();
+    if (stageEl === null) return;
+    const reclamp = (): void => {
+      const sr = stageEl.getBoundingClientRect();
+      const tr = toolbar.getBoundingClientRect();
+      // Mirror the drag-time clamp: leave DRAG_MARGIN_PX between the
+      // toolbar edges and the stage edges, and never invert the
+      // clamp interval when the stage is smaller than the toolbar.
+      const maxX = Math.max(DRAG_MARGIN_PX, sr.width - tr.width - DRAG_MARGIN_PX);
+      const maxY = Math.max(DRAG_MARGIN_PX, sr.height - tr.height - DRAG_MARGIN_PX);
+      setPosition((prev) => {
+        if (prev === null) return prev;
+        const cx = clamp(prev.x, DRAG_MARGIN_PX, maxX);
+        const cy = clamp(prev.y, DRAG_MARGIN_PX, maxY);
+        if (cx === prev.x && cy === prev.y) return prev;
+        return { x: cx, y: cy };
+      });
+    };
+    // Initial re-clamp: when the toolbar wraps a moment after mount
+    // (Geist swap, late image load, etc.), the rendered size differs
+    // from the stored position's original assumption. Run once before
+    // the observer attaches.
+    reclamp();
+    const ro = new ResizeObserver(reclamp);
+    ro.observe(stageEl);
+    ro.observe(toolbar);
+    return () => {
+      ro.disconnect();
+    };
+  }, [isPositioned]);
+
   // Drag tracking. We compute the new position from clientX/clientY +
   // the original offset of the toolbar at drag-start, so the grip
   // stays under the cursor regardless of where the user clicked
   // within it.
+  //
+  // `stageRect` is captured ONCE at drag-start (the user can't resize
+  // the window mid-drag without releasing the grip — pointer capture
+  // is exclusive). We clamp the drag to the stage rect so the toolbar
+  // can never slide off the canvas onto the Library sidebar or the
+  // Detail rail. Falls back to viewport bounds when the stage element
+  // can't be found — that path covers the unit test harness, which
+  // mounts EditToolbar without a `.psl__stage-wrap` parent.
   const dragStart = useRef<{
     pointerX: number;
     pointerY: number;
     toolbarLeft: number;
     toolbarTop: number;
+    stageRect: DOMRect | null;
   } | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+
+  function getStageEl(): HTMLElement | null {
+    return toolbarRef.current?.closest<HTMLElement>(".psl__stage-wrap") ?? null;
+  }
 
   function onGripPointerDown(event: React.PointerEvent<HTMLButtonElement>): void {
     if (event.button !== 0) return;
@@ -394,12 +474,14 @@ export function EditToolbar({
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
     const rect = toolbar.getBoundingClientRect();
+    const stageEl = getStageEl();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
     dragStart.current = {
       pointerX: event.clientX,
       pointerY: event.clientY,
       toolbarLeft: rect.left,
-      toolbarTop: rect.top
+      toolbarTop: rect.top,
+      stageRect: stageEl?.getBoundingClientRect() ?? null
     };
   }
   function onGripPointerMove(event: React.PointerEvent<HTMLButtonElement>): void {
@@ -408,19 +490,47 @@ export function EditToolbar({
     const dy = event.clientY - dragStart.current.pointerY;
     const toolbar = toolbarRef.current;
     if (toolbar === null) return;
-    // Clamp so at least HOLD_MARGIN_PX of the toolbar (containing the
-    // grip) stays visible on every edge. Otherwise the user could
-    // drag it entirely off-screen and have to know "double-click the
-    // grip to reset" — but they can't see the grip to do that.
+    // Read the LIVE toolbar rect (not the drag-start snapshot) so the
+    // clamp follows the toolbar's actual current width/height — which
+    // can change mid-session as the toolbar wraps to a 2nd row at
+    // narrow stage widths.
     const rect = toolbar.getBoundingClientRect();
-    const HOLD_MARGIN_PX = 32;
-    const minX = HOLD_MARGIN_PX - rect.width;
-    const maxX = window.innerWidth - HOLD_MARGIN_PX;
-    const minY = 0;
-    const maxY = window.innerHeight - HOLD_MARGIN_PX;
+    const { stageRect } = dragStart.current;
+    // Clamp to stage bounds when present, viewport otherwise. The
+    // stage path keeps the toolbar entirely inside the editor area —
+    // it can't be parked over the Library sidebar or the Detail rail.
+    // Viewport fallback preserves the old behavior for the unit test
+    // harness (no `.psl__stage-wrap` ancestor there).
+    const boundsLeft = stageRect?.left ?? 0;
+    const boundsTop = stageRect?.top ?? 0;
+    const boundsRight = stageRect?.right ?? window.innerWidth;
+    const boundsBottom = stageRect?.bottom ?? window.innerHeight;
+    const minViewportX = boundsLeft + DRAG_MARGIN_PX;
+    const maxViewportX = boundsRight - rect.width - DRAG_MARGIN_PX;
+    const minViewportY = boundsTop + DRAG_MARGIN_PX;
+    const maxViewportY = boundsBottom - rect.height - DRAG_MARGIN_PX;
+    // Guard against degenerate stage smaller than the toolbar
+    // (max < min after subtracting toolbar width/height): clamp to
+    // [min, max(min, max)] so we never invert the clamp interval.
+    const targetX = dragStart.current.toolbarLeft + dx;
+    const targetY = dragStart.current.toolbarTop + dy;
+    const clampedViewportX = clamp(
+      targetX,
+      minViewportX,
+      Math.max(minViewportX, maxViewportX)
+    );
+    const clampedViewportY = clamp(
+      targetY,
+      minViewportY,
+      Math.max(minViewportY, maxViewportY)
+    );
+    // Store in stage-relative coords so the position survives
+    // sidebar/window resize. The re-clamp effect below re-evaluates
+    // against the current stage rect when either the stage or the
+    // toolbar's rendered size changes.
     setPosition({
-      x: clamp(dragStart.current.toolbarLeft + dx, minX, maxX),
-      y: clamp(dragStart.current.toolbarTop + dy, minY, maxY)
+      x: clampedViewportX - boundsLeft,
+      y: clampedViewportY - boundsTop
     });
   }
   function onGripPointerUp(event: React.PointerEvent<HTMLButtonElement>): void {
@@ -432,21 +542,21 @@ export function EditToolbar({
     setPosition(null);
   }
 
-  // When a custom position is in effect, switch from `position:
-  // absolute` (default, positioned-ancestor-relative) to `position:
-  // fixed` (viewport-relative). The drag math uses
-  // `getBoundingClientRect()` which produces viewport-relative coords;
-  // applying those as `left`/`top` under `position: absolute` would
-  // double-offset the toolbar by the Stage wrapper's distance from
-  // the viewport (the sidebar width + any topbar height), making the
-  // toolbar jump away from the cursor at drag-start. Fixed positioning
-  // matches the coordinate space and keeps the grip directly under
-  // the pointer.
+  // When a custom position is in effect, override the default
+  // bottom-center anchor (`left: 50%; transform: translateX(-50%);
+  // bottom: 24px`) with explicit stage-relative `left`/`top`. The
+  // toolbar stays on `position: absolute` — parented to
+  // `.psl__stage-wrap` — so the offsets are interpreted in the same
+  // coord space we store them in. (Earlier versions used
+  // `position: fixed` to match the viewport coord space the drag
+  // math read from `getBoundingClientRect()`, but viewport storage
+  // doesn't survive sidebar/window resize and let the user park the
+  // toolbar over the Library / Detail rail; the drag handler now
+  // converts to stage-relative before storing.)
   const style: React.CSSProperties =
     position === null
       ? {}
       : {
-          position: "fixed",
           left: position.x,
           top: position.y,
           bottom: "auto",

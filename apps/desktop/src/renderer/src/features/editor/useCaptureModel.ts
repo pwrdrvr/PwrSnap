@@ -755,13 +755,41 @@ export function applyPatchToLayer(
 export function useCaptureModel(captureId: string): CaptureModel {
   const [state, setState] = useState<FetchedState>({ kind: "loading" });
 
+  // Per-refetch sequence guard. Multiple broadcasts (overlays:changed +
+  // captures:changed) can fire in rapid succession during a single
+  // dispatchEdit op (the v2 crop dispatcher emits ~5 broadcasts as it
+  // steps through transform → delete old crop → insert new crop →
+  // update canvas dims). Each broadcast triggers refetch → library:byId
+  // dispatch. The DB reflects different state at each dispatch's
+  // dispatch-time (Steps 0-2 see pre-canvas-update dims; Step 3 sees
+  // post). Real IPC + V8 microtask scheduling don't preserve dispatch
+  // order on resolution — so a stale Step-0 refetch can resolve AFTER
+  // a fresh Step-3 refetch and overwrite state with stale dims.
+  //
+  // The user-visible symptom: crop undo lands canvas at raster-natural
+  // dims (2880) instead of the original pre-crop dims (1728), because
+  // the undo dispatcher reads recordRef.current.width_px from a stale
+  // state (1728 instead of 1037), so newWidth = 1.667 × 1728 = 2880
+  // instead of 1.667 × 1037 = 1729. See pwrdrvr/PwrSnap#110 user
+  // report.
+  //
+  // Fix: bump a monotonic seq at the start of each refetch; capture
+  // the seq locally; before any setState check the seq still matches.
+  // Stale resolutions (whose seq is older than the current) are
+  // dropped — only the LATEST refetch's resolution wins, regardless
+  // of arrival order.
+  const refetchSeqRef = useRef(0);
+
   // refetch is recreated when captureId changes. Each invocation
   // re-discovers the bundle_format_version, so a Phase 3 doctor run
   // that flips a capture from v1 → v2 is picked up automatically.
   const refetch = useCallback(
     async (isCancelled: () => boolean): Promise<void> => {
+      refetchSeqRef.current += 1;
+      const mySeq = refetchSeqRef.current;
+      const isStale = (): boolean => mySeq !== refetchSeqRef.current;
       const recordResult = await dispatch("library:byId", { id: captureId });
-      if (isCancelled()) return;
+      if (isCancelled() || isStale()) return;
       if (!recordResult.ok) {
         setState({ kind: "error", message: recordResult.error.message });
         return;
@@ -786,7 +814,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
       }
       if (record.bundle_format_version >= 2) {
         const layersResult = await dispatch("layers:list", { captureId });
-        if (isCancelled()) return;
+        if (isCancelled() || isStale()) return;
         const layers =
           layersResult.ok && Array.isArray(layersResult.value)
             ? layersResult.value
@@ -796,7 +824,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
       }
       // v1
       const overlaysResult = await dispatch("overlays:list", { captureId });
-      if (isCancelled()) return;
+      if (isCancelled() || isStale()) return;
       const overlays =
         overlaysResult.ok && Array.isArray(overlaysResult.value)
           ? overlaysResult.value

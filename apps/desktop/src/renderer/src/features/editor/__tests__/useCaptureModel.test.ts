@@ -776,6 +776,141 @@ describe("useCaptureModel", () => {
     });
   });
 
+  test("5h. v2 refetch race: stale broadcast resolution must NOT overwrite fresh record (crop undo bug)", async () => {
+    // User-reported bug from PR #110 review:
+    //   1. User crops a capture (1728 → 1037 wide).
+    //   2. User hits ⌘Z immediately.
+    //   3. Undo dispatches a reverse-crop with rect.w = 1728/1037 ≈ 1.667.
+    //   4. The dispatcher reads recordRef.current.width_px to compute
+    //      `newWidth = op.rect.w * record.width_px`.
+    //   5. Expected: record.width_px is 1037 (post-forward-crop),
+    //      newWidth = 1729 (~original 1728).
+    //   6. Actual: record.width_px is STALE 1728, newWidth = 2880
+    //      (raster natural dims). Canvas restores to wrong size; text
+    //      transformed by the inverse rect now lands at totally wrong
+    //      coords.
+    //
+    // Root cause: the v2 crop dispatcher fires multiple steps that each
+    // broadcast events:overlays:changed / events:captures:changed. Each
+    // broadcast triggers a refetch via library:byId. Refetches from
+    // STEPS 0-2 dispatch BEFORE the DB row's canvas dims update (Step 3),
+    // so library:byId returns stale 1728. Step 3's refetch returns the
+    // fresh 1037. If the stale resolutions land AFTER the fresh one
+    // (any order is possible — IPC + microtask queuing is non-
+    // deterministic), state.record ends up at stale 1728 and recordRef
+    // shows 1728 forever.
+    //
+    // This test SIMULATES the race: fire 5 captures:changed broadcasts
+    // in sequence where each library:byId returns a different width
+    // (mimicking the DB state at each broadcast point), and assert
+    // the FINAL state.record.width is the LATEST value (1037), not the
+    // earliest stale one.
+
+    const STALE_WIDTH = 1728;
+    const FRESH_WIDTH = 1037;
+
+    // Realistic race simulation: each library:byId dispatch is queued.
+    // We control resolution order explicitly. Real IPC + microtasks
+    // don't preserve dispatch order on resolution (Electron's IPC
+    // layer + V8's microtask queue + the broadcast handler invocation
+    // order all contribute), so the order is intentionally reversed
+    // here to demonstrate the bug: the FRESH response (matching the
+    // FINAL DB state after Step 3's canvas dim update) is dispatched
+    // LAST but should resolve FIRST, while STALE responses dispatched
+    // earlier resolve AFTER it. Without a seq guard the stale
+    // resolution overwrites fresh.
+    type Pending = {
+      resolve: (record: CaptureRecord) => void;
+      width: number;
+    };
+    const pending: Pending[] = [];
+    let dispatchIdx = 0;
+    // Width per dispatch index: first call (initial) = stale.
+    // Subsequent (from broadcasts) = stale, stale, stale, stale, fresh.
+    const widthByIdx = [STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, FRESH_WIDTH];
+
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId") {
+        const w = widthByIdx[dispatchIdx] ?? FRESH_WIDTH;
+        dispatchIdx += 1;
+        return new Promise<{ ok: true; value: CaptureRecord }>((resolve) => {
+          pending.push({
+            width: w,
+            resolve: (record: CaptureRecord) => resolve({ ok: true, value: record })
+          });
+        });
+      }
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    // Resolve the initial fetch (call #0, stale width).
+    await act(async () => {
+      const initial = pending.shift();
+      if (initial !== undefined) {
+        const r = makeRecord("cap_2", 2);
+        initial.resolve({ ...r, width_px: initial.width });
+      }
+    });
+    await flush();
+    const initialModel = model as CaptureModel | null;
+    expect(initialModel?.kind === "loaded").toBe(true);
+
+    // Fire 5 captures:changed broadcasts in sequence. Each triggers
+    // a refetch → library:byId dispatch → queues a Pending.
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) {
+        broadcast("events:captures:changed", { changedIds: ["cap_2"] });
+      }
+    });
+    // All 5 should be queued.
+    expect(pending.length).toBe(5);
+
+    // Resolve them in REVERSE order: the FRESH response (last
+    // dispatched) resolves FIRST; the 4 STALE responses resolve
+    // AFTER. Without a seq guard, the last stale resolution wins
+    // and state.record.width ends up at STALE_WIDTH.
+    await act(async () => {
+      const fresh = pending.pop(); // last dispatched = fresh
+      if (fresh !== undefined) {
+        const r = makeRecord("cap_2", 2);
+        fresh.resolve({ ...r, width_px: fresh.width });
+      }
+    });
+    await flush();
+    // Now resolve the 4 stale ones (dispatched before fresh, but
+    // resolving after — the bug case).
+    await act(async () => {
+      while (pending.length > 0) {
+        const stale = pending.shift()!;
+        const r = makeRecord("cap_2", 2);
+        stale.resolve({ ...r, width_px: stale.width });
+      }
+    });
+    await flush();
+    await flush();
+
+    // CORE ASSERTION: even though a STALE response resolved LAST, the
+    // model's record should reflect the FRESH value because that
+    // dispatch was the LATEST one fired. Per-refetch sequence-number
+    // guard drops stale-arriving-late resolutions.
+    const m = model! as CaptureModel;
+    if (m.kind !== "loaded") throw new Error("model not loaded");
+    expect(
+      m.record.width_px,
+      "stale-arriving-late refetch must NOT overwrite fresh state (otherwise crop undo reads stale dims and lands canvas at wrong size — pwrdrvr/PwrSnap#110 user report)"
+    ).toBe(FRESH_WIDTH);
+  });
+
   test("5d. v2 dispatchEdit: upsertBatch → not yet supported error", async () => {
     const record = makeRecord("cap_2", 2);
     const layer = makeLayerNode("ly_1");

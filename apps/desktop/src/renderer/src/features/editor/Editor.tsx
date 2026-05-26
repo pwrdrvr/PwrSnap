@@ -56,6 +56,7 @@ import {
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
+import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
@@ -1333,11 +1334,24 @@ export function Editor({
   // one (shouldn't happen for a healthy v2 capture).
   let sourceWidthPx = model.record.width_px;
   let sourceHeightPx = model.record.height_px;
+  // Off-origin v2 crops translate the raster layer's transform by
+  // (-rect.x × oldW, -rect.y × oldH) so the (smaller) canvas displays
+  // the user's chosen region of the source. Read those translation
+  // components here so the editor's <img> can mirror the offset via
+  // CSS transform. Identity (0, 0) for uncropped + edge-aligned
+  // crops + v1 captures (no layer tree). See pwrdrvr/PwrSnap#110 and
+  // useCaptureModel.ts's `Step 0.5: translate every raster layer's
+  // transform...` for the dispatcher side of this contract.
+  let rasterTranslateXPx = 0;
+  let rasterTranslateYPx = 0;
   if (model.format === 2) {
     for (const layer of model.layers) {
       if (layer.kind === "raster" && layer.parent_id !== null) {
         sourceWidthPx = layer.natural_width_px;
         sourceHeightPx = layer.natural_height_px;
+        // transform[4] = tx, transform[5] = ty, both in source-pixel units.
+        rasterTranslateXPx = layer.transform[4];
+        rasterTranslateYPx = layer.transform[5];
         break;
       }
     }
@@ -1378,6 +1392,8 @@ export function Editor({
       dispatchEdit={dispatchEditErased}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
+      rasterTranslateXPx={rasterTranslateXPx}
+      rasterTranslateYPx={rasterTranslateYPx}
       onRequestEditOverlay={onRequestEditOverlay}
     />
   );
@@ -1420,6 +1436,8 @@ function EditorLoaded({
   dispatchEdit,
   sourceWidthPx,
   sourceHeightPx,
+  rasterTranslateXPx,
+  rasterTranslateYPx,
   onRequestEditOverlay
 }: {
   record: CaptureRecord;
@@ -1505,6 +1523,11 @@ function EditorLoaded({
    *  dims so the crop is visually reflected. */
   sourceWidthPx: number;
   sourceHeightPx: number;
+  /** Raster layer's transform translation in source-pixel units —
+   *  drives the off-origin crop view (pwrdrvr/PwrSnap#110). Zero
+   *  for uncropped captures, edge-aligned crops, and v1 captures. */
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
   /** Phase 3.6 — caller-provided handler for double-click on a TEXT
    *  overlay. Opens the draft input pre-filled with the existing
    *  body; commit replaces the overlay's body rather than creating
@@ -2274,20 +2297,32 @@ function EditorLoaded({
               content respect the box, which is the behavior every
               zoom level expects.
 
-              Off-origin crops (Phase 4-5) will translate the img via
-              `transform: translate(...)` driven by the raster layer's
-              transform — not via objectPosition (which only fires
-              when object-fit ≠ fill). */}
+              Off-origin crops (pwrdrvr/PwrSnap#110): the editor's view
+              renders the SOURCE raster directly (not the baked
+              composite), so the img has to honor the raster layer's
+              transform translation too. The dispatcher's
+              `Step 0.5: translate every raster layer's transform...`
+              (useCaptureModel.ts) writes the translation in source-
+              pixel units; `computeEditorImageStyle` converts that to
+              a CSS `translate(%, %)` on the img with
+              `transformOrigin: "0 0"`. Without this, an off-origin
+              crop silently shows the top-left of the source even
+              though the bake (compose-tree.ts) produces the right
+              region. */}
           <img
             src={captureSrcUrl(record.id)}
             alt={record.source_app_name ?? "Capture"}
             draggable={false}
             className="editor-image"
             data-testid="editor-image"
-            style={{
-              width: `${(sourceWidthPx / record.width_px) * 100}%`,
-              height: `${(sourceHeightPx / record.height_px) * 100}%`
-            }}
+            style={computeEditorImageStyle({
+              sourceWidthPx,
+              sourceHeightPx,
+              canvasWidthPx: record.width_px,
+              canvasHeightPx: record.height_px,
+              rasterTranslateXPx,
+              rasterTranslateYPx
+            })}
           />
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures

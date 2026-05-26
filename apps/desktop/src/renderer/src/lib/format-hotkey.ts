@@ -1,15 +1,14 @@
 // Pure-function translator for Electron accelerator strings → display
-// glyphs. Split out of HotkeysPage.tsx so that file exports only React
-// components — a non-component export sitting next to a component
-// causes vite-plugin-react to bail out of Fast Refresh, which (when
-// the invalidation bubbles up to App.tsx) leaves the renderer with a
-// half-applied module graph and stale state.
+// glyphs. Lives in `lib/` (not under `features/settings/`) so any
+// surface — the library top-bar, the tray, the float-over, the
+// in-canvas editor — can render hotkey chords without reaching across
+// feature boundaries.
 
 /**
  * Translate an Electron accelerator string (e.g. `CommandOrControl+Shift+P`,
  * `Cmd+Alt+R`, `Option+Backspace`) into the array of glyphs the
  * `Hk` component renders. Returns an empty array for an empty input
- * so the page can render `<HkUnset />` cleanly.
+ * so callers can branch on the unbound case cleanly.
  */
 export function acceleratorToDisplayKeys(accel: string): string[] {
   if (accel.length === 0) return [];

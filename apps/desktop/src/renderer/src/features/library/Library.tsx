@@ -34,8 +34,8 @@ import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../li
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
-import { useSettings } from "../settings/useSettings";
-import { acceleratorToDisplayKeys } from "../settings/pages/hotkeys-display";
+import { useHotkeys } from "../shared/useHotkeys";
+import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -303,15 +303,17 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const storageBusy = storage.workingAction !== null;
   const refreshStorage = storage.refresh;
 
-  // Settings subscription — drives the live "Quick Capture · <chord>"
+  // Hotkeys subscription — drives the live "Quick Capture · <chord>"
   // hint in the top bar so it tracks whatever the user has bound in
-  // Settings → Hotkeys. Falls back to the default chord during the
-  // initial load; renders bare "Quick Capture" if the user unbound it.
-  const { settings } = useSettings();
-  const quickCaptureChord = useMemo(() => {
-    const accel = settings?.hotkeys.quickCapture ?? "CommandOrControl+Shift+C";
-    return acceleratorToDisplayKeys(accel).join("");
-  }, [settings?.hotkeys.quickCapture]);
+  // Settings → Hotkeys. `useHotkeys` seeds with the EMPTY snapshot
+  // (all chords `""`) until the first `settings:read` resolves, so
+  // the button renders bare "Quick Capture" briefly on cold start and
+  // identically when the user explicitly unbinds the chord.
+  const hotkeys = useHotkeys();
+  const quickCaptureChord = useMemo(
+    () => acceleratorToDisplayKeys(hotkeys.quickCapture).join(""),
+    [hotkeys.quickCapture]
+  );
 
   // App version for the footer — mirrors AboutPage. One-shot read on
   // mount; the version doesn't change at runtime.

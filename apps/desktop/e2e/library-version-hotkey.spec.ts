@@ -16,6 +16,8 @@
 // settings substrate, but nothing tied the chord/version through the
 // real library DOM. This file plugs that gap.
 
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
@@ -52,15 +54,29 @@ test("library footer renders the version from app.getVersion()", async () => {
   }
 });
 
-test("library top bar renders the default Quick Capture chord on a fresh HOME", async () => {
-  const app = await launchPwrSnap();
+test("library top bar reads a seeded non-default Quick Capture chord on first paint", async () => {
+  // Seed `pwrsnap-settings.json` with a non-default chord BEFORE main
+  // boots. `useHotkeys` starts at the EMPTY snapshot and only learns
+  // the real value via its initial `settings:read`, so if the renderer
+  // ever forgets to dispatch that read (or drops the response), the
+  // button never reaches ⌘⌥R and the assertion times out. Seeding on
+  // disk also proves the cold-start read path works, separate from the
+  // broadcast path that the next test covers.
+  const app = await launchPwrSnap({
+    seedUserData: async (homeRoot) => {
+      await writeFile(
+        path.join(homeRoot, "pwrsnap-settings.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          hotkeys: { quickCapture: "CommandOrControl+Alt+R" }
+        }),
+        "utf8"
+      );
+    }
+  });
   try {
-    // Default in `defaultSettings()` is CommandOrControl+Shift+C, which
-    // `acceleratorToDisplayKeys` translates to ⌘⇧C. The on-disk file
-    // doesn't exist yet on a fresh HOME — the renderer should still
-    // render the default chord rather than the empty/unbound state.
     await expect(app.window.locator(TOPBAR_QUICK_CAPTURE)).toContainText(
-      "Quick Capture · ⌘⇧C"
+      "Quick Capture · ⌘⌥R"
     );
   } finally {
     await app.close();
@@ -72,7 +88,7 @@ test("library top bar updates when settings:write changes the Quick Capture hotk
   try {
     // Wait for the renderer to settle on the default before we mutate —
     // otherwise we can race the initial settings read and assert against
-    // the patched value before useSettings has even loaded once.
+    // the patched value before useHotkeys has hydrated once.
     await expect(app.window.locator(TOPBAR_QUICK_CAPTURE)).toContainText(
       "Quick Capture · ⌘⇧C"
     );

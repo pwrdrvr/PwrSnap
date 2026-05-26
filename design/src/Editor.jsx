@@ -26,22 +26,54 @@ const { PsAppIcon, PsAppTag, PsBundleIcon, APP_INFO } = window.PS;
 const CANVAS_W = 2246;
 const CANVAS_H = 1496;
 
+// ----------------------------------------------------------
+// Semantic color palette — the user's stoplight habit.
+// Arrow + text colors are paired so the same semantic key drives
+// both at once (a green arrow → green "✓ ok" text).
+// ----------------------------------------------------------
+const SEM_COLORS = {
+  good:    { name: "good",    glyph: "✓", stroke: "#22b85b", fill: "#22b85b", text: "#22b85b" },
+  ok:      { name: "ok",      glyph: "•", stroke: "#f5b800", fill: "#f5b800", text: "#f5b800" },
+  bad:     { name: "bad",     glyph: "!", stroke: "#ff3b30", fill: "#ff3b30", text: "#ff3b30" },
+  context: { name: "context", glyph: "→", stroke: "#1f7cff", fill: "#1f7cff", text: "#4aa0ff" },
+  neutral: { name: "neutral", glyph: "·", stroke: "#9a9690", fill: "#9a9690", text: "#c2bfb8" },
+  brand:   { name: "brand",   glyph: "★", stroke: "#ff8a1f", fill: "#ff8a1f", text: "#ff8a1f" },
+};
+const SEM_ORDER = ["good", "ok", "bad", "context", "neutral", "brand"];
+
 const LAYER_TREE = [
+  {
+    id: "lyr_text_worktree", kind: "text",
+    source: "codex", aiRun: "run_a8c2",
+    name: 'Text — "✓ all green"',
+    visible: true,
+    geom: { x: 1080, y: 825, w: 180, h: 32 },
+    style: { text: "✓ all green", sem: "good" },
+  },
+  {
+    id: "lyr_arrow_worktree", kind: "vector", sub: "arrow",
+    source: "codex", aiRun: "run_a8c2",
+    name: "Arrow → Worktree is clean",
+    visible: true,
+    geom: { from: { x: 1085, y: 855 }, to: { x: 990, y: 855 } },
+    style: { sem: "good", width: 6, head: "triangle" },
+    label: null,
+  },
   {
     id: "lyr_text_clickhere", kind: "text",
     source: "codex", aiRun: "run_a8c2",
     name: 'Text — "click here"',
     visible: true,
-    geom: { x: 1700, y: 1290, w: 130, h: 28 },
-    style: { text: "click here" },
+    geom: { x: 1690, y: 1290, w: 130, h: 28 },
+    style: { text: "click here", sem: "brand" },
   },
   {
     id: "lyr_arrow_send", kind: "vector", sub: "arrow",
     source: "codex", aiRun: "run_a8c2",
-    name: "Arrow — Send button",
+    name: "Arrow → Send button",
     visible: true,
     geom: { from: { x: 1810, y: 1330 }, to: { x: 2010, y: 1395 } },
-    style: { stroke: "#ff8a1f", width: 6, head: "triangle" },
+    style: { sem: "brand", width: 6, head: "triangle" },
     label: null,
   },
   {
@@ -204,9 +236,11 @@ function CanvasLayer({ layer, selectedId, aiFresh, onSelect, capSrc }) {
   const cls = "pse__layer" + (isSelected ? " is-selected" : "") + (isAiFresh ? " is-ai-fresh" : "");
 
   if (layer.kind === "vector" && layer.sub === "arrow") {
+    const sem = layer.style.sem ? SEM_COLORS[layer.style.sem] : null;
+    const color = sem ? sem.stroke : layer.style.stroke;
     return (
       <div className={cls + " pse__layer-arrow"} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-        <PseArrow from={layer.geom.from} to={layer.geom.to} color={layer.style.stroke} width={layer.style.width / 6} />
+        <PseArrow from={layer.geom.from} to={layer.geom.to} color={color} width={(layer.style.width || 6) / 6} />
       </div>
     );
   }
@@ -228,10 +262,13 @@ function CanvasLayer({ layer, selectedId, aiFresh, onSelect, capSrc }) {
                 onClick={(e) => { e.stopPropagation(); onSelect && onSelect(layer.id); }} />;
   }
   if (layer.kind === "text") {
+    const sem = layer.style.sem ? SEM_COLORS[layer.style.sem] : null;
+    const textColor = sem ? sem.text : "var(--accent-bright)";
+    const borderColor = sem ? sem.stroke : "var(--accent-border)";
     return (
       <div className={cls} style={{ ...pctStyle, width: "auto", height: "auto" }}
            onClick={(e) => { e.stopPropagation(); onSelect && onSelect(layer.id); }}>
-        <span className="pse__layer-text">{layer.style.text}</span>
+        <span className="pse__layer-text" style={{ color: textColor, borderColor }}>{layer.style.text}</span>
       </div>
     );
   }
@@ -365,21 +402,34 @@ const TOOLS = [
     ico: LAYER_ICONS.highlight(14) },
   { id: "text", name: "Text", key: "T",
     ico: LAYER_ICONS.text(14) },
+  { id: "crop", name: "Crop", key: "C",
+    ico: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M7 3v14a1 1 0 0 0 1 1h14"/><path d="M3 7h14a1 1 0 0 1 1 1v14"/></svg> },
 ];
 
-function EditorToolbar({ tool, setTool, undoLabel }) {
+// Tools that show inline color in the toolbar + open the Tool inspector
+const SEMANTIC_TOOLS = new Set(["arrow", "rect", "text", "highlight"]);
+
+function EditorToolbar({ tool, setTool, toolSem = "brand", undoLabel }) {
+  const semColor = SEM_COLORS[toolSem] || SEM_COLORS.brand;
   return (
     <div className="pse__toolbar">
-      {TOOLS.map((t) => (
-        <button key={t.id}
-                className={"pse__tool" + (tool === t.id ? " is-active" : "")}
-                onClick={() => setTool(t.id)}
-                title={`${t.name} (${t.key})`}>
-          <span className="pse__tool-ico">{t.ico}</span>
-          <span>{t.name}</span>
-          <span className="pse__tool-key">{t.key}</span>
-        </button>
-      ))}
+      {TOOLS.map((t) => {
+        const isActive = tool === t.id;
+        const showChip = isActive && SEMANTIC_TOOLS.has(t.id);
+        return (
+          <button key={t.id}
+                  className={"pse__tool" + (isActive ? " is-active" : "")}
+                  onClick={() => setTool(t.id)}
+                  title={`${t.name} (${t.key})`}>
+            <span className="pse__tool-ico" style={showChip ? { color: semColor.stroke } : undefined}>{t.ico}</span>
+            <span>{t.name}</span>
+            {showChip && (
+              <span className="pse__tool-chip" title={`color: ${semColor.name}`} style={{ background: semColor.stroke }} />
+            )}
+            <span className="pse__tool-key">{t.key}</span>
+          </button>
+        );
+      })}
 
       <div className="pse__tool-sep" />
 
@@ -464,4 +514,5 @@ Object.assign(window.PSE, {
   LAYER_TREE, CHAT_HISTORY, CAPTURE_META, LAYER_ICONS,
   EditorChrome, EditorToolbar, EditorCanvas, ActivityBar,
   CANVAS_W, CANVAS_H,
+  SEM_COLORS, SEM_ORDER, SEMANTIC_TOOLS, TOOLS,
 });

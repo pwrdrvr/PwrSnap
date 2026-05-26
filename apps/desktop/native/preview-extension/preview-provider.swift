@@ -21,23 +21,39 @@
 // applies to the Thumbnail extension — MH_EXECUTE, App Sandbox,
 // _NSExtensionMain entry point — applies here identically.)
 //
-// Preview content strategy:
-//   1. composite.png — legacy bundles only; carries the
-//      pre-baked rendered composite with overlays applied. Best
-//      preview if available because it shows what the user
-//      actually composed in PwrSnap.
-//   2. source.png — always present. For modern bundles without
-//      applied overlays, source equals composite, so this is the
-//      canonical preview content. For bundles with applied
-//      overlays, this loses the overlays — a future enhancement
-//      could re-compose live, but the sandbox can't load sharp/
-//      libvips, so it'd need to be the bundle writer's job to
-//      carry a full-res composite for v2 bundles too.
+// Preview content strategy (updated for v2 bundles + post-PR-#90
+// packer):
+//   1. composite.png — present only in legacy bundles. Pre-baked
+//      full-res composite with overlays already applied. The
+//      reigning best-preview source if available because it shows
+//      the user's actual annotated screenshot at full resolution.
+//   2. composite_thumbnail.jpg — present in all modern bundles
+//      (post-PR-#90 packer writes one for every capture, as of the
+//      "always-write-thumbnail" change). Lower resolution
+//      (≤ 1024px long edge, JPEG q90), but it's the BAKED COMPOSITE
+//      — overlays are visible. For an annotated PwrSnap, that's
+//      what the user expects Quick Look to show. Previously this
+//      branch was ordered AFTER source.png, which meant Spacebar-
+//      previewing an annotated capture showed the bare screenshot
+//      and silently lost the user's arrows / rects / text — wrong
+//      tradeoff (sharp + no-edits vs slightly-soft + edits; the
+//      annotations are the file's content, not optional chrome).
+//   3. source.png — v1-only flat name. Lossless full-res but with
+//      NO overlays applied. Last-resort fallback for very old
+//      bundles that somehow ship without a composite OR a
+//      thumbnail. Loses the user's annotations; only fires when
+//      both better options are absent.
 //
-// We do NOT fall back to composite_thumbnail.jpg here — the
-// thumbnail JPEG is sized for Finder icons (≤ 1024px), Spacebar
-// preview wants full resolution and the thumbnail would look soft
-// blown up to 2K+ display dimensions.
+// Note for v2 bundles: source bytes live at `sources/<sha256>.png`,
+// invisible to this static fallback chain. The sandbox can't run
+// sharp/libvips, so we can't reconstruct from sources/ + document.json
+// here either. The thumbnail (always written for v2) is the canonical
+// preview content for v2 bundles.
+//
+// On softness when blown up: the 1024px thumbnail on a 5K display
+// looks marginally less sharp than a full-res source would, but it
+// shows the user's annotations correctly. The alternative — a sharp
+// preview that's missing the user's annotations — is worse.
 
 import AppKit
 import Foundation
@@ -55,15 +71,17 @@ public func extractPwrSnapPreview(
   if let composite = try reader.extractEntry(named: "composite.png") {
     return (composite, .png)
   }
-  if let source = try reader.extractEntry(named: "source.png") {
-    return (source, .png)
-  }
-  // Last-ditch fallback — if the bundle somehow has no source.png
-  // (which would fail bundle-store's validation, so this is
-  // theoretical) but does have a thumbnail, render that rather
-  // than failing the preview entirely.
+  // composite_thumbnail.jpg ranks ABOVE source.png intentionally —
+  // see the strategy comment above. For an annotated screenshot, a
+  // slightly-soft preview with the annotations is more truthful than
+  // a sharp preview without them.
   if let thumbnail = try reader.extractEntry(named: "composite_thumbnail.jpg") {
     return (thumbnail, .jpeg)
+  }
+  // Last-resort: v1 source.png (no overlays). For v2 bundles this is
+  // absent (sources are at sources/<sha>.png) and we throw below.
+  if let source = try reader.extractEntry(named: "source.png") {
+    return (source, .png)
   }
   throw ThumbnailError.noCompositeEntry
 }

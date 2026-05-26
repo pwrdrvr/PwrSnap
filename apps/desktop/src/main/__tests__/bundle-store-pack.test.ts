@@ -16,6 +16,7 @@ import archiver from "archiver";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 import yazl from "yazl";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -24,6 +25,8 @@ import {
   type BundleOverlaysV1
 } from "@pwrsnap/shared";
 import {
+  buildCompositeThumbnail,
+  COMPOSITE_THUMBNAIL_MAX_DIM_PX,
   packBundle,
   readBundleManifest,
   readBundleOverlays,
@@ -317,5 +320,103 @@ describe("packBundle — output structure invariants", () => {
     // STORE leaves them intact in the bundle.
     expect(buf.includes(big)).toBe(true);
     expect(buf.includes(big2)).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------------
+// buildCompositeThumbnail — always-Buffer contract
+// ----------------------------------------------------------------------
+//
+// Pre-fix this function returned null for sources ≤ 1024px long edge
+// as a perf optimization. That broke v2 bundles in Finder and Quick
+// Look because the Swift extensions' fallback chains can't see v2's
+// `sources/<sha>.png` layout — without a `composite_thumbnail.jpg` in
+// the bundle they had nothing to render. The function now ALWAYS
+// returns a JPEG Buffer (uses sharp's `withoutEnlargement` so tiny
+// sources don't get upscaled, just re-encoded). These tests pin that
+// contract.
+
+describe("buildCompositeThumbnail — always-Buffer (no size skip)", () => {
+  test("tiny source returns a Buffer, not null", async () => {
+    // 100×100 — well under COMPOSITE_THUMBNAIL_MAX_DIM_PX. Pre-fix
+    // this returned null.
+    const tinyPng = await sharp({
+      create: {
+        width: 100,
+        height: 100,
+        channels: 4,
+        background: { r: 255, g: 0, b: 0, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+
+    const out = await buildCompositeThumbnail(tinyPng);
+
+    expect(out).toBeInstanceOf(Buffer);
+    expect(out.length).toBeGreaterThan(0);
+    // JPEG SOI marker (FF D8) — confirms we got JPEG-encoded bytes,
+    // not the PNG passed through.
+    expect(out[0]).toBe(0xff);
+    expect(out[1]).toBe(0xd8);
+  });
+
+  test("source already at max dim returns a Buffer (not null)", async () => {
+    const atMaxPng = await sharp({
+      create: {
+        width: COMPOSITE_THUMBNAIL_MAX_DIM_PX,
+        height: COMPOSITE_THUMBNAIL_MAX_DIM_PX,
+        channels: 4,
+        background: { r: 0, g: 255, b: 0, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+
+    const out = await buildCompositeThumbnail(atMaxPng);
+
+    expect(out).toBeInstanceOf(Buffer);
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  test("oversized source is resized to fit COMPOSITE_THUMBNAIL_MAX_DIM_PX on long edge", async () => {
+    const bigPng = await sharp({
+      create: {
+        width: 2000,
+        height: 1500,
+        channels: 4,
+        background: { r: 0, g: 0, b: 255, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+
+    const out = await buildCompositeThumbnail(bigPng);
+
+    expect(out).toBeInstanceOf(Buffer);
+    // Decode the JPEG and verify its long edge is exactly the cap.
+    const meta = await sharp(out).metadata();
+    expect(meta.width).toBe(COMPOSITE_THUMBNAIL_MAX_DIM_PX);
+    expect(meta.height).toBe(Math.round(1500 * (COMPOSITE_THUMBNAIL_MAX_DIM_PX / 2000)));
+  });
+
+  test("withoutEnlargement: tiny source stays at its natural dims (no upscale)", async () => {
+    // The whole point of `withoutEnlargement: true` — a 100×100
+    // source must NOT come back as a 1024×1024 thumbnail.
+    const tinyPng = await sharp({
+      create: {
+        width: 100,
+        height: 75,
+        channels: 4,
+        background: { r: 128, g: 128, b: 128, alpha: 1 }
+      }
+    })
+      .png()
+      .toBuffer();
+
+    const out = await buildCompositeThumbnail(tinyPng);
+    const meta = await sharp(out).metadata();
+    expect(meta.width).toBe(100);
+    expect(meta.height).toBe(75);
   });
 });

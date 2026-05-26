@@ -1,17 +1,22 @@
 // PwrSnap macOS Thumbnail Extension. Renders Finder + QuickLook
 // thumbnails for `.pwrsnap` bundles without ever launching the app
 // or running compose() — the bundle already carries a pre-baked
-// `composite_thumbnail.jpg` (≤ 1024px long edge, JPEG quality 80)
+// `composite_thumbnail.jpg` (≤ 1024px long edge, JPEG quality 90)
 // generated at pack time by `buildCompositeThumbnail` in
 // apps/desktop/src/main/persistence/bundle-store.ts.
 //
 // Fallback chain (most → least preferred):
-//   1. composite_thumbnail.jpg — modern bundles (post bundle-storage-
-//      refactor for captures > 1024px on either edge)
-//   2. composite.png — legacy bundles (pre-refactor; full-res baked
+//   1. composite_thumbnail.jpg — present in all modern bundles
+//      (post-PR-#111 the packer writes one for every capture; the
+//      previous "skip for small sources" optimization left v2 bundles
+//      with no Finder thumbnail at all).
+//   2. composite.png — legacy bundles (pre-PR-#90; full-res baked
 //      composite. Larger but still decodes the same way.)
-//   3. source.png — small-capture modern bundles that skipped the
-//      thumbnail entirely (source ≤ 1024px so it IS thumbnail-sized).
+//   3. source.png — v1-only flat name, last-resort fallback for
+//      bundles that somehow lack both above. v2 bundles store
+//      source bytes at `sources/<sha256>.png` (invisible to this
+//      static chain — but post-PR-#111 every v2 capture has a
+//      composite_thumbnail.jpg anyway).
 //
 // The extension runs in a sandboxed XPC subprocess managed by
 // macOS's QuickLookThumbnailing framework — read-only access to the

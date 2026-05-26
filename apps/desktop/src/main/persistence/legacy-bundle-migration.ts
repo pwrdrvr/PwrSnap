@@ -522,10 +522,7 @@ async function migrateRow(row: LegacyRow): Promise<void> {
     ai_runs: []
   };
 
-  const thumbnailJpg = await buildCompositeThumbnail(compositePng, {
-    width_px: row.width_px,
-    height_px: row.height_px
-  });
+  const thumbnailJpg = await buildCompositeThumbnail(compositePng);
 
   const outputDir = dirname(legacyPngPath);
   const { bundlePath } = await writeBundle({
@@ -663,10 +660,7 @@ async function rewriteCompositeRow(
   const compositeSha = createHash("sha256").update(compositePng).digest("hex");
   const thumbnailInput = sourceSha === compositeSha ? sourcePng : compositePng;
 
-  const thumbnailJpg = await buildCompositeThumbnail(thumbnailInput, {
-    width_px: row.width_px,
-    height_px: row.height_px
-  });
+  const thumbnailJpg = await buildCompositeThumbnail(thumbnailInput);
 
   // Preserve every field from the original manifest except
   // bundle_modified_at, which we bump to "now" so the migration is

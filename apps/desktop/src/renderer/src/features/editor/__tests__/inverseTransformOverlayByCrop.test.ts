@@ -95,14 +95,21 @@ describe("inverseTransformOverlayByCrop — overlays in kept region preserve abs
   });
 });
 
-describe("inverseTransformOverlayByCrop — overlays in cropped-away region get clamped or deleted (schema requires [0,1])", () => {
-  test("text: anchor past new right edge → null (caller deletes layer)", () => {
-    // The user's reported bug: text on the right edge survived the
-    // crop (slid leftward into the kept region) instead of being
-    // clipped. The fix returns null for text/step whose anchor falls
-    // outside the new canvas; the dispatcher deletes the layer rather
-    // than upserting with out-of-bounds coords (which the
-    // NormalizedScalar.max(1) zod constraint would reject).
+describe("inverseTransformOverlayByCrop — overlays in cropped-away region PERSIST with out-of-canvas coords (crop is a viewport, not destructive)", () => {
+  // Per pwrdrvr/PwrSnap#110 review feedback: crop is a viewport
+  // change, not a destructive op. Overlays outside the cropped
+  // viewport must survive as DATA — invisible while clipped, but
+  // restored when the crop is undone. The schema was widened
+  // (NormalizedScalar: .min(0).max(1) → .finite()) specifically to
+  // permit out-of-canvas coords; renderer (SVG overflow:hidden) and
+  // bake (sharp composite) clip at paint time.
+  //
+  // The old behavior — return null for "out of bounds" so the
+  // dispatcher deletes the layer — made data loss PERMANENT. Undo
+  // had nothing to restore. Tests below pin the new "just emit the
+  // math; never delete for being out of bounds" contract.
+
+  test("text: anchor past new right edge → preserved with point.x > 1", () => {
     const text: Overlay = {
       kind: "text",
       point: { x: 0.95, y: 0.5 },
@@ -116,10 +123,17 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region get 
       w: 0.6,
       h: 1
     });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    if (result?.kind !== "text") throw new Error("kind preserved");
+    // 0.95 / 0.6 = 1.5833... — out of the new canvas, but preserved.
+    expect(result.point.x).toBeCloseTo(0.95 / 0.6, 5);
+    expect(result.point.y).toBeCloseTo(0.5, 6);
+    // Schema must accept the out-of-canvas coord (load-bearing
+    // invariant — the upsert downstream uses the same schema).
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 
-  test("step: anchor past new bottom edge → null", () => {
+  test("step: anchor past new bottom edge → preserved with point.y > 1", () => {
     const step: Overlay = { kind: "step", point: { x: 0.5, y: 0.9 }, index: 1 };
     const result = inverseTransformOverlayByCrop(step, {
       x: 0,
@@ -127,21 +141,25 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region get 
       w: 1,
       h: 0.5
     });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    if (result?.kind !== "step") throw new Error("kind preserved");
+    expect(result.point.x).toBeCloseTo(0.5, 6);
+    expect(result.point.y).toBeCloseTo(0.9 / 0.5, 5); // 1.8
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 
-  test("rect crossing the new right edge → clamped to [0,1]² intersection", () => {
-    // Rect starts in the kept region but extends past the crop
-    // boundary. Clamp the rect to the canvas-shaped intersection.
+  test("rect crossing the new right edge → preserved with w extending past 1 (NO clamp)", () => {
+    // Rect starts in the kept region and extends past the crop
+    // boundary. Pre-fix: clamped to the canvas intersection (data
+    // loss on undo). Post-fix: w preserved verbatim — renderer
+    // clips at canvas edge at paint time.
     const rect: Overlay = {
       kind: "rect",
       rect: { x: 0.3, y: 0.3, w: 0.6, h: 0.2 },
       color: "auto"
     };
-    // Crop to keep left 50%. Transformed rect would be:
-    //   x = 0.6, y = 0.3, w = 1.2, h = 0.2
-    // Clamped to canvas:
-    //   x = 0.6, y = 0.3, w = 0.4 (stops at x=1), h = 0.2
+    // Crop to keep left 50%. Transformed rect:
+    //   x = 0.3 / 0.5 = 0.6, y = 0.3, w = 0.6 / 0.5 = 1.2, h = 0.2
     const result = inverseTransformOverlayByCrop(rect, {
       x: 0,
       y: 0,
@@ -151,35 +169,46 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region get 
     if (result?.kind !== "rect") throw new Error("kind preserved");
     expect(result.rect.x).toBeCloseTo(0.6, 6);
     expect(result.rect.y).toBeCloseTo(0.3, 6);
-    expect(result.rect.w).toBeCloseTo(0.4, 6);
+    expect(result.rect.w).toBeCloseTo(1.2, 6); // NOT clamped to 0.4
     expect(result.rect.h).toBeCloseTo(0.2, 6);
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 
-  test("rect entirely outside the new canvas → null", () => {
+  test("rect entirely outside the new canvas → preserved with x > 1", () => {
     const rect: Overlay = {
       kind: "rect",
       rect: { x: 0.8, y: 0.1, w: 0.1, h: 0.1 },
       color: "auto"
     };
-    // Crop to keep left 50% — rect (x:0.8-0.9) is entirely outside.
+    // Crop to keep left 50% — rect's old absolute pixels at
+    // x:0.8-0.9 are entirely past the new right edge (x=1 in new
+    // norm space = old absolute pixel 0.5). New x = 0.8/0.5 = 1.6.
     const result = inverseTransformOverlayByCrop(rect, {
       x: 0,
       y: 0,
       w: 0.5,
       h: 1
     });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    if (result?.kind !== "rect") throw new Error("kind preserved");
+    expect(result.rect.x).toBeCloseTo(1.6, 5);
+    expect(result.rect.y).toBeCloseTo(0.1, 6);
+    expect(result.rect.w).toBeCloseTo(0.2, 6); // 0.1/0.5
+    expect(result.rect.h).toBeCloseTo(0.1, 6);
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 
-  test("arrow with one endpoint past crop boundary → endpoint clamped to canvas edge", () => {
+  test("arrow with one endpoint past crop boundary → endpoint preserved past 1 (NO clamp)", () => {
+    // Pre-fix: clamped the out-of-bounds endpoint to canvas edge
+    // (subtly distorts arrow direction on undo). Post-fix: both
+    // endpoints carry through exactly.
     const arrow: Overlay = {
       kind: "arrow",
       from: { x: 0.1, y: 0.5 },
       to: { x: 0.9, y: 0.5 },
       color: "auto"
     };
-    // Crop to keep left 50% — from at 0.2 (kept), to would be at 1.8
-    // (past right edge). Endpoints get clamped: to.x = 1.
+    // Crop to keep left 50% — from: 0.1/0.5 = 0.2 (kept), to: 0.9/0.5 = 1.8.
     const result = inverseTransformOverlayByCrop(arrow, {
       x: 0,
       y: 0,
@@ -189,11 +218,12 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region get 
     if (result?.kind !== "arrow") throw new Error("kind preserved");
     expect(result.from.x).toBeCloseTo(0.2, 6);
     expect(result.from.y).toBeCloseTo(0.5, 6);
-    expect(result.to.x).toBeCloseTo(1, 6); // clamped from 1.8
+    expect(result.to.x).toBeCloseTo(1.8, 5); // NOT clamped to 1
     expect(result.to.y).toBeCloseTo(0.5, 6);
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 
-  test("arrow with BOTH endpoints past same edge → null (segment can't cross canvas)", () => {
+  test("arrow with BOTH endpoints past same edge → preserved (no special-casing for fully-out segments)", () => {
     const arrow: Overlay = {
       kind: "arrow",
       from: { x: 0.7, y: 0.5 },
@@ -206,7 +236,12 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region get 
       w: 0.5,
       h: 1
     });
-    expect(result).toBeNull();
+    if (result?.kind !== "arrow") throw new Error("kind preserved");
+    expect(result.from.x).toBeCloseTo(1.4, 5); // 0.7/0.5
+    expect(result.from.y).toBeCloseTo(0.5, 6);
+    expect(result.to.x).toBeCloseTo(1.8, 5);
+    expect(result.to.y).toBeCloseTo(0.5, 6);
+    expect(OverlaySchema.safeParse(result).success).toBe(true);
   });
 });
 
@@ -256,12 +291,13 @@ describe("inverseTransformOverlayByCrop — edge cases", () => {
   });
 
   test("schema invariant: any non-null transform output passes the Overlay schema", () => {
-    // The Overlay zod schema's NormalizedScalar refuses values outside
-    // [0,1]. So the helper MUST NOT emit out-of-bounds coords — the
-    // bus's BundleLayerNode.safeParse at layers:upsert would reject
-    // and the dispatcher's `if (!insResult.ok) return err(...)` would
-    // bail mid-transform, leaving the overlay at its OLD coords (which
-    // IS the bug class we set out to fix).
+    // NormalizedScalar is `.finite()` (post-#110 widening), so any
+    // real-number result the helper emits must parse cleanly — out-
+    // of-canvas coords (x>1, y<0, etc.) are explicitly allowed because
+    // overlays at absolute source pixels outside the cropped viewport
+    // are preserved as DATA. The schema only rejects NaN/Infinity
+    // (which would crash the renderer); the helper never emits those
+    // because it only does finite arithmetic on finite inputs.
     //
     // Fuzz a handful of overlay kinds × crop rects; any non-null
     // result must parse cleanly.
@@ -292,6 +328,53 @@ describe("inverseTransformOverlayByCrop — edge cases", () => {
         ).toBe(true);
       }
     }
+  });
+
+  test("overlays outside the new canvas are PRESERVED (out-of-[0,1] coords valid) so crop is reversible", () => {
+    // User's correct model: crop is a viewport, not a destructive op.
+    // Text at the right edge of the source should persist as DATA
+    // through a crop — invisible while clipped, but restored when the
+    // crop is undone. So the transform helper must NOT return null for
+    // text whose anchor falls outside the new canvas — instead it
+    // returns the transformed point.x > 1, and the schema permits it.
+    // Renderer/bake clip at canvas boundary at paint time (SVG overflow
+    // + sharp composite clipping).
+    //
+    // Round-trip check: forward transform of a right-edge text by
+    // rect.w=0.6 should give point.x = 0.95/0.6 = 1.583, and the
+    // reverse transform by rect.w = 1/0.6 = 1.667 should restore
+    // point.x = 1.583/1.667 = 0.95.
+    const text: Overlay = {
+      kind: "text",
+      point: { x: 0.95, y: 0.5 },
+      body: "edge",
+      size: "small",
+      color: "auto"
+    };
+    const forwardRect = { x: 0, y: 0, w: 0.6, h: 1 };
+    const inverseRect = { x: 0, y: 0, w: 1 / 0.6, h: 1 };
+
+    const cropped = inverseTransformOverlayByCrop(text, forwardRect);
+    expect(
+      cropped,
+      "right-edge text must NOT be deleted by crop — undo would have nothing to restore"
+    ).not.toBeNull();
+    if (cropped?.kind !== "text") throw new Error("kind preserved");
+    expect(cropped.point.x).toBeCloseTo(1.5833, 3);
+
+    // The transformed overlay must pass the schema (otherwise the
+    // bus rejects on upsert and we lose the data anyway).
+    const parsed = OverlaySchema.safeParse(cropped);
+    expect(
+      parsed.success,
+      "cropped overlay with out-of-canvas point must pass schema"
+    ).toBe(true);
+
+    // Reverse transform = identity.
+    const restored = inverseTransformOverlayByCrop(cropped, inverseRect);
+    if (restored?.kind !== "text") throw new Error("kind preserved");
+    expect(restored.point.x).toBeCloseTo(0.95, 5);
+    expect(restored.point.y).toBeCloseTo(0.5, 5);
   });
 
   test("non-(0,0) crop offsets translate before scaling", () => {

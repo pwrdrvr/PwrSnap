@@ -3,7 +3,9 @@
 // Phase 4 Codex DynamicToolCall response is reparsed through these
 // schemas, so we hold the line on:
 //   - kind discriminator presence + value
-//   - normalized [0, 1] coord clamping
+//   - normalized coords are FINITE real numbers (no NaN/Infinity);
+//     out-of-canvas coords are permitted so crop is reversible (see
+//     pwrdrvr/PwrSnap#110 review — crop is a viewport, not destructive)
 //   - hex color format vs the literal "auto"
 //   - `default()` filling missing optional fields
 
@@ -33,12 +35,29 @@ describe("CropOverlay", () => {
     expect(parsed.kind).toBe("crop");
   });
 
-  test("rejects coords outside [0, 1]", () => {
+  test("accepts coords outside [0, 1] (crop is reversible; overlays may live outside the cropped viewport)", () => {
+    // Pre-pwrdrvr/PwrSnap#110: NormalizedScalar was .min(0).max(1),
+    // which rejected these. The reviewer flagged that as destructive:
+    // an overlay at point.x=0.95 that gets transformed by a 60% crop
+    // becomes point.x≈1.58, and the only way to round-trip an undo is
+    // to PRESERVE that out-of-canvas coord. The renderer (SVG
+    // overflow:hidden) and bake pipeline (sharp composite) clip at
+    // paint time, so out-of-canvas overlays are invisible but still
+    // present in the bundle.
+    expect(
+      CropOverlay.parse({ kind: "crop", rect: { x: -0.1, y: 0, w: 0.5, h: 0.5 } }).rect.x
+    ).toBeCloseTo(-0.1, 6);
+    expect(
+      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: 1.5, h: 0.5 } }).rect.w
+    ).toBeCloseTo(1.5, 6);
+  });
+
+  test("rejects non-finite coords (NaN/Infinity would crash the renderer)", () => {
     expect(() =>
-      CropOverlay.parse({ kind: "crop", rect: { x: -0.1, y: 0, w: 0.5, h: 0.5 } })
+      CropOverlay.parse({ kind: "crop", rect: { x: NaN, y: 0, w: 0.5, h: 0.5 } })
     ).toThrow();
     expect(() =>
-      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: 1.5, h: 0.5 } })
+      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: Infinity, h: 0.5 } })
     ).toThrow();
   });
 });

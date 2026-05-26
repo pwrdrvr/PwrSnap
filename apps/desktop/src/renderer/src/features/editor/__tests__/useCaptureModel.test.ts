@@ -608,18 +608,26 @@ describe("useCaptureModel", () => {
     });
   });
 
-  test("5g. v2 dispatchEdit: crop re-normalizes vector layer coords (text at right edge → x>1, clipped)", async () => {
+  test("5g. v2 dispatchEdit: crop re-normalizes vector layer coords (text at right edge → x>1, preserved as data outside viewport)", async () => {
     // User bug from pwrdrvr/PwrSnap#110: text at point.x=0.95 on a
     // 1728-px canvas (absolute pixel 1641) survived a crop to 60%
     // width — the canvas shrunk but the text's normalized coord
     // stayed 0.95, so the text "slid leftward" into the kept region
     // instead of being clipped at the right edge.
     //
-    // The fix re-normalizes every vector layer's coords by the inverse
-    // of the crop rect at dispatch time. This test exercises the
-    // FULL dispatch flow (raster + text vector → crop dispatch →
-    // verify text layer was deleted-and-reinserted with transformed
-    // coords + an upsert of a NEW crop VectorLayer happened +
+    // Follow-up from the same PR review: crop is a VIEWPORT change,
+    // not a destructive op. Overlays at absolute source pixels
+    // outside the cropped viewport must PERSIST as DATA so undoing
+    // the crop restores them. The schema's NormalizedScalar was
+    // widened to .finite() (was .min(0).max(1)) specifically to allow
+    // this. The dispatcher's "delete + reinsert" loop must always
+    // reinsert with the transformed coords; renderer (SVG overflow)
+    // and bake (sharp composite) clip at paint time.
+    //
+    // This test exercises the FULL dispatch flow (raster + text
+    // vector → crop dispatch → verify text layer was deleted-and-
+    // reinserted with the OUT-OF-CANVAS transformed coord + an
+    // upsert of a NEW crop VectorLayer happened +
     // bundle:updateCanvasDimensions fired with derived dims).
     const record = makeRecord("cap_2", 2); // 2000x1000
     const rasterLayer = makeLayerNode("ly_raster");
@@ -733,15 +741,13 @@ describe("useCaptureModel", () => {
       "expected layers:delete for the text layer id"
     ).toBeDefined();
 
-    // 2. CRITICAL: NO upsert with the text body "edge" — the text
-    //    was at point.x=0.95 which transforms to 1.58 (past the new
-    //    canvas right edge). The Overlay zod schema rejects coords
-    //    outside [0,1], so the dispatcher detects "fully outside" via
-    //    the helper returning null and DELETES the text layer (the
-    //    delete in #1) without reinserting. The text was outside the
-    //    cropped region anyway — its absence is the correct behavior.
-    //    Undo of the crop currently won't restore it (recordCropRef
-    //    snapshot of deleted overlays is a follow-up).
+    // 2. CRITICAL: text MUST be reinserted with transformed coords
+    //    point.x = 0.95 / 0.6 ≈ 1.5833 (past the new canvas right
+    //    edge, but the schema now permits out-of-canvas coords).
+    //    Pre-#110 review: the dispatcher deleted-without-reinserting
+    //    here, which made the data loss permanent — undo of the crop
+    //    had nothing to restore. Post-fix: the overlay persists as
+    //    DATA outside the viewport; renderer clips at paint time.
     const textUpsertCall = dispatchMock.mock.calls.find((c) => {
       if (c[0] !== "layers:upsert") return false;
       const layer = (c[1] as { layer: BundleLayerNode }).layer;
@@ -753,8 +759,17 @@ describe("useCaptureModel", () => {
     });
     expect(
       textUpsertCall,
-      "text outside the new canvas should NOT be reinserted — staying upserted with out-of-bounds coords would fail schema validation at the bus, leaving the user with the original bug"
-    ).toBeUndefined();
+      "text outside the new canvas MUST be reinserted with transformed (out-of-canvas) coords — without it, undo cannot restore the overlay (the destructive-crop regression from PR #110)"
+    ).toBeDefined();
+    if (textUpsertCall !== undefined) {
+      const layer = (textUpsertCall[1] as { layer: BundleLayerNode }).layer;
+      if (layer.kind !== "vector" || layer.shape.kind !== "text") {
+        throw new Error("text layer shape preserved");
+      }
+      // 0.95 / 0.6 = 1.5833... — past the new canvas, but preserved.
+      expect(layer.shape.point.x).toBeCloseTo(0.95 / 0.6, 4);
+      expect(layer.shape.point.y).toBeCloseTo(0.5, 6);
+    }
 
     // 3. A crop VectorLayer was inserted.
     const cropUpsertCall = dispatchMock.mock.calls.find((c) => {

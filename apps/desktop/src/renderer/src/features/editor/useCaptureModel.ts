@@ -594,71 +594,53 @@ export function inverseTransformOverlayByCrop(
   const ty = (n: number): number => (n - cy) / ch;
   const sx = (n: number): number => n / cw;
   const sy = (n: number): number => n / ch;
-  const clamp = (n: number): number => Math.max(0, Math.min(1, n));
-  // The Overlay zod schema's NormalizedScalar refuses values outside
-  // [0,1]. So we can't just emit a transformed point with x > 1 — the
-  // bus's BundleLayerNode.safeParse at the layers:upsert handler
-  // rejects it, the upsert silently fails, and the user sees the
-  // overlay at its OLD coords (the original bug we're trying to
-  // fix). Two policies depending on overlay kind:
+  // Crop is a VIEWPORT change, not a destructive op (the user's
+  // mental model on pwrdrvr/PwrSnap#110 review). Overlays at absolute
+  // source pixels outside the cropped viewport must persist as DATA
+  // (coords > 1 or < 0 in the new canvas's [0,1] space) so that
+  // undoing the crop restores them to their original positions.
   //
-  //   • text / step — single anchor point. If the anchor is outside
-  //     the new canvas, the overlay can't be seen; return null so the
-  //     dispatcher deletes the layer outright.
-  //   • rect / highlight / blur — has extent. Clamp the rect to the
-  //     [0,1]² intersection. If the intersection is degenerate
-  //     (w<=0 or h<=0), the rect is entirely outside — return null.
-  //   • arrow — two endpoints. If BOTH endpoints fall outside in the
-  //     same axis (both left, both right, etc.), the segment can't
-  //     cross the new canvas — return null. Otherwise clamp each
-  //     endpoint to [0,1] so the schema accepts; this slightly
-  //     foreshortens arrows that crossed the crop boundary, but
-  //     the alternative is dropping them entirely. (A proper segment-
-  //     vs-box clip would preserve the visible portion exactly;
-  //     deferred — visually close enough for most crops.)
-  //   • crop — return null; the crop layer is replaced wholesale
-  //     by the dispatcher.
+  // NormalizedScalar was widened from .min(0).max(1) to .finite() to
+  // accept out-of-canvas coords; renderer + bake clip at the canvas
+  // boundary at paint time (SVG overflow + sharp composite).
+  //
+  // Pre-fix this helper deleted (returned null for) overlays whose
+  // transformed coords fell outside [0,1], which made the data loss
+  // PERMANENT — undoing a crop couldn't restore overlays the forward
+  // crop had wiped out. The new behavior just emits the math; nothing
+  // is deleted, undo round-trips back to the original coords exactly.
   switch (overlay.kind) {
-    case "arrow": {
-      const from = { x: tx(overlay.from.x), y: ty(overlay.from.y) };
-      const to = { x: tx(overlay.to.x), y: ty(overlay.to.y) };
-      const bothLeft = from.x < 0 && to.x < 0;
-      const bothRight = from.x > 1 && to.x > 1;
-      const bothAbove = from.y < 0 && to.y < 0;
-      const bothBelow = from.y > 1 && to.y > 1;
-      if (bothLeft || bothRight || bothAbove || bothBelow) return null;
+    case "arrow":
       return {
         ...overlay,
-        from: { x: clamp(from.x), y: clamp(from.y) },
-        to: { x: clamp(to.x), y: clamp(to.y) }
+        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
+        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
       };
-    }
     case "rect":
     case "highlight":
-    case "blur": {
-      const r = {
-        x: tx(overlay.rect.x),
-        y: ty(overlay.rect.y),
-        w: sx(overlay.rect.w),
-        h: sy(overlay.rect.h)
-      };
-      const x1 = Math.max(0, r.x);
-      const y1 = Math.max(0, r.y);
-      const x2 = Math.min(1, r.x + r.w);
-      const y2 = Math.min(1, r.y + r.h);
-      if (x2 <= x1 || y2 <= y1) return null;
+    case "blur":
       return {
         ...overlay,
-        rect: { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }
+        rect: {
+          x: tx(overlay.rect.x),
+          y: ty(overlay.rect.y),
+          w: sx(overlay.rect.w),
+          h: sy(overlay.rect.h)
+        }
       } as Overlay;
-    }
     case "text":
-    case "step": {
-      const p = { x: tx(overlay.point.x), y: ty(overlay.point.y) };
-      if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) return null;
-      return { ...overlay, point: p };
-    }
+    case "step":
+      return {
+        ...overlay,
+        point: { x: tx(overlay.point.x), y: ty(overlay.point.y) }
+      };
     case "crop":
+      // Crop layers are replaced wholesale by the dispatcher (the new
+      // crop's rect is in the old canvas's coord space; the old crop's
+      // rect doesn't make sense in the new canvas). Returning null
+      // here signals "don't re-emit this overlay" — the dispatcher's
+      // Step 1 deletes the old crop layer and Step 2 inserts the
+      // fresh one.
       return null;
   }
 }
@@ -1165,11 +1147,22 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // inverse of the crop rect — overlays in the kept region
           // stay put visually (absolute pixel position preserved);
           // overlays in the cropped-away region end up with normalized
-          // coords > 1 and get clipped by the new canvas at render
-          // time. Without this, a text at point.x = 0.95 on an 800-px
-          // canvas (absolute pixel 760) would slide LEFT to 0.95 of
-          // the new 480-px canvas (absolute pixel 456) after a 60%
-          // width crop, instead of being clipped at the right edge.
+          // coords > 1 (or < 0) and get clipped by the new canvas at
+          // render time. Without this, a text at point.x = 0.95 on an
+          // 800-px canvas (absolute pixel 760) would slide LEFT to
+          // 0.95 of the new 480-px canvas (absolute pixel 456) after
+          // a 60% width crop, instead of being clipped at the right
+          // edge.
+          //
+          // Crop is a VIEWPORT change, not a destructive op (the
+          // user's mental model on pwrdrvr/PwrSnap#110 review).
+          // Overlays outside the cropped viewport must PERSIST as
+          // DATA so undoing the crop restores them. The schema's
+          // NormalizedScalar was widened from .min(0).max(1) to
+          // .finite() specifically to permit out-of-canvas coords;
+          // the renderer (SVG overflow:hidden) and bake pipeline
+          // (sharp composite) clip at paint time. So this loop never
+          // deletes for "out of bounds" — that data has to survive.
           //
           // Skip the (current) crop VectorLayer itself — it's about
           // to be deleted in Step 1 anyway. Skip effect layers'
@@ -1201,14 +1194,14 @@ export function useCaptureModel(captureId: string): CaptureModel {
             // eslint-disable-next-line no-await-in-loop
             const delResult = await dispatch("layers:delete", { id: layer.id });
             if (!delResult.ok) return err(delResult.error);
-            // `transformed === null` means the overlay is entirely
-            // outside the new canvas (e.g. text whose anchor is past
-            // the new right edge). It would be invisible anyway, so
-            // skip the reinsert — the delete above wipes it from the
-            // tree. UX note: undo of the crop currently won't restore
-            // these wiped overlays; a follow-up should extend
-            // recordCropRef to snapshot deleted overlays for undo
-            // replay.
+            // `transformed === null` only happens for kinds the helper
+            // refuses to re-emit: CropOverlay (replaced wholesale by
+            // Steps 1-2 below) and degenerate crop rects. Neither
+            // should be reached here — `vectorsBeforeCrop` already
+            // filters out crop shapes, and the dispatcher's outer
+            // validator rejects degenerate rects. Defense in depth:
+            // skip the upsert if we ever do see null, rather than
+            // pushing an invalid layer into the tree.
             if (transformed === null) continue;
             // eslint-disable-next-line no-await-in-loop
             const insResult = await dispatch("layers:upsert", {

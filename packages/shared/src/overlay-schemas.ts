@@ -5,8 +5,14 @@
 // region capture; the editor tools (arrow / rect / text / etc.) land
 // in Phase 2.
 //
-// Coordinate space: all overlays are normalized to [0, 1]^2 fractions
-// of the source image's WxH. (0, 0) is top-left.
+// Coordinate space: overlay coords are normalized fractions of the
+// CURRENT canvas's WxH. (0, 0) is top-left. The canonical case is
+// values in [0, 1]^2 (overlay visible within the canvas), but coords
+// OUTSIDE that range are also legal — see `NormalizedScalar` below.
+// Crop is implemented as a viewport change (per pwrdrvr/PwrSnap#110),
+// and overlays at absolute source pixels outside the cropped viewport
+// must persist as DATA so undoing the crop restores them; that's only
+// possible if the schema permits out-of-canvas coords.
 
 import { z } from "zod";
 
@@ -141,7 +147,20 @@ export function readOverlayThickness(
   return Math.max(fromMultiplier, shortSidePx * p.floorFraction);
 }
 
-const NormalizedScalar = z.number().min(0).max(1);
+// Overlay coords are "normalized" with respect to the SOURCE raster's
+// natural dims, NOT the current canvas dims. Before crop-as-layer
+// (pwrdrvr/PwrSnap#110), this scalar was constrained to [0,1] under
+// the assumption that overlay coords always referenced the visible
+// canvas. That assumption breaks the moment a crop layer enters the
+// tree: overlays at absolute source pixels outside the cropped
+// viewport must persist as DATA (with coords > 1 or < 0 in the new
+// canvas's [0,1] space) so undoing the crop restores them. Renderer
+// and bake clip at canvas boundary at paint time (SVG overflow, sharp
+// composite). Constraint widened to `.finite()` — disallows
+// NaN/Infinity (those would crash the renderer), allows any real
+// number (which is what "absolute source coord, expressed as a
+// fraction of the current canvas" needs to be).
+const NormalizedScalar = z.number().finite();
 const NormalizedPoint = z.object({
   x: NormalizedScalar,
   y: NormalizedScalar

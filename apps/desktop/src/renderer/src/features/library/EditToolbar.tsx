@@ -331,16 +331,34 @@ export function EditToolbar({
   // v2 cropped-state detector for the Reset button. For v1 captures
   // a crop is a CropOverlay row — already counted in `overlayCount`
   // via `overlayRows` above — so Reset enables naturally when only
-  // a crop exists. For v2 the crop instead lives in the captures
-  // row's width_px/height_px (via `bundle:updateCanvasDimensions`);
-  // the overlay count can be zero AND the user has a perfectly
-  // legitimate "reset the crop" want. Without this signal the
-  // Reset button stays disabled and the user has no way to undo
-  // a crop once the editor reopens (⌘Z only spans the current
-  // session). Compare record dims to the raster's natural dims:
-  // if smaller in either axis, we're cropped.
+  // a crop exists. For v2 the crop has TWO representations (both
+  // written by the v2 crop dispatcher in useCaptureModel.ts):
+  //
+  //   1. A VectorLayer with shape.kind === "crop" in the layer tree
+  //      — the layer-tree-native signal (post #109/#110's crop-as-
+  //      layer work). Detected via the loop below. This is also what
+  //      Reset's "delete user-facing layers" loop wipes — see the
+  //      delete branch below for the canvas-dim restore that follows
+  //      a crop-layer deletion.
+  //
+  //   2. captures.{width,height}_px < raster.natural_{width,height}_px
+  //      — the cached canvas dim shrink. The bake reads this, and
+  //      legacy v2 captures cropped BEFORE the crop-as-layer dispatch
+  //      landed only have this representation (no VectorLayer).
+  //
+  // We check both: if EITHER is true the capture is cropped and
+  // Reset should be enabled. New captures cropped on this PR's code
+  // have both signals; legacy captures have only the dim shrink.
   const isV2Cropped = useMemo(() => {
     if (model.kind !== "loaded" || model.format !== 2) return false;
+    // Signal 1 — VectorLayer<crop> in the layer tree.
+    for (const layer of model.layers) {
+      if (layer.kind === "vector" && layer.shape.kind === "crop") {
+        return true;
+      }
+    }
+    // Signal 2 — captures dims shrunk below raster natural dims.
+    // Fallback for legacy captures cropped pre-crop-as-layer.
     for (const layer of model.layers) {
       if (layer.kind === "raster" && layer.parent_id !== null) {
         return (

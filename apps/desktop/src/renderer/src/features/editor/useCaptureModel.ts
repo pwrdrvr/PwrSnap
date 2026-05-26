@@ -32,6 +32,7 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 
 // ---- Geometry / patch op types -------------------------------------
 //
@@ -977,11 +978,36 @@ export function useCaptureModel(captureId: string): CaptureModel {
               "layers:upsertBatch is not in the IPC surface yet; Phase 7 ships it"
           });
         case "crop": {
-          // v2 crop: multiply the normalized rect by the CURRENT canvas
-          // dims (from the live record) to derive new dims in source
-          // pixels, then ship via bundle:updateCanvasDimensions. The
-          // main-side handler returns the previous dims so we can
-          // stash them for undo.
+          // v2 crop = TWO writes that together form the "I cropped" state:
+          //
+          //   1. A VectorLayer with shape.kind === "crop" inserted in the
+          //      layer tree — same kind as any arrow/rect/text. Idempotent:
+          //      any pre-existing crop VectorLayer is deleted first so we
+          //      end up with exactly ONE active crop. The compose pipeline
+          //      treats this layer as a no-op composite (canvas-dim shrink
+          //      below is what actually clips the image); the layer's job
+          //      is to RECORD the crop in the tree so Reset can wipe it
+          //      via the normal "delete user-facing layers" loop and
+          //      future undo / layer-panel reads can see it.
+          //
+          //   2. captures.{width,height}_px shrink via
+          //      bundle:updateCanvasDimensions — the authoritative canvas
+          //      dims for the bake (sharp's .extract()), library grid,
+          //      export filename, etc. The handler refuses dims exceeding
+          //      raster.natural so this is the validation gate.
+          //
+          // Pre-fix, only (2) happened; the crop was invisible to the layer
+          // tree, which made Reset disabled when only a crop existed and
+          // forced bespoke `recordCropRef` undo plumbing.  See #109.
+          //
+          // Order: layer ops first (best-effort, idempotent), then dim
+          // update. If the dim update fails (e.g. rect would exceed
+          // natural dims), the crop layer has already updated to reflect
+          // the user's intent — they retry and the dim update succeeds
+          // or the validation surfaces. If the dim update succeeds but
+          // the layer ops failed: canvas is cropped but no layer in the
+          // tree, which means Reset still works via the legacy dim-
+          // comparison fallback added in EditToolbar's isV2Cropped.
           const record = recordRef.current;
           if (record === null) {
             return err({
@@ -1001,6 +1027,46 @@ export function useCaptureModel(captureId: string): CaptureModel {
             1,
             Math.round(op.rect.h * record.height_px)
           );
+
+          // Step 1: wipe any prior crop VectorLayer (the existing one, if
+          // a re-crop, would otherwise stack alongside the new one and
+          // mean "the user has TWO crops" — not a meaningful state).
+          const existingCrop = layersRef.current.find(
+            (l) => l.kind === "vector" && l.shape.kind === "crop"
+          );
+          if (existingCrop !== undefined) {
+            const delResult = await dispatch("layers:delete", {
+              id: existingCrop.id
+            });
+            if (!delResult.ok) return err(delResult.error);
+          }
+
+          // Step 2: insert the fresh crop VectorLayer under the root
+          // group. Skip silently when the tree has no root group (means
+          // the doctor hasn't run yet; shouldn't happen at this point
+          // but be defensive). Skip surfacing a layer-insert failure as
+          // a hard dispatch error — the user-visible crop IS the canvas
+          // shrink in step 3, and the absence of the layer record only
+          // costs us a layer-tree-aware Reset path (the dim-comparison
+          // fallback in EditToolbar.isV2Cropped still works).
+          const rootId = findRootGroupId(layersRef.current);
+          if (rootId !== null) {
+            const layerResult = overlayToBundleLayerNode(
+              { kind: "crop", rect: op.rect },
+              { width: record.width_px, height: record.height_px },
+              rootId
+            );
+            if (layerResult.ok) {
+              await dispatch("layers:upsert", {
+                captureId,
+                layer: layerResult.layer
+              });
+            }
+          }
+
+          // Step 3: shrink the canvas dims — the authoritative crop signal
+          // for the bake + downstream consumers. Failure here returns err;
+          // the user retries.
           const result = await dispatch("bundle:updateCanvasDimensions", {
             captureId,
             widthPx: newWidth,

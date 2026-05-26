@@ -111,16 +111,35 @@ describe("overlayToBundleLayerNode", () => {
     expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
   });
 
-  test("crop is refused with crop_not_supported_on_v2", () => {
+  test("crop projects to a VectorLayer with shape.kind === 'crop'", () => {
+    // Pre-#110 this overlay kind was refused with
+    // `crop_not_supported_on_v2`. Post-#110 the v2 crop dispatcher
+    // ALSO records the crop in the layer tree (alongside the canvas-
+    // dim shrink) so Reset and any future layer-panel surface can
+    // see it. The compose pipeline still no-ops on the crop layer
+    // (canvas-dim shrink is what actually clips); this layer's job
+    // is to RECORD the crop in the tree.
     const crop: Overlay = {
       kind: "crop",
       rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
     };
     const result = overlayToBundleLayerNode(crop, CANVAS);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.kind).toBe("validation");
-    expect(result.error.code).toBe("crop_not_supported_on_v2");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.layer.kind).toBe("vector");
+    if (result.layer.kind === "vector") {
+      expect(result.layer.shape.kind).toBe("crop");
+      if (result.layer.shape.kind === "crop") {
+        expect(result.layer.shape.rect).toEqual({
+          x: 0,
+          y: 0,
+          w: 0.5,
+          h: 0.5
+        });
+      }
+      expect(result.layer.name).toBe("Crop");
+    }
+    expect(() => BundleLayerNodeSchema.parse(result.layer)).not.toThrow();
   });
 
   test("parentId override is honored on both vector and effect outputs", () => {

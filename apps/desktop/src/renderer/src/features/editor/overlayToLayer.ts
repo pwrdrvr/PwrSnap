@@ -103,20 +103,30 @@ export function overlayToBundleLayerNode(
   const id = nanoid(16);
   const now = nowIso();
 
-  // Crop has no per-layer v2 representation. Refuse with a typed
-  // validation error so the call site can surface it (and so future
-  // call paths that DO support crop don't quietly inherit a misroute).
-  if (overlay.kind === "crop") {
-    return {
-      ok: false,
-      error: {
-        kind: "validation",
-        code: "crop_not_supported_on_v2",
-        message:
-          "v2 capture: crop overlay has no layer-tree equivalent; canvas-side crop is Phase 4+"
-      }
-    };
-  }
+  // Crop IS a vector layer in v2 (was deferred to "Phase 4+" originally
+  // but the dual-state — crop in captures.{width,height}_px AND crop
+  // not in the layer tree — caused the Reset-can't-undo-crop class of
+  // bugs (#109). Adding a crop VectorLayer makes the crop a first-class
+  // layer-tree citizen: Reset's existing "delete user-facing layers"
+  // loop wipes it naturally, undo through the layer model is symmetric
+  // with every other layer mutation, and "is this capture cropped?"
+  // becomes a layer-tree presence check instead of a captures-dim vs
+  // raster-natural-dims comparison.
+  //
+  // The compose pipeline (compose-tree-vector.ts) already treats
+  // `case "crop"` as a no-op composite — crop is consumed at the
+  // canvas-dimension level by sharp's .extract(), not by painting
+  // anything onto the accumulator. So adding this layer kind doesn't
+  // change render output; it just gives the editor a place to RECORD
+  // the crop in the layer tree alongside arrows / rects / etc.
+  //
+  // The dispatcher (useCaptureModel.ts v2 crop case) updates
+  // captures.width_px/height_px alongside the layer insert — those
+  // remain the authoritative canvas dims for downstream consumers
+  // (library grid, export filename, render coordinator). Promoting
+  // the layer tree to source-of-truth for canvas dims is a future
+  // refactor; this PR closes the bug class without changing that
+  // boundary.
 
   if (overlay.kind === "blur") {
     // Phase 3.4 — thread the v1 BlurOverlay's `style` field into the v2
@@ -203,7 +213,7 @@ export function findRootGroupId(layers: readonly BundleLayerNode[]): string | nu
  *  renderer/main boundary — the doctor module is main-only and
  *  pulling it would yank node-only code into the renderer bundle. */
 function layerNameForVector(
-  kind: Exclude<Overlay["kind"], "crop" | "blur">
+  kind: Exclude<Overlay["kind"], "blur">
 ): string {
   switch (kind) {
     case "arrow":
@@ -216,5 +226,12 @@ function layerNameForVector(
       return "Highlight";
     case "step":
       return "Step";
+    case "crop":
+      // v2 crop is a VectorLayer with shape.kind === "crop" — same
+      // tree-shape as arrow/rect/text. The compose pipeline no-ops
+      // on it (canvas-dim shrink is what actually clips the
+      // composite); the layer's job is to RECORD the crop in the
+      // tree so Reset / undo / future layer-panel reads can see it.
+      return "Crop";
   }
 }

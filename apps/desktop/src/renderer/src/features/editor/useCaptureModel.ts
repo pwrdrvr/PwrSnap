@@ -558,6 +558,76 @@ export function applyPatchToOverlay(
   return { ...overlay, ...patch } as Overlay;
 }
 
+/** Re-normalize an Overlay's coords by the INVERSE of a crop rect.
+ *
+ *  Overlay coords are normalized [0,1] to the canvas. When the canvas
+ *  is cropped, the canvas dims shrink BUT the absolute-pixel position
+ *  the user sees the overlay at should NOT move — overlays in the
+ *  kept region stay put visually; overlays in the cropped-away region
+ *  end up with normalized coords outside [0,1] and get clipped by
+ *  the canvas at render time.
+ *
+ *  Without this transform a text overlay at point.x = 0.95 on an
+ *  800-px canvas (absolute pixel 760) would still render at 0.95 of
+ *  the NEW 480-px canvas (absolute pixel 456) after a crop to 60%
+ *  width — i.e. the text would visually SLIDE LEFT into the kept
+ *  region instead of being clipped at the right edge.
+ *
+ *  Formula (per axis): `new = (old - rect.origin) / rect.size`.
+ *  For width / height (no offset, just scale): `new_w = old_w / rect.w`.
+ *  The current v2 crop dispatcher collapses rect.x/y to 0, but the
+ *  formula handles non-(0,0) crops too in case the off-origin path
+ *  ever ships.
+ *
+ *  Returns null for CropOverlay (the crop layer itself is in the
+ *  pre-crop space and is replaced wholesale by the dispatcher, so
+ *  re-normalizing it would scramble the rect meaninglessly). Returns
+ *  the original overlay unchanged for kinds with no transformable
+ *  coords. */
+export function inverseTransformOverlayByCrop(
+  overlay: Overlay,
+  cropRect: { x: number; y: number; w: number; h: number }
+): Overlay | null {
+  const { x: cx, y: cy, w: cw, h: ch } = cropRect;
+  if (cw <= 0 || ch <= 0) return null;
+  const tx = (n: number): number => (n - cx) / cw;
+  const ty = (n: number): number => (n - cy) / ch;
+  const sx = (n: number): number => n / cw;
+  const sy = (n: number): number => n / ch;
+  switch (overlay.kind) {
+    case "arrow":
+      return {
+        ...overlay,
+        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
+        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
+      };
+    case "rect":
+    case "highlight":
+    case "blur":
+      return {
+        ...overlay,
+        rect: {
+          x: tx(overlay.rect.x),
+          y: ty(overlay.rect.y),
+          w: sx(overlay.rect.w),
+          h: sy(overlay.rect.h)
+        }
+      } as Overlay;
+    case "text":
+    case "step":
+      return {
+        ...overlay,
+        point: { x: tx(overlay.point.x), y: ty(overlay.point.y) }
+      };
+    case "crop":
+      // Crop layers are in the pre-crop canvas's coord space; the
+      // dispatcher replaces them wholesale with the new crop rect.
+      // Re-normalizing in place would meaninglessly scramble the
+      // rect that's about to be deleted anyway.
+      return null;
+  }
+}
+
 /** Apply a GeometryUpdate to a BundleLayerNode. For vector layers
  *  we update the underlying `shape` (which carries the v1 Overlay
  *  shape verbatim). For blur/highlight effect layers, geometry
@@ -1027,6 +1097,53 @@ export function useCaptureModel(captureId: string): CaptureModel {
             1,
             Math.round(op.rect.h * record.height_px)
           );
+
+          // Step 0: re-normalize every vector layer's coords by the
+          // inverse of the crop rect — overlays in the kept region
+          // stay put visually (absolute pixel position preserved);
+          // overlays in the cropped-away region end up with normalized
+          // coords > 1 and get clipped by the new canvas at render
+          // time. Without this, a text at point.x = 0.95 on an 800-px
+          // canvas (absolute pixel 760) would slide LEFT to 0.95 of
+          // the new 480-px canvas (absolute pixel 456) after a 60%
+          // width crop, instead of being clipped at the right edge.
+          //
+          // Skip the (current) crop VectorLayer itself — it's about
+          // to be deleted in Step 1 anyway. Skip effect layers'
+          // clip_rect: those are already in absolute canvas pixels
+          // (per the v2 EffectLayer contract), so a (0,0)-anchored
+          // crop leaves their position unchanged. (Off-origin crops
+          // would need an effect.clip_rect translate but the current
+          // dispatcher collapses to (0,0) so this isn't reachable.)
+          // The IPC surface has no `layers:updateOverlay` verb — v2
+          // edits are delete-plus-insert via `layers:delete` +
+          // `layers:upsert` (the v2 updateOverlay dispatcher op does
+          // the same dance internally; we inline it here rather than
+          // recursively re-entering the dispatchEdit closure).
+          // Snapshot the current vector layers before any mutation so
+          // we don't iterate over freshly-inserted post-transform
+          // layers (the layersRef would update on each upsert as the
+          // captures:changed broadcast lands).
+          const vectorsBeforeCrop = layersRef.current.filter(
+            (l): l is BundleLayerNode & { kind: "vector" } =>
+              l.kind === "vector" && l.shape.kind !== "crop"
+          );
+          for (const layer of vectorsBeforeCrop) {
+            const transformed = inverseTransformOverlayByCrop(
+              layer.shape,
+              op.rect
+            );
+            if (transformed === null) continue;
+            // eslint-disable-next-line no-await-in-loop
+            const delResult = await dispatch("layers:delete", { id: layer.id });
+            if (!delResult.ok) return err(delResult.error);
+            // eslint-disable-next-line no-await-in-loop
+            const insResult = await dispatch("layers:upsert", {
+              captureId,
+              layer: { ...layer, id: nanoid(16), shape: transformed }
+            });
+            if (!insResult.ok) return err(insResult.error);
+          }
 
           // Step 1: wipe any prior crop VectorLayer (the existing one, if
           // a re-crop, would otherwise stack alongside the new one and

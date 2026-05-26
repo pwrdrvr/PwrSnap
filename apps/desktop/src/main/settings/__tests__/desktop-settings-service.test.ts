@@ -198,6 +198,49 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
     expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
   });
+
+  test("v1 shape missing `codex.captionModel` gets the default filled in", async () => {
+    // Same pattern as videoCapture above: `captionModel` landed after
+    // v1 shipped, so older settings files won't have it. parseV1 fills
+    // the gap so the in-memory shape always has every field.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+  });
+
+  test("v1 shape with an unknown `codex.captionModel` falls through to the default", async () => {
+    // Forward-compatibility: when a future release retires a model
+    // from CODEX_CAPTION_MODELS, existing on-disk settings will name a
+    // model we no longer accept. parseV1 must self-heal by falling
+    // through to the current default — never crash, never honor a
+    // stale value the spawn-Codex path can't handle.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: {
+          mode: "auto",
+          pinnedPath: "",
+          profile: "",
+          captionModel: "gpt-retired-mini"
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+  });
 });
 
 describe("DesktopSettingsService write-queue serialization on rejection", () => {

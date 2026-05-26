@@ -27,42 +27,78 @@ export const OverlayThickness = z.union([
 export type OverlayThickness = z.infer<typeof OverlayThickness>;
 
 /**
- * Multiplier table for thickness presets, with an optional short-side
- * floor so high-DPI captures don't render Large/X-Large arrows too
- * thin. The auto-derived stroke is clamped at `STROKE_MAX_PX` (14 px
- * by default), which becomes a smaller fraction of a 4K+ image than
- * of a 1080p image. Without a floor, `Large = autoStroke × 2 = 28 px`
- * caps regardless of how big the image is — that reads as visually
- * proportional on a 1080p capture and as a hairline on a 5K Retina
- * external monitor screenshot.
+ * Multiplier × auto-stroke + optional short-side floor for each
+ * thickness preset. Hoisted to module scope so the object isn't
+ * re-allocated on every call to `readOverlayThickness` — called once
+ * per arrow/rect render, and renders can be hot during drag.
  *
- * Final stroke = `max(autoStroke × multiplier, shortSidePx × floorFraction)`.
- * When `shortSidePx` is omitted (legacy callers), only the multiplier
- * is applied — preserves byte-identical pre-floor behavior so the
- * change is opt-in per call site.
+ * Tuning notes (read before changing these — they affect every
+ * arrow / rect overlay rendered, present and future):
  *
- * `medium` has no floor (`floorFraction === 0`) because it IS the
- * auto stroke — applying a floor would silently push medium past
- * "auto" on big images, surprising users who picked medium because
- * they wanted the default. `small` has a floor too — but because
- * `autoStroke × 0.5` is already a tighter constraint than `shortSide
- * × 0.003` on sub-Retina images, the floor only kicks in on captures
- * where Auto itself would have been ≥ 7-ish px (i.e., big enough
- * that 0.5× of it shouldn't disappear). Empirically: no visible
- * change at 1080p, modest rescue on 4K+.
+ *   • `small` floor = 0.003 of short side. On 1080p that's 3.24 px;
+ *     on 4K 6.48 px. Calibrated to keep small arrows from collapsing
+ *     to sub-pixel hairlines on high-DPI captures while still being
+ *     visibly thinner than Medium on every resolution.
+ *
+ *   • `medium` floor = 0 (intentional — see below). Medium IS the
+ *     auto stroke; applying a floor would silently push it past
+ *     "auto" on big images and surprise users who picked Medium
+ *     because they wanted the default.
+ *
+ *   • `large` floor = 0.012 of short side. On 1080p that's 12.96 px,
+ *     auto × 2 wins at any reasonable image size. On 4K the floor
+ *     starts matching (auto × 2 = 28 px ≈ floor = 25.92 px). On 5K+
+ *     the floor decisively wins — this is the Retina rescue point.
+ *
+ *   • `x-large` floor = 0.020 of short side. On 1080p 21.6 px (still
+ *     a bump over Large's 13 px). On 4K 43.2 px, on 5K 57.6 px —
+ *     the "chonker" preset, deliberately disproportionate at any
+ *     resolution.
+ *
+ * If you change these, every existing arrow at that preset re-bakes
+ * at next load. That's the trade-off for "preset behavior is
+ * consistent across captures regardless of when they were drawn"
+ * (the version-table mechanism handles HEAD GEOMETRY but not user-
+ * picked presets — see arrow.ts's `ARROW_STYLE_VERSIONS` comment).
+ */
+const THICKNESS_PRESETS: Readonly<
+  Record<"small" | "medium" | "large" | "x-large", { multiplier: number; floorFraction: number }>
+> = {
+  small: { multiplier: 0.5, floorFraction: 0.003 },
+  medium: { multiplier: 1, floorFraction: 0 },
+  large: { multiplier: 2, floorFraction: 0.012 },
+  "x-large": { multiplier: 3, floorFraction: 0.02 }
+};
+
+/**
+ * Resolve a thickness preset (or numeric override / "auto") to a
+ * concrete stroke value.
+ *
+ * Two call shapes — the third argument toggles between them:
+ *   • Legacy two-arg (no shortSidePx): multiplier-only. Returns
+ *     output in WHATEVER UNIT the auto value was passed in. Numeric
+ *     thickness passes through verbatim (treated as a [0,1] fraction
+ *     of short side; caller multiplies up if they want pixels).
+ *   • Three-arg (with shortSidePx, in the same units as autoFraction):
+ *     applies the floor formula `max(autoStroke × multiplier,
+ *     shortSidePx × floorFraction)`. Numeric thickness is treated as
+ *     a normalized fraction and expanded to pixels via shortSidePx.
+ *
+ * The two shapes exist because not all callers want the floor (it
+ * changes the output for existing rows when added). The three-arg
+ * form is the recommended new-code shape — it produces the Retina-
+ * proportional Large/XL strokes the floor is calibrated for.
  *
  * @param thickness    The persisted preset / numeric override / "auto".
- * @param autoFraction The geometry's auto-derived stroke value (in
- *                     whatever unit space the caller wants the output
- *                     in — fraction for legacy, pixels for new code).
- *                     `medium` = pass-through; numeric thickness
- *                     overrides this entirely.
- * @param shortSidePx  Optional image short-side IN THE SAME UNIT
- *                     SPACE as autoFraction. When provided, the
- *                     floor is enabled. Numeric thickness is treated
- *                     as a [0,1] fraction-of-shortSide and multiplied
- *                     by shortSidePx; when shortSidePx is omitted,
- *                     numeric values pass through verbatim (legacy).
+ * @param autoFraction The geometry's auto-derived stroke value, in
+ *                     the same unit space (fraction or pixels) the
+ *                     caller wants the output in. `medium` and
+ *                     `auto` pass this through verbatim.
+ * @param shortSidePx  Optional. Image short-side in the SAME unit
+ *                     space as autoFraction. Enables the floor;
+ *                     enables pixel expansion for numeric thickness.
+ *                     Omit only when matching legacy behavior is
+ *                     required.
  */
 export function readOverlayThickness(
   thickness: OverlayThickness | undefined,
@@ -74,19 +110,31 @@ export function readOverlayThickness(
     // Numeric thickness is a normalized fraction of short-side. If
     // shortSidePx is provided we expand to absolute units; otherwise
     // fall through verbatim (legacy "fraction in, fraction out").
+    //
+    // Dev-time footgun guard: numeric thickness should be ≤ 1 (it's a
+    // normalized fraction). A value > 1 strongly suggests a caller
+    // accidentally passed a PIXEL stroke into the legacy two-arg
+    // form and is going to multiply by shortSide somewhere downstream
+    // — producing a stroke wider than the image. Warn (but still
+    // return the value) so the broken render doesn't propagate
+    // silently. Skipped in production builds; the check is purely
+    // for catching call-site mistakes during development.
+    if (
+      thickness > 1 &&
+      shortSidePx === undefined &&
+      typeof process !== "undefined" &&
+      process.env?.NODE_ENV !== "production"
+    ) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[readOverlayThickness] numeric thickness=${thickness} (> 1) passed without shortSidePx — ` +
+          `did you mean to pass shortSidePx? Numeric thickness is a normalized [0,1] fraction; ` +
+          `pixel values must go through the three-arg form.`
+      );
+    }
     return shortSidePx !== undefined ? thickness * shortSidePx : thickness;
   }
-  // Preset: multiplier × auto, optionally lifted to a short-side floor.
-  const presets: Record<
-    "small" | "medium" | "large" | "x-large",
-    { multiplier: number; floorFraction: number }
-  > = {
-    small: { multiplier: 0.5, floorFraction: 0.003 },
-    medium: { multiplier: 1, floorFraction: 0 },
-    large: { multiplier: 2, floorFraction: 0.012 },
-    "x-large": { multiplier: 3, floorFraction: 0.02 }
-  };
-  const p = presets[thickness];
+  const p = THICKNESS_PRESETS[thickness];
   const fromMultiplier = autoFraction * p.multiplier;
   if (shortSidePx === undefined || p.floorFraction === 0) return fromMultiplier;
   return Math.max(fromMultiplier, shortSidePx * p.floorFraction);

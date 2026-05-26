@@ -747,6 +747,17 @@ interface TextBodyProps {
 }
 
 function TextBody({ style, onStyleFieldChange }: TextBodyProps): ReactElement {
+  // Defensive narrowing for the popover's "selected" highlight: if
+  // `style.fontSize` is somehow "x-large" (added to ToolSizePreset for
+  // arrow/rect thickness; not exposed to the text picker; could
+  // theoretically arrive via AI injection, JSON edit, or a future
+  // feature), the TEXT_SIZE_PRESETS table has no matching option and
+  // Segmented would render with NO button highlighted. Coerce to
+  // "large" here so the selected-state visibly matches the resolved
+  // text size — same fallback that `resolveTextSize` applies at the
+  // render layer.
+  const segmentedValue: TextToolStyle["fontSize"] =
+    style.fontSize === "x-large" ? "large" : style.fontSize;
   return (
     <>
       <ColorRow
@@ -757,7 +768,7 @@ function TextBody({ style, onStyleFieldChange }: TextBodyProps): ReactElement {
         label="Font size"
         testid="text-font-size"
         options={TEXT_SIZE_PRESETS}
-        value={style.fontSize}
+        value={segmentedValue}
         onChange={(v) => onStyleFieldChange("fontSize", v)}
       />
       <Segmented

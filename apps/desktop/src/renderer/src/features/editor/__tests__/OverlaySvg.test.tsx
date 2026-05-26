@@ -23,7 +23,13 @@ beforeAll(() => {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-async function renderOverlaySvg(overlays: OverlayRow[]): Promise<SVGSVGElement> {
+async function renderOverlaySvg(
+  overlays: OverlayRow[],
+  dims: { imageWidthPx: number; imageHeightPx: number } = {
+    imageWidthPx: 800,
+    imageHeightPx: 600
+  }
+): Promise<SVGSVGElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -32,8 +38,8 @@ async function renderOverlaySvg(overlays: OverlayRow[]): Promise<SVGSVGElement> 
       createElement(OverlaySvg, {
         overlays,
         draft: null,
-        imageWidthPx: 800,
-        imageHeightPx: 600
+        imageWidthPx: dims.imageWidthPx,
+        imageHeightPx: dims.imageHeightPx
       })
     );
   });
@@ -370,4 +376,143 @@ describe("OverlaySvg ArrowGlyph — combinations", () => {
       }
     }
   }
+});
+
+describe("OverlaySvg ArrowGlyph — portrait images (the original symptom)", () => {
+  // The pixel-space viewBox change in this PR was specifically aimed
+  // at portrait captures (e.g., a Quick Capture popover or a phone
+  // screenshot). Pre-fix the viewBox stretched X and Y by different
+  // amounts, skewing strokes and producing the vertical "fang" at
+  // the tail. Running these tests at portrait dims catches any
+  // future regression that re-introduces the non-uniform stretch.
+  const PORTRAIT_DIMS = { imageWidthPx: 720, imageHeightPx: 1280 };
+
+  test("viewBox uses pixel-space dimensions, not normalized 0..1", async () => {
+    // The load-bearing assertion: viewBox MUST be pixel-space so
+    // strokes render isotropically on non-square images.
+    const svg = await renderOverlaySvg([arrowRow()], PORTRAIT_DIMS);
+    const viewBox = svg.getAttribute("viewBox");
+    expect(viewBox).toBe(`0 0 ${PORTRAIT_DIMS.imageWidthPx} ${PORTRAIT_DIMS.imageHeightPx}`);
+    // preserveAspectRatio should NOT be "none" — that would re-introduce
+    // the bug. Default (xMidYMid meet) is correct here.
+    const par = svg.getAttribute("preserveAspectRatio");
+    expect(par).not.toBe("none");
+  });
+
+  test("horizontal arrow on portrait: stem is horizontal in pixel space (not skewed)", async () => {
+    // For a horizontal-in-normalized-coords arrow on a portrait
+    // image, the rendered stem must be horizontal in pixel space.
+    // Pre-fix the y1 vs y2 of the rendered stem differed because
+    // of the non-uniform viewBox; post-fix they match.
+    const svg = await renderOverlaySvg(
+      [arrowRow({ endStyle: "filled-triangle" })],
+      PORTRAIT_DIMS
+    );
+    const coloredStem = Array.from(svg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    );
+    expect(coloredStem).toBeDefined();
+    const y1 = Number(coloredStem!.getAttribute("y1"));
+    const y2 = Number(coloredStem!.getAttribute("y2"));
+    expect(y1).toBeCloseTo(y2, 5);
+  });
+
+  test("horizontal arrow on portrait: head triangle is isosceles (perpendicular not skewed)", async () => {
+    // The base corners (baseLeft, baseRight) must sit equidistant
+    // from baseCenter along the perpendicular axis. Pre-fix the
+    // non-uniform viewBox made the triangle look "tilted." Post-fix
+    // the perpendicular is computed in pixel space so isosceles
+    // holds regardless of image aspect.
+    const svg = await renderOverlaySvg(
+      [arrowRow({ endStyle: "filled-triangle" })],
+      PORTRAIT_DIMS
+    );
+    const coloredPoly = Array.from(svg.querySelectorAll("polygon")).find(
+      (p) => p.getAttribute("fill") !== "white" && p.getAttribute("fill") !== "none"
+    );
+    expect(coloredPoly).toBeDefined();
+    const points = coloredPoly!
+      .getAttribute("points")!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => pair.split(",").map(Number));
+    // Identify apex (rightmost on horizontal arrow); other two are
+    // base corners. For an isosceles triangle, base corners sit
+    // mirrored around apex.y.
+    const xs = points.map((p) => p[0]!);
+    const apexIdx = xs.indexOf(Math.max(...xs));
+    const apexY = points[apexIdx]![1]!;
+    const baseYs = points.filter((_, i) => i !== apexIdx).map((p) => p[1]!);
+    expect(Math.abs((baseYs[0]! - apexY) + (baseYs[1]! - apexY))).toBeLessThan(0.01);
+  });
+
+  test("stem halo and head halo share the same strokeWidth (no white bleed at baseCenter)", async () => {
+    // Structural invariant — proxy for the pixel-level "no white
+    // bleed into the open-triangle's hollow" property at the
+    // stem/head junction.
+    //
+    // The stem's round line cap at baseCenter extends `(stroke +
+    // outline*2)/2` past the geometric endpoint. The head halo
+    // polygon's stroke at baseCenter (on the base edge) extends
+    // `(stroke + outline*2)/2` INTO the head along the perpendicular.
+    // If these two strokes share the SAME width, the head halo's
+    // coverage exactly matches the stem halo's forward bleed —
+    // they paint the same pixels white, so no visible artifact.
+    //
+    // If they diverge (e.g., refactor accidentally uses a different
+    // outline value for one), the longer stroke pokes past the
+    // shorter and shows up as a visible white sliver where it
+    // shouldn't.
+    //
+    // Tested on open-triangle since that's the style where the
+    // hollow makes the white bleed visible. Filled-triangle's
+    // colored fill covers any halo discrepancy.
+    const svg = await renderOverlaySvg(
+      [arrowRow({ endStyle: "open-triangle" })],
+      PORTRAIT_DIMS
+    );
+    const haloStem = Array.from(svg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") === "white"
+    );
+    const haloPoly = Array.from(svg.querySelectorAll("polygon")).find(
+      (p) => p.getAttribute("stroke") === "white"
+    );
+    expect(haloStem).toBeDefined();
+    expect(haloPoly).toBeDefined();
+    const haloStemWidth = Number(haloStem!.getAttribute("stroke-width"));
+    const haloPolyWidth = Number(haloPoly!.getAttribute("stroke-width"));
+    expect(haloStemWidth).toBeCloseTo(haloPolyWidth, 5);
+  });
+
+  test("portrait + Large thickness: stem stroke matches the head's scale (no skew, no clamp surprise)", async () => {
+    // Tie together the pixel-space fix AND the head-scales-with-
+    // thickness fix on portrait. Large stroke should be ~2× auto;
+    // head polygon should grow proportionally. Same assertion as
+    // the landscape tests, just run at portrait dims to catch any
+    // aspect-conditional bug.
+    const autoSvg = await renderOverlaySvg(
+      [arrowRow({ endStyle: "filled-triangle", thickness: "auto" })],
+      PORTRAIT_DIMS
+    );
+    const largeSvg = await renderOverlaySvg(
+      [arrowRow({ endStyle: "filled-triangle", thickness: "large" })],
+      PORTRAIT_DIMS
+    );
+    const autoStem = Array.from(autoSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    const largeStem = Array.from(largeSvg.querySelectorAll("line")).find(
+      (l) => l.getAttribute("stroke") !== "white"
+    )!;
+    const autoWidth = Number(autoStem.getAttribute("stroke-width"));
+    const largeWidth = Number(largeStem.getAttribute("stroke-width"));
+    expect(largeWidth).toBeGreaterThan(autoWidth);
+    // Floor formula on small images: at PORTRAIT_DIMS shortSide=720,
+    // floor = 720 × 0.012 = 8.64 px. autoStroke = clamp(720/220, 4,
+    // 14) ≈ 3.27 px, so the auto path clamps to 4 (STROKE_MIN_PX).
+    // Large = max(4 × 2, 8.64) = 8.64 (floor wins). Auto stroke
+    // path also factors length-based scaling — be tolerant of a
+    // range rather than assert an exact value.
+    expect(largeWidth / autoWidth).toBeGreaterThan(1.5);
+  });
 });

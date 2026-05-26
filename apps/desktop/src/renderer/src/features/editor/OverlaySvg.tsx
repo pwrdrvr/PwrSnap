@@ -732,8 +732,17 @@ function RectGlyph({
   // space — readOverlayThickness with shortSide enabled returns
   // pixels directly, and applies the floor-fraction formula on
   // Large/X-Large so high-DPI captures don't get a hairline rect.
+  //
+  // Auto stroke is clamped between 0.3% and 1.2% of the short side,
+  // matching the arrow's [STROKE_MIN_PX, STROKE_MAX_PX] band in
+  // pixel units (3 px / 8 px on a 1000-px image; 6 px / 24 px on a
+  // 2000-px image). Direct pixel-space clamp — avoids the previous
+  // fraction-and-multiply round trip that obscured the actual range.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeWidthPx = Math.min(0.012, Math.max(0.003, 8 / shortSide)) * shortSide;
+  const autoStrokeWidthPx = Math.min(
+    shortSide * 0.012,
+    Math.max(shortSide * 0.003, 8)
+  );
   const strokeWidthPx = readOverlayThickness(thickness, autoStrokeWidthPx, shortSide);
   const outline = Math.max(strokeWidthPx * 0.25, 1.5);
   // Pixel-space rect dimensions.

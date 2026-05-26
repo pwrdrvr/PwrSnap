@@ -233,6 +233,41 @@ describe("arrowSvg (bake) — thickness", () => {
     );
     expect(smallStroke / autoStroke).toBeCloseTo(0.5, 1);
   });
+
+  test("thickness 'x-large' lifts past auto × 3 on Retina-scale captures (floor wins)", () => {
+    // X-Large's whole purpose: on high-DPI captures the auto stroke
+    // clamps at STROKE_MAX_PX = 14, so multiplier-only XL caps at 42.
+    // The floor-fraction formula `max(auto × 3, shortSide × 0.020)`
+    // lifts that on 4K+ images. At W=800, shortSide=600 → floor
+    // wins on this test image: 600 × 0.020 = 12 px which is below
+    // the multiplier (auto × 3 ≈ a much bigger number) — so this
+    // test image isn't dramatic enough to show the floor. Use a
+    // bigger image to demonstrate.
+    const bigW = 4000;
+    const bigH = 2800;
+    const xlSvg = arrowSvgForV2({ ...baseArrow(), thickness: "x-large" }, bigW, bigH);
+    const xlStroke = Number(
+      xlSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    // shortSide × 0.020 = 2800 × 0.020 = 56. auto × 3 = 14 × 3 = 42.
+    // Floor wins → expect ≈ 56.
+    expect(xlStroke).toBeGreaterThan(50);
+    expect(xlStroke).toBeLessThan(60);
+  });
+
+  test("numeric thickness: 0.02 fraction expands to ≈ 0.02 × shortSide pixels", () => {
+    // Regression for the previously-broken numeric path. Pre-fix the
+    // bake passed pixel autoStroke into readOverlayThickness's
+    // numeric branch (which expected a fraction) — silent
+    // unit-mismatch bug. Now we go through the three-arg form so
+    // numeric thickness expands cleanly to pixels.
+    const svg = arrowSvgForV2({ ...baseArrow(), thickness: 0.02 }, W, H);
+    const stroke = Number(
+      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    // shortSide = 600 (min of 800 × 600). 0.02 × 600 = 12.
+    expect(stroke).toBeCloseTo(12, 1);
+  });
 });
 
 describe("arrowSvg (bake) — doubleEnded", () => {
@@ -405,6 +440,129 @@ describe("arrowSvg (bake) — styleVersion", () => {
     const v1 = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
     const future = arrowSvgForV2({ ...baseArrow(), styleVersion: 999 }, W, H);
     expect(future).toBe(v1);
+  });
+});
+
+describe("arrowSvg (bake) — portrait images (the original symptom)", () => {
+  // The pixel-space viewBox change in this PR was specifically aimed
+  // at portrait captures where the previous "0 0 1 1" + preserve
+  // AspectRatio="none" SVG non-uniformly stretched X vs Y, skewing
+  // strokes and producing the "fang at the tail" artifact. These
+  // tests run at a portrait aspect (720×1280, the rough proportion
+  // of a Quick Capture popover) and verify the geometry survives.
+  const PORTRAIT_W = 720;
+  const PORTRAIT_H = 1280;
+
+  test("filled-triangle head triangle is isosceles on portrait (perpendicular not skewed)", () => {
+    // For a horizontal arrow on a portrait image, the head triangle's
+    // two base corners should sit equidistant from the geometric
+    // base center along the perpendicular axis (Y). Pre-fix the
+    // non-uniform viewBox stretch made this asymmetric. computeArrow
+    // Geometry now computes perpendicular in pixel space, so the
+    // triangle is isosceles regardless of image aspect.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.5 },
+        to: { x: 0.8, y: 0.5 },
+        color: "auto",
+        endStyle: "filled-triangle"
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    // Colored head polygon points: apex + two base corners.
+    const poly = svg.match(/<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i);
+    expect(poly).not.toBeNull();
+    const points = poly![1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => pair.split(",").map(Number));
+    expect(points.length).toBe(3);
+    // For a horizontal arrow, apex.y === arrow center, base corners
+    // sit equidistant above and below. Find apex (the point with
+    // max x; arrow goes left → right) and verify the other two are
+    // mirrored around apex.y.
+    const ys = points.map((p) => p[1]!);
+    const xs = points.map((p) => p[0]!);
+    const apexIdx = xs.indexOf(Math.max(...xs));
+    const apexY = ys[apexIdx]!;
+    const otherYs = ys.filter((_, i) => i !== apexIdx);
+    const dyTop = otherYs[0]! - apexY;
+    const dyBottom = otherYs[1]! - apexY;
+    // Equidistant: |dyTop + dyBottom| ≈ 0 (one positive, one negative).
+    expect(Math.abs(dyTop + dyBottom)).toBeLessThan(0.01);
+  });
+
+  test("portrait stem line is the line direction, not aspect-skewed", () => {
+    // On a horizontal arrow, the stem's y1 and y2 should be equal
+    // (line is horizontal in image pixels). Pre-fix the non-uniform
+    // viewBox stretch didn't reach into the bake — the bake was
+    // always pixel-space — so this passes pre- and post-fix. The
+    // analogous test exists in the renderer where it's more load-
+    // bearing.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.5 },
+        to: { x: 0.8, y: 0.5 },
+        color: "auto"
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    // Colored stem in the bake spans two lines (attr indentation
+     // wraps after y2). Match across whitespace including newlines.
+    const stemMatch = svg.match(
+      /<line x1="([\d.]+)" y1="([\d.]+)" x2="([\d.]+)" y2="([\d.]+)"[\s\S]*?stroke="#ff8a1f"/
+    );
+    expect(stemMatch).not.toBeNull();
+    const [y1, y2] = [Number(stemMatch![2]), Number(stemMatch![4])];
+    expect(y1).toBeCloseTo(y2, 4);
+  });
+
+  test("diagonal arrow's head triangle stays proportional on portrait", () => {
+    // Diagonal arrow on portrait image — the case where the
+    // non-uniform viewBox stretch was most visible (vertical fang
+    // at tail). Verify head proportions match the styleVersion's
+    // ratios regardless of aspect.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.1 },
+        to: { x: 0.9, y: 0.9 },
+        color: "auto",
+        styleVersion: 2
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    const stroke = Number(
+      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    expect(stroke).toBeGreaterThan(0);
+    // Head extent — compute the polygon's diagonal extent and compare
+    // to expected head length (= stroke × 5 for v2). Use the
+    // polygon's bounding box diagonal as a proxy.
+    const poly = svg.match(/<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i);
+    expect(poly).not.toBeNull();
+    const points = poly![1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => pair.split(",").map(Number));
+    const xs = points.map((p) => p[0]!);
+    const ys = points.map((p) => p[1]!);
+    const diag = Math.hypot(
+      Math.max(...xs) - Math.min(...xs),
+      Math.max(...ys) - Math.min(...ys)
+    );
+    // Diagonal of the head's bounding box is approximately the head
+    // length (the triangle is elongated along the arrow direction).
+    // v2: head length = 5 × stroke. Tolerate some slop since the
+    // bbox-diagonal isn't exactly the head length, but assert order
+    // of magnitude.
+    expect(diag).toBeGreaterThan(stroke * 3);
+    expect(diag).toBeLessThan(stroke * 7);
   });
 });
 

@@ -17,7 +17,7 @@
 // Phase 1.5 wires the float-over to actually fire after a successful
 // capture. Phase 1.6 adds clipboard at this seam.
 
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -299,6 +299,15 @@ export function registerCaptureHandlers(): void {
     }
   });
 
+  // Note (Full Screen / All Screens): unlike `capture:interactive` we
+  // do NOT call `activateApp(previousAppPid)` + `reclaimDockIconIfLibraryAlive`
+  // here. Those exist to recover from the activation cascade the
+  // region-selector window triggers (it takes key focus on show,
+  // AppKit demotes our activation policy on hide). The no-selector
+  // path never steals focus — the tray popover is a non-activating
+  // panel — so there's nothing to recover. If a future change makes
+  // this path activate PwrSnap (e.g. a confirmation HUD), re-introduce
+  // both calls here in lockstep with capture-handlers.ts:254-262.
   bus.register("capture:fullScreen", async (req) => {
     const displayId = resolveFullScreenDisplayId(req.displayId);
     const display = screen.getAllDisplays().find((d) => d.id === displayId);
@@ -332,6 +341,17 @@ export function registerCaptureHandlers(): void {
   });
 
   bus.register("capture:allScreens", async (req) => {
+    // Bus-boundary validation. The type system catches in-process
+    // callers, but `req` arrives over IPC where unchecked JSON could
+    // pass `{}` or `{mode: "bogus"}` and silently fall through to
+    // stitched. Reject unknown modes explicitly.
+    if (req.mode !== "split" && req.mode !== "stitched") {
+      return err({
+        kind: "validation",
+        code: "invalid_mode",
+        message: `capture:allScreens mode must be "split" or "stitched", got: ${String(req.mode)}`
+      });
+    }
     const displays = screen.getAllDisplays();
     if (displays.length === 0) {
       return err({
@@ -347,10 +367,28 @@ export function registerCaptureHandlers(): void {
       // invocations — `/usr/sbin/screencapture` doesn't like concurrent
       // calls (they race on the cursor-hide global), and 3 displays at
       // ~70ms each is still under 250ms total.
+      //
+      // Failure semantics: if any display's capture or persist fails
+      // partway through, we roll back the records already inserted
+      // so the user isn't left with orphan rows alongside an error.
+      // Rollback goes through `library:delete` (soft-delete + move to
+      // trash + broadcast) — if they want to recover, they're in
+      // trash for 14 days.
       const records: CaptureRecord[] = [];
+      const rollback = async (cause: string): Promise<void> => {
+        if (records.length === 0) return;
+        log.warn("capture:allScreens split: rolling back partial captures", {
+          cause,
+          rolledBack: records.length
+        });
+        for (const r of records) {
+          await bus.dispatch("library:delete", { id: r.id }, { principal: "ipc" });
+        }
+      };
       for (const d of displays) {
         const captureResult = await captureScreen(d.id);
         if (!captureResult.ok) {
+          await rollback(captureResult.reason);
           return err({
             kind: "capture",
             code: captureResult.reason,
@@ -360,7 +398,10 @@ export function registerCaptureHandlers(): void {
         const persisted = await persistAndBroadcast(captureResult.tempPath, null, {
           devicePixelRatio: d.scaleFactor
         });
-        if (!persisted.ok) return persisted;
+        if (!persisted.ok) {
+          await rollback(persisted.error.code);
+          return persisted;
+        }
         records.push(persisted.value);
       }
       // Only the last capture drives the float-over toast — N toasts
@@ -386,6 +427,12 @@ export function registerCaptureHandlers(): void {
     for (const d of displays) {
       const captureResult = await captureScreen(d.id);
       if (!captureResult.ok) {
+        // Clean up any per-display PNGs already on disk before
+        // bailing — the stitched path owns the temps from
+        // `captureScreen` (see screencapture.ts header), and a mid-
+        // loop failure would otherwise leak them until next boot's
+        // `sweepStaleTempFiles()`.
+        await unlinkTempPaths(parts.map((p) => p.tempPath));
         return err({
           kind: "capture",
           code: captureResult.reason,
@@ -394,7 +441,15 @@ export function registerCaptureHandlers(): void {
       }
       parts.push({ tempPath: captureResult.tempPath, display: d });
     }
-    const stitched = await stitchDisplays(parts);
+    let stitched;
+    try {
+      stitched = await stitchDisplays(parts);
+    } finally {
+      // The per-display PNGs are consumed by sharp inside
+      // `stitchDisplays` — delete them whether the composite
+      // succeeded or threw, since either way we're done with them.
+      await unlinkTempPaths(parts.map((p) => p.tempPath));
+    }
     const persisted = await persistAndBroadcast(stitched.tempPath, null, {
       devicePixelRatio: stitched.scaleFactor
     });
@@ -898,12 +953,17 @@ async function persistAndBroadcast(
 }
 
 /**
- * Resolve which display to capture for Full Screen. The tray sends 0
- * (or omits the field) to mean "the display the cursor is on right
- * now" — the renderer doesn't enumerate displays. Any non-zero id
- * that resolves to a real display is used as-is; anything else falls
- * back to the cursor's display, so a stale displayId from a hotplugged
- * setup doesn't fail the capture.
+ * Resolve which display to capture for Full Screen. Omitting `displayId`
+ * (or passing `undefined`) means "the display the cursor is on right
+ * now" — the renderer doesn't enumerate displays. Any id that resolves
+ * to a real display is used as-is; anything else (stale id from a
+ * hotplugged setup, or the legacy 0-sentinel from older callers) falls
+ * back to the cursor's display so the capture still succeeds.
+ *
+ * `Display.id === 0` is treated as the legacy sentinel rather than a
+ * real id — Electron's documented values are positive integers
+ * (`screen.getPrimaryDisplay().id`), and accepting 0 as a real id would
+ * also accidentally accept a stale numeric default.
  */
 function resolveFullScreenDisplayId(displayId: number | undefined): number {
   const all = screen.getAllDisplays();
@@ -916,6 +976,19 @@ function resolveFullScreenDisplayId(displayId: number | undefined): number {
   }
   const cursorPoint = screen.getCursorScreenPoint();
   return screen.getDisplayNearestPoint(cursorPoint).id;
+}
+
+/**
+ * Best-effort unlink of caller-owned screencapture temp files. Used by
+ * the stitched All-Screens path which owns N per-display PNGs that
+ * sharp consumes during composite — leaving them behind would leak
+ * one tmpdir per invocation until the boot-time `sweepStaleTempFiles()`
+ * reaps them. Errors are swallowed: a missing file is the success
+ * case for cleanup; other errors are out of our control here and the
+ * stale-temp sweep is the backstop.
+ */
+async function unlinkTempPaths(paths: readonly string[]): Promise<void> {
+  await Promise.allSettled(paths.map((p) => unlink(p)));
 }
 
 /**

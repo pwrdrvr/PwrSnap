@@ -354,9 +354,10 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     void dispatch("capture:interactive", { mode });
   };
   const onCaptureFullScreen = (): void => {
-    // displayId: 0 = "the display the cursor is on right now". Main
-    // resolves this without the renderer having to enumerate displays.
-    void dispatch("capture:fullScreen", { displayId: 0 });
+    // Omit displayId so main resolves to the display the cursor is on.
+    // Lets the renderer stay ignorant of display geometry — no
+    // round-trip to enumerate before clicking.
+    void dispatch("capture:fullScreen", {});
   };
   const onCaptureAllScreens = (): void => {
     void dispatch("capture:allScreens", { mode: allScreensMode });

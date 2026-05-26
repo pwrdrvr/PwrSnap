@@ -1021,12 +1021,12 @@ export type Commands = {
     res: { record: CaptureRecord; isNew: boolean };
   };
   /**
-   * Capture a single display end-to-end (no selector). `displayId === 0`
-   * (the default the tray sends) resolves to the display the cursor is
-   * currently on, so the user gets "the screen I'm pointing at" without
-   * the renderer having to enumerate displays first. PwrSnap chrome
-   * (tray popover, float-over toast) is hidden for one compositor
-   * frame so it doesn't bleed into the captured pixels.
+   * Capture a single display end-to-end (no selector). Omit `displayId`
+   * (or pass `undefined`) to capture the display the cursor is currently
+   * on — the tray uses this so the renderer never has to enumerate
+   * displays first. PwrSnap chrome (tray popover, float-over toast) is
+   * hidden for one compositor frame so it doesn't bleed into the
+   * captured pixels.
    */
   "capture:fullScreen": { req: { displayId?: number | undefined }; res: CaptureRecord };
   /**

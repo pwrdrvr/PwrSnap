@@ -328,6 +328,29 @@ export function EditToolbar({
   }, [captureId, overlayRows]);
 
   const overlayCount = overlayRows.length;
+  // v2 cropped-state detector for the Reset button. For v1 captures
+  // a crop is a CropOverlay row — already counted in `overlayCount`
+  // via `overlayRows` above — so Reset enables naturally when only
+  // a crop exists. For v2 the crop instead lives in the captures
+  // row's width_px/height_px (via `bundle:updateCanvasDimensions`);
+  // the overlay count can be zero AND the user has a perfectly
+  // legitimate "reset the crop" want. Without this signal the
+  // Reset button stays disabled and the user has no way to undo
+  // a crop once the editor reopens (⌘Z only spans the current
+  // session). Compare record dims to the raster's natural dims:
+  // if smaller in either axis, we're cropped.
+  const isV2Cropped = useMemo(() => {
+    if (model.kind !== "loaded" || model.format !== 2) return false;
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        return (
+          model.record.width_px < layer.natural_width_px ||
+          model.record.height_px < layer.natural_height_px
+        );
+      }
+    }
+    return false;
+  }, [model]);
   // Persist to module-level on every change so a remount picks up
   // the same position.
   useEffect(() => {
@@ -574,6 +597,7 @@ export function EditToolbar({
         <ResetButton
           captureId={captureId}
           overlayCount={overlayCount}
+          isV2Cropped={isV2Cropped}
           armed={resetArmedAt !== null}
           onArm={() => setResetArmedAt(Date.now())}
           onConfirm={async () => {
@@ -796,25 +820,47 @@ function ToolButton({
 function ResetButton({
   captureId,
   overlayCount,
+  isV2Cropped,
   armed,
   onArm,
   onConfirm
 }: {
   captureId: string | undefined;
   overlayCount: number;
+  /** v2 captures only — true when canvas dims are smaller than the
+   *  raster source's natural dims (i.e. the user cropped). v1 crops
+   *  are CropOverlay rows already counted in `overlayCount`, so this
+   *  is always false for v1. Enabling Reset on `isV2Cropped` lets the
+   *  user undo a crop on a capture with zero annotations — without
+   *  this the button stays disabled and there's no in-editor way to
+   *  reverse the crop once ⌘Z's session-undo window closes. */
+  isV2Cropped: boolean;
   armed: boolean;
   onArm: () => void;
   onConfirm: () => void;
 }): ReactElement {
-  const disabled = captureId === undefined || overlayCount === 0;
+  const hasResettableState = overlayCount > 0 || isV2Cropped;
+  const disabled = captureId === undefined || !hasResettableState;
+  // Confirm label: include the crop suffix when the only resettable
+  // state is the crop (overlayCount === 0). Otherwise just show the
+  // count — most resets are annotation-driven, and tacking "+ crop"
+  // on top of an N-overlay confirm makes the chip too long.
+  const confirmLabel =
+    overlayCount === 0 && isV2Cropped
+      ? "Confirm? · crop"
+      : `Confirm? · ${overlayCount}`;
   return (
     <button
       type="button"
       className={"psl__et-btn psl__et-btn--reset" + (armed ? " is-armed" : "")}
       title={
         armed
-          ? "Click again to confirm — removes every overlay"
-          : "Reset to original (remove all overlays)"
+          ? overlayCount === 0 && isV2Cropped
+            ? "Click again to confirm — restores original canvas dimensions"
+            : "Click again to confirm — removes every overlay"
+          : isV2Cropped && overlayCount === 0
+            ? "Reset to original (restore canvas dimensions)"
+            : "Reset to original (remove all overlays)"
       }
       disabled={disabled}
       onClick={() => {
@@ -827,9 +873,7 @@ function ResetButton({
         <path d="M3 12a9 9 0 1 0 3-6.7" />
         <path d="M3 4v5h5" />
       </svg>
-      <span>
-        {armed ? `Confirm? · ${overlayCount}` : "Reset"}
-      </span>
+      <span>{armed ? confirmLabel : "Reset"}</span>
     </button>
   );
 }

@@ -28,6 +28,18 @@ asarUnpack:
   # `require("@ffmpeg-installer/ffmpeg").path` which points to the
   # unpacked binary under `app.asar.unpacked/...`.
   - "**/node_modules/@ffmpeg-installer/**"
+  # Sharp's libvips runtime ships as `libvips-cpp.<ver>.dylib`
+  # inside `@img/sharp-libvips-darwin-<arch>/lib/`. The `**/*.node`
+  # rule above only catches sharp's tiny thin binding
+  # (`@img/sharp-darwin-<arch>/lib/sharp-darwin-<arch>.node`); the
+  # libvips `.dylib` it dlopens by dyld @rpath has to live on a
+  # real filesystem path, not inside an asar archive. Unpacking the
+  # whole `@img/**` tree keeps both the thin binding and the libvips
+  # dylib resolvable. Beta.3 shipped without this rule (and without
+  # the @img sub-packages — see release.mjs step 5b); the app
+  # crashed on startup with "Could not load the sharp module using
+  # the darwin-arm64 runtime".
+  - "**/node_modules/@img/**"
 compression: normal
 
 # Files included in the .app bundle. Run via apps/desktop/scripts/release.mjs

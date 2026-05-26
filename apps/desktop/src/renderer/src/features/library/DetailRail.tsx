@@ -150,6 +150,45 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     };
   }, [record?.id]);
 
+  // Tabs are memo'd UNCONDITIONALLY (Rules of Hooks: every render
+  // must call the same hooks in the same order). The original
+  // implementation kept `useMemo` BELOW the `view.kind === "grid"`
+  // / `record === null` early returns, which silently broke React's
+  // hook-count invariant the moment the component transitioned from
+  // grid (returns null after fewer hooks) to focus (continues past
+  // the early returns and reaches the useMemo). React detects the
+  // mismatch and bails the render — the parent commit never
+  // applies, the outer `.psl[data-mode]` stays at "grid", and any
+  // E2E that exercises the cell-click → focus transition hangs on
+  // the data-mode assertion (caught via library-source-filter.spec
+  // L373 on CI). Compute tabs up front; the early returns below
+  // just gate rendering, not hook-count.
+  const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
+  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
+    () => [
+      {
+        id: "info",
+        label: "Info",
+        title: "Info",
+        icon: INFO_ICON
+      },
+      {
+        id: "ocr",
+        label: "OCR",
+        title: hasOcrText ? "OCR — extracted text ready" : "OCR",
+        badge: hasOcrText,
+        icon: OCR_ICON
+      },
+      {
+        id: "chat",
+        label: "Chat",
+        title: "Chat with Codex",
+        icon: CHAT_ICON
+      }
+    ],
+    [hasOcrText]
+  );
+
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.
   if (view.kind === "grid") return null;
@@ -176,37 +215,6 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     (enrichment?.suggestedDescription ?? "") !== "" &&
     titleAccepted &&
     descriptionAccepted;
-
-  const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
-
-  // Memoized — the array identity is consumed by RightActivityBar's
-  // internal useMemo'd top/bottom split. Without this, the split runs
-  // on every DetailRail render even though the tab definitions only
-  // change when the OCR badge state flips.
-  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
-    () => [
-      {
-        id: "info",
-        label: "Info",
-        title: "Info",
-        icon: INFO_ICON
-      },
-      {
-        id: "ocr",
-        label: "OCR",
-        title: hasOcrText ? "OCR — extracted text ready" : "OCR",
-        badge: hasOcrText,
-        icon: OCR_ICON
-      },
-      {
-        id: "chat",
-        label: "Chat",
-        title: "Chat with Codex",
-        icon: CHAT_ICON
-      }
-    ],
-    [hasOcrText]
-  );
 
   // renderPanel returns the panel BODY only — the outer role="tabpanel"
   // wrapper (with id + aria-labelledby) is supplied by RightActivityBar

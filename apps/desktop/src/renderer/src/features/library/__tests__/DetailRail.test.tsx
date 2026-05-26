@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureEnrichment, CaptureRecord } from "@pwrsnap/shared";
 import { DetailRail } from "../DetailRail";
+import type { LibraryView } from "../library-view";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -664,6 +665,93 @@ describe("DetailRail", () => {
       '[data-testid="psl-right-tab-ocr"]'
     );
     expect(ocrTab?.querySelector(".rab__act-badge")).toBeNull();
+  });
+
+  test("grid → focus mode transition does not violate Rules of Hooks", async () => {
+    // Regression: a prior iteration of DetailRail kept `useMemo(tabs)`
+    // BELOW the `view.kind === "grid"` early return. In grid mode the
+    // component bailed before the useMemo, so the hook count was N. On
+    // the user's first cell click the component re-rendered in focus
+    // mode, ran past the early return, and reached the useMemo for
+    // (N+1) hooks — React detects the mismatch ("Rendered more hooks
+    // than during the previous render"), aborts the parent commit, and
+    // the outer `.psl[data-mode]` attribute is stuck at "grid". The
+    // E2E surface caught it (library-source-filter.spec L373 hung on
+    // the focus-mode wait); this unit case locks the fix in by
+    // rendering DetailRail twice — first in grid mode (returns null
+    // after the same N hooks as before), then in focus mode (runs
+    // past the early returns and reaches the additional hooks). React
+    // must not warn or throw across the transition.
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const errors: unknown[][] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+      origError(...args);
+    };
+
+    try {
+      // 1. Mount in grid mode — DetailRail returns null after the
+      //    early return; hooks execute up to that point.
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "grid",
+              selectedRecordId: null,
+              returnAnchor: null
+            } as LibraryView,
+            record
+          })
+        );
+        await Promise.resolve();
+      });
+
+      // 2. Transition to focus mode on the same component instance —
+      //    DetailRail now renders past the early returns. The hook
+      //    count MUST match the grid-mode render exactly. If it
+      //    doesn't, React fires a console.error with the "Rendered
+      //    more/fewer hooks" message AND aborts the render.
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "focus",
+              selectedRecordId: record.id,
+              returnAnchor: { scrollTop: 0, cellId: record.id }
+            },
+            record
+          })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Component rendered past the early returns — the activity bar
+      // icons appear, the rail is in its full focus-mode shape.
+      expect(
+        container?.querySelector('[data-testid="psl-right-tab-info"]')
+      ).not.toBeNull();
+
+      // No "Rendered more hooks" or "Rendered fewer hooks" warning
+      // from React in either render phase.
+      const hookCountErrors = errors.filter((args) =>
+        args.some(
+          (a: unknown) =>
+            typeof a === "string" &&
+            (a.includes("Rendered more hooks") ||
+              a.includes("Rendered fewer hooks") ||
+              a.includes("change in the order of Hooks"))
+        )
+      );
+      expect(hookCountErrors).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
   });
 
   test("Chat tab opens the ChatPanel surface", async () => {

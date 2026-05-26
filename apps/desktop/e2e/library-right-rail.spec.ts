@@ -10,6 +10,19 @@
 // Mirrors the editor-activity-bar spec for the Library surface. The
 // Library rail uses its own per-window pin state (separate from the
 // editor's settings-persisted state).
+//
+// macOS-only: the `library:openInLibrary` → OPEN_FOCUS reducer chain
+// races on Linux/Chromium-Xvfb — same surface the existing
+// library-focus-scroll.spec.ts (issue #scroll-restoration) and
+// library-focus-phase32.spec.ts skip on non-macOS for. The renderer's
+// `pendingOpenId` two-stage effect waits for `useLibrary`'s captures
+// refetch to surface the freshly-seeded capture, and on Xvfb that
+// refetch lands either late or not at all within the 15s wait. The
+// DetailRail never mounts, the test sees no `psl-right-tab-*` icon.
+// PwrSnap is macOS-first through Phase 7 (per AGENTS.md), so skipping
+// the Linux variant matches the project's existing posture; unit tests
+// cover the same render shape (DetailRail.test.tsx, 19 specs incl.
+// 4 dedicated to the vertical tabs + ARIA wiring).
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -17,7 +30,19 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 
+const isMac = process.platform === "darwin";
+
 test.setTimeout(120_000);
+
+test.describe("Library DetailRail — vertical activity bar (macOS)", () => {
+  // Same precedent + rationale as library-focus-scroll.spec.ts and
+  // library-focus-phase32.spec.ts: the Library Focus entry path through
+  // `library:openInLibrary` races on Linux/Xvfb (the renderer's
+  // pendingOpenId effect waits for useLibrary's refetch to surface
+  // the freshly-seeded capture; on Xvfb the refetch lands late or not
+  // at all within the 15s timeout). PwrSnap is macOS-first through
+  // Phase 7. Renderer-level coverage lives in DetailRail.test.tsx.
+  test.skip(!isMac, "Library Focus entry via library:openInLibrary is macOS-only.");
 
 test("library-right-rail: renders Info/OCR/Chat vertical tabs with persistent footer", async () => {
   const app = await launchPwrSnap();
@@ -118,6 +143,8 @@ test("library-right-rail: clicking active tab unpins to hover-pop", async () => 
     await app.close();
   }
 });
+
+}); // describe — Library DetailRail (macOS)
 
 // ---- Shared helpers --------------------------------------------------
 

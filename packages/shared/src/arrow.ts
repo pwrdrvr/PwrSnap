@@ -31,6 +31,22 @@ export type ArrowInput = {
   imageWidthPx: number;
   /** Source image height in pixels. */
   imageHeightPx: number;
+  /**
+   * Optional stroke-width override in source pixels. When provided,
+   * skips the auto-derivation (short-side + length scaling, MIN/MAX
+   * clamps) and uses this value as the basis for head sizing. The
+   * short-arrow correction still applies — if the override produces
+   * a head longer than the arrow itself, head + stroke shrink
+   * together so the head fits.
+   *
+   * Used by the user's thickness override (small/medium/large/
+   * numeric): without this, the stem stroke would scale 2× for
+   * "large" but the head triangle would stay at the auto-derived
+   * size, leaving a fat stem with a tiny head and (for open-
+   * triangle) a hollow whose interior fills with the now-thick
+   * outline stroke.
+   */
+  strokeWidthOverridePx?: number;
 };
 
 export type ArrowGeometry = {
@@ -105,14 +121,26 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
   const lengthPx = Math.hypot(dxPx, dyPx);
 
   // Step 2: base stroke from image short-side, then bump for long
-  // arrows so a hairline never happens on wide-short images.
-  const strokeFromShortSide = clamp(shortSidePx / STROKE_DIVISOR, STROKE_MIN_PX, STROKE_MAX_PX);
-  const strokeFromLength = lengthPx / LENGTH_DIVISOR;
-  let strokeWidthPx = clamp(
-    Math.max(strokeFromShortSide, strokeFromLength),
-    STROKE_MIN_PX,
-    STROKE_MAX_PX
-  );
+  // arrows so a hairline never happens on wide-short images. The
+  // optional override short-circuits auto-derivation so callers
+  // (user-picked Small/Medium/Large) can scale stem + head together
+  // through a single source of truth.
+  let strokeWidthPx: number;
+  if (input.strokeWidthOverridePx !== undefined && input.strokeWidthOverridePx > 0) {
+    strokeWidthPx = input.strokeWidthOverridePx;
+  } else {
+    const strokeFromShortSide = clamp(
+      shortSidePx / STROKE_DIVISOR,
+      STROKE_MIN_PX,
+      STROKE_MAX_PX
+    );
+    const strokeFromLength = lengthPx / LENGTH_DIVISOR;
+    strokeWidthPx = clamp(
+      Math.max(strokeFromShortSide, strokeFromLength),
+      STROKE_MIN_PX,
+      STROKE_MAX_PX
+    );
+  }
 
   let headLengthPx = strokeWidthPx * HEAD_LENGTH_RATIO;
   let headWidthPx = strokeWidthPx * HEAD_WIDTH_RATIO;

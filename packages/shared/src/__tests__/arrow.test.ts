@@ -235,6 +235,64 @@ describe("computeArrowGeometry", () => {
       }
     });
   });
+
+  describe("strokeWidthOverridePx", () => {
+    // Pre-fix: callers (renderer + bake) applied the user's "Large"
+    // multiplier ONLY to the stem stroke they drew, while the head
+    // triangle was sized from the un-multiplied geometry. Result on a
+    // Large arrow: fat stem + tiny head, and open-triangle's hollow
+    // filled in with the now-thick outline stroke. The override
+    // parameter pushes thickness resolution into the geometry function
+    // so head + stem scale together through one source of truth.
+    it("treats the override as the basis for head sizing", () => {
+      const base = {
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 },
+        ...SQUARE_2K
+      };
+      const auto = computeArrowGeometry(base);
+      const doubled = computeArrowGeometry({
+        ...base,
+        strokeWidthOverridePx: auto.strokeWidthPx * 2
+      });
+      expect(doubled.strokeWidthPx).toBeCloseTo(auto.strokeWidthPx * 2, 5);
+      // Head dims cascade from strokeWidthPx via HEAD_LENGTH_RATIO /
+      // HEAD_WIDTH_RATIO — both should ~2× with the doubled stroke.
+      expect(doubled.headLengthPx).toBeCloseTo(auto.headLengthPx * 2, 5);
+      expect(doubled.headWidthPx).toBeCloseTo(auto.headWidthPx * 2, 5);
+    });
+
+    it("short-arrow correction still applies when override is too big for the arrow", () => {
+      // 0.02 normalized × 2000 px = 40 px arrow. Force a 50-px stroke
+      // override → head length would be 50 × 3.5 = 175 px, way past
+      // the arrow's 40-px length. The correction must shrink head +
+      // stroke together so the head fits.
+      const geom = computeArrowGeometry({
+        from: { x: 0.5, y: 0.5 },
+        to: { x: 0.52, y: 0.5 },
+        strokeWidthOverridePx: 50,
+        ...SQUARE_2K
+      });
+      expect(geom.headLengthPx).toBeLessThanOrEqual(geom.lengthPx);
+      // Stroke shrinks proportionally with the head.
+      expect(geom.strokeWidthPx).toBeLessThan(50);
+    });
+
+    it("ignores override when undefined (auto-derivation path)", () => {
+      const a = computeArrowGeometry({
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 },
+        ...SQUARE_2K
+      });
+      const b = computeArrowGeometry({
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 },
+        ...SQUARE_2K
+      });
+      expect(b.strokeWidthPx).toBeCloseTo(a.strokeWidthPx, 5);
+      expect(b.headWidthPx).toBeCloseTo(a.headWidthPx, 5);
+    });
+  });
 });
 
 const STROKE_MIN_PX = 4;

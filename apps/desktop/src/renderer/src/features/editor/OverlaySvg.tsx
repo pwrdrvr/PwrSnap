@@ -330,29 +330,56 @@ function ArrowGlyph({
 }): ReactElement {
   const resolvedEndStyle: ArrowEndStyle = endStyle ?? "filled-triangle";
   const resolvedStemStyle: ArrowStemStyle = stemStyle ?? "solid";
-  const headGeom = computeArrowGeometry({
+  // Resolve the thickness override BEFORE computing geometry so head
+  // length/width scale with the stem. Without this, "Large" doubles
+  // the stem but leaves the head at the auto-derived size — fat stem,
+  // tiny head, and open-triangle's hollow interior fills up with the
+  // now-thick outline stroke. Two-step:
+  //   1. Compute the auto stroke for this arrow's geometry (length-
+  //      aware, short-side aware) by running geometry once with no
+  //      override.
+  //   2. Resolve the user's preset/numeric value against that auto
+  //      stroke, then feed the result back into geometry as
+  //      `strokeWidthOverridePx` for the FINAL geometry call.
+  // The compose.ts bake mirrors this same two-step.
+  const autoGeom = computeArrowGeometry({
     from: { x: fromXn, y: fromYn },
     to: { x: toXn, y: toYn },
     imageWidthPx,
     imageHeightPx
   });
+  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
+  const strokeWidthOverridePx =
+    thickness === undefined || thickness === "auto"
+      ? undefined
+      : readOverlayThickness(thickness, autoGeom.strokeFraction) * shortSidePx;
+  const headGeom =
+    strokeWidthOverridePx === undefined
+      ? autoGeom
+      : computeArrowGeometry({
+          from: { x: fromXn, y: fromYn },
+          to: { x: toXn, y: toYn },
+          imageWidthPx,
+          imageHeightPx,
+          strokeWidthOverridePx
+        });
   // Secondary geometry for double-ended arrows — swap from/to so the
   // tail-end head's triangle points at `from` with its base centered
-  // along the stem.
+  // along the stem. Same override applied so both ends match.
   const tailGeom = doubleEnded
     ? computeArrowGeometry({
         from: { x: toXn, y: toYn },
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
-        imageHeightPx
+        imageHeightPx,
+        ...(strokeWidthOverridePx !== undefined ? { strokeWidthOverridePx } : {})
       })
     : null;
-  // Apply the user's thickness override (small/medium/large/numeric)
-  // on top of the geometry-derived auto stroke (pixel-space). medium ≡
-  // auto. Numeric overrides are normalized fractions; multiply by the
-  // short side to convert.
-  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
-  const stroke = readOverlayThickness(thickness, headGeom.strokeFraction) * shortSidePx;
+  // Stem stroke = final geometry's stroke. Short-arrow correction
+  // inside computeArrowGeometry may have shrunk it from the requested
+  // override (so a Large thickness on a tiny arrow still renders
+  // proportionally).
+  const stroke = headGeom.strokeWidthPx;
   const outline = Math.max(stroke * 0.25, 1.5);
   // Resolution: explicit color → use it; "auto" / undefined → fall back
   // to the theme accent token. Draft variant uses --accent-strong for

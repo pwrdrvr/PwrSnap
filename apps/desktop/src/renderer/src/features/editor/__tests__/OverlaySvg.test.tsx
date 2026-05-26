@@ -205,6 +205,40 @@ describe("OverlaySvg ArrowGlyph — thickness", () => {
         Number(autoStem.getAttribute("stroke-width"))
     ).toBeCloseTo(0.5, 1);
   });
+
+  test("thickness 'large' scales the HEAD triangle too, not just the stem", async () => {
+    // Pre-fix: callers applied the Large multiplier only to the stem
+    // stroke they drew, leaving the head triangle at the un-multiplied
+    // size from the auto geometry. Result: fat stem + tiny head.
+    // Now the override is pushed into computeArrowGeometry so head
+    // dimensions scale with stroke. Assert the head polygon's
+    // perpendicular extent (a proxy for headWidthPx) ~doubles with
+    // Large.
+    function headPerpExtent(svg: SVGSVGElement): number {
+      // The arrow runs horizontally in arrowRow() — from (0.2, 0.5)
+      // to (0.8, 0.5). The colored head polygon (no halo) is the one
+      // with `fill !== "white"`. Its three vertices' y-range equals
+      // headWidthPx on a horizontal arrow.
+      const polys = Array.from(svg.querySelectorAll("polygon")).filter(
+        (p) => p.getAttribute("fill") !== "white"
+      );
+      const points = polys[0]!.getAttribute("points")!;
+      const ys = points
+        .trim()
+        .split(/\s+/)
+        .map((pair) => Number(pair.split(",")[1]));
+      return Math.max(...ys) - Math.min(...ys);
+    }
+    const autoSvg = await renderOverlaySvg([
+      arrowRow({ endStyle: "filled-triangle", thickness: "auto" })
+    ]);
+    const largeSvg = await renderOverlaySvg([
+      arrowRow({ endStyle: "filled-triangle", thickness: "large" })
+    ]);
+    const autoExtent = headPerpExtent(autoSvg);
+    const largeExtent = headPerpExtent(largeSvg);
+    expect(largeExtent / autoExtent).toBeCloseTo(2, 1);
+  });
 });
 
 function rectRow(

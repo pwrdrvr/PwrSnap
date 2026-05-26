@@ -349,30 +349,56 @@ function arrowSvg(
   const endStyle = readArrowEndStyle(data);
   const stemStyle = readArrowStemStyle(data);
   const doubleEnded = readArrowDoubleEnded(data);
-  const headGeom = computeArrowGeometry({
+  // Two-step thickness resolution so the head triangle scales with
+  // the stem (Small/Medium/Large). Without this, Large doubled the
+  // stem but left the head at auto size — fat stem, tiny head, and
+  // open-triangle's hollow filled in with the now-thick outline
+  // stroke. Live editor's ArrowGlyph mirrors this same pattern.
+  //   1. auto geometry → use its strokeFraction as the basis
+  //   2. resolve thickness override against that fraction
+  //   3. final geometry with the resolved stroke as override
+  const autoGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
     imageHeightPx
   });
+  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
+  const strokeWidthOverridePx =
+    data.thickness === undefined || data.thickness === "auto"
+      ? undefined
+      : readOverlayThickness(data.thickness, autoGeom.strokeFraction) * shortSidePx;
+  const headGeom =
+    strokeWidthOverridePx === undefined
+      ? autoGeom
+      : computeArrowGeometry({
+          from: data.from,
+          to: data.to,
+          imageWidthPx,
+          imageHeightPx,
+          strokeWidthOverridePx
+        });
   // Mirrored geometry for the tail-end head — same algorithm with
   // from/to swapped. Keeps the head triangle's proportions identical
   // at both ends instead of trying to reflect points by hand and
-  // getting the perpendicular sign wrong on slanted arrows.
+  // getting the perpendicular sign wrong on slanted arrows. Same
+  // override applied so both ends match.
   const tailGeom = doubleEnded
     ? computeArrowGeometry({
         from: data.to,
         to: data.from,
         imageWidthPx,
-        imageHeightPx
+        imageHeightPx,
+        ...(strokeWidthOverridePx !== undefined ? { strokeWidthOverridePx } : {})
       })
     : null;
 
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
-  // Apply the thickness override to the geometry-derived stroke.
-  // `readOverlayThickness` returns a multiple of `auto` for the
-  // preset buckets; numeric values pass through verbatim.
-  const strokeWidthPx = readOverlayThickness(data.thickness, headGeom.strokeWidthPx);
+  // Stem stroke = final geometry's strokeWidthPx. Short-arrow
+  // correction inside computeArrowGeometry may have shrunk it from
+  // the requested override so a Large thickness on a tiny arrow
+  // still renders proportionally.
+  const strokeWidthPx = headGeom.strokeWidthPx;
   // White outline always drawn (per plan §"Smart arrow algorithm"):
   // legibility on busy images. The outline is a slightly thicker
   // pass underneath the accent.

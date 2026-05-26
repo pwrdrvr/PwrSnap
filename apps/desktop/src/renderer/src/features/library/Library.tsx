@@ -34,6 +34,8 @@ import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../li
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
+import { useSettings } from "../settings/useSettings";
+import { acceleratorToDisplayKeys } from "../settings/pages/hotkeys-display";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -300,6 +302,31 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     0;
   const storageBusy = storage.workingAction !== null;
   const refreshStorage = storage.refresh;
+
+  // Settings subscription — drives the live "Quick Capture · <chord>"
+  // hint in the top bar so it tracks whatever the user has bound in
+  // Settings → Hotkeys. Falls back to the default chord during the
+  // initial load; renders bare "Quick Capture" if the user unbound it.
+  const { settings } = useSettings();
+  const quickCaptureChord = useMemo(() => {
+    const accel = settings?.hotkeys.quickCapture ?? "CommandOrControl+Shift+C";
+    return acceleratorToDisplayKeys(accel).join("");
+  }, [settings?.hotkeys.quickCapture]);
+
+  // App version for the footer — mirrors AboutPage. One-shot read on
+  // mount; the version doesn't change at runtime.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await dispatch("app:version", {});
+      if (cancelled) return;
+      if (result.ok) setAppVersion(result.value.version);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!storagePanelOpen) return;
@@ -1432,7 +1459,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
               <path d="M5 12h14M12 5v14" />
             </svg>
-            Quick Capture · ⌘⇧P
+            {quickCaptureChord.length > 0
+              ? `Quick Capture · ${quickCaptureChord}`
+              : "Quick Capture"}
           </button>
         </div>
       </header>
@@ -1865,9 +1894,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </span>
         </div>
         <div className="psl__status-r">
-          <span>⌘⇧P new · ⌘L library</span>
           <span>
-            <b>v0.0.1</b>
+            <b>{appVersion !== null ? `v${appVersion}` : "—"}</b>
           </span>
         </div>
       </footer>

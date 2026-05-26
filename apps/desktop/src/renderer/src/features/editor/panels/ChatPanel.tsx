@@ -36,6 +36,7 @@ import {
 } from "react";
 import {
   EVENT_CHANNELS,
+  type CaptureEnrichment,
   type CaptureRecord
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
@@ -49,12 +50,20 @@ interface ChatMessage {
   author: "you" | "codex";
   body: string;
   ts: string;
+  /** Model badge for codex responses ("codex" itself isn't enough —
+   *  power users care which tier wrote the response). Unused for
+   *  "you" rows. */
+  model?: string;
 }
 
 interface ContextSummary {
   layerCount: number;
   widthPx: number;
   heightPx: number;
+  /** OCR text preview, when available. Surfaces in the chat context
+   *  chip area as a small "OCR ready" pill so the user can see Codex
+   *  has the page text to work with. */
+  hasOcr: boolean;
 }
 
 type LoadState =
@@ -107,13 +116,23 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
           layerCount = layersResult.value.length;
         }
       }
+      // OCR readiness — surfaced as a chip so the user sees "Codex has
+      // the page text" at a glance. Failure to fetch enrichment is
+      // non-fatal; we just hide the chip.
+      const enrichmentResult = await dispatch("codex:enrichment", { captureId });
+      if (cancelled) return;
+      const hasOcr =
+        enrichmentResult.ok &&
+        ((enrichmentResult.value as CaptureEnrichment | null)?.ocrText ?? "")
+          .trim().length > 0;
       setState({
         kind: "loaded",
         record,
         context: {
           layerCount,
           widthPx: record.width_px,
-          heightPx: record.height_px
+          heightPx: record.height_px,
+          hasOcr
         }
       });
     };
@@ -154,7 +173,8 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
       author: "codex",
       body:
         "Dynamic tools aren't wired to Codex yet — your prompt is queued for when this connects. Use the toolbar to keep editing in the meantime.",
-      ts
+      ts,
+      model: "pending"
     };
     setMessages((prev) => [...prev, userMsg, codexMsg]);
     setDraft("");
@@ -200,6 +220,15 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
           {context.layerCount === 1 ? "layer" : "layers"} · {context.widthPx}×
           {context.heightPx}
         </span>
+        {context.hasOcr ? (
+          <span
+            className="pse-chat-context-chip is-ocr"
+            data-testid="chat-context-ocr-chip"
+            title="Codex sees the OCR-extracted text from this capture"
+          >
+            OCR
+          </span>
+        ) : null}
       </div>
 
       <div className="pse-chat-list" ref={listRef} data-testid="chat-list">
@@ -255,6 +284,9 @@ function ChatMessageRow({ message }: { message: ChatMessage }): ReactElement {
         <span className="pse-chat-msg-author">
           {isYou ? "you" : "codex"}
         </span>
+        {!isYou && message.model !== undefined ? (
+          <span className="pse-chat-msg-model">{message.model}</span>
+        ) : null}
         <span className="pse-chat-msg-ts">{message.ts}</span>
       </div>
       <p className="pse-chat-msg-body">{message.body}</p>

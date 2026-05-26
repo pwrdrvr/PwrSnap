@@ -1189,6 +1189,8 @@
 
 .pse-chat-context {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .pse-chat-context-chip {
   display: inline-flex;
@@ -1200,6 +1202,12 @@
   border-radius: 999px;
   font: 500 10.5px/1.2 var(--font-mono);
   letter-spacing: 0.02em;
+}
+.pse-chat-context-chip.is-ocr {
+  border-color: var(--border-default);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  letter-spacing: 0.06em;
 }
 
 .pse-chat-list {
@@ -1264,8 +1272,18 @@
 .pse-chat-msg.is-codex .pse-chat-msg-author {
   color: var(--accent-bright);
 }
+.pse-chat-msg-model {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-panel-hover);
+  color: var(--text-secondary);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
 .pse-chat-msg-ts {
   color: var(--text-muted);
+  margin-left: auto;
 }
 .pse-chat-msg-body {
   margin: 0;

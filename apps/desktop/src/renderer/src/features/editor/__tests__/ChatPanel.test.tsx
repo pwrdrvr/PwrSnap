@@ -67,6 +67,7 @@ const baseRecord: CaptureRecord = {
 interface RenderArgs {
   record?: CaptureRecord | null;
   layerCount?: number;
+  ocrText?: string | null;
 }
 
 async function renderPanel(
@@ -74,6 +75,7 @@ async function renderPanel(
 ): Promise<{ el: HTMLDivElement; dispatch: ReturnType<typeof vi.fn> }> {
   const record = args.record === undefined ? baseRecord : args.record;
   const layerCount = args.layerCount ?? 8;
+  const ocrText = args.ocrText ?? null;
   const layers = new Array(layerCount).fill(null).map((_, i) => ({
     id: `lyr_${i}`
   }));
@@ -82,6 +84,12 @@ async function renderPanel(
     if (name === "library:byId")
       return { ok: true, value: record };
     if (name === "layers:list") return { ok: true, value: layers };
+    if (name === "codex:enrichment") {
+      return {
+        ok: true,
+        value: ocrText !== null ? { captureId: "cap_chat_1", ocrText } : null
+      };
+    }
     return { ok: true, value: undefined };
   });
   (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
@@ -246,5 +254,40 @@ describe("ChatPanel", () => {
     expect(chip?.textContent).toContain("0 layers");
     const layerCalls = dispatch.mock.calls.filter(([n]) => n === "layers:list");
     expect(layerCalls.length).toBe(0);
+  });
+
+  test("OCR chip surfaces when enrichment has extracted text", async () => {
+    const { el } = await renderPanel({ ocrText: "some extracted page text" });
+    const ocrChip = el.querySelector('[data-testid="chat-context-ocr-chip"]');
+    expect(ocrChip).not.toBeNull();
+  });
+
+  test("OCR chip is absent when enrichment has no text", async () => {
+    const { el } = await renderPanel({ ocrText: null });
+    expect(el.querySelector('[data-testid="chat-context-ocr-chip"]')).toBeNull();
+  });
+
+  test("Codex messages carry a model badge ('pending' until IPC lands)", async () => {
+    const { el } = await renderPanel();
+    const textarea = el.querySelector<HTMLTextAreaElement>(
+      '[data-testid="chat-input"]'
+    );
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )?.set;
+      nativeSetter?.call(textarea, "hi");
+      textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      el.querySelector<HTMLButtonElement>('[data-testid="chat-send"]')?.click();
+      await Promise.resolve();
+    });
+    const codexMsg = el.querySelector('[data-testid="chat-msg-codex"]');
+    expect(codexMsg?.querySelector(".pse-chat-msg-model")?.textContent).toBe(
+      "pending"
+    );
   });
 });

@@ -224,7 +224,7 @@ export type PackBundleArgs = {
   sourcePng: Buffer;
   /**
    * Low-resolution composite thumbnail (max 1024px long edge,
-   * JPEG quality 80) written as `composite_thumbnail.jpg`. Generated
+   * JPEG quality 90) written as `composite_thumbnail.jpg`. Generated
    * by `buildCompositeThumbnail(compositePng)`, which now always
    * returns a Buffer (it used to return null for tiny captures but
    * that left v2 bundles with no Finder/Quick-Look thumbnail — see

@@ -30,7 +30,7 @@
 //   2. composite_thumbnail.jpg — present in all modern bundles
 //      (post-PR-#90 packer writes one for every capture, as of the
 //      "always-write-thumbnail" change). Lower resolution
-//      (≤ 1024px long edge, JPEG q80), but it's the BAKED COMPOSITE
+//      (≤ 1024px long edge, JPEG q90), but it's the BAKED COMPOSITE
 //      — overlays are visible. For an annotated PwrSnap, that's
 //      what the user expects Quick Look to show. Previously this
 //      branch was ordered AFTER source.png, which meant Spacebar-

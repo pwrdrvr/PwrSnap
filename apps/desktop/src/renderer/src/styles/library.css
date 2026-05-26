@@ -2098,7 +2098,27 @@
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  /* Wrap into a 2nd row when the stage is too narrow to fit every
+     tool + reset + zoom on one line. The `width` + `max-width` pair
+     is load-bearing: `inline-flex` alone shrinks the container back
+     to the widest row's width after wrap (Chromium's "tighten" pass),
+     so the toolbar ends up only as wide as ONE wrapped row's content
+     instead of the available stage width — which means each row is
+     under-packed and the toolbar splits into more rows than it needs
+     to (3 rows when 2 would fit). Forcing `width: max-content` keeps
+     the container at its natural single-row width, then `max-width`
+     clamps it to the available stage width; the wrapping pass packs
+     each row to that clamped width before starting a new row. Net
+     effect: at any stage width, the toolbar uses the minimum number
+     of rows that fit. Wrapped rows are centered (half-empty second
+     row sits under the first row's midline), and row-gap keeps a
+     small vertical air gap between rows. */
+  flex-wrap: wrap;
+  justify-content: center;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  row-gap: 4px;
+  column-gap: 2px;
   padding: 6px;
   background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
   border: 1px solid var(--border-subtle);

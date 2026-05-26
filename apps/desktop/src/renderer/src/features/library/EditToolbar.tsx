@@ -590,6 +590,28 @@ export function EditToolbar({
             if (isV2) {
               const list = await dispatch("layers:list", { captureId });
               if (!list.ok) return;
+              // Find the raster's natural dims BEFORE we delete layers
+              // — we need them to restore canvas dimensions if the user
+              // had previously cropped. v2 crop writes to the captures
+              // row's width_px/height_px (non-destructively, the raster
+              // source bytes are preserved) via
+              // `bundle:updateCanvasDimensions`; without restoring those
+              // here, Reset would only clear annotations and leave the
+              // capture in its cropped state forever. The user's
+              // intuition is "Reset = full original" so we restore both.
+              let rasterDims: { width: number; height: number } | null = null;
+              for (const node of list.value) {
+                if (
+                  node.kind === "raster" &&
+                  node.parent_id !== null
+                ) {
+                  rasterDims = {
+                    width: node.natural_width_px,
+                    height: node.natural_height_px
+                  };
+                  break;
+                }
+              }
               // Skip the synthesized root group + raster source; just
               // delete user-facing annotation layers. Sequential per
               // the same broadcast / edits_version reasoning as v1.
@@ -597,6 +619,25 @@ export function EditToolbar({
                 if (node.kind === "group" || node.kind === "raster") continue;
                 // eslint-disable-next-line no-await-in-loop
                 await dispatch("layers:delete", { id: node.id });
+              }
+              // Restore canvas to raster-natural dims if the capture
+              // was cropped. The `updateCanvasDimensions` handler
+              // refuses values exceeding the raster's natural dims so
+              // this can never grow the canvas past the source — only
+              // restore it to what was captured originally. Skip when
+              // already at natural dims (no-op writes burn an
+              // edits_version bump + a captures:changed broadcast for
+              // nothing).
+              if (
+                rasterDims !== null &&
+                (recordRes.value.width_px !== rasterDims.width ||
+                  recordRes.value.height_px !== rasterDims.height)
+              ) {
+                await dispatch("bundle:updateCanvasDimensions", {
+                  captureId,
+                  widthPx: rasterDims.width,
+                  heightPx: rasterDims.height
+                });
               }
             } else {
               const list = await dispatch("overlays:list", { captureId });

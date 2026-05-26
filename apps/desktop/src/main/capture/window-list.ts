@@ -204,15 +204,33 @@ export async function activateApp(pid: number): Promise<void> {
 }
 
 /**
- * Enumerate the live on-screen windows. Returns an empty array when
- * the helper isn't available (Linux/Windows, or a dev environment
- * where build-native.mjs hasn't run). Logs once at warn level so
- * we notice in dev but don't spam the log on every call.
+ * Snapshot of the on-screen window list plus the system's reported
+ * frontmost-app pid (from NSWorkspace.shared.frontmostApplication on
+ * macOS). The pid is `null` when no app is reported as frontmost
+ * (brief macOS transition states) or on non-darwin platforms.
+ *
+ * Callers cross-check `windows[0].pid` against `frontmostPid`; a
+ * mismatch indicates CGWindowList's z-order disagrees with the
+ * system's frontmost-app concept — see the warning in
+ * `region-selector.ts/prepareWindowListPayload`.
+ */
+export type WindowListSnapshot = {
+  windows: WindowInfo[];
+  frontmostPid: number | null;
+  frontmostBundleId: string | null;
+};
+
+/**
+ * Enumerate the live on-screen windows + the system's frontmost-app
+ * pid. Returns an empty snapshot when the helper isn't available
+ * (Linux/Windows, or a dev environment where build-native.mjs hasn't
+ * run). Logs once at warn level so we notice in dev but don't spam
+ * the log on every call.
  *
  * Latency: ~30-50ms cold per call. Caller should cache for the
  * duration of a single user interaction (e.g. one ⌘⇧P session).
  */
-export async function listWindows(): Promise<WindowInfo[]> {
+export async function listWindowsSnapshot(): Promise<WindowListSnapshot> {
   const helper = resolveHelperPath();
   if (helper === null) {
     if (!warned) {
@@ -221,22 +239,83 @@ export async function listWindows(): Promise<WindowInfo[]> {
       });
       warned = true;
     }
-    return [];
+    return { windows: [], frontmostPid: null, frontmostBundleId: null };
   }
   try {
     const { stdout } = await execFileAsync(helper, [], {
       timeout: 2_000,
       maxBuffer: 4 * 1024 * 1024
     });
-    const parsed = JSON.parse(stdout) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed as WindowInfo[];
+    return parseHelperOutput(stdout);
   } catch (cause) {
     log.warn("window-list helper failed", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
-    return [];
+    return { windows: [], frontmostPid: null, frontmostBundleId: null };
   }
+}
+
+/**
+ * Parse the Swift helper's stdout into a `WindowListSnapshot`. Pure;
+ * exported for unit testing. Three shapes survive:
+ *
+ *   1. Envelope (current): `{ windows: [...], frontmostPid: <int|null>,
+ *      frontmostBundleId: <string|null> }`. The post-2026-05-25 shape.
+ *   2. Bare array (legacy): `[<WindowInfo>, ...]`. Pre-envelope
+ *      helpers (and any in-flight ad-hoc Swift CLI tests) emit this.
+ *      Parsed for backwards compatibility — frontmost fields come
+ *      back as null because the data simply isn't there.
+ *   3. Anything else (malformed JSON, non-array non-object,
+ *      missing `windows` field): treated as an empty snapshot. The
+ *      caller will then have no candidates to hit-test against,
+ *      which downgrades gracefully — the user sees the selector
+ *      with no snap highlights, and the failure is logged upstream.
+ *
+ * Returns `frontmostPid` only when it parses to a JS number, and
+ * `frontmostBundleId` only when it parses to a JS string. Anything
+ * else (`null`, missing, wrong type) collapses to `null` so the
+ * downstream warning in `region-selector.ts/prepareWindowListPayload`
+ * is gated correctly.
+ */
+export function parseHelperOutput(stdout: string): WindowListSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { windows: [], frontmostPid: null, frontmostBundleId: null };
+  }
+  if (Array.isArray(parsed)) {
+    return {
+      windows: parsed as WindowInfo[],
+      frontmostPid: null,
+      frontmostBundleId: null
+    };
+  }
+  if (parsed !== null && typeof parsed === "object" && "windows" in parsed) {
+    const envelope = parsed as {
+      windows: WindowInfo[];
+      frontmostPid?: number | null;
+      frontmostBundleId?: string | null;
+    };
+    return {
+      windows: Array.isArray(envelope.windows) ? envelope.windows : [],
+      frontmostPid: typeof envelope.frontmostPid === "number" ? envelope.frontmostPid : null,
+      frontmostBundleId:
+        typeof envelope.frontmostBundleId === "string" ? envelope.frontmostBundleId : null
+    };
+  }
+  return { windows: [], frontmostPid: null, frontmostBundleId: null };
+}
+
+/**
+ * Backwards-compat thin wrapper around `listWindowsSnapshot()` that
+ * drops the frontmost-app info. Kept so the headless `capture:region`
+ * source-app backfill in `capture-handlers.ts` doesn't need to care
+ * about the envelope — it just wants the bounds list.
+ */
+export async function listWindows(): Promise<WindowInfo[]> {
+  const snapshot = await listWindowsSnapshot();
+  return snapshot.windows;
 }
 
 /**

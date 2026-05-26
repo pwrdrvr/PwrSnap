@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 import {
   boundsApproxEqual,
   findWindowAt,
+  parseHelperOutput,
   type WindowInfo
 } from "../capture/window-list";
 
@@ -104,6 +105,153 @@ describe("boundsApproxEqual", () => {
   test("custom tolerance", () => {
     expect(boundsApproxEqual(a, { x: 105, y: 200, width: 1440, height: 956 }, 5)).toBe(true);
     expect(boundsApproxEqual(a, { x: 106, y: 200, width: 1440, height: 956 }, 5)).toBe(false);
+  });
+});
+
+describe("parseHelperOutput", () => {
+  // Three input shapes from the Swift helper that survived from
+  // the pre-envelope era + the current envelope + everything else:
+  // current envelope, legacy bare-array, anything-malformed.
+  // Backwards-compat with the bare array is load-bearing — if a
+  // packaged release ever ships new TS code against an old helper
+  // binary (e.g. partial-rebuild dev environment) we want it to
+  // degrade gracefully, not crash. These tests lock that down.
+
+  test("parses the current envelope shape", () => {
+    const stdout = JSON.stringify({
+      windows: [
+        {
+          windowId: 100,
+          pid: 1987,
+          bundleId: "com.github.Electron",
+          appName: "Electron",
+          title: "PwrSnap",
+          bounds: { x: 0, y: 29, width: 1440, height: 938 },
+          layer: 0,
+          alpha: 1,
+          isFrontmostInApp: true
+        }
+      ],
+      frontmostPid: 1987,
+      frontmostBundleId: "com.github.Electron"
+    });
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]!.pid).toBe(1987);
+    expect(result.frontmostPid).toBe(1987);
+    expect(result.frontmostBundleId).toBe("com.github.Electron");
+  });
+
+  test("parses the legacy bare-array shape with null frontmost fields", () => {
+    // Pre-2026-05-25 helpers emitted a bare array. The TS parser
+    // tolerates it for the new-TS-against-old-helper partial-build
+    // case — windows survive, frontmost fields collapse to null so
+    // the downstream frontmost-vs-z=0 warning stays silent (there's
+    // no frontmost data to compare against).
+    const stdout = JSON.stringify([
+      {
+        windowId: 100,
+        pid: 1987,
+        bundleId: "com.github.Electron",
+        appName: "Electron",
+        title: "PwrSnap",
+        bounds: { x: 0, y: 29, width: 1440, height: 938 },
+        layer: 0,
+        alpha: 1,
+        isFrontmostInApp: true
+      },
+      {
+        windowId: 200,
+        pid: 5555,
+        bundleId: "com.apple.finder",
+        appName: "Finder",
+        title: "Applications",
+        bounds: { x: 100, y: 100, width: 800, height: 600 },
+        layer: 0,
+        alpha: 1,
+        isFrontmostInApp: true
+      }
+    ]);
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows[0]!.appName).toBe("Electron");
+    expect(result.windows[1]!.appName).toBe("Finder");
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("returns an empty snapshot on malformed JSON", () => {
+    const result = parseHelperOutput("not-json-at-all{");
+    expect(result.windows).toEqual([]);
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("returns an empty snapshot on JSON null", () => {
+    const result = parseHelperOutput("null");
+    expect(result.windows).toEqual([]);
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("returns an empty snapshot when the envelope is missing windows", () => {
+    // Defensive: a future helper that omits `windows` for some
+    // reason shouldn't crash the picker. Treat as "no candidates"
+    // and let the user see a no-snap selector.
+    const stdout = JSON.stringify({ frontmostPid: 1234, frontmostBundleId: "com.foo" });
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toEqual([]);
+    // No `windows` field → not the envelope shape → frontmost
+    // fields don't propagate even though they happen to be present.
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("envelope with non-array `windows` field collapses to empty", () => {
+    // Defensive against `windows: null` or `windows: "oops"` from
+    // a misbehaving helper build.
+    const stdout = JSON.stringify({
+      windows: null,
+      frontmostPid: 1987,
+      frontmostBundleId: "com.github.Electron"
+    });
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toEqual([]);
+    // frontmost fields still come through — they're independent
+    // of the windows-array integrity.
+    expect(result.frontmostPid).toBe(1987);
+    expect(result.frontmostBundleId).toBe("com.github.Electron");
+  });
+
+  test("envelope with frontmostPid=null comes back as null (no app frontmost)", () => {
+    // macOS reports `NSWorkspace.frontmostApplication == nil` during
+    // brief transition states. Helper serializes that as JSON null.
+    // The warning in region-selector skips when frontmostPid is
+    // null, so this case is the "silent succeed" path.
+    const stdout = JSON.stringify({
+      windows: [],
+      frontmostPid: null,
+      frontmostBundleId: null
+    });
+    const result = parseHelperOutput(stdout);
+    expect(result.windows).toEqual([]);
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
+  });
+
+  test("envelope rejects non-number/non-string frontmost field types", () => {
+    // Defensive type-narrowing — if a future helper accidentally
+    // serializes the pid as a string ("1987" vs 1987) we want to
+    // treat it as missing, not coerce. Keeps the downstream
+    // typeof-pid===number assertion in the warning block honest.
+    const stdout = JSON.stringify({
+      windows: [],
+      frontmostPid: "1987",
+      frontmostBundleId: 42
+    });
+    const result = parseHelperOutput(stdout);
+    expect(result.frontmostPid).toBeNull();
+    expect(result.frontmostBundleId).toBeNull();
   });
 });
 

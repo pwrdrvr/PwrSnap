@@ -372,7 +372,7 @@ function ArrowGlyph({
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
         imageHeightPx,
-        ...(strokeWidthOverridePx !== undefined ? { strokeWidthOverridePx } : {})
+        strokeWidthOverridePx
       })
     : null;
   // Stem stroke = final geometry's stroke. Short-arrow correction
@@ -845,7 +845,12 @@ function textBoundsBox(
   const naturalHeightPx = fontSizePx * (lineCount * 1.2 - 0.2);
   return {
     x: data.point.x,
-    y: data.point.y - fontSizePx / 2 / imageHeightPx,
+    // `fontSizePx / 2` is the half-glyph-height in pixels;
+    // divide by imageHeightPx to convert to normalized [0,1].
+    // Parens kept explicit — without them the chain
+    // `fontSizePx / 2 / imageHeightPx` parses identically but reads
+    // ambiguously to anyone scanning the line.
+    y: data.point.y - (fontSizePx / 2) / imageHeightPx,
     w: naturalWidthPx / imageWidthPx,
     h: naturalHeightPx / imageHeightPx
   };

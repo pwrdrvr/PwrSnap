@@ -32,12 +32,13 @@ export type ArrowInput = {
   /** Source image height in pixels. */
   imageHeightPx: number;
   /**
-   * Optional stroke-width override in source pixels. When provided,
-   * skips the auto-derivation (short-side + length scaling, MIN/MAX
-   * clamps) and uses this value as the basis for head sizing. The
-   * short-arrow correction still applies — if the override produces
-   * a head longer than the arrow itself, head + stroke shrink
-   * together so the head fits.
+   * Optional stroke-width override in source pixels. When provided
+   * (and positive), skips the auto-derivation (short-side + length
+   * scaling, MIN/MAX clamps) and uses this value as the basis for
+   * head sizing. `undefined` and non-positive values fall through to
+   * auto-derivation. The short-arrow correction still applies — if
+   * the override produces a head longer than the arrow itself, head
+   * + stroke shrink together so the head fits.
    *
    * Used by the user's thickness override (small/medium/large/
    * numeric): without this, the stem stroke would scale 2× for
@@ -45,8 +46,13 @@ export type ArrowInput = {
    * size, leaving a fat stem with a tiny head and (for open-
    * triangle) a hollow whose interior fills with the now-thick
    * outline stroke.
+   *
+   * Explicitly `| undefined` (not just `?`) so callers can pass the
+   * resolved-or-undefined override directly under
+   * `exactOptionalPropertyTypes` — matching the settings-substrate
+   * convention. See [AGENTS.md §"Settings substrate"].
    */
-  strokeWidthOverridePx?: number;
+  strokeWidthOverridePx?: number | undefined;
 };
 
 export type ArrowGeometry = {

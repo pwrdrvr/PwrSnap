@@ -389,7 +389,7 @@ function arrowSvg(
         to: data.from,
         imageWidthPx,
         imageHeightPx,
-        ...(strokeWidthOverridePx !== undefined ? { strokeWidthOverridePx } : {})
+        strokeWidthOverridePx
       })
     : null;
 

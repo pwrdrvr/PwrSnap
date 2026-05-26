@@ -283,19 +283,36 @@ describe("computeArrowGeometry", () => {
       expect(geom.strokeWidthPx).toBeLessThan(50);
     });
 
-    it("ignores override when undefined (auto-derivation path)", () => {
-      const a = computeArrowGeometry({
+    it("falls back to auto-derivation when override is missing, explicit undefined, or non-positive", () => {
+      // The override branch tests three "no override" shapes:
+      //   1. field absent entirely
+      //   2. field present with value `undefined` (the JS-only path,
+      //      since exactOptionalPropertyTypes makes explicit
+      //      undefined inexpressible from TS — but JSON-decoded
+      //      inputs and `any`-typed call sites can still hit it)
+      //   3. field present with 0 / negative (would otherwise produce
+      //      a zero-stroke arrow or a NaN; the `> 0` guard sends it
+      //      to auto-derivation)
+      // All three must produce the SAME auto geometry. Previously
+      // this test called the function twice with identical inputs
+      // (no override), which only asserted determinism.
+      const base = {
         from: { x: 0.1, y: 0.5 },
         to: { x: 0.9, y: 0.5 },
         ...SQUARE_2K
+      };
+      const auto = computeArrowGeometry(base);
+      const explicitUndefined = computeArrowGeometry({
+        ...base,
+        strokeWidthOverridePx: undefined
       });
-      const b = computeArrowGeometry({
-        from: { x: 0.1, y: 0.5 },
-        to: { x: 0.9, y: 0.5 },
-        ...SQUARE_2K
-      });
-      expect(b.strokeWidthPx).toBeCloseTo(a.strokeWidthPx, 5);
-      expect(b.headWidthPx).toBeCloseTo(a.headWidthPx, 5);
+      const zero = computeArrowGeometry({ ...base, strokeWidthOverridePx: 0 });
+      const negative = computeArrowGeometry({ ...base, strokeWidthOverridePx: -3 });
+      for (const variant of [explicitUndefined, zero, negative]) {
+        expect(variant.strokeWidthPx).toBeCloseTo(auto.strokeWidthPx, 5);
+        expect(variant.headWidthPx).toBeCloseTo(auto.headWidthPx, 5);
+        expect(variant.headLengthPx).toBeCloseTo(auto.headLengthPx, 5);
+      }
     });
   });
 });

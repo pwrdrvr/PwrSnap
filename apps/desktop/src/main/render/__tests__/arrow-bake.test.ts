@@ -47,17 +47,33 @@ describe("arrowSvg (bake) — endStyle variants", () => {
     expect(explicit).toBe(legacy);
   });
 
-  test("open-triangle renders a stroked-only polygon (fill='none', stroke=color)", () => {
+  test("open-triangle is HOLLOW: both polygons fill='none', halo stroke wider than colored", () => {
+    // Regression for the "hollow head is filled with white" bug.
+    // Pre-fix the halo had fill="white", making the interior solid
+    // white. Now both polygons are fill="none"; halo is a wider
+    // white stroke that peeks past the colored stroke on both edges.
+    // Mirrors OverlaySvg.test.tsx's renderer-side test — bake + live
+    // editor have to stay in sync.
     const svg = arrowSvgForV2(
       { ...baseArrow(), endStyle: "open-triangle" },
       W,
       H
     );
-    // Halo is still a filled white polygon.
-    expect(svg).toMatch(/<polygon points=".+?" fill="white" stroke="white"/);
+    // Halo polygon: fill="none", stroke="white", widened to halo
+    // both edges of the colored stroke.
+    expect(svg).toMatch(/<polygon points="[^"]+" fill="none" stroke="white" stroke-width="[\d.]+"/);
     // Colored head: fill="none", stroke=accent.
-    expect(svg).toMatch(/<polygon points=".+?" fill="none" stroke="#ff8a1f"/);
+    expect(svg).toMatch(/<polygon points="[^"]+" fill="none" stroke="#ff8a1f" stroke-width="[\d.]+"/);
+    // No solid-white polygon — that'd be the bug returning.
+    expect(svg).not.toMatch(/<polygon[^>]+fill="white"/);
     expect(svg).not.toMatch(/<circle/);
+    // Halo stroke must be wider than colored stroke (otherwise the
+    // halo can't peek out on either edge).
+    const haloMatch = svg.match(/<polygon points="[^"]+" fill="none" stroke="white" stroke-width="([\d.]+)"/);
+    const coloredMatch = svg.match(/<polygon points="[^"]+" fill="none" stroke="#ff8a1f" stroke-width="([\d.]+)"/);
+    expect(haloMatch).not.toBeNull();
+    expect(coloredMatch).not.toBeNull();
+    expect(Number(haloMatch![1])).toBeGreaterThan(Number(coloredMatch![1]));
   });
 
   test("line endStyle renders a perpendicular bar at the apex, no head polygon", () => {
@@ -217,6 +233,41 @@ describe("arrowSvg (bake) — thickness", () => {
     );
     expect(smallStroke / autoStroke).toBeCloseTo(0.5, 1);
   });
+
+  test("thickness 'x-large' lifts past auto × 3 on Retina-scale captures (floor wins)", () => {
+    // X-Large's whole purpose: on high-DPI captures the auto stroke
+    // clamps at STROKE_MAX_PX = 14, so multiplier-only XL caps at 42.
+    // The floor-fraction formula `max(auto × 3, shortSide × 0.020)`
+    // lifts that on 4K+ images. At W=800, shortSide=600 → floor
+    // wins on this test image: 600 × 0.020 = 12 px which is below
+    // the multiplier (auto × 3 ≈ a much bigger number) — so this
+    // test image isn't dramatic enough to show the floor. Use a
+    // bigger image to demonstrate.
+    const bigW = 4000;
+    const bigH = 2800;
+    const xlSvg = arrowSvgForV2({ ...baseArrow(), thickness: "x-large" }, bigW, bigH);
+    const xlStroke = Number(
+      xlSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    // shortSide × 0.020 = 2800 × 0.020 = 56. auto × 3 = 14 × 3 = 42.
+    // Floor wins → expect ≈ 56.
+    expect(xlStroke).toBeGreaterThan(50);
+    expect(xlStroke).toBeLessThan(60);
+  });
+
+  test("numeric thickness: 0.02 fraction expands to ≈ 0.02 × shortSide pixels", () => {
+    // Regression for the previously-broken numeric path. Pre-fix the
+    // bake passed pixel autoStroke into readOverlayThickness's
+    // numeric branch (which expected a fraction) — silent
+    // unit-mismatch bug. Now we go through the three-arg form so
+    // numeric thickness expands cleanly to pixels.
+    const svg = arrowSvgForV2({ ...baseArrow(), thickness: 0.02 }, W, H);
+    const stroke = Number(
+      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    // shortSide = 600 (min of 800 × 600). 0.02 × 600 = 12.
+    expect(stroke).toBeCloseTo(12, 1);
+  });
 });
 
 describe("arrowSvg (bake) — doubleEnded", () => {
@@ -258,6 +309,260 @@ describe("arrowSvg (bake) — doubleEnded", () => {
     // endpoint × 2 = 6.
     const lineCount = (svg.match(/<line\s/g) ?? []).length;
     expect(lineCount).toBe(6);
+  });
+});
+
+describe("arrowSvg (bake) — head scales with thickness override", () => {
+  // Regression for the same bug the renderer caught in
+  // OverlaySvg.test.tsx — the bake's `arrowSvg` mirrors the
+  // renderer's ArrowGlyph two-step thickness resolution, and if
+  // someone updates one side without the other the bake will
+  // silently produce fat-stem-tiny-head arrows in library
+  // thumbnails. Asserts the head polygon's perpendicular extent
+  // (y-range of vertices on a horizontal arrow) ~doubles with
+  // Large.
+
+  function headPerpExtent(svg: string): number {
+    // Match the FIRST colored polygon (skip the white halo). The
+    // polygon points attr is `x1,y1 x2,y2 x3,y3` for the head
+    // triangle.
+    const coloredPolyMatch = svg.match(
+      /<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i
+    );
+    if (coloredPolyMatch === null) {
+      throw new Error("colored head polygon not found in bake SVG");
+    }
+    const ys = coloredPolyMatch[1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => Number(pair.split(",")[1]));
+    return Math.max(...ys) - Math.min(...ys);
+  }
+
+  test("thickness 'large' scales the head ~2× alongside the stem", () => {
+    const autoSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
+      W,
+      H
+    );
+    const largeSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "large" },
+      W,
+      H
+    );
+    expect(headPerpExtent(largeSvg) / headPerpExtent(autoSvg)).toBeCloseTo(2, 1);
+  });
+
+  test("thickness 'small' scales the head ~0.5× alongside the stem", () => {
+    const autoSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
+      W,
+      H
+    );
+    const smallSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "small" },
+      W,
+      H
+    );
+    expect(headPerpExtent(smallSvg) / headPerpExtent(autoSvg)).toBeCloseTo(0.5, 1);
+  });
+});
+
+describe("arrowSvg (bake) — styleVersion", () => {
+  // The versioned style table is the load-bearing mechanism for
+  // freezing historical arrow proportions when the visual recipe
+  // changes. These tests prove the bake honors the version field —
+  // a regression here would silently rewrite library thumbnails when
+  // we add a v3+ in the future.
+
+  function coloredStemStrokeWidth(svg: string): number {
+    // The colored stem is the second <line> with stroke="#hex".
+    // The default fillColor is `#ff8a1f`; pull its stroke-width.
+    const m = svg.match(/stroke="#[0-9a-f]{6}" stroke-width="([\d.]+)"/i);
+    if (m === null) throw new Error("colored stem stroke-width not found");
+    return Number(m[1]);
+  }
+  function headLengthPxAlongArrow(svg: string): number {
+    // Horizontal arrow → head length = (to.x − baseCenter.x) =
+    // (apex x) − (min of base-corner xs). Extract head polygon
+    // vertices via the colored fill polygon.
+    const polyMatch = svg.match(
+      /<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i
+    );
+    if (polyMatch === null) throw new Error("colored head polygon not found");
+    const xs = polyMatch[1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => Number(pair.split(",")[0]));
+    return Math.max(...xs) - Math.min(...xs);
+  }
+
+  test("no styleVersion → v1 (legacy 3.5/2.6 ratios)", () => {
+    const svg = arrowSvgForV2(baseArrow(), W, H);
+    const stroke = coloredStemStrokeWidth(svg);
+    const headLen = headLengthPxAlongArrow(svg);
+    // v1: headLength = 3.5 × stroke.
+    expect(headLen / stroke).toBeCloseTo(3.5, 1);
+  });
+
+  test("explicit v1 matches the legacy default", () => {
+    const a = arrowSvgForV2(baseArrow(), W, H);
+    const b = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    expect(b).toBe(a);
+  });
+
+  test("v2 uses Office-aligned 5/3 ratios", () => {
+    const svg = arrowSvgForV2(
+      { ...baseArrow(), styleVersion: 2 },
+      W,
+      H
+    );
+    const stroke = coloredStemStrokeWidth(svg);
+    const headLen = headLengthPxAlongArrow(svg);
+    // v2: headLength = 5 × stroke.
+    expect(headLen / stroke).toBeCloseTo(5, 1);
+  });
+
+  test("v1 and v2 produce visibly different head lengths for the same row", () => {
+    // Same row, two version pins → bake produces different SVG.
+    // This is the WHOLE POINT of the version table.
+    const v1Svg = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    const v2Svg = arrowSvgForV2({ ...baseArrow(), styleVersion: 2 }, W, H);
+    expect(headLengthPxAlongArrow(v2Svg)).toBeGreaterThan(
+      headLengthPxAlongArrow(v1Svg)
+    );
+  });
+
+  test("unknown future version falls back to v1 (fail-safe)", () => {
+    // A v999 row read by this client must NOT silently render at v2.
+    // The version table is freeze-in-place; an unknown version gets
+    // the legacy recipe, not "the closest known version."
+    const v1 = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    const future = arrowSvgForV2({ ...baseArrow(), styleVersion: 999 }, W, H);
+    expect(future).toBe(v1);
+  });
+});
+
+describe("arrowSvg (bake) — portrait images (the original symptom)", () => {
+  // The pixel-space viewBox change in this PR was specifically aimed
+  // at portrait captures where the previous "0 0 1 1" + preserve
+  // AspectRatio="none" SVG non-uniformly stretched X vs Y, skewing
+  // strokes and producing the "fang at the tail" artifact. These
+  // tests run at a portrait aspect (720×1280, the rough proportion
+  // of a Quick Capture popover) and verify the geometry survives.
+  const PORTRAIT_W = 720;
+  const PORTRAIT_H = 1280;
+
+  test("filled-triangle head triangle is isosceles on portrait (perpendicular not skewed)", () => {
+    // For a horizontal arrow on a portrait image, the head triangle's
+    // two base corners should sit equidistant from the geometric
+    // base center along the perpendicular axis (Y). Pre-fix the
+    // non-uniform viewBox stretch made this asymmetric. computeArrow
+    // Geometry now computes perpendicular in pixel space, so the
+    // triangle is isosceles regardless of image aspect.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.5 },
+        to: { x: 0.8, y: 0.5 },
+        color: "auto",
+        endStyle: "filled-triangle"
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    // Colored head polygon points: apex + two base corners.
+    const poly = svg.match(/<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i);
+    expect(poly).not.toBeNull();
+    const points = poly![1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => pair.split(",").map(Number));
+    expect(points.length).toBe(3);
+    // For a horizontal arrow, apex.y === arrow center, base corners
+    // sit equidistant above and below. Find apex (the point with
+    // max x; arrow goes left → right) and verify the other two are
+    // mirrored around apex.y.
+    const ys = points.map((p) => p[1]!);
+    const xs = points.map((p) => p[0]!);
+    const apexIdx = xs.indexOf(Math.max(...xs));
+    const apexY = ys[apexIdx]!;
+    const otherYs = ys.filter((_, i) => i !== apexIdx);
+    const dyTop = otherYs[0]! - apexY;
+    const dyBottom = otherYs[1]! - apexY;
+    // Equidistant: |dyTop + dyBottom| ≈ 0 (one positive, one negative).
+    expect(Math.abs(dyTop + dyBottom)).toBeLessThan(0.01);
+  });
+
+  test("portrait stem line is the line direction, not aspect-skewed", () => {
+    // On a horizontal arrow, the stem's y1 and y2 should be equal
+    // (line is horizontal in image pixels). Pre-fix the non-uniform
+    // viewBox stretch didn't reach into the bake — the bake was
+    // always pixel-space — so this passes pre- and post-fix. The
+    // analogous test exists in the renderer where it's more load-
+    // bearing.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.5 },
+        to: { x: 0.8, y: 0.5 },
+        color: "auto"
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    // Colored stem in the bake spans two lines (attr indentation
+     // wraps after y2). Match across whitespace including newlines.
+    const stemMatch = svg.match(
+      /<line x1="([\d.]+)" y1="([\d.]+)" x2="([\d.]+)" y2="([\d.]+)"[\s\S]*?stroke="#ff8a1f"/
+    );
+    expect(stemMatch).not.toBeNull();
+    const [y1, y2] = [Number(stemMatch![2]), Number(stemMatch![4])];
+    expect(y1).toBeCloseTo(y2, 4);
+  });
+
+  test("diagonal arrow's head triangle stays proportional on portrait", () => {
+    // Diagonal arrow on portrait image — the case where the
+    // non-uniform viewBox stretch was most visible (vertical fang
+    // at tail). Verify head proportions match the styleVersion's
+    // ratios regardless of aspect.
+    const svg = arrowSvgForV2(
+      {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.1 },
+        to: { x: 0.9, y: 0.9 },
+        color: "auto",
+        styleVersion: 2
+      },
+      PORTRAIT_W,
+      PORTRAIT_H
+    );
+    const stroke = Number(
+      svg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
+    );
+    expect(stroke).toBeGreaterThan(0);
+    // Head extent — compute the polygon's diagonal extent and compare
+    // to expected head length (= stroke × 5 for v2). Use the
+    // polygon's bounding box diagonal as a proxy.
+    const poly = svg.match(/<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i);
+    expect(poly).not.toBeNull();
+    const points = poly![1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => pair.split(",").map(Number));
+    const xs = points.map((p) => p[0]!);
+    const ys = points.map((p) => p[1]!);
+    const diag = Math.hypot(
+      Math.max(...xs) - Math.min(...xs),
+      Math.max(...ys) - Math.min(...ys)
+    );
+    // Diagonal of the head's bounding box is approximately the head
+    // length (the triangle is elongated along the arrow direction).
+    // v2: head length = 5 × stroke. Tolerate some slop since the
+    // bbox-diagonal isn't exactly the head length, but assert order
+    // of magnitude.
+    expect(diag).toBeGreaterThan(stroke * 3);
+    expect(diag).toBeLessThan(stroke * 7);
   });
 });
 

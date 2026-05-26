@@ -21,28 +21,124 @@ export const OverlayThickness = z.union([
   z.literal("small"),
   z.literal("medium"),
   z.literal("large"),
+  z.literal("x-large"),
   z.number().positive().max(1)
 ]);
 export type OverlayThickness = z.infer<typeof OverlayThickness>;
 
-/** Multiplier table for thickness presets — applied to the
- *  auto-derived stroke fraction. medium ≡ auto so the user can pick a
- *  symmetric S/M/L stack without surprising the default. Numeric
- *  values pass through directly as the stroke fraction. */
+/**
+ * Multiplier × auto-stroke + optional short-side floor for each
+ * thickness preset. Hoisted to module scope so the object isn't
+ * re-allocated on every call to `readOverlayThickness` — called once
+ * per arrow/rect render, and renders can be hot during drag.
+ *
+ * Tuning notes (read before changing these — they affect every
+ * arrow / rect overlay rendered, present and future):
+ *
+ *   • `small` floor = 0.003 of short side. On 1080p that's 3.24 px;
+ *     on 4K 6.48 px. Calibrated to keep small arrows from collapsing
+ *     to sub-pixel hairlines on high-DPI captures while still being
+ *     visibly thinner than Medium on every resolution.
+ *
+ *   • `medium` floor = 0 (intentional — see below). Medium IS the
+ *     auto stroke; applying a floor would silently push it past
+ *     "auto" on big images and surprise users who picked Medium
+ *     because they wanted the default.
+ *
+ *   • `large` floor = 0.012 of short side. On 1080p that's 12.96 px,
+ *     auto × 2 wins at any reasonable image size. On 4K the floor
+ *     starts matching (auto × 2 = 28 px ≈ floor = 25.92 px). On 5K+
+ *     the floor decisively wins — this is the Retina rescue point.
+ *
+ *   • `x-large` floor = 0.020 of short side. On 1080p 21.6 px (still
+ *     a bump over Large's 13 px). On 4K 43.2 px, on 5K 57.6 px —
+ *     the "chonker" preset, deliberately disproportionate at any
+ *     resolution.
+ *
+ * If you change these, every existing arrow at that preset re-bakes
+ * at next load. That's the trade-off for "preset behavior is
+ * consistent across captures regardless of when they were drawn"
+ * (the version-table mechanism handles HEAD GEOMETRY but not user-
+ * picked presets — see arrow.ts's `ARROW_STYLE_VERSIONS` comment).
+ */
+const THICKNESS_PRESETS: Readonly<
+  Record<"small" | "medium" | "large" | "x-large", { multiplier: number; floorFraction: number }>
+> = {
+  small: { multiplier: 0.5, floorFraction: 0.003 },
+  medium: { multiplier: 1, floorFraction: 0 },
+  large: { multiplier: 2, floorFraction: 0.012 },
+  "x-large": { multiplier: 3, floorFraction: 0.02 }
+};
+
+/**
+ * Resolve a thickness preset (or numeric override / "auto") to a
+ * concrete stroke value.
+ *
+ * Two call shapes — the third argument toggles between them:
+ *   • Legacy two-arg (no shortSidePx): multiplier-only. Returns
+ *     output in WHATEVER UNIT the auto value was passed in. Numeric
+ *     thickness passes through verbatim (treated as a [0,1] fraction
+ *     of short side; caller multiplies up if they want pixels).
+ *   • Three-arg (with shortSidePx, in the same units as autoFraction):
+ *     applies the floor formula `max(autoStroke × multiplier,
+ *     shortSidePx × floorFraction)`. Numeric thickness is treated as
+ *     a normalized fraction and expanded to pixels via shortSidePx.
+ *
+ * The two shapes exist because not all callers want the floor (it
+ * changes the output for existing rows when added). The three-arg
+ * form is the recommended new-code shape — it produces the Retina-
+ * proportional Large/XL strokes the floor is calibrated for.
+ *
+ * @param thickness    The persisted preset / numeric override / "auto".
+ * @param autoFraction The geometry's auto-derived stroke value, in
+ *                     the same unit space (fraction or pixels) the
+ *                     caller wants the output in. `medium` and
+ *                     `auto` pass this through verbatim.
+ * @param shortSidePx  Optional. Image short-side in the SAME unit
+ *                     space as autoFraction. Enables the floor;
+ *                     enables pixel expansion for numeric thickness.
+ *                     Omit only when matching legacy behavior is
+ *                     required.
+ */
 export function readOverlayThickness(
   thickness: OverlayThickness | undefined,
-  autoFraction: number
+  autoFraction: number,
+  shortSidePx?: number
 ): number {
   if (thickness === undefined || thickness === "auto") return autoFraction;
-  if (typeof thickness === "number") return thickness;
-  switch (thickness) {
-    case "small":
-      return autoFraction * 0.5;
-    case "medium":
-      return autoFraction;
-    case "large":
-      return autoFraction * 2;
+  if (typeof thickness === "number") {
+    // Numeric thickness is a normalized fraction of short-side. If
+    // shortSidePx is provided we expand to absolute units; otherwise
+    // fall through verbatim (legacy "fraction in, fraction out").
+    //
+    // Footgun guard: numeric thickness should be ≤ 1 (it's a
+    // normalized fraction). A value > 1 strongly suggests a caller
+    // accidentally passed a PIXEL stroke into the legacy two-arg
+    // form and is going to multiply by shortSide somewhere downstream
+    // — producing a stroke wider than the image. Warn (but still
+    // return the value) so the broken render doesn't propagate
+    // silently.
+    //
+    // packages/shared is environment-agnostic (`"types": []` in the
+    // tsconfig — no Node, no DOM lib), so we can't reference
+    // `console` or `process` directly. Route through `globalThis`
+    // with an inline cast: console is present in both Node and
+    // browser; if some exotic runtime lacks it, the optional-chain
+    // falls back to a silent no-op rather than throwing.
+    if (thickness > 1 && shortSidePx === undefined) {
+      const con = (globalThis as { console?: { warn(msg: string): void } }).console;
+      con?.warn(
+        `[readOverlayThickness] numeric thickness=${thickness} (> 1) passed without shortSidePx — ` +
+          `did you mean to pass shortSidePx? Numeric thickness is a normalized [0,1] fraction; ` +
+          `pixel values must go through the three-arg form.`
+      );
+    }
+    return shortSidePx !== undefined ? thickness * shortSidePx : thickness;
   }
+  const p = THICKNESS_PRESETS[thickness];
+  const fromMultiplier = autoFraction * p.multiplier;
+  if (shortSidePx === undefined || p.floorFraction === 0) return fromMultiplier;
+  return Math.max(fromMultiplier, shortSidePx * p.floorFraction);
 }
 
 const NormalizedScalar = z.number().min(0).max(1);
@@ -88,7 +184,16 @@ export const ArrowOverlay = z.object({
   /** Optional stroke-thickness override. Maps through
    *  `readOverlayThickness` to a stroke fraction; missing / "auto"
    *  preserves the legacy short-side-derived stroke. */
-  thickness: OverlayThickness.optional()
+  thickness: OverlayThickness.optional(),
+  /** Pins which version of the arrow style table to use for head
+   *  proportions + stroke clamps. Stamped at commit time with
+   *  `CURRENT_ARROW_STYLE_VERSION` from `arrow.ts`; legacy rows
+   *  without the field fall back to v1 (the historical 3.5/2.6
+   *  proportions) so changing the current version doesn't
+   *  retroactively rewrite existing captures. See the
+   *  `ARROW_STYLE_VERSIONS` table in `arrow.ts` for the recipe per
+   *  version. */
+  styleVersion: z.number().int().positive().optional()
 });
 
 /** Mirror of readBlurStyle — applies the legacy default for arrows

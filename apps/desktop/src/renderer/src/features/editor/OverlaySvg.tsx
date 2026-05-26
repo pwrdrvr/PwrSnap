@@ -1,9 +1,21 @@
-// Editor canvas overlay layer — single <svg> with viewBox="0 0 1 1"
-// that renders every committed overlay PLUS the live-drag draft on
-// top. Glyphs are coordinate-normalized to [0,1]² so they render
-// identically regardless of canvas display size, and so the bake
-// (compose.ts) can reuse the same shape math at source-pixel
-// resolution.
+// Editor canvas overlay layer — single <svg> with a PIXEL-SPACE
+// viewBox (`0 0 imageWidthPx imageHeightPx`) that renders every
+// committed overlay PLUS the live-drag draft on top. The overlay
+// schema stores coordinates in normalized [0,1]² space (so the same
+// row can be baked at any resolution by compose.ts); this component
+// multiplies by the image dims at render so all geometry lands in
+// pixel units inside the SVG.
+//
+// Why pixel-space, not viewBox="0 0 1 1" + preserveAspectRatio="none":
+// the non-uniform stretch from a 1×1 viewBox to a non-square canvas
+// SKEWS strokes (the stroke perpendicular is no longer perpendicular
+// to the visible line) and turns round line caps into ellipses
+// oriented along the image's aspect ratio, not the line. On a tall
+// image, diagonal arrows show a vertical "fang" at the tail and the
+// arrow tip's halo fringes asymmetrically. Pixel-space viewBox keeps
+// the coordinate system isotropic, mirrors compose.ts (which already
+// uses pixel-space SVG buffers), and eliminates an entire class of
+// "live editor diverges from baked thumbnail" bugs.
 //
 // Extracted from Editor.tsx as part of the v1 polish round so the
 // Editor file itself stays focused on state/handlers/effects.
@@ -16,7 +28,9 @@ import type {
   OverlayThickness
 } from "@pwrsnap/shared";
 import {
+  CURRENT_ARROW_STYLE_VERSION,
   computeArrowGeometry,
+  computeStemDashArray,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
@@ -89,7 +103,14 @@ export function OverlaySvg({
   // divs with backdrop-filter, so the live preview ACTUALLY blurs
   // the underlying image. SVG <filter> can blur SVG content but
   // can't reach behind itself to blur a sibling <img>.
-  const viewBox = "0 0 1 1";
+  //
+  // viewBox in pixel space so 1 SVG unit = 1 image pixel — strokes
+  // and round caps stay isotropic regardless of the image's aspect.
+  // The SVG element is sized via CSS to fill the editor-canvas
+  // (which itself has the image's aspect-ratio), so the default
+  // preserveAspectRatio="xMidYMid meet" fits the viewBox exactly
+  // into the rendered area without distortion.
+  const viewBox = `0 0 ${imageWidthPx} ${imageHeightPx}`;
   // Project the live-drag override (if any) onto the matching row's
   // `data`. Every downstream split reads from `effectiveOverlays`
   // so the override participates uniformly in the kind-buckets and
@@ -148,7 +169,7 @@ export function OverlaySvg({
   const liveRect = draft !== null && draft.kind === "rect-drag" ? rectFromDrag(draft) : null;
 
   return (
-    <svg className="editor-svg" viewBox={viewBox} preserveAspectRatio="none">
+    <svg className="editor-svg" viewBox={viewBox}>
       {/* Highlights painted first so they sit beneath rects/arrows. */}
       {highlights.map(({ row, data }) => (
         <HighlightGlyph
@@ -157,6 +178,8 @@ export function OverlaySvg({
           color={data.color}
           opacity={data.opacity}
           blend={data.blend}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
         />
       ))}
       {rects.map(({ row, data }) => (
@@ -182,6 +205,7 @@ export function OverlaySvg({
           stemStyle={readArrowStemStyle(data)}
           doubleEnded={readArrowDoubleEnded(data)}
           thickness={data.thickness}
+          styleVersion={data.styleVersion}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -232,6 +256,13 @@ export function OverlaySvg({
           stemStyle={draftStyle?.stemStyle}
           doubleEnded={draftStyle?.doubleEnded}
           thickness={draftStyle?.thickness}
+          // Drafts always render at the CURRENT style version — they
+          // get stamped with it on commit, so the live preview during
+          // drag matches what's about to be persisted. Without this
+          // an in-flight arrow would render at v1 (the default when
+          // styleVersion is undefined) and then jump to the current
+          // version proportions on pointerup.
+          styleVersion={CURRENT_ARROW_STYLE_VERSION}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
           isDraft
@@ -244,6 +275,8 @@ export function OverlaySvg({
               rect={liveRect}
               color={draftStyle?.color}
               blend={draftStyle?.highlightBlend}
+              imageWidthPx={imageWidthPx}
+              imageHeightPx={imageHeightPx}
               isDraft
             />
           )}
@@ -276,6 +309,7 @@ function ArrowGlyph({
   stemStyle,
   doubleEnded = false,
   thickness,
+  styleVersion,
   isDraft = false
 }: {
   fromXn: number;
@@ -303,31 +337,78 @@ function ArrowGlyph({
   /** Optional stroke-thickness override. "auto"/undefined falls back
    *  to the geometry-derived stroke fraction (legacy behavior). */
   thickness?: OverlayThickness | undefined;
+  /** Pinned arrow style version (see `ARROW_STYLE_VERSIONS` in
+   *  `arrow.ts`). Missing/undefined falls back to v1 — the legacy
+   *  proportions — so pre-versioning rows render exactly as they
+   *  did before the table existed. New committed rows stamp
+   *  `CURRENT_ARROW_STYLE_VERSION`. */
+  styleVersion?: number | undefined;
   isDraft?: boolean;
 }): ReactElement {
   const resolvedEndStyle: ArrowEndStyle = endStyle ?? "filled-triangle";
   const resolvedStemStyle: ArrowStemStyle = stemStyle ?? "solid";
-  const headGeom = computeArrowGeometry({
+  // Resolve the thickness override BEFORE computing geometry so head
+  // length/width scale with the stem. Without this, "Large" doubles
+  // the stem but leaves the head at the auto-derived size — fat stem,
+  // tiny head, and open-triangle's hollow interior fills up with the
+  // now-thick outline stroke. Two-step:
+  //   1. Compute the auto stroke for this arrow's geometry (length-
+  //      aware, short-side aware) by running geometry once with no
+  //      override.
+  //   2. Resolve the user's preset/numeric value against that auto
+  //      stroke, then feed the result back into geometry as
+  //      `strokeWidthOverridePx` for the FINAL geometry call.
+  // The compose.ts bake mirrors this same two-step.
+  //
+  // `styleVersion` is threaded through BOTH calls so head proportions
+  // stay pinned to the row's version even when a thickness override
+  // is in play.
+  const autoGeom = computeArrowGeometry({
     from: { x: fromXn, y: fromYn },
     to: { x: toXn, y: toYn },
     imageWidthPx,
-    imageHeightPx
+    imageHeightPx,
+    styleVersion
   });
+  const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
+  // Pass autoStrokeWidthPx + shortSidePx so the floor-fraction
+  // formula activates (Large/X-Large lift the stroke off the
+  // STROKE_MAX_PX cap on high-DPI captures). Output is in pixels,
+  // no trailing multiplication needed.
+  const strokeWidthOverridePx =
+    thickness === undefined || thickness === "auto"
+      ? undefined
+      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, shortSidePx);
+  const headGeom =
+    strokeWidthOverridePx === undefined
+      ? autoGeom
+      : computeArrowGeometry({
+          from: { x: fromXn, y: fromYn },
+          to: { x: toXn, y: toYn },
+          imageWidthPx,
+          imageHeightPx,
+          strokeWidthOverridePx,
+          styleVersion
+        });
   // Secondary geometry for double-ended arrows — swap from/to so the
   // tail-end head's triangle points at `from` with its base centered
-  // along the stem.
+  // along the stem. Same override applied so both ends match.
   const tailGeom = doubleEnded
     ? computeArrowGeometry({
         from: { x: toXn, y: toYn },
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
-        imageHeightPx
+        imageHeightPx,
+        strokeWidthOverridePx,
+        styleVersion
       })
     : null;
-  // Apply the user's thickness override (small/medium/large/numeric)
-  // on top of the geometry-derived auto stroke. medium ≡ auto.
-  const stroke = readOverlayThickness(thickness, headGeom.strokeFraction);
-  const outline = Math.max(stroke * 0.25, 0.0015);
+  // Stem stroke = final geometry's stroke. Short-arrow correction
+  // inside computeArrowGeometry may have shrunk it from the requested
+  // override (so a Large thickness on a tiny arrow still renders
+  // proportionally).
+  const stroke = headGeom.strokeWidthPx;
+  const outline = Math.max(stroke * 0.25, 1.5);
   // Resolution: explicit color → use it; "auto" / undefined → fall back
   // to the theme accent token. Draft variant uses --accent-strong for
   // the pre-Phase-3.1 visual cue, but ONLY when color is "auto"/missing
@@ -344,15 +425,34 @@ function ArrowGlyph({
   // doesn't punch through a hollow head outline. For filled glyphs the
   // head paints over the stem anyway; for `line`/`dot`/`open-triangle`
   // the head is shorter or has interior negative space so we stop the
-  // stem at the geometric base instead of the apex.
-  const stemEndAtTo = stemEndpointFor(resolvedEndStyle, headGeom);
-  const stemEndAtFrom = tailGeom !== null ? stemEndpointFor(resolvedEndStyle, tailGeom) : null;
-  const fromPoint = stemEndAtFrom ?? { x: headGeom.from.x, y: headGeom.from.y };
+  // stem at the geometric base instead of the apex. Returned in PIXEL
+  // coordinates (the helper does the normalized→px conversion).
+  const stemEndAtTo = stemEndpointFor(resolvedEndStyle, headGeom, imageWidthPx, imageHeightPx);
+  const stemEndAtFrom =
+    tailGeom !== null
+      ? stemEndpointFor(resolvedEndStyle, tailGeom, imageWidthPx, imageHeightPx)
+      : null;
+  const fromPoint =
+    stemEndAtFrom ?? {
+      x: headGeom.from.x * imageWidthPx,
+      y: headGeom.from.y * imageHeightPx
+    };
 
-  // Stroke-dash pattern. Scaled by stem stroke width so dash density
-  // stays visually consistent across image sizes. dotted gets round
-  // caps so the dots look like dots, not stripes.
-  const dashStem = stemDashFor(resolvedStemStyle, stroke);
+  // Stroke-dash pattern, aligned so the line begins AND ends on a
+  // complete dash. Pre-fix this used a fixed `${stroke*4} ${stroke*2}`
+  // pattern; the stem ended at whatever phase the natural cycle
+  // landed at, producing visible inconsistency between arrows of
+  // slightly different lengths (sliver vs whole dash at the tail).
+  // computeStemDashArray stretches the dash:gap ratio so N dashes +
+  // (N−1) gaps fill the segment exactly. Mirrors the Illustrator/
+  // Figma/PowerPoint convention. The halo line gets the same pattern
+  // so dashed-on-dashed gaps align (otherwise the solid halo would
+  // show through colored stem gaps as white "ghost dashes").
+  const stemLengthPx = Math.hypot(
+    stemEndAtTo.x - fromPoint.x,
+    stemEndAtTo.y - fromPoint.y
+  );
+  const dashStem = computeStemDashArray(resolvedStemStyle, stemLengthPx, stroke);
 
   return (
     <g strokeLinejoin="round">
@@ -374,10 +474,24 @@ function ArrowGlyph({
         fill="none"
       />
       {/* Head halo at the `to` endpoint. */}
-      <ArrowHeadHalo style={resolvedEndStyle} geom={headGeom} outline={outline} stroke={stroke} />
+      <ArrowHeadHalo
+        style={resolvedEndStyle}
+        geom={headGeom}
+        outline={outline}
+        stroke={stroke}
+        imageWidthPx={imageWidthPx}
+        imageHeightPx={imageHeightPx}
+      />
       {/* Mirrored head halo at the `from` endpoint (double-ended). */}
       {tailGeom !== null && (
-        <ArrowHeadHalo style={resolvedEndStyle} geom={tailGeom} outline={outline} stroke={stroke} />
+        <ArrowHeadHalo
+          style={resolvedEndStyle}
+          geom={tailGeom}
+          outline={outline}
+          stroke={stroke}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
+        />
       )}
       {/* Colored stem on top of the halo. */}
       <line
@@ -387,21 +501,36 @@ function ArrowGlyph({
         y2={stemEndAtTo.y}
         stroke={accent}
         strokeWidth={stroke}
-        strokeLinecap={resolvedStemStyle === "dotted" ? "round" : "round"}
+        strokeLinecap="round"
         strokeDasharray={dashStem ?? undefined}
         fill="none"
       />
       {/* Colored head at the `to` endpoint. */}
-      <ArrowHead style={resolvedEndStyle} geom={headGeom} stroke={stroke} accent={accent} />
+      <ArrowHead
+        style={resolvedEndStyle}
+        geom={headGeom}
+        stroke={stroke}
+        accent={accent}
+        imageWidthPx={imageWidthPx}
+        imageHeightPx={imageHeightPx}
+      />
       {/* Mirrored colored head at the `from` endpoint (double-ended). */}
       {tailGeom !== null && (
-        <ArrowHead style={resolvedEndStyle} geom={tailGeom} stroke={stroke} accent={accent} />
+        <ArrowHead
+          style={resolvedEndStyle}
+          geom={tailGeom}
+          stroke={stroke}
+          accent={accent}
+          imageWidthPx={imageWidthPx}
+          imageHeightPx={imageHeightPx}
+        />
       )}
     </g>
   );
 }
 
-/** Return where the stem should terminate for a given head style.
+/** Return where the stem should terminate for a given head style, in
+ *  PIXEL coordinates.
  *  - filled-triangle / open-triangle: pull back to baseCenter (head
  *    triangle takes over from there).
  *  - line: stop at the apex; the perpendicular bar overlaps the stem
@@ -410,49 +539,61 @@ function ArrowGlyph({
  *    runs to its center (which is the visual end of the arrow). */
 function stemEndpointFor(
   style: ArrowEndStyle,
-  geom: ReturnType<typeof computeArrowGeometry>
+  geom: ReturnType<typeof computeArrowGeometry>,
+  imageWidthPx: number,
+  imageHeightPx: number
 ): { x: number; y: number } {
   switch (style) {
     case "filled-triangle":
     case "open-triangle":
-      return { x: geom.baseCenter.x, y: geom.baseCenter.y };
+      return {
+        x: geom.baseCenter.x * imageWidthPx,
+        y: geom.baseCenter.y * imageHeightPx
+      };
     case "line":
     case "dot":
-      return { x: geom.to.x, y: geom.to.y };
+      return { x: geom.to.x * imageWidthPx, y: geom.to.y * imageHeightPx };
   }
 }
 
-/** Compute the SVG `stroke-dasharray` string for the stem style.
- *  Returns null for solid (no attribute emitted). All values are in
- *  the same normalized [0,1] space as `stroke`. */
-function stemDashFor(style: ArrowStemStyle, stroke: number): string | null {
-  switch (style) {
-    case "solid":
-      return null;
-    case "dashed":
-      return `${stroke * 4} ${stroke * 2}`;
-    case "dotted":
-      return `${stroke * 0.01} ${stroke * 1.8}`;
-  }
-}
+// Old `stemDashFor` removed in favor of `computeStemDashArray` from
+// @pwrsnap/shared, which scales the dash pattern to land on a
+// complete dash at both ends of the stem. See the helper's docblock
+// for the algorithm; the bake (compose.ts) uses the same helper so
+// renderer + thumbnail stay byte-aligned on the dash math.
 
 /** White halo behind the arrow head — drawn underneath the colored
- *  head so the entire glyph reads on busy backgrounds. */
+ *  head so the entire glyph reads on busy backgrounds. Geometry is
+ *  normalized; pixel conversion happens here so all coords + strokes
+ *  land in the parent SVG's pixel-space viewBox. */
 function ArrowHeadHalo({
   style,
   geom,
   outline,
-  stroke
+  stroke,
+  imageWidthPx,
+  imageHeightPx
 }: {
   style: ArrowEndStyle;
   geom: ReturnType<typeof computeArrowGeometry>;
   outline: number;
   stroke: number;
+  imageWidthPx: number;
+  imageHeightPx: number;
 }): ReactElement {
-  const polygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
+  const toX = geom.to.x * imageWidthPx;
+  const toY = geom.to.y * imageHeightPx;
+  const blX = geom.baseLeft.x * imageWidthPx;
+  const blY = geom.baseLeft.y * imageHeightPx;
+  const brX = geom.baseRight.x * imageWidthPx;
+  const brY = geom.baseRight.y * imageHeightPx;
+  const polygon = `${toX},${toY} ${blX},${blY} ${brX},${brY}`;
   switch (style) {
     case "filled-triangle":
-    case "open-triangle":
+      // Filled head: interior is colored, so the halo only needs to
+      // peek out at the edges. A filled white polygon under the
+      // colored fill works (the colored fill covers everything but
+      // the rim).
       return (
         <polygon
           points={polygon}
@@ -462,13 +603,33 @@ function ArrowHeadHalo({
           strokeLinejoin="round"
         />
       );
+    case "open-triangle":
+      // Hollow head: interior must stay transparent so the image
+      // shows through. Use a fill="none" white polygon with a stroke
+      // wide enough that it extends `outline` past the colored stroke
+      // on BOTH sides — the outside edge (legibility against the
+      // background) AND the inside edge (legibility against whatever
+      // the hollow exposes). Centered strokes split width equally:
+      // a strokeWidth=(stroke + outline*2) halo over a strokeWidth=
+      // stroke colored line yields `outline` of white visible on
+      // each side. Without this fix the interior reads as solid
+      // white — the very thing the open style was meant to avoid.
+      return (
+        <polygon
+          points={polygon}
+          fill="none"
+          stroke="white"
+          strokeWidth={stroke + outline * 2}
+          strokeLinejoin="round"
+        />
+      );
     case "line":
       return (
         <line
-          x1={geom.baseLeft.x}
-          y1={geom.baseLeft.y}
-          x2={geom.baseRight.x}
-          y2={geom.baseRight.y}
+          x1={blX}
+          y1={blY}
+          x2={brX}
+          y2={brY}
           stroke="white"
           strokeWidth={stroke + outline * 2}
           strokeLinecap="round"
@@ -478,8 +639,8 @@ function ArrowHeadHalo({
       const r = stroke * 1.5;
       return (
         <circle
-          cx={geom.to.x}
-          cy={geom.to.y}
+          cx={toX}
+          cy={toY}
           r={r + outline}
           fill="white"
           stroke="white"
@@ -495,14 +656,24 @@ function ArrowHead({
   style,
   geom,
   stroke,
-  accent
+  accent,
+  imageWidthPx,
+  imageHeightPx
 }: {
   style: ArrowEndStyle;
   geom: ReturnType<typeof computeArrowGeometry>;
   stroke: number;
   accent: string;
+  imageWidthPx: number;
+  imageHeightPx: number;
 }): ReactElement {
-  const polygon = `${geom.to.x},${geom.to.y} ${geom.baseLeft.x},${geom.baseLeft.y} ${geom.baseRight.x},${geom.baseRight.y}`;
+  const toX = geom.to.x * imageWidthPx;
+  const toY = geom.to.y * imageHeightPx;
+  const blX = geom.baseLeft.x * imageWidthPx;
+  const blY = geom.baseLeft.y * imageHeightPx;
+  const brX = geom.baseRight.x * imageWidthPx;
+  const brY = geom.baseRight.y * imageHeightPx;
+  const polygon = `${toX},${toY} ${blX},${blY} ${brX},${brY}`;
   switch (style) {
     case "filled-triangle":
       return <polygon points={polygon} fill={accent} />;
@@ -519,10 +690,10 @@ function ArrowHead({
     case "line":
       return (
         <line
-          x1={geom.baseLeft.x}
-          y1={geom.baseLeft.y}
-          x2={geom.baseRight.x}
-          y2={geom.baseRight.y}
+          x1={blX}
+          y1={blY}
+          x2={brX}
+          y2={brY}
           stroke={accent}
           strokeWidth={stroke}
           strokeLinecap="round"
@@ -530,7 +701,7 @@ function ArrowHead({
       );
     case "dot": {
       const r = stroke * 1.5;
-      return <circle cx={geom.to.x} cy={geom.to.y} r={r} fill={accent} />;
+      return <circle cx={toX} cy={toY} r={r} fill={accent} />;
     }
   }
 }
@@ -557,13 +728,28 @@ function RectGlyph({
   filled?: boolean | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Stroke width scaled by image short-side, like the arrow's. We
-  // compute via computeArrowGeometry across the diagonal so the
-  // stroke matches the arrow's visual weight on the same image.
+  // Stroke width scaled by image short-side, like the arrow's. Pixel-
+  // space — readOverlayThickness with shortSide enabled returns
+  // pixels directly, and applies the floor-fraction formula on
+  // Large/X-Large so high-DPI captures don't get a hairline rect.
+  //
+  // Auto stroke is clamped between 0.3% and 1.2% of the short side,
+  // matching the arrow's [STROKE_MIN_PX, STROKE_MAX_PX] band in
+  // pixel units (3 px / 8 px on a 1000-px image; 6 px / 24 px on a
+  // 2000-px image). Direct pixel-space clamp — avoids the previous
+  // fraction-and-multiply round trip that obscured the actual range.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
-  const strokeFraction = readOverlayThickness(thickness, autoStrokeFraction);
-  const outline = Math.max(strokeFraction * 0.25, 0.0015);
+  const autoStrokeWidthPx = Math.min(
+    shortSide * 0.012,
+    Math.max(shortSide * 0.003, 8)
+  );
+  const strokeWidthPx = readOverlayThickness(thickness, autoStrokeWidthPx, shortSide);
+  const outline = Math.max(strokeWidthPx * 0.25, 1.5);
+  // Pixel-space rect dimensions.
+  const rx = rect.x * imageWidthPx;
+  const ry = rect.y * imageHeightPx;
+  const rw = rect.w * imageWidthPx;
+  const rh = rect.h * imageHeightPx;
   const accent =
     color !== undefined && color !== "auto"
       ? color
@@ -577,10 +763,10 @@ function RectGlyph({
     return (
       <g>
         <rect
-          x={rect.x}
-          y={rect.y}
-          width={rect.w}
-          height={rect.h}
+          x={rx}
+          y={ry}
+          width={rw}
+          height={rh}
           fill={accent}
           stroke="none"
         />
@@ -590,23 +776,23 @@ function RectGlyph({
   return (
     <g>
       <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
+        x={rx}
+        y={ry}
+        width={rw}
+        height={rh}
         fill="none"
         stroke="white"
-        strokeWidth={strokeFraction + outline * 2}
+        strokeWidth={strokeWidthPx + outline * 2}
         strokeLinejoin="round"
       />
       <rect
-        x={rect.x}
-        y={rect.y}
-        width={rect.w}
-        height={rect.h}
+        x={rx}
+        y={ry}
+        width={rw}
+        height={rh}
         fill="none"
         stroke={accent}
-        strokeWidth={strokeFraction}
+        strokeWidth={strokeWidthPx}
         strokeLinejoin="round"
       />
     </g>
@@ -618,6 +804,8 @@ function HighlightGlyph({
   color,
   opacity,
   blend,
+  imageWidthPx,
+  imageHeightPx,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
@@ -637,6 +825,8 @@ function HighlightGlyph({
    *  was set — this default keeps existing captures looking the
    *  same). */
   blend?: "multiply" | "screen" | "overlay" | undefined;
+  imageWidthPx: number;
+  imageHeightPx: number;
   isDraft?: boolean;
 }): ReactElement {
   // Legacy marker yellow + opacity tunings preserved as defaults for
@@ -661,10 +851,10 @@ function HighlightGlyph({
   const resolvedBlend = blend ?? "multiply";
   return (
     <rect
-      x={rect.x}
-      y={rect.y}
-      width={rect.w}
-      height={rect.h}
+      x={rect.x * imageWidthPx}
+      y={rect.y * imageHeightPx}
+      width={rect.w * imageWidthPx}
+      height={rect.h * imageHeightPx}
       fill={baseHex}
       fillOpacity={fillOpacity}
       stroke="none"
@@ -681,18 +871,23 @@ function HighlightGlyph({
  *  on-the-text behavior covers the same area.
  *
  *  Math mirrors TextGlyph's render:
- *    • fontSize = sizePx / shortSide, where sizePx is the bucket
- *      (small=shortSide/50, medium=/30, large=/18)
- *    • Width: longest line × fontSize × 0.55 (avg em-advance for SF
- *      Pro), then × `imageH/imageW` to compensate for the outer SVG's
- *      preserveAspectRatio="none" X-stretch (same scaleX(H/W) the
- *      TextGlyph wrapper uses on the glyphs themselves).
- *    • Height: fontSize × (lineCount × 1.2 - 0.2) — accounts for
- *      `dy="1.2em"` between tspans and the central-baseline split
- *      of the first line.
- *    • Anchor: point.x (left edge), point.y - fontSize/2 (top edge
- *      of first line; central baseline puts the line's center on
- *      point.y).
+ *    • fontSizePx — bucket on image short-side (small=shortSide/50,
+ *      medium=/30, large=/18)
+ *    • Width in pixels: maxChars × fontSizePx × 0.55 (avg em-advance
+ *      for SF Pro), normalized by imageWidth so callers can place a
+ *      hit-rect via CSS `%`.
+ *    • Height in pixels: fontSizePx × (lineCount × 1.2 - 0.2),
+ *      accounting for `dy="1.2em"` tspans + the central-baseline
+ *      split of the first line, normalized by imageHeight.
+ *    • Anchor: point.x (left edge), point.y − (fontSizePx/2) /
+ *      imageHeight (top edge of first line; central baseline puts
+ *      the line's center on point.y).
+ *
+ *  Pre-refactor this function carried an `aspectComp = imageH/imageW`
+ *  multiplier on width to cancel the preserveAspectRatio="none"
+ *  X-stretch that the parent SVG used to have. With the SVG now in
+ *  pixel-space viewBox, the natural pixel width is already correct
+ *  and the hack is gone.
  */
 function textBoundsBox(
   data: Extract<OverlayRow["data"], { kind: "text" }>,
@@ -700,26 +895,28 @@ function textBoundsBox(
   imageHeightPx: number
 ): { x: number; y: number; w: number; h: number } {
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const sizePx =
+  const fontSizePx =
     data.size === "large"
       ? shortSide / 18
       : data.size === "medium"
         ? shortSide / 30
         : shortSide / 50;
-  const fontSize = sizePx / shortSide;
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
   const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
   const charAdvance = 0.55;
-  const naturalWidth = maxChars * fontSize * charAdvance;
-  const aspectComp = imageHeightPx / imageWidthPx;
-  const w = naturalWidth * aspectComp;
-  const h = fontSize * (lineCount * 1.2 - 0.2);
+  const naturalWidthPx = maxChars * fontSizePx * charAdvance;
+  const naturalHeightPx = fontSizePx * (lineCount * 1.2 - 0.2);
   return {
     x: data.point.x,
-    y: data.point.y - fontSize / 2,
-    w,
-    h
+    // `fontSizePx / 2` is the half-glyph-height in pixels;
+    // divide by imageHeightPx to convert to normalized [0,1].
+    // Parens kept explicit — without them the chain
+    // `fontSizePx / 2 / imageHeightPx` parses identically but reads
+    // ambiguously to anyone scanning the line.
+    y: data.point.y - (fontSizePx / 2) / imageHeightPx,
+    w: naturalWidthPx / imageWidthPx,
+    h: naturalHeightPx / imageHeightPx
   };
 }
 
@@ -754,14 +951,25 @@ function SelectionOutline({
     box = data.rect;
   }
   if (box === null) return null;
-  // Pad slightly so the outline doesn't sit ON the stroke.
+  // Pad slightly so the outline doesn't sit ON the stroke. Normalized
+  // padding (0.006 of each axis) converts cleanly to pixel space below.
   const pad = 0.006;
-  const x = Math.max(0, box.x - pad);
-  const y = Math.max(0, box.y - pad);
-  const w = Math.min(1 - x, box.w + pad * 2);
-  const h = Math.min(1 - y, box.h + pad * 2);
+  const xn = Math.max(0, box.x - pad);
+  const yn = Math.max(0, box.y - pad);
+  const wn = Math.min(1 - xn, box.w + pad * 2);
+  const hn = Math.min(1 - yn, box.h + pad * 2);
+  const x = xn * imageWidthPx;
+  const y = yn * imageHeightPx;
+  const w = wn * imageWidthPx;
+  const h = hn * imageHeightPx;
   const stroke = "var(--accent, #ff8a1f)";
-  const strokeW = 0.003;
+  const shortSide = Math.min(imageWidthPx, imageHeightPx);
+  const strokeW = Math.max(1, shortSide * 0.003);
+  // Dash pattern in pixel space. Tracks the previous normalized ratio
+  // (0.012 on / 0.008 off) so the rhythm reads the same on any image.
+  const dashOn = shortSide * 0.012;
+  const dashOff = shortSide * 0.008;
+  const dashArray = `${dashOn} ${dashOff}`;
   return (
     <g data-testid="selection-outline">
       {/* White halo for contrast on dark images. */}
@@ -773,7 +981,7 @@ function SelectionOutline({
         fill="none"
         stroke="white"
         strokeWidth={strokeW * 2}
-        strokeDasharray="0.012 0.008"
+        strokeDasharray={dashArray}
       />
       <rect
         x={x}
@@ -783,7 +991,7 @@ function SelectionOutline({
         fill="none"
         stroke={stroke}
         strokeWidth={strokeW}
-        strokeDasharray="0.012 0.008"
+        strokeDasharray={dashArray}
       />
     </g>
   );
@@ -1415,9 +1623,8 @@ function TextGlyph({
   //   large  ≈ shortSide / 18  (e.g. 107 px)
   // Same values in the bake; see compose.ts textSvg.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const sizePx =
+  const fontSizePx =
     size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
-  const fontSize = sizePx / shortSide;
   const accent =
     color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
   // Multi-line support: body may contain "\n" from the Shift+Enter
@@ -1425,50 +1632,29 @@ function TextGlyph({
   // dy="1.2em" advancing the baseline. Single-line bodies keep their
   // original placement exactly (the first tspan has dy="0").
   const lines = body.split("\n");
-  // Compensate for the outer SVG's `preserveAspectRatio="none"` on a
-  // viewBox of `0 0 1 1`. With "none", X and Y axes scale independently
-  // to fill the canvas — so a glyph at font-size F user-units ends up
-  // rendering at F×canvasH CSS tall AND glyph-aspect×F×canvasW CSS wide.
-  // On a landscape capture (e.g. 2880×1920) that stretches text 1.5×
-  // wider per glyph than HTML at the same font-size, producing the
-  // "draft input looks tiny, commit jumps bigger" mismatch the user
-  // reported.
+  // Pixel-space anchor. The historical aspectCompensation `scale(H/W,1)`
+  // wrapper is gone — that hack only existed to undo the non-uniform
+  // viewBox stretch from preserveAspectRatio="none" on a 1×1 viewBox.
+  // With a pixel-space viewBox text renders isotropically by default,
+  // no extra transform needed.
   //
-  // Fix: scale text glyphs in X by H/W in the local user space, then
-  // let the viewport stretch take it the rest of the way. Net X scale
-  // becomes (H/W) × canvasW = canvasH (since aspect is preserved on
-  // the canvas), matching Y. The text now renders isotropically at
-  // canvasH/60 CSS px on both axes — identical to the bake's natural
-  // (square-coords) viewBox and the HTML draft input's font-size math.
-  //
-  // The transform also positions the text origin so we don't move the
-  // anchor: translate FIRST to put the glyph at (point.x, point.y) in
-  // viewBox coords, THEN scale around that origin. Inside the wrapper,
-  // each <text> uses x=0,y=0 so its left/top edge sits exactly on the
-  // anchor.
-  //
-  // Only TextGlyph needs this. Rect / arrow / highlight all describe
-  // rectangular shapes whose stretch IS the desired behavior — a
-  // normalized rect fills the canvas rect at any aspect. Text is the
-  // only glyph where the natural-aspect rendering matters.
-  const aspectCompensation = imageHeightPx / imageWidthPx;
   // Vertically center the FIRST line on the click point — matches the
   // draft input's `translateY(-50%)` so the text doesn't jump on
   // commit. Subsequent lines extend downward via `dy="1.2em"` per
   // tspan, which is the conventional layout for multi-line annotation.
+  const px = point.x * imageWidthPx;
+  const py = point.y * imageHeightPx;
   return (
-    <g
-      transform={`translate(${point.x} ${point.y}) scale(${aspectCompensation} 1)`}
-    >
+    <g transform={`translate(${px} ${py})`}>
       <text
         x={0}
         y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSize}
+        fontSize={fontSizePx}
         fontWeight={weight}
         fill="white"
         stroke="rgba(0,0,0,0.6)"
-        strokeWidth={fontSize * 0.08}
+        strokeWidth={fontSizePx * 0.08}
         paintOrder="stroke"
         dominantBaseline="central"
       >
@@ -1482,7 +1668,7 @@ function TextGlyph({
         x={0}
         y={0}
         fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSize}
+        fontSize={fontSizePx}
         fontWeight={weight}
         fill={accent}
         dominantBaseline="central"

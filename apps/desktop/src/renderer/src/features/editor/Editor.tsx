@@ -49,7 +49,11 @@ import type {
   TextToolStyle,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { DEFAULT_BLUR_STYLE, readTextWeight } from "@pwrsnap/shared";
+import {
+  CURRENT_ARROW_STYLE_VERSION,
+  DEFAULT_BLUR_STYLE,
+  readTextWeight
+} from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { resolveToolColor } from "./resolveToolColor";
@@ -333,6 +337,14 @@ function resolveTextSize(
 ): "small" | "medium" | "large" {
   if (typeof fontSize === "number") return "medium";
   if (fontSize === "large") return "large";
+  // The text popover doesn't expose "x-large", but the type union
+  // includes it (shared with arrow/rect thickness). Map it to
+  // "large" defensively in case it ever arrives via persisted state
+  // or AI-injected overlays. Three text buckets is enough; if we
+  // want a true XL text someday we should add a 4th bucket to the
+  // schema with its own font-size curve rather than overload the
+  // thickness preset name.
+  if (fontSize === "x-large") return "large";
   if (fontSize === "small") return "small";
   // "auto" and "medium" both resolve to medium.
   return "medium";
@@ -868,7 +880,12 @@ export function Editor({
         color:
           arrowStyleSrc !== null
             ? resolveToolColor(arrowStyleSrc.color)
-            : "auto"
+            : "auto",
+        // Pin the style version at commit time so future tweaks to
+        // head proportions / stroke clamps don't retroactively rewrite
+        // this row. See `ARROW_STYLE_VERSIONS` in
+        // `packages/shared/src/arrow.ts` for the recipe per version.
+        styleVersion: CURRENT_ARROW_STYLE_VERSION
       };
       if (arrowStyleSrc !== null) {
         arrowOverlay.endStyle = arrowStyleSrc.endStyle;

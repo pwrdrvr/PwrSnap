@@ -623,10 +623,14 @@ export function isColorToken(value: unknown): value is ColorToken {
 export type ToolColor = ColorToken | string;
 
 /** "auto" picks a sensible default per tool kind (scaled with capture
- *  resolution); the preset buckets give the user three quick taps for
- *  thicker / thinner. Numeric values are the explicit-px escape hatch
+ *  resolution); the preset buckets give the user quick taps for
+ *  thicker / thinner. "x-large" is supported for arrow / rect
+ *  thickness on high-DPI captures where the auto-clamped stroke gets
+ *  visually thin against the image area; the text tool ignores it
+ *  (maps to large) because the three text-size buckets are already
+ *  well-spaced. Numeric values are the explicit-px escape hatch
  *  reserved for future power-user controls. */
-export type ToolSizePreset = "auto" | "small" | "medium" | "large";
+export type ToolSizePreset = "auto" | "small" | "medium" | "large" | "x-large";
 
 // Arrow end + stem style names are defined as zod enums in overlay-
 // schemas.ts (the runtime source of truth for what gets persisted on

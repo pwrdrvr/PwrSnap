@@ -608,6 +608,174 @@ describe("useCaptureModel", () => {
     });
   });
 
+  test("5g. v2 dispatchEdit: crop re-normalizes vector layer coords (text at right edge → x>1, clipped)", async () => {
+    // User bug from pwrdrvr/PwrSnap#110: text at point.x=0.95 on a
+    // 1728-px canvas (absolute pixel 1641) survived a crop to 60%
+    // width — the canvas shrunk but the text's normalized coord
+    // stayed 0.95, so the text "slid leftward" into the kept region
+    // instead of being clipped at the right edge.
+    //
+    // The fix re-normalizes every vector layer's coords by the inverse
+    // of the crop rect at dispatch time. This test exercises the
+    // FULL dispatch flow (raster + text vector → crop dispatch →
+    // verify text layer was deleted-and-reinserted with transformed
+    // coords + an upsert of a NEW crop VectorLayer happened +
+    // bundle:updateCanvasDimensions fired with derived dims).
+    const record = makeRecord("cap_2", 2); // 2000x1000
+    const rasterLayer = makeLayerNode("ly_raster");
+    const rootGroupId = "ly_root";
+    const rootGroup: BundleLayerNode = {
+      id: rootGroupId,
+      parent_id: null,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "group",
+      collapsed: false
+    };
+    // Re-parent the raster under the root group (matches the doctor's
+    // tree shape: root group → raster → user vectors).
+    const rasterUnderRoot: BundleLayerNode = {
+      ...rasterLayer,
+      parent_id: rootGroupId
+    };
+    // Text on the right edge of the source. With a crop to w=0.6,
+    // the user's expectation is that this text gets clipped at the
+    // right edge of the new (smaller) canvas because its absolute
+    // pixel position (0.95 * 2000 = 1900) is outside the new canvas
+    // (0.6 * 2000 = 1200 wide).
+    const textLayer: BundleLayerNode = {
+      id: "ly_text",
+      parent_id: rootGroupId,
+      name: "Text",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "vector",
+      shape: {
+        kind: "text",
+        point: { x: 0.95, y: 0.5 },
+        body: "edge",
+        size: "small",
+        color: "auto"
+      }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list")
+        return Promise.resolve({
+          ok: true,
+          value: [rootGroup, rasterUnderRoot, textLayer]
+        });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Apply a 60% width crop. Per the user's intuition the text at
+    // point.x = 0.95 should end up with new normalized coord
+    // 0.95 / 0.6 ≈ 1.5833 (past the new canvas right edge → clipped).
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0, y: 0, w: 0.6, h: 1 }
+    });
+    expect(r.ok).toBe(true);
+
+    // 1. Text layer was deleted (Step 0 of the dispatcher's "delete +
+    //    reinsert with transformed coords" loop).
+    const textDeleteCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "layers:delete" && (c[1] as { id: string }).id === "ly_text"
+    );
+    expect(
+      textDeleteCall,
+      "expected layers:delete for the text layer id"
+    ).toBeDefined();
+
+    // 2. CRITICAL: NO upsert with the text body "edge" — the text
+    //    was at point.x=0.95 which transforms to 1.58 (past the new
+    //    canvas right edge). The Overlay zod schema rejects coords
+    //    outside [0,1], so the dispatcher detects "fully outside" via
+    //    the helper returning null and DELETES the text layer (the
+    //    delete in #1) without reinserting. The text was outside the
+    //    cropped region anyway — its absence is the correct behavior.
+    //    Undo of the crop currently won't restore it (recordCropRef
+    //    snapshot of deleted overlays is a follow-up).
+    const textUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return (
+        layer.kind === "vector" &&
+        layer.shape.kind === "text" &&
+        layer.shape.body === "edge"
+      );
+    });
+    expect(
+      textUpsertCall,
+      "text outside the new canvas should NOT be reinserted — staying upserted with out-of-bounds coords would fail schema validation at the bus, leaving the user with the original bug"
+    ).toBeUndefined();
+
+    // 3. A crop VectorLayer was inserted.
+    const cropUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return layer.kind === "vector" && layer.shape.kind === "crop";
+    });
+    expect(cropUpsertCall, "expected a crop VectorLayer to be inserted").toBeDefined();
+
+    // 4. The canvas dim shrink happened.
+    const canvasDimCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(canvasDimCall).toBeDefined();
+    expect(canvasDimCall?.[1]).toEqual({
+      captureId: "cap_2",
+      widthPx: 1200, // 2000 * 0.6
+      heightPx: 1000
+    });
+  });
+
   test("5d. v2 dispatchEdit: upsertBatch → not yet supported error", async () => {
     const record = makeRecord("cap_2", 2);
     const layer = makeLayerNode("ly_1");

@@ -14,12 +14,12 @@
 // treatment, revisit.
 
 import {
+  CODEX_CAPTION_MODELS,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
-  isSettingsPage,
-  CODEX_CAPTION_MODELS
+  isSettingsPage
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,

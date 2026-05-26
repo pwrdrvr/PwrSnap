@@ -537,29 +537,14 @@ function JobRoutingRow({
       </div>
       <span className="pss__role-arrow">→</span>
       {children !== undefined ? (
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          <b
-            style={{
-              font: "600 12px/1 var(--font-sans)",
-              color: "var(--accent-bright)"
-            }}
-          >
-            {provider}
-          </b>
+        <div className="pss__role-control">
+          <b>{provider}</b>
           {children}
         </div>
       ) : (
         <span className="pss__role-provider" aria-disabled="true">
           <b>{provider}</b>
-          <span
-            style={{
-              color: "var(--text-muted)",
-              font: "500 11px/1 var(--font-mono)",
-              marginLeft: 2
-            }}
-          >
-            {model ?? ""}
-          </span>
+          <span className="pss__role-model">{model ?? ""}</span>
         </span>
       )}
     </div>

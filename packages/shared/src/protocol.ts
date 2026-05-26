@@ -441,6 +441,17 @@ export type DesktopCodexDiscoverySnapshot = {
 
 /** Outcome of a Codex `--version` probe via the connection-test button.
  *  Ported from PwrAgnt's CredentialTester.testCodex. */
+export type CodexTestStatus = "unset" | "ok" | "failed";
+
+export type CodexTestResult = {
+  status: CodexTestStatus;
+  testedAt: string;
+  durationMs: number;
+  account: string | null;
+  detail?: string;
+  errorMessage?: string;
+};
+
 /** Codex CLI models PwrSnap will spawn for the capture-enrichment turn.
  *  Sourced from https://developers.openai.com/codex/models — kept as a
  *  literal union so the validator, the renderer dropdown, and the
@@ -457,17 +468,6 @@ export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel 
     (CODEX_CAPTION_MODELS as readonly string[]).includes(value)
   );
 }
-
-export type CodexTestStatus = "unset" | "ok" | "failed";
-
-export type CodexTestResult = {
-  status: CodexTestStatus;
-  testedAt: string;
-  durationMs: number;
-  account: string | null;
-  detail?: string;
-  errorMessage?: string;
-};
 
 export type AppDocumentKind = "changelog" | "third-party-licenses";
 

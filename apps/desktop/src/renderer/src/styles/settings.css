@@ -956,6 +956,29 @@
 .pss__role-provider:hover { background: var(--bg-row-active); }
 .pss__role-provider svg { color: var(--text-muted); margin-left: auto; }
 .pss__role-provider b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
+/* Model-ID label inside a static (read-only) provider chip. Mono font
+   marks it as an identifier; muted color keeps the provider name
+   dominant. */
+.pss__role-model {
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+  margin-left: 2px;
+}
+
+/* Right-edge slot when a Job-routing row hosts a real control (e.g. a
+   <select>) instead of a static "Provider model" label. We intentionally
+   do NOT wrap in .pss__role-provider here — the control inside (e.g.
+   .pss__select) already carries its own border + padding, and nesting
+   would produce double chrome. The provider name sits next to the
+   control with the same accent color so the row still reads as one
+   coherent unit. */
+.pss__role-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.pss__role-control b { font: 600 12px/1 var(--font-sans); color: var(--accent-bright); }
 
 /* Customization-count badge in page-header actions — shows
    "N customizations" next to the Reset button on Hotkeys (extensible

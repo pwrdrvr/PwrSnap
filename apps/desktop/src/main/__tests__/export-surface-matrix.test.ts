@@ -237,6 +237,17 @@ async function seedV1Capture(args: SeedArgs): Promise<void> {
   const sourcePng = await makeSourcePng();
   const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
   const bundlePath = join(workDir, "captures", `${args.id}.pwrsnap`);
+  // `flat_png_path` is the user-visible flat composite PNG that lives
+  // as a sibling next to the bundle. Real captures populate this from
+  // the capture flow; we populate it here with the canonical sibling
+  // path AND write the file on disk so any future surface added to
+  // the matrix that reads this column (e.g., a hypothetical
+  // "open in default viewer" or "reveal in Finder") gets a valid path
+  // instead of a NULL footgun. The flat PNG mirrors the source bytes
+  // for unedited variants; for the matrix's pixel assertions only the
+  // re-rendered cache files matter — the flat file is just present.
+  const flatPngPath = join(workDir, "captures", `${args.id}.png`);
+  await writeFile(flatPngPath, sourcePng);
   const now = new Date().toISOString();
   const manifest: BundleManifestV1 = {
     bundle_format_version: 1,
@@ -276,7 +287,7 @@ async function seedV1Capture(args: SeedArgs): Promise<void> {
         sha256, edits_version, deleted_at
       ) VALUES (
         @id, 'image', @captured_at, NULL, NULL,
-        NULL, @bundle_path, NULL, @captured_at,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
         1, 0,
         @w, @h, 2.0, @bs,
         @sha, 0, NULL
@@ -286,6 +297,7 @@ async function seedV1Capture(args: SeedArgs): Promise<void> {
       id: args.id,
       captured_at: now,
       bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
       w: SOURCE_WIDTH,
       h: SOURCE_HEIGHT,
       bs: bundleBuf.length,
@@ -320,6 +332,10 @@ async function seedV2Capture(args: SeedArgs): Promise<void> {
   const sourcePng = await makeSourcePng();
   const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
   const bundlePath = join(workDir, "captures", `${args.id}.pwrsnap`);
+  // See `seedV1Capture` for why flat_png_path is populated even
+  // though the surfaces currently under test don't read it.
+  const flatPngPath = join(workDir, "captures", `${args.id}.png`);
+  await writeFile(flatPngPath, sourcePng);
   const now = new Date().toISOString();
 
   const manifest: BundleManifestV2 = {
@@ -414,7 +430,7 @@ async function seedV2Capture(args: SeedArgs): Promise<void> {
         sha256, edits_version, deleted_at
       ) VALUES (
         @id, 'image', @captured_at, NULL, NULL,
-        NULL, @bundle_path, NULL, @captured_at,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
         2, @ev,
         @w, @h, 2.0, @bs,
         @sha, @ev, NULL
@@ -424,6 +440,7 @@ async function seedV2Capture(args: SeedArgs): Promise<void> {
       id: args.id,
       captured_at: now,
       bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
       ev: args.annotated ? 1 : 0,
       w: SOURCE_WIDTH,
       h: SOURCE_HEIGHT,
@@ -480,9 +497,12 @@ async function pngHasRedInOverlayRegion(pngBytes: Buffer): Promise<boolean> {
 
 interface Surface {
   name: string;
-  /** Whether this surface is currently exercised by all variants.
-   *  Set false to skip a surface that has its own quirks. */
-  enabled: boolean;
+  /** Optional applicability filter. Returning false for a variant
+   *  skips the cell entirely — used by v2-only surfaces (e.g.,
+   *  `clipboard:copyLayerFragment`) so v1 variants don't run against
+   *  a handler that's documented to refuse them. Default = always
+   *  applies. */
+  appliesTo?(variantName: string): boolean;
   /** Drive the surface; return the PNG bytes it produced. */
   run(captureId: string): Promise<Buffer>;
 }
@@ -490,7 +510,6 @@ interface Surface {
 const SURFACES: readonly Surface[] = [
   {
     name: "clipboard:copy-image",
-    enabled: true,
     run: async (captureId) => {
       const result = await bus.dispatch(
         "clipboard:copy",
@@ -509,7 +528,6 @@ const SURFACES: readonly Surface[] = [
   },
   {
     name: "clipboard:copy-path",
-    enabled: true,
     run: async (captureId) => {
       const result = await bus.dispatch(
         "clipboard:copy-path",
@@ -528,7 +546,6 @@ const SURFACES: readonly Surface[] = [
   },
   {
     name: "capture:prepareDrag",
-    enabled: true,
     run: async (captureId) => {
       const result = await bus.dispatch(
         "capture:prepareDrag",
@@ -540,6 +557,45 @@ const SURFACES: readonly Surface[] = [
       // `iconPath` (the smaller drag preview). The high-res path is
       // the user-facing payload; verify pixels there.
       return readFileSync(result.value.path);
+    }
+  },
+  {
+    name: "clipboard:copyLayerFragment",
+    // v2-only by design: the handler returns `v1_capture` for v1
+    // rows. Skipping v1 variants is cleaner than asserting the
+    // error (which would be testing the validation gate, not the
+    // composite-bytes-on-clipboard behavior the matrix exists for).
+    appliesTo: (variantName) => variantName.startsWith("v2"),
+    run: async (captureId) => {
+      // Drive the verb with no `layerIds` so the whole tree gets
+      // serialized — matches the most common "copy this PwrSnap"
+      // user flow.
+      const result = await bus.dispatch(
+        "clipboard:copyLayerFragment",
+        { captureId },
+        { principal: "ipc" }
+      );
+      if (!result.ok) {
+        throw new Error(`copyLayerFragment failed: ${result.error.code}`);
+      }
+      // copyLayerFragment writes BOTH a private-UTI buffer (the
+      // PwrSnap-to-PwrSnap fragment) AND a fallback PNG image (so
+      // non-PwrSnap consumers get usable bytes). The PNG is what
+      // a generic paste-target would see; the matrix asserts the
+      // PNG contains the user's annotations. The writeBuffer call
+      // is a separate, independent check — see the dedicated test
+      // below the matrix.
+      const writeImage = [...clipboardCaptured]
+        .reverse()
+        .find((c) => c.kind === "writeImage");
+      if (writeImage === undefined || writeImage.kind !== "writeImage") {
+        throw new Error(
+          `expected writeImage in clipboard captures, got ${JSON.stringify(
+            clipboardCaptured
+          )}`
+        );
+      }
+      return writeImage.bytes;
     }
   }
 ];
@@ -579,8 +635,10 @@ const VARIANTS: readonly Variant[] = [
 
 describe("export-surface-matrix: every surface honors the v1/v2 dispatch + overlay set", () => {
   for (const surface of SURFACES) {
-    if (!surface.enabled) continue;
     for (const variant of VARIANTS) {
+      if (surface.appliesTo !== undefined && !surface.appliesTo(variant.name)) {
+        continue;
+      }
       const expectation = variant.expectsRed
         ? "INCLUDES overlay (red pixels in overlay region)"
         : "OMITS overlay (no red pixels — source is white)";
@@ -593,6 +651,14 @@ describe("export-surface-matrix: every surface honors the v1/v2 dispatch + overl
           // The #116 regression class manifested here for v2-annotated:
           // pre-fix this assertion failed because the surface returned
           // bare source bytes with no overlay composited.
+          //
+          // TO VERIFY the matrix is honest about catching that class:
+          // temporarily wrap the v2 branch in
+          // `apps/desktop/src/main/render/coordinator.ts` behind
+          // `false &&` and re-run this file. Exactly the v2-annotated
+          // cells (across every surface that respects the dispatch)
+          // must fail; the unedited cells stay green. That's the
+          // signature. Revert when done.
           expect(hasRed).toBe(true);
         } else {
           // Sanity: unedited variants must NOT have red pixels — proves
@@ -603,6 +669,49 @@ describe("export-surface-matrix: every surface honors the v1/v2 dispatch + overl
       });
     }
   }
+});
+
+// ---------------------------------------------------------------------
+// Additional pin for `clipboard:copyLayerFragment`'s WriteBuffer side
+// (the private-UTI fragment payload). The matrix above asserts the
+// PNG fallback that non-PwrSnap consumers see; this confirms the
+// PwrSnap-to-PwrSnap fragment ALSO lands on the clipboard correctly.
+// Without this, the writeBuffer interceptor in the electron mock
+// would be untested — a regression where writeBuffer stopped being
+// called for some reason would slip through silently.
+// ---------------------------------------------------------------------
+
+describe("clipboard:copyLayerFragment — private UTI fragment payload", () => {
+  test("writes a UTI buffer containing a valid layer-fragment JSON for v2 annotated", async () => {
+    const captureId = "t_uti_buffer_check_xx";
+    await seedV2Capture({ id: captureId, annotated: true });
+
+    const result = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+
+    const writeBuf = clipboardCaptured.find((c) => c.kind === "writeBuffer");
+    expect(writeBuf).toBeDefined();
+    if (writeBuf === undefined || writeBuf.kind !== "writeBuffer") return;
+
+    // UTI matches the canonical PwrSnap one — the same constant
+    // every PwrSnap-to-PwrSnap paste path looks for.
+    expect(writeBuf.uti).toBe("com.pwrdrvr.pwrsnap.layer-fragment");
+
+    // Payload parses as JSON and carries the expected top-level
+    // schema fields. We don't re-validate the whole zod schema here
+    // (that's the handler's job); a presence check confirms the
+    // wire path is intact.
+    const parsed = JSON.parse(writeBuf.bytes.toString("utf-8"));
+    expect(parsed.format_version).toBe(1);
+    expect(parsed.source_capture_id).toBe(captureId);
+    expect(Array.isArray(parsed.layers)).toBe(true);
+    expect(parsed.layers.length).toBeGreaterThan(0);
+    expect(Array.isArray(parsed.source_refs)).toBe(true);
+  });
 });
 
 function idForCell(surfaceName: string, variantName: string): string {

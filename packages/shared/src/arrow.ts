@@ -53,6 +53,26 @@ export type ArrowInput = {
    * convention. See [AGENTS.md §"Settings substrate"].
    */
   strokeWidthOverridePx?: number | undefined;
+  /**
+   * Which version of the arrow style table to use. The table holds
+   * head proportions + stroke clamps; freezing a version per overlay
+   * row lets us tune future arrows without retroactively rewriting
+   * historical captures. See `ARROW_STYLE_VERSIONS` below.
+   *
+   * Defaults to `ARROW_STYLE_VERSION_LEGACY` (1) for back-compat when
+   * the field is missing — pre-versioning arrow rows render at the
+   * proportions they were drawn with. Newly committed rows should
+   * stamp `CURRENT_ARROW_STYLE_VERSION` at creation time.
+   *
+   * Unknown versions (e.g. a future v3 row read by an older client)
+   * fall back to v1 — the conservative choice on a version mismatch.
+   * If you need cross-version interop, do it through the schema
+   * migration layer, not by silently rendering at the wrong style.
+   *
+   * Explicitly `| undefined` (not just `?`) so callers can pass
+   * `data.styleVersion` directly under `exactOptionalPropertyTypes`.
+   */
+  styleVersion?: number | undefined;
 };
 
 export type ArrowGeometry = {
@@ -87,54 +107,124 @@ export type ArrowGeometry = {
   lengthPx: number;
 };
 
-const STROKE_DIVISOR = 220;
-const STROKE_MIN_PX = 4;
-const STROKE_MAX_PX = 14;
 /**
- * Head proportions, length:width ≈ 5:3 ≈ 1.67:1 ≈ golden ratio. Same
- * neighborhood as PowerPoint / Word / Keynote default annotation
- * arrows, which is the visual grammar most users have already
- * internalized from Office.
- *
- * Pre-2026-05 these were 3.5 / 2.6 (length:width ≈ 1.35:1), which
- * read as a squat / chunky "modern UI" arrow — visibly different from
- * Office and noticeably worse on Large thickness where the head
- * looked stubby next to the doubled stem. The longer-thinner shape
- * also gives the head more room before the stem stroke starts to
- * crowd the open-triangle's hollow.
- *
- * NOT pinned per-overlay yet: changing these constants re-renders
- * every historical arrow at next load. The plan is to fold ratios
- * into a snapshotted `arrowStyleVersion` on the overlay row so old
- * captures stay frozen at the ratios they were drawn with — see the
- * comment block at the bottom of this file.
+ * One row of the versioned arrow style table. Every parameter that
+ * influences arrow geometry lives here, so a single integer on the
+ * overlay row pins the entire visual recipe. New rendering knobs
+ * (different stem curves, alternative head families) go in by
+ * extending this shape and bumping `CURRENT_ARROW_STYLE_VERSION`.
  */
-const HEAD_LENGTH_RATIO = 5;
-const HEAD_WIDTH_RATIO = 3;
+interface ArrowStyleParams {
+  /**
+   * Auto-stroke divisor against image short-side. `strokeFromShortSide
+   * = clamp(shortSidePx / STROKE_DIVISOR, STROKE_MIN_PX, STROKE_MAX_PX)`.
+   */
+  STROKE_DIVISOR: number;
+  /** Lower clamp on auto-derived stroke (px). */
+  STROKE_MIN_PX: number;
+  /** Upper clamp on auto-derived stroke (px). */
+  STROKE_MAX_PX: number;
+  /** Head triangle length as a multiple of stroke width. */
+  HEAD_LENGTH_RATIO: number;
+  /** Head triangle base width as a multiple of stroke width. */
+  HEAD_WIDTH_RATIO: number;
+  /**
+   * Long arrows traversing a large fraction of the image need a
+   * thicker stroke to avoid looking like a hair, especially on tall-
+   * skinny or wide-short images where the short-side-derived base
+   * stroke clamps to STROKE_MIN_PX. Scale the stroke by `lengthPx /
+   * LENGTH_DIVISOR`, take the max with the image-derived base, and
+   * re-clamp.
+   *
+   * A 3000px-long arrow → 3000/250 = 12px stroke (capped at MAX 14).
+   * A 200px arrow → 200/250 = 0.8 → falls below short-side floor;
+   * the image-derived stroke wins.
+   */
+  LENGTH_DIVISOR: number;
+  /**
+   * Hard floor for short-arrow strokes after the short-arrow
+   * correction shrinks head + stroke together. Smaller than
+   * `STROKE_MIN_PX` because for very short arrows we'd rather have
+   * a thin-but-proportional silhouette than a normal stroke with a
+   * missing head.
+   */
+  SHORT_ARROW_STROKE_MIN_PX: number;
+}
+
 /**
- * Long arrows traversing a large fraction of the image need a thicker
- * stroke to avoid looking like a hair, especially on tall-skinny or
- * wide-short images where the short-side-derived base stroke clamps
- * to STROKE_MIN_PX (4). Scale the stroke by `lengthPx / LENGTH_DIVISOR`,
- * take the max with the image-derived base, and re-clamp.
+ * Versioned arrow style table.
  *
- * A 3000px-long arrow → 3000/250 = 12px stroke (capped at MAX 14).
- * A 200px arrow → 200/250 = 0.8 → falls below short-side floor; the
- * image-derived stroke wins.
+ * v1 (the historical default — applied to any overlay row with no
+ * `styleVersion` field): head length:width ≈ 1.35:1. Read as a squat
+ * "modern UI" arrow; visibly different from Office and noticeably
+ * worse on Large thickness where the head looked stubby next to the
+ * doubled stem.
+ *
+ * v2: head length:width = 5:3 ≈ 1.67:1 ≈ φ. Same neighborhood as
+ * PowerPoint / Word / Keynote default annotation arrows — the visual
+ * grammar most users have already internalized from Office. Longer
+ * thinner shape also gives the head more room before the stem stroke
+ * starts to crowd the open-triangle's hollow.
+ *
+ * To add a new version: copy v2's entry, change the fields you care
+ * about, append at the next integer key, and bump
+ * `CURRENT_ARROW_STYLE_VERSION` to match. Historical rows keep
+ * rendering at whatever version they were stamped with.
  */
-const LENGTH_DIVISOR = 250;
+const ARROW_STYLE_VERSIONS: Readonly<Record<number, ArrowStyleParams>> = {
+  1: {
+    STROKE_DIVISOR: 220,
+    STROKE_MIN_PX: 4,
+    STROKE_MAX_PX: 14,
+    HEAD_LENGTH_RATIO: 3.5,
+    HEAD_WIDTH_RATIO: 2.6,
+    LENGTH_DIVISOR: 250,
+    SHORT_ARROW_STROKE_MIN_PX: 2
+  },
+  2: {
+    STROKE_DIVISOR: 220,
+    STROKE_MIN_PX: 4,
+    STROKE_MAX_PX: 14,
+    HEAD_LENGTH_RATIO: 5,
+    HEAD_WIDTH_RATIO: 3,
+    LENGTH_DIVISOR: 250,
+    SHORT_ARROW_STROKE_MIN_PX: 2
+  }
+};
+
 /**
- * Hard floor for short-arrow strokes. Smaller than STROKE_MIN_PX
- * because for very short arrows we'd rather have a thin-but-
- * proportional silhouette than a normal stroke with a missing head.
+ * Version stamped on every NEW arrow overlay at commit time. Increment
+ * this when you change any entry in `ARROW_STYLE_VERSIONS` so legacy
+ * rows freeze at their original proportions while new rows pick up
+ * the change.
  */
-const SHORT_ARROW_STROKE_MIN_PX = 2;
+export const CURRENT_ARROW_STYLE_VERSION = 2 as const;
+
+/**
+ * Version used when an overlay row has no `styleVersion` field set
+ * (pre-versioning rows from before this table existed). v1 is the
+ * historical 3.5/2.6 shape; switching the default here would
+ * retroactively re-render every legacy arrow, which is exactly the
+ * problem this whole mechanism exists to prevent.
+ */
+const ARROW_STYLE_VERSION_LEGACY = 1;
+
+function resolveArrowStyleParams(version: number | undefined): ArrowStyleParams {
+  const resolved = version ?? ARROW_STYLE_VERSION_LEGACY;
+  // Future-proof: an unknown version (e.g., v3 row read by an older
+  // client that only knows v1+v2) falls back to legacy. The
+  // alternative — silently render at the latest version we do know —
+  // would produce DIFFERENT proportions on the same row in different
+  // client versions, defeating the whole point of pinning.
+  return ARROW_STYLE_VERSIONS[resolved] ?? ARROW_STYLE_VERSIONS[ARROW_STYLE_VERSION_LEGACY]!;
+}
 
 /**
  * Compute the smart-arrow geometry for the given inputs. Pure
  * function — no globals, no allocation beyond the returned object.
  */
 export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
+  const params = resolveArrowStyleParams(input.styleVersion);
   const shortSidePx = Math.max(1, Math.min(input.imageWidthPx, input.imageHeightPx));
 
   // Step 1: arrow length in image pixels. Needed for the
@@ -155,20 +245,20 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
     strokeWidthPx = input.strokeWidthOverridePx;
   } else {
     const strokeFromShortSide = clamp(
-      shortSidePx / STROKE_DIVISOR,
-      STROKE_MIN_PX,
-      STROKE_MAX_PX
+      shortSidePx / params.STROKE_DIVISOR,
+      params.STROKE_MIN_PX,
+      params.STROKE_MAX_PX
     );
-    const strokeFromLength = lengthPx / LENGTH_DIVISOR;
+    const strokeFromLength = lengthPx / params.LENGTH_DIVISOR;
     strokeWidthPx = clamp(
       Math.max(strokeFromShortSide, strokeFromLength),
-      STROKE_MIN_PX,
-      STROKE_MAX_PX
+      params.STROKE_MIN_PX,
+      params.STROKE_MAX_PX
     );
   }
 
-  let headLengthPx = strokeWidthPx * HEAD_LENGTH_RATIO;
-  let headWidthPx = strokeWidthPx * HEAD_WIDTH_RATIO;
+  let headLengthPx = strokeWidthPx * params.HEAD_LENGTH_RATIO;
+  let headWidthPx = strokeWidthPx * params.HEAD_WIDTH_RATIO;
 
   // Step 3: short-arrow correction. When the arrow length is smaller
   // than the head's natural size, baseCenter would land behind `from`
@@ -185,7 +275,7 @@ export function computeArrowGeometry(input: ArrowInput): ArrowGeometry {
     const scale = lengthPx / headLengthPx;
     headLengthPx = lengthPx; // exactly fills the segment
     headWidthPx *= scale;
-    strokeWidthPx = Math.max(SHORT_ARROW_STROKE_MIN_PX, strokeWidthPx * scale);
+    strokeWidthPx = Math.max(params.SHORT_ARROW_STROKE_MIN_PX, strokeWidthPx * scale);
   }
 
   // Compute the head triangle's three corners. The triangle's apex
@@ -245,24 +335,40 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-// -- TODO: persist style version per overlay ----------------------
+// -- How to evolve the arrow style table --------------------------
 //
-// The constants above (`STROKE_DIVISOR`, `STROKE_MIN_PX`,
-// `STROKE_MAX_PX`, `HEAD_LENGTH_RATIO`, `HEAD_WIDTH_RATIO`,
-// `LENGTH_DIVISOR`, `SHORT_ARROW_STROKE_MIN_PX`) are global —
-// changing them retroactively re-renders every historical arrow at
-// next load, in both the live editor and library thumbnails. The
-// first time we tweaked head proportions (3.5/2.6 → 5/3) we
-// accepted that, but it's not a habit we want.
+// To change ANY arrow rendering parameter (head proportions, stroke
+// clamps, length-scaling curve, short-arrow floor) WITHOUT breaking
+// historical captures:
 //
-// Better: snapshot a `styleVersion: number` on each `ArrowOverlay`
-// at commit time, and look up the ratios by version inside
-// `computeArrowGeometry`. Legacy rows without the field render at
-// v1 (the historical 3.5/2.6 set); newly drawn arrows go in at the
-// current version. The same parameter table can later host new
-// fields (different stem-stroke curve, alternative head families)
-// without invalidating existing captures.
+//  1. Append a new entry to `ARROW_STYLE_VERSIONS` at the next
+//     integer key (e.g., 3). Copy the previous version's row and
+//     change only the fields you want to evolve — the table is a
+//     full snapshot, so leaving a field unchanged is just copying
+//     the old value.
 //
-// Out of scope for the current visual-fix pass; do this before the
-// next ratio change, not as part of it. See ArrowOverlay schema in
-// `overlay-schemas.ts`.
+//  2. Bump `CURRENT_ARROW_STYLE_VERSION` to match. New arrows drawn
+//     after this lands get stamped with the new version at commit
+//     time (see Editor.tsx's arrow-creation path); existing rows
+//     keep their original version field and continue rendering at
+//     the proportions they were drawn with.
+//
+//  3. Add a regression test in arrow.test.ts that creates rows at
+//     each version (no field → v1, explicit v2, explicit v3) and
+//     asserts the geometry differences you care about. The point of
+//     the table is freeze-in-place: a test that demonstrates v1 and
+//     v3 produce different output for the same inputs is the proof
+//     that pinning works.
+//
+//  4. Do NOT introduce a "migration" that bumps old rows to the new
+//     version. Existing captures should stay frozen — that's the
+//     whole contract. If a user explicitly opts in (a future
+//     "modernize arrow style" command), that's a separate user-
+//     initiated flow, not an implicit upgrade.
+//
+// What does NOT belong in the version table: anything the user
+// controls per-overlay (color, thickness preset, end style, stem
+// style). Those are already per-row fields in `ArrowOverlay`. The
+// version table is for the SHARED RECIPE — the things that would
+// otherwise be hardcoded constants and silently rewrite every
+// existing capture if changed.

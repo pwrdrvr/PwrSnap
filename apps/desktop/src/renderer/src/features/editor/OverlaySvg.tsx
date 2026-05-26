@@ -28,6 +28,7 @@ import type {
   OverlayThickness
 } from "@pwrsnap/shared";
 import {
+  CURRENT_ARROW_STYLE_VERSION,
   computeArrowGeometry,
   readArrowDoubleEnded,
   readArrowEndStyle,
@@ -203,6 +204,7 @@ export function OverlaySvg({
           stemStyle={readArrowStemStyle(data)}
           doubleEnded={readArrowDoubleEnded(data)}
           thickness={data.thickness}
+          styleVersion={data.styleVersion}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
         />
@@ -253,6 +255,13 @@ export function OverlaySvg({
           stemStyle={draftStyle?.stemStyle}
           doubleEnded={draftStyle?.doubleEnded}
           thickness={draftStyle?.thickness}
+          // Drafts always render at the CURRENT style version — they
+          // get stamped with it on commit, so the live preview during
+          // drag matches what's about to be persisted. Without this
+          // an in-flight arrow would render at v1 (the default when
+          // styleVersion is undefined) and then jump to the current
+          // version proportions on pointerup.
+          styleVersion={CURRENT_ARROW_STYLE_VERSION}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
           isDraft
@@ -299,6 +308,7 @@ function ArrowGlyph({
   stemStyle,
   doubleEnded = false,
   thickness,
+  styleVersion,
   isDraft = false
 }: {
   fromXn: number;
@@ -326,6 +336,12 @@ function ArrowGlyph({
   /** Optional stroke-thickness override. "auto"/undefined falls back
    *  to the geometry-derived stroke fraction (legacy behavior). */
   thickness?: OverlayThickness | undefined;
+  /** Pinned arrow style version (see `ARROW_STYLE_VERSIONS` in
+   *  `arrow.ts`). Missing/undefined falls back to v1 — the legacy
+   *  proportions — so pre-versioning rows render exactly as they
+   *  did before the table existed. New committed rows stamp
+   *  `CURRENT_ARROW_STYLE_VERSION`. */
+  styleVersion?: number | undefined;
   isDraft?: boolean;
 }): ReactElement {
   const resolvedEndStyle: ArrowEndStyle = endStyle ?? "filled-triangle";
@@ -342,11 +358,16 @@ function ArrowGlyph({
   //      stroke, then feed the result back into geometry as
   //      `strokeWidthOverridePx` for the FINAL geometry call.
   // The compose.ts bake mirrors this same two-step.
+  //
+  // `styleVersion` is threaded through BOTH calls so head proportions
+  // stay pinned to the row's version even when a thickness override
+  // is in play.
   const autoGeom = computeArrowGeometry({
     from: { x: fromXn, y: fromYn },
     to: { x: toXn, y: toYn },
     imageWidthPx,
-    imageHeightPx
+    imageHeightPx,
+    styleVersion
   });
   const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
   const strokeWidthOverridePx =
@@ -361,7 +382,8 @@ function ArrowGlyph({
           to: { x: toXn, y: toYn },
           imageWidthPx,
           imageHeightPx,
-          strokeWidthOverridePx
+          strokeWidthOverridePx,
+          styleVersion
         });
   // Secondary geometry for double-ended arrows — swap from/to so the
   // tail-end head's triangle points at `from` with its base centered
@@ -372,7 +394,8 @@ function ArrowGlyph({
         to: { x: fromXn, y: fromYn },
         imageWidthPx,
         imageHeightPx,
-        strokeWidthOverridePx
+        strokeWidthOverridePx,
+        styleVersion
       })
     : null;
   // Stem stroke = final geometry's stroke. Short-arrow correction

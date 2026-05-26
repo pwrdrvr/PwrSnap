@@ -88,7 +88,16 @@ export const ArrowOverlay = z.object({
   /** Optional stroke-thickness override. Maps through
    *  `readOverlayThickness` to a stroke fraction; missing / "auto"
    *  preserves the legacy short-side-derived stroke. */
-  thickness: OverlayThickness.optional()
+  thickness: OverlayThickness.optional(),
+  /** Pins which version of the arrow style table to use for head
+   *  proportions + stroke clamps. Stamped at commit time with
+   *  `CURRENT_ARROW_STYLE_VERSION` from `arrow.ts`; legacy rows
+   *  without the field fall back to v1 (the historical 3.5/2.6
+   *  proportions) so changing the current version doesn't
+   *  retroactively rewrite existing captures. See the
+   *  `ARROW_STYLE_VERSIONS` table in `arrow.ts` for the recipe per
+   *  version. */
+  styleVersion: z.number().int().positive().optional()
 });
 
 /** Mirror of readBlurStyle — applies the legacy default for arrows

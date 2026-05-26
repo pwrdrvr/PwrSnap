@@ -261,6 +261,137 @@ describe("arrowSvg (bake) — doubleEnded", () => {
   });
 });
 
+describe("arrowSvg (bake) — head scales with thickness override", () => {
+  // Regression for the same bug the renderer caught in
+  // OverlaySvg.test.tsx — the bake's `arrowSvg` mirrors the
+  // renderer's ArrowGlyph two-step thickness resolution, and if
+  // someone updates one side without the other the bake will
+  // silently produce fat-stem-tiny-head arrows in library
+  // thumbnails. Asserts the head polygon's perpendicular extent
+  // (y-range of vertices on a horizontal arrow) ~doubles with
+  // Large.
+
+  function headPerpExtent(svg: string): number {
+    // Match the FIRST colored polygon (skip the white halo). The
+    // polygon points attr is `x1,y1 x2,y2 x3,y3` for the head
+    // triangle.
+    const coloredPolyMatch = svg.match(
+      /<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i
+    );
+    if (coloredPolyMatch === null) {
+      throw new Error("colored head polygon not found in bake SVG");
+    }
+    const ys = coloredPolyMatch[1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => Number(pair.split(",")[1]));
+    return Math.max(...ys) - Math.min(...ys);
+  }
+
+  test("thickness 'large' scales the head ~2× alongside the stem", () => {
+    const autoSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
+      W,
+      H
+    );
+    const largeSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "large" },
+      W,
+      H
+    );
+    expect(headPerpExtent(largeSvg) / headPerpExtent(autoSvg)).toBeCloseTo(2, 1);
+  });
+
+  test("thickness 'small' scales the head ~0.5× alongside the stem", () => {
+    const autoSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "auto" },
+      W,
+      H
+    );
+    const smallSvg = arrowSvgForV2(
+      { ...baseArrow(), endStyle: "filled-triangle", thickness: "small" },
+      W,
+      H
+    );
+    expect(headPerpExtent(smallSvg) / headPerpExtent(autoSvg)).toBeCloseTo(0.5, 1);
+  });
+});
+
+describe("arrowSvg (bake) — styleVersion", () => {
+  // The versioned style table is the load-bearing mechanism for
+  // freezing historical arrow proportions when the visual recipe
+  // changes. These tests prove the bake honors the version field —
+  // a regression here would silently rewrite library thumbnails when
+  // we add a v3+ in the future.
+
+  function coloredStemStrokeWidth(svg: string): number {
+    // The colored stem is the second <line> with stroke="#hex".
+    // The default fillColor is `#ff8a1f`; pull its stroke-width.
+    const m = svg.match(/stroke="#[0-9a-f]{6}" stroke-width="([\d.]+)"/i);
+    if (m === null) throw new Error("colored stem stroke-width not found");
+    return Number(m[1]);
+  }
+  function headLengthPxAlongArrow(svg: string): number {
+    // Horizontal arrow → head length = (to.x − baseCenter.x) =
+    // (apex x) − (min of base-corner xs). Extract head polygon
+    // vertices via the colored fill polygon.
+    const polyMatch = svg.match(
+      /<polygon points="([^"]+)" fill="#[0-9a-f]{6}"\s*\/>/i
+    );
+    if (polyMatch === null) throw new Error("colored head polygon not found");
+    const xs = polyMatch[1]!
+      .trim()
+      .split(/\s+/)
+      .map((pair) => Number(pair.split(",")[0]));
+    return Math.max(...xs) - Math.min(...xs);
+  }
+
+  test("no styleVersion → v1 (legacy 3.5/2.6 ratios)", () => {
+    const svg = arrowSvgForV2(baseArrow(), W, H);
+    const stroke = coloredStemStrokeWidth(svg);
+    const headLen = headLengthPxAlongArrow(svg);
+    // v1: headLength = 3.5 × stroke.
+    expect(headLen / stroke).toBeCloseTo(3.5, 1);
+  });
+
+  test("explicit v1 matches the legacy default", () => {
+    const a = arrowSvgForV2(baseArrow(), W, H);
+    const b = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    expect(b).toBe(a);
+  });
+
+  test("v2 uses Office-aligned 5/3 ratios", () => {
+    const svg = arrowSvgForV2(
+      { ...baseArrow(), styleVersion: 2 },
+      W,
+      H
+    );
+    const stroke = coloredStemStrokeWidth(svg);
+    const headLen = headLengthPxAlongArrow(svg);
+    // v2: headLength = 5 × stroke.
+    expect(headLen / stroke).toBeCloseTo(5, 1);
+  });
+
+  test("v1 and v2 produce visibly different head lengths for the same row", () => {
+    // Same row, two version pins → bake produces different SVG.
+    // This is the WHOLE POINT of the version table.
+    const v1Svg = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    const v2Svg = arrowSvgForV2({ ...baseArrow(), styleVersion: 2 }, W, H);
+    expect(headLengthPxAlongArrow(v2Svg)).toBeGreaterThan(
+      headLengthPxAlongArrow(v1Svg)
+    );
+  });
+
+  test("unknown future version falls back to v1 (fail-safe)", () => {
+    // A v999 row read by this client must NOT silently render at v2.
+    // The version table is freeze-in-place; an unknown version gets
+    // the legacy recipe, not "the closest known version."
+    const v1 = arrowSvgForV2({ ...baseArrow(), styleVersion: 1 }, W, H);
+    const future = arrowSvgForV2({ ...baseArrow(), styleVersion: 999 }, W, H);
+    expect(future).toBe(v1);
+  });
+});
+
 describe("arrowSvg (bake) — combined variants (matrix smoke)", () => {
   // Sample a handful of combinations to make sure nothing throws and
   // every combo yields a syntactically-plausible SVG (correctly

@@ -50,19 +50,17 @@ describe("computeArrowGeometry", () => {
     expect(wide.strokeWidthPx).toBe(4);
   });
 
-  it("scales head dimensions proportionally to stroke", () => {
+  it("scales head dimensions proportionally to stroke (v1 default)", () => {
+    // No styleVersion → v1 (legacy proportions: length 3.5×stroke,
+    // width 2.6×stroke). Pre-versioning rows render at this recipe
+    // forever. v2 (5/3) tested separately below.
     const geom = computeArrowGeometry({
       from: { x: 0.2, y: 0.5 },
       to: { x: 0.8, y: 0.5 },
       ...SQUARE_2K
     });
-    // Length:width = 5:3 ≈ golden ratio. PowerPoint / Word /
-    // Keynote default annotation arrows live in the same zone, which
-    // is the visual grammar PwrSnap viewers have already learned.
-    // Pre-2026-05 this was 3.5/2.6 (≈1.35:1) — too squat, especially
-    // at Large where the head was visibly stubby vs the doubled stem.
-    expect(geom.headLengthPx).toBeCloseTo(geom.strokeWidthPx * 5, 5);
-    expect(geom.headWidthPx).toBeCloseTo(geom.strokeWidthPx * 3, 5);
+    expect(geom.headLengthPx).toBeCloseTo(geom.strokeWidthPx * 3.5, 5);
+    expect(geom.headWidthPx).toBeCloseTo(geom.strokeWidthPx * 2.6, 5);
   });
 
   it("places the base of the head behind `to` along the arrow direction", () => {
@@ -313,6 +311,70 @@ describe("computeArrowGeometry", () => {
         expect(variant.headWidthPx).toBeCloseTo(auto.headWidthPx, 5);
         expect(variant.headLengthPx).toBeCloseTo(auto.headLengthPx, 5);
       }
+    });
+  });
+
+  describe("styleVersion", () => {
+    // The version table is the load-bearing mechanism for keeping
+    // historical captures stable when we change the visual recipe.
+    // These tests prove three things:
+    //   1. Missing styleVersion falls back to v1 (legacy proportions).
+    //   2. Explicit v1 matches the missing-field default exactly.
+    //   3. v2 produces different proportions for the same inputs —
+    //      proof that the table actually swaps recipes.
+    //   4. An unknown future version falls back to v1, not silently
+    //      "the closest known version" — fail-safe rather than
+    //      fail-pretty.
+    //
+    // When adding v3+ down the line, append a test here that asserts
+    // v1 vs vN produce visibly different output for the same inputs.
+
+    const base = {
+      from: { x: 0.1, y: 0.5 },
+      to: { x: 0.9, y: 0.5 },
+      ...SQUARE_2K
+    };
+
+    it("defaults to v1 (legacy 3.5/2.6 proportions) when field is missing", () => {
+      const geom = computeArrowGeometry(base);
+      expect(geom.headLengthPx).toBeCloseTo(geom.strokeWidthPx * 3.5, 5);
+      expect(geom.headWidthPx).toBeCloseTo(geom.strokeWidthPx * 2.6, 5);
+    });
+
+    it("explicit v1 matches the default", () => {
+      const missing = computeArrowGeometry(base);
+      const explicit = computeArrowGeometry({ ...base, styleVersion: 1 });
+      expect(explicit.headLengthPx).toBeCloseTo(missing.headLengthPx, 5);
+      expect(explicit.headWidthPx).toBeCloseTo(missing.headWidthPx, 5);
+      expect(explicit.strokeWidthPx).toBeCloseTo(missing.strokeWidthPx, 5);
+    });
+
+    it("v2 uses 5/3 proportions (Office-aligned)", () => {
+      const v2 = computeArrowGeometry({ ...base, styleVersion: 2 });
+      expect(v2.headLengthPx).toBeCloseTo(v2.strokeWidthPx * 5, 5);
+      expect(v2.headWidthPx).toBeCloseTo(v2.strokeWidthPx * 3, 5);
+    });
+
+    it("v1 and v2 produce different head dimensions for the same inputs", () => {
+      const v1 = computeArrowGeometry({ ...base, styleVersion: 1 });
+      const v2 = computeArrowGeometry({ ...base, styleVersion: 2 });
+      // Same stroke (auto-derived from identical geometry), different
+      // ratios → different head dims. This is the WHOLE POINT of the
+      // version table — same row, different visual recipe.
+      expect(v2.strokeWidthPx).toBeCloseTo(v1.strokeWidthPx, 5);
+      expect(v2.headLengthPx).toBeGreaterThan(v1.headLengthPx);
+      expect(v2.headWidthPx).toBeGreaterThan(v1.headWidthPx);
+    });
+
+    it("unknown future version falls back to v1 (fail-safe)", () => {
+      // A v3 row read by an older client that only knows v1+v2 must
+      // NOT silently render at v2 — that would produce inconsistent
+      // output for the same row across clients. v1 is the legacy
+      // anchor; anything we don't recognize gets the legacy recipe.
+      const v1 = computeArrowGeometry({ ...base, styleVersion: 1 });
+      const future = computeArrowGeometry({ ...base, styleVersion: 999 });
+      expect(future.headLengthPx).toBeCloseTo(v1.headLengthPx, 5);
+      expect(future.headWidthPx).toBeCloseTo(v1.headWidthPx, 5);
     });
   });
 });

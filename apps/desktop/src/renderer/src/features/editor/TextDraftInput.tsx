@@ -68,13 +68,46 @@ export function TextDraftInput({
 }): ReactElement {
   // Mirror TextGlyph's px math EXACTLY — any drift here is a visible
   // "text jumps on commit" bug.
+  //
+  // `fontPx` is the screen-pixel font-size that should land on the
+  // canvas during the draft. The canvas preserves the image aspect
+  // ratio, so the CSS→image scale factor is the same on both axes
+  // (canvasCssWidth/imageWidthPx === canvasCssHeight/imageHeightPx).
+  // We want the rendered draft to be `scaleFactor × sizePx` screen
+  // px so it matches:
+  //   - the SVG TextGlyph (which now renders at sizePx in pixel-
+  //     space viewBox units, scaled by the SVG-to-canvas mapping →
+  //     same product)
+  //   - the bake (compose.ts textSvg renders at sizePx image-px,
+  //     authoritative)
+  //
+  // Pre-fix this used `canvasCssHeight × sizePx/shortSide`, which
+  // accidentally evaluates to `canvasCssHeight × sizePx/imageWidth`
+  // on portrait images (where shortSide = imageWidth, not
+  // imageHeight). That came out to `scaleFactor × sizePx × imageH/
+  // imageW` — too big by the aspect ratio on portrait, exactly right
+  // on landscape (where shortSide = imageHeight and the formula
+  // collapses to `scaleFactor × sizePx`).
+  //
+  // The bug was invisible until PR #121 fixed the SVG side; pre-PR
+  // the SVG TextGlyph was *also* wrong-by-the-same-factor on
+  // portrait (via the `preserveAspectRatio="none"` non-uniform
+  // stretch), so draft + commit matched. After PR #121 the SVG
+  // renders correctly and this stale formula was the only thing
+  // left producing the oversized draft.
+  //
+  // The dimensionally-clean form: `(canvasCssHeight / imageHeightPx)
+  // × sizePx` — pulled the scale factor out, multiplied by image-
+  // pixel font size. Identical on landscape, correct on portrait.
   const rect = canvasRef.current?.getBoundingClientRect() ?? null;
   const canvasCssHeight = rect?.height ?? 0;
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const sizePx =
     size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
   const fontPx =
-    canvasCssHeight > 0 ? canvasCssHeight * (sizePx / shortSide) : 16;
+    canvasCssHeight > 0
+      ? (canvasCssHeight / imageHeightPx) * sizePx
+      : 16;
   // Halo MUST use the SAME technique as TextGlyph's SVG stroke or
   // Regular-weight glyphs render visibly wider on commit than they did
   // in draft. Why: SVG strokes are GEOMETRIC outlines that follow the

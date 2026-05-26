@@ -49,7 +49,11 @@ import type {
   TextToolStyle,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { DEFAULT_BLUR_STYLE, readTextWeight } from "@pwrsnap/shared";
+import {
+  CURRENT_ARROW_STYLE_VERSION,
+  DEFAULT_BLUR_STYLE,
+  readTextWeight
+} from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 import { resolveToolColor } from "./resolveToolColor";
@@ -868,7 +872,12 @@ export function Editor({
         color:
           arrowStyleSrc !== null
             ? resolveToolColor(arrowStyleSrc.color)
-            : "auto"
+            : "auto",
+        // Pin the style version at commit time so future tweaks to
+        // head proportions / stroke clamps don't retroactively rewrite
+        // this row. See `ARROW_STYLE_VERSIONS` in
+        // `packages/shared/src/arrow.ts` for the recipe per version.
+        styleVersion: CURRENT_ARROW_STYLE_VERSION
       };
       if (arrowStyleSrc !== null) {
         arrowOverlay.endStyle = arrowStyleSrc.endStyle;

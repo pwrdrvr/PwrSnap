@@ -357,11 +357,18 @@ function arrowSvg(
   //   1. auto geometry → use its strokeFraction as the basis
   //   2. resolve thickness override against that fraction
   //   3. final geometry with the resolved stroke as override
+  // styleVersion pins the head proportions + stroke clamps to the
+  // recipe this row was drawn with. Missing/undefined → v1 (legacy
+  // proportions) so pre-versioning rows render unchanged. New rows
+  // get stamped with `CURRENT_ARROW_STYLE_VERSION` at commit time
+  // in Editor.tsx.
+  const styleVersion = data.styleVersion;
   const autoGeom = computeArrowGeometry({
     from: data.from,
     to: data.to,
     imageWidthPx,
-    imageHeightPx
+    imageHeightPx,
+    styleVersion
   });
   const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
   const strokeWidthOverridePx =
@@ -376,7 +383,8 @@ function arrowSvg(
           to: data.to,
           imageWidthPx,
           imageHeightPx,
-          strokeWidthOverridePx
+          strokeWidthOverridePx,
+          styleVersion
         });
   // Mirrored geometry for the tail-end head — same algorithm with
   // from/to swapped. Keeps the head triangle's proportions identical
@@ -389,7 +397,8 @@ function arrowSvg(
         to: data.from,
         imageWidthPx,
         imageHeightPx,
-        strokeWidthOverridePx
+        strokeWidthOverridePx,
+        styleVersion
       })
     : null;
 

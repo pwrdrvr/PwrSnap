@@ -77,6 +77,7 @@ import {
 } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import { dispatch } from "../../lib/pwrsnap";
+import { nanoid } from "nanoid";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
 
@@ -642,6 +643,17 @@ export function EditToolbar({
               // capture in its cropped state forever. The user's
               // intuition is "Reset = full original" so we restore both.
               let rasterDims: { width: number; height: number } | null = null;
+              // Snapshot the raster layer too — Reset needs to restore
+              // its transform to identity if a previous off-origin crop
+              // translated it (useCaptureModel.ts Step 0.5 writes
+              // raster.transform[4]/[5] when the user drags a non-(0,0)
+              // crop rect, per PR #110). Without resetting, the
+              // captures-row dim restore below leaves the raster
+              // shifted inside the now-full canvas — visible as the
+              // image appearing offset from the canvas's top-left with
+              // empty space on the opposite edges. (Reproduced live
+              // by the user after Reset on lPK1jAx7uXAACf9k.)
+              let rasterNeedingReset: (typeof list.value)[number] | null = null;
               for (const node of list.value) {
                 if (
                   node.kind === "raster" &&
@@ -651,6 +663,9 @@ export function EditToolbar({
                     width: node.natural_width_px,
                     height: node.natural_height_px
                   };
+                  if (node.transform[4] !== 0 || node.transform[5] !== 0) {
+                    rasterNeedingReset = node;
+                  }
                   break;
                 }
               }
@@ -661,6 +676,23 @@ export function EditToolbar({
                 if (node.kind === "group" || node.kind === "raster") continue;
                 // eslint-disable-next-line no-await-in-loop
                 await dispatch("layers:delete", { id: node.id });
+              }
+              // Restore the raster's identity transform if a previous
+              // off-origin crop translated it. Delete + reinsert mirrors
+              // the dispatcher's pattern (the IPC surface has no
+              // updateLayer verb; v2 edits are delete-plus-insert via
+              // `layers:delete` + `layers:upsert`). Skip when transform
+              // is already identity so the common case stays churn-free.
+              if (rasterNeedingReset !== null) {
+                await dispatch("layers:delete", { id: rasterNeedingReset.id });
+                await dispatch("layers:upsert", {
+                  captureId,
+                  layer: {
+                    ...rasterNeedingReset,
+                    id: nanoid(16),
+                    transform: [1, 0, 0, 1, 0, 0]
+                  }
+                });
               }
               // Restore canvas to raster-natural dims if the capture
               // was cropped. The `updateCanvasDimensions` handler

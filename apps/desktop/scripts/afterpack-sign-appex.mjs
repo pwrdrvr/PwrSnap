@@ -53,12 +53,16 @@ const entitlementsPath = join(
 /**
  * Locate a Developer ID Application identity for code signing.
  * Mirrors electron-builder's own discovery heuristic:
- *   1. `CSC_NAME` env var (set by CI, or by the user via release.mjs)
- *   2. First "Developer ID Application: ..." identity from the user
+ *   1. `PWRSNAP_APPEX_SIGN_IDENTITY` env var (full identity from release.mjs)
+ *   2. `CSC_NAME` env var (local escape hatch; may be full identity)
+ *   3. First "Developer ID Application: ..." identity from the user
  *      keychain via `security find-identity -v -p codesigning`
- *   3. None — fall through to ad-hoc signing (`-`)
+ *   4. None — fall through to ad-hoc signing (`-`)
  */
 function discoverSigningIdentity() {
+  if (process.env.PWRSNAP_APPEX_SIGN_IDENTITY) {
+    return process.env.PWRSNAP_APPEX_SIGN_IDENTITY;
+  }
   if (process.env.CSC_NAME) return process.env.CSC_NAME;
 
   try {

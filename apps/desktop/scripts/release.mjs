@@ -226,6 +226,10 @@ function findDeveloperIdIdentity(keychainPath) {
   return match?.[1] ?? null;
 }
 
+function stripDeveloperIdApplicationPrefix(identity) {
+  return identity.replace(/^Developer ID Application:\s*/, "");
+}
+
 function restoreCodesignKeychains(originalKeychains, keychainPath) {
   try {
     runQuiet("security", ["list-keychains", "-d", "user", "-s", ...originalKeychains]);
@@ -317,7 +321,8 @@ function maybePrepareCodesignKeychain() {
 
   const existingIdentity = findDeveloperIdIdentity(null);
   if (existingIdentity !== null) {
-    process.env.CSC_NAME ??= existingIdentity;
+    process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= existingIdentity;
+    process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(existingIdentity);
     return;
   }
 
@@ -375,7 +380,8 @@ function maybePrepareCodesignKeychain() {
   }
 
   process.env.CSC_KEYCHAIN = keychainPath;
-  process.env.CSC_NAME ??= identity;
+  process.env.PWRSNAP_APPEX_SIGN_IDENTITY ??= identity;
+  process.env.CSC_NAME ??= stripDeveloperIdApplicationPrefix(identity);
   codesignKeychainCleanup = () => restoreCodesignKeychains(originalKeychains, keychainPath);
   process.once("exit", () => {
     if (codesignKeychainCleanup !== null) {

@@ -341,3 +341,46 @@ describe("OverlayThickness + readOverlayThickness", () => {
     expect(parsed.thickness).toBe("x-large");
   });
 });
+
+describe("TextOverlay sizePx (absolute text height in source pixels)", () => {
+  // pwrdrvr/PwrSnap#110: a sibling field to `size` that stores the
+  // ABSOLUTE text height in source pixels. The bucket enum stays as
+  // the user's last UI intent; sizePx is the resolved truth. Decoupling
+  // them lets `"medium"` mean different absolute sizes for two
+  // canvases of the same dim depending on placement history (native vs
+  // cropped) — without this field, the bucket math at render time has
+  // to pick ONE source-of-truth (canvas shortSide OR source shortSide)
+  // and is forced to lie to the user on one of the two cases.
+  //
+  // Optional for back-compat. Legacy rows (no sizePx) keep parsing
+  // and rendering exactly as they did before this change; the new
+  // field only takes effect when the renderer/bake see it populated.
+
+  test("accepts a positive finite sizePx", () => {
+    const parsed = TextOverlay.parse({
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "Hi",
+      size: "medium",
+      sizePx: 64
+    });
+    expect(parsed.sizePx).toBe(64);
+  });
+
+  test("legacy row without sizePx parses cleanly — field stays undefined", () => {
+    const parsed = TextOverlay.parse({
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "Hi"
+    });
+    expect(parsed.sizePx).toBeUndefined();
+  });
+
+  test("rejects non-positive or non-finite sizePx (defensive — would crash the renderer)", () => {
+    const base = { kind: "text", point: { x: 0, y: 0 }, body: "x", size: "small" };
+    expect(() => TextOverlay.parse({ ...base, sizePx: 0 })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: -5 })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: NaN })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: Infinity })).toThrow();
+  });
+});

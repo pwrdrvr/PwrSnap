@@ -71,6 +71,21 @@ describe("textSvg (bake) — fontSize derives from SOURCE shortSide, not canvas"
     expect(large).toMatch(new RegExp(`font-size="${600 / 18}"`)); // 33.333...
   });
 
+  test("row with explicit sizePx field overrides bucket × source math", () => {
+    // pwrdrvr/PwrSnap#110: the row carries `sizePx: 100` — bake must
+    // emit font-size="100" regardless of bucket / source / canvas
+    // dims. This is the load-bearing path for the new "Custom" UX:
+    // a row whose sizePx is between two buckets renders at its
+    // stored value, and the popover surfaces "Custom".
+    const data: Extract<OverlayRow["data"], { kind: "text" }> = {
+      ...baseText("medium"),
+      sizePx: 100
+    };
+    const svg = textSvgForV2(data, 400, 300, 800, 600);
+    expect(svg).toMatch(/font-size="100"/);
+    expect(svg).not.toMatch(/font-size="20"/); // would be source-shortSide bucket
+  });
+
   test("legacy callers without source dims fall back to canvas shortSide", () => {
     // v1 captures and any caller that doesn't have source dims at
     // hand can omit them; in that case `textSvg` falls back to the

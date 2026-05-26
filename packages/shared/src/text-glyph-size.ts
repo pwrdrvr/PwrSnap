@@ -42,6 +42,18 @@ export interface TextGlyphSizeArgs {
   canvasWidthPx: number;
   /** CANVAS pixel height — `record.height_px`. */
   canvasHeightPx: number;
+  /** Persisted absolute text height from `TextOverlay.sizePx`, in
+   *  source/canvas pixels (same scale in v2). When present this is
+   *  the source of truth — `size` is ignored for sizing math (it's
+   *  still the UI intent the popover renders to highlight the right
+   *  bucket button). Legacy rows without sizePx fall back to the
+   *  bucket × source-shortSide formula below. See
+   *  pwrdrvr/PwrSnap#110 for the design.
+   *
+   *  Explicitly `| undefined` (not just `?`) so callers under
+   *  `exactOptionalPropertyTypes: true` can pass `data.sizePx`
+   *  through directly without a guard. */
+  storedSizePx?: number | undefined;
 }
 
 export interface TextGlyphSize {
@@ -65,14 +77,57 @@ export function computeTextGlyphSize(args: TextGlyphSizeArgs): TextGlyphSize {
     sourceWidthPx,
     sourceHeightPx,
     canvasWidthPx,
-    canvasHeightPx
+    canvasHeightPx,
+    storedSizePx
   } = args;
   // Defensive: zero dims would crash the divisions. Fall back to 1
   // so the helper never throws (caller might have a transient state
   // mid-load). The fallback is wrong-looking but non-fatal.
   const safeSourceShort = Math.max(1, Math.min(sourceWidthPx, sourceHeightPx));
   const safeCanvasShort = Math.max(1, Math.min(canvasWidthPx, canvasHeightPx));
-  const sizePx = safeSourceShort / DIVISORS[size];
-  const fontSize = sizePx / safeCanvasShort;
-  return { sizePx, fontSize };
+  // When the row carries an explicit sizePx, that's the source of
+  // truth — bucket math is bypassed entirely. Renderers + popover
+  // still read `size` for the UI bucket highlight (and for "Custom"
+  // detection when sizePx doesn't match any bucket for the current
+  // canvas), but the rendered glyph height is whatever sizePx says.
+  // Legacy rows fall through to the bucket × source-shortSide
+  // formula (the post-`881cff0` behavior).
+  const resolvedSizePx =
+    storedSizePx !== undefined && Number.isFinite(storedSizePx) && storedSizePx > 0
+      ? storedSizePx
+      : safeSourceShort / DIVISORS[size];
+  const fontSize = resolvedSizePx / safeCanvasShort;
+  return { sizePx: resolvedSizePx, fontSize };
+}
+
+/** Per-bucket source-pixel value for the CURRENT canvas. The popover
+ *  uses this to decide whether a row's stored `sizePx` is "in bucket"
+ *  (matches one of these within tolerance) or "Custom" (between
+ *  buckets after a crop). Source dims are constant across crops, so
+ *  the same canvas → same bucket values regardless of capture
+ *  history. */
+export function bucketSizePxForCanvas(
+  bucket: TextSizeBucket,
+  sourceWidthPx: number,
+  sourceHeightPx: number
+): number {
+  const sourceShortSide = Math.max(1, Math.min(sourceWidthPx, sourceHeightPx));
+  return sourceShortSide / DIVISORS[bucket];
+}
+
+/** Returns the bucket whose pixel value matches `sizePx` within
+ *  `tolerancePx` source pixels, or `null` when none match (Custom
+ *  state — the popover surfaces this as a non-clickable label). */
+export function matchBucket(
+  sizePx: number,
+  sourceWidthPx: number,
+  sourceHeightPx: number,
+  tolerancePx = 1
+): TextSizeBucket | null {
+  const buckets: TextSizeBucket[] = ["small", "medium", "large"];
+  for (const bucket of buckets) {
+    const bucketPx = bucketSizePxForCanvas(bucket, sourceWidthPx, sourceHeightPx);
+    if (Math.abs(sizePx - bucketPx) < tolerancePx) return bucket;
+  }
+  return null;
 }

@@ -21,6 +21,56 @@
 import { describe, expect, test } from "vitest";
 import { computeTextGlyphSize } from "../text-glyph-size";
 
+describe("computeTextGlyphSize storedSizePx override (TextOverlay.sizePx → render)", () => {
+  // pwrdrvr/PwrSnap#110: when a row carries an explicit sizePx, that
+  // value wins — the bucket math is bypassed. This is the load-
+  // bearing path for the new "Custom" UX: a row whose sizePx doesn't
+  // match any bucket for the current canvas renders at its stored
+  // size; the popover then surfaces "Custom" to signal the mismatch.
+  test("storedSizePx wins over the bucket math when present", () => {
+    const result = computeTextGlyphSize({
+      size: "medium", // would resolve to 1920/30 = 64 normally
+      sourceWidthPx: 2880,
+      sourceHeightPx: 1920,
+      canvasWidthPx: 2880,
+      canvasHeightPx: 1920,
+      storedSizePx: 100 // explicit override
+    });
+    expect(result.sizePx).toBe(100); // NOT 64
+    expect(result.fontSize).toBeCloseTo(100 / 1920, 5);
+  });
+
+  test("storedSizePx absent → falls back to bucket × source shortSide", () => {
+    const result = computeTextGlyphSize({
+      size: "medium",
+      sourceWidthPx: 2880,
+      sourceHeightPx: 1920,
+      canvasWidthPx: 2880,
+      canvasHeightPx: 1920
+      // no storedSizePx
+    });
+    expect(result.sizePx).toBeCloseTo(64, 5); // bucket fallback
+  });
+
+  test("storedSizePx with cropped canvas: stored value stays, fontSize scales to current canvas", () => {
+    // The Custom-state scenario: row was placed at sizePx=64 on the
+    // uncropped capture, user then cropped to a smaller canvas. The
+    // stored sizePx doesn't change (it's row-level data). fontSize
+    // (viewBox unit) scales by canvasShortSide so the on-screen text
+    // height stays proportional to the source raster.
+    const result = computeTextGlyphSize({
+      size: "medium",
+      sourceWidthPx: 2880,
+      sourceHeightPx: 1920,
+      canvasWidthPx: 2294,
+      canvasHeightPx: 1239,
+      storedSizePx: 64
+    });
+    expect(result.sizePx).toBe(64); // unchanged across crops
+    expect(result.fontSize).toBeCloseTo(64 / 1239, 5); // bigger viewBox value
+  });
+});
+
 describe("computeTextGlyphSize", () => {
   test("uncropped capture (canvas == source): sizePx = sourceShortSide/30 for medium", () => {
     const result = computeTextGlyphSize({

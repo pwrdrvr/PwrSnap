@@ -357,7 +357,21 @@ export const TextOverlay = z.object({
    *  honored it — every draft, every committed glyph, every export
    *  rendered at 600 regardless of pick. */
   weight: z.union([z.literal("regular"), z.literal("bold")]).optional(),
-  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto")
+  color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
+  /** Absolute text height in source/canvas pixels (the two share the
+   *  same scale in v2 — crop is a viewport change, not a resampling).
+   *  When present, renderers + bake use this directly and IGNORE the
+   *  bucket math; `size` is then UI-intent metadata only ("user last
+   *  picked Medium") used by the popover to highlight the right
+   *  button. Lets the same row mean different absolute sizes for
+   *  native vs cropped captures of the same dim — and lets the popover
+   *  surface a "Custom" indicator when sizePx doesn't match any of the
+   *  current canvas's bucket values (pwrdrvr/PwrSnap#110).
+   *
+   *  Optional for back-compat: legacy rows (no sizePx) keep
+   *  rendering via the bucket + source-shortSide formula in
+   *  `computeTextGlyphSize`. */
+  sizePx: z.number().positive().finite().optional()
 });
 
 /** Map the optional `weight` field to a CSS font-weight number.

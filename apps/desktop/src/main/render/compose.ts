@@ -669,9 +669,17 @@ function textSvg(
 ): string {
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
-  // Prefer source shortSide when available — keeps text size invariant
-  // across crops (matches `computeTextGlyphSize` in the renderer's
-  // `text-glyph-size.ts`).
+  // When the row carries an explicit sizePx (pwrdrvr/PwrSnap#110),
+  // that value wins — bucket math is bypassed. Otherwise fall back to
+  // bucket × source-shortSide (with canvas-shortSide as the legacy
+  // fallback when source dims aren't known). Same precedence as
+  // `computeTextGlyphSize` in @pwrsnap/shared — the renderer and the
+  // bake walk the same decision tree so the live preview and the
+  // export always agree.
+  //
+  //   small  ≈ shortSide / 50
+  //   medium ≈ shortSide / 30
+  //   large  ≈ shortSide / 18
   const shortSideForSizing =
     sourceWidthPx !== undefined &&
     sourceHeightPx !== undefined &&
@@ -679,18 +687,16 @@ function textSvg(
     sourceHeightPx > 0
       ? Math.min(sourceWidthPx, sourceHeightPx)
       : Math.min(imageWidthPx, imageHeightPx);
-  // Three buckets, ~1.7× ratios — must match
-  // apps/desktop/src/renderer/src/features/editor/OverlaySvg.tsx's
-  // TextGlyph or the live preview and the export will disagree.
-  //   small  ≈ shortSide / 50
-  //   medium ≈ shortSide / 30
-  //   large  ≈ shortSide / 18
-  const fontSizePx =
+  const bucketSizePx =
     data.size === "large"
       ? shortSideForSizing / 18
       : data.size === "medium"
         ? shortSideForSizing / 30
         : shortSideForSizing / 50;
+  const fontSizePx =
+    data.sizePx !== undefined && Number.isFinite(data.sizePx) && data.sizePx > 0
+      ? data.sizePx
+      : bucketSizePx;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   // Multi-line: split body on "\n" and emit one tspan per line, each
   // advancing the baseline by 1.2em. dominant-baseline="central" puts

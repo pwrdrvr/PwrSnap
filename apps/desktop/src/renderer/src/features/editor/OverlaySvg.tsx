@@ -40,7 +40,7 @@ import {
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
-import { computeTextGlyphSize } from "./text-glyph-size";
+import { computeTextGlyphSize } from "@pwrsnap/shared";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -233,6 +233,7 @@ export function OverlaySvg({
           imageHeightPx={imageHeightPx}
           sourceWidthPx={sourceWidthPx}
           sourceHeightPx={sourceHeightPx}
+          storedSizePx={data.sizePx}
         />
       ))}
 
@@ -924,7 +925,8 @@ function textBoundsBox(
     sourceWidthPx,
     sourceHeightPx,
     canvasWidthPx: imageWidthPx,
-    canvasHeightPx: imageHeightPx
+    canvasHeightPx: imageHeightPx,
+    storedSizePx: data.sizePx
   });
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
@@ -1639,11 +1641,17 @@ function TextGlyph({
   imageHeightPx,
   sourceWidthPx,
   sourceHeightPx,
+  storedSizePx,
   color
 }: {
   point: { x: number; y: number };
   body: string;
   size: "small" | "medium" | "large";
+  /** Persisted `TextOverlay.sizePx` (pwrdrvr/PwrSnap#110). When
+   *  present overrides the bucket math — keeps the row at a stable
+   *  physical size across crops. Legacy rows pass undefined and fall
+   *  back to the bucket × source-shortSide formula. */
+  storedSizePx?: number | undefined;
   /** Resolved CSS font-weight number — pass through `readTextWeight`
    *  from `@pwrsnap/shared` so the legacy fallback (600) and the
    *  popover values (regular=400, bold=700) all funnel through one
@@ -1685,7 +1693,12 @@ function TextGlyph({
     sourceWidthPx,
     sourceHeightPx,
     canvasWidthPx: imageWidthPx,
-    canvasHeightPx: imageHeightPx
+    canvasHeightPx: imageHeightPx,
+    // Persisted absolute size (pwrdrvr/PwrSnap#110) — when present
+    // overrides the bucket math so the same row renders at a stable
+    // physical size across crops + across native/cropped captures of
+    // the same dim.
+    storedSizePx
   });
   const accent =
     color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";

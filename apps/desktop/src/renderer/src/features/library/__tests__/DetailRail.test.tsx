@@ -271,13 +271,13 @@ describe("DetailRail", () => {
     const fullOcr = `${"line\n".repeat(80)}final visible line`;
     const { el } = await renderDetailRail(enrichment({ ocrText: fullOcr }));
 
-    // Detail tab is the default tab; OCR text must NOT appear there now.
+    // Info tab is the default tab; OCR text must NOT appear there now.
     expect(el.querySelector(".psl__ocr-tab-body")).toBeNull();
 
-    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
-      candidate.textContent?.startsWith("OCR")
-    ) as HTMLButtonElement | undefined;
-    expect(ocrTab).toBeDefined();
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab).not.toBeNull();
     await act(async () => {
       ocrTab?.click();
       await Promise.resolve();
@@ -312,9 +312,10 @@ describe("DetailRail", () => {
   test("OCR Copy text routes through clipboard:copyText, not navigator.clipboard", async () => {
     const { el, dispatch } = await renderDetailRail(enrichment({ ocrText: "secret contents" }));
 
-    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
-      candidate.textContent?.startsWith("OCR")
-    ) as HTMLButtonElement | undefined;
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab).not.toBeNull();
     await act(async () => {
       ocrTab?.click();
       await Promise.resolve();
@@ -620,16 +621,61 @@ describe("DetailRail", () => {
     expect(titleInput?.value).toBe("Prior accepted headline");
   });
 
-  test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {
+  test("vertical activity bar renders Info / OCR / Chat tabs with role=tab", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "some text" }));
+
+    const infoTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-info"]'
+    );
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    const chatTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    expect(infoTab).not.toBeNull();
+    expect(ocrTab).not.toBeNull();
+    expect(chatTab).not.toBeNull();
+    expect(infoTab?.getAttribute("role")).toBe("tab");
+    expect(ocrTab?.getAttribute("role")).toBe("tab");
+    expect(chatTab?.getAttribute("role")).toBe("tab");
+
+    // Pinned by default — the Info panel renders as a region with role
+    // tabpanel; the active tab is Info on first paint.
+    const tabPanels = el.querySelectorAll('[role="tabpanel"]');
+    expect(tabPanels.length).toBeGreaterThanOrEqual(1);
+
+    // Persistent footer that hosts the L/M/H copy row + actions never
+    // disappears across tab switches.
+    expect(el.querySelector('[data-testid="psl-right-footer"]')).not.toBeNull();
+  });
+
+  test("OCR tab shows a notification badge when extracted text exists", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "snap content" }));
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).not.toBeNull();
+  });
+
+  test("OCR tab badge is absent when there is no extracted text", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: null }));
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).toBeNull();
+  });
+
+  test("Chat tab opens the ChatPanel surface", async () => {
     const { el } = await renderDetailRail(enrichment());
-
-    const detailTab = el.querySelector("#psl-tab-detail");
-    const ocrTab = el.querySelector("#psl-tab-ocr");
-    expect(detailTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-detail");
-    expect(ocrTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-ocr");
-
-    const panel = el.querySelector('[role="tabpanel"]');
-    expect(panel?.getAttribute("id")).toBe("psl-tabpanel-detail");
-    expect(panel?.getAttribute("aria-labelledby")).toBe("psl-tab-detail");
+    const chatTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    expect(chatTab).not.toBeNull();
+    await act(async () => {
+      chatTab?.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="chat-panel"]')).not.toBeNull();
   });
 });

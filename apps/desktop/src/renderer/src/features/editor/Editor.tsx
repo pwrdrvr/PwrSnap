@@ -80,6 +80,7 @@ import { CropTool } from "./CropTool";
 import { EditorChrome } from "./EditorChrome";
 import { ToolStylePopover, type StyledToolKind } from "./ToolStylePopover";
 import { InfoPanel } from "./panels/InfoPanel";
+import { ChatPanel } from "./panels/ChatPanel";
 import { ToolConfigPanel } from "./panels/ToolConfigPanel";
 import {
   useEditorToolState,
@@ -2753,11 +2754,7 @@ function EditorLoaded({
     <EditorChrome
       panels={{
         info: <InfoPanel captureId={record.id} />,
-        chat: (
-          <div className="pse-panel-stub" data-testid="panel-chat-stub">
-            Chat with AI lands in Phase 7.
-          </div>
-        ),
+        chat: <ChatPanel captureId={record.id} />,
         toolConfig: (
           <ToolConfigPanel
             captureId={record.id}

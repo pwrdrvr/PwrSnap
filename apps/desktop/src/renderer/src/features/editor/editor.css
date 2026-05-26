@@ -1145,8 +1145,8 @@
   outline-offset: 2px;
 }
 
-/* Right-sidebar panel stubs — Chat (Phase 7) + Help. Both render
-   inside .pse-chrome__panel-body which supplies scroll + padding;
+/* Right-sidebar panel stubs — Help. Renders inside
+   .pse-chrome__panel-body which supplies scroll + padding;
    the stub is just a lightweight typographic body. */
 .pse-panel-stub {
   padding: 16px;
@@ -1159,6 +1159,178 @@
 }
 .pse-panel-stub p:last-child {
   margin-bottom: 0;
+}
+
+/* ============================================================
+   CHAT PANEL — right-sidebar surface for the Codex dynamic-tools
+   work. The composer is sticky-ish at the bottom; the message
+   list scrolls between the context chip and the composer.
+   ============================================================ */
+
+.pse-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 14px 14px 12px;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.pse-chat-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pse-chat-context {
+  display: flex;
+}
+.pse-chat-context-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+  border-radius: 999px;
+  font: 500 10.5px/1.2 var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.pse-chat-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+  min-height: 0;
+}
+
+.pse-chat-welcome {
+  padding: 10px 12px;
+  border: 1px dashed var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pse-chat-welcome-eyebrow {
+  font: 600 10px/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-bright);
+}
+.pse-chat-welcome-body {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.pse-chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+}
+.pse-chat-msg.is-you {
+  background: color-mix(in srgb, var(--bg-panel) 70%, transparent);
+}
+.pse-chat-msg.is-codex {
+  border-color: var(--accent-border);
+}
+
+.pse-chat-msg-hdr {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+.pse-chat-msg-author {
+  color: var(--text-secondary);
+  text-transform: lowercase;
+}
+.pse-chat-msg.is-codex .pse-chat-msg-author {
+  color: var(--accent-bright);
+}
+.pse-chat-msg-ts {
+  color: var(--text-muted);
+}
+.pse-chat-msg-body {
+  margin: 0;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pse-chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.pse-chat-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 56px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.pse-chat-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.pse-chat-composer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pse-chat-composer-meta {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+.pse-chat-send {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 14px;
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pse-chat-send:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+.pse-chat-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pse-chat-send:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 1px;
 }
 
 /* ============================================================

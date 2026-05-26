@@ -1226,6 +1226,44 @@
   border-left: 1px solid var(--border-subtle);
 }
 
+/* Vertical-tabs variant — used by the DetailRail refresh. Splits the
+   aside into a top region that hosts the RightActivityBar (panel +
+   activity-bar columns) and a persistent footer (Copy row + actions).
+   The footer stays put across tab switches AND across hover-pop
+   show/hide, so the user never loses the keep-using-the-snap controls
+   to a UI mode toggle.
+
+   The top region clips so a hover-pop's overlay panel stays anchored
+   within the rail; without this clip an over-tall panel (e.g. Chat
+   with lots of messages) would bleed past the aside's right edge. */
+.psl__right--vertical {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+.psl__right-content {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+.psl__right-footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-sidebar);
+}
+.psl__right-body--chat {
+  /* Chat carries its own composer footer; let it stretch to the panel
+     bottom rather than scrolling inside another scroll context. */
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
 .psl__right-tabs {
   display: flex; padding: 10px 12px 0;
   gap: 2px;

@@ -135,8 +135,16 @@ test("editor-activity-bar: accel+1/2/3 select panels", async () => {
       .locator('[data-testid="pse-panel-pinned"]')
       .waitFor({ state: "visible", timeout: 5_000 });
     await expect(
-      editorWindow.locator('[data-testid="panel-chat-stub"]')
+      editorWindow.locator('[data-testid="chat-panel"]')
     ).toHaveCount(1);
+    // ChatPanel renders its title.
+    await expect(
+      editorWindow.locator('[data-testid="chat-panel"] .pse-chat-title')
+    ).toContainText("Chat with Codex");
+    // And the context chip surfaces dims + layer count.
+    await expect(
+      editorWindow.locator('[data-testid="chat-context"]')
+    ).toContainText("capture");
 
     // ⌘3 — Tool Config.
     await editorWindow.keyboard.press(`${accel()}+3`);

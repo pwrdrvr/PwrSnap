@@ -9,9 +9,16 @@
 // affordances. The Codex status surfaces through the shared
 // CodexStatusPill so "thinking" looks identical on both surfaces.
 //
-// Tabs: Detail (current editor) + OCR (its own panel for the often-
-// lengthy extracted text). The placeholder "History" tab is gone — when
-// run-history needs surfacing we'll add it back as a real tab.
+// Tabs are now vertical (VS-Code-style activity bar on the right edge)
+// with three surfaces: Info (the prior "Detail" panel), OCR, and Chat
+// (placeholder for the upcoming Codex dynamic-tools wiring). The bar
+// can be pinned open or auto-hidden — same hover-pop pattern the
+// editor's chrome uses. The L/M/H copy row + secondary action row sit
+// in a persistent footer beneath the bar so a tab switch (or a hover-
+// pop closing) never strands the user without copy/file/trash access.
+//
+// Pinned + last-selected state is per-window local state — settings
+// persistence can land later if cross-window memory becomes desirable.
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -21,6 +28,12 @@ import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
+import {
+  RightActivityBar,
+  type RightActivityTab
+} from "../shared/RightActivityBar";
+import "../shared/RightActivityBar.css";
+import { ChatPanel } from "../editor/panels/ChatPanel";
 import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
@@ -32,7 +45,7 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
   high: "High"
 };
 
-type SidebarTab = "detail" | "ocr";
+type SidebarTab = "info" | "ocr" | "chat";
 
 export type DetailRailProps = {
   readonly view: LibraryView;
@@ -46,7 +59,10 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
-  const [activeTab, setActiveTab] = useState<SidebarTab>("detail");
+  const [activeTab, setActiveTab] = useState<SidebarTab>("info");
+  // Pinned by default — current behavior is "panel always visible".
+  // Click an active icon to unpin and switch to hover-pop mode.
+  const [pinned, setPinned] = useState<boolean>(true);
 
   useEffect(() => {
     if (record === null) {
@@ -104,45 +120,38 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     titleAccepted &&
     descriptionAccepted;
 
-  return (
-    <aside className="psl__right" aria-label="Capture details">
-      <div className="psl__right-tabs" role="tablist">
-        <button
-          id="psl-tab-detail"
-          className={"psl__right-tab" + (activeTab === "detail" ? " is-active" : "")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "detail"}
-          aria-controls="psl-tabpanel-detail"
-          onClick={() => setActiveTab("detail")}
-        >
-          Detail
-        </button>
-        <button
-          id="psl-tab-ocr"
-          className={"psl__right-tab" + (activeTab === "ocr" ? " is-active" : "")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "ocr"}
-          aria-controls="psl-tabpanel-ocr"
-          onClick={() => setActiveTab("ocr")}
-        >
-          OCR
-          {enrichment?.ocrText ? (
-            <span className="psl__right-tab-badge" aria-hidden>
-              •
-            </span>
-          ) : null}
-        </button>
-      </div>
+  const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
 
-      <div
-        className="psl__right-body"
-        role="tabpanel"
-        id={activeTab === "detail" ? "psl-tabpanel-detail" : "psl-tabpanel-ocr"}
-        aria-labelledby={activeTab === "detail" ? "psl-tab-detail" : "psl-tab-ocr"}
-      >
-        {activeTab === "detail" ? (
+  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = [
+    {
+      id: "info",
+      label: "Info",
+      title: "Info",
+      icon: INFO_ICON
+    },
+    {
+      id: "ocr",
+      label: "OCR",
+      title: hasOcrText ? "OCR — extracted text ready" : "OCR",
+      badge: hasOcrText,
+      icon: OCR_ICON
+    },
+    {
+      id: "chat",
+      label: "Chat",
+      title: "Chat with Codex",
+      icon: CHAT_ICON
+    }
+  ];
+
+  const renderPanel = (id: SidebarTab): ReactElement => {
+    if (id === "info") {
+      return (
+        <div
+          className="psl__right-body"
+          role="tabpanel"
+          aria-label="Info"
+        >
           <DetailTab
             record={record}
             enrichment={enrichment}
@@ -154,14 +163,39 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             allDraftsAccepted={allDraftsAccepted}
             onEnrichmentUpdate={setEnrichment}
           />
-        ) : (
+        </div>
+      );
+    }
+    if (id === "ocr") {
+      return (
+        <div className="psl__right-body" role="tabpanel" aria-label="OCR">
           <OcrTab record={record} enrichment={enrichment} />
-        )}
+        </div>
+      );
+    }
+    return (
+      <div className="psl__right-body psl__right-body--chat" role="tabpanel" aria-label="Chat">
+        <ChatPanel captureId={record.id} />
+      </div>
+    );
+  };
 
-        {/* L/M/H copy row + actions live OUTSIDE the tab body so they
-            never disappear with a tab switch. The OCR tab is content-
-            only; the user still wants to drag / copy / open while
-            reading text. */}
+  return (
+    <aside className="psl__right psl__right--vertical" aria-label="Capture details">
+      <div className="psl__right-content">
+        <RightActivityBar
+          tabs={tabs}
+          activeTab={activeTab}
+          pinned={pinned}
+          onTabChange={setActiveTab}
+          onPinChange={setPinned}
+          renderPanel={renderPanel}
+          testIdPrefix="psl-right"
+          pinnedWidthPx={320}
+        />
+      </div>
+
+      <div className="psl__right-footer" data-testid="psl-right-footer">
         <div>
           <div className="psl__copy-eyebrow">
             <span>Copy to clipboard</span>
@@ -271,12 +305,6 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
                 </svg>
                 File
               </button>
-              {/* "Editor" button opens a STANDALONE editor window for
-                  the capture. When the rail is showing in Focus or
-                  Reel mode, the user is already in an editor view
-                  (chromeless Editor inside Library) — surfacing this
-                  button would suggest there's another editor to open,
-                  which is just a confusing duplicate. Hide it. */}
               {view.kind !== "focus" && view.kind !== "reel" && (
                 <button
                   type="button"
@@ -324,6 +352,50 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     </aside>
   );
 }
+
+const INFO_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8h0M11 12h1v5h1" />
+  </svg>
+);
+
+const OCR_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4 7V5h4M20 7V5h-4M4 17v2h4M20 17v2h-4" />
+    <path d="M7 9h10M7 13h10M7 17h6" />
+  </svg>
+);
+
+const CHAT_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4 5h16v11H8l-4 4z" />
+  </svg>
+);
 
 type DetailTabProps = {
   readonly record: CaptureRecord;

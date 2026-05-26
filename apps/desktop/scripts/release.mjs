@@ -48,7 +48,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -62,6 +62,7 @@ const pnpmProjectConfigEnv = {
   npm_config_global_pnpmfile: "",
   NPM_CONFIG_GLOBAL_PNPMFILE: ""
 };
+let codesignKeychainCleanup = null;
 
 const args = process.argv.slice(2);
 const dryrun = args.includes("--dryrun");
@@ -179,6 +180,65 @@ function runChecked(file, argv, opts = {}) {
   }
 }
 
+function runQuiet(file, argv) {
+  const result = spawnSync(file, argv, {
+    cwd: desktopRoot,
+    encoding: "utf8",
+    env: process.env
+  });
+  if (result.status !== 0) {
+    const detail = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    throw new Error(
+      `${file} ${argv.join(" ")} failed with exit ${result.status}${detail ? `:\n${detail}` : ""}`
+    );
+  }
+  return result.stdout ?? "";
+}
+
+function parseSecurityKeychains(output) {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^"|"$/g, ""));
+}
+
+function cscLinkFilePath() {
+  const link = process.env.CSC_LINK;
+  if (!link) return null;
+  if (link.startsWith("file://")) {
+    return fileURLToPath(link);
+  }
+  if (link.startsWith("~/")) {
+    return join(process.env.HOME ?? "", link.slice(2));
+  }
+  if (existsSync(link)) {
+    return link;
+  }
+  return null;
+}
+
+function findDeveloperIdIdentity(keychainPath) {
+  const args = ["find-identity", "-v", "-p", "codesigning"];
+  if (keychainPath) args.push(keychainPath);
+  const out = runQuiet("security", args);
+  const match = out.match(/"(Developer ID Application: [^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function restoreCodesignKeychains(originalKeychains, keychainPath) {
+  try {
+    runQuiet("security", ["list-keychains", "-d", "user", "-s", ...originalKeychains]);
+  } catch {
+    // Process exit cleanup must not mask the original build result.
+  }
+  try {
+    runQuiet("security", ["delete-keychain", keychainPath]);
+  } catch {
+    // Best effort only; GitHub-hosted runners are disposable.
+  }
+}
+
 // Resolve electron-builder's CLI from the staged node_modules. The sign job
 // runs without pnpm install / npx — invoking the CLI by absolute path through
 // `node` keeps lifecycle scripts and package-manager binaries off the
@@ -238,6 +298,92 @@ function maybeDecodeCscLink() {
   chmodSync(target, 0o600);
   process.env.CSC_LINK = target;
   console.log("  decoded CSC_LINK -> temporary Developer ID certificate file");
+}
+
+// electron-builder imports CSC_LINK before its parent-app signing pass, but
+// our afterPack hook must sign Quick Look .appex bundles earlier. In CI,
+// preload the .p12 into a temporary keychain so both the hook and
+// electron-builder resolve the same Developer ID identity deterministically.
+function maybePrepareCodesignKeychain() {
+  if (process.platform !== "darwin") return;
+  if (!process.env.CSC_LINK) return;
+  if (!process.env.CSC_KEY_PASSWORD) {
+    throw new Error("CSC_LINK is set but CSC_KEY_PASSWORD is missing");
+  }
+  const certificatePath = cscLinkFilePath();
+  if (certificatePath === null) {
+    return;
+  }
+
+  const existingIdentity = findDeveloperIdIdentity(null);
+  if (existingIdentity !== null) {
+    process.env.CSC_NAME ??= existingIdentity;
+    return;
+  }
+
+  const keychainPath = join(
+    tmpdir(),
+    `pwrsnap-codesign-${process.pid}-${Date.now()}.keychain-db`
+  );
+  const keychainPassword = `pwrsnap-${process.pid}-${Date.now()}`;
+  const originalKeychains = parseSecurityKeychains(
+    runQuiet("security", ["list-keychains", "-d", "user"])
+  );
+
+  runQuiet("security", ["create-keychain", "-p", keychainPassword, keychainPath]);
+  runQuiet("security", ["set-keychain-settings", "-lut", "21600", keychainPath]);
+  runQuiet("security", ["unlock-keychain", "-p", keychainPassword, keychainPath]);
+  runQuiet("security", [
+    "import",
+    certificatePath,
+    "-k",
+    keychainPath,
+    "-P",
+    process.env.CSC_KEY_PASSWORD,
+    "-T",
+    "/usr/bin/codesign",
+    "-T",
+    "/usr/bin/security",
+    "-T",
+    "/usr/bin/productbuild"
+  ]);
+  runQuiet("security", [
+    "set-key-partition-list",
+    "-S",
+    "apple-tool:,apple:,codesign:",
+    "-s",
+    "-k",
+    keychainPassword,
+    keychainPath
+  ]);
+  runQuiet("security", [
+    "list-keychains",
+    "-d",
+    "user",
+    "-s",
+    keychainPath,
+    ...originalKeychains
+  ]);
+
+  const identity = findDeveloperIdIdentity(keychainPath);
+  if (identity === null) {
+    restoreCodesignKeychains(originalKeychains, keychainPath);
+    throw new Error(
+      `imported ${pathToFileURL(certificatePath).href} into ${keychainPath}, ` +
+      "but no Developer ID Application identity was found"
+    );
+  }
+
+  process.env.CSC_KEYCHAIN = keychainPath;
+  process.env.CSC_NAME ??= identity;
+  codesignKeychainCleanup = () => restoreCodesignKeychains(originalKeychains, keychainPath);
+  process.once("exit", () => {
+    if (codesignKeychainCleanup !== null) {
+      codesignKeychainCleanup();
+      codesignKeychainCleanup = null;
+    }
+  });
+  console.log(`  imported CSC_LINK into temporary keychain for ${identity}`);
 }
 
 if (!signStageOnly) {
@@ -360,6 +506,7 @@ step(
 maybeDecodeAppleApiKey();
 if (!dryrun) {
   maybeDecodeCscLink();
+  maybePrepareCodesignKeychain();
 }
 // Fail loudly BEFORE invoking electron-builder if we expect to
 // notarize but don't have the creds. Cheaper than letting the
@@ -393,6 +540,10 @@ runChecked("node", [electronBuilderCli(), ...cleanedArgs], {
   cwd: stageDir,
   env: pnpmProjectConfigEnv
 });
+if (codesignKeychainCleanup !== null) {
+  codesignKeychainCleanup();
+  codesignKeychainCleanup = null;
+}
 
 const builtApp = join(stageDir, "dist", `mac-${releaseArch}`, "PwrSnap.app");
 

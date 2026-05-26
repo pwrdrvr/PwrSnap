@@ -1292,6 +1292,24 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // top-left crops (no behavior change for that case).
           const offsetXPx = op.rect.x * record.width_px;
           const offsetYPx = op.rect.y * record.height_px;
+          // Observability for PR #110 off-origin crop bug — confirms
+          // the dispatcher decided to (or skipped) translating the
+          // raster. Pre-fix this branch didn't exist, so the absence
+          // of these log lines is the smoke test for "running stale
+          // build vs my fix". A fresh build shows ONE OF:
+          //   skip (edge-aligned): { offset: { x: 0, y: 0 } }
+          //   active (off-origin): { offset: {...}, rasterCount: N }
+          //   active but no raster: { rasterCount: 0 } — would be a bug
+          // eslint-disable-next-line no-console
+          console.log("[crop-dispatch v2] step 0.5 raster-translate", {
+            offsetXPx,
+            offsetYPx,
+            willTranslate: offsetXPx !== 0 || offsetYPx !== 0,
+            rasterCount: layersRef.current.filter((l) => l.kind === "raster").length,
+            rasterTransformsBefore: layersRef.current
+              .filter((l) => l.kind === "raster")
+              .map((l) => ({ id: l.id, transform: l.transform }))
+          });
           if (offsetXPx !== 0 || offsetYPx !== 0) {
             const rasterLayers = layersRef.current.filter(
               (l): l is BundleLayerNode & { kind: "raster" } => l.kind === "raster"

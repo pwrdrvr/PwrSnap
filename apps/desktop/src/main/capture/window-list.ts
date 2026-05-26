@@ -246,39 +246,65 @@ export async function listWindowsSnapshot(): Promise<WindowListSnapshot> {
       timeout: 2_000,
       maxBuffer: 4 * 1024 * 1024
     });
-    const parsed = JSON.parse(stdout) as unknown;
-    // Helper post-2026-05-25 wraps the windows array in an envelope
-    // with `windows` + `frontmostPid` + `frontmostBundleId`. Pre-
-    // envelope helpers (and any in-flight ad-hoc Swift CLI tests)
-    // returned a bare array — still parseable for safety, but the
-    // frontmost fields come back as null in that legacy shape.
-    if (Array.isArray(parsed)) {
-      return {
-        windows: parsed as WindowInfo[],
-        frontmostPid: null,
-        frontmostBundleId: null
-      };
-    }
-    if (parsed !== null && typeof parsed === "object" && "windows" in parsed) {
-      const envelope = parsed as {
-        windows: WindowInfo[];
-        frontmostPid?: number | null;
-        frontmostBundleId?: string | null;
-      };
-      return {
-        windows: Array.isArray(envelope.windows) ? envelope.windows : [],
-        frontmostPid: typeof envelope.frontmostPid === "number" ? envelope.frontmostPid : null,
-        frontmostBundleId:
-          typeof envelope.frontmostBundleId === "string" ? envelope.frontmostBundleId : null
-      };
-    }
-    return { windows: [], frontmostPid: null, frontmostBundleId: null };
+    return parseHelperOutput(stdout);
   } catch (cause) {
     log.warn("window-list helper failed", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
     return { windows: [], frontmostPid: null, frontmostBundleId: null };
   }
+}
+
+/**
+ * Parse the Swift helper's stdout into a `WindowListSnapshot`. Pure;
+ * exported for unit testing. Three shapes survive:
+ *
+ *   1. Envelope (current): `{ windows: [...], frontmostPid: <int|null>,
+ *      frontmostBundleId: <string|null> }`. The post-2026-05-25 shape.
+ *   2. Bare array (legacy): `[<WindowInfo>, ...]`. Pre-envelope
+ *      helpers (and any in-flight ad-hoc Swift CLI tests) emit this.
+ *      Parsed for backwards compatibility — frontmost fields come
+ *      back as null because the data simply isn't there.
+ *   3. Anything else (malformed JSON, non-array non-object,
+ *      missing `windows` field): treated as an empty snapshot. The
+ *      caller will then have no candidates to hit-test against,
+ *      which downgrades gracefully — the user sees the selector
+ *      with no snap highlights, and the failure is logged upstream.
+ *
+ * Returns `frontmostPid` only when it parses to a JS number, and
+ * `frontmostBundleId` only when it parses to a JS string. Anything
+ * else (`null`, missing, wrong type) collapses to `null` so the
+ * downstream warning in `region-selector.ts/prepareWindowListPayload`
+ * is gated correctly.
+ */
+export function parseHelperOutput(stdout: string): WindowListSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { windows: [], frontmostPid: null, frontmostBundleId: null };
+  }
+  if (Array.isArray(parsed)) {
+    return {
+      windows: parsed as WindowInfo[],
+      frontmostPid: null,
+      frontmostBundleId: null
+    };
+  }
+  if (parsed !== null && typeof parsed === "object" && "windows" in parsed) {
+    const envelope = parsed as {
+      windows: WindowInfo[];
+      frontmostPid?: number | null;
+      frontmostBundleId?: string | null;
+    };
+    return {
+      windows: Array.isArray(envelope.windows) ? envelope.windows : [],
+      frontmostPid: typeof envelope.frontmostPid === "number" ? envelope.frontmostPid : null,
+      frontmostBundleId:
+        typeof envelope.frontmostBundleId === "string" ? envelope.frontmostBundleId : null
+    };
+  }
+  return { windows: [], frontmostPid: null, frontmostBundleId: null };
 }
 
 /**

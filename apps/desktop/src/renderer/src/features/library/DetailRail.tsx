@@ -20,9 +20,15 @@
 // Pinned + last-selected state is per-window local state — settings
 // persistence can land later if cross-window memory becomes desirable.
 
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CaptureEnrichment, CaptureRecord, SuggestedTag } from "@pwrsnap/shared";
+import type {
+  CaptureEnrichment,
+  CaptureRecord,
+  LibrarySidebarTab,
+  Settings,
+  SuggestedTag
+} from "@pwrsnap/shared";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
@@ -45,7 +51,7 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
   high: "High"
 };
 
-type SidebarTab = "info" | "ocr" | "chat";
+type SidebarTab = LibrarySidebarTab;
 
 export type DetailRailProps = {
   readonly view: LibraryView;
@@ -59,10 +65,48 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
+  // Active tab + pin state — seeded from Settings on first mount,
+  // then user-driven. Each user write also fires `settings:write` so
+  // the choice survives relaunches. Same per-window source-of-truth
+  // pattern EditorChrome uses (cross-window broadcasts are
+  // deliberately ignored so Window B can't stomp Window A mid-edit).
   const [activeTab, setActiveTab] = useState<SidebarTab>("info");
-  // Pinned by default — current behavior is "panel always visible".
-  // Click an active icon to unpin and switch to hover-pop mode.
   const [pinned, setPinned] = useState<boolean>(true);
+  const initialReadDoneRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:read", {}).then((result) => {
+      if (cancelled) return;
+      if (initialReadDoneRef.current) return; // user already touched it
+      if (!result.ok) return;
+      const settings = result.value as Settings | undefined;
+      const rail = settings?.library?.detailRail;
+      if (rail === undefined) return;
+      setPinned(rail.pinned);
+      setActiveTab(rail.lastSelectedTab);
+      initialReadDoneRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const writePinned = useCallback((next: boolean): void => {
+    initialReadDoneRef.current = true;
+    setPinned(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { pinned: next } }
+    });
+  }, []);
+
+  const writeActiveTab = useCallback((next: SidebarTab): void => {
+    initialReadDoneRef.current = true;
+    setActiveTab(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { lastSelectedTab: next } }
+    });
+  }, []);
 
   useEffect(() => {
     if (record === null) {
@@ -187,8 +231,8 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
           tabs={tabs}
           activeTab={activeTab}
           pinned={pinned}
-          onTabChange={setActiveTab}
-          onPinChange={setPinned}
+          onTabChange={writeActiveTab}
+          onPinChange={writePinned}
           renderPanel={renderPanel}
           testIdPrefix="psl-right"
           pinnedWidthPx={320}

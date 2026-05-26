@@ -106,7 +106,8 @@ function makeSettings(overrides?: {
       coachmarks: { stoplightSeen: false },
       matchingText: { enabled: overrides?.matchingTextEnabled ?? true },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
-    }
+    },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
   };
 }
 

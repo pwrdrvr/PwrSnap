@@ -414,3 +414,59 @@ describe("DesktopSettingsService.appearance defaulting", () => {
     expect(reread.appearance.theme).toBe("dark");
   });
 });
+
+describe("DesktopSettingsService.library.detailRail", () => {
+  test("v1 file written before `library` landed gets the default filled in", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.library.detailRail.pinned).toBe(true);
+    expect(settings.library.detailRail.lastSelectedTab).toBe("info");
+  });
+
+  test("invalid lastSelectedTab on disk falls back to the default", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        library: { detailRail: { pinned: false, lastSelectedTab: "magic" } }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.library.detailRail.pinned).toBe(false);
+    expect(settings.library.detailRail.lastSelectedTab).toBe("info");
+  });
+
+  test("write({ library: { detailRail: { lastSelectedTab: \"ocr\" } } }) round-trips", async () => {
+    const svc = makeService();
+    const written = await svc.write({
+      library: { detailRail: { lastSelectedTab: "ocr" } }
+    });
+    expect(written.library.detailRail.lastSelectedTab).toBe("ocr");
+    // Pinned untouched — keep the prior value.
+    expect(written.library.detailRail.pinned).toBe(true);
+    const reread = await svc.read();
+    expect(reread.library.detailRail.lastSelectedTab).toBe("ocr");
+  });
+
+  test("write({ library: { detailRail: { pinned: false } } }) does not stomp the tab", async () => {
+    const svc = makeService();
+    await svc.write({ library: { detailRail: { lastSelectedTab: "chat" } } });
+    const written = await svc.write({
+      library: { detailRail: { pinned: false } }
+    });
+    expect(written.library.detailRail.pinned).toBe(false);
+    expect(written.library.detailRail.lastSelectedTab).toBe("chat");
+  });
+});

@@ -11,7 +11,7 @@
 //   - app:update:releases     — GitHub Releases list (independent of the
 //                               updater channel; used by the Updates page)
 
-import { app } from "electron";
+import { app, screen } from "electron";
 import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
@@ -30,6 +30,17 @@ export function registerAppHandlers(): void {
       electronVersion: process.versions.electron ?? "",
       nodeVersion: process.versions.node ?? "",
       chromeVersion: process.versions.chrome ?? ""
+    });
+  });
+  bus.register("system:listDisplays", async () => {
+    const primaryId = screen.getPrimaryDisplay().id;
+    return ok({
+      displays: screen.getAllDisplays().map((d) => ({
+        id: d.id,
+        bounds: { x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height },
+        scaleFactor: d.scaleFactor,
+        isPrimary: d.id === primaryId
+      }))
     });
   });
   bus.register("app:readDocument", async (req) => {

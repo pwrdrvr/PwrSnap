@@ -38,7 +38,7 @@ import {
   getLastWindowListSnapshot,
   hideSelector
 } from "../capture/region-selector";
-import { captureRegion, captureWindow } from "../capture/screencapture";
+import { captureRegion, captureScreen, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
 import {
@@ -299,12 +299,112 @@ export function registerCaptureHandlers(): void {
     }
   });
 
-  bus.register("capture:fullScreen", async () => {
-    return err({
-      kind: "validation",
-      code: "not_implemented",
-      message: "capture:fullScreen lands in Phase 1.5+"
+  bus.register("capture:fullScreen", async (req) => {
+    const displayId = resolveFullScreenDisplayId(req.displayId);
+    const display = screen.getAllDisplays().find((d) => d.id === displayId);
+    if (display === undefined) {
+      return err({
+        kind: "validation",
+        code: "unknown_display",
+        message: `unknown display id: ${displayId}`
+      });
+    }
+    await hidePwrSnapChromeAndSettle();
+    const captureResult = await captureScreen(displayId);
+    if (!captureResult.ok) {
+      return err({
+        kind: "capture",
+        code: captureResult.reason,
+        message: captureResult.message
+      });
+    }
+    const persisted = await persistAndBroadcast(captureResult.tempPath, null, {
+      devicePixelRatio: display.scaleFactor
     });
+    if (persisted.ok) {
+      setFloatOverState({
+        kind: "show-loaded",
+        captureId: persisted.value.id,
+        record: persisted.value
+      });
+    }
+    return persisted;
+  });
+
+  bus.register("capture:allScreens", async (req) => {
+    const displays = screen.getAllDisplays();
+    if (displays.length === 0) {
+      return err({
+        kind: "validation",
+        code: "no_displays",
+        message: "no displays connected"
+      });
+    }
+    await hidePwrSnapChromeAndSettle();
+
+    if (req.mode === "split") {
+      // One capture record per display. We serialize the screencapture
+      // invocations — `/usr/sbin/screencapture` doesn't like concurrent
+      // calls (they race on the cursor-hide global), and 3 displays at
+      // ~70ms each is still under 250ms total.
+      const records: CaptureRecord[] = [];
+      for (const d of displays) {
+        const captureResult = await captureScreen(d.id);
+        if (!captureResult.ok) {
+          return err({
+            kind: "capture",
+            code: captureResult.reason,
+            message: captureResult.message
+          });
+        }
+        const persisted = await persistAndBroadcast(captureResult.tempPath, null, {
+          devicePixelRatio: d.scaleFactor
+        });
+        if (!persisted.ok) return persisted;
+        records.push(persisted.value);
+      }
+      // Only the last capture drives the float-over toast — N toasts
+      // for N displays would flash through too fast for the user to
+      // see any of them, and the library refresh already reflects all
+      // N rows.
+      const last = records[records.length - 1];
+      if (last !== undefined) {
+        setFloatOverState({
+          kind: "show-loaded",
+          captureId: last.id,
+          record: last
+        });
+      }
+      return ok({ records });
+    }
+
+    // Stitched: shoot every display, then composite onto the virtual-
+    // desktop union rect as one PNG. Single capture record in the
+    // library, visually identical to "one screenshot of the whole
+    // workspace".
+    const parts: Array<{ tempPath: string; display: Electron.Display }> = [];
+    for (const d of displays) {
+      const captureResult = await captureScreen(d.id);
+      if (!captureResult.ok) {
+        return err({
+          kind: "capture",
+          code: captureResult.reason,
+          message: captureResult.message
+        });
+      }
+      parts.push({ tempPath: captureResult.tempPath, display: d });
+    }
+    const stitched = await stitchDisplays(parts);
+    const persisted = await persistAndBroadcast(stitched.tempPath, null, {
+      devicePixelRatio: stitched.scaleFactor
+    });
+    if (!persisted.ok) return persisted;
+    setFloatOverState({
+      kind: "show-loaded",
+      captureId: persisted.value.id,
+      record: persisted.value
+    });
+    return ok({ records: [persisted.value] });
   });
 
   bus.register("capture:window", async () => {
@@ -795,4 +895,99 @@ async function persistAndBroadcast(
     maybeEnqueueCaptureEnrichment(record.id);
   }
   return ok(record);
+}
+
+/**
+ * Resolve which display to capture for Full Screen. The tray sends 0
+ * (or omits the field) to mean "the display the cursor is on right
+ * now" — the renderer doesn't enumerate displays. Any non-zero id
+ * that resolves to a real display is used as-is; anything else falls
+ * back to the cursor's display, so a stale displayId from a hotplugged
+ * setup doesn't fail the capture.
+ */
+function resolveFullScreenDisplayId(displayId: number | undefined): number {
+  const all = screen.getAllDisplays();
+  if (
+    displayId !== undefined &&
+    displayId !== 0 &&
+    all.some((d) => d.id === displayId)
+  ) {
+    return displayId;
+  }
+  const cursorPoint = screen.getCursorScreenPoint();
+  return screen.getDisplayNearestPoint(cursorPoint).id;
+}
+
+/**
+ * Drop the tray popover and park the float-over before a no-selector
+ * capture (Full Screen / All Screens). Both PwrSnap surfaces would
+ * otherwise be in the captured framebuffer. A 50ms compositor flush
+ * matches the timing the cancel branch of `capture:interactive` uses
+ * for the float-over → selector handoff (line 169) — long enough for
+ * the WindowServer to finish the hide, short enough that the user
+ * doesn't perceive lag between click and shutter.
+ */
+async function hidePwrSnapChromeAndSettle(): Promise<void> {
+  setFloatOverState({ kind: "cancel" });
+  hideTrayPopoverIfVisible();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+/**
+ * Composite N display PNGs onto the virtual-desktop union rect. Each
+ * display's PNG arrives at PHYSICAL pixels (logical × scaleFactor),
+ * but the union rect is in LOGICAL coords because that's the
+ * coordinate space displays sit in. We resize each display's PNG to
+ * `display.{w,h} × maxScale` (so a mixed 1×/2× setup ends up at
+ * uniform 2× DPI in the output) and composite at the offset within
+ * the union rect, also in `× maxScale` pixels. Non-contiguous
+ * layouts (gaps between displays) get the transparent canvas
+ * underneath — matches what macOS itself produces for `Cmd+Shift+3`
+ * across non-contiguous displays.
+ */
+async function stitchDisplays(
+  parts: Array<{ tempPath: string; display: Electron.Display }>
+): Promise<{ tempPath: string; scaleFactor: number }> {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxScale = 1;
+  for (const { display } of parts) {
+    minX = Math.min(minX, display.bounds.x);
+    minY = Math.min(minY, display.bounds.y);
+    maxX = Math.max(maxX, display.bounds.x + display.bounds.width);
+    maxY = Math.max(maxY, display.bounds.y + display.bounds.height);
+    maxScale = Math.max(maxScale, display.scaleFactor);
+  }
+  const unionW = Math.round((maxX - minX) * maxScale);
+  const unionH = Math.round((maxY - minY) * maxScale);
+
+  const composites: Array<{ input: Buffer; left: number; top: number }> = [];
+  for (const { tempPath, display } of parts) {
+    const targetW = Math.round(display.bounds.width * maxScale);
+    const targetH = Math.round(display.bounds.height * maxScale);
+    const buf = await sharp(tempPath).resize(targetW, targetH).png().toBuffer();
+    composites.push({
+      input: buf,
+      left: Math.round((display.bounds.x - minX) * maxScale),
+      top: Math.round((display.bounds.y - minY) * maxScale)
+    });
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "pwrsnap-stitch-"));
+  const tempPath = join(dir, `${Date.now()}.png`);
+  await sharp({
+    create: {
+      width: unionW,
+      height: unionH,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  })
+    .composite(composites)
+    .png()
+    .toFile(tempPath);
+
+  return { tempPath, scaleFactor: maxScale };
 }

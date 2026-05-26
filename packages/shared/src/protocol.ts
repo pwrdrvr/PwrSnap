@@ -1020,7 +1020,26 @@ export type Commands = {
     };
     res: { record: CaptureRecord; isNew: boolean };
   };
-  "capture:fullScreen": { req: { displayId: number }; res: CaptureRecord };
+  /**
+   * Capture a single display end-to-end (no selector). `displayId === 0`
+   * (the default the tray sends) resolves to the display the cursor is
+   * currently on, so the user gets "the screen I'm pointing at" without
+   * the renderer having to enumerate displays first. PwrSnap chrome
+   * (tray popover, float-over toast) is hidden for one compositor
+   * frame so it doesn't bleed into the captured pixels.
+   */
+  "capture:fullScreen": { req: { displayId?: number | undefined }; res: CaptureRecord };
+  /**
+   * Capture every connected display. `mode: "split"` produces one
+   * capture record per display (N rows in the library). `mode:
+   * "stitched"` composites every display's PNG onto the virtual-desktop
+   * union rect and persists as a single capture. PwrSnap chrome is
+   * hidden for one compositor frame, same as `capture:fullScreen`.
+   */
+  "capture:allScreens": {
+    req: { mode: "split" | "stitched" };
+    res: { records: CaptureRecord[] };
+  };
   "capture:window": { req: { windowId: number }; res: CaptureRecord };
   "capture:reveal": { req: { captureId: string }; res: void };
   /** Pre-render the cache file used by `webContents.startDrag`. */
@@ -1354,6 +1373,25 @@ export type Commands = {
    *  electron-updater channel). Used by Settings → Updates to show the
    *  candidate version for each channel. */
   "app:update:releases": { req: Record<string, never>; res: AppUpdateReleaseVersions };
+
+  // ---- system ----
+  /**
+   * Snapshot of every connected display. The tray uses this to label
+   * the All Screens toggle (`N×` vs `1×`) with the live display count;
+   * future surfaces can read display bounds without reaching into
+   * Electron's `screen` module from the renderer.
+   */
+  "system:listDisplays": {
+    req: Record<string, never>;
+    res: {
+      displays: Array<{
+        id: number;
+        bounds: Rect;
+        scaleFactor: number;
+        isPrimary: boolean;
+      }>;
+    };
+  };
 
   // ---- float-over ----
   "float-over:dismiss": { req: Record<string, never>; res: void };

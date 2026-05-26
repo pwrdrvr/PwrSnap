@@ -151,10 +151,23 @@ function LayoutChip({ kind, open, onClick, testId }: LayoutChipProps): ReactElem
   );
 }
 
-/** Pure SVG glyph: a rounded square with three vertical columns.
- *  The "active" column for the kind is filled when `open`; the other
- *  two columns are always shown as outlines so the icon remains
- *  recognizable in either state. */
+/** Pure SVG glyph: a rounded square with ONE off-center vertical
+ *  divider. The primary chip draws its divider on the LEFT (carving
+ *  off a thin left-side strip — the "primary side bar" — from the
+ *  main content area); the secondary chip mirrors it on the RIGHT.
+ *  When the bar is open, the thin strip fills with `currentColor`
+ *  so the icon reads as "this side has a side bar AND it's showing
+ *  right now"; when closed, only the outline remains.
+ *
+ *  Why asymmetric instead of the prior 3-column glyph: with three
+ *  equal columns the left and right chips were visually
+ *  indistinguishable at a glance — both icons rendered the same
+ *  rounded square with two interior verticals, and only the fill
+ *  position changed. Splitting the icon ~20/80 makes "primary" and
+ *  "secondary" identifiable from the divider position alone, even
+ *  in the closed state. Same pattern Apple and VS Code use for
+ *  their side bar chips.
+ */
 function LayoutGlyph({
   kind,
   open
@@ -163,13 +176,12 @@ function LayoutGlyph({
   open: boolean;
 }): ReactElement {
   // Layout (viewBox 24x24):
-  //   • Outer frame:       (2,2) → (22,22), rx=4
-  //   • Left column fill:  (4,4)  → (9,20)
-  //   • Right column fill: (15,4) → (20,20)
-  // Each column is ~5 units wide; center stays bordered as the
-  // "main pane" affordance.
-  const fillLeft = kind === "primary" && open;
-  const fillRight = kind === "secondary" && open;
+  //   • Outer frame:      (2.5, 3.5) → (21.5, 20.5), rx=3
+  //   • Inner usable area: 19 × 17 (between 2.5..21.5 / 3.5..20.5)
+  //   • Side-bar strip:    ~28% of inner width → 5.3 units. We use
+  //                        5.5 for crisp pixel alignment at 14×14.
+  //   • Primary divider:   x = 8 (carves left strip 2.5..8)
+  //   • Secondary divider: x = 16 (carves right strip 16..21.5)
   return (
     <svg
       width="14"
@@ -184,30 +196,36 @@ function LayoutGlyph({
       focusable="false"
     >
       <rect x="2.5" y="3.5" width="19" height="17" rx="3" />
-      {/* Vertical separators marking the column boundaries. */}
-      <path d="M9 4v16" />
-      <path d="M15 4v16" />
-      {fillLeft && (
-        <rect
-          x="3.5"
-          y="4.5"
-          width="5"
-          height="15"
-          rx="1.5"
-          fill="currentColor"
-          stroke="none"
-        />
-      )}
-      {fillRight && (
-        <rect
-          x="15.5"
-          y="4.5"
-          width="5"
-          height="15"
-          rx="1.5"
-          fill="currentColor"
-          stroke="none"
-        />
+      {kind === "primary" ? (
+        <>
+          <path d="M8 4v16" />
+          {open && (
+            <rect
+              x="3"
+              y="4"
+              width="5"
+              height="16"
+              rx="1.5"
+              fill="currentColor"
+              stroke="none"
+            />
+          )}
+        </>
+      ) : (
+        <>
+          <path d="M16 4v16" />
+          {open && (
+            <rect
+              x="16"
+              y="4"
+              width="5"
+              height="16"
+              rx="1.5"
+              fill="currentColor"
+              stroke="none"
+            />
+          )}
+        </>
       )}
     </svg>
   );

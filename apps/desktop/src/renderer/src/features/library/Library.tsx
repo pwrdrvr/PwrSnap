@@ -1574,23 +1574,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       >
         <div className="psl__left-section psl__left-section--top">
           <span>Library</span>
-          {/* In-panel pin toggle. Visible whenever the panel is on
-              screen (pinned OR peeking) so the user can pin from
-              either state. Hidden in `collapsed` because the panel
-              itself is offscreen and the spine button takes over. */}
-          {(leftPinned || leftRevealed) && (
-            <button
-              type="button"
-              className="psl__left-pin"
-              aria-label={leftPinned ? "Unpin sidebar" : "Pin sidebar"}
-              title={leftPinned ? "Unpin sidebar (collapse to spine)" : "Pin sidebar"}
-              onClick={() => setLeftPinned((v) => !v)}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d={leftPinned ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"} />
-              </svg>
-            </button>
-          )}
+          {/* In-panel pin toggle removed — the title-bar
+              LayoutToggleButtons chip is now the single, consistent
+              control for both the left + right side bars (mirrors
+              VS Code's primary / secondary side bar pattern). The
+              spine button at `.psl__left-spine` still surfaces when
+              the panel is collapsed entirely; both the chip and the
+              spine route through `setLeftPinned` so all three entry
+              points stay in sync. */}
         </div>
         <button
           className={"psl__nav" + (activeFilter.kind === "all" ? " is-active" : "")}

@@ -4,9 +4,15 @@
 
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  CodexCaptionModel,
   CodexTestResult,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
+} from "@pwrsnap/shared";
+import {
+  CODEX_CAPTION_MODELS,
+  DEFAULT_CODEX_CAPTION_MODEL,
+  isCodexCaptionModel
 } from "@pwrsnap/shared";
 import {
   Card,
@@ -63,6 +69,12 @@ export function AIProvidersPage(): ReactElement {
     setSnapshotLoading(false);
   };
 
+  const captionModel: CodexCaptionModel = isCodexCaptionModel(
+    settings?.codex.captionModel
+  )
+    ? settings.codex.captionModel
+    : DEFAULT_CODEX_CAPTION_MODEL;
+
   return (
     <>
       <div className="pss__main-hdr">
@@ -70,42 +82,47 @@ export function AIProvidersPage(): ReactElement {
           <div className="pss__main-eyebrow">Providers</div>
           <h1 className="pss__main-title">Backends &amp; credentials</h1>
           <p className="pss__main-sub">
-            PwrSnap delegates AI work to multiple providers. Codex generates
-            capture captions and tag suggestions; other providers vectorize
-            captures + OCR for semantic search. Configure each backend below.
+            PwrSnap delegates AI work to your local Codex install. Captions,
+            tag suggestions, and OCR all ride on a single Codex enrichment
+            turn per capture. Semantic search vectorization is planned.
           </p>
         </div>
       </div>
 
       <Card eyebrow="ROLES" title="Job routing">
-        <div className="pss__row">
-          <div className="pss__row-l">
-            <div className="pss__row-label">Preview</div>
-            <div className="pss__row-sub">
-              Routing wires up when the AI pipeline ships (Phase 4). The rows
-              below are visual-only today.
-            </div>
-            <div className="pss__row-tag">preview</div>
-          </div>
-          <div className="pss__row-r" />
-        </div>
         <JobRoutingRow
           name="Capture captions & tag suggestions"
           sub="Codex caption shown in Library detail + Float-Over"
           provider="Codex"
-          model="haiku-4.5"
+        >
+          <select
+            className="pss__select"
+            value={captionModel}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (!isCodexCaptionModel(next)) return;
+              void patch({ codex: { captionModel: next } });
+            }}
+            aria-label="Capture caption model"
+          >
+            {CODEX_CAPTION_MODELS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </JobRoutingRow>
+        <JobRoutingRow
+          name="OCR — extract text from screenshots"
+          sub="Rides with the captions request — same Codex turn, same model"
+          provider="Codex"
+          model={captionModel}
         />
         <JobRoutingRow
           name="Semantic search vectorization"
-          sub="Embeds capture metadata + OCR for ⌘K search"
-          provider="OpenAI"
-          model="3-small"
-        />
-        <JobRoutingRow
-          name="OCR — extract text from screenshots"
-          sub="Runs with the capture enrichment request through Codex"
-          provider="Codex"
-          model="Configured provider"
+          sub="Will embed capture metadata + OCR text for ⌘K search"
+          provider="—"
+          model="Coming soon"
           dim
         />
       </Card>
@@ -489,7 +506,15 @@ type JobRoutingRowProps = {
   name: string;
   sub: string;
   provider: string;
-  model: string;
+  /** Static model label rendered to the right of the provider name.
+   *  Mutually exclusive with `children` — pass `model` for read-only
+   *  rows (OCR, Coming-soon), pass `children` to drop in a real
+   *  control (dropdown, button, etc.). */
+  model?: string;
+  /** Custom right-edge slot. When set, replaces the provider chip's
+   *  "model" sub-label so the row can host a real `<select>` or any
+   *  other input. */
+  children?: ReactElement;
   dim?: boolean;
 };
 
@@ -498,6 +523,7 @@ function JobRoutingRow({
   sub,
   provider,
   model,
+  children,
   dim
 }: JobRoutingRowProps): ReactElement {
   return (
@@ -510,18 +536,32 @@ function JobRoutingRow({
         <span className="pss__role-sub">{sub}</span>
       </div>
       <span className="pss__role-arrow">→</span>
-      <span className="pss__role-provider" aria-disabled="true">
-        <b>{provider}</b>
-        <span
-          style={{
-            color: "var(--text-muted)",
-            font: "500 11px/1 var(--font-mono)",
-            marginLeft: 2
-          }}
-        >
-          {model}
+      {children !== undefined ? (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <b
+            style={{
+              font: "600 12px/1 var(--font-sans)",
+              color: "var(--accent-bright)"
+            }}
+          >
+            {provider}
+          </b>
+          {children}
+        </div>
+      ) : (
+        <span className="pss__role-provider" aria-disabled="true">
+          <b>{provider}</b>
+          <span
+            style={{
+              color: "var(--text-muted)",
+              font: "500 11px/1 var(--font-mono)",
+              marginLeft: 2
+            }}
+          >
+            {model ?? ""}
+          </span>
         </span>
-      </span>
+      )}
     </div>
   );
 }

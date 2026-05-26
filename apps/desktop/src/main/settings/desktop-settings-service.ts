@@ -35,7 +35,13 @@ import type {
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { isAppearanceTheme, isColorToken, isEditorSidebarPanel } from "@pwrsnap/shared";
+import {
+  DEFAULT_CODEX_CAPTION_MODEL,
+  isAppearanceTheme,
+  isCodexCaptionModel,
+  isColorToken,
+  isEditorSidebarPanel
+} from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
   discoverCodexCommands,
@@ -64,7 +70,8 @@ export function defaultSettings(): Settings {
     codex: {
       mode: "auto",
       pinnedPath: "",
-      profile: ""
+      profile: "",
+      captionModel: DEFAULT_CODEX_CAPTION_MODEL
     },
     ai: {
       enabled: false,
@@ -392,7 +399,13 @@ function parseV1(raw: unknown): Settings | null {
     codex: {
       mode: pickMode(codex.mode ?? defaults.codex.mode),
       pinnedPath: pickString(codex.pinnedPath, defaults.codex.pinnedPath),
-      profile: pickString(codex.profile, defaults.codex.profile)
+      profile: pickString(codex.profile, defaults.codex.profile),
+      // `captionModel` landed after v1 shipped; older files won't have
+      // it and a stale write may name a model we no longer support.
+      // Fall through to the default in both cases.
+      captionModel: isCodexCaptionModel(codex.captionModel)
+        ? codex.captionModel
+        : defaults.codex.captionModel
     },
     ai: {
       enabled: pickBoolean(ai.enabled, defaults.ai.enabled),

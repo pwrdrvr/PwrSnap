@@ -85,7 +85,7 @@ function makeSettings(overrides?: {
 }): Settings {
   return {
     schemaVersion: 1,
-    codex: { mode: "auto", pinnedPath: "", profile: "" },
+    codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
     ai: {
       enabled: false,
       consentAcceptedAt: null,

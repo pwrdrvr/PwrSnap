@@ -15,9 +15,11 @@
 
 import {
   isAppearanceTheme,
+  isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
-  isSettingsPage
+  isSettingsPage,
+  CODEX_CAPTION_MODELS
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -144,6 +146,18 @@ export function validateSettingsWrite(
         error: validationError(
           "invalid_codex_mode",
           "settings:write: codex.mode must be \"auto\" or \"pinned\""
+        )
+      };
+    }
+    // captionModel: literal union (CODEX_CAPTION_MODELS). Reject
+    // unknown IDs so a buggy renderer can't pin a model name the
+    // spawn-Codex path doesn't accept.
+    if (!isUndefined(codex.captionModel) && !isCodexCaptionModel(codex.captionModel)) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_codex_captionModel",
+          `settings:write: codex.captionModel must be one of ${JSON.stringify(CODEX_CAPTION_MODELS)}`
         )
       };
     }

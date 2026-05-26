@@ -441,6 +441,23 @@ export type DesktopCodexDiscoverySnapshot = {
 
 /** Outcome of a Codex `--version` probe via the connection-test button.
  *  Ported from PwrAgnt's CredentialTester.testCodex. */
+/** Codex CLI models PwrSnap will spawn for the capture-enrichment turn.
+ *  Sourced from https://developers.openai.com/codex/models — kept as a
+ *  literal union so the validator, the renderer dropdown, and the
+ *  Settings type all draw from one list. Mini-tier only today because
+ *  captioning fires on every capture; expand when there's a reason to
+ *  spend a larger model's tokens on a screenshot description. */
+export const CODEX_CAPTION_MODELS = ["gpt-5.4-mini"] as const;
+export type CodexCaptionModel = (typeof CODEX_CAPTION_MODELS)[number];
+export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.4-mini";
+
+export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel {
+  return (
+    typeof value === "string" &&
+    (CODEX_CAPTION_MODELS as readonly string[]).includes(value)
+  );
+}
+
 export type CodexTestStatus = "unset" | "ok" | "failed";
 
 export type CodexTestResult = {
@@ -472,6 +489,12 @@ export type Settings = {
     pinnedPath: string;
     /** CODEX_HOME / profile dir. Empty string = system default (`~/.codex`). */
     profile: string;
+    /** Codex model ID used for the capture-enrichment turn (captions,
+     *  tag suggestions, OCR — all one Codex call). MUST be a member of
+     *  `CODEX_CAPTION_MODELS`. Mini-tier is the only allowed option
+     *  today because captioning is high-volume + cost-sensitive; widen
+     *  the list when we want users to opt into a larger model. */
+    captionModel: CodexCaptionModel;
   };
   ai: {
     /** Phase 4 AI-pipeline kill switch. */

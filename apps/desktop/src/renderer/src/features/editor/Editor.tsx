@@ -2348,6 +2348,12 @@ function EditorLoaded({
             draftStyle={resolveDraftStyleForActiveTool(toolState.activeStyle)}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
+            // pwrdrvr/PwrSnap#110: source raster dims drive text
+            // overlay sizing so a "medium" text doesn't shrink when
+            // the user crops. CANVAS dims (image*Px above) drive
+            // coord normalization (those scale with the canvas).
+            sourceWidthPx={sourceWidthPx}
+            sourceHeightPx={sourceHeightPx}
             selectedLayerId={selectedLayerId}
             liveOverride={draftGeometry}
           />
@@ -2366,6 +2372,8 @@ function EditorLoaded({
               selectedOverlay={selectedOverlayForHandles}
               imageWidthPx={record.width_px}
               imageHeightPx={record.height_px}
+              sourceWidthPx={sourceWidthPx}
+              sourceHeightPx={sourceHeightPx}
               onGeometryChange={onHandleGeometryChange}
               onGeometryDrag={onHandleGeometryDrag}
               onDragStart={onHandleDragStart}

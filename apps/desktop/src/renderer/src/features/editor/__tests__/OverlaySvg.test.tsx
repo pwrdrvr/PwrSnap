@@ -39,7 +39,13 @@ async function renderOverlaySvg(
         overlays,
         draft: null,
         imageWidthPx: dims.imageWidthPx,
-        imageHeightPx: dims.imageHeightPx
+        imageHeightPx: dims.imageHeightPx,
+        // pwrdrvr/PwrSnap#110: source dims drive text overlay sizing
+        // so a "medium" text doesn't silently resize on crop. Tests
+        // default to source == canvas (uncropped); per-test overrides
+        // pass distinct values to exercise the cropped scenario.
+        sourceWidthPx: dims.imageWidthPx,
+        sourceHeightPx: dims.imageHeightPx
       })
     );
   });

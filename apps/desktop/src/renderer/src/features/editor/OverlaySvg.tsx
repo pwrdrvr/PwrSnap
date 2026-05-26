@@ -40,6 +40,7 @@ import {
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
+import { computeTextGlyphSize } from "./text-glyph-size";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -75,6 +76,8 @@ export function OverlaySvg({
   draftStyle,
   imageWidthPx,
   imageHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
   selectedLayerId = null,
   liveOverride = null
 }: {
@@ -83,8 +86,16 @@ export function OverlaySvg({
   /** Explicitly `| undefined` (not just `?`) so callers can pass the
    *  helper's result directly under `exactOptionalPropertyTypes`. */
   draftStyle?: DraftStyle | undefined;
+  /** CANVAS dims — `record.width_px` / `record.height_px`. Drive
+   *  viewBox-relative measurements and overlay coord mapping. */
   imageWidthPx: number;
   imageHeightPx: number;
+  /** SOURCE raster dims — raster layer's `natural_*_px`. Used by
+   *  TextGlyph's `computeTextGlyphSize` so text overlays don't
+   *  silently resize after a v2 crop (pwrdrvr/PwrSnap#110). v1
+   *  callers pass canvas dims (no separate source). */
+  sourceWidthPx: number;
+  sourceHeightPx: number;
   /** Phase 3.2 selection model — id of the currently-selected overlay
    *  row, or null for none. When set, a 1px accent-colored outline
    *  glyph is drawn over that overlay's bounding box so the user can
@@ -220,6 +231,8 @@ export function OverlaySvg({
           color={data.color}
           imageWidthPx={imageWidthPx}
           imageHeightPx={imageHeightPx}
+          sourceWidthPx={sourceWidthPx}
+          sourceHeightPx={sourceHeightPx}
         />
       ))}
 
@@ -236,6 +249,8 @@ export function OverlaySvg({
             data={sel.data}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
+            sourceWidthPx={sourceWidthPx}
+            sourceHeightPx={sourceHeightPx}
           />
         );
       })()}
@@ -892,15 +907,25 @@ function HighlightGlyph({
 function textBoundsBox(
   data: Extract<OverlayRow["data"], { kind: "text" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  sourceWidthPx: number,
+  sourceHeightPx: number
 ): { x: number; y: number; w: number; h: number } {
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const fontSizePx =
-    data.size === "large"
-      ? shortSide / 18
-      : data.size === "medium"
-        ? shortSide / 30
-        : shortSide / 50;
+  // Same `computeTextGlyphSize` contract as TextGlyph so the hit-test
+  // / selection-outline box stays in sync with what's actually drawn.
+  // `sizePx` is the pixel-space text height (in canvas/source pixels,
+  // which share the same scale in v2); used as `fontSizePx` for
+  // downstream pixel-space math (main's #121 arrow refactor moved
+  // OverlaySvg's geometry to pixel space). See
+  // `packages/shared/src/text-glyph-size.ts` for the derivation and
+  // pwrdrvr/PwrSnap#110 for the source-shortSide invariant.
+  const { sizePx: fontSizePx } = computeTextGlyphSize({
+    size: data.size,
+    sourceWidthPx,
+    sourceHeightPx,
+    canvasWidthPx: imageWidthPx,
+    canvasHeightPx: imageHeightPx
+  });
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
   const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
@@ -927,11 +952,15 @@ function textBoundsBox(
 function SelectionOutline({
   data,
   imageWidthPx,
-  imageHeightPx
+  imageHeightPx,
+  sourceWidthPx,
+  sourceHeightPx
 }: {
   data: OverlayRow["data"];
   imageWidthPx: number;
   imageHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
 }): ReactElement | null {
   // Derive a normalized bounding box for each overlay kind.
   let box: { x: number; y: number; w: number; h: number } | null = null;
@@ -946,7 +975,7 @@ function SelectionOutline({
     // the user's annotation as a misleading box. Return null.
     return null;
   } else if (data.kind === "text") {
-    box = textBoundsBox(data, imageWidthPx, imageHeightPx);
+    box = textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   } else if (data.kind === "crop") {
     box = data.rect;
   }
@@ -1263,6 +1292,8 @@ export function TransformHandles({
   selectedOverlay,
   imageWidthPx,
   imageHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
   onGeometryChange,
   onGeometryDrag,
   onDragStart,
@@ -1274,6 +1305,12 @@ export function TransformHandles({
    *  arrow / blur / highlight ignore these. */
   imageWidthPx: number;
   imageHeightPx: number;
+  /** SOURCE raster dims — pwrdrvr/PwrSnap#110: text body-hit rect
+   *  uses the same `computeTextGlyphSize` formula as the dashed
+   *  selection outline, which needs source dims to stay constant
+   *  across crops. */
+  sourceWidthPx: number;
+  sourceHeightPx: number;
   /** Called once at pointerup with the final geometry. Caller is
    *  responsible for routing this through dispatchEdit (which is
    *  format-aware) and updating the selection model to follow the
@@ -1332,8 +1369,8 @@ export function TransformHandles({
   // `data` snapshot the handles use so the body follows during a
   // live drag.
   const bodyBox = useMemo(
-    () => bodyBoxForOverlay(data, imageWidthPx, imageHeightPx),
-    [data, imageWidthPx, imageHeightPx]
+    () => bodyBoxForOverlay(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx),
+    [data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx]
   );
 
   // Translate a pointer event's client coordinates back into normalized
@@ -1525,7 +1562,9 @@ export function TransformHandles({
 function bodyBoxForOverlay(
   data: OverlayRow["data"],
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  sourceWidthPx: number,
+  sourceHeightPx: number
 ): { x: number; y: number; w: number; h: number } | null {
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     return data.rect;
@@ -1547,7 +1586,7 @@ function bodyBoxForOverlay(
     // size approximation that missed multi-line bodies or long
     // single-line text. The hit rect is fully transparent; the only
     // user-visible affordance is the SelectionOutline above.
-    return textBoundsBox(data, imageWidthPx, imageHeightPx);
+    return textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   }
   if (data.kind === "step") {
     // Step keeps its small approximate box — no body length to
@@ -1598,6 +1637,8 @@ function TextGlyph({
   weight,
   imageWidthPx,
   imageHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
   color
 }: {
   point: { x: number; y: number };
@@ -1608,23 +1649,44 @@ function TextGlyph({
    *  popover values (regular=400, bold=700) all funnel through one
    *  place. */
   weight: number;
+  /** CANVAS dims (`record.width_px` / `record.height_px`) — shrink
+   *  with each crop. Drive the viewBox-relative `fontSize`. */
   imageWidthPx: number;
   imageHeightPx: number;
+  /** SOURCE raster dims (raster layer's natural_*_px). INVARIANT
+   *  across crops — drive `sizePx` so text overlays don't silently
+   *  resize every crop (pwrdrvr/PwrSnap#110). */
+  sourceWidthPx: number;
+  sourceHeightPx: number;
   /** See ArrowGlyph.color. */
   color?: "auto" | string | undefined;
 }): ReactElement {
-  // Font size derived from image short-side, matching the bake.
-  // Three buckets at ~1.7× ratios so users can actually tell them
-  // apart in the popover — the old 60/30 split made "small" too tiny
-  // to read at typical zooms and the medium/large gap was too small
-  // to be useful.
-  //   small  ≈ shortSide / 50  (e.g. 38 px on a 1920-px-tall image)
-  //   medium ≈ shortSide / 30  (e.g. 64 px)
-  //   large  ≈ shortSide / 18  (e.g. 107 px)
-  // Same values in the bake; see compose.ts textSvg.
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const fontSizePx =
-    size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
+  // Font size derivation lives in `computeTextGlyphSize` (testable
+  // in isolation; pinned by pwrdrvr/PwrSnap#110). The key invariant:
+  // `sizePx` is the pixel-space text height in canvas pixels (= source
+  // pixels in v2 — crop is a viewport change, not a resampling) and
+  // stays CONSTANT across crops, derived from the SOURCE raster's
+  // short side. Main's #121 arrow refactor moved OverlaySvg's
+  // geometry to pixel space, so we use the helper's `sizePx`
+  // directly as `fontSizePx`.
+  //
+  //   small  ≈ sourceShortSide / 50  (e.g. 38 px on a 1920-px-tall image)
+  //   medium ≈ sourceShortSide / 30  (e.g. 64 px)
+  //   large  ≈ sourceShortSide / 18  (e.g. 107 px)
+  //
+  // Pre-fix this used the CANVAS short side for sizePx — for an
+  // already-cropped v2 capture (canvas H = 1239), a "medium" text
+  // re-rendered as 1239/30 = 41 source-px tall instead of the
+  // original 64. Visible symptom: text body shrinks horizontally,
+  // more chars fit before the canvas right edge, user perceives
+  // the crop as "wider than I drew it".
+  const { sizePx: fontSizePx } = computeTextGlyphSize({
+    size,
+    sourceWidthPx,
+    sourceHeightPx,
+    canvasWidthPx: imageWidthPx,
+    canvasHeightPx: imageHeightPx
+  });
   const accent =
     color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
   // Multi-line support: body may contain "\n" from the Shift+Enter

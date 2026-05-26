@@ -28,6 +28,15 @@
 // right edge of its parent and the popped panel is anchored to the
 // left of the bar. Left-rail variants are a copy-paste away but
 // have no caller today.
+//
+// One window-level listener per mount: the component installs a
+// `window.addEventListener("keydown", ...)` for ⌘\ + ⌘N + Escape.
+// If a future surface mounts BOTH `EditorChrome` (which has its own
+// listener for the same chord set) AND a `RightActivityBar` inside
+// the same `BrowserWindow`, the chords fire on both — Escape would
+// close both panels at once, ⌘\ would toggle both pin states. There
+// is no caller today that combines them; if one lands, lift the
+// keydown handling into the parent and pass intents in via props.
 
 import {
   useCallback,
@@ -323,12 +332,21 @@ export function RightActivityBar<Id extends string>(
 
   const pinnedStyle: CSSProperties = { width: `${pinnedWidthPx}px` };
 
+  // tabpanel id is keyed on the visible-tab id, NOT on pinned vs
+  // hover-pop mode, so the tab→panel aria-controls link survives
+  // unpinning. Tab buttons reference the SAME id their controlled
+  // panel carries; only one panel is mounted at a time.
+  const panelId = `${testIdPrefix}-tabpanel-${String(activeForPanel)}`;
+  const activeTabId = `${testIdPrefix}-tab-${String(activeForPanel)}-button`;
+
   return (
     <div className={rootClass} onMouseMove={handleChromeMouseMove}>
       {showPinnedPanel && (
         <div
           className="rab__panel rab__panel--pinned"
-          role="region"
+          role="tabpanel"
+          id={panelId}
+          aria-labelledby={activeTabId}
           aria-label={`${labelFor(tabs, activeTab)} panel`}
           data-testid={`${testIdPrefix}-panel-pinned`}
           style={pinnedStyle}
@@ -349,6 +367,7 @@ export function RightActivityBar<Id extends string>(
             tab={tab}
             active={pinned && activeTab === tab.id}
             testIdPrefix={testIdPrefix}
+            panelId={panelId}
             onClick={handleIconClick}
             onMouseEnter={handleIconMouseEnter}
             onMouseLeave={handleIconMouseLeave}
@@ -361,6 +380,7 @@ export function RightActivityBar<Id extends string>(
             tab={tab}
             active={pinned && activeTab === tab.id}
             testIdPrefix={testIdPrefix}
+            panelId={panelId}
             onClick={handleIconClick}
             onMouseEnter={handleIconMouseEnter}
             onMouseLeave={handleIconMouseLeave}
@@ -379,7 +399,9 @@ export function RightActivityBar<Id extends string>(
         >
           <div
             className="rab__panel rab__panel--hover"
-            role="region"
+            role="tabpanel"
+            id={panelId}
+            aria-labelledby={activeTabId}
             aria-label={`${labelFor(tabs, activeForPanel)} panel`}
             style={pinnedStyle}
           >
@@ -409,6 +431,10 @@ interface ActivityButtonProps<Id extends string> {
   tab: RightActivityTab<Id>;
   active: boolean;
   testIdPrefix: string;
+  /** DOM id of the tabpanel this tab controls. Both the pinned and
+   *  hover-popped panels carry the same id (only one is mounted at a
+   *  time) so the tab→panel link survives the pin/unpin transition. */
+  panelId: string;
   onClick: (id: Id) => void;
   onMouseEnter: (id: Id) => void;
   onMouseLeave: (id: Id) => void;
@@ -418,6 +444,7 @@ function ActivityButton<Id extends string>({
   tab,
   active,
   testIdPrefix,
+  panelId,
   onClick,
   onMouseEnter,
   onMouseLeave
@@ -427,9 +454,25 @@ function ActivityButton<Id extends string>({
       type="button"
       className={"rab__act" + (active ? " is-active" : "")}
       role="tab"
-      aria-label={tab.label}
-      aria-pressed={active}
+      // role="tab" requires aria-selected, NOT aria-pressed. The two
+      // serve different a11y semantics: aria-pressed is for toggle
+      // buttons (mute, bookmark); aria-selected is for tabs / listbox
+      // options / treeitems where one of N siblings is the chosen one.
+      // Screen readers announce "selected" for tabs and "pressed" for
+      // toggles, so mixing them breaks the user's mental model.
+      aria-selected={active}
+      // aria-controls + the tabpanel's matching id let assistive tech
+      // jump from the tab to the panel it controls. Both the pinned
+      // and hover-popped panels carry the same id since only one is
+      // visible at a time.
+      aria-controls={panelId}
+      // tabindex follows the WAI-ARIA "roving tabindex" pattern for
+      // tablists: the active tab is 0, inactive tabs are -1 so they
+      // skip the natural Tab traversal.
+      tabIndex={active ? 0 : -1}
+      id={`${testIdPrefix}-tab-${String(tab.id)}-button`}
       title={tab.title ?? tab.label}
+      aria-label={tab.label}
       data-tab={tab.id}
       data-testid={`${testIdPrefix}-tab-${tab.id}`}
       onClick={() => onClick(tab.id)}

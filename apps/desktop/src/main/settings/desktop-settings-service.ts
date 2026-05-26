@@ -41,7 +41,8 @@ import {
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
-  isEditorSidebarPanel
+  isEditorSidebarPanel,
+  isLibrarySidebarTab
 } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
@@ -493,13 +494,15 @@ function parseLibrarySettings(
   if (!isRecord(raw)) return defaults;
   const detailRaw = raw.detailRail;
   if (!isRecord(detailRaw)) return defaults;
-  const lastSelectedTab = detailRaw.lastSelectedTab;
-  const pickedTab: LibrarySidebarTab =
-    lastSelectedTab === "info" ||
-    lastSelectedTab === "ocr" ||
-    lastSelectedTab === "chat"
-      ? lastSelectedTab
-      : defaults.detailRail.lastSelectedTab;
+  // Route the on-disk tab value through the shared type guard so the
+  // accepted set has a single source of truth (the protocol's
+  // LIBRARY_SIDEBAR_TABS array). A new tab id only has to be added in
+  // one place to round-trip through settings.
+  const pickedTab: LibrarySidebarTab = isLibrarySidebarTab(
+    detailRaw.lastSelectedTab
+  )
+    ? detailRaw.lastSelectedTab
+    : defaults.detailRail.lastSelectedTab;
   return {
     detailRail: {
       pinned: pickBoolean(detailRaw.pinned, defaults.detailRail.pinned),

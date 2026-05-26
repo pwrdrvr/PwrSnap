@@ -20,7 +20,14 @@
 // Pinned + last-selected state is per-window local state — settings
 // persistence can land later if cross-window memory becomes desirable.
 
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement
+} from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   CaptureEnrichment,
@@ -80,8 +87,14 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
       if (cancelled) return;
       if (initialReadDoneRef.current) return; // user already touched it
       if (!result.ok) return;
-      const settings = result.value as Settings | undefined;
-      const rail = settings?.library?.detailRail;
+      // settings:read returns a fully-shaped Settings at runtime
+      // (parseV1 fills any missing nested fields with defaults), but
+      // renderer test mocks frequently return `{ ok: true, value:
+      // undefined }` for verbs they don't explicitly stub. Keep an
+      // optional chain on `result.value` itself so a mock that
+      // forgets to wire settings:read doesn't crash the panel.
+      const rail = (result.value as Settings | undefined)?.library
+        ?.detailRail;
       if (rail === undefined) return;
       setPinned(rail.pinned);
       setActiveTab(rail.lastSelectedTab);
@@ -166,36 +179,44 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
 
   const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
 
-  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = [
-    {
-      id: "info",
-      label: "Info",
-      title: "Info",
-      icon: INFO_ICON
-    },
-    {
-      id: "ocr",
-      label: "OCR",
-      title: hasOcrText ? "OCR — extracted text ready" : "OCR",
-      badge: hasOcrText,
-      icon: OCR_ICON
-    },
-    {
-      id: "chat",
-      label: "Chat",
-      title: "Chat with Codex",
-      icon: CHAT_ICON
-    }
-  ];
+  // Memoized — the array identity is consumed by RightActivityBar's
+  // internal useMemo'd top/bottom split. Without this, the split runs
+  // on every DetailRail render even though the tab definitions only
+  // change when the OCR badge state flips.
+  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
+    () => [
+      {
+        id: "info",
+        label: "Info",
+        title: "Info",
+        icon: INFO_ICON
+      },
+      {
+        id: "ocr",
+        label: "OCR",
+        title: hasOcrText ? "OCR — extracted text ready" : "OCR",
+        badge: hasOcrText,
+        icon: OCR_ICON
+      },
+      {
+        id: "chat",
+        label: "Chat",
+        title: "Chat with Codex",
+        icon: CHAT_ICON
+      }
+    ],
+    [hasOcrText]
+  );
 
+  // renderPanel returns the panel BODY only — the outer role="tabpanel"
+  // wrapper (with id + aria-labelledby) is supplied by RightActivityBar
+  // so the tab→panel aria-controls link is single-source-of-truth. Two
+  // nested role="tabpanel" elements would confuse assistive tech about
+  // which container is the "real" panel.
   const renderPanel = (id: SidebarTab): ReactElement => {
     if (id === "info") {
       return (
-        <div
-          className="psl__right-body"
-          role="tabpanel"
-          aria-label="Info"
-        >
+        <div className="psl__right-body">
           <DetailTab
             record={record}
             enrichment={enrichment}
@@ -212,13 +233,13 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     }
     if (id === "ocr") {
       return (
-        <div className="psl__right-body" role="tabpanel" aria-label="OCR">
+        <div className="psl__right-body">
           <OcrTab record={record} enrichment={enrichment} />
         </div>
       );
     }
     return (
-      <div className="psl__right-body psl__right-body--chat" role="tabpanel" aria-label="Chat">
+      <div className="psl__right-body psl__right-body--chat">
         <ChatPanel captureId={record.id} />
       </div>
     );

@@ -77,6 +77,13 @@ const COMPOSER_PLACEHOLDER =
 const WELCOME_BODY =
   "Chat lives next to the canvas so Codex can act on layers. Once dynamic tools are wired, ask things like \"add an arrow pointing at Send\" or \"make all arrows orange and Large\" and your edits stick.";
 
+/** Sentinel rendered in the Codex message header until the real
+ *  dynamic-tools IPC lands. The IPC PR replaces every `MODEL_PLACEHOLDER`
+ *  call site with the actual model id returned by the turn (e.g.
+ *  `haiku-4.5`). Centralizing the literal here makes that swap a
+ *  one-line grep. */
+const MODEL_PLACEHOLDER = "pending";
+
 export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -174,7 +181,7 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
       body:
         "Dynamic tools aren't wired to Codex yet — your prompt is queued for when this connects. Use the toolbar to keep editing in the meantime.",
       ts,
-      model: "pending"
+      model: MODEL_PLACEHOLDER
     };
     setMessages((prev) => [...prev, userMsg, codexMsg]);
     setDraft("");

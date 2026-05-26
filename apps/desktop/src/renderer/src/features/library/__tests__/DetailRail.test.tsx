@@ -678,4 +678,34 @@ describe("DetailRail", () => {
     });
     expect(el.querySelector('[data-testid="chat-panel"]')).not.toBeNull();
   });
+
+  test("ARIA: active tab carries aria-selected + aria-controls pointing at the tabpanel id", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "some text" }));
+    const infoTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-info"]'
+    );
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    // Default tab is Info — it should be the only one with
+    // aria-selected="true". aria-pressed must be absent across the
+    // board (toggle-button semantic is wrong for role=tab).
+    expect(infoTab?.getAttribute("aria-selected")).toBe("true");
+    expect(ocrTab?.getAttribute("aria-selected")).toBe("false");
+    expect(infoTab?.getAttribute("aria-pressed")).toBeNull();
+
+    // aria-controls links the tab to its tabpanel by DOM id. Both
+    // tabs reference the SAME id (single panel rendered at a time).
+    const panel = el.querySelector('[data-testid="psl-right-panel-pinned"]');
+    const panelId = panel?.getAttribute("id") ?? "";
+    expect(panelId.length).toBeGreaterThan(0);
+    expect(infoTab?.getAttribute("aria-controls")).toBe(panelId);
+    expect(ocrTab?.getAttribute("aria-controls")).toBe(panelId);
+    // The panel itself must be a tabpanel and labelled by the active
+    // tab's id (so screen readers announce "Info, tab panel").
+    expect(panel?.getAttribute("role")).toBe("tabpanel");
+    expect(panel?.getAttribute("aria-labelledby")).toBe(
+      infoTab?.getAttribute("id")
+    );
+  });
 });

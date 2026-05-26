@@ -19,7 +19,9 @@ import {
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
-  isSettingsPage
+  isLibrarySidebarTab,
+  isSettingsPage,
+  LIBRARY_SIDEBAR_TABS
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -417,14 +419,13 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
         "settings:write: library.detailRail.pinned must be a boolean"
       );
     }
-    if (!isUndefined(dr.lastSelectedTab)) {
-      const v = dr.lastSelectedTab;
-      if (v !== "info" && v !== "ocr" && v !== "chat") {
-        return validationError(
-          "invalid_library_detailRail_lastSelectedTab",
-          "settings:write: library.detailRail.lastSelectedTab must be one of info/ocr/chat"
-        );
-      }
+    if (!isUndefined(dr.lastSelectedTab) && !isLibrarySidebarTab(dr.lastSelectedTab)) {
+      return validationError(
+        "invalid_library_detailRail_lastSelectedTab",
+        `settings:write: library.detailRail.lastSelectedTab must be one of ${LIBRARY_SIDEBAR_TABS.join(
+          "/"
+        )}`
+      );
     }
   }
   return null;

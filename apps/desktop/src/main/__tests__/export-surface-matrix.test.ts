@@ -714,6 +714,282 @@ describe("clipboard:copyLayerFragment — private UTI fragment payload", () => {
   });
 });
 
+// ---------------------------------------------------------------------
+// Text-overlay sizing across crops (pwrdrvr/PwrSnap#110 follow-up).
+//
+// The matrix above pins overlay COMPOSITING (red region present in
+// the export). This block pins overlay SIZING — specifically, that
+// text in a v2 cropped capture renders at the SOURCE raster's
+// shortSide-derived size, not the (shrunk) canvas's. Editor was
+// fixed in commit `881cff0`; the bake's `textSvg` (compose.ts) had
+// the same bug. User-visible symptom: clipboard:copy MED produced a
+// PNG with text noticeably smaller than what the editor displayed.
+//
+// Pixel signature: a "large" text bucket on a 400×300 canvas backed
+// by an 800×600 source raster renders text 33 source-px tall (correct
+// behavior, sourceShortSide=600 / 18) vs 17 source-px tall (bug
+// behavior, canvasShortSide=300 / 18). After MED resizes to 1440-wide,
+// the canvas is 1440×1080, scale 3.6×. Text vertical extent:
+//   • Correct: rows 480..600
+//   • Bug:     rows 510..570
+// At Y=495 (between the two regimes), the column at the text's X
+// anchor (720) has dark pixels under the CORRECT rendering and white
+// under the BUG.
+// ---------------------------------------------------------------------
+
+const CROPPED_TEXT_RASTER_W = 800;
+const CROPPED_TEXT_RASTER_H = 600;
+const CROPPED_TEXT_CANVAS_W = 400;
+const CROPPED_TEXT_CANVAS_H = 300;
+
+async function seedV2CroppedCaptureWithLargeText(id: string): Promise<void> {
+  // Source raster is 800×600 (the user's pre-crop natural). The
+  // captures.{width,height}_px and the manifest canvas_dimensions are
+  // 400×300 — simulating the post-crop state. The raster's transform
+  // stays identity here; this fixture is about the SIZE math, not the
+  // off-origin translate (PR #110 covers the latter separately).
+  const sourcePng = await sharp({
+    create: {
+      width: CROPPED_TEXT_RASTER_W,
+      height: CROPPED_TEXT_RASTER_H,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 }
+    }
+  })
+    .png()
+    .toBuffer();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const bundlePath = join(workDir, "captures", `${id}.pwrsnap`);
+  const flatPngPath = join(workDir, "captures", `${id}.png`);
+  await writeFile(flatPngPath, sourcePng);
+  const now = new Date().toISOString();
+
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: {
+      width_px: CROPPED_TEXT_CANVAS_W,
+      height_px: CROPPED_TEXT_CANVAS_H
+    },
+    paired_png_filename: `${id}.png`,
+    created_at: now,
+    bundle_modified_at: now
+  };
+
+  // NanoId16 = exactly 16 chars of [A-Za-z0-9_-]. Match existing
+  // matrix fixtures' style.
+  const rootGroupId = "grp_text_size_x0";
+  const rasterId = "ras_text_size_x0";
+  const textId = "vec_text_size_x0";
+  const common = {
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+  const layers: BundleLayerNode[] = [
+    {
+      ...common,
+      id: rootGroupId,
+      kind: "group",
+      parent_id: null,
+      z_index: 0,
+      collapsed: false
+    },
+    {
+      ...common,
+      id: rasterId,
+      kind: "raster",
+      parent_id: rootGroupId,
+      z_index: 0,
+      source_ref: { kind: "embedded", sha256: sourceSha },
+      // NATURAL dims are the source raster's 800×600 — invariant
+      // across crops. Canvas dims (manifest + captures row) are the
+      // smaller cropped extent. This mismatch is the load-bearing
+      // setup that exposes the bake's size bug.
+      natural_width_px: CROPPED_TEXT_RASTER_W,
+      natural_height_px: CROPPED_TEXT_RASTER_H
+    },
+    {
+      ...common,
+      id: textId,
+      kind: "vector",
+      parent_id: rootGroupId,
+      z_index: 1,
+      shape: {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        // Single dense glyph so the vertical pixel column at the
+        // anchor X reliably hits text body for ANY non-trivial
+        // fontSize. "M" is the densest ASCII char vertically.
+        body: "M",
+        size: "large",
+        // Explicit dark color: black so the test's "is this pixel
+        // dark?" check is unambiguous against the white raster.
+        color: "#000000"
+      }
+    }
+  ];
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 1,
+    layers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+
+  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sourceSha, sourcePng]]),
+    layerBytes: new Map(),
+    thumbnailJpg
+  });
+  await writeFile(bundlePath, bundleBuf);
+
+  getDb()
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at, source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio, byte_size,
+        sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', @captured_at, NULL, NULL,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
+        2, @ev,
+        @w, @h, 2.0, @bs,
+        @sha, @ev, NULL
+      )`
+    )
+    .run({
+      id,
+      captured_at: now,
+      bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
+      ev: 1,
+      w: CROPPED_TEXT_CANVAS_W,
+      h: CROPPED_TEXT_CANVAS_H,
+      bs: bundleBuf.length,
+      sha: sourceSha
+    });
+
+  insertLayerTreeForCapture(id, layers);
+}
+
+/** Count how many "dark" pixels fall in a vertical column at the
+ *  given X coord, within Y range [yStart, yEnd). Used to estimate text
+ *  height in the rendered PNG without depending on exact glyph metrics
+ *  — a taller text glyph fills more rows of the column. */
+async function darkPixelCountInColumn(
+  pngBytes: Buffer,
+  x: number,
+  yStart: number,
+  yEnd: number
+): Promise<number> {
+  const { data, info } = await sharp(pngBytes)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  const width = info.width;
+  let count = 0;
+  for (let y = yStart; y < yEnd; y += 1) {
+    const idx = (y * width + x) * channels;
+    const r = data[idx] ?? 255;
+    const g = data[idx + 1] ?? 255;
+    const b = data[idx + 2] ?? 255;
+    // "Dark" = significantly darker than white. The text has a
+    // black fill + dark stroke; an anti-aliased edge pixel will
+    // land somewhere below 200 in all channels. 200 is generous —
+    // pure background (255,255,255) doesn't hit; even faint anti-
+    // alias halos do.
+    if (r < 200 && g < 200 && b < 200) count += 1;
+  }
+  return count;
+}
+
+describe("text overlay sizing — bake honors source shortSide across crops (pwrdrvr/PwrSnap#110)", () => {
+  test("clipboard:copy MED on v2 cropped capture renders text at SOURCE-shortSide-derived size", async () => {
+    // The user-visible bug: the editor showed text at the correct size
+    // (post-`881cff0` renderer fix), but Copy MED produced an export
+    // where the text was visibly smaller. Root cause: `textSvg` in
+    // `compose.ts` was deriving fontSize from canvas shortSide, which
+    // shrinks every crop. Fix threads source dims through compose-tree
+    // so textSvg can use the raster's natural shortSide.
+    const captureId = "t_text_size_cropped_x0";
+    await seedV2CroppedCaptureWithLargeText(captureId);
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+
+    const last = clipboardCaptured.at(-1);
+    if (last === undefined || last.kind !== "writeImage") {
+      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
+    }
+    const pngBytes = last.bytes;
+
+    // Output dims: clipboard:copy renders the canvas, then sharp's
+    // resize honors `withoutEnlargement: true` (compose-tree.ts) so
+    // small canvases stay at their native pixel count even when the
+    // MED preset asks for 1440 wide. Our canvas is 400×300; the
+    // resize doesn't enlarge so the output is also 400×300. That's
+    // fine for the size assertion — text fontSize math is unchanged
+    // by whether the resize enlarges or not.
+    const meta = await sharp(pngBytes).metadata();
+    expect(meta.width).toBe(CROPPED_TEXT_CANVAS_W);
+    expect(meta.height).toBe(CROPPED_TEXT_CANVAS_H);
+
+    // Text anchor at canvas (200, 150). SVG `text-anchor` defaults
+    // to "start" so the M's left edge sits at x=200; with fontSize ≈
+    // 33 the glyph extends roughly x=200..226. The left vertical of
+    // "M" sits at ~x=202 reliably for any non-zero fontSize. Pick
+    // x=202 as the column to scan.
+    //
+    // fontSize derivation:
+    //   CORRECT (uses sourceShortSide=600): 600/18 = 33.3 px tall
+    //   BUG     (uses canvasShortSide=300): 300/18 = 16.7 px tall
+    //
+    // The vertical stroke of "M" fills a contiguous block at its
+    // column. A taller fontSize means more rows of dark pixels in
+    // that column:
+    //   • CORRECT yields ~30+ dark rows (≈ fontSize 33)
+    //   • BUG     yields ~15 dark rows  (≈ fontSize 17)
+    //
+    // Pick > 22 as the assertion: above the bug's max, below the
+    // correct's min. Anti-alias slack on both sides makes a strict
+    // "exactly 33" check brittle; the magnitude difference between
+    // the two regimes is what we're pinning.
+    const x = 202;
+    const windowStart = 120; // y=150 - 30
+    const windowEnd = 180; // y=150 + 30
+    const darkCount = await darkPixelCountInColumn(
+      pngBytes,
+      x,
+      windowStart,
+      windowEnd
+    );
+    expect(
+      darkCount,
+      `Dark-pixel count in vertical column at x=${x}, y=[${windowStart}, ${windowEnd}) should reflect CORRECT (source-shortSide) text height (~33 px) — saw ${darkCount}. Bug rendering would shrink the text to ~17 px tall and miss this threshold; the bake's textSvg used canvas shortSide instead of sourceShortSide.`
+    ).toBeGreaterThan(22);
+  });
+});
+
 function idForCell(surfaceName: string, variantName: string): string {
   // Captures table + BundleManifestV1/V2 cap capture_id at 32 chars.
   // Derive a short, stable id from a sha256 of the cell coordinates

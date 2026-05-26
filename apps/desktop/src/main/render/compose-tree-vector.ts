@@ -31,7 +31,15 @@ import {
 export async function buildCompositeLayersForV2(
   row: OverlayRow,
   canvasWidthPx: number,
-  canvasHeightPx: number
+  canvasHeightPx: number,
+  /** SOURCE raster's natural dims — passed in by `composeV2` after
+   *  scanning the layer tree for the root raster. Used by `textSvg` so
+   *  the bake's fontSize matches the editor's renderer (commit
+   *  `881cff0` made the renderer source-shortSide-based; this prop
+   *  closes the loop for the export side). Optional for callers that
+   *  haven't been updated yet — `textSvg` falls back to canvas dims. */
+  sourceWidthPx?: number,
+  sourceHeightPx?: number
 ): Promise<sharp.OverlayOptions[]> {
   const data = row.data;
   switch (data.kind) {
@@ -67,7 +75,13 @@ export async function buildCompositeLayersForV2(
     case "text":
       return [
         await rasterizeSvgForV2(
-          textSvgForV2(data, canvasWidthPx, canvasHeightPx),
+          textSvgForV2(
+            data,
+            canvasWidthPx,
+            canvasHeightPx,
+            sourceWidthPx,
+            sourceHeightPx
+          ),
           canvasWidthPx,
           canvasHeightPx
         )

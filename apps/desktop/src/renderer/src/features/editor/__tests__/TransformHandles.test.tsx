@@ -538,6 +538,8 @@ describe("TransformHandles", () => {
           selectedOverlay: cropOverlay,
           imageWidthPx: 1920,
           imageHeightPx: 1080,
+          sourceWidthPx: 1920,
+          sourceHeightPx: 1080,
           onGeometryChange: () => undefined
         } as Parameters<typeof TransformHandles>[0])
       );

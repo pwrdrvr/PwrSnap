@@ -652,23 +652,51 @@ function highlightBlendMode(
 function textSvg(
   data: Extract<OverlayRow["data"], { kind: "text" }>,
   imageWidthPx: number,
-  imageHeightPx: number
+  imageHeightPx: number,
+  /** SOURCE raster's natural dims, when known. v2 captures can be
+   *  cropped — the canvas dims (`imageWidthPx` / `imageHeightPx`)
+   *  shrink with every crop but the raster's source-pixel scale stays
+   *  constant. To keep text overlays at the same physical size as the
+   *  editor renders them (commit `881cff0` made the editor source-
+   *  shortSide-based), the bake must use the source's shortSide too.
+   *
+   *  v1 callers — and v2 callers that don't have source dims at hand —
+   *  can omit these args; the function falls back to canvas shortSide,
+   *  matching the pre-#110-bake behavior. v1 captures have source ==
+   *  canvas so the fallback is also correct for them. */
+  sourceWidthPx?: number,
+  sourceHeightPx?: number
 ): string {
   const xPx = data.point.x * imageWidthPx;
   const yPx = data.point.y * imageHeightPx;
-  const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
-  // Three buckets, ~1.7× ratios — must match
-  // apps/desktop/src/renderer/src/features/editor/OverlaySvg.tsx's
-  // TextGlyph or the live preview and the export will disagree.
+  // When the row carries an explicit sizePx (pwrdrvr/PwrSnap#110),
+  // that value wins — bucket math is bypassed. Otherwise fall back to
+  // bucket × source-shortSide (with canvas-shortSide as the legacy
+  // fallback when source dims aren't known). Same precedence as
+  // `computeTextGlyphSize` in @pwrsnap/shared — the renderer and the
+  // bake walk the same decision tree so the live preview and the
+  // export always agree.
+  //
   //   small  ≈ shortSide / 50
   //   medium ≈ shortSide / 30
   //   large  ≈ shortSide / 18
-  const fontSizePx =
+  const shortSideForSizing =
+    sourceWidthPx !== undefined &&
+    sourceHeightPx !== undefined &&
+    sourceWidthPx > 0 &&
+    sourceHeightPx > 0
+      ? Math.min(sourceWidthPx, sourceHeightPx)
+      : Math.min(imageWidthPx, imageHeightPx);
+  const bucketSizePx =
     data.size === "large"
-      ? shortSidePx / 18
+      ? shortSideForSizing / 18
       : data.size === "medium"
-        ? shortSidePx / 30
-        : shortSidePx / 50;
+        ? shortSideForSizing / 30
+        : shortSideForSizing / 50;
+  const fontSizePx =
+    data.sizePx !== undefined && Number.isFinite(data.sizePx) && data.sizePx > 0
+      ? data.sizePx
+      : bucketSizePx;
   const accent = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   // Multi-line: split body on "\n" and emit one tspan per line, each
   // advancing the baseline by 1.2em. dominant-baseline="central" puts

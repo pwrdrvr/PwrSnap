@@ -3,7 +3,9 @@
 // Phase 4 Codex DynamicToolCall response is reparsed through these
 // schemas, so we hold the line on:
 //   - kind discriminator presence + value
-//   - normalized [0, 1] coord clamping
+//   - normalized coords are FINITE real numbers (no NaN/Infinity);
+//     out-of-canvas coords are permitted so crop is reversible (see
+//     pwrdrvr/PwrSnap#110 review — crop is a viewport, not destructive)
 //   - hex color format vs the literal "auto"
 //   - `default()` filling missing optional fields
 
@@ -33,12 +35,29 @@ describe("CropOverlay", () => {
     expect(parsed.kind).toBe("crop");
   });
 
-  test("rejects coords outside [0, 1]", () => {
+  test("accepts coords outside [0, 1] (crop is reversible; overlays may live outside the cropped viewport)", () => {
+    // Pre-pwrdrvr/PwrSnap#110: NormalizedScalar was .min(0).max(1),
+    // which rejected these. The reviewer flagged that as destructive:
+    // an overlay at point.x=0.95 that gets transformed by a 60% crop
+    // becomes point.x≈1.58, and the only way to round-trip an undo is
+    // to PRESERVE that out-of-canvas coord. The renderer (SVG
+    // overflow:hidden) and bake pipeline (sharp composite) clip at
+    // paint time, so out-of-canvas overlays are invisible but still
+    // present in the bundle.
+    expect(
+      CropOverlay.parse({ kind: "crop", rect: { x: -0.1, y: 0, w: 0.5, h: 0.5 } }).rect.x
+    ).toBeCloseTo(-0.1, 6);
+    expect(
+      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: 1.5, h: 0.5 } }).rect.w
+    ).toBeCloseTo(1.5, 6);
+  });
+
+  test("rejects non-finite coords (NaN/Infinity would crash the renderer)", () => {
     expect(() =>
-      CropOverlay.parse({ kind: "crop", rect: { x: -0.1, y: 0, w: 0.5, h: 0.5 } })
+      CropOverlay.parse({ kind: "crop", rect: { x: NaN, y: 0, w: 0.5, h: 0.5 } })
     ).toThrow();
     expect(() =>
-      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: 1.5, h: 0.5 } })
+      CropOverlay.parse({ kind: "crop", rect: { x: 0, y: 0, w: Infinity, h: 0.5 } })
     ).toThrow();
   });
 });
@@ -320,5 +339,48 @@ describe("OverlayThickness + readOverlayThickness", () => {
       thickness: "x-large"
     });
     expect(parsed.thickness).toBe("x-large");
+  });
+});
+
+describe("TextOverlay sizePx (absolute text height in source pixels)", () => {
+  // pwrdrvr/PwrSnap#110: a sibling field to `size` that stores the
+  // ABSOLUTE text height in source pixels. The bucket enum stays as
+  // the user's last UI intent; sizePx is the resolved truth. Decoupling
+  // them lets `"medium"` mean different absolute sizes for two
+  // canvases of the same dim depending on placement history (native vs
+  // cropped) — without this field, the bucket math at render time has
+  // to pick ONE source-of-truth (canvas shortSide OR source shortSide)
+  // and is forced to lie to the user on one of the two cases.
+  //
+  // Optional for back-compat. Legacy rows (no sizePx) keep parsing
+  // and rendering exactly as they did before this change; the new
+  // field only takes effect when the renderer/bake see it populated.
+
+  test("accepts a positive finite sizePx", () => {
+    const parsed = TextOverlay.parse({
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "Hi",
+      size: "medium",
+      sizePx: 64
+    });
+    expect(parsed.sizePx).toBe(64);
+  });
+
+  test("legacy row without sizePx parses cleanly — field stays undefined", () => {
+    const parsed = TextOverlay.parse({
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "Hi"
+    });
+    expect(parsed.sizePx).toBeUndefined();
+  });
+
+  test("rejects non-positive or non-finite sizePx (defensive — would crash the renderer)", () => {
+    const base = { kind: "text", point: { x: 0, y: 0 }, body: "x", size: "small" };
+    expect(() => TextOverlay.parse({ ...base, sizePx: 0 })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: -5 })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: NaN })).toThrow();
+    expect(() => TextOverlay.parse({ ...base, sizePx: Infinity })).toThrow();
   });
 });

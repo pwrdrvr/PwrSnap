@@ -572,7 +572,21 @@ export function CropTool(props: CropToolProps): ReactElement | null {
         role="img"
         aria-label={ariaLabel}
         data-testid="crop-rect"
-        style={rectStyle}
+        style={{
+          ...rectStyle,
+          // pwrdrvr/PwrSnap#110: visible boundary is drawn OUTSIDE
+          // the rect's pixel bounds via CSS outline (which doesn't
+          // consume any of the layout box). The rect's left/top/
+          // width/height encode EXACTLY the kept region — the
+          // dashed outline sits on top of the dim layer just past
+          // the boundary. Pre-fix used `border: 1px solid` with
+          // box-sizing: border-box, which drew the line INSIDE the
+          // rect and made the outermost 1px ambiguously "kept" or
+          // "cropped" (the source of the user's "Hi Mom" vs
+          // "Hi Mom, w" perception drift).
+          outline: "1px dashed rgba(255, 255, 255, 0.9)",
+          outlineOffset: "0px"
+        }}
         onPointerDown={onInteriorPointerDown}
       >
         {/* Rule-of-thirds guides — only while dragging. Positioned
@@ -602,7 +616,21 @@ export function CropTool(props: CropToolProps): ReactElement | null {
           </>
         ) : null}
 
-        <div className="pse-crop-hud" data-testid="crop-hud">
+        <div
+          className="pse-crop-hud"
+          data-testid="crop-hud"
+          style={{
+            // pwrdrvr/PwrSnap#110: theme-independent high-contrast
+            // colors so the W×H readout stays legible against ANY
+            // image content. Pre-fix used `--bg-overlay` +
+            // `--text-primary` which resolved to ~32% black scrim +
+            // near-black text in light theme — invisible on a black
+            // screenshot. White-on-dark-scrim works regardless.
+            backgroundColor: "rgba(0, 0, 0, 0.85)",
+            color: "rgb(255, 255, 255)",
+            boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.4)"
+          }}
+        >
           {hudText}
         </div>
       </div>

@@ -105,6 +105,16 @@ export interface ToolStylePopoverProps {
   /** Click handler for the header × button. Caller clears the
    *  selection. Required when `selectedOverlayLabel` is set. */
   onClearSelection?: () => void;
+  /** pwrdrvr/PwrSnap#110 — when set on a text overlay's popover, the
+   *  header of the Font size row renders a small "Custom · {label}"
+   *  chip. Indicates the selected row's stored `sizePx` doesn't match
+   *  any of the current canvas's bucket values (typically because of
+   *  a crop after placement). Clicking S/M/L re-snaps `sizePx` to the
+   *  current canvas's bucket value and the chip disappears next
+   *  render. Caller (Editor.tsx) computes the label from
+   *  `matchBucket()` + the row's stored sizePx; omits the prop when
+   *  the row is in-bucket. */
+  customTextSizeLabel?: string;
 }
 
 // ---- Constants ------------------------------------------------------
@@ -310,7 +320,8 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
     onClose,
     onStyleFieldChange,
     selectedOverlayLabel,
-    onClearSelection
+    onClearSelection,
+    customTextSizeLabel
   } = props;
   const isSelectedMode = selectedOverlayLabel !== undefined;
 
@@ -514,6 +525,7 @@ export function ToolStylePopover(props: ToolStylePopoverProps): ReactElement | n
       tool={tool}
       style={style}
       onStyleFieldChange={onStyleFieldChange}
+      {...(customTextSizeLabel !== undefined ? { customTextSizeLabel } : {})}
     />
   );
 
@@ -596,6 +608,9 @@ export interface ToolStyleBodyProps {
   /** Fired when the user mutates any control. Mirrors the popover's
    *  signature so the same handler wires both surfaces. */
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  /** pwrdrvr/PwrSnap#110 — pass-through to TextBody's Custom indicator
+   *  (see `ToolStylePopoverProps.customTextSizeLabel`). */
+  customTextSizeLabel?: string;
 }
 
 /**
@@ -613,7 +628,8 @@ export interface ToolStyleBodyProps {
 export function ToolStyleBody({
   tool,
   style,
-  onStyleFieldChange
+  onStyleFieldChange,
+  customTextSizeLabel
 }: ToolStyleBodyProps): ReactElement {
   switch (tool) {
     case "arrow":
@@ -628,6 +644,7 @@ export function ToolStyleBody({
         <TextBody
           style={style as TextToolStyle}
           onStyleFieldChange={onStyleFieldChange}
+          customSizeLabel={customTextSizeLabel}
         />
       );
     case "rect":
@@ -744,9 +761,22 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
 interface TextBodyProps {
   style: TextToolStyle;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
+  /** pwrdrvr/PwrSnap#110 — when set, renders a "Custom · {label}"
+   *  chip above the Font size row. Signals that the selected text
+   *  overlay's stored sizePx doesn't match any of the current
+   *  canvas's bucket values (typically because a crop changed the
+   *  bucket math after the text was placed). Clicking S/M/L below
+   *  fires onStyleFieldChange("fontSize", value) which the caller
+   *  routes through onSelectedStyleFieldChange — that handler maps
+   *  to {size, sizePx} and re-snaps. */
+  customSizeLabel?: string | undefined;
 }
 
-function TextBody({ style, onStyleFieldChange }: TextBodyProps): ReactElement {
+function TextBody({
+  style,
+  onStyleFieldChange,
+  customSizeLabel
+}: TextBodyProps): ReactElement {
   // Defensive narrowing for the popover's "selected" highlight: if
   // `style.fontSize` is somehow "x-large" (added to ToolSizePreset for
   // arrow/rect thickness; not exposed to the text picker; could
@@ -764,6 +794,29 @@ function TextBody({ style, onStyleFieldChange }: TextBodyProps): ReactElement {
         value={style.color}
         onChange={(c) => onStyleFieldChange("color", c)}
       />
+      {customSizeLabel !== undefined ? (
+        <div
+          className="pse-tsp-custom-size-badge"
+          data-testid="text-custom-size-badge"
+          // Inline style keeps the chip self-contained — same pattern
+          // as the CropTool's HUD badge (pwrdrvr/PwrSnap#110). Theme-
+          // independent dark scrim + white text so the chip reads
+          // against the popover's surface regardless of theme.
+          style={{
+            display: "inline-block",
+            padding: "2px 6px",
+            marginBottom: "4px",
+            borderRadius: "3px",
+            backgroundColor: "rgba(0, 0, 0, 0.85)",
+            color: "rgb(255, 255, 255)",
+            fontSize: "11px",
+            fontFamily: "var(--font-mono)",
+            boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.4)"
+          }}
+        >
+          {`Custom · ${customSizeLabel}`}
+        </div>
+      ) : null}
       <Segmented
         label="Font size"
         testid="text-font-size"

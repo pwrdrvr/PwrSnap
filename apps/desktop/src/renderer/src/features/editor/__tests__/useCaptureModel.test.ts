@@ -608,6 +608,456 @@ describe("useCaptureModel", () => {
     });
   });
 
+  test("5g. v2 dispatchEdit: crop re-normalizes vector layer coords (text at right edge → x>1, preserved as data outside viewport)", async () => {
+    // User bug from pwrdrvr/PwrSnap#110: text at point.x=0.95 on a
+    // 1728-px canvas (absolute pixel 1641) survived a crop to 60%
+    // width — the canvas shrunk but the text's normalized coord
+    // stayed 0.95, so the text "slid leftward" into the kept region
+    // instead of being clipped at the right edge.
+    //
+    // Follow-up from the same PR review: crop is a VIEWPORT change,
+    // not a destructive op. Overlays at absolute source pixels
+    // outside the cropped viewport must PERSIST as DATA so undoing
+    // the crop restores them. The schema's NormalizedScalar was
+    // widened to .finite() (was .min(0).max(1)) specifically to allow
+    // this. The dispatcher's "delete + reinsert" loop must always
+    // reinsert with the transformed coords; renderer (SVG overflow)
+    // and bake (sharp composite) clip at paint time.
+    //
+    // This test exercises the FULL dispatch flow (raster + text
+    // vector → crop dispatch → verify text layer was deleted-and-
+    // reinserted with the OUT-OF-CANVAS transformed coord + an
+    // upsert of a NEW crop VectorLayer happened +
+    // bundle:updateCanvasDimensions fired with derived dims).
+    const record = makeRecord("cap_2", 2); // 2000x1000
+    const rasterLayer = makeLayerNode("ly_raster");
+    const rootGroupId = "ly_root";
+    const rootGroup: BundleLayerNode = {
+      id: rootGroupId,
+      parent_id: null,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "group",
+      collapsed: false
+    };
+    // Re-parent the raster under the root group (matches the doctor's
+    // tree shape: root group → raster → user vectors).
+    const rasterUnderRoot: BundleLayerNode = {
+      ...rasterLayer,
+      parent_id: rootGroupId
+    };
+    // Text on the right edge of the source. With a crop to w=0.6,
+    // the user's expectation is that this text gets clipped at the
+    // right edge of the new (smaller) canvas because its absolute
+    // pixel position (0.95 * 2000 = 1900) is outside the new canvas
+    // (0.6 * 2000 = 1200 wide).
+    const textLayer: BundleLayerNode = {
+      id: "ly_text",
+      parent_id: rootGroupId,
+      name: "Text",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "vector",
+      shape: {
+        kind: "text",
+        point: { x: 0.95, y: 0.5 },
+        body: "edge",
+        size: "small",
+        color: "auto"
+      }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list")
+        return Promise.resolve({
+          ok: true,
+          value: [rootGroup, rasterUnderRoot, textLayer]
+        });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Apply a 60% width crop. Per the user's intuition the text at
+    // point.x = 0.95 should end up with new normalized coord
+    // 0.95 / 0.6 ≈ 1.5833 (past the new canvas right edge → clipped).
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0, y: 0, w: 0.6, h: 1 }
+    });
+    expect(r.ok).toBe(true);
+
+    // 1. Text layer was deleted (Step 0 of the dispatcher's "delete +
+    //    reinsert with transformed coords" loop).
+    const textDeleteCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "layers:delete" && (c[1] as { id: string }).id === "ly_text"
+    );
+    expect(
+      textDeleteCall,
+      "expected layers:delete for the text layer id"
+    ).toBeDefined();
+
+    // 2. CRITICAL: text MUST be reinserted with transformed coords
+    //    point.x = 0.95 / 0.6 ≈ 1.5833 (past the new canvas right
+    //    edge, but the schema now permits out-of-canvas coords).
+    //    Pre-#110 review: the dispatcher deleted-without-reinserting
+    //    here, which made the data loss permanent — undo of the crop
+    //    had nothing to restore. Post-fix: the overlay persists as
+    //    DATA outside the viewport; renderer clips at paint time.
+    const textUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return (
+        layer.kind === "vector" &&
+        layer.shape.kind === "text" &&
+        layer.shape.body === "edge"
+      );
+    });
+    expect(
+      textUpsertCall,
+      "text outside the new canvas MUST be reinserted with transformed (out-of-canvas) coords — without it, undo cannot restore the overlay (the destructive-crop regression from PR #110)"
+    ).toBeDefined();
+    if (textUpsertCall !== undefined) {
+      const layer = (textUpsertCall[1] as { layer: BundleLayerNode }).layer;
+      if (layer.kind !== "vector" || layer.shape.kind !== "text") {
+        throw new Error("text layer shape preserved");
+      }
+      // 0.95 / 0.6 = 1.5833... — past the new canvas, but preserved.
+      expect(layer.shape.point.x).toBeCloseTo(0.95 / 0.6, 4);
+      expect(layer.shape.point.y).toBeCloseTo(0.5, 6);
+    }
+
+    // 3. A crop VectorLayer was inserted.
+    const cropUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return layer.kind === "vector" && layer.shape.kind === "crop";
+    });
+    expect(cropUpsertCall, "expected a crop VectorLayer to be inserted").toBeDefined();
+
+    // 4. The canvas dim shrink happened.
+    const canvasDimCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(canvasDimCall).toBeDefined();
+    expect(canvasDimCall?.[1]).toEqual({
+      captureId: "cap_2",
+      widthPx: 1200, // 2000 * 0.6
+      heightPx: 1000
+    });
+  });
+
+  test("5g2. v2 dispatchEdit: OFF-ORIGIN crop translates the raster layer so the new canvas shows the user's chosen region", async () => {
+    // User-reported bug from pwrdrvr/PwrSnap#110 review (diagnostic
+    // log on a real center-crop):
+    //
+    //   text at (0.89, 0.59) on 2880×1920
+    //   crop rect (0.354, 0.187, 0.6, 0.6)  ← CENTER crop, not top-left
+    //   newCanvas: 1728×1152
+    //
+    // The forward overlay transform correctly emits (0.896, 0.676) for
+    // the text in the new canvas — matches the math. BUT the canvas-
+    // dim shrink ignores rect.x/y (only uses w×h) so the new canvas
+    // implicitly shows the TOP-LEFT 60% of the source, not the middle
+    // 60% the user dragged. Net result: text lands at canvas pixel
+    // (1548, 779) which displays source pixel (1548, 779), NOT the
+    // user's chosen (2567, 1138).
+    //
+    // Fix: also translate the raster layer's transform by
+    // (-rect.x × oldW, -rect.y × oldH) so the cropped canvas shows
+    // the user's chosen region of the source. The dispatcher comment
+    // ("Off-origin crops require translating every layer's transform
+    // by (-rect.x, -rect.y) — deferred to the layer-editor UI in
+    // Phase 4-5") flagged this as a known gap; this test makes it
+    // un-deferred.
+    const record = makeRecord("cap_2", 2);
+    // 2000×1000 record (matches makeRecord default).
+    const rasterLayer = makeLayerNode("ly_raster");
+    const rootGroupId = "ly_root";
+    const rootGroup: BundleLayerNode = {
+      id: rootGroupId,
+      parent_id: null,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "group",
+      collapsed: false
+    };
+    const rasterUnderRoot: BundleLayerNode = {
+      ...rasterLayer,
+      parent_id: rootGroupId
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list")
+        return Promise.resolve({
+          ok: true,
+          value: [rootGroup, rasterUnderRoot]
+        });
+      if (name === "layers:delete")
+        return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Off-origin crop: rect.x = 0.25, rect.y = 0.1, keeping middle 50% × 50%.
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 }
+    });
+    expect(r.ok).toBe(true);
+
+    // The raster must be deleted-and-reinserted with a translated
+    // transform so its visible window matches the user's crop rect.
+    // Expected new translation: (-0.25 × 2000, -0.1 × 1000) = (-500, -100).
+    const rasterUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return layer.kind === "raster";
+    });
+    expect(
+      rasterUpsertCall,
+      "off-origin crop must reinsert the raster with a translated transform — without this the canvas shrink takes the TOP-LEFT W×H of the source instead of the user's chosen region"
+    ).toBeDefined();
+    if (rasterUpsertCall !== undefined) {
+      const layer = (rasterUpsertCall[1] as { layer: BundleLayerNode }).layer;
+      if (layer.kind !== "raster") throw new Error("kind preserved");
+      // transform = [a, b, c, d, tx, ty]; the translation lives at [4]/[5].
+      expect(layer.transform[4]).toBeCloseTo(-500, 3);
+      expect(layer.transform[5]).toBeCloseTo(-100, 3);
+      // Other matrix elements untouched (identity scale + no rotation).
+      expect(layer.transform[0]).toBe(1);
+      expect(layer.transform[1]).toBe(0);
+      expect(layer.transform[2]).toBe(0);
+      expect(layer.transform[3]).toBe(1);
+    }
+
+    // Canvas dims shrink to (1000, 500) — derived from w × oldW and
+    // h × oldH; unchanged behavior. The translation in raster
+    // transform is what makes the off-origin crop show the right
+    // region.
+    const canvasDimCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(canvasDimCall?.[1]).toEqual({
+      captureId: "cap_2",
+      widthPx: 1000, // 2000 * 0.5
+      heightPx: 500 // 1000 * 0.5
+    });
+  });
+
+  test("5h. v2 refetch race: stale broadcast resolution must NOT overwrite fresh record (crop undo bug)", async () => {
+    // User-reported bug from PR #110 review:
+    //   1. User crops a capture (1728 → 1037 wide).
+    //   2. User hits ⌘Z immediately.
+    //   3. Undo dispatches a reverse-crop with rect.w = 1728/1037 ≈ 1.667.
+    //   4. The dispatcher reads recordRef.current.width_px to compute
+    //      `newWidth = op.rect.w * record.width_px`.
+    //   5. Expected: record.width_px is 1037 (post-forward-crop),
+    //      newWidth = 1729 (~original 1728).
+    //   6. Actual: record.width_px is STALE 1728, newWidth = 2880
+    //      (raster natural dims). Canvas restores to wrong size; text
+    //      transformed by the inverse rect now lands at totally wrong
+    //      coords.
+    //
+    // Root cause: the v2 crop dispatcher fires multiple steps that each
+    // broadcast events:overlays:changed / events:captures:changed. Each
+    // broadcast triggers a refetch via library:byId. Refetches from
+    // STEPS 0-2 dispatch BEFORE the DB row's canvas dims update (Step 3),
+    // so library:byId returns stale 1728. Step 3's refetch returns the
+    // fresh 1037. If the stale resolutions land AFTER the fresh one
+    // (any order is possible — IPC + microtask queuing is non-
+    // deterministic), state.record ends up at stale 1728 and recordRef
+    // shows 1728 forever.
+    //
+    // This test SIMULATES the race: fire 5 captures:changed broadcasts
+    // in sequence where each library:byId returns a different width
+    // (mimicking the DB state at each broadcast point), and assert
+    // the FINAL state.record.width is the LATEST value (1037), not the
+    // earliest stale one.
+
+    const STALE_WIDTH = 1728;
+    const FRESH_WIDTH = 1037;
+
+    // Realistic race simulation: each library:byId dispatch is queued.
+    // We control resolution order explicitly. Real IPC + microtasks
+    // don't preserve dispatch order on resolution (Electron's IPC
+    // layer + V8's microtask queue + the broadcast handler invocation
+    // order all contribute), so the order is intentionally reversed
+    // here to demonstrate the bug: the FRESH response (matching the
+    // FINAL DB state after Step 3's canvas dim update) is dispatched
+    // LAST but should resolve FIRST, while STALE responses dispatched
+    // earlier resolve AFTER it. Without a seq guard the stale
+    // resolution overwrites fresh.
+    type Pending = {
+      resolve: (record: CaptureRecord) => void;
+      width: number;
+    };
+    const pending: Pending[] = [];
+    let dispatchIdx = 0;
+    // Width per dispatch index: first call (initial) = stale.
+    // Subsequent (from broadcasts) = stale, stale, stale, stale, fresh.
+    const widthByIdx = [STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, STALE_WIDTH, FRESH_WIDTH];
+
+    dispatchMock.mockImplementation((name: string) => {
+      if (name === "library:byId") {
+        const w = widthByIdx[dispatchIdx] ?? FRESH_WIDTH;
+        dispatchIdx += 1;
+        return new Promise<{ ok: true; value: CaptureRecord }>((resolve) => {
+          pending.push({
+            width: w,
+            resolve: (record: CaptureRecord) => resolve({ ok: true, value: record })
+          });
+        });
+      }
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    // Resolve the initial fetch (call #0, stale width).
+    await act(async () => {
+      const initial = pending.shift();
+      if (initial !== undefined) {
+        const r = makeRecord("cap_2", 2);
+        initial.resolve({ ...r, width_px: initial.width });
+      }
+    });
+    await flush();
+    const initialModel = model as CaptureModel | null;
+    expect(initialModel?.kind === "loaded").toBe(true);
+
+    // Fire 5 captures:changed broadcasts in sequence. Each triggers
+    // a refetch → library:byId dispatch → queues a Pending.
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) {
+        broadcast("events:captures:changed", { changedIds: ["cap_2"] });
+      }
+    });
+    // All 5 should be queued.
+    expect(pending.length).toBe(5);
+
+    // Resolve them in REVERSE order: the FRESH response (last
+    // dispatched) resolves FIRST; the 4 STALE responses resolve
+    // AFTER. Without a seq guard, the last stale resolution wins
+    // and state.record.width ends up at STALE_WIDTH.
+    await act(async () => {
+      const fresh = pending.pop(); // last dispatched = fresh
+      if (fresh !== undefined) {
+        const r = makeRecord("cap_2", 2);
+        fresh.resolve({ ...r, width_px: fresh.width });
+      }
+    });
+    await flush();
+    // Now resolve the 4 stale ones (dispatched before fresh, but
+    // resolving after — the bug case).
+    await act(async () => {
+      while (pending.length > 0) {
+        const stale = pending.shift()!;
+        const r = makeRecord("cap_2", 2);
+        stale.resolve({ ...r, width_px: stale.width });
+      }
+    });
+    await flush();
+    await flush();
+
+    // CORE ASSERTION: even though a STALE response resolved LAST, the
+    // model's record should reflect the FRESH value because that
+    // dispatch was the LATEST one fired. Per-refetch sequence-number
+    // guard drops stale-arriving-late resolutions.
+    const m = model! as CaptureModel;
+    if (m.kind !== "loaded") throw new Error("model not loaded");
+    expect(
+      m.record.width_px,
+      "stale-arriving-late refetch must NOT overwrite fresh state (otherwise crop undo reads stale dims and lands canvas at wrong size — pwrdrvr/PwrSnap#110 user report)"
+    ).toBe(FRESH_WIDTH);
+  });
+
   test("5d. v2 dispatchEdit: upsertBatch → not yet supported error", async () => {
     const record = makeRecord("cap_2", 2);
     const layer = makeLayerNode("ly_1");

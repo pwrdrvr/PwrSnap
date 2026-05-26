@@ -450,6 +450,78 @@ describe("useUndoRedo", () => {
     expect(sent.rect.h).toBe(2);
   });
 
+  test("recordCrop + undo of an OFF-ORIGIN crop dispatches the inverse rect with negative origin (otherwise raster + overlays don't return to start)", async () => {
+    // PR #110 review: a user-reported bug. The undo path used to
+    // pass `{ x: 0, y: 0, w: 1/cw, h: 1/ch }` regardless of the
+    // forward crop's offset. For an edge-aligned crop that's fine
+    // (origin was 0,0 already), but for a center crop the forward
+    // dispatch translates the raster by (-cx × oldW, -cy × oldH);
+    // the undo MUST translate by the inverse offset to restore the
+    // identity transform. Math:
+    //   forward: tx → tx - cx*W
+    //   undo offset:  (-cx/cw) × newW = (-cx/cw) × (cw*W) = -cx*W
+    //   undo transform delta: -(-cx*W) = +cx*W
+    //   net: (tx - cx*W) + cx*W = tx  ✓
+    let api: UseUndoRedoResult | null = null;
+    const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {
+      if (op.kind === "crop") {
+        return {
+          ok: true,
+          value: {
+            kind: "crop",
+            artifact: { previousWidthPx: 0, previousHeightPx: 0 }
+          }
+        };
+      }
+      return { ok: true, value: { kind: "delete" } };
+    });
+    function Probe3(): null {
+      const internal = useRef(false);
+      const a = useUndoRedo({
+        captureId: "cap_v2",
+        applyingRef: internal,
+        dispatchEdit
+      });
+      useEffect(() => {
+        api = a;
+      });
+      return null;
+    }
+    render(createElement(Probe3));
+
+    // Forward crop: center crop of a 2880×1920 canvas keeping the
+    // middle 60% × 60% — matches the user's diagnostic on PR #110.
+    act(() => {
+      api!.recordCrop({
+        rect: { x: 0.354, y: 0.187, w: 0.6, h: 0.6 },
+        previousWidthPx: 2880,
+        previousHeightPx: 1920,
+        newWidthPx: 1728,
+        newHeightPx: 1152
+      });
+    });
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    const cropCalls = dispatchEdit.mock.calls.filter(
+      (c) => (c[0] as { kind: string }).kind === "crop"
+    );
+    expect(cropCalls.length).toBe(1);
+    const sent = cropCalls[0]?.[0] as {
+      rect: { x: number; y: number; w: number; h: number };
+    };
+    // inverse w = 1/0.6 ≈ 1.6667 (restores 2880 from 1728).
+    expect(sent.rect.w).toBeCloseTo(2880 / 1728, 5);
+    expect(sent.rect.h).toBeCloseTo(1920 / 1152, 5);
+    // inverse x = -cx/cw — what makes the undo restore the raster's
+    // identity transform. Pre-fix this was 0 and the user saw the
+    // post-undo image at a different position than the original.
+    expect(sent.rect.x).toBeCloseTo(-0.354 / 0.6, 5);
+    expect(sent.rect.y).toBeCloseTo(-0.187 / 0.6, 5);
+  });
+
   test("recordGeometry + undo dispatches updateGeometry with previousGeometry", async () => {
     let api: UseUndoRedoResult | null = null;
     const dispatchEdit = vi.fn<UndoRedoDispatchEdit>(async (op) => {

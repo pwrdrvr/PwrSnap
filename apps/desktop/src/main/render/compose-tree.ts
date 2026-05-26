@@ -118,8 +118,32 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // opacity (deferred — needs a separate accumulator per group).
   const flattened = flattenTreeInZOrder(layers);
 
+  // SOURCE raster dims — captured once up-front so text vector layers
+  // can derive fontSize from the source's shortSide rather than the
+  // (cropped) canvas's. Matches the editor's commit `881cff0` behavior
+  // for the bake. Picks the FIRST raster child of the root group; v2.0
+  // ships with a single raster per capture, so this is unambiguous.
+  // (Phase 5 paste-image flow with multiple rasters would revisit;
+  // until then we treat the root raster as canonical.)
+  let sourceWidthPx: number | undefined;
+  let sourceHeightPx: number | undefined;
   for (const node of flattened) {
-    accumulator = await renderNode(node, accumulator, canvasInfo, req);
+    if (node.kind === "raster") {
+      sourceWidthPx = node.natural_width_px;
+      sourceHeightPx = node.natural_height_px;
+      break;
+    }
+  }
+
+  for (const node of flattened) {
+    accumulator = await renderNode(
+      node,
+      accumulator,
+      canvasInfo,
+      req,
+      sourceWidthPx,
+      sourceHeightPx
+    );
   }
 
   // Final pass: resize + encode. Single PNG encode at the very end,
@@ -181,7 +205,13 @@ async function renderNode(
   node: BundleLayerNode,
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
-  req: ComposeTreeRequest
+  req: ComposeTreeRequest,
+  /** Source raster's natural dims — captured upstream by `composeV2`.
+   *  Threaded only as far as `compositeVectorOntoAccumulator` cares
+   *  (TEXT shapes use it). Raster + effect layers compute their own
+   *  sizing from `canvasInfo` + node fields. */
+  sourceWidthPx?: number,
+  sourceHeightPx?: number
 ): Promise<Buffer> {
   if (!node.visible) return accumulator;
 
@@ -195,7 +225,13 @@ async function renderNode(
       return compositeRasterOntoAccumulator(node, accumulator, canvasInfo, req);
 
     case "vector":
-      return compositeVectorOntoAccumulator(node, accumulator, canvasInfo);
+      return compositeVectorOntoAccumulator(
+        node,
+        accumulator,
+        canvasInfo,
+        sourceWidthPx,
+        sourceHeightPx
+      );
 
     case "effect":
       return applyEffectOntoAccumulator(node, accumulator, canvasInfo);
@@ -323,7 +359,16 @@ async function compositeRasterOntoAccumulator(
 async function compositeVectorOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "vector" }>,
   accumulator: Buffer,
-  canvasInfo: { width: number; height: number; channels: 4 }
+  canvasInfo: { width: number; height: number; channels: 4 },
+  /** SOURCE raster's natural dims, captured upstream in `composeV2`
+   *  from the root raster layer's `natural_*_px`. Threaded through so
+   *  TEXT vector shapes can derive fontSize from sourceShortSide (per
+   *  pwrdrvr/PwrSnap#110 — keeps the bake's text size invariant across
+   *  crops, matching the editor's commit `881cff0` behavior). Optional
+   *  to keep callers that don't have a raster (synthetic test trees,
+   *  legacy v1-as-v2 fixtures) working. */
+  sourceWidthPx?: number,
+  sourceHeightPx?: number
 ): Promise<Buffer> {
   // v2 VectorLayer.shape is the same Overlay discriminated union as
   // v1 OverlayRow.data. We adapt to v1's buildCompositeLayers
@@ -353,7 +398,13 @@ async function compositeVectorOntoAccumulator(
   }
 
   const { buildCompositeLayersForV2 } = await import("./compose-tree-vector");
-  const layers = await buildCompositeLayersForV2(fakeRow, canvasInfo.width, canvasInfo.height);
+  const layers = await buildCompositeLayersForV2(
+    fakeRow,
+    canvasInfo.width,
+    canvasInfo.height,
+    sourceWidthPx,
+    sourceHeightPx
+  );
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })
     .composite(layers)

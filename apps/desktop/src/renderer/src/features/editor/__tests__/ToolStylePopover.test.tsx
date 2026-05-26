@@ -175,6 +175,11 @@ interface HarnessProps {
   style: ToolStylePopoverStyle;
   onClose?: () => void;
   onStyleFieldChange?: (field: string, value: unknown) => void;
+  /** When provided, the popover surfaces a "Custom · {label}" badge
+   *  above the Font size row (pwrdrvr/PwrSnap#110). Threaded from
+   *  Editor.tsx when a selected text overlay's stored `sizePx`
+   *  doesn't match any of the current canvas's bucket values. */
+  customTextSizeLabel?: string;
 }
 
 function Harness(props: HarnessProps): ReactElement {
@@ -197,7 +202,10 @@ function Harness(props: HarnessProps): ReactElement {
       style: props.style,
       onClose: props.onClose ?? (() => undefined),
       onStyleFieldChange:
-        props.onStyleFieldChange ?? ((_f, _v) => undefined)
+        props.onStyleFieldChange ?? ((_f, _v) => undefined),
+      ...(props.customTextSizeLabel !== undefined
+        ? { customTextSizeLabel: props.customTextSizeLabel }
+        : {})
     })
   );
 }
@@ -847,5 +855,43 @@ describe("ToolStylePopover", () => {
         `interactive control without an accessible label: ${el.outerHTML.slice(0, 120)}`
       ).toBe(true);
     }
+  });
+
+  // pwrdrvr/PwrSnap#110: when a text overlay's stored sizePx doesn't
+  // match any current-canvas bucket value (post-crop typically), the
+  // popover surfaces a "Custom · {N} px" indicator above the Font
+  // size row so the user sees their text is "off-bucket" and can
+  // re-click S/M/L to re-snap. Without this, the bucket buttons would
+  // look like one was active when the rendered text actually doesn't
+  // match any of them.
+
+  test("text popover renders Custom indicator when `customTextSizeLabel` prop is set", () => {
+    render(
+      createElement(Harness, {
+        tool: "text",
+        style: DEFAULT_TEXT_STYLE,
+        customTextSizeLabel: "64 px"
+      })
+    );
+    const badge = queryPopover().querySelector(
+      '[data-testid="text-custom-size-badge"]'
+    );
+    expect(badge, "Custom badge must render when prop is set").not.toBeNull();
+    // Label text contains "Custom" and the size value.
+    expect((badge?.textContent ?? "").trim()).toContain("Custom");
+    expect((badge?.textContent ?? "").trim()).toContain("64 px");
+  });
+
+  test("text popover OMITS Custom indicator when prop is absent (in-bucket state)", () => {
+    render(
+      createElement(Harness, { tool: "text", style: DEFAULT_TEXT_STYLE })
+    );
+    const badge = queryPopover().querySelector(
+      '[data-testid="text-custom-size-badge"]'
+    );
+    expect(
+      badge,
+      "Custom badge must NOT render when row is in-bucket — would falsely tell the user their text is custom-sized."
+    ).toBeNull();
   });
 });

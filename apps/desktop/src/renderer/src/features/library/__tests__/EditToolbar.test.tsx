@@ -488,6 +488,173 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     expect(observedActiveTool.value).toBe("rect");
   });
 
+  test("6. v2 Reset on a previously off-origin-cropped capture restores raster transform to identity", async () => {
+    // User-reported bug (pwrdrvr/PwrSnap#110):
+    //
+    //   1. Open a v2 capture (raster at identity transform).
+    //   2. Drag a CENTER crop → useCaptureModel Step 0.5 translates
+    //      the raster's transform by (-rect.x × oldW, -rect.y × oldH)
+    //      so the new (smaller) canvas displays the chosen region.
+    //   3. Click Reset.
+    //
+    // Pre-fix: Reset deleted user-facing layers + restored canvas
+    // dims via bundle:updateCanvasDimensions, but left the raster
+    // at its TRANSLATED transform. The full-dim canvas then showed
+    // the raster offset from the top-left with empty space on the
+    // opposite edges. The user reported "misaligned in its own
+    // viewport / canvas and can't be fixed".
+    //
+    // Post-fix: Reset detects a non-identity raster transform and
+    // delete-plus-inserts the raster with transform [1,0,0,1,0,0]
+    // alongside the canvas-dim restore.
+    const captureId = "cap-v2-cropped";
+    const translatedRasterId = "ly_raster_translated";
+    const v2Record = {
+      ...makeStubRecord(),
+      id: captureId,
+      bundle_format_version: 2,
+      // Cropped state — canvas smaller than the raster's natural dims.
+      width_px: 2221,
+      height_px: 1162
+    };
+    const v2Layers = [
+      // Root group.
+      {
+        id: "ly_root",
+        parent_id: null,
+        name: "Root",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal" as const,
+        transform: [1, 0, 0, 1, 0, 0] as const,
+        z_index: 0,
+        source: "user" as const,
+        ai_run_id: null,
+        applied_at: null,
+        rejected_at: null,
+        superseded_by: null,
+        created_at: new Date().toISOString(),
+        kind: "group" as const,
+        collapsed: false
+      },
+      // Raster — TRANSLATED by a previous off-origin crop.
+      // (-516.6, -167.4) matches the user's PR #110 diagnostic.
+      {
+        id: translatedRasterId,
+        parent_id: "ly_root",
+        name: "Source",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal" as const,
+        transform: [1, 0, 0, 1, -516.6, -167.4] as const,
+        z_index: 0,
+        source: "user" as const,
+        ai_run_id: null,
+        applied_at: null,
+        rejected_at: null,
+        superseded_by: null,
+        created_at: new Date().toISOString(),
+        kind: "raster" as const,
+        source_ref: { kind: "embedded" as const, sha256: "a".repeat(64) },
+        natural_width_px: 2880,
+        natural_height_px: 1920
+      }
+    ];
+
+    dispatchMock.mockImplementation(async (name: string, req: unknown) => {
+      if (name === "library:byId") return { ok: true, value: v2Record };
+      if (name === "layers:list") return { ok: true, value: v2Layers };
+      // overlays:list is gated by v1 — v2 captures should never hit it,
+      // but be defensive in case useCaptureModel still probes.
+      if (name === "overlays:list")
+        return {
+          ok: false,
+          error: {
+            kind: "validation" as const,
+            code: "v2_capture_use_layers_ipc"
+          }
+        };
+      if (name === "layers:delete")
+        return { ok: true, value: undefined };
+      if (name === "layers:upsert") {
+        const r = req as { layer: unknown };
+        return { ok: true, value: r.layer };
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return {
+          ok: true,
+          value: { previousWidthPx: 2221, previousHeightPx: 1162 }
+        };
+      }
+      return { ok: true, value: undefined };
+    });
+
+    await render(createElement(Harness, { captureId }));
+
+    // Reset is a 2-click sequence: arm + confirm. Find the button by
+    // visible label (component is named ResetButton; aria label is
+    // localized as plain text).
+    const resetBtn = host?.querySelector<HTMLButtonElement>(
+      "button.psl__et-btn--reset"
+    );
+    expect(resetBtn, "Reset button must be present").not.toBeNull();
+    if (resetBtn === null || resetBtn === undefined) throw new Error("unreachable");
+    // Reset enables when overlayCount > 0 OR isV2Cropped is true.
+    // The fixture has a raster + a crop-layer-equivalent state, so
+    // isV2Cropped should be true via the dim-comparison fallback
+    // (width_px=2221 < natural_width_px=2880).
+    expect(resetBtn.disabled, "Reset must be enabled on cropped capture").toBe(false);
+
+    // First click arms.
+    await fireClick(resetBtn);
+    // Second click confirms.
+    await fireClick(resetBtn);
+    // Drain microtasks for the async onConfirm chain (library:byId,
+    // layers:list, layers:delete, layers:upsert, bundle:updateCanvasDimensions).
+    await act(async () => {
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+
+    const allCalls = dispatchMock.mock.calls;
+
+    // Raster must be deleted-and-reinserted with identity transform.
+    // Pre-fix this call was MISSING — Reset only deleted user
+    // annotations + restored canvas dims; the translated raster
+    // stayed translated.
+    const rasterUpsert = allCalls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: { kind?: string } }).layer;
+      return layer.kind === "raster";
+    });
+    expect(
+      rasterUpsert,
+      "Reset must reinsert the raster with identity transform when a prior off-origin crop translated it — otherwise the full-dim canvas shows the raster offset (user-reported bug)"
+    ).toBeDefined();
+    if (rasterUpsert !== undefined) {
+      const layer = (rasterUpsert[1] as {
+        layer: { kind: string; transform: readonly number[] };
+      }).layer;
+      expect(layer.kind).toBe("raster");
+      expect(layer.transform[4]).toBe(0);
+      expect(layer.transform[5]).toBe(0);
+      // Scale + rotation untouched.
+      expect(layer.transform[0]).toBe(1);
+      expect(layer.transform[3]).toBe(1);
+    }
+
+    // Canvas dim restore still happens (independent of raster reset).
+    const dimRestore = allCalls.find(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(dimRestore?.[1]).toEqual({
+      captureId,
+      widthPx: 2880,
+      heightPx: 1920
+    });
+  });
+
   test("5. ⌥-click arrow → single-shot; placing one arrow returns to pointer", async () => {
     const onToolChange = vi.fn<(t: Tool) => void>();
     await render(createElement(Harness, { onToolChange }));

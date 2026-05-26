@@ -32,6 +32,7 @@ import {
   type Result
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 
 // ---- Geometry / patch op types -------------------------------------
 //
@@ -557,6 +558,93 @@ export function applyPatchToOverlay(
   return { ...overlay, ...patch } as Overlay;
 }
 
+/** Re-normalize an Overlay's coords by the INVERSE of a crop rect.
+ *
+ *  Overlay coords are normalized [0,1] to the canvas. When the canvas
+ *  is cropped, the canvas dims shrink BUT the absolute-pixel position
+ *  the user sees the overlay at should NOT move — overlays in the
+ *  kept region stay put visually; overlays in the cropped-away region
+ *  end up with normalized coords outside [0,1] and get clipped by
+ *  the canvas at render time.
+ *
+ *  Without this transform a text overlay at point.x = 0.95 on an
+ *  800-px canvas (absolute pixel 760) would still render at 0.95 of
+ *  the NEW 480-px canvas (absolute pixel 456) after a crop to 60%
+ *  width — i.e. the text would visually SLIDE LEFT into the kept
+ *  region instead of being clipped at the right edge.
+ *
+ *  Formula (per axis): `new = (old - rect.origin) / rect.size`.
+ *  For width / height (no offset, just scale): `new_w = old_w / rect.w`.
+ *  The current v2 crop dispatcher collapses rect.x/y to 0, but the
+ *  formula handles non-(0,0) crops too in case the off-origin path
+ *  ever ships.
+ *
+ *  Returns null for CropOverlay (the crop layer itself is in the
+ *  pre-crop space and is replaced wholesale by the dispatcher, so
+ *  re-normalizing it would scramble the rect meaninglessly). Returns
+ *  the original overlay unchanged for kinds with no transformable
+ *  coords. */
+export function inverseTransformOverlayByCrop(
+  overlay: Overlay,
+  cropRect: { x: number; y: number; w: number; h: number }
+): Overlay | null {
+  const { x: cx, y: cy, w: cw, h: ch } = cropRect;
+  if (cw <= 0 || ch <= 0) return null;
+  const tx = (n: number): number => (n - cx) / cw;
+  const ty = (n: number): number => (n - cy) / ch;
+  const sx = (n: number): number => n / cw;
+  const sy = (n: number): number => n / ch;
+  // Crop is a VIEWPORT change, not a destructive op (the user's
+  // mental model on pwrdrvr/PwrSnap#110 review). Overlays at absolute
+  // source pixels outside the cropped viewport must persist as DATA
+  // (coords > 1 or < 0 in the new canvas's [0,1] space) so that
+  // undoing the crop restores them to their original positions.
+  //
+  // NormalizedScalar was widened from .min(0).max(1) to .finite() to
+  // accept out-of-canvas coords; renderer + bake clip at the canvas
+  // boundary at paint time (SVG overflow + sharp composite).
+  //
+  // Pre-fix this helper deleted (returned null for) overlays whose
+  // transformed coords fell outside [0,1], which made the data loss
+  // PERMANENT — undoing a crop couldn't restore overlays the forward
+  // crop had wiped out. The new behavior just emits the math; nothing
+  // is deleted, undo round-trips back to the original coords exactly.
+  switch (overlay.kind) {
+    case "arrow":
+      return {
+        ...overlay,
+        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
+        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
+      };
+    case "rect":
+    case "highlight":
+    case "blur":
+      return {
+        ...overlay,
+        rect: {
+          x: tx(overlay.rect.x),
+          y: ty(overlay.rect.y),
+          w: sx(overlay.rect.w),
+          h: sy(overlay.rect.h)
+        }
+      } as Overlay;
+    case "text":
+    case "step":
+      return {
+        ...overlay,
+        point: { x: tx(overlay.point.x), y: ty(overlay.point.y) }
+      };
+    case "crop":
+      // Crop layers are replaced wholesale by the dispatcher (the new
+      // crop's rect is in the old canvas's coord space; the old crop's
+      // rect doesn't make sense in the new canvas). Returning null
+      // here signals "don't re-emit this overlay" — the dispatcher's
+      // Step 1 deletes the old crop layer and Step 2 inserts the
+      // fresh one.
+      return null;
+  }
+}
+
 /** Apply a GeometryUpdate to a BundleLayerNode. For vector layers
  *  we update the underlying `shape` (which carries the v1 Overlay
  *  shape verbatim). For blur/highlight effect layers, geometry
@@ -649,13 +737,41 @@ export function applyPatchToLayer(
 export function useCaptureModel(captureId: string): CaptureModel {
   const [state, setState] = useState<FetchedState>({ kind: "loading" });
 
+  // Per-refetch sequence guard. Multiple broadcasts (overlays:changed +
+  // captures:changed) can fire in rapid succession during a single
+  // dispatchEdit op (the v2 crop dispatcher emits ~5 broadcasts as it
+  // steps through transform → delete old crop → insert new crop →
+  // update canvas dims). Each broadcast triggers refetch → library:byId
+  // dispatch. The DB reflects different state at each dispatch's
+  // dispatch-time (Steps 0-2 see pre-canvas-update dims; Step 3 sees
+  // post). Real IPC + V8 microtask scheduling don't preserve dispatch
+  // order on resolution — so a stale Step-0 refetch can resolve AFTER
+  // a fresh Step-3 refetch and overwrite state with stale dims.
+  //
+  // The user-visible symptom: crop undo lands canvas at raster-natural
+  // dims (2880) instead of the original pre-crop dims (1728), because
+  // the undo dispatcher reads recordRef.current.width_px from a stale
+  // state (1728 instead of 1037), so newWidth = 1.667 × 1728 = 2880
+  // instead of 1.667 × 1037 = 1729. See pwrdrvr/PwrSnap#110 user
+  // report.
+  //
+  // Fix: bump a monotonic seq at the start of each refetch; capture
+  // the seq locally; before any setState check the seq still matches.
+  // Stale resolutions (whose seq is older than the current) are
+  // dropped — only the LATEST refetch's resolution wins, regardless
+  // of arrival order.
+  const refetchSeqRef = useRef(0);
+
   // refetch is recreated when captureId changes. Each invocation
   // re-discovers the bundle_format_version, so a Phase 3 doctor run
   // that flips a capture from v1 → v2 is picked up automatically.
   const refetch = useCallback(
     async (isCancelled: () => boolean): Promise<void> => {
+      refetchSeqRef.current += 1;
+      const mySeq = refetchSeqRef.current;
+      const isStale = (): boolean => mySeq !== refetchSeqRef.current;
       const recordResult = await dispatch("library:byId", { id: captureId });
-      if (isCancelled()) return;
+      if (isCancelled() || isStale()) return;
       if (!recordResult.ok) {
         setState({ kind: "error", message: recordResult.error.message });
         return;
@@ -680,7 +796,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
       }
       if (record.bundle_format_version >= 2) {
         const layersResult = await dispatch("layers:list", { captureId });
-        if (isCancelled()) return;
+        if (isCancelled() || isStale()) return;
         const layers =
           layersResult.ok && Array.isArray(layersResult.value)
             ? layersResult.value
@@ -690,7 +806,7 @@ export function useCaptureModel(captureId: string): CaptureModel {
       }
       // v1
       const overlaysResult = await dispatch("overlays:list", { captureId });
-      if (isCancelled()) return;
+      if (isCancelled() || isStale()) return;
       const overlays =
         overlaysResult.ok && Array.isArray(overlaysResult.value)
           ? overlaysResult.value
@@ -977,11 +1093,36 @@ export function useCaptureModel(captureId: string): CaptureModel {
               "layers:upsertBatch is not in the IPC surface yet; Phase 7 ships it"
           });
         case "crop": {
-          // v2 crop: multiply the normalized rect by the CURRENT canvas
-          // dims (from the live record) to derive new dims in source
-          // pixels, then ship via bundle:updateCanvasDimensions. The
-          // main-side handler returns the previous dims so we can
-          // stash them for undo.
+          // v2 crop = TWO writes that together form the "I cropped" state:
+          //
+          //   1. A VectorLayer with shape.kind === "crop" inserted in the
+          //      layer tree — same kind as any arrow/rect/text. Idempotent:
+          //      any pre-existing crop VectorLayer is deleted first so we
+          //      end up with exactly ONE active crop. The compose pipeline
+          //      treats this layer as a no-op composite (canvas-dim shrink
+          //      below is what actually clips the image); the layer's job
+          //      is to RECORD the crop in the tree so Reset can wipe it
+          //      via the normal "delete user-facing layers" loop and
+          //      future undo / layer-panel reads can see it.
+          //
+          //   2. captures.{width,height}_px shrink via
+          //      bundle:updateCanvasDimensions — the authoritative canvas
+          //      dims for the bake (sharp's .extract()), library grid,
+          //      export filename, etc. The handler refuses dims exceeding
+          //      raster.natural so this is the validation gate.
+          //
+          // Pre-fix, only (2) happened; the crop was invisible to the layer
+          // tree, which made Reset disabled when only a crop existed and
+          // forced bespoke `recordCropRef` undo plumbing.  See #109.
+          //
+          // Order: layer ops first (best-effort, idempotent), then dim
+          // update. If the dim update fails (e.g. rect would exceed
+          // natural dims), the crop layer has already updated to reflect
+          // the user's intent — they retry and the dim update succeeds
+          // or the validation surfaces. If the dim update succeeds but
+          // the layer ops failed: canvas is cropped but no layer in the
+          // tree, which means Reset still works via the legacy dim-
+          // comparison fallback added in EditToolbar's isV2Cropped.
           const record = recordRef.current;
           if (record === null) {
             return err({
@@ -990,9 +1131,13 @@ export function useCaptureModel(captureId: string): CaptureModel {
               message: "crop op dispatched before record resolved"
             });
           }
-          // Collapse to (0,0) + w×h here. Off-origin crops require
-          // translating every layer's transform by (-rect.x, -rect.y)
-          // — deferred to the layer-editor UI in Phase 4-5.
+          // Canvas size shrinks by w × h — this is independent of the
+          // crop's origin (a 60%-wide crop produces a 60%-wide canvas
+          // whether the user dragged the rect from the left edge or
+          // from the middle). The OFFSET (rect.x, rect.y) is applied
+          // separately to the raster layer's transform below, so the
+          // smaller canvas displays the user's chosen REGION of the
+          // source — not the top-left corner.
           const newWidth = Math.max(
             1,
             Math.round(op.rect.w * record.width_px)
@@ -1001,6 +1146,193 @@ export function useCaptureModel(captureId: string): CaptureModel {
             1,
             Math.round(op.rect.h * record.height_px)
           );
+
+          // Step 0: re-normalize every vector layer's coords by the
+          // inverse of the crop rect — overlays in the kept region
+          // stay put visually (absolute pixel position preserved);
+          // overlays in the cropped-away region end up with normalized
+          // coords > 1 (or < 0) and get clipped by the new canvas at
+          // render time. Without this, a text at point.x = 0.95 on an
+          // 800-px canvas (absolute pixel 760) would slide LEFT to
+          // 0.95 of the new 480-px canvas (absolute pixel 456) after
+          // a 60% width crop, instead of being clipped at the right
+          // edge.
+          //
+          // Crop is a VIEWPORT change, not a destructive op (the
+          // user's mental model on pwrdrvr/PwrSnap#110 review).
+          // Overlays outside the cropped viewport must PERSIST as
+          // DATA so undoing the crop restores them. The schema's
+          // NormalizedScalar was widened from .min(0).max(1) to
+          // .finite() specifically to permit out-of-canvas coords;
+          // the renderer (SVG overflow:hidden) and bake pipeline
+          // (sharp composite) clip at paint time. So this loop never
+          // deletes for "out of bounds" — that data has to survive.
+          //
+          // Skip the (current) crop VectorLayer itself — it's about
+          // to be deleted in Step 1 anyway. Skip effect layers'
+          // clip_rect: those are already in absolute canvas pixels
+          // (per the v2 EffectLayer contract), so a (0,0)-anchored
+          // crop leaves their position unchanged. (Off-origin crops
+          // would need an effect.clip_rect translate but the current
+          // dispatcher collapses to (0,0) so this isn't reachable.)
+          // The IPC surface has no `layers:updateOverlay` verb — v2
+          // edits are delete-plus-insert via `layers:delete` +
+          // `layers:upsert` (the v2 updateOverlay dispatcher op does
+          // the same dance internally; we inline it here rather than
+          // recursively re-entering the dispatchEdit closure).
+          // Snapshot the current vector layers before any mutation so
+          // we don't iterate over freshly-inserted post-transform
+          // layers (the layersRef would update on each upsert as the
+          // captures:changed broadcast lands).
+          const vectorsBeforeCrop = layersRef.current.filter(
+            (l): l is BundleLayerNode & { kind: "vector" } =>
+              l.kind === "vector" && l.shape.kind !== "crop"
+          );
+          for (const layer of vectorsBeforeCrop) {
+            const transformed = inverseTransformOverlayByCrop(
+              layer.shape,
+              op.rect
+            );
+            // Always delete the OLD vector layer — it's at pre-crop
+            // coords that don't apply to the new canvas.
+            // eslint-disable-next-line no-await-in-loop
+            const delResult = await dispatch("layers:delete", { id: layer.id });
+            if (!delResult.ok) return err(delResult.error);
+            // `transformed === null` only happens for kinds the helper
+            // refuses to re-emit: CropOverlay (replaced wholesale by
+            // Steps 1-2 below) and degenerate crop rects. Neither
+            // should be reached here — `vectorsBeforeCrop` already
+            // filters out crop shapes, and the dispatcher's outer
+            // validator rejects degenerate rects. Defense in depth:
+            // skip the upsert if we ever do see null, rather than
+            // pushing an invalid layer into the tree.
+            if (transformed === null) continue;
+            // eslint-disable-next-line no-await-in-loop
+            const insResult = await dispatch("layers:upsert", {
+              captureId,
+              layer: { ...layer, id: nanoid(16), shape: transformed }
+            });
+            if (!insResult.ok) {
+              // eslint-disable-next-line no-console
+              console.error("[crop-dispatch v2] upsert failed", {
+                id: layer.id,
+                kind: layer.shape.kind,
+                transformed,
+                error: insResult.error
+              });
+              return err(insResult.error);
+            }
+          }
+
+          // Step 0.5: translate every raster layer's transform by
+          // (-rect.x × oldW, -rect.y × oldH) so the (smaller) new
+          // canvas displays the user's chosen REGION of the source.
+          // Without this, the canvas-dim shrink in Step 3 would just
+          // take the top-left W×H of the source — every off-origin
+          // crop would silently show the wrong region of the image,
+          // and overlays inverse-transformed by Step 0 would no
+          // longer line up with where the user originally placed
+          // them on the visible image.
+          //
+          // Multi-crop composes: the new tx/ty ADDs to the existing
+          // transform's translation (not replaces). So cropping an
+          // already-cropped image accumulates offsets correctly.
+          //
+          // Why the offset is applied to the RASTER's transform (not
+          // by mutating sourceBytes): the source raster's bytes are
+          // immutable across crops — the bundle stores one copy of
+          // the original screenshot, and every "crop" is purely a
+          // viewport change. The compose pipeline (compose-tree.ts'
+          // compositeRasterOntoAccumulator) already handles negative
+          // translation by extracting the visible window of the
+          // source. Same machinery; off-origin just becomes the
+          // common case instead of the edge case.
+          //
+          // Only translate when the crop is actually off-origin.
+          // Edge-aligned crops (rect.x === 0 && rect.y === 0) skip
+          // this step so we don't churn the raster row on simple
+          // top-left crops (no behavior change for that case).
+          const offsetXPx = op.rect.x * record.width_px;
+          const offsetYPx = op.rect.y * record.height_px;
+          if (offsetXPx !== 0 || offsetYPx !== 0) {
+            const rasterLayers = layersRef.current.filter(
+              (l): l is BundleLayerNode & { kind: "raster" } => l.kind === "raster"
+            );
+            for (const raster of rasterLayers) {
+              const newTransform: [
+                number,
+                number,
+                number,
+                number,
+                number,
+                number
+              ] = [
+                raster.transform[0],
+                raster.transform[1],
+                raster.transform[2],
+                raster.transform[3],
+                raster.transform[4] - offsetXPx,
+                raster.transform[5] - offsetYPx
+              ];
+              // eslint-disable-next-line no-await-in-loop
+              const delResult = await dispatch("layers:delete", { id: raster.id });
+              if (!delResult.ok) return err(delResult.error);
+              // eslint-disable-next-line no-await-in-loop
+              const insResult = await dispatch("layers:upsert", {
+                captureId,
+                layer: { ...raster, id: nanoid(16), transform: newTransform }
+              });
+              if (!insResult.ok) {
+                // eslint-disable-next-line no-console
+                console.error("[crop-dispatch v2] raster upsert failed", {
+                  id: raster.id,
+                  newTransform,
+                  error: insResult.error
+                });
+                return err(insResult.error);
+              }
+            }
+          }
+
+          // Step 1: wipe any prior crop VectorLayer (the existing one, if
+          // a re-crop, would otherwise stack alongside the new one and
+          // mean "the user has TWO crops" — not a meaningful state).
+          const existingCrop = layersRef.current.find(
+            (l) => l.kind === "vector" && l.shape.kind === "crop"
+          );
+          if (existingCrop !== undefined) {
+            const delResult = await dispatch("layers:delete", {
+              id: existingCrop.id
+            });
+            if (!delResult.ok) return err(delResult.error);
+          }
+
+          // Step 2: insert the fresh crop VectorLayer under the root
+          // group. Skip silently when the tree has no root group (means
+          // the doctor hasn't run yet; shouldn't happen at this point
+          // but be defensive). Skip surfacing a layer-insert failure as
+          // a hard dispatch error — the user-visible crop IS the canvas
+          // shrink in step 3, and the absence of the layer record only
+          // costs us a layer-tree-aware Reset path (the dim-comparison
+          // fallback in EditToolbar.isV2Cropped still works).
+          const rootId = findRootGroupId(layersRef.current);
+          if (rootId !== null) {
+            const layerResult = overlayToBundleLayerNode(
+              { kind: "crop", rect: op.rect },
+              { width: record.width_px, height: record.height_px },
+              rootId
+            );
+            if (layerResult.ok) {
+              await dispatch("layers:upsert", {
+                captureId,
+                layer: layerResult.layer
+              });
+            }
+          }
+
+          // Step 3: shrink the canvas dims — the authoritative crop signal
+          // for the bake + downstream consumers. Failure here returns err;
+          // the user retries.
           const result = await dispatch("bundle:updateCanvasDimensions", {
             captureId,
             widthPx: newWidth,

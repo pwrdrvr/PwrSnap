@@ -77,6 +77,7 @@ import {
 } from "../editor/ToolStylePopover";
 import { useCaptureModel } from "../editor/useCaptureModel";
 import { dispatch } from "../../lib/pwrsnap";
+import { nanoid } from "nanoid";
 
 const RESET_CONFIRM_WINDOW_MS = 3_000;
 
@@ -328,6 +329,47 @@ export function EditToolbar({
   }, [captureId, overlayRows]);
 
   const overlayCount = overlayRows.length;
+  // v2 cropped-state detector for the Reset button. For v1 captures
+  // a crop is a CropOverlay row — already counted in `overlayCount`
+  // via `overlayRows` above — so Reset enables naturally when only
+  // a crop exists. For v2 the crop has TWO representations (both
+  // written by the v2 crop dispatcher in useCaptureModel.ts):
+  //
+  //   1. A VectorLayer with shape.kind === "crop" in the layer tree
+  //      — the layer-tree-native signal (post #109/#110's crop-as-
+  //      layer work). Detected via the loop below. This is also what
+  //      Reset's "delete user-facing layers" loop wipes — see the
+  //      delete branch below for the canvas-dim restore that follows
+  //      a crop-layer deletion.
+  //
+  //   2. captures.{width,height}_px < raster.natural_{width,height}_px
+  //      — the cached canvas dim shrink. The bake reads this, and
+  //      legacy v2 captures cropped BEFORE the crop-as-layer dispatch
+  //      landed only have this representation (no VectorLayer).
+  //
+  // We check both: if EITHER is true the capture is cropped and
+  // Reset should be enabled. New captures cropped on this PR's code
+  // have both signals; legacy captures have only the dim shrink.
+  const isV2Cropped = useMemo(() => {
+    if (model.kind !== "loaded" || model.format !== 2) return false;
+    // Signal 1 — VectorLayer<crop> in the layer tree.
+    for (const layer of model.layers) {
+      if (layer.kind === "vector" && layer.shape.kind === "crop") {
+        return true;
+      }
+    }
+    // Signal 2 — captures dims shrunk below raster natural dims.
+    // Fallback for legacy captures cropped pre-crop-as-layer.
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        return (
+          model.record.width_px < layer.natural_width_px ||
+          model.record.height_px < layer.natural_height_px
+        );
+      }
+    }
+    return false;
+  }, [model]);
   // Persist to module-level on every change so a remount picks up
   // the same position.
   useEffect(() => {
@@ -574,6 +616,7 @@ export function EditToolbar({
         <ResetButton
           captureId={captureId}
           overlayCount={overlayCount}
+          isV2Cropped={isV2Cropped}
           armed={resetArmedAt !== null}
           onArm={() => setResetArmedAt(Date.now())}
           onConfirm={async () => {
@@ -590,6 +633,42 @@ export function EditToolbar({
             if (isV2) {
               const list = await dispatch("layers:list", { captureId });
               if (!list.ok) return;
+              // Find the raster's natural dims BEFORE we delete layers
+              // — we need them to restore canvas dimensions if the user
+              // had previously cropped. v2 crop writes to the captures
+              // row's width_px/height_px (non-destructively, the raster
+              // source bytes are preserved) via
+              // `bundle:updateCanvasDimensions`; without restoring those
+              // here, Reset would only clear annotations and leave the
+              // capture in its cropped state forever. The user's
+              // intuition is "Reset = full original" so we restore both.
+              let rasterDims: { width: number; height: number } | null = null;
+              // Snapshot the raster layer too — Reset needs to restore
+              // its transform to identity if a previous off-origin crop
+              // translated it (useCaptureModel.ts Step 0.5 writes
+              // raster.transform[4]/[5] when the user drags a non-(0,0)
+              // crop rect, per PR #110). Without resetting, the
+              // captures-row dim restore below leaves the raster
+              // shifted inside the now-full canvas — visible as the
+              // image appearing offset from the canvas's top-left with
+              // empty space on the opposite edges. (Reproduced live
+              // by the user after Reset on lPK1jAx7uXAACf9k.)
+              let rasterNeedingReset: (typeof list.value)[number] | null = null;
+              for (const node of list.value) {
+                if (
+                  node.kind === "raster" &&
+                  node.parent_id !== null
+                ) {
+                  rasterDims = {
+                    width: node.natural_width_px,
+                    height: node.natural_height_px
+                  };
+                  if (node.transform[4] !== 0 || node.transform[5] !== 0) {
+                    rasterNeedingReset = node;
+                  }
+                  break;
+                }
+              }
               // Skip the synthesized root group + raster source; just
               // delete user-facing annotation layers. Sequential per
               // the same broadcast / edits_version reasoning as v1.
@@ -597,6 +676,42 @@ export function EditToolbar({
                 if (node.kind === "group" || node.kind === "raster") continue;
                 // eslint-disable-next-line no-await-in-loop
                 await dispatch("layers:delete", { id: node.id });
+              }
+              // Restore the raster's identity transform if a previous
+              // off-origin crop translated it. Delete + reinsert mirrors
+              // the dispatcher's pattern (the IPC surface has no
+              // updateLayer verb; v2 edits are delete-plus-insert via
+              // `layers:delete` + `layers:upsert`). Skip when transform
+              // is already identity so the common case stays churn-free.
+              if (rasterNeedingReset !== null) {
+                await dispatch("layers:delete", { id: rasterNeedingReset.id });
+                await dispatch("layers:upsert", {
+                  captureId,
+                  layer: {
+                    ...rasterNeedingReset,
+                    id: nanoid(16),
+                    transform: [1, 0, 0, 1, 0, 0]
+                  }
+                });
+              }
+              // Restore canvas to raster-natural dims if the capture
+              // was cropped. The `updateCanvasDimensions` handler
+              // refuses values exceeding the raster's natural dims so
+              // this can never grow the canvas past the source — only
+              // restore it to what was captured originally. Skip when
+              // already at natural dims (no-op writes burn an
+              // edits_version bump + a captures:changed broadcast for
+              // nothing).
+              if (
+                rasterDims !== null &&
+                (recordRes.value.width_px !== rasterDims.width ||
+                  recordRes.value.height_px !== rasterDims.height)
+              ) {
+                await dispatch("bundle:updateCanvasDimensions", {
+                  captureId,
+                  widthPx: rasterDims.width,
+                  heightPx: rasterDims.height
+                });
               }
             } else {
               const list = await dispatch("overlays:list", { captureId });
@@ -755,25 +870,47 @@ function ToolButton({
 function ResetButton({
   captureId,
   overlayCount,
+  isV2Cropped,
   armed,
   onArm,
   onConfirm
 }: {
   captureId: string | undefined;
   overlayCount: number;
+  /** v2 captures only — true when canvas dims are smaller than the
+   *  raster source's natural dims (i.e. the user cropped). v1 crops
+   *  are CropOverlay rows already counted in `overlayCount`, so this
+   *  is always false for v1. Enabling Reset on `isV2Cropped` lets the
+   *  user undo a crop on a capture with zero annotations — without
+   *  this the button stays disabled and there's no in-editor way to
+   *  reverse the crop once ⌘Z's session-undo window closes. */
+  isV2Cropped: boolean;
   armed: boolean;
   onArm: () => void;
   onConfirm: () => void;
 }): ReactElement {
-  const disabled = captureId === undefined || overlayCount === 0;
+  const hasResettableState = overlayCount > 0 || isV2Cropped;
+  const disabled = captureId === undefined || !hasResettableState;
+  // Confirm label: include the crop suffix when the only resettable
+  // state is the crop (overlayCount === 0). Otherwise just show the
+  // count — most resets are annotation-driven, and tacking "+ crop"
+  // on top of an N-overlay confirm makes the chip too long.
+  const confirmLabel =
+    overlayCount === 0 && isV2Cropped
+      ? "Confirm? · crop"
+      : `Confirm? · ${overlayCount}`;
   return (
     <button
       type="button"
       className={"psl__et-btn psl__et-btn--reset" + (armed ? " is-armed" : "")}
       title={
         armed
-          ? "Click again to confirm — removes every overlay"
-          : "Reset to original (remove all overlays)"
+          ? overlayCount === 0 && isV2Cropped
+            ? "Click again to confirm — restores original canvas dimensions"
+            : "Click again to confirm — removes every overlay"
+          : isV2Cropped && overlayCount === 0
+            ? "Reset to original (restore canvas dimensions)"
+            : "Reset to original (remove all overlays)"
       }
       disabled={disabled}
       onClick={() => {
@@ -786,9 +923,7 @@ function ResetButton({
         <path d="M3 12a9 9 0 1 0 3-6.7" />
         <path d="M3 4v5h5" />
       </svg>
-      <span>
-        {armed ? `Confirm? · ${overlayCount}` : "Reset"}
-      </span>
+      <span>{armed ? confirmLabel : "Reset"}</span>
     </button>
   );
 }

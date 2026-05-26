@@ -52,10 +52,13 @@ import type {
 import {
   CURRENT_ARROW_STYLE_VERSION,
   DEFAULT_BLUR_STYLE,
+  computeTextGlyphSize,
+  matchBucket,
   readTextWeight
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
 import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
+import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
@@ -1104,6 +1107,10 @@ export function Editor({
       setDraft(null);
       return;
     }
+    // Defensive: commitText only fires from a focused canvas under a
+    // loaded model. Re-check so the TS narrowing below holds without
+    // a non-null assertion.
+    if (model.kind !== "loaded") return;
     // Phase 3.1 fix #2 + Phase 3.2 lift: thread the active text style
     // (color + fontSize mapped to v1's two-bucket size enum). Reads
     // from effectiveToolState so Library Focus picks up the lifted
@@ -1112,12 +1119,44 @@ export function Editor({
       effectiveToolState.activeStyle.tool === "text"
         ? effectiveToolState.activeStyle.style
         : null;
+    const resolvedSize =
+      textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "medium";
+    // pwrdrvr/PwrSnap#110: every new text overlay persists an
+    // absolute `sizePx` resolved at PLACEMENT time using the current
+    // source raster's shortSide. From this point on the row's
+    // physical size stays constant across crops — the popover's
+    // "Custom" indicator surfaces if a later crop changes the
+    // canvas's bucket math so the original "medium" no longer
+    // matches the current canvas's medium-bucket value.
+    //
+    // For v2 captures the source dims come from the raster layer's
+    // natural_*_px. For v1, the model doesn't carry separate source
+    // dims; fall back to record dims (= canvas dims = source dims
+    // for v1 since v1 crops don't shrink the canvas record).
+    let placementSourceW = model.record.width_px;
+    let placementSourceH = model.record.height_px;
+    if (model.format === 2) {
+      for (const layer of model.layers) {
+        if (layer.kind === "raster" && layer.parent_id !== null) {
+          placementSourceW = layer.natural_width_px;
+          placementSourceH = layer.natural_height_px;
+          break;
+        }
+      }
+    }
+    const sizePxAtPlacement = computeTextGlyphSize({
+      size: resolvedSize,
+      sourceWidthPx: placementSourceW,
+      sourceHeightPx: placementSourceH,
+      canvasWidthPx: model.record.width_px,
+      canvasHeightPx: model.record.height_px
+    }).sizePx;
     const overlay: Overlay = {
       kind: "text",
       point: { x: draft.xn, y: draft.yn },
       body,
-      size:
-        textStyleSrc !== null ? resolveTextSize(textStyleSrc.fontSize) : "medium",
+      size: resolvedSize,
+      sizePx: sizePxAtPlacement,
       // Persist the user's regular/bold pick into the row. Pre-fix this
       // wasn't written at all — the schema didn't even carry weight —
       // so every committed glyph rendered at the hardcoded 600. Now
@@ -1333,11 +1372,24 @@ export function Editor({
   // one (shouldn't happen for a healthy v2 capture).
   let sourceWidthPx = model.record.width_px;
   let sourceHeightPx = model.record.height_px;
+  // Off-origin v2 crops translate the raster layer's transform by
+  // (-rect.x × oldW, -rect.y × oldH) so the (smaller) canvas displays
+  // the user's chosen region of the source. Read those translation
+  // components here so the editor's <img> can mirror the offset via
+  // CSS transform. Identity (0, 0) for uncropped + edge-aligned
+  // crops + v1 captures (no layer tree). See pwrdrvr/PwrSnap#110 and
+  // useCaptureModel.ts's `Step 0.5: translate every raster layer's
+  // transform...` for the dispatcher side of this contract.
+  let rasterTranslateXPx = 0;
+  let rasterTranslateYPx = 0;
   if (model.format === 2) {
     for (const layer of model.layers) {
       if (layer.kind === "raster" && layer.parent_id !== null) {
         sourceWidthPx = layer.natural_width_px;
         sourceHeightPx = layer.natural_height_px;
+        // transform[4] = tx, transform[5] = ty, both in source-pixel units.
+        rasterTranslateXPx = layer.transform[4];
+        rasterTranslateYPx = layer.transform[5];
         break;
       }
     }
@@ -1378,6 +1430,8 @@ export function Editor({
       dispatchEdit={dispatchEditErased}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
+      rasterTranslateXPx={rasterTranslateXPx}
+      rasterTranslateYPx={rasterTranslateYPx}
       onRequestEditOverlay={onRequestEditOverlay}
     />
   );
@@ -1420,6 +1474,8 @@ function EditorLoaded({
   dispatchEdit,
   sourceWidthPx,
   sourceHeightPx,
+  rasterTranslateXPx,
+  rasterTranslateYPx,
   onRequestEditOverlay
 }: {
   record: CaptureRecord;
@@ -1505,6 +1561,11 @@ function EditorLoaded({
    *  dims so the crop is visually reflected. */
   sourceWidthPx: number;
   sourceHeightPx: number;
+  /** Raster layer's transform translation in source-pixel units —
+   *  drives the off-origin crop view (pwrdrvr/PwrSnap#110). Zero
+   *  for uncropped captures, edge-aligned crops, and v1 captures. */
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
   /** Phase 3.6 — caller-provided handler for double-click on a TEXT
    *  overlay. Opens the draft input pre-filled with the existing
    *  body; commit replaces the overlay's body rather than creating
@@ -1731,13 +1792,48 @@ function EditorLoaded({
     (field: string, value: unknown): void => {
       const current = selectedOverlayForHandles;
       if (current === null) return;
-      // Project the (field, value) pair into a single-field overlay
-      // patch. The patch's kind matches the current overlay's kind so
-      // the dispatcher's kind-match guard accepts it.
-      const patch: Partial<Overlay> = {
-        kind: current.data.kind,
-        [field]: value
-      } as Partial<Overlay>;
+      // Special case: the text popover's "fontSize" field has to map
+      // to TextOverlay's `size` field (different name — popover is
+      // ToolStylePopover state, overlay is the persisted schema). Pre-
+      // pwrdrvr/PwrSnap#110 this mapping was missing, so size changes
+      // on selected text rows silently did nothing (the patch carried
+      // an unknown `fontSize` field that the bus's zod parse stripped).
+      // Now we also recompute `sizePx` to re-snap the persisted
+      // absolute size to the current canvas's bucket value — what
+      // surfaces "Custom" → S/M/L resize for the user.
+      let patch: Partial<Overlay>;
+      if (
+        current.data.kind === "text" &&
+        field === "fontSize" &&
+        (value === "auto" || value === "small" || value === "medium" || value === "large")
+      ) {
+        const newSize: "small" | "medium" | "large" = resolveTextSize(
+          value as "auto" | "small" | "medium" | "large"
+        );
+        // Recompute sizePx for the current canvas — the user has
+        // explicitly picked a bucket, so re-snap to that bucket's
+        // value (no more "Custom" state after this lands).
+        const newSizePx = computeTextGlyphSize({
+          size: newSize,
+          sourceWidthPx,
+          sourceHeightPx,
+          canvasWidthPx: record.width_px,
+          canvasHeightPx: record.height_px
+        }).sizePx;
+        patch = {
+          kind: "text",
+          size: newSize,
+          sizePx: newSizePx
+        };
+      } else {
+        // Project the (field, value) pair into a single-field overlay
+        // patch. The patch's kind matches the current overlay's kind so
+        // the dispatcher's kind-match guard accepts it.
+        patch = {
+          kind: current.data.kind,
+          [field]: value
+        } as Partial<Overlay>;
+      }
       void (async (): Promise<void> => {
         const result = await dispatchEdit({
           kind: "updateOverlay",
@@ -2095,9 +2191,15 @@ function EditorLoaded({
   // which causes the compositor to clip the next composite to the
   // new canvas size.
   //
-  // Crop is sticky — DO NOT change tools after commit; the user can
-  // re-position by re-entering the crop tool or move on by picking
-  // another tool themselves.
+  // Crop exits to pointer on commit (mirrors the cancel path below
+  // and Photoshop/Cleanshot/Skitch's behavior — every other crop
+  // tool dismisses on Apply). Pre-fix the crop was deliberately
+  // "sticky" — the assumption was the user might re-crop several
+  // times — but that's wrong in practice: after Apply, the canvas
+  // has SHRUNK, and the now-stale crop rect renders over the
+  // smaller canvas in a confusing way (the post-commit screenshot in
+  // pwrdrvr/PwrSnap#109 shows exactly this). Users who want to
+  // re-crop pick the Crop tool again, which is the cheap path.
   const onCropCommit = useCallback(
     (rect: { x: number; y: number; w: number; h: number }): void => {
       void (async (): Promise<void> => {
@@ -2135,6 +2237,18 @@ function EditorLoaded({
         if (!isControlled) {
           toolState.onAnnotationPlaced({ tool: "crop" });
         }
+        // Exit crop mode so the HUD, handles, and rule-of-thirds grid
+        // dismiss. Without this the post-Apply screenshot in #109
+        // shows the cropped (smaller) canvas with the old crop rect
+        // still painted on top — confusing because the rect coords
+        // refer to the OLD canvas dims and don't match anything the
+        // user sees now. setTool guards against the controlled mode
+        // already (onChange wrapper). Skip during undo replay so a
+        // ⌘Z of a crop doesn't yank the user out of whatever tool
+        // they're currently on.
+        if (!undoApplyingRef.current) {
+          setTool("pointer");
+        }
       })();
     },
     [
@@ -2143,13 +2257,16 @@ function EditorLoaded({
       dispatchEdit,
       recordCropRef,
       toolState,
-      undoApplyingRef
+      undoApplyingRef,
+      setTool
     ]
   );
 
   const onCropCancel = useCallback((): void => {
     // Switching to pointer feels like "I'm done cropping" without
     // wedging the user on the crop tool. Mirrors Photoshop's behavior.
+    // Same exit target as `onCropCommit` so Cancel and Apply share
+    // the same end-state.
     setTool("pointer");
   }, [setTool]);
 
@@ -2253,20 +2370,32 @@ function EditorLoaded({
               content respect the box, which is the behavior every
               zoom level expects.
 
-              Off-origin crops (Phase 4-5) will translate the img via
-              `transform: translate(...)` driven by the raster layer's
-              transform — not via objectPosition (which only fires
-              when object-fit ≠ fill). */}
+              Off-origin crops (pwrdrvr/PwrSnap#110): the editor's view
+              renders the SOURCE raster directly (not the baked
+              composite), so the img has to honor the raster layer's
+              transform translation too. The dispatcher's
+              `Step 0.5: translate every raster layer's transform...`
+              (useCaptureModel.ts) writes the translation in source-
+              pixel units; `computeEditorImageStyle` converts that to
+              a CSS `translate(%, %)` on the img with
+              `transformOrigin: "0 0"`. Without this, an off-origin
+              crop silently shows the top-left of the source even
+              though the bake (compose-tree.ts) produces the right
+              region. */}
           <img
             src={captureSrcUrl(record.id)}
             alt={record.source_app_name ?? "Capture"}
             draggable={false}
             className="editor-image"
             data-testid="editor-image"
-            style={{
-              width: `${(sourceWidthPx / record.width_px) * 100}%`,
-              height: `${(sourceHeightPx / record.height_px) * 100}%`
-            }}
+            style={computeEditorImageStyle({
+              sourceWidthPx,
+              sourceHeightPx,
+              canvasWidthPx: record.width_px,
+              canvasHeightPx: record.height_px,
+              rasterTranslateXPx,
+              rasterTranslateYPx
+            })}
           />
           {/* HTML blur layer between the <img> and the SVG so
               backdrop-filter on each blur rect actually obscures
@@ -2292,6 +2421,12 @@ function EditorLoaded({
             draftStyle={resolveDraftStyleForActiveTool(toolState.activeStyle)}
             imageWidthPx={record.width_px}
             imageHeightPx={record.height_px}
+            // pwrdrvr/PwrSnap#110: source raster dims drive text
+            // overlay sizing so a "medium" text doesn't shrink when
+            // the user crops. CANVAS dims (image*Px above) drive
+            // coord normalization (those scale with the canvas).
+            sourceWidthPx={sourceWidthPx}
+            sourceHeightPx={sourceHeightPx}
             selectedLayerId={selectedLayerId}
             liveOverride={draftGeometry}
           />
@@ -2310,6 +2445,8 @@ function EditorLoaded({
               selectedOverlay={selectedOverlayForHandles}
               imageWidthPx={record.width_px}
               imageHeightPx={record.height_px}
+              sourceWidthPx={sourceWidthPx}
+              sourceHeightPx={sourceHeightPx}
               onGeometryChange={onHandleGeometryChange}
               onGeometryDrag={onHandleGeometryDrag}
               onDragStart={onHandleDragStart}
@@ -2528,6 +2665,22 @@ function EditorLoaded({
           const labelInfo = selectedOverlayToStyledTool(
             selectedOverlayForHandles.data
           );
+          // pwrdrvr/PwrSnap#110: when the selected overlay is a text
+          // with stored sizePx that doesn't match any bucket for the
+          // CURRENT canvas, render the "Custom" indicator.
+          // matchBucket returns null when off-bucket — that's the
+          // Custom case. Legacy rows without sizePx skip this (matched
+          // by the typeof check).
+          let customTextSizeLabel: string | undefined;
+          if (selectedOverlayForHandles.data.kind === "text") {
+            const stored = selectedOverlayForHandles.data.sizePx;
+            if (typeof stored === "number" && Number.isFinite(stored) && stored > 0) {
+              const match = matchBucket(stored, sourceWidthPx, sourceHeightPx);
+              if (match === null) {
+                customTextSizeLabel = `${Math.round(stored)} px`;
+              }
+            }
+          }
           return (
             <ToolStylePopover
               anchorRef={popoverAnchorRef}
@@ -2538,6 +2691,9 @@ function EditorLoaded({
                 onSelectedStyleFieldChange(field, value);
               }}
               selectedOverlayLabel={labelInfo?.label ?? projection.tool}
+              {...(customTextSizeLabel !== undefined
+                ? { customTextSizeLabel }
+                : {})}
               onClearSelection={() => {
                 setSelectedLayerId(null);
                 setPopoverOpen(false);

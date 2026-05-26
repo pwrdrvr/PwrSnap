@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.0.0-beta.5 - 2026-05-26
+
+- Fixed v2 crop handling so crop is treated as a viewport: text, arrows, blur,
+  and image layers keep their absolute source positions across crop, undo, and
+  Reset.
+- Fixed editor arrow rendering with pixel-space SVG output, thickness-scaled
+  heads, and golden-ratio proportions.
+- Added export-surface integration coverage for the main export, copy, and
+  render paths.
+- Fixed v2 medium-copy behavior so Copy MED returns the rendered composite
+  instead of the bare source image.
+- Fixed the AI Providers settings page to use the real Codex caption model
+  picker.
+- Fixed Library metadata to show the real app version and made Quick Capture
+  hotkey changes apply live.
+- Corrected README AI-provider claims to describe the existing provider-routing
+  behavior accurately.
+
 ## v1.0.0-beta.4 - 2026-05-25
 
 - Fixed the beta.3 packaged-app startup failure by explicitly shipping the

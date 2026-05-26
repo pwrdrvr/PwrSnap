@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeArrowGeometry } from "../arrow";
+import { computeArrowGeometry, computeStemDashArray } from "../arrow";
 
 const SQUARE_2K = { imageWidthPx: 2000, imageHeightPx: 2000 };
 
@@ -376,6 +376,97 @@ describe("computeArrowGeometry", () => {
       expect(future.headLengthPx).toBeCloseTo(v1.headLengthPx, 5);
       expect(future.headWidthPx).toBeCloseTo(v1.headWidthPx, 5);
     });
+  });
+});
+
+describe("computeStemDashArray", () => {
+  // The whole point of this helper: regardless of stem length, the
+  // dash pattern terminates with a complete dash at both ends. These
+  // tests prove that property holds for the dashed style (which is
+  // the visually load-bearing case — dotted dots are too small to
+  // notice misalignment).
+
+  it("returns null for solid (caller emits no dasharray attr)", () => {
+    expect(computeStemDashArray("solid", 100, 2)).toBeNull();
+  });
+
+  function parsePattern(s: string): { dash: number; gap: number } {
+    const parts = s.split(/\s+/).map(Number);
+    return { dash: parts[0]!, gap: parts[1]! };
+  }
+
+  // For "N dashes + (N − 1) gaps fill exactly L" the test is
+  // `N × dash + (N − 1) × gap ≈ L`. We don't know N from the output
+  // string directly; recover it by inverting the math.
+  function nDashes(pattern: { dash: number; gap: number }, L: number): number {
+    // L = N*D + (N-1)*G = N*(D+G) - G → N = (L + G) / (D + G)
+    return Math.round((L + pattern.gap) / (pattern.dash + pattern.gap));
+  }
+
+  it("dashed: line begins and ends on a complete dash for various lengths", () => {
+    // Sweep a range of stem lengths — short, around-one-cycle,
+    // medium, long — and verify the alignment invariant holds at
+    // each. This is the regression-prevention test: any future
+    // change that breaks the alignment will fail here.
+    const stroke = 4; // natural cycle = 4*4 + 4*2 = 24 px
+    for (const L of [10, 24, 50, 100, 137, 250, 500, 1000, 1337]) {
+      const out = computeStemDashArray("dashed", L, stroke);
+      expect(out, `length=${L}`).not.toBeNull();
+      const p = parsePattern(out!);
+      const N = nDashes(p, L);
+      const reconstructed = N * p.dash + (N - 1) * p.gap;
+      expect(reconstructed, `length=${L}, N=${N}`).toBeCloseTo(L, 4);
+      // Ratio preserved: natural dashed is 4:2 = 2:1.
+      expect(p.dash / p.gap, `length=${L}`).toBeCloseTo(2, 5);
+    }
+  });
+
+  it("dotted: line begins and ends on a complete dot", () => {
+    const stroke = 4;
+    for (const L of [10, 50, 100, 250, 500]) {
+      const out = computeStemDashArray("dotted", L, stroke);
+      expect(out).not.toBeNull();
+      const p = parsePattern(out!);
+      const N = nDashes(p, L);
+      const reconstructed = N * p.dash + (N - 1) * p.gap;
+      expect(reconstructed, `length=${L}, N=${N}`).toBeCloseTo(L, 4);
+      // Dotted ratio: 0.01 / 1.8 ≈ 0.00556 — much smaller dot than
+      // gap (renders as a dot, not a stripe).
+      expect(p.dash / p.gap).toBeLessThan(0.05);
+    }
+  });
+
+  it("preserves dash:gap ratio so 'dashed' still reads as dashed", () => {
+    // The scale stretches both D and G uniformly. A user looking at
+    // two arrows of slightly different lengths should still see the
+    // same visual rhythm, just slightly different absolute dash
+    // lengths.
+    const stroke = 6;
+    for (const L of [80, 95, 110, 125]) {
+      const p = parsePattern(computeStemDashArray("dashed", L, stroke)!);
+      expect(p.dash / p.gap).toBeCloseTo(2, 5);
+    }
+  });
+
+  it("degenerate input: zero-length stem returns a finite pattern (avoids NaN)", () => {
+    const out = computeStemDashArray("dashed", 0, 2);
+    expect(out).not.toBeNull();
+    // Pattern must be parseable numbers — the line element will
+    // render as a no-op but won't throw.
+    const p = parsePattern(out!);
+    expect(Number.isFinite(p.dash)).toBe(true);
+    expect(Number.isFinite(p.gap)).toBe(true);
+  });
+
+  it("very short stem (< 1 natural cycle): falls back to a single dash spanning the stem", () => {
+    // For stem << natural cycle, N rounds to 1. With 1 dash + 0 gaps,
+    // the single dash fills L exactly → solid-ish output. Good
+    // fallback: tiny arrows never visually read as dashed anyway.
+    const stroke = 10; // natural cycle = 60 px
+    const L = 8; // way less than cycle
+    const p = parsePattern(computeStemDashArray("dashed", L, stroke)!);
+    // Reconstruction with N=1: 1*D + 0*G = D = L.
+    expect(p.dash).toBeCloseTo(L, 5);
   });
 });
 

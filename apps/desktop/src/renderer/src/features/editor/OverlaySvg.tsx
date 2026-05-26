@@ -30,6 +30,7 @@ import type {
 import {
   CURRENT_ARROW_STYLE_VERSION,
   computeArrowGeometry,
+  computeStemDashArray,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
@@ -370,10 +371,14 @@ function ArrowGlyph({
     styleVersion
   });
   const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
+  // Pass autoStrokeWidthPx + shortSidePx so the floor-fraction
+  // formula activates (Large/X-Large lift the stroke off the
+  // STROKE_MAX_PX cap on high-DPI captures). Output is in pixels,
+  // no trailing multiplication needed.
   const strokeWidthOverridePx =
     thickness === undefined || thickness === "auto"
       ? undefined
-      : readOverlayThickness(thickness, autoGeom.strokeFraction) * shortSidePx;
+      : readOverlayThickness(thickness, autoGeom.strokeWidthPx, shortSidePx);
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -433,10 +438,21 @@ function ArrowGlyph({
       y: headGeom.from.y * imageHeightPx
     };
 
-  // Stroke-dash pattern. Scaled by stem stroke width so dash density
-  // stays visually consistent across image sizes. dotted gets round
-  // caps so the dots look like dots, not stripes.
-  const dashStem = stemDashFor(resolvedStemStyle, stroke);
+  // Stroke-dash pattern, aligned so the line begins AND ends on a
+  // complete dash. Pre-fix this used a fixed `${stroke*4} ${stroke*2}`
+  // pattern; the stem ended at whatever phase the natural cycle
+  // landed at, producing visible inconsistency between arrows of
+  // slightly different lengths (sliver vs whole dash at the tail).
+  // computeStemDashArray stretches the dash:gap ratio so N dashes +
+  // (N−1) gaps fill the segment exactly. Mirrors the Illustrator/
+  // Figma/PowerPoint convention. The halo line gets the same pattern
+  // so dashed-on-dashed gaps align (otherwise the solid halo would
+  // show through colored stem gaps as white "ghost dashes").
+  const stemLengthPx = Math.hypot(
+    stemEndAtTo.x - fromPoint.x,
+    stemEndAtTo.y - fromPoint.y
+  );
+  const dashStem = computeStemDashArray(resolvedStemStyle, stemLengthPx, stroke);
 
   return (
     <g strokeLinejoin="round">
@@ -540,19 +556,11 @@ function stemEndpointFor(
   }
 }
 
-/** Compute the SVG `stroke-dasharray` string for the stem style.
- *  Returns null for solid (no attribute emitted). `stroke` is in
- *  pixel space (matches the parent viewBox). */
-function stemDashFor(style: ArrowStemStyle, stroke: number): string | null {
-  switch (style) {
-    case "solid":
-      return null;
-    case "dashed":
-      return `${stroke * 4} ${stroke * 2}`;
-    case "dotted":
-      return `${stroke * 0.01} ${stroke * 1.8}`;
-  }
-}
+// Old `stemDashFor` removed in favor of `computeStemDashArray` from
+// @pwrsnap/shared, which scales the dash pattern to land on a
+// complete dash at both ends of the stem. See the helper's docblock
+// for the algorithm; the bake (compose.ts) uses the same helper so
+// renderer + thumbnail stay byte-aligned on the dash math.
 
 /** White halo behind the arrow head — drawn underneath the colored
  *  head so the entire glyph reads on busy backgrounds. Geometry is
@@ -582,13 +590,36 @@ function ArrowHeadHalo({
   const polygon = `${toX},${toY} ${blX},${blY} ${brX},${brY}`;
   switch (style) {
     case "filled-triangle":
-    case "open-triangle":
+      // Filled head: interior is colored, so the halo only needs to
+      // peek out at the edges. A filled white polygon under the
+      // colored fill works (the colored fill covers everything but
+      // the rim).
       return (
         <polygon
           points={polygon}
           fill="white"
           stroke="white"
           strokeWidth={outline * 2}
+          strokeLinejoin="round"
+        />
+      );
+    case "open-triangle":
+      // Hollow head: interior must stay transparent so the image
+      // shows through. Use a fill="none" white polygon with a stroke
+      // wide enough that it extends `outline` past the colored stroke
+      // on BOTH sides — the outside edge (legibility against the
+      // background) AND the inside edge (legibility against whatever
+      // the hollow exposes). Centered strokes split width equally:
+      // a strokeWidth=(stroke + outline*2) halo over a strokeWidth=
+      // stroke colored line yields `outline` of white visible on
+      // each side. Without this fix the interior reads as solid
+      // white — the very thing the open style was meant to avoid.
+      return (
+        <polygon
+          points={polygon}
+          fill="none"
+          stroke="white"
+          strokeWidth={stroke + outline * 2}
           strokeLinejoin="round"
         />
       );
@@ -698,11 +729,12 @@ function RectGlyph({
   isDraft?: boolean;
 }): ReactElement {
   // Stroke width scaled by image short-side, like the arrow's. Pixel-
-  // space — multiplied here once so the rect's halo/colored strokes
-  // both land in the parent SVG's pixel viewBox units.
+  // space — readOverlayThickness with shortSide enabled returns
+  // pixels directly, and applies the floor-fraction formula on
+  // Large/X-Large so high-DPI captures don't get a hairline rect.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const autoStrokeFraction = Math.min(0.012, Math.max(0.003, 8 / shortSide));
-  const strokeWidthPx = readOverlayThickness(thickness, autoStrokeFraction) * shortSide;
+  const autoStrokeWidthPx = Math.min(0.012, Math.max(0.003, 8 / shortSide)) * shortSide;
+  const strokeWidthPx = readOverlayThickness(thickness, autoStrokeWidthPx, shortSide);
   const outline = Math.max(strokeWidthPx * 0.25, 1.5);
   // Pixel-space rect dimensions.
   const rx = rect.x * imageWidthPx;

@@ -337,6 +337,14 @@ function resolveTextSize(
 ): "small" | "medium" | "large" {
   if (typeof fontSize === "number") return "medium";
   if (fontSize === "large") return "large";
+  // The text popover doesn't expose "x-large", but the type union
+  // includes it (shared with arrow/rect thickness). Map it to
+  // "large" defensively in case it ever arrives via persisted state
+  // or AI-injected overlays. Three text buckets is enough; if we
+  // want a true XL text someday we should add a 4th bucket to the
+  // schema with its own font-size curve rather than overload the
+  // thickness preset name.
+  if (fontSize === "x-large") return "large";
   if (fontSize === "small") return "small";
   // "auto" and "medium" both resolve to medium.
   return "medium";

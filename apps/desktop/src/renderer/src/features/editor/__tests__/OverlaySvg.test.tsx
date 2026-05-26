@@ -93,15 +93,37 @@ describe("OverlaySvg ArrowGlyph — endStyle", () => {
     expect(svg.querySelectorAll("polygon").length).toBe(2);
   });
 
-  test("open-triangle renders fill='none' on the colored polygon", async () => {
+  test("open-triangle is HOLLOW: halo + colored head both fill='none'", async () => {
+    // Regression for the "hollow head is opaque white" bug. Pre-fix:
+    // halo polygon had fill="white", so the interior of an
+    // open-triangle was solid white over the image — exactly what
+    // the open style was meant to avoid. Now both polygons are
+    // fill="none"; the halo is a wider WHITE STROKE that peeks
+    // outline*1 past the colored stroke on both edges (legibility
+    // outside AND inside the hollow), and the interior is fully
+    // transparent.
     const svg = await renderOverlaySvg([arrowRow({ endStyle: "open-triangle" })]);
     const polygons = svg.querySelectorAll("polygon");
     expect(polygons.length).toBe(2);
-    // One of them should be the colored open polygon — fill="none".
+    // BOTH polygons must be fill="none" — halo polygon was the bug.
     const openPolys = Array.from(polygons).filter(
       (p) => p.getAttribute("fill") === "none"
     );
-    expect(openPolys.length).toBe(1);
+    expect(openPolys.length).toBe(2);
+    // Halo identity: stroke="white", strokeWidth > colored stroke.
+    const haloPoly = Array.from(polygons).find(
+      (p) => p.getAttribute("stroke") === "white"
+    );
+    const coloredPoly = Array.from(polygons).find(
+      (p) => p.getAttribute("stroke") !== "white" && p.getAttribute("stroke") !== null
+    );
+    expect(haloPoly).toBeDefined();
+    expect(coloredPoly).toBeDefined();
+    // Halo stroke must be wider than colored stroke for the inside-
+    // edge halo to be visible.
+    expect(Number(haloPoly!.getAttribute("stroke-width"))).toBeGreaterThan(
+      Number(coloredPoly!.getAttribute("stroke-width"))
+    );
   });
 
   test("line endStyle renders no polygon and uses head-bar lines", async () => {

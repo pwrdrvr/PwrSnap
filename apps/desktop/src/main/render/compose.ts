@@ -25,9 +25,10 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
-import type { ArrowEndStyle, ArrowStemStyle, OverlayRow } from "@pwrsnap/shared";
+import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
   computeArrowGeometry,
+  computeStemDashArray,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
@@ -371,10 +372,13 @@ function arrowSvg(
     styleVersion
   });
   const shortSidePx = Math.max(1, Math.min(imageWidthPx, imageHeightPx));
+  // Pass autoStrokeWidthPx + shortSidePx so readOverlayThickness's
+  // floor-fraction formula activates on Large/X-Large for high-DPI
+  // captures. Output is in pixels.
   const strokeWidthOverridePx =
     data.thickness === undefined || data.thickness === "auto"
       ? undefined
-      : readOverlayThickness(data.thickness, autoGeom.strokeFraction) * shortSidePx;
+      : readOverlayThickness(data.thickness, autoGeom.strokeWidthPx, shortSidePx);
   const headGeom =
     strokeWidthOverridePx === undefined
       ? autoGeom
@@ -422,13 +426,19 @@ function arrowSvg(
     ? stemEndpointPx(endStyle, tailGeom, imageWidthPx, imageHeightPx)
     : pxOf(headGeom.from, imageWidthPx, imageHeightPx);
 
-  // Stem dash pattern — pixel-space (since this SVG's viewBox is in
-  // image pixels). dotted uses round caps so dots look like dots.
-  // The SAME pattern is applied to the halo line below so the halo's
-  // on/off rhythm lines up with the colored stem — without that, a
-  // dashed colored stem over a solid halo shows solid-white ghost
-  // dashes through the gaps.
-  const stemDashAttr = stemDashAttr_PixelSpace(stemStyle, strokeWidthPx);
+  // Stem dash pattern, aligned to both stem ends via
+  // computeStemDashArray (shared with the live editor — same helper
+  // = identical math in renderer vs bake). N dashes + (N−1) gaps fill
+  // the stem exactly so the line begins and ends on a complete dash.
+  // The HALO line uses the same pattern; without that, a dashed
+  // colored stem over a solid halo would show white "ghost dashes"
+  // through the gaps.
+  const stemLengthPx = Math.hypot(
+    stemEndAtTo.x - stemEndAtFrom.x,
+    stemEndAtTo.y - stemEndAtFrom.y
+  );
+  const stemDashRaw = computeStemDashArray(stemStyle, stemLengthPx, strokeWidthPx);
+  const stemDashAttr = stemDashRaw === null ? "" : ` stroke-dasharray="${stemDashRaw}"`;
 
   const halo = arrowHeadHaloSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, outlineWidth, strokeWidthPx);
   const head = arrowHeadSvg(endStyle, headGeom, imageWidthPx, imageHeightPx, strokeWidthPx, fillColor);
@@ -472,20 +482,11 @@ function stemEndpointPx(
   }
 }
 
-/** SVG `stroke-dasharray` attribute fragment (including the leading
- *  space) for the bake's pixel-space SVG buffer. Returns "" for
- *  solid so the line element stays clean. */
-function stemDashAttr_PixelSpace(style: ArrowStemStyle, strokeWidthPx: number): string {
-  switch (style) {
-    case "solid":
-      return "";
-    case "dashed":
-      return ` stroke-dasharray="${strokeWidthPx * 4} ${strokeWidthPx * 2}"`;
-    case "dotted":
-      // 0.01px "on" + round cap → renders as a dot of diameter ≈ stroke.
-      return ` stroke-dasharray="${strokeWidthPx * 0.01} ${strokeWidthPx * 1.8}"`;
-  }
-}
+// `stemDashAttr_PixelSpace` removed in favor of `computeStemDashArray`
+// from @pwrsnap/shared — scales the dash pattern to land on a
+// complete dash at both ends of the stem (vs the old fixed-cycle
+// pattern that left a sliver / partial gap at the tail end). Shared
+// helper means renderer + bake produce byte-identical dash math.
 
 function arrowHeadHaloSvg(
   style: ArrowEndStyle,
@@ -499,10 +500,22 @@ function arrowHeadHaloSvg(
   const baseLeftPx = pxOf(geom.baseLeft, imageWidthPx, imageHeightPx);
   const baseRightPx = pxOf(geom.baseRight, imageWidthPx, imageHeightPx);
   switch (style) {
-    case "filled-triangle":
-    case "open-triangle": {
+    case "filled-triangle": {
+      // Filled head: interior is colored, halo only needs to peek
+      // at the rim. fill="white" works because the colored polygon
+      // on top covers everything but the rim.
       const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
       return `<polygon points="${polygon}" fill="white" stroke="white" stroke-width="${outlineWidth * 2}" stroke-linejoin="round" />`;
+    }
+    case "open-triangle": {
+      // Hollow head: interior must stay transparent. fill="none" +
+      // wider stroke so the white peeks `outlineWidth` past the
+      // colored stroke on BOTH sides (outside edge for legibility
+      // against the background, inside edge for legibility against
+      // whatever shows through the hollow). Mirrors the live editor's
+      // ArrowHeadHalo open-triangle case — keep in sync.
+      const polygon = `${toPx.x},${toPx.y} ${baseLeftPx.x},${baseLeftPx.y} ${baseRightPx.x},${baseRightPx.y}`;
+      return `<polygon points="${polygon}" fill="none" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linejoin="round" />`;
     }
     case "line":
       return `<line x1="${baseLeftPx.x}" y1="${baseLeftPx.y}" x2="${baseRightPx.x}" y2="${baseRightPx.y}" stroke="white" stroke-width="${strokeWidthPx + outlineWidth * 2}" stroke-linecap="round" />`;
@@ -563,13 +576,15 @@ function rectSvg(
   const hPx = data.rect.h * imageHeightPx;
   const shortSidePx = Math.min(imageWidthPx, imageHeightPx);
   const autoStrokeWidthPx = clamp(shortSidePx / 220, 4, 14);
-  // Numeric thickness values are stored as normalized fractions in
-  // the overlay row; multiply by the short side here to land in
-  // pixel space. Preset buckets scale `autoStrokeWidthPx` directly.
-  const strokeWidthPx =
-    typeof data.thickness === "number"
-      ? data.thickness * shortSidePx
-      : readOverlayThickness(data.thickness, autoStrokeWidthPx);
+  // Pass shortSidePx so the floor-fraction formula activates on
+  // Large/X-Large — same Retina rescue as the arrow path. Numeric
+  // thickness values are normalized fractions in the schema; the
+  // helper expands them when shortSidePx is provided.
+  const strokeWidthPx = readOverlayThickness(
+    data.thickness,
+    autoStrokeWidthPx,
+    shortSidePx
+  );
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readRectFilled(data);

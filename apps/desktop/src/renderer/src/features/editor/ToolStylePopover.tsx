@@ -124,7 +124,28 @@ const COLOR_LABELS: Record<ColorToken, string> = {
   accent: "Brand accent"
 };
 
-const SIZE_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = [
+// Thickness presets for arrow + rect stroke. Includes "x-large" for
+// Retina / 4K+ captures where the auto-clamped stroke (capped at
+// STROKE_MAX_PX) becomes visually thin as a fraction of the image
+// area. See `readOverlayThickness` for the floor-fraction math that
+// makes the L/XL presets scale on big images.
+const THICKNESS_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = [
+  { id: "auto", label: "Auto" },
+  { id: "small", label: "S" },
+  { id: "medium", label: "M" },
+  { id: "large", label: "L" },
+  { id: "x-large", label: "XL" }
+];
+
+// Text font-size presets. Three buckets only (small/medium/large +
+// auto) — we DON'T expose x-large here because the bucket curve
+// (shortSide/50, /30, /18) is already well-separated, and x-large
+// for text is a different kind of decision (more like a heading
+// style than a stroke weight) that we'd rather make explicit if it
+// ever comes up. Picking x-large for arrow/rect doesn't accidentally
+// give you "huge text" — the text path stays on its own three-bucket
+// curve.
+const TEXT_SIZE_PRESETS: ReadonlyArray<{ id: ToolSizePreset; label: string }> = [
   { id: "auto", label: "Auto" },
   { id: "small", label: "S" },
   { id: "medium", label: "M" },
@@ -650,7 +671,7 @@ function ArrowBody({ style, onStyleFieldChange }: ArrowBodyProps): ReactElement 
       <Segmented
         label="Thickness"
         testid="arrow-thickness"
-        options={SIZE_PRESETS}
+        options={THICKNESS_PRESETS}
         value={style.thickness}
         onChange={(v) => onStyleFieldChange("thickness", v)}
       />
@@ -735,7 +756,7 @@ function TextBody({ style, onStyleFieldChange }: TextBodyProps): ReactElement {
       <Segmented
         label="Font size"
         testid="text-font-size"
-        options={SIZE_PRESETS}
+        options={TEXT_SIZE_PRESETS}
         value={style.fontSize}
         onChange={(v) => onStyleFieldChange("fontSize", v)}
       />
@@ -765,7 +786,7 @@ function RectBody({ style, onStyleFieldChange }: RectBodyProps): ReactElement {
       <Segmented
         label="Thickness"
         testid="rect-thickness"
-        options={SIZE_PRESETS}
+        options={THICKNESS_PRESETS}
         value={style.thickness}
         onChange={(v) => onStyleFieldChange("thickness", v)}
       />

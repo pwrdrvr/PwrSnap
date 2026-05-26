@@ -335,6 +335,81 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * Dash pattern for an arrow stem of a given pixel length, scaled so
+ * the line starts and ends on a complete dash on both ends. Returns
+ * `null` for the solid case (caller emits no `stroke-dasharray`
+ * attribute).
+ *
+ * Why scale: SVG's `stroke-dasharray` repeats from the start of the
+ * line at a fixed cycle. With a fixed natural dash/gap, the line end
+ * lands at an arbitrary phase — could be a sliver of dash, a partial
+ * gap, or whatever. Side-by-side arrows of slightly different lengths
+ * look unequal because the cut at the end is different each time.
+ *
+ * The fix is the Illustrator/Figma/PowerPoint convention: stretch the
+ * pattern slightly so the line fits an integer count of dashes (plus
+ * gaps between them), starting AND ending on a dash. The dash:gap
+ * ratio is preserved so the visual rhythm reads the same; the
+ * absolute dash lengths differ slightly between arrows. The eye
+ * forgives small length differences far more easily than mismatched
+ * cuts at the ends.
+ *
+ * Pattern shape:
+ *   - N dashes + (N − 1) gaps fill the line: `N × D + (N − 1) × G = L`
+ *   - Pick `N = max(1, round(L / (D + G)))` for natural-ish density
+ *   - Solve for scale: `s = L / (N × D + (N − 1) × G)`
+ *   - Emit `${D × s} ${G × s}` — the dasharray for both halo + colored
+ *     stems. Both share the same pattern so dashed-on-dashed gaps line
+ *     up (a solid halo through a dashed colored stem would otherwise
+ *     show solid-white "ghost dashes" through the gaps).
+ *
+ * @param style      Stem style (solid → no dasharray; dashed/dotted
+ *                   → scaled pattern).
+ * @param stemLengthPx  Pixel-space length of the stem segment the
+ *                   caller is about to draw (from-end to head-base for
+ *                   filled/open triangles; from-end to apex for
+ *                   line/dot).
+ * @param strokeWidthPx  Stem stroke width (px). Sets the natural
+ *                   dash/gap sizes (`D = 4×stroke`, `G = 2×stroke`
+ *                   for dashed; `D = 0.01×stroke`, `G = 1.8×stroke`
+ *                   for dotted — the dot is a tiny "on" + a round
+ *                   linecap, which renders as a circle of diameter
+ *                   ≈ stroke).
+ */
+export function computeStemDashArray(
+  style: "solid" | "dashed" | "dotted",
+  stemLengthPx: number,
+  strokeWidthPx: number
+): string | null {
+  if (style === "solid") return null;
+  // Natural dash/gap proportions — preserved through the scale.
+  const naturalDash = style === "dotted" ? strokeWidthPx * 0.01 : strokeWidthPx * 4;
+  const naturalGap = style === "dotted" ? strokeWidthPx * 1.8 : strokeWidthPx * 2;
+  const naturalCycle = naturalDash + naturalGap;
+  // Degenerate: zero / sub-cycle stem. One dash spans the whole line
+  // (effectively solid). Caller still gets a finite dasharray so the
+  // halo + colored stem stay structurally identical.
+  if (stemLengthPx <= 0 || naturalCycle <= 0) {
+    return `${Math.max(stemLengthPx, 1)} 0`;
+  }
+  // Pick dash count so the natural density is honored as closely as
+  // possible. round() lands at the nearest integer; clamp to 1 so
+  // very short stems still get something dashable (it'll come out as
+  // 1 dash = whole stem with no gaps, i.e. visually solid for very
+  // short arrows, which is the right fallback).
+  const n = Math.max(1, Math.round(stemLengthPx / naturalCycle));
+  // Solve N × D' + (N − 1) × G' = L for scale, where D' = D × scale
+  // and G' = G × scale (ratio preserved).
+  const denom = n * naturalDash + (n - 1) * naturalGap;
+  // Defensive: denom can only hit 0 if both natural dash + gap are 0,
+  // which would mean strokeWidth was 0 — caller shouldn't pass that,
+  // but if they do, render as solid (1 dash, no gap).
+  if (denom <= 0) return `${stemLengthPx} 0`;
+  const scale = stemLengthPx / denom;
+  return `${naturalDash * scale} ${naturalGap * scale}`;
+}
+
 // -- How to evolve the arrow style table --------------------------
 //
 // To change ANY arrow rendering parameter (head proportions, stroke

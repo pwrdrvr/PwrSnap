@@ -16,7 +16,9 @@ import {
   HighlightOverlay,
   Overlay,
   OVERLAY_RENDER_ORDER,
+  OverlayThickness,
   readBlurStyle,
+  readOverlayThickness,
   RectOverlay,
   StepOverlay,
   TextOverlay
@@ -211,5 +213,112 @@ describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
     expect(readBlurStyle({})).toBe(DEFAULT_BLUR_STYLE);
     expect(readBlurStyle({ style: "pixelate" })).toBe("pixelate");
     expect(readBlurStyle({ style: "redact" })).toBe("redact");
+  });
+});
+
+describe("OverlayThickness + readOverlayThickness", () => {
+  // The thickness preset table is the user-facing knob for stroke
+  // weight. These tests cover:
+  //   * x-large lands in the type union (added for Retina rescue)
+  //   * legacy two-arg call (no shortSide) preserves byte-identical
+  //     multiplier-only behavior
+  //   * three-arg call (with shortSide) activates the floor formula
+  //     on Large/X-Large so high-DPI captures don't get hairline
+  //     strokes
+  //   * numeric thickness path scales correctly under both shapes
+
+  test("OverlayThickness accepts x-large", () => {
+    expect(OverlayThickness.parse("x-large")).toBe("x-large");
+  });
+
+  test("legacy two-arg form: multiplier-only, no floor applied", () => {
+    // 200 short-side, auto=4 → small=2, medium=4, large=8, xl=12.
+    // With NO shortSidePx the floor never activates regardless of
+    // image dims. This preserves byte-identical pre-floor output
+    // so call sites that haven't opted in stay unchanged.
+    expect(readOverlayThickness("small", 4)).toBeCloseTo(2, 5);
+    expect(readOverlayThickness("medium", 4)).toBeCloseTo(4, 5);
+    expect(readOverlayThickness("large", 4)).toBeCloseTo(8, 5);
+    expect(readOverlayThickness("x-large", 4)).toBeCloseTo(12, 5);
+  });
+
+  test("three-arg form: low-res image — floor is below multiplier, no-op", () => {
+    // 1080 short-side. auto stroke ≈ 5 (1080/220, clamped within
+    // [4,14]). Pass autoStrokeWidthPx=5 + shortSide=1080.
+    //   small  = max(5 × 0.5,  1080 × 0.003)  = max(2.5,  3.24)  = 3.24
+    //   medium = 5  (no floor)
+    //   large  = max(5 × 2,    1080 × 0.012)  = max(10,   12.96) = 12.96
+    //   xl     = max(5 × 3,    1080 × 0.020)  = max(15,   21.6)  = 21.6
+    // Note: on this image the floor IS active for small/large/xl
+    // — the auto path is clamped down at MIN_PX so floors do help
+    // even at 1080p for the bigger presets. Medium stays at auto.
+    expect(readOverlayThickness("medium", 5, 1080)).toBeCloseTo(5, 5);
+    expect(readOverlayThickness("large", 5, 1080)).toBeCloseTo(12.96, 1);
+    expect(readOverlayThickness("x-large", 5, 1080)).toBeCloseTo(21.6, 1);
+  });
+
+  test("three-arg form: Retina image — floor lifts Large/XL off STROKE_MAX_PX cap", () => {
+    // 4K-ish short side (2160). auto stroke is clamped to STROKE_MAX_PX=14.
+    // Pre-fix: large = 14 × 2 = 28 px (≈ 1.3% of short side — thin).
+    // Post-fix: large = max(28, 2160 × 0.012) = max(28, 25.92) = 28
+    //   (still wins via multiplier on this size)
+    //          x-large = max(14 × 3, 2160 × 0.020) = max(42, 43.2) = 43.2
+    //   (floor wins, lifting XL past the multiplier-only ceiling)
+    expect(readOverlayThickness("large", 14, 2160)).toBeCloseTo(28, 1);
+    expect(readOverlayThickness("x-large", 14, 2160)).toBeCloseTo(43.2, 1);
+  });
+
+  test("three-arg form: 5K Retina — floor decisively wins for Large", () => {
+    // 5K short side (2880). auto = 14 (capped).
+    //   large  = max(14 × 2, 2880 × 0.012) = max(28, 34.56) = 34.56
+    //   x-large= max(14 × 3, 2880 × 0.020) = max(42, 57.6)  = 57.6
+    // The whole point of the floor: at 5K, Large goes from a 28px
+    // multiplier-only stroke (visually thin) to a 34.56px floor-
+    // driven stroke (visually present).
+    expect(readOverlayThickness("large", 14, 2880)).toBeCloseTo(34.56, 1);
+    expect(readOverlayThickness("x-large", 14, 2880)).toBeCloseTo(57.6, 1);
+  });
+
+  test("medium has no floor — picking M never silently bumps past auto", () => {
+    // Medium IS auto by design. The floor formula must NOT lift
+    // medium on huge images; otherwise users who picked M because
+    // they wanted "the default" would get surprised on Retina.
+    for (const shortSide of [720, 1080, 1440, 2160, 2880, 4320]) {
+      expect(readOverlayThickness("medium", 10, shortSide)).toBeCloseTo(10, 5);
+    }
+  });
+
+  test("auto / undefined pass through regardless of shortSide", () => {
+    expect(readOverlayThickness(undefined, 7)).toBeCloseTo(7, 5);
+    expect(readOverlayThickness(undefined, 7, 1080)).toBeCloseTo(7, 5);
+    expect(readOverlayThickness("auto", 7, 2880)).toBeCloseTo(7, 5);
+  });
+
+  test("numeric thickness: legacy two-arg passes through; three-arg expands to pixels", () => {
+    // Legacy: numeric is a normalized fraction returned verbatim
+    // (caller multiplies by shortSide if they want pixels).
+    expect(readOverlayThickness(0.02, 5)).toBeCloseTo(0.02, 5);
+    // New: with shortSide, numeric is expanded to pixels. On a
+    // 1080-px image, thickness=0.02 → 21.6 px.
+    expect(readOverlayThickness(0.02, 5, 1080)).toBeCloseTo(21.6, 1);
+  });
+
+  test("ArrowOverlay schema accepts x-large in the thickness field", () => {
+    const parsed = ArrowOverlay.parse({
+      kind: "arrow",
+      from: { x: 0.1, y: 0.5 },
+      to: { x: 0.9, y: 0.5 },
+      thickness: "x-large"
+    });
+    expect(parsed.thickness).toBe("x-large");
+  });
+
+  test("RectOverlay schema accepts x-large in the thickness field", () => {
+    const parsed = RectOverlay.parse({
+      kind: "rect",
+      rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+      thickness: "x-large"
+    });
+    expect(parsed.thickness).toBe("x-large");
   });
 });

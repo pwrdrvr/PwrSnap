@@ -47,17 +47,33 @@ describe("arrowSvg (bake) — endStyle variants", () => {
     expect(explicit).toBe(legacy);
   });
 
-  test("open-triangle renders a stroked-only polygon (fill='none', stroke=color)", () => {
+  test("open-triangle is HOLLOW: both polygons fill='none', halo stroke wider than colored", () => {
+    // Regression for the "hollow head is filled with white" bug.
+    // Pre-fix the halo had fill="white", making the interior solid
+    // white. Now both polygons are fill="none"; halo is a wider
+    // white stroke that peeks past the colored stroke on both edges.
+    // Mirrors OverlaySvg.test.tsx's renderer-side test — bake + live
+    // editor have to stay in sync.
     const svg = arrowSvgForV2(
       { ...baseArrow(), endStyle: "open-triangle" },
       W,
       H
     );
-    // Halo is still a filled white polygon.
-    expect(svg).toMatch(/<polygon points=".+?" fill="white" stroke="white"/);
+    // Halo polygon: fill="none", stroke="white", widened to halo
+    // both edges of the colored stroke.
+    expect(svg).toMatch(/<polygon points="[^"]+" fill="none" stroke="white" stroke-width="[\d.]+"/);
     // Colored head: fill="none", stroke=accent.
-    expect(svg).toMatch(/<polygon points=".+?" fill="none" stroke="#ff8a1f"/);
+    expect(svg).toMatch(/<polygon points="[^"]+" fill="none" stroke="#ff8a1f" stroke-width="[\d.]+"/);
+    // No solid-white polygon — that'd be the bug returning.
+    expect(svg).not.toMatch(/<polygon[^>]+fill="white"/);
     expect(svg).not.toMatch(/<circle/);
+    // Halo stroke must be wider than colored stroke (otherwise the
+    // halo can't peek out on either edge).
+    const haloMatch = svg.match(/<polygon points="[^"]+" fill="none" stroke="white" stroke-width="([\d.]+)"/);
+    const coloredMatch = svg.match(/<polygon points="[^"]+" fill="none" stroke="#ff8a1f" stroke-width="([\d.]+)"/);
+    expect(haloMatch).not.toBeNull();
+    expect(coloredMatch).not.toBeNull();
+    expect(Number(haloMatch![1])).toBeGreaterThan(Number(coloredMatch![1]));
   });
 
   test("line endStyle renders a perpendicular bar at the apex, no head polygon", () => {

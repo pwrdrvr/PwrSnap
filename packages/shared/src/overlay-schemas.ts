@@ -21,28 +21,75 @@ export const OverlayThickness = z.union([
   z.literal("small"),
   z.literal("medium"),
   z.literal("large"),
+  z.literal("x-large"),
   z.number().positive().max(1)
 ]);
 export type OverlayThickness = z.infer<typeof OverlayThickness>;
 
-/** Multiplier table for thickness presets — applied to the
- *  auto-derived stroke fraction. medium ≡ auto so the user can pick a
- *  symmetric S/M/L stack without surprising the default. Numeric
- *  values pass through directly as the stroke fraction. */
+/**
+ * Multiplier table for thickness presets, with an optional short-side
+ * floor so high-DPI captures don't render Large/X-Large arrows too
+ * thin. The auto-derived stroke is clamped at `STROKE_MAX_PX` (14 px
+ * by default), which becomes a smaller fraction of a 4K+ image than
+ * of a 1080p image. Without a floor, `Large = autoStroke × 2 = 28 px`
+ * caps regardless of how big the image is — that reads as visually
+ * proportional on a 1080p capture and as a hairline on a 5K Retina
+ * external monitor screenshot.
+ *
+ * Final stroke = `max(autoStroke × multiplier, shortSidePx × floorFraction)`.
+ * When `shortSidePx` is omitted (legacy callers), only the multiplier
+ * is applied — preserves byte-identical pre-floor behavior so the
+ * change is opt-in per call site.
+ *
+ * `medium` has no floor (`floorFraction === 0`) because it IS the
+ * auto stroke — applying a floor would silently push medium past
+ * "auto" on big images, surprising users who picked medium because
+ * they wanted the default. `small` has a floor too — but because
+ * `autoStroke × 0.5` is already a tighter constraint than `shortSide
+ * × 0.003` on sub-Retina images, the floor only kicks in on captures
+ * where Auto itself would have been ≥ 7-ish px (i.e., big enough
+ * that 0.5× of it shouldn't disappear). Empirically: no visible
+ * change at 1080p, modest rescue on 4K+.
+ *
+ * @param thickness    The persisted preset / numeric override / "auto".
+ * @param autoFraction The geometry's auto-derived stroke value (in
+ *                     whatever unit space the caller wants the output
+ *                     in — fraction for legacy, pixels for new code).
+ *                     `medium` = pass-through; numeric thickness
+ *                     overrides this entirely.
+ * @param shortSidePx  Optional image short-side IN THE SAME UNIT
+ *                     SPACE as autoFraction. When provided, the
+ *                     floor is enabled. Numeric thickness is treated
+ *                     as a [0,1] fraction-of-shortSide and multiplied
+ *                     by shortSidePx; when shortSidePx is omitted,
+ *                     numeric values pass through verbatim (legacy).
+ */
 export function readOverlayThickness(
   thickness: OverlayThickness | undefined,
-  autoFraction: number
+  autoFraction: number,
+  shortSidePx?: number
 ): number {
   if (thickness === undefined || thickness === "auto") return autoFraction;
-  if (typeof thickness === "number") return thickness;
-  switch (thickness) {
-    case "small":
-      return autoFraction * 0.5;
-    case "medium":
-      return autoFraction;
-    case "large":
-      return autoFraction * 2;
+  if (typeof thickness === "number") {
+    // Numeric thickness is a normalized fraction of short-side. If
+    // shortSidePx is provided we expand to absolute units; otherwise
+    // fall through verbatim (legacy "fraction in, fraction out").
+    return shortSidePx !== undefined ? thickness * shortSidePx : thickness;
   }
+  // Preset: multiplier × auto, optionally lifted to a short-side floor.
+  const presets: Record<
+    "small" | "medium" | "large" | "x-large",
+    { multiplier: number; floorFraction: number }
+  > = {
+    small: { multiplier: 0.5, floorFraction: 0.003 },
+    medium: { multiplier: 1, floorFraction: 0 },
+    large: { multiplier: 2, floorFraction: 0.012 },
+    "x-large": { multiplier: 3, floorFraction: 0.02 }
+  };
+  const p = presets[thickness];
+  const fromMultiplier = autoFraction * p.multiplier;
+  if (shortSidePx === undefined || p.floorFraction === 0) return fromMultiplier;
+  return Math.max(fromMultiplier, shortSidePx * p.floorFraction);
 }
 
 const NormalizedScalar = z.number().min(0).max(1);

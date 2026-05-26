@@ -791,6 +791,138 @@ describe("useCaptureModel", () => {
     });
   });
 
+  test("5g2. v2 dispatchEdit: OFF-ORIGIN crop translates the raster layer so the new canvas shows the user's chosen region", async () => {
+    // User-reported bug from pwrdrvr/PwrSnap#110 review (diagnostic
+    // log on a real center-crop):
+    //
+    //   text at (0.89, 0.59) on 2880×1920
+    //   crop rect (0.354, 0.187, 0.6, 0.6)  ← CENTER crop, not top-left
+    //   newCanvas: 1728×1152
+    //
+    // The forward overlay transform correctly emits (0.896, 0.676) for
+    // the text in the new canvas — matches the math. BUT the canvas-
+    // dim shrink ignores rect.x/y (only uses w×h) so the new canvas
+    // implicitly shows the TOP-LEFT 60% of the source, not the middle
+    // 60% the user dragged. Net result: text lands at canvas pixel
+    // (1548, 779) which displays source pixel (1548, 779), NOT the
+    // user's chosen (2567, 1138).
+    //
+    // Fix: also translate the raster layer's transform by
+    // (-rect.x × oldW, -rect.y × oldH) so the cropped canvas shows
+    // the user's chosen region of the source. The dispatcher comment
+    // ("Off-origin crops require translating every layer's transform
+    // by (-rect.x, -rect.y) — deferred to the layer-editor UI in
+    // Phase 4-5") flagged this as a known gap; this test makes it
+    // un-deferred.
+    const record = makeRecord("cap_2", 2);
+    // 2000×1000 record (matches makeRecord default).
+    const rasterLayer = makeLayerNode("ly_raster");
+    const rootGroupId = "ly_root";
+    const rootGroup: BundleLayerNode = {
+      id: rootGroupId,
+      parent_id: null,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-23T12:00:00.000Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-23T12:00:00.000Z",
+      kind: "group",
+      collapsed: false
+    };
+    const rasterUnderRoot: BundleLayerNode = {
+      ...rasterLayer,
+      parent_id: rootGroupId
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId")
+        return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list")
+        return Promise.resolve({
+          ok: true,
+          value: [rootGroup, rasterUnderRoot]
+        });
+      if (name === "layers:delete")
+        return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      if (name === "bundle:updateCanvasDimensions") {
+        return Promise.resolve({
+          ok: true,
+          value: { previousWidthPx: 2000, previousHeightPx: 1000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Off-origin crop: rect.x = 0.25, rect.y = 0.1, keeping middle 50% × 50%.
+    const r = await m.dispatchEdit({
+      kind: "crop",
+      rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 }
+    });
+    expect(r.ok).toBe(true);
+
+    // The raster must be deleted-and-reinserted with a translated
+    // transform so its visible window matches the user's crop rect.
+    // Expected new translation: (-0.25 × 2000, -0.1 × 1000) = (-500, -100).
+    const rasterUpsertCall = dispatchMock.mock.calls.find((c) => {
+      if (c[0] !== "layers:upsert") return false;
+      const layer = (c[1] as { layer: BundleLayerNode }).layer;
+      return layer.kind === "raster";
+    });
+    expect(
+      rasterUpsertCall,
+      "off-origin crop must reinsert the raster with a translated transform — without this the canvas shrink takes the TOP-LEFT W×H of the source instead of the user's chosen region"
+    ).toBeDefined();
+    if (rasterUpsertCall !== undefined) {
+      const layer = (rasterUpsertCall[1] as { layer: BundleLayerNode }).layer;
+      if (layer.kind !== "raster") throw new Error("kind preserved");
+      // transform = [a, b, c, d, tx, ty]; the translation lives at [4]/[5].
+      expect(layer.transform[4]).toBeCloseTo(-500, 3);
+      expect(layer.transform[5]).toBeCloseTo(-100, 3);
+      // Other matrix elements untouched (identity scale + no rotation).
+      expect(layer.transform[0]).toBe(1);
+      expect(layer.transform[1]).toBe(0);
+      expect(layer.transform[2]).toBe(0);
+      expect(layer.transform[3]).toBe(1);
+    }
+
+    // Canvas dims shrink to (1000, 500) — derived from w × oldW and
+    // h × oldH; unchanged behavior. The translation in raster
+    // transform is what makes the off-origin crop show the right
+    // region.
+    const canvasDimCall = dispatchMock.mock.calls.find(
+      (c) => c[0] === "bundle:updateCanvasDimensions"
+    );
+    expect(canvasDimCall?.[1]).toEqual({
+      captureId: "cap_2",
+      widthPx: 1000, // 2000 * 0.5
+      heightPx: 500 // 1000 * 0.5
+    });
+  });
+
   test("5h. v2 refetch race: stale broadcast resolution must NOT overwrite fresh record (crop undo bug)", async () => {
     // User-reported bug from PR #110 review:
     //   1. User crops a capture (1728 → 1037 wide).

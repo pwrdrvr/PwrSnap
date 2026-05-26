@@ -570,19 +570,41 @@ export function useUndoRedo(opts: {
           return;
         }
         if (direction === "undo") {
-          // The dispatcher interprets `rect.w * currentCanvasWidth` as
-          // the new width. Currently the canvas is `newWidthPx` wide;
-          // we want to restore `previousWidthPx`. So rect.w =
-          // previousWidthPx / newWidthPx. Same for height. (Same model
-          // for v1 crop overlay — re-storing as a normalized rect of
-          // the previous dims.)
+          // The inverse of crop(cx, cy, cw, ch) is the rect
+          //   (-cx/cw, -cy/ch, 1/cw, 1/ch)
+          // applied against the CURRENT (post-crop) canvas. Why:
+          //
+          //   forward: new = (old - cx) / cw            (Step 0 transform)
+          //   inverse: old = new × cw + cx
+          //
+          // For "old" to come out of the same dispatcher (which does
+          // `n' = (n - c'x) / c'w`) we need c'w = 1/cw and c'x such
+          // that `n × cw + cx = (n - c'x) × cw`, i.e. c'x = -cx/cw.
+          //
+          // Pre-fix this branch dispatched `{ x: 0, y: 0, ... }`
+          // regardless of the forward crop's offset — fine for edge-
+          // aligned crops, but a CENTER crop's forward translates the
+          // raster by (-cx × oldW, -cy × oldH); the undo must
+          // translate by +cx × oldW to restore the identity. With
+          // c'x = -cx/cw and the new canvas at newW = cw × oldW:
+          //   undo offset = c'x × newW = (-cx/cw) × (cw × oldW) = -cx × oldW
+          //   transform delta = -(undo offset) = +cx × oldW   ✓
+          //
+          // The user-visible symptom of the old code was: undo of a
+          // center crop restored the canvas DIMS but the image +
+          // overlays ended up at a different position than the
+          // original. (Pwrdrvr/PwrSnap#110 review screenshots.)
           const rectW =
             op.newWidthPx > 0 ? op.previousWidthPx / op.newWidthPx : 1;
           const rectH =
             op.newHeightPx > 0 ? op.previousHeightPx / op.newHeightPx : 1;
+          const cw = op.rect.w;
+          const ch = op.rect.h;
+          const rectX = cw > 0 ? -op.rect.x / cw : 0;
+          const rectY = ch > 0 ? -op.rect.y / ch : 0;
           await dispatchEdit({
             kind: "crop",
-            rect: { x: 0, y: 0, w: rectW, h: rectH }
+            rect: { x: rectX, y: rectY, w: rectW, h: rectH }
           });
           return;
         }

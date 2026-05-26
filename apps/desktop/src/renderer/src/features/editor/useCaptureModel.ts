@@ -1131,9 +1131,13 @@ export function useCaptureModel(captureId: string): CaptureModel {
               message: "crop op dispatched before record resolved"
             });
           }
-          // Collapse to (0,0) + w×h here. Off-origin crops require
-          // translating every layer's transform by (-rect.x, -rect.y)
-          // — deferred to the layer-editor UI in Phase 4-5.
+          // Canvas size shrinks by w × h — this is independent of the
+          // crop's origin (a 60%-wide crop produces a 60%-wide canvas
+          // whether the user dragged the rect from the left edge or
+          // from the middle). The OFFSET (rect.x, rect.y) is applied
+          // separately to the raster layer's transform below, so the
+          // smaller canvas displays the user's chosen REGION of the
+          // source — not the top-left corner.
           const newWidth = Math.max(
             1,
             Math.round(op.rect.w * record.width_px)
@@ -1255,6 +1259,76 @@ export function useCaptureModel(captureId: string): CaptureModel {
                 error: insResult.error
               });
               return err(insResult.error);
+            }
+          }
+
+          // Step 0.5: translate every raster layer's transform by
+          // (-rect.x × oldW, -rect.y × oldH) so the (smaller) new
+          // canvas displays the user's chosen REGION of the source.
+          // Without this, the canvas-dim shrink in Step 3 would just
+          // take the top-left W×H of the source — every off-origin
+          // crop would silently show the wrong region of the image,
+          // and overlays inverse-transformed by Step 0 would no
+          // longer line up with where the user originally placed
+          // them on the visible image.
+          //
+          // Multi-crop composes: the new tx/ty ADDs to the existing
+          // transform's translation (not replaces). So cropping an
+          // already-cropped image accumulates offsets correctly.
+          //
+          // Why the offset is applied to the RASTER's transform (not
+          // by mutating sourceBytes): the source raster's bytes are
+          // immutable across crops — the bundle stores one copy of
+          // the original screenshot, and every "crop" is purely a
+          // viewport change. The compose pipeline (compose-tree.ts'
+          // compositeRasterOntoAccumulator) already handles negative
+          // translation by extracting the visible window of the
+          // source. Same machinery; off-origin just becomes the
+          // common case instead of the edge case.
+          //
+          // Only translate when the crop is actually off-origin.
+          // Edge-aligned crops (rect.x === 0 && rect.y === 0) skip
+          // this step so we don't churn the raster row on simple
+          // top-left crops (no behavior change for that case).
+          const offsetXPx = op.rect.x * record.width_px;
+          const offsetYPx = op.rect.y * record.height_px;
+          if (offsetXPx !== 0 || offsetYPx !== 0) {
+            const rasterLayers = layersRef.current.filter(
+              (l): l is BundleLayerNode & { kind: "raster" } => l.kind === "raster"
+            );
+            for (const raster of rasterLayers) {
+              const newTransform: [
+                number,
+                number,
+                number,
+                number,
+                number,
+                number
+              ] = [
+                raster.transform[0],
+                raster.transform[1],
+                raster.transform[2],
+                raster.transform[3],
+                raster.transform[4] - offsetXPx,
+                raster.transform[5] - offsetYPx
+              ];
+              // eslint-disable-next-line no-await-in-loop
+              const delResult = await dispatch("layers:delete", { id: raster.id });
+              if (!delResult.ok) return err(delResult.error);
+              // eslint-disable-next-line no-await-in-loop
+              const insResult = await dispatch("layers:upsert", {
+                captureId,
+                layer: { ...raster, id: nanoid(16), transform: newTransform }
+              });
+              if (!insResult.ok) {
+                // eslint-disable-next-line no-console
+                console.error("[crop-dispatch v2] raster upsert failed", {
+                  id: raster.id,
+                  newTransform,
+                  error: insResult.error
+                });
+                return err(insResult.error);
+              }
             }
           }
 

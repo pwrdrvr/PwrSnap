@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, type ReactElement } from "react";
 import { Hk, HkUnset } from "./Hk";
-import { acceleratorToDisplayKeys } from "../pages/hotkeys-display";
+import { acceleratorToDisplayKeys } from "../../../lib/format-hotkey";
 
 export type HotkeyChange = {
   /** Stable identifier — e.g. "quickCapture". */

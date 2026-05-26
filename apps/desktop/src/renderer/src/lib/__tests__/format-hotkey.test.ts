@@ -1,9 +1,10 @@
-// Pure-function tests for the accelerator → glyph translator used
-// by HotkeysPage. The page is a thin wrapper over this function,
-// so we test the function directly and skip React rendering.
+// Pure-function tests for the accelerator → glyph translator. Lives
+// in `lib/` alongside the helper itself; multiple surfaces (the
+// library top-bar, the settings hotkey rows, the reset confirmation
+// modal) all render through this same function.
 
 import { describe, expect, test } from "vitest";
-import { acceleratorToDisplayKeys } from "../hotkeys-display";
+import { acceleratorToDisplayKeys } from "../format-hotkey";
 
 describe("acceleratorToDisplayKeys", () => {
   test("translates the Electron-canonical accelerator forms", () => {

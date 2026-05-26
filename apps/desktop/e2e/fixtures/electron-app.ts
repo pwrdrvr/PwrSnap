@@ -165,6 +165,13 @@ export type LaunchOptions = {
    * full `open-file → readBundleManifest → editor:open` flow.
    */
   extraArgs?: readonly string[];
+  /**
+   * Called with the fresh tmpdir HOME after creation but before Electron
+   * launches. Use to seed `pwrsnap-settings.json`, the captures dir,
+   * or other userData state that needs to exist on first paint — anything
+   * that has to be on disk BEFORE main reads it, not after.
+   */
+  seedUserData?: (homeRoot: string) => Promise<void>;
 };
 
 export async function launchPwrSnap(
@@ -198,6 +205,13 @@ export async function launchPwrSnap(
     } else {
       env[key] = value;
     }
+  }
+
+  if (options.seedUserData !== undefined) {
+    // Seeding has to land BEFORE `electron.launch` so the seeded state
+    // is what main reads on first paint — that's what makes the spec
+    // prove a live read instead of a fallback.
+    await options.seedUserData(homeRoot);
   }
 
   let electronApp: ElectronApplication | null = null;

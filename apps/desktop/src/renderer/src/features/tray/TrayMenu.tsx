@@ -6,7 +6,7 @@ import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
-import { acceleratorToDisplayKeys } from "../settings/pages/hotkeys-display";
+import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
 

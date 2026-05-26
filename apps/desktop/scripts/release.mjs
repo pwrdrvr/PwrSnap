@@ -39,7 +39,15 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -264,6 +272,23 @@ if (!signStageOnly) {
     { cwd: repoRoot }
   );
 
+  // 5b. Inject darwin-arm64 + darwin-x64 platform packages that
+  //     `pnpm deploy` drops on the floor. `pnpm-workspace.yaml`
+  //     declares supportedArchitectures so the workspace install
+  //     pulls all darwin slices into `node_modules/.pnpm/`, but
+  //     `pnpm deploy --prod --legacy` only stages the host arch
+  //     and even then drops platform-specific optionalDependencies
+  //     entirely (the JS wrapper makes it in, the sub-packages
+  //     don't). Universal builds need both arch slices for sharp
+  //     (native binding + libvips dylib) and ffmpeg, so we
+  //     hand-copy them from the workspace pnpm store before
+  //     electron-builder runs. Without this, the produced .app
+  //     crashes on first launch with "Could not load the sharp
+  //     module using the darwin-arm64 runtime" (we shipped this
+  //     bug in Beta.3 — every install was DOA).
+  step("inject darwin platform packages from workspace pnpm store");
+  injectDarwinPlatformPackages();
+
   // 6. Build the staged Electron-native sqlite sidecar. The stage contains only
   //    production dependencies, so the script gets the packaged Electron version
   //    from electron-builder.yml instead of devDependency resolution.
@@ -439,4 +464,73 @@ function readElectronBuilderVersion() {
     throw new Error("electron-builder.yml is missing electronVersion");
   }
   return match[1];
+}
+
+/**
+ * Workaround for `pnpm deploy` dropping platform-specific
+ * optionalDependencies (sharp's libvips + native binding, ffmpeg's
+ * arch-tagged binary packages). See the call site for the full
+ * incident note. We resolve each missing package's expected version
+ * from its parent's optionalDependencies in the already-staged
+ * package.json, then hand-copy the matching tree out of the
+ * workspace's pnpm store and into the stage's node_modules so
+ * electron-builder + @electron/universal see both Darwin slices.
+ */
+function injectDarwinPlatformPackages() {
+  const pnpmStore = join(repoRoot, "node_modules", ".pnpm");
+  if (!existsSync(pnpmStore)) {
+    throw new Error(
+      `workspace pnpm store missing at ${pnpmStore}; run \`pnpm install\` from the repo root first`
+    );
+  }
+
+  // Each entry: [npm-style package name, parent package whose
+  //              optionalDependencies pin the version]
+  const targets = [
+    ["@img/sharp-darwin-arm64", "sharp"],
+    ["@img/sharp-darwin-x64", "sharp"],
+    ["@img/sharp-libvips-darwin-arm64", "sharp"],
+    ["@img/sharp-libvips-darwin-x64", "sharp"],
+    ["@ffmpeg-installer/darwin-arm64", "@ffmpeg-installer/ffmpeg"],
+    ["@ffmpeg-installer/darwin-x64", "@ffmpeg-installer/ffmpeg"]
+  ];
+
+  const parentVersions = new Map();
+  for (const [pkgName, parent] of targets) {
+    const parentManifest = parentVersions.get(parent) ?? readStagedPackageJson(parent);
+    parentVersions.set(parent, parentManifest);
+    const expected = parentManifest.optionalDependencies?.[pkgName];
+    if (typeof expected !== "string" || expected.length === 0) {
+      throw new Error(
+        `${parent} doesn't declare ${pkgName} in optionalDependencies; ` +
+        `release.mjs platform-package list is out of sync with sharp/ffmpeg versions`
+      );
+    }
+    const flatName = pkgName.replace("/", "+");
+    const source = join(pnpmStore, `${flatName}@${expected}`, "node_modules", pkgName);
+    if (!existsSync(source)) {
+      throw new Error(
+        `cannot find ${pkgName}@${expected} in workspace pnpm store at ${source}.\n` +
+        `Run \`pnpm install\` from the repo root — pnpm-workspace.yaml's ` +
+        `supportedArchitectures should pull every darwin slice.`
+      );
+    }
+    const target = join(stageDir, "node_modules", pkgName);
+    if (existsSync(target)) {
+      rmSync(target, { recursive: true, force: true });
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(source, target, { recursive: true, dereference: true });
+    console.log(`  + ${pkgName}@${expected}`);
+  }
+}
+
+function readStagedPackageJson(pkgName) {
+  const path = join(stageDir, "node_modules", pkgName, "package.json");
+  if (!existsSync(path)) {
+    throw new Error(
+      `staged ${pkgName}/package.json missing at ${path}; pnpm deploy didn't install the parent package`
+    );
+  }
+  return JSON.parse(readFileSync(path, "utf8"));
 }

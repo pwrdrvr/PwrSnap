@@ -479,7 +479,10 @@ function GrokKeyControl({
               type="password"
               readOnly
               value={configured ? "••••••••••••••••" : ""}
-              placeholder={configured ? "" : "Not set"}
+              placeholder={configured ? "" : "Click Set to enter a key"}
+              onFocus={() => {
+                if (!configured) setEditing(true);
+              }}
             />
             <button
               className="pss__key-btn"
@@ -488,7 +491,7 @@ function GrokKeyControl({
                 setEditing(true);
               }}
             >
-              Replace
+              {configured ? "Replace" : "Set"}
             </button>
             <button
               className="pss__key-btn is-danger"

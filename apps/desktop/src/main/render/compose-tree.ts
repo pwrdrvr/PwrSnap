@@ -26,6 +26,11 @@ import sharp from "sharp";
 import { createHash } from "node:crypto";
 
 import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
+import {
+  readHighlightBlend,
+  readHighlightColor,
+  readHighlightOpacity
+} from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
 import { readSourceFromBundle } from "../persistence/bundle-store";
@@ -480,6 +485,29 @@ async function compositeVectorOntoAccumulator(
     return accumulator; // EffectLayer is the v2 blur path
   }
 
+  // Special-case HIGHLIGHT: needs CSS-style blend (multiply / screen /
+  // overlay) computed against the accumulator content, NOT sharp's
+  // built-in blend modes. resvg premultiplies fill-opacity into the
+  // SVG's RGB during rasterization, and sharp's blend modes assume
+  // already-premultiplied input — so going through SVG → sharp.composite
+  // (blend:"multiply") produces results that diverge from CSS
+  // mix-blend-mode multiply by a lot:
+  //
+  //   user-visible symptom: a 50%-opaque blue highlight over a white
+  //   raster, which the editor renders as light blue (165, 207, 255),
+  //   bakes through the SVG path as gray-blue (146, 167, 192) —
+  //   dark+desaturated. WYSIWYG broken.
+  //
+  // Fix: extract the rect from the accumulator, apply the CSS blend
+  // formula per-pixel with the unpremultiplied tint color, then
+  // alpha-composite the blended result back at the user's opacity.
+  // This matches the editor's `mix-blend-mode: multiply` Chromium
+  // implementation exactly (modulo rounding).
+  const shape = node.shape as Overlay;
+  if (shape.kind === "highlight") {
+    return compositeHighlightOntoAccumulator(shape, accumulator, canvasInfo);
+  }
+
   const { buildCompositeLayersForV2 } = await import("./compose-tree-vector");
   const layers = await buildCompositeLayersForV2(fakeRow, {
     // canvasInfo.width/height are the RENDER dims (post-scale). SVG
@@ -499,6 +527,145 @@ async function compositeVectorOntoAccumulator(
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })
     .composite(layers)
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+}
+
+/**
+ * Composite a VECTOR HIGHLIGHT shape onto the accumulator using
+ * CSS-style blend modes computed manually. Bypasses the SVG +
+ * sharp.composite(blend:"multiply") path because that double-applies
+ * alpha (resvg premultiplies fill-opacity into RGB, sharp's multiply
+ * assumes premultiplied input) and produces user-visibly different
+ * colors from the editor's `mix-blend-mode: multiply`.
+ *
+ * Math mirrors the CSS Compositing and Blending Level 1 spec:
+ *   B(Cb, Cs) — the blend function: multiply / screen / overlay
+ *   Co       = αs × B(Cb, Cs) + (1 − αs) × Cb
+ *
+ * where Cb = backdrop (accumulator) and Cs = source (highlight tint).
+ * Alpha is preserved from the backdrop — the highlight tints existing
+ * pixels but doesn't introduce new alpha.
+ */
+async function compositeHighlightOntoAccumulator(
+  shape: Extract<Overlay, { kind: "highlight" }>,
+  accumulator: Buffer,
+  canvasInfo: { width: number; height: number; channels: 4 }
+): Promise<Buffer> {
+  // Rect coords are normalized [0,1] of canvas-pixel space. canvasInfo
+  // is already at render dims (scale-aware accumulator) so multiplying
+  // here gives render-pixel coords directly. Same convention as
+  // highlightSvgForV2 — it multiplies by imageWidthPx (passed render
+  // dims), then sharp's resvg renders at render dims.
+  const xRaw = shape.rect.x * canvasInfo.width;
+  const yRaw = shape.rect.y * canvasInfo.height;
+  const wRaw = shape.rect.w * canvasInfo.width;
+  const hRaw = shape.rect.h * canvasInfo.height;
+  // Clamp to accumulator bounds. Out-of-canvas rects (post-#110
+  // schema widening) silently no-op here, matching the existing
+  // schema-permits-paint-clips contract pinned by another test in
+  // this file.
+  const x = Math.max(0, Math.min(canvasInfo.width, Math.round(xRaw)));
+  const y = Math.max(0, Math.min(canvasInfo.height, Math.round(yRaw)));
+  const w = Math.max(0, Math.min(canvasInfo.width - x, Math.round(wRaw)));
+  const h = Math.max(0, Math.min(canvasInfo.height - y, Math.round(hRaw)));
+  if (w === 0 || h === 0) return accumulator;
+
+  const colorHex = readHighlightColor(shape);
+  const opacity = readHighlightOpacity(shape);
+  const blendMode = readHighlightBlend(shape);
+  const tintR = parseInt(colorHex.slice(1, 3), 16);
+  const tintG = parseInt(colorHex.slice(3, 5), 16);
+  const tintB = parseInt(colorHex.slice(5, 7), 16);
+
+  // Extract the affected rect from the accumulator as raw RGBA.
+  const extracted = await sharp(accumulator, { raw: canvasInfo })
+    .extract({ left: x, top: y, width: w, height: h })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+
+  // Apply CSS blend formula per pixel. Hot loop — keep it tight; no
+  // branching inside the per-pixel block (lift blend mode out).
+  const out = Buffer.alloc(w * h * 4);
+  const oneMinusAlpha = 1 - opacity;
+  // Compute the blended channel as a function (no allocation per pixel).
+  // CSS spec definitions:
+  //   multiply: Cb × Cs
+  //   screen:   1 − (1 − Cb) × (1 − Cs)
+  //   overlay:  hardlight(Cs, Cb), where hardlight(a,b) =
+  //               b < 128 ? multiply(a, 2b) : screen(a, 2b − 255)
+  // Working in 0..255 ints throughout (channel values), promoting to
+  // float only for the alpha-composite. Branch hoisted out of the loop.
+  if (blendMode === "multiply") {
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r = (cb_r * tintR) >> 8;
+      const b_g = (cb_g * tintG) >> 8;
+      const b_b = (cb_b * tintB) >> 8;
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  } else if (blendMode === "screen") {
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r = 255 - (((255 - cb_r) * (255 - tintR)) >> 8);
+      const b_g = 255 - (((255 - cb_g) * (255 - tintG)) >> 8);
+      const b_b = 255 - (((255 - cb_b) * (255 - tintB)) >> 8);
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  } else {
+    // overlay: hardlight with source/backdrop swapped, i.e.
+    //   B(Cb, Cs) = Cb < 128 ? multiply(Cs, 2Cb) : screen(Cs, 2Cb − 255)
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r =
+        cb_r < 128
+          ? (tintR * (2 * cb_r)) >> 8
+          : 255 - (((255 - tintR) * (255 - (2 * cb_r - 255))) >> 8);
+      const b_g =
+        cb_g < 128
+          ? (tintG * (2 * cb_g)) >> 8
+          : 255 - (((255 - tintG) * (255 - (2 * cb_g - 255))) >> 8);
+      const b_b =
+        cb_b < 128
+          ? (tintB * (2 * cb_b)) >> 8
+          : 255 - (((255 - tintB) * (255 - (2 * cb_b - 255))) >> 8);
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  }
+
+  // Composite the blended rect back onto the accumulator at (x, y).
+  return sharp(accumulator, { raw: canvasInfo })
+    .composite([
+      {
+        input: out,
+        raw: { width: w, height: h, channels: 4 },
+        top: y,
+        left: x
+      }
+    ])
     .ensureAlpha()
     .raw()
     .toBuffer();
@@ -706,8 +873,14 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           overlays scattered across the full render canvas.
  *    "3" — fix v2's positioning bug: raster's tx/ty + natural_*_px
  *           and effect's clip_rect now scale by renderScale so the
- *           bake matches the editor across all preset tiers. */
-const BAKE_PIPELINE_VERSION = "3";
+ *           bake matches the editor across all preset tiers.
+ *    "4" — vector highlight CSS-correct multiply: bypasses sharp's
+ *           premultiplied-multiply blend mode (which double-applied
+ *           alpha through resvg's premultiplication, producing
+ *           desaturated/dark output for any non-full-opacity tint).
+ *           Now uses a hand-rolled CSS-spec multiply / screen /
+ *           overlay against the accumulator content. */
+const BAKE_PIPELINE_VERSION = "4";
 
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

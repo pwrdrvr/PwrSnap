@@ -1636,6 +1636,205 @@ describe("scale-aware accumulator: raster + effect layers respect renderScale", 
   });
 });
 
+// ---------------------------------------------------------------------
+// Highlight color WYSIWYG — bake matches editor's CSS mix-blend-mode
+// multiply behavior, not sharp/libvips's premultiplied multiply.
+//
+// User report on PR #129: the v2 bake of a vector highlight (kind:
+// "highlight", default blend "multiply") produces a DARK gray box
+// where the editor shows a LIGHT tint of the highlight color. Root
+// cause: sharp's `blend: "multiply"` premultiplies the overlay's
+// alpha into RGB before computing the multiply, so a 32%-opaque blue
+// over white becomes (74×0.32, 158×0.32, 255×0.32) ≈ (24, 51, 82)
+// instead of the CSS-spec
+//   result = αs × (Cb × Cs / 255) + (1 - αs) × Cb
+// which over white (Cb=255) gives (165, 207, 255) — recognizably blue.
+//
+// The editor uses CSS mix-blend-mode multiply (Chromium implements the
+// CSS spec verbatim). The bake's path through `compositeVectorOnto-
+// Accumulator` → `compose-tree-vector.ts` → `sharp.composite({ blend:
+// "multiply" })` diverges by enough to be user-visible — and the
+// existing matrix tests miss it because they only check "is there
+// red?" not "is the actual color right?"
+// ---------------------------------------------------------------------
+
+async function seedV2CaptureWithHighlightOverlay(id: string): Promise<void> {
+  // 400×300 WHITE raster + a vector highlight rect covering the center
+  // half. White background means CSS multiply gives a clean light tint
+  // of the highlight color; the bug regime gives darker.
+  const sourcePng = await makeSourcePng();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const bundlePath = join(workDir, "captures", `${id}.pwrsnap`);
+  const flatPngPath = join(workDir, "captures", `${id}.png`);
+  await writeFile(flatPngPath, sourcePng);
+  const now = new Date().toISOString();
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: { width_px: SOURCE_WIDTH, height_px: SOURCE_HEIGHT },
+    paired_png_filename: `${id}.png`,
+    created_at: now,
+    bundle_modified_at: now
+  };
+  const rootGroupId = "grp_hl_color_xx0";
+  const rasterId = "ras_hl_color_xx0";
+  const overlayId = "vec_hl_color_xx0";
+  const common = {
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+  const layers: BundleLayerNode[] = [
+    {
+      ...common,
+      id: rootGroupId,
+      kind: "group",
+      parent_id: null,
+      z_index: 0,
+      collapsed: false
+    },
+    {
+      ...common,
+      id: rasterId,
+      kind: "raster",
+      parent_id: rootGroupId,
+      z_index: 0,
+      source_ref: { kind: "embedded", sha256: sourceSha },
+      natural_width_px: SOURCE_WIDTH,
+      natural_height_px: SOURCE_HEIGHT
+    },
+    {
+      ...common,
+      id: overlayId,
+      kind: "vector",
+      parent_id: rootGroupId,
+      z_index: 1,
+      shape: {
+        kind: "highlight",
+        // Center half: covers (100, 75) to (300, 225) in canvas coords.
+        rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+        color: "#4a9eff", // bright blue — easy to detect a "light blue" result
+        opacity: 0.5
+        // blend omitted — falls back to "multiply" (default)
+      }
+    }
+  ];
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 1,
+    layers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sourceSha, sourcePng]]),
+    layerBytes: new Map(),
+    thumbnailJpg
+  });
+  await writeFile(bundlePath, bundleBuf);
+  getDb()
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at, source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio, byte_size,
+        sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', @captured_at, NULL, NULL,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
+        2, 1,
+        @w, @h, 2.0, @bs,
+        @sha, 1, NULL
+      )`
+    )
+    .run({
+      id,
+      captured_at: now,
+      bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
+      w: SOURCE_WIDTH,
+      h: SOURCE_HEIGHT,
+      bs: bundleBuf.length,
+      sha: sourceSha
+    });
+  insertLayerTreeForCapture(id, layers);
+}
+
+describe("highlight color WYSIWYG: bake matches editor's CSS multiply behavior", () => {
+  test("vector highlight over white raster bakes to a LIGHT tint (not dark/gray)", async () => {
+    // CSS mix-blend-mode multiply formula:
+    //   blend = (overlay_rgb × backdrop_rgb) / 255
+    //   result = blend × overlay_alpha + backdrop × (1 - overlay_alpha)
+    // For blue (74, 158, 255) at α=0.5 over white (255, 255, 255):
+    //   blend = (74, 158, 255)
+    //   result = (74×0.5 + 255×0.5, 158×0.5 + 255×0.5, 255×0.5 + 255×0.5)
+    //          = (164.5, 206.5, 255)  → recognizably LIGHT BLUE
+    //
+    // Pre-fix bake (sharp.composite blend:"multiply" — premultiplies):
+    //   result ≈ (74×0.5, 158×0.5, 255×0.5) = (37, 79, 127.5)
+    //   → DARK BLUE/GRAY. Gray-blue is the symptom in the user's
+    //     screenshot from PR #129 review.
+    const captureId = "t_highlight_color_x0";
+    await seedV2CaptureWithHighlightOverlay(captureId);
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "high" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    const last = clipboardCaptured.at(-1);
+    if (last === undefined || last.kind !== "writeImage") {
+      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
+    }
+    const pngBytes = last.bytes;
+
+    // Sanity: HIGH preset on 400-wide canvas → no upscale, output 400×300.
+    const meta = await sharp(pngBytes).metadata();
+    expect(meta.width).toBe(SOURCE_WIDTH);
+    expect(meta.height).toBe(SOURCE_HEIGHT);
+
+    // Center of highlight = canvas (200, 150). The highlight rect covers
+    // (100, 75) → (300, 225) so the center is well inside, away from
+    // edges where antialiasing might confuse the read.
+    const center = await readPixel(pngBytes, 200, 150);
+
+    // CORRECT (CSS multiply on white): channels ≈ (165, 207, 255).
+    // BUG (libvips premultiplied multiply on white): channels ≈ (37, 79, 128).
+    //
+    // The R channel is the clearest signal: CSS gives ~165, bug gives
+    // ~37. A threshold of R > 130 cleanly distinguishes them with
+    // plenty of room for libvips/sharp-version jitter.
+    expect(
+      center.r,
+      `Highlight center should be a LIGHT tint of blue (R ≈ 165 — ` +
+        `CSS mix-blend-mode multiply over white). If R is low (~37), ` +
+        `the bake is using sharp's premultiplied multiply blend and ` +
+        `diverging from the editor — the symptom is a dark/gray box ` +
+        `where the editor shows light blue. Got rgba(${center.r}, ` +
+        `${center.g}, ${center.b}, ${center.a}).`
+    ).toBeGreaterThan(130);
+    // Sanity on the other channels — light blue means G is medium-high
+    // and B is very high. Reject any reading that's purely gray/black.
+    expect(center.g, `Highlight G channel`).toBeGreaterThan(180);
+    expect(center.b, `Highlight B channel`).toBeGreaterThan(240);
+  });
+});
+
 function idForCell(surfaceName: string, variantName: string): string {
   // Captures table + BundleManifestV1/V2 cap capture_id at 32 chars.
   // Derive a short, stable id from a sha256 of the cell coordinates

@@ -618,6 +618,32 @@ describe("TransformHandles", () => {
     expect(onRequestEdit).not.toHaveBeenCalled();
   });
 
+  test("drag just above NO_DRAG_THRESHOLD_N commits geometry and does NOT request edit", async () => {
+    // Boundary case for the drag-vs-click decision in onPointerUp.
+    // NO_DRAG_THRESHOLD_N = 0.002 (~2 normalized units on the 1000×1000
+    // harness canvas → 2 client px). A 3-px move is JUST past the
+    // threshold; the contract is: geometry commits, edit does not fire
+    // — even though the browser still emits `click` (the click event
+    // has no movement threshold). Locks the boundary so future
+    // refactors that touch the threshold can't silently swap behavior
+    // in the narrow band between "definitely a click" and "definitely
+    // a drag."
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 503, 500);
+    firePointer(body, "pointerup", 503, 500);
+    fireClick(body, 503, 500);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    expect(onRequestEdit).not.toHaveBeenCalled();
+  });
+
   test("drag-then-click on selected text body: onGeometryChange ONCE + onRequestEdit NEVER (clone bug)", async () => {
     // Real browsers DO fire `click` after a mousedown→mousemove→mouseup
     // sequence whenever mousedown and mouseup target the same element

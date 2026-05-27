@@ -18,8 +18,7 @@ import type { OverlayRow } from "@pwrsnap/shared";
 import { readTextWeight } from "@pwrsnap/shared";
 import { resolveToolColor } from "./resolveToolColor";
 import { TextHtml } from "./TextHtml";
-import { applyGeometryLocally } from "./OverlaySvg";
-import type { GeometryUpdate } from "./useCaptureModel";
+import { applyGeometryLocally, type GeometryUpdate } from "./geometry-projection";
 
 const AUTO_COLOR_HEX = "var(--accent, #ff8a1f)";
 

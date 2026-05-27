@@ -39,6 +39,7 @@ import {
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
+import { applyGeometryLocally } from "./geometry-projection";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 
@@ -1538,21 +1539,13 @@ export function TransformHandles({
           // branch. First-click-to-select happens in Editor.onPointerDown
           // before TransformHandles even mounts; this body's pointerup
           // only ever fires on the SECOND click on an already-selected
-          // overlay.
-          //
-          // Double-click on a TEXT overlay also routes to edit — kept
-          // for users who learned the gesture from the previous build
-          // and for the case where their click sequence on the body
-          // happens to register as a dblclick rather than two clicks.
-          onDoubleClick={
-            selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
-              ? (e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  onRequestEdit(selectedOverlay);
-                }
-              : undefined
-          }
+          // overlay — and that pointerup IS the edit trigger when no
+          // drag happened. A native dblclick on the body never reaches
+          // this element in practice: by the time the second click's
+          // pointerup runs, onRequestEdit has cleared selectedLayerId
+          // and TransformHandles has unmounted, so the dblclick has no
+          // listener target. The previous onDoubleClick handler was
+          // load-bearing dead code; removed.
           style={{
             position: "absolute",
             left: `${bodyBox.x * 100}%`,
@@ -1646,33 +1639,6 @@ function bodyBoxForOverlay(
     return { x, y, w, h };
   }
   return null;
-}
-
-/** Local mirror of `applyGeometryToOverlay` — used to update the
- *  in-component liveData during pointermove without round-tripping
- *  through useCaptureModel. Kept in this file to avoid a circular
- *  import (useCaptureModel already imports things from here implicitly
- *  via the dispatcher; OverlaySvg should remain a leaf). */
-export function applyGeometryLocally(
-  data: OverlayRow["data"],
-  geometry: GeometryUpdate
-): OverlayRow["data"] | null {
-  switch (geometry.kind) {
-    case "arrow":
-      if (data.kind !== "arrow") return null;
-      return { ...data, from: geometry.from, to: geometry.to };
-    case "rect":
-      if (data.kind !== "rect" && data.kind !== "highlight" && data.kind !== "blur") {
-        return null;
-      }
-      return { ...data, rect: geometry.rect };
-    case "text":
-      if (data.kind !== "text") return null;
-      return { ...data, point: geometry.point };
-    case "step":
-      if (data.kind !== "step") return null;
-      return { ...data, point: geometry.point };
-  }
 }
 
 // Suppress unused-symbol churn for the geometry types we re-export.

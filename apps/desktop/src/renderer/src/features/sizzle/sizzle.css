@@ -441,6 +441,16 @@
   letter-spacing: 0.02em;
 }
 
+.szl__scene-hint {
+  margin-top: -2px;
+  padding: 6px 9px;
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent-border);
+  border-radius: 6px;
+  font: 500 11px/1.35 var(--font-sans);
+  color: var(--text-secondary);
+}
+
 .szl__scene-mini {
   width: 26px;
   height: 26px;

@@ -444,6 +444,14 @@ function Editor(props: EditorProps): ReactElement {
   }, [autoFocusTitle, onTitleFocused]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Cache of (sceneId → measured voiceover audio duration in seconds)
+  // populated as the user clicks ▶ to preview each scene. Used to
+  // surface a "voiceover is longer than trim — last frame will hold"
+  // hint on video scenes so the user understands the render math
+  // before hitting Render.
+  const [previewDurations, setPreviewDurations] = useState<
+    Record<string, number>
+  >({});
   // Hold the currently-mounted object URL so we can revoke it before
   // assigning a new src. A data: URL would leak ~33% memory per
   // preview AND keep the prior buffer pinned in memory; object URLs
@@ -514,6 +522,13 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewError(result.error.message);
       return;
     }
+    // Cache the measured audio duration so the editor can surface
+    // an inline "voiceover is X.Xs vs Y.Ys trim" hint on the video
+    // scene's row without forcing the user to render to find out.
+    setPreviewDurations((prev) => ({
+      ...prev,
+      [sceneId]: result.value.durationSec
+    }));
     const el = audioRef.current;
     if (el === null) return;
     // Decode the base64 into a Blob, hand the audio element an
@@ -844,6 +859,34 @@ function Editor(props: EditorProps): ReactElement {
                       </label>
                     </div>
                   ) : null}
+
+                  {(() => {
+                    // Inline mismatch hint for video scenes whose
+                    // voiceover overruns the clip — surfaces the
+                    // composer's "last frame holds while voiceover
+                    // finishes" behavior so the user understands
+                    // what'll happen before clicking Render. Only
+                    // shows once the user has previewed (so we have
+                    // a measured TTS duration to compare against).
+                    if (!isVideo || effectiveAudio !== "voiceover") return null;
+                    const audioDur = previewDurations[scene.id];
+                    if (audioDur === undefined) return null;
+                    const trimDur =
+                      (scene.mediaTrim?.endSec ??
+                        capture?.video?.defaultRange.end ??
+                        0) -
+                      (scene.mediaTrim?.startSec ??
+                        capture?.video?.defaultRange.start ??
+                        0);
+                    if (audioDur + 0.35 <= trimDur + 0.1) return null;
+                    const padSec = audioDur + 0.35 - trimDur;
+                    return (
+                      <div className="szl__scene-hint">
+                        Voiceover is {audioDur.toFixed(1)}s — longer than the {trimDur.toFixed(1)}s trim.
+                        Render will hold the last frame for {padSec.toFixed(1)}s.
+                      </div>
+                    );
+                  })()}
 
                   <div className="szl__scene-row">
                     {!isVideo ? (

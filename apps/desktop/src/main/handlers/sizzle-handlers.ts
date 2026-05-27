@@ -501,11 +501,15 @@ export function registerSizzleHandlers(): void {
               capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
           };
           const trimDur = trim.endSec - trim.startSec;
-          durationSec =
-            scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-              ? scene.durationOverrideSec
-              : trimDur;
 
+          // Resolve audio + duration per audio source. Scene duration
+          // policy for video scenes:
+          //   • durationOverrideSec wins if explicitly set.
+          //   • Voiceover longer than the trim: extend to fit the
+          //     voiceover. Composer holds the last frame via tpad
+          //     for the remainder (documentary-style — narration is
+          //     load-bearing, the B-roll holds).
+          //   • Native + muted: scene duration matches trim.
           if (effectiveAudio === "voiceover") {
             const tts = await synthesize({
               provider: project.ttsProvider,
@@ -514,15 +518,37 @@ export function registerSizzleHandlers(): void {
               voice: project.voice,
               model: project.ttsModel
             });
+            const voiceoverDur = await probeDurationSec(tts.audioPath);
             audioPath = tts.audioPath;
+            durationSec =
+              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+                ? scene.durationOverrideSec
+                : Math.max(trimDur, voiceoverDur + 0.35);
+            if (durationSec > trimDur + 0.05) {
+              log.info("sizzle:render holding last frame for voiceover", {
+                sceneIdx: i + 1,
+                trimDur: trimDur.toFixed(2),
+                voiceoverDur: voiceoverDur.toFixed(2),
+                sceneDur: durationSec.toFixed(2),
+                freezeFrameSec: (durationSec - trimDur).toFixed(2)
+              });
+            }
           } else if (effectiveAudio === "native") {
             audioPath = await extractVideoAudio({
               videoPath: capture.legacy_src_path!,
               startSec: trim.startSec,
               durationSec: trimDur
             });
+            durationSec =
+              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+                ? scene.durationOverrideSec
+                : trimDur;
           } else {
             // muted
+            durationSec =
+              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+                ? scene.durationOverrideSec
+                : trimDur;
             audioPath = await synthesizeSilence(durationSec);
           }
 
@@ -530,6 +556,7 @@ export function registerSizzleHandlers(): void {
             kind: "video",
             videoPath: capture.legacy_src_path!,
             startSec: trim.startSec,
+            trimDurationSec: trimDur,
             durationSec,
             audioPath,
             transition: scene.transition

@@ -37,8 +37,15 @@ export type VideoSceneInput = {
   /** Trim start in the source file, seconds. Passed to ffmpeg as
    *  `-ss` BEFORE `-i` so seeking is fast. */
   startSec: number;
-  /** Trim length in seconds. Passed as `-t` BEFORE `-i` so the
-   *  decoder stops at this duration. */
+  /** Trim length in seconds — how much of the source clip plays
+   *  before the freeze-frame extension (if any) takes over. Passed
+   *  as `-t` BEFORE `-i` so the decoder stops at this duration. */
+  trimDurationSec: number;
+  /** Total visible duration the scene occupies in the output reel,
+   *  i.e. `trimDurationSec + freeze-frame extension`. When this is
+   *  > `trimDurationSec` (voiceover longer than the video clip), the
+   *  composer appends `tpad=stop_mode=clone` to hold the last frame
+   *  for the remainder. When equal, no padding fires. */
   durationSec: number;
   audioPath: string;
   transition: SizzleTransition;
@@ -168,13 +175,15 @@ export function buildCompositionArgs(
       // Single-frame input. zoompan time-stretches in the filter graph.
       args.push("-i", scene.imagePath);
     } else {
-      // Input-side -ss + -t for fast trim. -ss must come BEFORE -i;
-      // -t too (so decoder stops at the trim, not just the demuxer).
+      // Input-side -ss + -t for fast trim. -ss must come BEFORE -i.
+      // -t uses TRIM duration (not the final scene duration) so the
+      // decoder stops at the source's natural end; freeze-frame
+      // extension happens in the filter graph via tpad.
       args.push(
         "-ss",
         scene.startSec.toFixed(3),
         "-t",
-        scene.durationSec.toFixed(3),
+        scene.trimDurationSec.toFixed(3),
         "-i",
         scene.videoPath
       );
@@ -210,13 +219,23 @@ export function buildCompositionArgs(
           `setsar=1,format=yuv420p[v${i}]`
       );
     } else {
-      // Video: scale to fit, letterbox, force uniform fps + SAR + pixfmt.
-      // No zoompan — the video already has motion of its own.
+      // Video: scale to fit, letterbox, force uniform fps + SAR +
+      // pixfmt. If the scene's voiceover runs longer than the trim
+      // (a common documentary-style situation), pad the tail by
+      // cloning the last frame via `tpad`. The video freezes; the
+      // voiceover keeps going underneath until the scene ends.
+      const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
+      const tpadFilter =
+        padSec > 0.05
+          ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
+          : "";
       filters.push(
         `[${i}:v]` +
           `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
           `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-          `fps=${req.fps},setsar=1,format=yuv420p[v${i}]`
+          `fps=${req.fps},setsar=1,format=yuv420p` +
+          tpadFilter +
+          `[v${i}]`
       );
     }
   });

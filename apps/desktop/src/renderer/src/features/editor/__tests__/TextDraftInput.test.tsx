@@ -125,56 +125,42 @@ describe("TextDraftInput — line-height", () => {
   });
 });
 
-describe("TextDraftInput — empty-state affordances", () => {
-  // Regression for the "I clicked text tool, clicked the canvas,
-  // nothing happened" bug. Before these fixes the visible div had 0
+describe("TextDraftInput — caret visibility on fresh placement", () => {
+  // Regression for the "I clicked Text tool, clicked the canvas,
+  // nothing happened" bug. Before this fix the visible div had 0
   // dimensions when `draft.body === ""`, the textarea (sized via
-  // inset:0) inherited 0 dimensions, and the user saw no caret + no
-  // bounding box → zero feedback that the system was waiting for
-  // keystrokes. Both affordances live on the VISIBLE DIV (not the
-  // textarea); these tests find the visible div as the wrapper's
-  // first <div> child.
+  // inset:0) inherited 0 dimensions, and the blinking caret had
+  // nowhere to render → zero feedback that the system was waiting
+  // for keystrokes. The fix lives on the VISIBLE DIV (not the
+  // textarea); this test finds the visible div as the second <div>
+  // in the rendered DOM (after the wrapper).
 
   function visibleDiv(): HTMLDivElement {
     if (container === null) throw new Error("container is null");
     // Structure: container > wrapper-div > [visible-div, textarea].
     // Both the container's child (wrapper) and the wrapper's child
-    // (visible div) match `div > div` — pick the deeper one.
+    // (visible div) are divs — index [1] is the inner visible div.
     const all = container.querySelectorAll("div");
-    // all[0] = wrapper (container > wrapper), all[1] = visible div
-    // (wrapper > visible-div). The textarea isn't a div so it doesn't
-    // count.
     const div = all[1];
     if (div === undefined) throw new Error("visible div not found");
     return div;
   }
 
-  test("min-width + min-height keep the wrapper visible when body is empty", async () => {
+  test("min-width + min-height keep the caret visible when body is empty", async () => {
     await renderInput("");
     const div = visibleDiv();
     expect(div.style.minWidth).toBe("1ch");
     expect(div.style.minHeight).toBe("1em");
   });
 
-  test("placeholder dashed outline only renders on empty body", async () => {
-    await renderInput("");
-    const empty = visibleDiv();
-    // jsdom's CSSOM doesn't always parse `outline` shorthand cleanly
-    // (especially with `var()` values) — fall back to inspecting the
-    // raw inline-style attribute string, which React serializes
-    // verbatim from the camelCase keys we set.
-    const styleAttr = empty.getAttribute("style") ?? "";
-    expect(styleAttr).toMatch(/outline:\s*[^;]*dashed/);
-    expect(styleAttr).toMatch(/outline-offset:\s*2px/);
-  });
-
-  test("no placeholder outline once content lands", async () => {
+  test("min-width + min-height are also set when body has content (don't shrink the rendered box)", async () => {
+    // The min-dimensions are unconditional — same value whether the
+    // body is empty or populated. With content they're no-ops (the
+    // div's content extent is bigger than the min). Keeping them
+    // unconditional is simpler than detecting empty and toggling.
     await renderInput("hello");
-    const filled = visibleDiv();
-    // Either no outline declaration at all, or empty value. The
-    // production code drops the entire outline + outlineOffset block
-    // from the style object when body is non-empty.
-    const styleAttr = filled.getAttribute("style") ?? "";
-    expect(styleAttr).not.toMatch(/outline:\s*[^;]*dashed/);
+    const div = visibleDiv();
+    expect(div.style.minWidth).toBe("1ch");
+    expect(div.style.minHeight).toBe("1em");
   });
 });

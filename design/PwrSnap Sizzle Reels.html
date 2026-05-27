@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PwrSnap — Sizzle Reels</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="ds/colors_and_type.css" />
+<link rel="stylesheet" href="src/floatover.css" />
+<link rel="stylesheet" href="src/library.css" />
+<link rel="stylesheet" href="src/sizzle.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-primary); font-family: var(--font-sans); overflow: hidden; }
+  /* Notes panel styling */
+  .notes { width:100%; height:100%; padding: 30px; background: var(--bg-app); border: 1px solid var(--border-subtle); border-radius: 12px; overflow: auto; font-family: var(--font-sans); color: var(--text-secondary); }
+  .notes h2 { font: 700 22px/1.15 var(--font-display); color: var(--text-primary); margin: 0 0 6px; letter-spacing: -0.01em; }
+  .notes .lead { font: 400 13px/1.55 var(--font-sans); color: var(--text-secondary); margin: 0 0 16px; max-width: 60ch; }
+  .notes .eyebrow { font: 700 9px/1 var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-bright); margin: 16px 0 6px; }
+  .notes .muted { font: 700 9px/1 var(--font-sans); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted); margin: 16px 0 6px; }
+  .notes ul { font: 400 13px/1.55 var(--font-sans); color: var(--text-secondary); padding-left: 18px; margin: 0 0 10px; }
+  .notes ul li { margin-bottom: 4px; }
+  .notes b { color: var(--text-primary); }
+  .notes .a { color: var(--accent-bright); }
+  .notes code { font: 600 11px/1 var(--font-mono); background: var(--bg-panel-elevated); border: 1px solid var(--border-subtle); padding: 1px 5px; border-radius: 3px; color: var(--accent-bright); }
+  .notes .q { padding: 10px 12px; background: color-mix(in srgb, var(--accent) 5%, transparent); border: 1px dashed var(--accent-border); border-radius: 7px; margin: 8px 0; font: 500 12px/1.5 var(--font-sans); color: var(--text-primary); }
+  .notes .q b { color: var(--accent-bright); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="src/design-canvas.jsx"></script>
+<script type="text/babel" src="src/AppIcons.jsx"></script>
+<script type="text/babel" src="src/Library.jsx"></script>
+<script type="text/babel" src="src/SizzleData.jsx"></script>
+<script type="text/babel" src="src/SizzleRails.jsx"></script>
+<script type="text/babel" src="src/SizzleEditor.jsx"></script>
+<script type="text/babel" src="src/SizzleApp.jsx"></script>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+const { SizzleApp } = window.SZL;
+
+function DesignNotes() {
+  return (
+    <div className="notes">
+      <h2>Sizzle Reels — design notes</h2>
+      <p className="lead">
+        First pass at the new Projects + Sizzle Reels feature. The Library learns about <b>types</b> (Images / Videos / Projects), the right rail grows a third tab (<b>Project Assets</b>), and opening a project swaps the main pane into a dedicated <b>Sizzle Editor</b> with three timeline variants side-by-side via a header toggle.
+      </p>
+
+      <div className="eyebrow">① Library — new sidebar shape</div>
+      <ul>
+        <li><b>Types</b> replaces the old "Smart Filters" mock — three multi-pick rows (Images / Videos / Projects), all on by default. Toggle off Projects and the project chips vanish from the rail.</li>
+        <li><b>Sizzle reels</b> section appears below Types. Each project is a row: stacked-rect mark with a tiny play badge, name, <code>N clips · MM:SS · modified</code>.</li>
+        <li><b>+ New Project</b> CTA: a dashed-amber pill in the topbar next to Quick Capture, <i>and</i> a small <code>+</code> next to the Sizzle reels section header — both routes to the same place.</li>
+      </ul>
+
+      <div className="eyebrow">② Right rail — three vertical tabs</div>
+      <ul>
+        <li>The single-tab right rail becomes a thin <b>icon strip + body</b>. Tabs (top→bottom): <span className="a">Project Assets</span> · <span className="a">AI Chat</span> · <span className="a">Details</span>.</li>
+        <li><b>Project Assets:</b> project picker dropdown → ordered, draggable list of clips with thumbnail, stem name, kind chip, duration. Footer total + "Open editor".</li>
+        <li><b>AI Chat:</b> project-scoped thread (sees the script, clips, voice). Tool-calls show diffs (e.g. "Edited transitions · 5 changes") with Keep/Undo.</li>
+        <li><b>Details:</b> per-clip pane — title, OCR text, script line, duration override, source app. Mirrors the existing capture detail-form vibe.</li>
+      </ul>
+
+      <div className="eyebrow">③ Project mode in Library</div>
+      <ul>
+        <li>Click a project in the sidebar → main pane filters to that project's clips, shown in order with a "01"/"02" badge on each thumb.</li>
+        <li>Two CTAs above the grid: <b>Add captures</b> (toggles select-mode where every capture gets a +/✓ button) and <b>Open editor</b> (jumps into the timeline view).</li>
+      </ul>
+
+      <div className="eyebrow">④ Sizzle Editor — three timeline variants</div>
+      <ul>
+        <li>You weren't sure which timeline shape works, so all three are here and switchable from the editor header:
+          <ul>
+            <li><b>Script</b> — vertical row-per-clip. Big edit affordance on the script line (the thing the AI rewrites). Best for "what are we <i>saying</i>?"</li>
+            <li><b>Timeline</b> — classic horizontal NLE. Monitor + clip strip + script captions + voice waveform. Best for "how does it <i>play</i>?"</li>
+            <li><b>Storyboard</b> — masonry of clip cards with transition-arrows between them. Best for "what's the <i>shape</i>?"</li>
+          </ul>
+        </li>
+        <li><b>Transitions</b> show up three ways simultaneously, as you asked: a chip <i>between</i> rows (vertical), a diamond <i>on the seam</i> (horizontal), an arrow tab on the <i>card edge</i> (storyboard). All open the same picker popover.</li>
+      </ul>
+
+      <div className="eyebrow">⑤ Voice + Export</div>
+      <ul>
+        <li>Bottom drawer in the editor — three columns: <b>Voice picker</b> (Ada / Rio / Kael / Record yourself) · <b>Waveform</b> (with auto-cut diff notice) · <b>Actions</b> (preview, record, upload, regen).</li>
+        <li>Export modal: multi-pick destinations (<b>MP4</b> · <b>YouTube</b> · <b>X</b>). Resolution / aspect / bitrate / captions, plus a render summary.</li>
+      </ul>
+
+      <div className="muted">Open questions</div>
+      <div className="q">
+        <b>Project window</b> — currently the editor takes over the Library main pane (left rail + right rail still visible). A "Pop out" button in the editor header suggests it could also open a new dedicated window. <b>Which is canonical?</b>
+      </div>
+      <div className="q">
+        <b>What does "New Project" do exactly?</b> — In this mock it creates an empty project + drops you into <i>add-captures mode</i> in the library. Alt: drop you into the editor with a "drag clips here" empty timeline.
+      </div>
+      <div className="q">
+        <b>Project kinds beyond Sizzle Reels?</b> — Header reads "sizzle reel" today. Once there are other kinds (slide deck? bug-repro packet?) the sidebar would group them under Projects.
+      </div>
+      <div className="q">
+        <b>Where does the AI live during quiet moments?</b> — Right now AI Chat is one of three tabs. Alternative: keep AI Chat <i>always</i> visible as a slim bottom drawer in the editor (like Copilot), with Project Assets / Details only.
+      </div>
+
+      <div className="muted">What's NOT in this pass</div>
+      <ul>
+        <li>Actual video playback (timeline preview is a still + waveform).</li>
+        <li>Captions burn-in styling — just an "on/off" option in Export.</li>
+        <li>YouTube/X auth flows.</li>
+        <li>Project sharing / multiplayer.</li>
+      </ul>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <DesignCanvas projectName="PwrSnap" deliverable="Sizzle Reels feature">
+
+      <DCSection id="library" title="① Library — project mode, Project Assets rail">
+        <DCArtboard id="library-project-open" label="Project selected · Project Assets on right · ordered clip list" width={1440} height={900}>
+          <SizzleApp initialMode="library" initialProject="p1" initialRightTab="assets" />
+        </DCArtboard>
+        <DCArtboard id="library-notes" label="Design notes & open questions" width={520} height={900}>
+          <DesignNotes />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="library-add" title="② Library — add captures to a project">
+        <DCArtboard id="library-adding" label="Adding captures · +/✓ overlay on every cell · pending count in banner" width={1440} height={900}>
+          <SizzleApp initialMode="library" initialProject="p1" initialRightTab="assets" initialAdding={true} />
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="rails" title="③ Right rail · all three tabs">
+        <DCArtboard id="rail-assets" label="Project Assets · default" width={1440} height={900}>
+          <SizzleApp initialMode="library" initialProject="p1" initialRightTab="assets"/>
+        </DCArtboard>
+        <DCArtboard id="rail-chat" label="AI Chat · project-scoped · transition-edit diff" width={1440} height={900}>
+          <SizzleApp initialMode="library" initialProject="p1" initialRightTab="chat"/>
+        </DCArtboard>
+        <DCArtboard id="rail-detail" label="Details · per-clip OCR + script override" width={1440} height={900}>
+          <SizzleApp initialMode="library" initialProject="p1" initialRightTab="detail"/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="editor-script" title="④ Sizzle Editor — Script (vertical) variant">
+        <DCArtboard id="editor-script" label="Vertical script-first · transition chips between rows · voice drawer collapsed" width={1440} height={900}>
+          <SizzleApp initialMode="editor" initialProject="p1" initialRightTab="assets" initialVariant="vertical"/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="editor-timeline" title="⑤ Sizzle Editor — Timeline (horizontal NLE) variant">
+        <DCArtboard id="editor-tl" label="Horizontal · monitor + clip strip + script + voice waveform · transition diamonds on seams" width={1440} height={900}>
+          <SizzleApp initialMode="editor" initialProject="p1" initialRightTab="chat" initialVariant="horizontal"/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="editor-storyboard" title="⑥ Sizzle Editor — Storyboard variant">
+        <DCArtboard id="editor-sb" label="Cards in a grid · transition-arrow on card edge · best for reordering by shape" width={1440} height={900}>
+          <SizzleApp initialMode="editor" initialProject="p1" initialRightTab="detail" initialVariant="storyboard"/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="editor-voice" title="⑦ Voice drawer — expanded">
+        <DCArtboard id="editor-voice" label="Voice picker + waveform + actions · auto-cut diff notice in green" width={1440} height={900}>
+          <SizzleApp initialMode="editor" initialProject="p1" initialRightTab="assets" initialVariant="vertical" initialVoiceExpanded={true}/>
+        </DCArtboard>
+      </DCSection>
+
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -32,6 +32,7 @@ let libraryWindow: BrowserWindow | null = null;
  * idempotent without scanning every BrowserWindow.
  */
 let settingsWindow: BrowserWindow | null = null;
+let sizzleWindow: BrowserWindow | null = null;
 const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 
 type RendererStage =
@@ -40,6 +41,7 @@ type RendererStage =
   | "edit"
   | "settings"
   | "document"
+  | "sizzle"
   | "recording-controller";
 type RendererTarget = { kind: "url"; url: string } | { kind: "file"; path: string; hash?: string };
 
@@ -336,6 +338,38 @@ export function createSettingsWindow(extraHash?: string): BrowserWindow {
     log.warn("settings window renderer unresponsive", { id: window.id });
   });
 
+  return window;
+}
+
+export function findSizzleWindow(): BrowserWindow | null {
+  if (sizzleWindow !== null && !sizzleWindow.isDestroyed()) return sizzleWindow;
+  return null;
+}
+
+export function createSizzleWindow(extraHash?: string): BrowserWindow {
+  if (sizzleWindow !== null && !sizzleWindow.isDestroyed()) {
+    return sizzleWindow;
+  }
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 880,
+    minHeight: 560,
+    show: false,
+    title: "PwrSnap Sizzle Reels",
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 20, y: 18 },
+    backgroundColor: getStartupBackgroundColor(),
+    webPreferences: themedWebPreferences()
+  });
+  sizzleWindow = window;
+
+  loadRenderer(window, rendererTarget("sizzle", extraHash));
+  showWindowWhenReady(window, { label: "sizzle" });
+
+  window.on("closed", () => {
+    if (sizzleWindow === window) sizzleWindow = null;
+  });
   return window;
 }
 

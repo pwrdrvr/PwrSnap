@@ -4,8 +4,49 @@
 // Each is self-contained; only the parent picks which is mounted.
 
 const { useState: usePsePState } = React;
-const { LAYER_ICONS, LAYER_TREE, CHAT_HISTORY, CAPTURE_META } = window.PSE;
+const { LAYER_ICONS, LAYER_TREE, CHAT_HISTORY, CAPTURE_META, SEM_COLORS, SEM_ORDER, SEMANTIC_TOOLS, TOOLS } = window.PSE;
 const { PsAppTag, PsAppIcon, APP_INFO } = window.PS;
+
+// Mini "live preview" of an arrow + text in the chosen semantic color
+function SemPreview({ sem, kind = "arrow" }) {
+  const c = SEM_COLORS[sem];
+  if (!c) return null;
+  return (
+    <div className="pse__sem-preview">
+      <svg className="pse__sem-preview-arrow" viewBox="0 0 70 22" fill="none">
+        <line x1="6" y1="11" x2="50" y2="11" stroke={c.stroke} strokeWidth="3" strokeLinecap="round"/>
+        <polygon points="64,11 50,4 50,18" fill={c.fill}/>
+      </svg>
+      <span className="pse__sem-preview-text" style={{ color: c.text }}>
+        {sem === "good" ? "✓ passes" :
+         sem === "ok"   ? "• warning" :
+         sem === "bad"  ? "✗ broken" :
+         sem === "context" ? "→ context" :
+         sem === "neutral" ? "· note" :
+         "★ here"}
+      </span>
+    </div>
+  );
+}
+
+function SemPalette({ value, onChange, layout = "grid" }) {
+  return (
+    <div className={layout === "row" ? "pse__sem-row" : "pse__sem-grid"}>
+      {SEM_ORDER.map((k) => {
+        const c = SEM_COLORS[k];
+        return (
+          <div key={k}
+               className={"pse__sem-cell" + (value === k ? " is-on" : "")}
+               onClick={() => onChange && onChange(k)}
+               title={k}>
+            <span className="pse__sem-dot" style={{ background: c.stroke }} />
+            <span className="pse__sem-name">{c.name}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ============================================================
 // Panel header — shared chrome
@@ -171,9 +212,15 @@ function LayersPanel({ layers, selectedId, setSelectedId, onToggleVis, ...props 
 }
 
 // ============================================================
-// STYLE PANEL
+// STYLE PANEL — context-sensitive
+//   • selected layer  → edit that layer's style
+//   • active tool     → tool defaults (color, thickness, ...) before drawing
+//   • neither         → empty state
 // ============================================================
-function StylePanel({ selectedLayer, ...props }) {
+function StylePanel({ selectedLayer, tool, toolSem, setToolSem, ...props }) {
+  const showToolInspector = !selectedLayer && tool && SEMANTIC_TOOLS && SEMANTIC_TOOLS.has(tool);
+  const toolMeta = TOOLS.find((t) => t.id === tool);
+
   return (
     <>
       <PanelHeader title="Style" icon={
@@ -185,15 +232,125 @@ function StylePanel({ selectedLayer, ...props }) {
         </svg>
       } {...props} />
       <div className="pse__panel-body">
-        {!selectedLayer ? (
-          <div className="pse__style-empty">
-            <b>No layer selected</b>
-            Click a layer in the canvas or the Layers panel to edit its properties here.
-          </div>
-        ) : (
-          <StyleForLayer L={selectedLayer} />
-        )}
+        {selectedLayer
+          ? <StyleForLayer L={selectedLayer} />
+          : showToolInspector
+            ? <ToolInspector toolMeta={toolMeta} toolSem={toolSem} setToolSem={setToolSem} />
+            : (
+              <div className="pse__style-empty">
+                <b>No layer selected</b>
+                Pick a tool to see its defaults — or click a layer in the canvas / Layers panel to edit its style.
+              </div>
+            )
+        }
       </div>
+    </>
+  );
+}
+
+// Tool inspector — what you'll draw with BEFORE you draw it.
+function ToolInspector({ toolMeta, toolSem, setToolSem }) {
+  if (!toolMeta) return null;
+  const headerIco = toolMeta.ico;
+  return (
+    <>
+      <div className="pse__inspector-banner">
+        {headerIco}
+        <span>tool defaults · {toolMeta.name.toLowerCase()}</span>
+        <small>applies to next {toolMeta.name.toLowerCase()} you draw</small>
+      </div>
+
+      <div className="pse__style-grp">
+        <div className="pse__style-grp-label">Semantic color</div>
+        <SemPalette value={toolSem} onChange={setToolSem} />
+        <div className="pse__field-help">
+          Stoplight pairs the {toolMeta.name.toLowerCase()} stroke with matching label text.
+        </div>
+        <SemPreview sem={toolSem} kind={toolMeta.id} />
+      </div>
+
+      {toolMeta.id === "arrow" && (
+        <>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Thickness</div>
+            <div className="pse__slider-row">
+              <input type="range" min="1" max="12" defaultValue="6" />
+              <span className="pse__slider-val">6 px</span>
+            </div>
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Arrowhead</div>
+            <div className="pse__seg">
+              <button>None</button>
+              <button className="is-on">Solid</button>
+              <button>Open</button>
+            </div>
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Auto-label</div>
+            <div className="pse__seg">
+              <button className="is-on">Off</button>
+              <button>On</button>
+            </div>
+            <div className="pse__field-help">
+              When on, drawing an arrow drops a paired text layer using the same semantic color — pick "good" + Auto-label, draw, then type "✓ ships".
+            </div>
+          </div>
+        </>
+      )}
+
+      {toolMeta.id === "rect" && (
+        <>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Stroke width</div>
+            <div className="pse__slider-row">
+              <input type="range" min="1" max="8" defaultValue="3" />
+              <span className="pse__slider-val">3 px</span>
+            </div>
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Fill</div>
+            <div className="pse__seg">
+              <button className="is-on">None</button>
+              <button>10%</button>
+              <button>25%</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {toolMeta.id === "text" && (
+        <>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Size</div>
+            <div className="pse__seg">
+              <button>S</button>
+              <button className="is-on">M</button>
+              <button>L</button>
+              <button>XL</button>
+            </div>
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Background</div>
+            <div className="pse__seg">
+              <button className="is-on">Card</button>
+              <button>None</button>
+              <button>Solid</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {toolMeta.id === "highlight" && (
+        <div className="pse__style-grp">
+          <div className="pse__style-grp-label">Blend</div>
+          <div className="pse__seg">
+            <button>Normal</button>
+            <button className="is-on">Screen</button>
+            <button>Multiply</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -258,15 +415,9 @@ function StyleForLayer({ L }) {
       {L.kind === "vector" && L.sub === "arrow" && (
         <>
           <div className="pse__style-grp">
-            <div className="pse__style-grp-label">Color</div>
-            <div className="pse__color-row">
-              <span className="pse__sw is-on" style={{ background: "#ff8a1f" }}/>
-              <span className="pse__sw" style={{ background: "#ff5f57" }}/>
-              <span className="pse__sw" style={{ background: "#28c840" }}/>
-              <span className="pse__sw" style={{ background: "#1f7cff" }}/>
-              <span className="pse__sw" style={{ background: "#f5efe3" }}/>
-              <span className="pse__sw" style={{ background: "#0a0a0a", borderColor: "var(--border-strong)" }}/>
-            </div>
+            <div className="pse__style-grp-label">Semantic color</div>
+            <SemPalette value={L.style.sem || "brand"} onChange={() => {}} />
+            <SemPreview sem={L.style.sem || "brand"} />
           </div>
           <div className="pse__style-grp">
             <div className="pse__style-grp-label">Thickness</div>
@@ -282,6 +433,26 @@ function StyleForLayer({ L }) {
               <button className="is-on">Solid</button>
               <button>Open</button>
             </div>
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Linked text</div>
+            <div className="pse__field-help">
+              No linked text — turn on <b style={{ color: "var(--text-primary)" }}>Auto-label</b> next time to drop a paired Text layer that recolors with this arrow.
+            </div>
+          </div>
+        </>
+      )}
+
+      {L.kind === "text" && (
+        <>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Content</div>
+            <input className="pse__field-input" defaultValue={L.style.text} />
+          </div>
+          <div className="pse__style-grp">
+            <div className="pse__style-grp-label">Semantic color</div>
+            <SemPalette value={L.style.sem || "brand"} onChange={() => {}} />
+            <SemPreview sem={L.style.sem || "brand"} />
           </div>
         </>
       )}
@@ -435,4 +606,5 @@ function PanelHost({ active, ...props }) {
 
 Object.assign(window.PSE, {
   InfoPanel, ChatPanel, LayersPanel, StylePanel, PanelHost, ChatMessage,
+  SemPalette, SemPreview, ToolInspector,
 });

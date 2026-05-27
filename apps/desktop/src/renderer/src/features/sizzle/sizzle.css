@@ -1,0 +1,620 @@
+/* PwrSnap Sizzle Reels — composer window.
+ *
+ * Shell mirrors settings.css: 52px title bar row + content grid (rail +
+ * main). Title bar is the system drag region with left padding clearing
+ * the macOS traffic lights (titleBarStyle: "hiddenInset" in
+ * createSizzleWindow). All colors via tokens — never hardcoded.
+ */
+
+.szl {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: 52px 1fr;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* Title bar — drag region, traffic-light padding, brand + crumb.
+   Matches .pss__titlebar so the two surfaces read as the same app. */
+.szl__titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 16px 0 92px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 14px;
+  -webkit-app-region: drag;
+}
+
+.szl__titlebar button,
+.szl__titlebar input,
+.szl__titlebar select {
+  -webkit-app-region: no-drag;
+}
+
+.szl__title-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 14px/1 var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.szl__title-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+}
+
+.szl__title-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 16px;
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.szl__title-sep {
+  opacity: 0.5;
+}
+
+.szl__title-here {
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: 0;
+  font: 600 13px/1 var(--font-sans);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Left rail — projects list. */
+.szl__rail {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  padding: 14px 12px 12px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.szl__new {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px dashed var(--accent-border);
+  border-radius: 8px;
+  font: 600 12px/1.2 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+
+.szl__new:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.szl__list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.szl__empty,
+.szl__scene-empty {
+  font: 400 12px/1.4 var(--font-sans);
+  color: var(--text-muted);
+  padding: 12px 6px;
+  text-align: left;
+}
+
+.szl__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.szl__row:hover {
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+
+.szl__row.is-active {
+  background: var(--bg-row-active);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.szl__row-name {
+  font: 600 12px/1.2 var(--font-sans);
+}
+
+.szl__row-meta {
+  font: 500 10px/1.2 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* Main pane — empty state OR active editor. */
+.szl__main {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-app);
+}
+
+.szl__empty-pane {
+  margin: auto;
+  max-width: 460px;
+  padding: 32px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.szl__empty-mark {
+  font-size: 48px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.szl__empty-pane h2 {
+  font: 700 22px/1.1 var(--font-display);
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.szl__empty-pane p {
+  font: 400 13px/1.55 var(--font-sans);
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.szl__hint {
+  font: 500 11px/1.5 var(--font-sans);
+  color: var(--text-muted);
+}
+
+.szl__editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.szl__editor-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.szl__editor-title {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font: 700 22px/1.1 var(--font-display);
+  letter-spacing: -0.015em;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 0;
+  border-bottom: 1px solid transparent;
+}
+
+.szl__editor-title:focus {
+  border-bottom-color: var(--accent-border);
+}
+
+.szl__editor-meta {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.szl__spacer {
+  flex: 1;
+}
+
+.szl__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+  background: var(--bg-panel);
+}
+
+.szl__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.szl__field select {
+  padding: 6px 8px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.szl__btn,
+.szl__btn-primary,
+.szl__btn-danger {
+  padding: 7px 14px;
+  border-radius: 8px;
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+}
+
+.szl__btn:hover {
+  background: var(--bg-panel-hover);
+}
+
+.szl__btn-primary {
+  background: var(--accent);
+  color: var(--button-text-on-accent, #000);
+  border-color: var(--accent);
+}
+
+.szl__btn-primary:hover {
+  background: var(--accent-strong);
+}
+
+.szl__btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.szl__btn-danger {
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  background: transparent;
+}
+
+.szl__btn-danger:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+}
+
+.szl__scenes {
+  list-style: none;
+  margin: 0;
+  padding: 14px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+.szl__scene {
+  display: grid;
+  grid-template-columns: 28px 180px 1fr;
+  gap: 14px;
+  padding: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.szl__scene-num {
+  font: 700 12px/1 var(--font-mono);
+  color: var(--accent);
+  align-self: center;
+  text-align: center;
+}
+
+.szl__scene-thumb {
+  width: 180px;
+  height: 102px;
+  background: var(--bg-input);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.szl__scene-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.szl__scene-missing {
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+}
+
+.szl__scene-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.szl__scene-script {
+  flex: 1;
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  font: 400 13px/1.5 var(--font-sans);
+  resize: vertical;
+  outline: none;
+}
+
+.szl__scene-script:focus {
+  border-color: var(--accent-border);
+}
+
+.szl__scene-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.szl__scene-dur {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.szl__scene-dur input {
+  width: 60px;
+  padding: 4px 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  font: 500 12px/1 var(--font-mono);
+}
+
+.szl__scene-dur-unit {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+
+.szl__scene-app {
+  font: 500 11px/1 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.szl__scene-mini {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 500 12px/1 var(--font-mono);
+}
+
+.szl__scene-mini:hover:not(:disabled) {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+
+.szl__scene-mini:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.szl__scene-mini--danger:hover {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.szl__scene-mini--play {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.szl__scene-mini--play:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.szl__preview-error {
+  margin: 0 24px 12px;
+  padding: 8px 12px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  border-radius: 8px;
+  font: 500 12px/1.4 var(--font-sans);
+}
+
+.szl__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+
+.szl__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 500 12px/1 var(--font-sans);
+  color: var(--text-secondary);
+}
+
+.szl__status--idle {
+  color: var(--text-muted);
+}
+
+.szl__status--err {
+  color: var(--accent);
+}
+
+.szl__status--ok {
+  color: var(--accent);
+}
+
+.szl__status-bar {
+  width: 180px;
+  height: 6px;
+  background: var(--bg-panel-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+  display: inline-block;
+}
+
+.szl__status-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+
+.szl__modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.szl__modal {
+  width: 720px;
+  max-width: 90vw;
+  max-height: 78vh;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.45);
+}
+
+.szl__modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.szl__modal h3 {
+  margin: 0;
+  font: 700 16px/1 var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.szl__picker-grid {
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.szl__picker-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  /* Paired with loading=lazy on the inner <img>: Chromium skips
+     layout + paint for offscreen cells, which means the
+     pwrsnap-cache:// fetch (and the v2 compose-tree it triggers)
+     never runs for cells the user hasn't scrolled to yet. Same
+     pattern Library.tsx CellThumb uses; the aspect-ratio on the
+     image keeps offscreen cells correctly sized for the scrollbar. */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 140px;
+}
+
+.szl__picker-cell:hover {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.szl__picker-cell.is-used {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.szl__picker-cell img {
+  width: 100%;
+  aspect-ratio: 16/10;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg-input);
+}
+
+.szl__picker-label {
+  font: 500 10px/1.2 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  text-align: center;
+}

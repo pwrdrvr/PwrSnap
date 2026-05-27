@@ -10,7 +10,8 @@ import { getMainLogger } from "../log";
 type Logger = ReturnType<typeof getMainLogger>;
 
 export const KNOWN_SECRET_NAMES = [
-  "grokApiKey"
+  "grokApiKey",
+  "openaiApiKey"
 ] as const satisfies readonly DesktopSettingsSecretName[];
 
 // Compile-time check the other direction: adding a new

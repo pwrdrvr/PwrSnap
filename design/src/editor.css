@@ -884,8 +884,107 @@
 .pse.is-left-bar .pse__canvas-wrap { grid-column: 3; }
 .pse.is-left-bar .pse__act-btn.is-active::before { left: auto; right: -8px; }
 
+/* inline color chip on the active toolbar tool — shows what color
+   you'll draw with. ~10px circle sitting between label and key. */
+.pse__tool-chip {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255,255,255,0.25);
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ---------------- SEMANTIC PALETTE — tool inspector ---------------- */
+.pse__sem-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.pse__sem-cell {
+  position: relative;
+  display: flex; align-items: center; gap: 7px;
+  height: 38px;
+  padding: 0 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.pse__sem-cell:hover { border-color: var(--accent-border); }
+.pse__sem-cell.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.pse__sem-cell.is-on::after {
+  content: "";
+  position: absolute; top: 5px; right: 5px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.pse__sem-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pse__sem-name {
+  font: 600 11px/1 var(--font-mono);
+  text-transform: lowercase;
+  color: var(--text-primary);
+}
+
+/* full-width row variant for when 3-column is too cramped (focus mode) */
+.pse__sem-row {
+  display: flex; gap: 6px;
+}
+.pse__sem-row .pse__sem-cell { flex: 1; }
+
+/* preview chip — shows a mini arrow + text in the current semantic color */
+.pse__sem-preview {
+  margin-top: 12px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 10px;
+  position: relative;
+}
+.pse__sem-preview-arrow {
+  width: 70px; height: 22px;
+}
+.pse__sem-preview-text {
+  font: 600 13px/1 var(--font-sans);
+}
+
+/* highlight on active-tool inspector header */
+.pse__inspector-banner {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-border);
+  font: 600 10.5px/1 var(--font-mono);
+  color: var(--accent-bright);
+}
+.pse__inspector-banner svg { color: var(--accent); }
+.pse__inspector-banner small {
+  margin-left: auto;
+  font: 500 9.5px/1 var(--font-mono);
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+
 /* utility */
 .pse__hk-kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 15px;
+  padding: 0 4px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  font: 600 9.5px/1 var(--font-mono);
+  color: var(--text-secondary);
+}
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 16px; height: 15px;
   padding: 0 4px;

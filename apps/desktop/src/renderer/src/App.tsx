@@ -5,6 +5,7 @@ import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
 import { RegionSelector } from "./features/region/RegionSelector";
 import { SettingsApp } from "./features/settings/SettingsApp";
+import { SizzleApp } from "./features/sizzle/SizzleApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
 import { LegacyMigrationBanner } from "./features/library/LegacyMigrationBanner";
@@ -18,6 +19,7 @@ type Stage =
   | "region"
   | "edit"
   | "settings"
+  | "sizzle"
   | "document"
   | "recording-controller";
 type AppDocumentKind = "changelog" | "third-party-licenses";
@@ -32,6 +34,7 @@ function readStage(): Stage {
     v === "region" ||
     v === "edit" ||
     v === "settings" ||
+    v === "sizzle" ||
     v === "document" ||
     v === "recording-controller"
   ) {
@@ -80,6 +83,7 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   region: "PwrSnap Capture",
   edit: "PwrSnap Editor",
   settings: "PwrSnap Settings",
+  sizzle: "PwrSnap Sizzle Reels",
   "recording-controller": "PwrSnap Recording",
   document:
     DOCUMENT_KIND === "third-party-licenses"
@@ -110,6 +114,9 @@ export function App() {
     }
     if (STAGE === "settings") {
       return <SettingsApp />;
+    }
+    if (STAGE === "sizzle") {
+      return <SizzleApp />;
     }
     if (STAGE === "recording-controller") {
       return <RecordingController />;

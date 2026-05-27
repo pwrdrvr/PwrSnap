@@ -19,7 +19,9 @@ import {
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
-  isSettingsPage
+  isLibrarySidebarTab,
+  isSettingsPage,
+  LIBRARY_SIDEBAR_TABS
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -385,7 +387,48 @@ export function validateSettingsWrite(
     if (editorErr !== null) return { ok: false, error: editorErr };
   }
 
+  if (p.library !== undefined) {
+    const libraryErr = validateLibraryPatch(p.library);
+    if (libraryErr !== null) return { ok: false, error: libraryErr };
+  }
+
   return { ok: true, value: patch as SettingsPatch };
+}
+
+/** Validate the library section of a settings patch. Currently
+ *  exposes a single nested object: `detailRail`. Symmetric with
+ *  `validateEditorPatch`. */
+function validateLibraryPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_library",
+      "settings:write: library must be an object"
+    );
+  }
+  if (raw.detailRail !== undefined) {
+    if (!isObject(raw.detailRail)) {
+      return validationError(
+        "invalid_library_detailRail",
+        "settings:write: library.detailRail must be an object"
+      );
+    }
+    const dr = raw.detailRail;
+    if (!isUndefined(dr.pinned) && !isBoolean(dr.pinned)) {
+      return validationError(
+        "invalid_library_detailRail_pinned",
+        "settings:write: library.detailRail.pinned must be a boolean"
+      );
+    }
+    if (!isUndefined(dr.lastSelectedTab) && !isLibrarySidebarTab(dr.lastSelectedTab)) {
+      return validationError(
+        "invalid_library_detailRail_lastSelectedTab",
+        `settings:write: library.detailRail.lastSelectedTab must be one of ${LIBRARY_SIDEBAR_TABS.join(
+          "/"
+        )}`
+      );
+    }
+  }
+  return null;
 }
 
 // ---- settings:write — editor sub-validator -----------------------------

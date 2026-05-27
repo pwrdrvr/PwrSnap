@@ -581,6 +581,12 @@ export type Settings = {
    *  substrate"). Added per docs/plans/2026-05-23-001-feat-v2-editor-
    *  plan.md Phase 1. */
   editor: EditorSettings;
+  /** Library DetailRail right-side activity bar state. Mirrors
+   *  `editor.sidebar` but scoped to the Library — the two surfaces
+   *  use the same RightActivityBar primitive and persist
+   *  independently so users can prefer "always-open" in Library while
+   *  the Editor stays unpinned, or vice versa. */
+  library: LibrarySettings;
 };
 
 // ---- Editor user preferences (Phase 1) ----------------------------------
@@ -748,6 +754,37 @@ export type EditorSettings = {
   sidebar: EditorSidebarSettings;
 };
 
+// ---- Library DetailRail settings ---------------------------------------
+
+/** Tab identifier for the Library DetailRail right-side activity bar.
+ *  Mirrors `EditorSidebarPanel` for symmetry but scoped to the
+ *  Library — the available surfaces (Info / OCR / Chat) are
+ *  different from the editor's (Info / Chat / Tool Config / Help). */
+export type LibrarySidebarTab = "info" | "ocr" | "chat";
+
+export const LIBRARY_SIDEBAR_TABS = [
+  "info",
+  "ocr",
+  "chat"
+] as const satisfies readonly LibrarySidebarTab[];
+
+export function isLibrarySidebarTab(value: unknown): value is LibrarySidebarTab {
+  return (
+    typeof value === "string" &&
+    (LIBRARY_SIDEBAR_TABS as readonly string[]).includes(value)
+  );
+}
+
+/** Persisted state for the Library DetailRail's right-bar. */
+export type LibrarySidebarSettings = {
+  pinned: boolean;
+  lastSelectedTab: LibrarySidebarTab;
+};
+
+export type LibrarySettings = {
+  detailRail: LibrarySidebarSettings;
+};
+
 // ---- Chat message content (Phase 7 prep, exported only) ----------------
 //
 // Defined here so Phase 7's `chat-schemas.ts` zod definitions and the
@@ -818,6 +855,13 @@ export type SettingsPatch = {
     coachmarks?: Partial<EditorCoachmarks>;
     matchingText?: Partial<EditorMatchingText>;
     sidebar?: Partial<EditorSidebarSettings>;
+  };
+  /** Library DetailRail preferences — currently just the right-bar
+   *  pin + last-tab state. Mirrors the `editor.sidebar` patch shape
+   *  one level deeper since the Library carries more rail-shaped
+   *  surfaces over time. */
+  library?: {
+    detailRail?: Partial<LibrarySidebarSettings>;
   };
 };
 

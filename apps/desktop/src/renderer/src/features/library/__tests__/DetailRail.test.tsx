@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CaptureEnrichment, CaptureRecord } from "@pwrsnap/shared";
 import { DetailRail } from "../DetailRail";
+import type { LibraryView } from "../library-view";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -271,13 +272,13 @@ describe("DetailRail", () => {
     const fullOcr = `${"line\n".repeat(80)}final visible line`;
     const { el } = await renderDetailRail(enrichment({ ocrText: fullOcr }));
 
-    // Detail tab is the default tab; OCR text must NOT appear there now.
+    // Info tab is the default tab; OCR text must NOT appear there now.
     expect(el.querySelector(".psl__ocr-tab-body")).toBeNull();
 
-    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
-      candidate.textContent?.startsWith("OCR")
-    ) as HTMLButtonElement | undefined;
-    expect(ocrTab).toBeDefined();
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab).not.toBeNull();
     await act(async () => {
       ocrTab?.click();
       await Promise.resolve();
@@ -312,9 +313,10 @@ describe("DetailRail", () => {
   test("OCR Copy text routes through clipboard:copyText, not navigator.clipboard", async () => {
     const { el, dispatch } = await renderDetailRail(enrichment({ ocrText: "secret contents" }));
 
-    const ocrTab = Array.from(el.querySelectorAll("button")).find((candidate) =>
-      candidate.textContent?.startsWith("OCR")
-    ) as HTMLButtonElement | undefined;
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab).not.toBeNull();
     await act(async () => {
       ocrTab?.click();
       await Promise.resolve();
@@ -620,16 +622,446 @@ describe("DetailRail", () => {
     expect(titleInput?.value).toBe("Prior accepted headline");
   });
 
-  test("OCR and Detail tabs are linked by aria-controls / aria-labelledby", async () => {
+  test("vertical activity bar renders Info / OCR / Chat tabs with role=tab", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "some text" }));
+
+    const infoTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-info"]'
+    );
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    const chatTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    expect(infoTab).not.toBeNull();
+    expect(ocrTab).not.toBeNull();
+    expect(chatTab).not.toBeNull();
+    expect(infoTab?.getAttribute("role")).toBe("tab");
+    expect(ocrTab?.getAttribute("role")).toBe("tab");
+    expect(chatTab?.getAttribute("role")).toBe("tab");
+
+    // Pinned by default — the Info panel renders as a region with role
+    // tabpanel; the active tab is Info on first paint.
+    const tabPanels = el.querySelectorAll('[role="tabpanel"]');
+    expect(tabPanels.length).toBeGreaterThanOrEqual(1);
+
+    // Persistent footer that hosts the L/M/H copy row + actions never
+    // disappears across tab switches.
+    expect(el.querySelector('[data-testid="psl-right-footer"]')).not.toBeNull();
+  });
+
+  test("OCR tab shows a notification badge when extracted text exists", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "snap content" }));
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).not.toBeNull();
+  });
+
+  test("OCR tab badge is absent when there is no extracted text", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: null }));
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.querySelector(".rab__act-badge")).toBeNull();
+  });
+
+  test("grid → focus mode transition does not violate Rules of Hooks", async () => {
+    // Regression: a prior iteration of DetailRail kept `useMemo(tabs)`
+    // BELOW the `view.kind === "grid"` early return. In grid mode the
+    // component bailed before the useMemo, so the hook count was N. On
+    // the user's first cell click the component re-rendered in focus
+    // mode, ran past the early return, and reached the useMemo for
+    // (N+1) hooks — React detects the mismatch ("Rendered more hooks
+    // than during the previous render"), aborts the parent commit, and
+    // the outer `.psl[data-mode]` attribute is stuck at "grid". The
+    // E2E surface caught it (library-source-filter.spec L373 hung on
+    // the focus-mode wait); this unit case locks the fix in by
+    // rendering DetailRail twice — first in grid mode (returns null
+    // after the same N hooks as before), then in focus mode (runs
+    // past the early returns and reaches the additional hooks). React
+    // must not warn or throw across the transition.
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    const errors: unknown[][] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+      origError(...args);
+    };
+
+    try {
+      // 1. Mount in grid mode — DetailRail returns null after the
+      //    early return; hooks execute up to that point.
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "grid",
+              selectedRecordId: null,
+              returnAnchor: null
+            } as LibraryView,
+            record
+          })
+        );
+        await Promise.resolve();
+      });
+
+      // 2. Transition to focus mode on the same component instance —
+      //    DetailRail now renders past the early returns. The hook
+      //    count MUST match the grid-mode render exactly. If it
+      //    doesn't, React fires a console.error with the "Rendered
+      //    more/fewer hooks" message AND aborts the render.
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "focus",
+              selectedRecordId: record.id,
+              returnAnchor: { scrollTop: 0, cellId: record.id }
+            },
+            record
+          })
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Component rendered past the early returns — the activity bar
+      // icons appear, the rail is in its full focus-mode shape.
+      expect(
+        container?.querySelector('[data-testid="psl-right-tab-info"]')
+      ).not.toBeNull();
+
+      // No "Rendered more hooks" or "Rendered fewer hooks" warning
+      // from React in either render phase.
+      const hookCountErrors = errors.filter((args) =>
+        args.some(
+          (a: unknown) =>
+            typeof a === "string" &&
+            (a.includes("Rendered more hooks") ||
+              a.includes("Rendered fewer hooks") ||
+              a.includes("change in the order of Hooks"))
+        )
+      );
+      expect(hookCountErrors).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+  });
+
+  test("controlled mode: parent's pinned + activeTab props win over local state", async () => {
+    // When Library threads `pinned` + `onPinChange` + `activeTab` +
+    // `onActiveTabChange` in, the rail is controlled by Library — its
+    // own local state and settings:read effect are bypassed. The
+    // title-bar LayoutToggleButtons and the rail then share a single
+    // source of truth without cross-component broadcasts.
+    const onPinChange = vi.fn();
+    const onActiveTabChange = vi.fn();
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange,
+          activeTab: "ocr",
+          onActiveTabChange
+        })
+      );
+      await Promise.resolve();
+    });
+
+    // OCR tab is active (parent set it via prop).
+    const ocrTab = container.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    expect(ocrTab?.getAttribute("aria-selected")).toBe("true");
+
+    // Click chat tab → onActiveTabChange fires, local state does NOT
+    // hold the new value (parent owns it).
+    const chatTab = container.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    await act(async () => {
+      chatTab?.click();
+      await Promise.resolve();
+    });
+    expect(onActiveTabChange).toHaveBeenCalledWith("chat");
+    // Active tab is still "ocr" because the parent hasn't re-rendered
+    // with the new value yet (test never updates the props).
+    expect(
+      container.querySelector('[data-testid="psl-right-tab-ocr"]')?.getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+  });
+
+  test("controlled mode: pin and tab pairs are independently controllable", async () => {
+    // Pass ONLY the pin pair. The tab pair stays local-state-only —
+    // a controlled pin caller (e.g. Library's title-bar toggle)
+    // doesn't have to also take over tab persistence.
+    const onPinChange = vi.fn();
+    installFakeApi(enrichment({ ocrText: "x" }));
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange
+          // intentionally omit activeTab + onActiveTabChange
+        })
+      );
+      await Promise.resolve();
+    });
+    // Pin pair is controlled: clicking the active tab routes through
+    // the parent's onPinChange, not local state.
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(onPinChange).toHaveBeenLastCalledWith(false);
+
+    // Tab pair is uncontrolled: clicking the OCR tab updates local
+    // state and the rail re-renders with OCR active.
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-ocr"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    // OCR tab is now selected (local state moved). Pin remains
+    // whatever the controlled prop says — still true, since the
+    // parent didn't re-render.
+    expect(
+      container?.querySelector('[data-testid="psl-right-tab-ocr"]')?.getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+  });
+
+  test("partial control (pinned without onPinChange) warns via console.warn", async () => {
+    // The "controlled" contract requires BOTH halves of a pair. The
+    // previous all-or-nothing isControlled silently degraded a
+    // half-passed caller to fully-uncontrolled — the user-facing
+    // symptom would be "I passed pinned=false but the rail is still
+    // open". We now warn loudly during dev so the bug surfaces.
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      const msg = args.map((a) => String(a)).join(" ");
+      warnings.push(msg);
+    };
+
+    try {
+      installFakeApi(enrichment());
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => {
+        root?.render(
+          createElement(DetailRail, {
+            view: {
+              kind: "focus",
+              selectedRecordId: record.id,
+              returnAnchor: { scrollTop: 0, cellId: record.id }
+            } as LibraryView,
+            record,
+            pinned: true
+            // intentionally omit onPinChange to trigger the warning
+          })
+        );
+        await Promise.resolve();
+      });
+      const pinPartial = warnings.find((m) =>
+        m.includes("partial pin control")
+      );
+      expect(pinPartial).toBeDefined();
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  test("uncontrolled: user click before settings:read resolves is preserved (race guard)", async () => {
+    // Race: settings:read is a real IPC round-trip (~10-50ms). If
+    // the user clicks the toggle during the in-flight window, the
+    // resolved settings value would overwrite their click without
+    // the `initialReadDoneRef` gate — surfacing as "I clicked and
+    // nothing happened." This spec wires a deferred settings:read
+    // mock so we can interleave the click before resolution.
+    const accepted = enrichment();
+    let resolveSettingsRead: (value: unknown) => void = () => undefined;
+    const settingsReadPromise = new Promise<unknown>((resolve) => {
+      resolveSettingsRead = resolve;
+    });
+
+    const dispatch = vi.fn(async (name: string) => {
+      if (name === "settings:read") return settingsReadPromise;
+      if (name === "codex:enrichment") return { ok: true, value: accepted };
+      if (name === "capture:presetMetrics") {
+        return { ok: true, value: { metrics: [] } };
+      }
+      return { ok: true, value: undefined };
+    });
+    (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
+      dispatch,
+      on: () => () => undefined,
+      startCaptureDrag: () => undefined
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // Mount uncontrolled — settings:read in-flight, default pinned=true.
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record
+        })
+      );
+      await Promise.resolve();
+    });
+
+    // Default pinned=true ⇒ pinned panel is rendered.
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).not.toBeNull();
+
+    // User clicks the active Info tab BEFORE settings:read resolves.
+    // The rail demotes to hover-pop (unpinned).
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-hover"]')
+    ).not.toBeNull();
+
+    // Now settings:read resolves with the OPPOSITE saved value (pinned=true).
+    // The race-guard must bail before re-applying the saved value.
+    await act(async () => {
+      resolveSettingsRead({
+        ok: true,
+        value: {
+          library: {
+            detailRail: { pinned: true, lastSelectedTab: "info" }
+          }
+        }
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // User's click survives — the rail stays unpinned.
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).toBeNull();
+  });
+
+  test("controlled mode: clicking active tab fires onPinChange(false), not local state", async () => {
+    const onPinChange = vi.fn();
+    installFakeApi(enrichment());
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record,
+          pinned: true,
+          onPinChange,
+          activeTab: "info",
+          onActiveTabChange: vi.fn()
+        })
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(onPinChange).toHaveBeenLastCalledWith(false);
+  });
+
+  test("Chat tab opens the ChatPanel surface", async () => {
     const { el } = await renderDetailRail(enrichment());
+    const chatTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-chat"]'
+    );
+    expect(chatTab).not.toBeNull();
+    await act(async () => {
+      chatTab?.click();
+      await Promise.resolve();
+    });
+    expect(el.querySelector('[data-testid="chat-panel"]')).not.toBeNull();
+  });
 
-    const detailTab = el.querySelector("#psl-tab-detail");
-    const ocrTab = el.querySelector("#psl-tab-ocr");
-    expect(detailTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-detail");
-    expect(ocrTab?.getAttribute("aria-controls")).toBe("psl-tabpanel-ocr");
+  test("ARIA: active tab carries aria-selected + aria-controls pointing at the tabpanel id", async () => {
+    const { el } = await renderDetailRail(enrichment({ ocrText: "some text" }));
+    const infoTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-info"]'
+    );
+    const ocrTab = el.querySelector<HTMLButtonElement>(
+      '[data-testid="psl-right-tab-ocr"]'
+    );
+    // Default tab is Info — it should be the only one with
+    // aria-selected="true". aria-pressed must be absent across the
+    // board (toggle-button semantic is wrong for role=tab).
+    expect(infoTab?.getAttribute("aria-selected")).toBe("true");
+    expect(ocrTab?.getAttribute("aria-selected")).toBe("false");
+    expect(infoTab?.getAttribute("aria-pressed")).toBeNull();
 
-    const panel = el.querySelector('[role="tabpanel"]');
-    expect(panel?.getAttribute("id")).toBe("psl-tabpanel-detail");
-    expect(panel?.getAttribute("aria-labelledby")).toBe("psl-tab-detail");
+    // aria-controls links the tab to its tabpanel by DOM id. Both
+    // tabs reference the SAME id (single panel rendered at a time).
+    const panel = el.querySelector('[data-testid="psl-right-panel-pinned"]');
+    const panelId = panel?.getAttribute("id") ?? "";
+    expect(panelId.length).toBeGreaterThan(0);
+    expect(infoTab?.getAttribute("aria-controls")).toBe(panelId);
+    expect(ocrTab?.getAttribute("aria-controls")).toBe(panelId);
+    // The panel itself must be a tabpanel and labelled by the active
+    // tab's id (so screen readers announce "Info, tab panel").
+    expect(panel?.getAttribute("role")).toBe("tabpanel");
+    expect(panel?.getAttribute("aria-labelledby")).toBe(
+      infoTab?.getAttribute("id")
+    );
   });
 });

@@ -25,6 +25,7 @@ import type {
   EditorSidebarPanel,
   EditorSidebarSettings,
   EditorToolStyles,
+  LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
   RectToolStyle,
@@ -40,7 +41,8 @@ import {
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
-  isEditorSidebarPanel
+  isEditorSidebarPanel,
+  isLibrarySidebarTab
 } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
@@ -125,7 +127,21 @@ export function defaultSettings(): Settings {
       includeMicrophone: false,
       lastRoutedPermissionFingerprint: ""
     },
-    editor: defaultEditorSettings()
+    editor: defaultEditorSettings(),
+    library: defaultLibrarySettings()
+  };
+}
+
+/** Library preferences default. Currently just the DetailRail
+ *  right-bar state. Pinned + Info-first is the more discoverable
+ *  default in Library (vs. the editor's collapsed default) — Library
+ *  users mostly come to read details, not to draw on canvas. */
+function defaultLibrarySettings(): Settings["library"] {
+  return {
+    detailRail: {
+      pinned: true,
+      lastSelectedTab: "info"
+    }
   };
 }
 
@@ -464,7 +480,34 @@ function parseV1(raw: unknown): Settings | null {
     // to defaults for any missing nested field so the in-memory shape
     // is always complete and the next write rewrites the file with the
     // full block. No `schemaVersion` bump per the additive convention.
-    editor: parseEditorSettings(raw.editor, defaults.editor)
+    editor: parseEditorSettings(raw.editor, defaults.editor),
+    // `library.*` is additive too — older files won't have it. Falls
+    // through to defaultLibrarySettings() (pinned + Info) when missing.
+    library: parseLibrarySettings(raw.library, defaults.library)
+  };
+}
+
+function parseLibrarySettings(
+  raw: unknown,
+  defaults: Settings["library"]
+): Settings["library"] {
+  if (!isRecord(raw)) return defaults;
+  const detailRaw = raw.detailRail;
+  if (!isRecord(detailRaw)) return defaults;
+  // Route the on-disk tab value through the shared type guard so the
+  // accepted set has a single source of truth (the protocol's
+  // LIBRARY_SIDEBAR_TABS array). A new tab id only has to be added in
+  // one place to round-trip through settings.
+  const pickedTab: LibrarySidebarTab = isLibrarySidebarTab(
+    detailRaw.lastSelectedTab
+  )
+    ? detailRaw.lastSelectedTab
+    : defaults.detailRail.lastSelectedTab;
+  return {
+    detailRail: {
+      pinned: pickBoolean(detailRaw.pinned, defaults.detailRail.pinned),
+      lastSelectedTab: pickedTab
+    }
   };
 }
 
@@ -796,7 +839,20 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),
     recording: mergeSection(current.recording, patch.recording),
-    editor: mergeEditor(current.editor, patch.editor)
+    editor: mergeEditor(current.editor, patch.editor),
+    library: mergeLibrary(current.library, patch.library)
+  };
+}
+
+/** Library merge is one level deeper than the flat-shallow mergeSection
+ *  because `detailRail` is itself an object. Mirrors `mergeEditor`. */
+function mergeLibrary(
+  current: Settings["library"],
+  patch: SettingsPatch["library"]
+): Settings["library"] {
+  if (patch === undefined) return current;
+  return {
+    detailRail: mergeSection(current.detailRail, patch.detailRail)
   };
 }
 

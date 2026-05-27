@@ -11,10 +11,12 @@ import {
 import type {
   CaptureRecord,
   LibraryCursor,
+  LibrarySidebarTab,
   PwrSnapError,
   Res,
   Result,
-  ScrollProbeRequest
+  ScrollProbeRequest,
+  Settings
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
@@ -35,6 +37,8 @@ import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
 import { useHotkeys } from "../shared/useHotkeys";
+import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
+import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
@@ -263,6 +267,99 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       setLeftRevealed(false);
       leftHideTimerRef.current = undefined;
     }, 200);
+  }, []);
+
+  // Right-rail (DetailRail) pin + active-tab state. Lifted to the
+  // Library level so the title-bar LayoutToggleButtons can drive the
+  // rail without crossing component boundaries or routing through
+  // Settings broadcasts. Seeded once from `settings:read`; each user
+  // write also fires `settings:write` so the choice survives relaunch.
+  //
+  // `settingsHydrated` gates the data-right attribute below — without
+  // it, a fresh launch paints with the in-memory default (pinned:
+  // true) for the ~50ms before settings:read resolves, then snaps to
+  // the user's saved choice. Worth a flag to avoid the visual stutter.
+  //
+  // `userTouchedRailRef` guards against a click-before-hydrate race:
+  // settings:read is a real IPC round-trip and can take 10–50ms. If
+  // the user presses ⌘⌥B (or clicks the toggle chip) within that
+  // window, their click moves the state to the OPPOSITE of the saved
+  // value. Without the gate, the settings:read resolution would then
+  // overwrite the user's choice — surfacing as "I clicked the toggle
+  // and nothing happened." The ref is mutated synchronously by every
+  // user-driven setter so the in-flight settings read knows to bail.
+  const [rightPinned, setRightPinnedState] = useState<boolean>(true);
+  const [rightActiveTab, setRightActiveTabState] =
+    useState<LibrarySidebarTab>("info");
+  const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
+  const userTouchedRailRef = useRef<boolean>(false);
+  // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
+  // compute `!current` without subscribing to the state and triggering
+  // a callback-identity churn (which would make the
+  // LayoutToggleButtons keydown listener re-attach on every toggle).
+  // The companion effect updates the ref whenever React commits a new
+  // value; reads from the ref are always one render fresh.
+  const rightPinnedRef = useRef<boolean>(true);
+  useEffect(() => {
+    rightPinnedRef.current = rightPinned;
+  }, [rightPinned]);
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:read", {}).then((result) => {
+      if (cancelled) return;
+      if (result.ok && !userTouchedRailRef.current) {
+        const rail = (result.value as Settings | undefined)?.library
+          ?.detailRail;
+        if (rail !== undefined) {
+          setRightPinnedState(rail.pinned);
+          setRightActiveTabState(rail.lastSelectedTab);
+        }
+      }
+      // Always mark hydrated — even on read failure / user-touched
+      // bail — so the rail doesn't stay in its pre-hydration phantom
+      // state forever. Mirror of the same pattern in DetailRail's
+      // uncontrolled-mode read.
+      setSettingsHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // All three setters mark `userTouchedRailRef` synchronously BEFORE
+  // any state write. The settings:read resolution checks this flag
+  // and bails — see the race-guard comment above. The setters use
+  // direct value writes (not functional `setState((prev) => …)`)
+  // because the dispatch must run OUTSIDE the React state-setter
+  // callback; functional setters are meant to be pure and StrictMode
+  // double-invokes them in dev, which would fire `settings:write`
+  // twice per toggle.
+  const setRightPinned = useCallback((next: boolean): void => {
+    userTouchedRailRef.current = true;
+    setRightPinnedState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { pinned: next } }
+    });
+  }, []);
+  const setRightActiveTab = useCallback((next: LibrarySidebarTab): void => {
+    userTouchedRailRef.current = true;
+    setRightActiveTabState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { lastSelectedTab: next } }
+    });
+  }, []);
+  const toggleLeftPinned = useCallback((): void => {
+    setLeftPinned((v) => !v);
+  }, []);
+  // Reads `rightPinnedRef.current` (synced via the effect above) so
+  // the toggle has stable identity — no `rightPinned` in deps. The
+  // chord listener in LayoutToggleButtons attaches once on mount.
+  const toggleRightPinned = useCallback((): void => {
+    userTouchedRailRef.current = true;
+    const next = !rightPinnedRef.current;
+    setRightPinnedState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { pinned: next } }
+    });
   }, []);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
@@ -1371,7 +1468,24 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const leftState = leftPinned ? "pinned" : leftRevealed ? "peek" : "collapsed";
 
   return (
-    <div className="psl" data-mode={view.kind} data-left={leftState}>
+    <div
+      className="psl"
+      data-mode={view.kind}
+      data-left={leftState}
+      // `data-right` controls the right column width (38px collapsed
+      // vs 360px pinned) AND the footer/overflow rules. In Grid mode
+      // DetailRail returns null, so the column is 0 either way and
+      // emitting the attribute would just confuse readers. Likewise,
+      // skip it until settings:read resolves so the rail doesn't
+      // paint at the wrong width for ~50ms on cold start.
+      data-right={
+        !settingsHydrated || view.kind === "grid"
+          ? undefined
+          : rightPinned
+            ? "pinned"
+            : "collapsed"
+      }
+    >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
           <div className="psl__title">
@@ -1430,6 +1544,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               defaultValue=""
             />
           </div>
+          {/* VS Code-style layout chips — toggle the primary (left)
+              and secondary (right) side bars from the title bar. Same
+              visual language as `Toggle Primary Side Bar (⌘B)` /
+              `Toggle Secondary Side Bar (⌘⌥B)`. The component owns
+              the keyboard chord; clicks flip the parent state which
+              also persists to Settings via setRightPinned. */}
+          <LayoutToggleButtons
+            primaryOpen={leftPinned}
+            secondaryOpen={rightPinned}
+            onTogglePrimary={toggleLeftPinned}
+            onToggleSecondary={toggleRightPinned}
+            testIdPrefix="psl-layout-toggle"
+          />
           {/* Settings gear — opens the Settings window. Sits just
               left of Quick Capture so the right side reads as
               "configure · capture". */}
@@ -1505,23 +1632,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       >
         <div className="psl__left-section psl__left-section--top">
           <span>Library</span>
-          {/* In-panel pin toggle. Visible whenever the panel is on
-              screen (pinned OR peeking) so the user can pin from
-              either state. Hidden in `collapsed` because the panel
-              itself is offscreen and the spine button takes over. */}
-          {(leftPinned || leftRevealed) && (
-            <button
-              type="button"
-              className="psl__left-pin"
-              aria-label={leftPinned ? "Unpin sidebar" : "Pin sidebar"}
-              title={leftPinned ? "Unpin sidebar (collapse to spine)" : "Pin sidebar"}
-              onClick={() => setLeftPinned((v) => !v)}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d={leftPinned ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"} />
-              </svg>
-            </button>
-          )}
+          {/* In-panel pin toggle removed — the title-bar
+              LayoutToggleButtons chip is now the single, consistent
+              control for both the left + right side bars (mirrors
+              VS Code's primary / secondary side bar pattern). The
+              spine button at `.psl__left-spine` still surfaces when
+              the panel is collapsed entirely; both the chip and the
+              spine route through `setLeftPinned` so all three entry
+              points stay in sync. */}
         </div>
         <button
           className={"psl__nav" + (activeFilter.kind === "all" ? " is-active" : "")}
@@ -1818,7 +1936,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           focus + reel modes. Lives in the third grid column
           (`grid-template-columns: 220px 1fr 360px` when
           data-mode is focus/reel, collapsed to 0 in grid mode). */}
-      <DetailRail view={view} record={selectedRecord} copyPulses={copyPulses} />
+      <DetailRail
+        view={view}
+        record={selectedRecord}
+        copyPulses={copyPulses}
+        pinned={rightPinned}
+        onPinChange={setRightPinned}
+        activeTab={rightActiveTab}
+        onActiveTabChange={setRightActiveTab}
+      />
 
       <footer className="psl__status">
         <div className="psl__status-l">

@@ -140,7 +140,8 @@ function makeSettings(matchingTextEnabled = true): Settings {
       coachmarks: { stoplightSeen: true },
       matchingText: { enabled: matchingTextEnabled },
       sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
-    }
+    },
+    library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
   };
 }
 

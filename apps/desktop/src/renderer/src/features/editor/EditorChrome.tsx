@@ -33,12 +33,12 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode
 } from "react";
 import type { EditorSidebarPanel, Settings } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+import { isPrimaryAccel } from "../shared/keyboard";
 
 export type EditorPanel = EditorSidebarPanel;
 
@@ -88,8 +88,8 @@ const ACTIVITY_TOP: ReadonlyArray<ActivityButtonDef> = [
   {
     id: "chat",
     label: "Chat",
-    title: "Chat with AI — available in Phase 7",
-    disabled: true,
+    title: "Chat with Codex",
+    disabled: false,
     icon: (
       <svg
         viewBox="0 0 24 24"
@@ -221,18 +221,6 @@ function isHeadingTowardPanel(
     projectedY >= rect.top - 24 &&
     projectedY <= rect.bottom + 24
   );
-}
-
-/**
- * Mac vs non-Mac modifier detection. The keyboard shortcuts (⌘\ ⌘1
- * ⌘2 ⌘3) use Cmd on macOS and Ctrl elsewhere — matches the rest of
- * the renderer's chord conventions.
- */
-function isPrimaryAccel(event: ReactKeyboardEvent | KeyboardEvent): boolean {
-  if (typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform)) {
-    return event.metaKey === true;
-  }
-  return event.ctrlKey === true;
 }
 
 export function EditorChrome({

@@ -66,7 +66,8 @@ const baseSettings: Settings = {
     coachmarks: { stoplightSeen: false },
     matchingText: { enabled: true },
     sidebar: { pinned: false, lastSelectedPanel: "toolConfig" }
-  }
+  },
+  library: { detailRail: { pinned: true, lastSelectedTab: "info" } }
 };
 
 const baseSecrets = {

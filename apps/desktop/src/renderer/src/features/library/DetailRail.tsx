@@ -9,18 +9,44 @@
 // affordances. The Codex status surfaces through the shared
 // CodexStatusPill so "thinking" looks identical on both surfaces.
 //
-// Tabs: Detail (current editor) + OCR (its own panel for the often-
-// lengthy extracted text). The placeholder "History" tab is gone — when
-// run-history needs surfacing we'll add it back as a real tab.
+// Tabs are now vertical (VS-Code-style activity bar on the right edge)
+// with three surfaces: Info (the prior "Detail" panel), OCR, and Chat
+// (placeholder for the upcoming Codex dynamic-tools wiring). The bar
+// can be pinned open or auto-hidden — same hover-pop pattern the
+// editor's chrome uses. The L/M/H copy row + secondary action row sit
+// in a persistent footer beneath the bar so a tab switch (or a hover-
+// pop closing) never strands the user without copy/file/trash access.
+//
+// Pinned + last-selected state is per-window local state — settings
+// persistence can land later if cross-window memory becomes desirable.
 
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement
+} from "react";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { CaptureEnrichment, CaptureRecord, SuggestedTag } from "@pwrsnap/shared";
+import type {
+  CaptureEnrichment,
+  CaptureRecord,
+  LibrarySidebarTab,
+  Settings,
+  SuggestedTag
+} from "@pwrsnap/shared";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { AppTag } from "../shared/AppIcons";
+import {
+  RightActivityBar,
+  type RightActivityTab
+} from "../shared/RightActivityBar";
+import "../shared/RightActivityBar.css";
+import { ChatPanel } from "../editor/panels/ChatPanel";
 import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
@@ -32,21 +58,159 @@ const COPY_LABELS: Record<(typeof COPY_PRESETS)[number], string> = {
   high: "High"
 };
 
-type SidebarTab = "detail" | "ocr";
+type SidebarTab = LibrarySidebarTab;
 
 export type DetailRailProps = {
   readonly view: LibraryView;
   readonly record: CaptureRecord | null;
   readonly copyPulses?: Readonly<Record<CopyPreset, number>>;
+  /** Controlled pin state — when both `pinned` and `onPinChange` are
+   *  provided the rail is "controlled" by the parent (Library top-bar
+   *  layout toggle owns the truth + settings persistence). When
+   *  omitted, the rail falls back to its own local state seeded from
+   *  Settings on mount. Symmetric prop pattern to the Editor's
+   *  controlled mode. */
+  readonly pinned?: boolean;
+  readonly onPinChange?: (next: boolean) => void;
+  /** Controlled active-tab — same shape as `pinned`. */
+  readonly activeTab?: LibrarySidebarTab;
+  readonly onActiveTabChange?: (next: LibrarySidebarTab) => void;
 };
 
-export function DetailRail({ view, record, copyPulses }: DetailRailProps): ReactElement | null {
+export function DetailRail({
+  view,
+  record,
+  copyPulses,
+  pinned: pinnedProp,
+  onPinChange,
+  activeTab: activeTabProp,
+  onActiveTabChange
+}: DetailRailProps): ReactElement | null {
   const renderMetrics = usePresetRenderMetrics(
     record?.id ?? null,
     record?.edits_version ?? null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
-  const [activeTab, setActiveTab] = useState<SidebarTab>("detail");
+  // Active tab + pin state. The pin pair and the tab pair are
+  // controlled INDEPENDENTLY — a caller can control just the pin
+  // (e.g. drive it from a title-bar toggle) while letting the rail
+  // own which tab is active, or vice versa. The previous
+  // all-or-nothing `isControlled` check silently degraded a partial
+  // pass to fully-uncontrolled, which was a footgun: passing
+  // `pinned` without `onPinChange` made the prop a no-op. Independent
+  // pairs match React's standard controlled-input idiom (`value` +
+  // `onChange` per input).
+  //
+  // Pair coherence is checked at dev-time: passing one half of a
+  // pair without the other emits a console.warn so a caller that
+  // intended to control sees the bug instead of silent fallback.
+  const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
+  const [localPinned, setLocalPinned] = useState<boolean>(true);
+  const initialReadDoneRef = useRef<boolean>(false);
+
+  const isPinControlled =
+    pinnedProp !== undefined && onPinChange !== undefined;
+  const isTabControlled =
+    activeTabProp !== undefined && onActiveTabChange !== undefined;
+  const pinned = isPinControlled ? pinnedProp : localPinned;
+  const activeTab = isTabControlled ? activeTabProp : localActiveTab;
+
+  // Skip the settings read entirely when BOTH pairs are controlled —
+  // the parent owns the truth and handles its own hydration. When
+  // either pair is uncontrolled the rail still owns that half's
+  // state and reads it from Settings on mount.
+  const fullyControlled = isPinControlled && isTabControlled;
+  useEffect(() => {
+    if (fullyControlled) return undefined;
+    let cancelled = false;
+    void dispatch("settings:read", {}).then((result) => {
+      if (cancelled) return;
+      if (initialReadDoneRef.current) return; // user already touched it
+      if (!result.ok) return;
+      // settings:read returns a fully-shaped Settings at runtime
+      // (parseV1 fills any missing nested fields with defaults), but
+      // renderer test mocks frequently return `{ ok: true, value:
+      // undefined }` for verbs they don't explicitly stub. Keep an
+      // optional chain on `result.value` itself so a mock that
+      // forgets to wire settings:read doesn't crash the panel.
+      const rail = (result.value as Settings | undefined)?.library
+        ?.detailRail;
+      if (rail === undefined) return;
+      // Only hydrate the halves we still own.
+      if (!isPinControlled) setLocalPinned(rail.pinned);
+      if (!isTabControlled) setLocalActiveTab(rail.lastSelectedTab);
+      initialReadDoneRef.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fullyControlled, isPinControlled, isTabControlled]);
+
+  // Dev-only coherence warning. We catch:
+  //   • `pinned` without `onPinChange` (or vice versa)
+  //   • `activeTab` without `onActiveTabChange` (or vice versa)
+  // Each is a likely bug — the caller probably intended to control
+  // that pair and forgot the handler half. Gated on
+  // `import.meta.env.DEV` so the entire block tree-shakes out of
+  // production bundles AND so React StrictMode's double-invoke
+  // doesn't produce duplicate console output during dev.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const pinHalf = pinnedProp !== undefined;
+    const pinHandler = onPinChange !== undefined;
+    if (pinHalf !== pinHandler) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[DetailRail] partial pin control — pass both `pinned` and `onPinChange` together (or neither)"
+      );
+    }
+    const tabHalf = activeTabProp !== undefined;
+    const tabHandler = onActiveTabChange !== undefined;
+    if (tabHalf !== tabHandler) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[DetailRail] partial tab control — pass both `activeTab` and `onActiveTabChange` together (or neither)"
+      );
+    }
+  }, [pinnedProp, onPinChange, activeTabProp, onActiveTabChange]);
+
+  // Inside the branches below TypeScript can't narrow `onPinChange`
+  // through the separately-computed `isPinControlled`, so we check
+  // the handler directly. The READ path above uses `isPinControlled`
+  // (both halves must agree to USE pinnedProp); the WRITE path here
+  // routes through the handler whenever it's defined — even if the
+  // controlled half is missing the value, the user's click should
+  // still surface to the parent rather than silently dropping. The
+  // partial-control warning above fires first to surface the bug.
+  const writePinned = useCallback(
+    (next: boolean): void => {
+      if (onPinChange !== undefined) {
+        onPinChange(next);
+        return;
+      }
+      initialReadDoneRef.current = true;
+      setLocalPinned(next);
+      void dispatch("settings:write", {
+        library: { detailRail: { pinned: next } }
+      });
+    },
+    [onPinChange]
+  );
+
+  const writeActiveTab = useCallback(
+    (next: SidebarTab): void => {
+      if (onActiveTabChange !== undefined) {
+        onActiveTabChange(next);
+        return;
+      }
+      initialReadDoneRef.current = true;
+      setLocalActiveTab(next);
+      void dispatch("settings:write", {
+        library: { detailRail: { lastSelectedTab: next } }
+      });
+    },
+    [onActiveTabChange]
+  );
 
   useEffect(() => {
     if (record === null) {
@@ -77,6 +241,45 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     };
   }, [record?.id]);
 
+  // Tabs are memo'd UNCONDITIONALLY (Rules of Hooks: every render
+  // must call the same hooks in the same order). The original
+  // implementation kept `useMemo` BELOW the `view.kind === "grid"`
+  // / `record === null` early returns, which silently broke React's
+  // hook-count invariant the moment the component transitioned from
+  // grid (returns null after fewer hooks) to focus (continues past
+  // the early returns and reaches the useMemo). React detects the
+  // mismatch and bails the render — the parent commit never
+  // applies, the outer `.psl[data-mode]` stays at "grid", and any
+  // E2E that exercises the cell-click → focus transition hangs on
+  // the data-mode assertion (caught via library-source-filter.spec
+  // L373 on CI). Compute tabs up front; the early returns below
+  // just gate rendering, not hook-count.
+  const hasOcrText = (enrichment?.ocrText ?? "").length > 0;
+  const tabs: ReadonlyArray<RightActivityTab<SidebarTab>> = useMemo(
+    () => [
+      {
+        id: "info",
+        label: "Info",
+        title: "Info",
+        icon: INFO_ICON
+      },
+      {
+        id: "ocr",
+        label: "OCR",
+        title: hasOcrText ? "OCR — extracted text ready" : "OCR",
+        badge: hasOcrText,
+        icon: OCR_ICON
+      },
+      {
+        id: "chat",
+        label: "Chat",
+        title: "Chat with Codex",
+        icon: CHAT_ICON
+      }
+    ],
+    [hasOcrText]
+  );
+
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.
   if (view.kind === "grid") return null;
@@ -104,45 +307,15 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     titleAccepted &&
     descriptionAccepted;
 
-  return (
-    <aside className="psl__right" aria-label="Capture details">
-      <div className="psl__right-tabs" role="tablist">
-        <button
-          id="psl-tab-detail"
-          className={"psl__right-tab" + (activeTab === "detail" ? " is-active" : "")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "detail"}
-          aria-controls="psl-tabpanel-detail"
-          onClick={() => setActiveTab("detail")}
-        >
-          Detail
-        </button>
-        <button
-          id="psl-tab-ocr"
-          className={"psl__right-tab" + (activeTab === "ocr" ? " is-active" : "")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "ocr"}
-          aria-controls="psl-tabpanel-ocr"
-          onClick={() => setActiveTab("ocr")}
-        >
-          OCR
-          {enrichment?.ocrText ? (
-            <span className="psl__right-tab-badge" aria-hidden>
-              •
-            </span>
-          ) : null}
-        </button>
-      </div>
-
-      <div
-        className="psl__right-body"
-        role="tabpanel"
-        id={activeTab === "detail" ? "psl-tabpanel-detail" : "psl-tabpanel-ocr"}
-        aria-labelledby={activeTab === "detail" ? "psl-tab-detail" : "psl-tab-ocr"}
-      >
-        {activeTab === "detail" ? (
+  // renderPanel returns the panel BODY only — the outer role="tabpanel"
+  // wrapper (with id + aria-labelledby) is supplied by RightActivityBar
+  // so the tab→panel aria-controls link is single-source-of-truth. Two
+  // nested role="tabpanel" elements would confuse assistive tech about
+  // which container is the "real" panel.
+  const renderPanel = (id: SidebarTab): ReactElement => {
+    if (id === "info") {
+      return (
+        <div className="psl__right-body">
           <DetailTab
             record={record}
             enrichment={enrichment}
@@ -154,14 +327,39 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
             allDraftsAccepted={allDraftsAccepted}
             onEnrichmentUpdate={setEnrichment}
           />
-        ) : (
+        </div>
+      );
+    }
+    if (id === "ocr") {
+      return (
+        <div className="psl__right-body">
           <OcrTab record={record} enrichment={enrichment} />
-        )}
+        </div>
+      );
+    }
+    return (
+      <div className="psl__right-body psl__right-body--chat">
+        <ChatPanel captureId={record.id} />
+      </div>
+    );
+  };
 
-        {/* L/M/H copy row + actions live OUTSIDE the tab body so they
-            never disappear with a tab switch. The OCR tab is content-
-            only; the user still wants to drag / copy / open while
-            reading text. */}
+  return (
+    <aside className="psl__right psl__right--vertical" aria-label="Capture details">
+      <div className="psl__right-content">
+        <RightActivityBar
+          tabs={tabs}
+          activeTab={activeTab}
+          pinned={pinned}
+          onTabChange={writeActiveTab}
+          onPinChange={writePinned}
+          renderPanel={renderPanel}
+          testIdPrefix="psl-right"
+          pinnedWidthPx={320}
+        />
+      </div>
+
+      <div className="psl__right-footer" data-testid="psl-right-footer">
         <div>
           <div className="psl__copy-eyebrow">
             <span>Copy to clipboard</span>
@@ -271,12 +469,6 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
                 </svg>
                 File
               </button>
-              {/* "Editor" button opens a STANDALONE editor window for
-                  the capture. When the rail is showing in Focus or
-                  Reel mode, the user is already in an editor view
-                  (chromeless Editor inside Library) — surfacing this
-                  button would suggest there's another editor to open,
-                  which is just a confusing duplicate. Hide it. */}
               {view.kind !== "focus" && view.kind !== "reel" && (
                 <button
                   type="button"
@@ -324,6 +516,50 @@ export function DetailRail({ view, record, copyPulses }: DetailRailProps): React
     </aside>
   );
 }
+
+const INFO_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8h0M11 12h1v5h1" />
+  </svg>
+);
+
+const OCR_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4 7V5h4M20 7V5h-4M4 17v2h4M20 17v2h-4" />
+    <path d="M7 9h10M7 13h10M7 17h6" />
+  </svg>
+);
+
+const CHAT_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M4 5h16v11H8l-4 4z" />
+  </svg>
+);
 
 type DetailTabProps = {
   readonly record: CaptureRecord;

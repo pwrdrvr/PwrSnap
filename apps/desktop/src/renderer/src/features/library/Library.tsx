@@ -33,6 +33,8 @@ import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
+import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { LibraryProjectView } from "./LibraryProjectView";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -369,6 +371,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // three-state-view-model-plan.md, Phase A. Tests at
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
+  const { projects: sizzleProjects } = useSizzleProjects();
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
@@ -1698,6 +1701,75 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </button>
         ))}
 
+        {sizzleProjects.length > 0 ? (
+          <>
+            <div className="psl__left-section psl__left-section--with-action">
+              <span>Sizzle Reels</span>
+              <button
+                type="button"
+                className="psl__left-section-action"
+                title="New Sizzle Reel"
+                onClick={() => {
+                  void dispatch("sizzle:create", { name: "Untitled Sizzle" }).then(
+                    (r) => {
+                      if (r.ok) {
+                        void dispatch("sizzle:open", { projectId: r.value.id });
+                      }
+                    }
+                  );
+                }}
+              >
+                +
+              </button>
+            </div>
+            {sizzleProjects.map((p) => {
+              const totalSec = p.scenes.reduce((acc, s) => {
+                const explicit = s.durationOverrideSec;
+                if (explicit !== null && explicit > 0) return acc + explicit;
+                if (s.mediaTrim !== null)
+                  return acc + (s.mediaTrim.endSec - s.mediaTrim.startSec);
+                return acc + 3; // rough estimate when unknown
+              }, 0);
+              const isActive =
+                view.kind === "project" && view.projectId === p.id;
+              return (
+                <button
+                  key={p.id}
+                  className={"psl__nav" + (isActive ? " is-active" : "")}
+                  onClick={() =>
+                    viewDispatch({ type: "OPEN_PROJECT", projectId: p.id })
+                  }
+                  title={`Open ${p.name} in Library project mode`}
+                >
+                  <span className="psl__nav-icon">
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="11"
+                      height="11"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                    >
+                      <rect x="3" y="6" width="14" height="12" rx="2" />
+                      <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                    </svg>
+                  </span>
+                  <span className="psl__nav-label">{p.name}</span>
+                  <span className="psl__nav-count">
+                    {p.scenes.length === 0
+                      ? "—"
+                      : totalSec >= 60
+                        ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
+                            .toString()
+                            .padStart(2, "0")}`
+                        : `${Math.round(totalSec)}s`}
+                  </span>
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+
         <div className="psl__left-section">Smart Filters</div>
         <button className="psl__nav">
           <span className="psl__nav-icon">
@@ -1730,11 +1802,21 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       </aside>
 
       <main className="psl__main">
+        {view.kind === "project" ? (
+          <LibraryProjectView
+            project={
+              sizzleProjects.find((p) => p.id === view.projectId) ?? null
+            }
+            onClose={() => viewDispatch({ type: "CLOSE_PROJECT" })}
+          />
+        ) : null}
         {/* Grid pane — visible in grid mode only via .psl[data-mode="grid"]
             CSS toggle. All day groups render (the prior .slice(0, 2)
             band-aid is removed per Phase B.10; perf hygiene of B.9 —
             loading="lazy" + content-visibility:auto on cells — carries
-            us through ~1000 captures without virtualization).
+            us through ~1000 captures without virtualization). Hidden
+            when in project mode (LibraryProjectView takes over the
+            main pane).
 
             Note: the filmstrip used to render here in a `.psl__reel-wrap`
             section, but as of Phase C/D it's passed into <Stage> as the

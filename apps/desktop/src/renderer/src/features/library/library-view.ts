@@ -34,7 +34,18 @@ export type LibraryView =
       readonly selectedRecordId: string;
       readonly returnAnchor: GridReturnAnchor;
     }
-  | { readonly kind: "reel"; readonly selectedRecordId: string };
+  | { readonly kind: "reel"; readonly selectedRecordId: string }
+  | {
+      /** In-library Sizzle Reel project mode. The grid filters to the
+       *  project's scenes (in order). `adding === true` flips the grid
+       *  back to the full library with +/✓ overlays so the user can
+       *  toggle scene membership inline. Clicking a project in the
+       *  sidebar dispatches OPEN_PROJECT; closing returns to grid. */
+      readonly kind: "project";
+      readonly projectId: string;
+      readonly selectedRecordId: string | null;
+      readonly adding: boolean;
+    };
 
 export type LibraryAction =
   /** User clicked a Grid cell — open Focus on that capture, capturing
@@ -73,7 +84,17 @@ export type LibraryAction =
       readonly type: "FILTER_CHANGED";
       readonly visibleIds: ReadonlyArray<string>;
       readonly resetReturnScroll?: boolean;
-    };
+    }
+  /** Sidebar Sizzle Reels row clicked. Transitions from any view to
+   *  `project` mode. The grid query layer swaps to library:listByIds
+   *  filtered by the project's scene captures. */
+  | { readonly type: "OPEN_PROJECT"; readonly projectId: string }
+  /** Project breadcrumb close button — returns to Grid. */
+  | { readonly type: "CLOSE_PROJECT" }
+  /** Project topbar "Add captures" toggle. Flips `adding` so the
+   *  grid query reverts to the full library while +/✓ overlays light
+   *  up on each cell. */
+  | { readonly type: "TOGGLE_ADDING" };
 
 export const initialLibraryView: LibraryView = {
   kind: "grid",
@@ -136,6 +157,10 @@ export function libraryReducer(state: LibraryView, action: LibraryAction): Libra
       // If we're in focus or reel and the current selection survives,
       // no transition. If it doesn't, bail to a clean grid state.
       if (state.kind === "grid") return state;
+      // Project mode: filter changes are the project's filter itself
+      // (visibleIds = the project's scene captures). Stay in project
+      // mode regardless of selection survival.
+      if (state.kind === "project") return state;
       const stillVisible =
         state.selectedRecordId !== null &&
         action.visibleIds.includes(state.selectedRecordId);
@@ -153,5 +178,21 @@ export function libraryReducer(state: LibraryView, action: LibraryAction): Libra
       }
       return { kind: "grid", selectedRecordId: null };
     }
+
+    case "OPEN_PROJECT":
+      return {
+        kind: "project",
+        projectId: action.projectId,
+        selectedRecordId: null,
+        adding: false
+      };
+
+    case "CLOSE_PROJECT":
+      if (state.kind !== "project") return state;
+      return { kind: "grid", selectedRecordId: null };
+
+    case "TOGGLE_ADDING":
+      if (state.kind !== "project") return state;
+      return { ...state, adding: !state.adding };
   }
 }

@@ -624,32 +624,51 @@ async function runInteractiveRecord(): Promise<void> {
   const overlapping = shouldRaise
     ? appWindowsOverlappingRect(selection.rect, selection.displayId)
     : [];
+  log.info("video-record post-commit focus policy", {
+    snappedWindowId: selection.snappedWindowId ?? null,
+    previousAppPid,
+    shouldRaise,
+    overlappingCount: overlapping.length,
+    overlappingTitles: overlapping.map((w) => w.getTitle()),
+    dockVisibleBefore: app.dock?.isVisible() ?? null,
+    libraryAlive: findMainLibraryWindow() !== null
+  });
   if (overlapping.length > 0) {
-    // CRITICAL: reclaim Regular activation policy BEFORE focus. A
-    // previous capture / cancel may have left PwrSnap demoted to
-    // Accessory (NSUIElement) — see `reclaimDockIconIfLibraryAlive`
-    // in window.ts for the side-effect chain. While Accessory, our
-    // `focus()` call is a no-op (Accessory apps don't auto-activate
-    // on window click), so the Library stays orphaned behind
-    // whatever the user is currently in. Reclaim first, THEN
-    // `app.focus({ steal: true })` to actually bring PwrSnap
-    // forward, THEN moveTop / focus the individual window. Without
-    // these two extra steps, the Library "appears closed" — it's
-    // alive but unreachable.
+    // Two-step "really bring PwrSnap forward" because Electron's
+    // app.focus() + window.focus() are unreliable when the app's
+    // activation policy has drifted to Accessory (NSUIElement) — a
+    // previous activateApp() side-effect.
+    //
+    //   1. `reclaimDockIconIfLibraryAlive()` → calls
+    //      `app.dock.show()` which forcibly re-asserts Regular
+    //      activation policy. Without this the next focus() is a
+    //      no-op while Accessory.
+    //   2. `activateApp(process.pid)` → goes through the same native
+    //      NSRunningApplication.activate helper we use to bring
+    //      OTHER apps forward, but pointed at our own pid. This
+    //      bypasses Electron entirely and uses the macOS API
+    //      directly. More reliable than `app.focus({ steal: true })`
+    //      which has had spotty behavior with our floating panels
+    //      (focus-sink + HUD) in the window list.
     reclaimDockIconIfLibraryAlive();
-    app.focus({ steal: true });
+    await activateApp(process.pid);
     for (const win of overlapping) {
       if (win.isMinimized()) win.restore();
       if (!win.isVisible()) win.show();
       win.moveTop();
     }
     pickFocusTargetForRecording(overlapping).focus();
+    log.info("video-record raised our windows", {
+      ownPid: process.pid,
+      dockVisibleAfter: app.dock?.isVisible() ?? null
+    });
   } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
     // Same reclaim as the image-capture path — activateApp deactivates
     // PwrSnap; AppKit can demote our activation policy to Accessory as
     // a side-effect, stripping the Dock icon and orphaning the Library.
     reclaimDockIconIfLibraryAlive();
+    log.info("video-record activated previous app", { previousAppPid });
   }
   const settings = await new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")

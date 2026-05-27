@@ -1,50 +1,106 @@
+/* PwrSnap Sizzle Reels — composer window.
+ *
+ * Shell mirrors settings.css: 52px title bar row + content grid (rail +
+ * main). Title bar is the system drag region with left padding clearing
+ * the macOS traffic lights (titleBarStyle: "hiddenInset" in
+ * createSizzleWindow). All colors via tokens — never hardcoded.
+ */
+
 .szl {
+  width: 100%;
+  height: 100%;
   display: grid;
   grid-template-columns: 240px 1fr;
-  height: 100vh;
+  grid-template-rows: 52px 1fr;
   background: var(--bg-app);
   color: var(--text-primary);
   font-family: var(--font-sans);
   overflow: hidden;
 }
 
+/* Title bar — drag region, traffic-light padding, brand + crumb.
+   Matches .pss__titlebar so the two surfaces read as the same app. */
+.szl__titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 16px 0 92px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 14px;
+  -webkit-app-region: drag;
+}
+
+.szl__titlebar button,
+.szl__titlebar input,
+.szl__titlebar select {
+  -webkit-app-region: no-drag;
+}
+
+.szl__title-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 14px/1 var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.szl__title-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+}
+
+.szl__title-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 16px;
+  font: 600 11px/1 var(--font-sans);
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.szl__title-sep {
+  opacity: 0.5;
+}
+
+.szl__title-here {
+  color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: 0;
+  font: 600 13px/1 var(--font-sans);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Left rail — projects list. */
 .szl__rail {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   flex-direction: column;
+  background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
-  padding: 56px 12px 12px;
+  padding: 14px 12px 12px;
   gap: 8px;
   overflow: hidden;
-}
-
-.szl__rail-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0 6px 6px;
-}
-
-.szl__brand {
-  font: 700 18px/1 var(--font-display);
-  letter-spacing: -0.02em;
-}
-
-.szl__brand-accent {
-  color: var(--accent);
-}
-
-.szl__rail-subtitle {
-  font: 600 10px/1 var(--font-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-muted);
 }
 
 .szl__new {
   display: block;
   width: 100%;
   padding: 8px 10px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--accent-soft);
   color: var(--accent);
   border: 1px dashed var(--accent-border);
   border-radius: 8px;
@@ -54,7 +110,7 @@
 }
 
 .szl__new:hover {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .szl__list {
@@ -95,7 +151,7 @@
 }
 
 .szl__row.is-active {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: var(--bg-row-active);
   border-color: var(--accent-border);
   color: var(--text-primary);
 }
@@ -110,17 +166,21 @@
   letter-spacing: 0.02em;
 }
 
+/* Main pane — empty state OR active editor. */
 .szl__main {
+  grid-column: 2;
+  grid-row: 2;
   position: relative;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background: var(--bg-app);
 }
 
 .szl__empty-pane {
   margin: auto;
-  max-width: 440px;
+  max-width: 460px;
   padding: 32px;
   text-align: center;
   display: flex;
@@ -162,13 +222,11 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 56px 24px 14px;
+  padding: 14px 24px;
   border-bottom: 1px solid var(--border-subtle);
-  -webkit-app-region: drag;
 }
 
 .szl__editor-title {
-  -webkit-app-region: no-drag;
   background: transparent;
   border: none;
   outline: none;
@@ -177,10 +235,15 @@
   letter-spacing: -0.015em;
   flex: 0 1 auto;
   min-width: 0;
+  padding: 2px 0;
+  border-bottom: 1px solid transparent;
+}
+
+.szl__editor-title:focus {
+  border-bottom-color: var(--accent-border);
 }
 
 .szl__editor-meta {
-  -webkit-app-region: no-drag;
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
@@ -188,7 +251,6 @@
 
 .szl__spacer {
   flex: 1;
-  -webkit-app-region: drag;
 }
 
 .szl__controls {
@@ -198,6 +260,7 @@
   padding: 14px 24px;
   border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
+  background: var(--bg-panel);
 }
 
 .szl__field {
@@ -230,7 +293,6 @@
   border: 1px solid var(--border-subtle);
   background: var(--bg-panel-elevated);
   color: var(--text-primary);
-  -webkit-app-region: no-drag;
 }
 
 .szl__btn:hover {
@@ -239,12 +301,12 @@
 
 .szl__btn-primary {
   background: var(--accent);
-  color: var(--button-text-on-accent);
+  color: var(--button-text-on-accent, #000);
   border-color: var(--accent);
 }
 
 .szl__btn-primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, white 12%);
+  background: var(--accent-strong);
 }
 
 .szl__btn-primary:disabled {
@@ -253,13 +315,14 @@
 }
 
 .szl__btn-danger {
-  border-color: var(--danger-border, #c14a4a);
-  color: var(--danger-text, #f3a3a3);
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
   background: transparent;
 }
 
 .szl__btn-danger:hover {
-  background: color-mix(in srgb, #c14a4a 14%, transparent);
+  color: var(--text-primary);
+  border-color: var(--accent-border);
 }
 
 .szl__scenes {
@@ -272,6 +335,7 @@
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  background: var(--bg-app);
 }
 
 .szl__scene {
@@ -279,7 +343,7 @@
   grid-template-columns: 28px 180px 1fr;
   gap: 14px;
   padding: 12px;
-  background: var(--bg-panel-elevated);
+  background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
 }
@@ -294,7 +358,7 @@
 .szl__scene-thumb {
   width: 180px;
   height: 102px;
-  background: #0a0a0a;
+  background: var(--bg-input);
   border-radius: 8px;
   overflow: hidden;
   display: flex;
@@ -325,7 +389,7 @@
   width: 100%;
   min-height: 60px;
   padding: 8px 10px;
-  background: var(--bg-app);
+  background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -357,7 +421,7 @@
 .szl__scene-dur input {
   width: 60px;
   padding: 4px 6px;
-  background: var(--bg-panel);
+  background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
   border-radius: 5px;
@@ -380,7 +444,7 @@
   height: 26px;
   border-radius: 6px;
   border: 1px solid var(--border-subtle);
-  background: var(--bg-panel);
+  background: var(--bg-panel-elevated);
   color: var(--text-secondary);
   cursor: pointer;
   font: 500 12px/1 var(--font-mono);
@@ -397,8 +461,8 @@
 }
 
 .szl__scene-mini--danger:hover {
-  color: var(--danger-text, #f3a3a3);
-  border-color: var(--danger-border, #c14a4a);
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .szl__footer {
@@ -407,7 +471,7 @@
   gap: 12px;
   padding: 14px 24px;
   border-top: 1px solid var(--border-subtle);
-  background: var(--bg-app);
+  background: var(--bg-sidebar);
 }
 
 .szl__status {
@@ -423,7 +487,7 @@
 }
 
 .szl__status--err {
-  color: var(--danger-text, #f3a3a3);
+  color: var(--accent);
 }
 
 .szl__status--ok {
@@ -449,7 +513,7 @@
 .szl__modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -518,7 +582,7 @@
   aspect-ratio: 16/10;
   object-fit: cover;
   border-radius: 5px;
-  background: #0a0a0a;
+  background: var(--bg-input);
 }
 
 .szl__picker-label {

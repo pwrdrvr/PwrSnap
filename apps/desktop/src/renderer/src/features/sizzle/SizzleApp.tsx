@@ -9,6 +9,7 @@ import {
   type SizzleVoice
 } from "@pwrsnap/shared";
 import { cacheUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import "./sizzle.css";
 
 type RenderStatus = {
@@ -146,13 +147,24 @@ export function SizzleApp(): ReactElement {
 
   return (
     <div className="szl">
-      <aside className="szl__rail">
-        <header className="szl__rail-head">
-          <span className="szl__brand">
-            Pwr<span className="szl__brand-accent">Snap</span>
+      <header className="szl__titlebar">
+        <div className="szl__title-brand">
+          <span className="szl__title-mark">
+            <PwrSnapMark size={18} />
           </span>
-          <span className="szl__rail-subtitle">Sizzle Reels</span>
-        </header>
+          <PwrSnapWordmark />
+        </div>
+        <span className="szl__title-crumb">
+          Sizzle Reels
+          {active !== null ? (
+            <>
+              <span className="szl__title-sep">›</span>
+              <span className="szl__title-here">{active.name}</span>
+            </>
+          ) : null}
+        </span>
+      </header>
+      <aside className="szl__rail">
         <button className="szl__new" onClick={onCreate} type="button">
           + New Sizzle Reel
         </button>

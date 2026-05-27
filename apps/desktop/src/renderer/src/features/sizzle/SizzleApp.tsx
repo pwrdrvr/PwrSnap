@@ -592,6 +592,16 @@ function CapturePicker({
                   <img
                     src={cacheUrl(c.id, 240, "webp", c.edits_version)}
                     alt=""
+                    // loading=lazy + decoding=async + the cell's
+                    // content-visibility:auto skip the cache-protocol
+                    // fetch for offscreen cells. Without these, opening
+                    // the picker fires hundreds of pwrsnap-cache://
+                    // requests at once — each one runs the full v2
+                    // compose-tree pipeline for a 240w thumbnail.
+                    // Same trick the Library grid uses (Library.tsx
+                    // CellThumb).
+                    loading="lazy"
+                    decoding="async"
                   />
                   <span className="szl__picker-label">
                     {c.source_app_name ?? "—"}

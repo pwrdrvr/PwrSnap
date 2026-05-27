@@ -565,6 +565,14 @@
   border-radius: 8px;
   cursor: pointer;
   color: var(--text-secondary);
+  /* Paired with loading=lazy on the inner <img>: Chromium skips
+     layout + paint for offscreen cells, which means the
+     pwrsnap-cache:// fetch (and the v2 compose-tree it triggers)
+     never runs for cells the user hasn't scrolled to yet. Same
+     pattern Library.tsx CellThumb uses; the aspect-ratio on the
+     image keeps offscreen cells correctly sized for the scrollbar. */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 140px;
 }
 
 .szl__picker-cell:hover {

@@ -579,6 +579,14 @@ async function runInteractiveRecord(): Promise<void> {
     hideSelector();
     if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
       await activateApp(selection.previousAppPid);
+      // Match the image-capture cancel branch — activateApp can
+      // demote PwrSnap's activation policy to Accessory as a side-
+      // effect of returning focus to the previous app, which leaves
+      // the Library orphaned (alive but unreachable from the Dock or
+      // ⌘-Tab). Reclaim Regular policy without yanking focus from
+      // the previous app. See `capture-handlers.ts` for the matching
+      // call on the image path.
+      reclaimDockIconIfLibraryAlive();
     }
     return;
   }
@@ -617,6 +625,19 @@ async function runInteractiveRecord(): Promise<void> {
     ? appWindowsOverlappingRect(selection.rect, selection.displayId)
     : [];
   if (overlapping.length > 0) {
+    // CRITICAL: reclaim Regular activation policy BEFORE focus. A
+    // previous capture / cancel may have left PwrSnap demoted to
+    // Accessory (NSUIElement) — see `reclaimDockIconIfLibraryAlive`
+    // in window.ts for the side-effect chain. While Accessory, our
+    // `focus()` call is a no-op (Accessory apps don't auto-activate
+    // on window click), so the Library stays orphaned behind
+    // whatever the user is currently in. Reclaim first, THEN
+    // `app.focus({ steal: true })` to actually bring PwrSnap
+    // forward, THEN moveTop / focus the individual window. Without
+    // these two extra steps, the Library "appears closed" — it's
+    // alive but unreachable.
+    reclaimDockIconIfLibraryAlive();
+    app.focus({ steal: true });
     for (const win of overlapping) {
       if (win.isMinimized()) win.restore();
       if (!win.isVisible()) win.show();
@@ -625,6 +646,10 @@ async function runInteractiveRecord(): Promise<void> {
     pickFocusTargetForRecording(overlapping).focus();
   } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
+    // Same reclaim as the image-capture path — activateApp deactivates
+    // PwrSnap; AppKit can demote our activation policy to Accessory as
+    // a side-effect, stripping the Dock icon and orphaning the Library.
+    reclaimDockIconIfLibraryAlive();
   }
   const settings = await new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")

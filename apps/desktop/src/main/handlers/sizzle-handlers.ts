@@ -1,6 +1,6 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import {
   EVENT_CHANNELS,
   err,
@@ -135,6 +135,58 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
+  bus.register("sizzle:previewSceneAudio", async (req) => {
+    const project = await store.get(req.projectId);
+    if (project === null) {
+      return err({ kind: "validation", code: "not_found", message: "Project not found" });
+    }
+    const scene = project.scenes.find((s) => s.id === req.sceneId);
+    if (scene === undefined) {
+      return err({ kind: "validation", code: "not_found", message: "Scene not found" });
+    }
+    const text = scene.scriptLine.trim();
+    if (text.length === 0) {
+      return err({
+        kind: "validation",
+        code: "empty_script",
+        message: "Write a script line first, then preview"
+      });
+    }
+    let apiKey: string | null;
+    try {
+      apiKey = await getSecrets().getValue(
+        project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
+      );
+    } catch (cause) {
+      return err(toError(cause, "secret_read_failed"));
+    }
+    if (apiKey === null || apiKey.length === 0) {
+      return err({
+        kind: "validation",
+        code: "no_api_key",
+        message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
+      });
+    }
+    try {
+      const tts = await synthesize({
+        provider: project.ttsProvider,
+        apiKey,
+        text,
+        voice: project.voice,
+        model: project.ttsModel
+      });
+      const durationSec = await probeDurationSec(tts.audioPath);
+      const bytes = await readFile(tts.audioPath);
+      return ok({
+        audioBase64: bytes.toString("base64"),
+        mimeType: "audio/mpeg" as const,
+        durationSec
+      });
+    } catch (cause) {
+      return err(toError(cause, "preview_failed"));
+    }
+  });
+
   bus.register("sizzle:revealOutput", async (req) => {
     const project = await store.get(req.id);
     if (project === null || project.outputPath === null) {
@@ -159,6 +211,26 @@ export function registerSizzleHandlers(): void {
         code: "no_scenes",
         message: "Add at least one scene before rendering"
       });
+    }
+
+    // Refuse to render if any scene has an empty script. The previous
+    // behavior was to fall back to "." which OpenAI happily synthesized
+    // as ~0.3s of click — produced a 3s reel of clicks instead of a
+    // narrated walkthrough. Better to error loudly and let the user
+    // know they need to write (or auto-fill) the script lines.
+    const emptyIdx = project.scenes.findIndex(
+      (s) => s.scriptLine.trim().length === 0
+    );
+    if (emptyIdx !== -1) {
+      const message = `Scene ${emptyIdx + 1} has no script line — write what the narrator should say, then render`;
+      broadcast({
+        projectId: project.id,
+        phase: "failed",
+        message,
+        ratio: 0,
+        error: { code: "empty_script", message }
+      });
+      return err({ kind: "validation", code: "empty_script", message });
     }
 
     broadcast({ projectId: project.id, phase: "tts", message: "Generating voiceover", ratio: 0 });
@@ -193,7 +265,7 @@ export function registerSizzleHandlers(): void {
         if (imagePath === null) {
           throw new SceneError(`Could not render capture ${scene.captureId}`);
         }
-        const text = scene.scriptLine.trim() || ".";
+        const text = scene.scriptLine.trim();
         const tts = await synthesize({
           provider: project.ttsProvider,
           apiKey,
@@ -202,10 +274,16 @@ export function registerSizzleHandlers(): void {
           model: project.ttsModel
         });
         const measured = await probeDurationSec(tts.audioPath);
+        // Scene duration = audio duration + a 350ms tail so the image
+        // doesn't cut on the last syllable. NO floor: matching audio
+        // exactly is critical, otherwise `-shortest` in the composer
+        // truncates the video to the longer of the two and we lose
+        // scenes. The script-validation above guarantees `measured`
+        // is meaningful (real speech, not a "." click).
         const durationSec =
           scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
             ? scene.durationOverrideSec
-            : Math.max(1.4, measured + 0.35);
+            : measured + 0.35;
         sceneInputs.push({ imagePath, audioPath: tts.audioPath, durationSec });
         broadcast({
           projectId: project.id,

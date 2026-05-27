@@ -137,10 +137,27 @@ export function SizzleApp(): ReactElement {
   const onAddScene = useCallback(
     async (captureId: string) => {
       if (active === null) return;
+      // Pre-fill the script line from the capture's existing Codex
+      // enrichment (accepted description first, then suggested). Every
+      // image capture gets a Codex-generated description at capture
+      // time — this means new scenes ship with real narratable content
+      // out of the box instead of an empty box that synthesizes to
+      // a "." click on render.
+      let scriptLine = "";
+      const enr = await dispatch("codex:enrichment", { captureId });
+      if (enr.ok && enr.value !== null) {
+        scriptLine =
+          enr.value.acceptedDescription ??
+          enr.value.suggestedDescription ??
+          enr.value.acceptedTitle ??
+          enr.value.suggestedTitle ??
+          "";
+        scriptLine = scriptLine.trim();
+      }
       const scene: SizzleScene = {
         id: `sc_${Date.now().toString(36)}`,
         captureId,
-        scriptLine: "",
+        scriptLine,
         durationOverrideSec: null
       };
       await onUpdate(active.id, { scenes: [...active.scenes, scene] });
@@ -297,6 +314,41 @@ function Editor(props: EditorProps): ReactElement {
     onTitleFocused();
   }, [autoFocusTitle, onTitleFocused]);
 
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
+  const [previewLoadingSceneId, setPreviewLoadingSceneId] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const onPreviewScene = async (sceneId: string): Promise<void> => {
+    // Toggle: if this scene is already playing, stop it.
+    if (previewingSceneId === sceneId && audioRef.current !== null) {
+      audioRef.current.pause();
+      setPreviewingSceneId(null);
+      return;
+    }
+    setPreviewError(null);
+    setPreviewLoadingSceneId(sceneId);
+    const result = await dispatch("sizzle:previewSceneAudio", {
+      projectId: project.id,
+      sceneId
+    });
+    setPreviewLoadingSceneId(null);
+    if (!result.ok) {
+      setPreviewError(result.error.message);
+      return;
+    }
+    const el = audioRef.current;
+    if (el === null) return;
+    el.src = `data:${result.value.mimeType};base64,${result.value.audioBase64}`;
+    setPreviewingSceneId(sceneId);
+    try {
+      await el.play();
+    } catch (cause) {
+      setPreviewError(cause instanceof Error ? cause.message : String(cause));
+      setPreviewingSceneId(null);
+    }
+  };
+
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();
     for (const c of captures) m.set(c.id, c);
@@ -447,6 +499,28 @@ function Editor(props: EditorProps): ReactElement {
                     </span>
                     <span className="szl__spacer" />
                     <button
+                      className="szl__scene-mini szl__scene-mini--play"
+                      onClick={() => void onPreviewScene(scene.id)}
+                      disabled={
+                        scene.scriptLine.trim().length === 0 ||
+                        previewLoadingSceneId === scene.id
+                      }
+                      type="button"
+                      title={
+                        scene.scriptLine.trim().length === 0
+                          ? "Write a script line to preview"
+                          : previewingSceneId === scene.id
+                            ? "Stop preview"
+                            : "Preview voiceover"
+                      }
+                    >
+                      {previewLoadingSceneId === scene.id
+                        ? "…"
+                        : previewingSceneId === scene.id
+                          ? "■"
+                          : "▶"}
+                    </button>
+                    <button
                       className="szl__scene-mini"
                       onClick={() => moveScene(idx, -1)}
                       disabled={idx === 0}
@@ -479,6 +553,20 @@ function Editor(props: EditorProps): ReactElement {
           })
         )}
       </ul>
+
+      {previewError !== null ? (
+        <div className="szl__preview-error">{previewError}</div>
+      ) : null}
+      <audio
+        ref={audioRef}
+        onEnded={() => setPreviewingSceneId(null)}
+        onPause={() => {
+          // Treat any pause (including end-of-track) as "no longer playing"
+          // so the button flips back to ▶.
+          setPreviewingSceneId(null);
+        }}
+        style={{ display: "none" }}
+      />
 
       <footer className="szl__footer">
         <RenderStatusBar status={status} />

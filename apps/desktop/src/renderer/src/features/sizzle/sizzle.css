@@ -465,6 +465,25 @@
   border-color: var(--accent-border);
 }
 
+.szl__scene-mini--play {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.szl__scene-mini--play:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.szl__preview-error {
+  margin: 0 24px 12px;
+  padding: 8px 12px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  border-radius: 8px;
+  font: 500 12px/1.4 var(--font-sans);
+}
+
 .szl__footer {
   display: flex;
   align-items: center;

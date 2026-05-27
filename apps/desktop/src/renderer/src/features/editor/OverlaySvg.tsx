@@ -35,12 +35,12 @@ import {
   readArrowEndStyle,
   readArrowStemStyle,
   readOverlayThickness,
-  readRectFilled,
-  readTextWeight
+  readRectFilled
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
+import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -167,13 +167,12 @@ export function OverlaySvg({
       ),
     [effectiveOverlays]
   );
-  const texts = useMemo(
-    () =>
-      effectiveOverlays.flatMap((row) =>
-        row.data.kind === "text" ? [{ row, data: row.data }] : []
-      ),
-    [effectiveOverlays]
-  );
+  // Text overlays moved out of the SVG path in the HTML-text
+  // unification (see TextHtmlOverlays). The SVG side handles non-text
+  // shapes + the selection outline; TextHtml renders persisted text
+  // glyphs as absolute-positioned <div>s in the canvas-wrap so display
+  // + edit go through Chromium's HTML text pipeline. The "suppress
+  // the editing overlay" rule lives in TextHtmlOverlays.tsx now.
 
   // Live-rect for rect/highlight/blur drags, computed once so all
   // three branches can share.
@@ -221,21 +220,8 @@ export function OverlaySvg({
           imageHeightPx={imageHeightPx}
         />
       ))}
-      {texts.map(({ row, data }) => (
-        <TextGlyph
-          key={row.id}
-          point={data.point}
-          body={data.body}
-          size={data.size}
-          weight={readTextWeight(data)}
-          color={data.color}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-          sourceWidthPx={sourceWidthPx}
-          sourceHeightPx={sourceHeightPx}
-          storedSizePx={data.sizePx}
-        />
-      ))}
+      {/* Text overlays render outside the SVG via <TextHtmlOverlays>
+          so display/edit/bake share Chromium's HTML text pipeline. */}
 
       {/* Phase 3.2 selection outline — rendered after all overlays but
           before drafts so a draft-in-progress doesn't hide the
@@ -912,14 +898,19 @@ function textBoundsBox(
   sourceWidthPx: number,
   sourceHeightPx: number
 ): { x: number; y: number; w: number; h: number } {
-  // Same `computeTextGlyphSize` contract as TextGlyph so the hit-test
-  // / selection-outline box stays in sync with what's actually drawn.
-  // `sizePx` is the pixel-space text height (in canvas/source pixels,
-  // which share the same scale in v2); used as `fontSizePx` for
-  // downstream pixel-space math (main's #121 arrow refactor moved
-  // OverlaySvg's geometry to pixel space). See
-  // `packages/shared/src/text-glyph-size.ts` for the derivation and
-  // pwrdrvr/PwrSnap#110 for the source-shortSide invariant.
+  // MUST match the HTML rendering's metrics. TextHtml renders the
+  // glyph as a `<div>` styled by `computeTextHtmlStyle`, which sets
+  // `line-height: 1` (single-line height = fontSize px exactly) and
+  // wraps in an absolute-positioned outer div with `translateY(-50%)`
+  // — meaning the FULL height of the multi-line block is centered on
+  // the anchor point, not the first line.
+  //
+  // Pre-fix this function used the old SVG layout metrics
+  // (`lineHeight * 1.2` and "first-line center on anchor"). On
+  // multi-line bodies — especially ones with blank lines — the
+  // outline ended up the wrong shape AND offset to the wrong vertical
+  // position, drifting further with each added line. Visible
+  // regression in the HTML-text unification commit.
   const { sizePx: fontSizePx } = computeTextGlyphSize({
     size: data.size,
     sourceWidthPx,
@@ -931,17 +922,23 @@ function textBoundsBox(
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
   const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
-  const charAdvance = 0.55;
-  const naturalWidthPx = maxChars * fontSizePx * charAdvance;
-  const naturalHeightPx = fontSizePx * (lineCount * 1.2 - 0.2);
+  // Approximate proportional-font advance for the SELECTION OUTLINE
+  // — tight wrap around the rendered glyph. The hit-test
+  // (`hitTestOverlays` in Editor.tsx) uses a slightly LOOSER advance
+  // so clicks just past the right edge still register. Both constants
+  // live in text-bbox-constants.ts with the rationale; see it before
+  // changing either value.
+  const naturalWidthPx = maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE_OUTLINE;
+  // line-height: 1 on the HTML div → total block height is exactly
+  // `lineCount * fontSize`. No extra 1.2× spacing, no 0.2 trailing
+  // subtraction (that was for SVG dy="1.2em").
+  const naturalHeightPx = fontSizePx * lineCount;
   return {
     x: data.point.x,
-    // `fontSizePx / 2` is the half-glyph-height in pixels;
-    // divide by imageHeightPx to convert to normalized [0,1].
-    // Parens kept explicit — without them the chain
-    // `fontSizePx / 2 / imageHeightPx` parses identically but reads
-    // ambiguously to anyone scanning the line.
-    y: data.point.y - (fontSizePx / 2) / imageHeightPx,
+    // translateY(-50%) on the wrapper centers the FULL block on the
+    // anchor — top edge sits `half-block-height` above point.y. Same
+    // math the HTML wrapper applies during layout.
+    y: data.point.y - (naturalHeightPx / 2) / imageHeightPx,
     w: naturalWidthPx / imageWidthPx,
     h: naturalHeightPx / imageHeightPx
   };
@@ -1447,6 +1444,22 @@ export function TransformHandles({
         onDragEnd?.();
         return;
       }
+      // Click-without-drag on the body / a handle is NOT a move — skip
+      // the geometry write so we don't stamp a no-op translation onto
+      // the overlay (which would push a noisy entry onto the undo stack
+      // every time the user just clicks-to-focus a layer). The threshold
+      // is generous enough to absorb sub-pixel jitter from a real click
+      // while still recognising the smallest deliberate drag. The
+      // body-hit rect's onClick relies on this suppression to fire its
+      // "click selected text → enter edit mode" branch cleanly without
+      // the geometry write racing the edit-mode draft.
+      const NO_DRAG_THRESHOLD_N = 0.002;
+      const movedN = Math.hypot(pt.xn - startPt.xn, pt.yn - startPt.yn);
+      if (movedN < NO_DRAG_THRESHOLD_N) {
+        setLiveData(null);
+        onDragEnd?.();
+        return;
+      }
       const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn, startPt);
       if (geometry !== null) {
         onGeometryChange(geometry);
@@ -1486,18 +1499,40 @@ export function TransformHandles({
           data-testid="transform-handle-body"
           data-handle-kind="body"
           role="button"
-          aria-label={selectedOverlay.data.kind === "text" ? "Move or double-click to edit text" : "Move layer"}
+          aria-label={selectedOverlay.data.kind === "text" ? "Click to edit text, drag to move" : "Move layer"}
           tabIndex={-1}
           onPointerDown={(e) => onPointerDown(e, "body")}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          // Double-click on a TEXT overlay re-opens the draft input
-          // with the existing body pre-filled. The caller's
-          // onRequestEdit handler is responsible for removing /
-          // replacing the existing overlay so the user doesn't end
-          // up with two copies. Non-text kinds ignore the dblclick
-          // — there's nothing equivalent to "edit the body" for an
-          // arrow or rect.
+          // Click-without-drag on a SELECTED text overlay re-opens the
+          // draft input with the existing body pre-filled — caret lands
+          // exactly where they expect, no double-click puzzle. Browser
+          // `click` only fires when mousedown + mouseup land on the same
+          // element without crossing the drag threshold, so a real
+          // drag-to-move never trips this. Pairs with the no-drag
+          // suppression in onPointerUp above (otherwise the click would
+          // race a no-op geometry write).
+          //
+          // First-click-to-select is handled in Editor.onPointerDown
+          // before TransformHandles even mounts, so this branch only
+          // ever fires on the SECOND click on an already-selected
+          // overlay — exactly the "click selected to edit" gesture.
+          //
+          // Non-text kinds ignore clicks (no equivalent of "edit the
+          // body" for an arrow / rect / highlight / blur).
+          onClick={
+            selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
+              ? (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onRequestEdit(selectedOverlay);
+                }
+              : undefined
+          }
+          // Double-click on a TEXT overlay also routes to edit — kept
+          // for users who learned the gesture from the previous build
+          // and for the case where their click sequence on the body
+          // happens to register as a dblclick rather than two clicks.
           onDoubleClick={
             selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
               ? (e) => {
@@ -1632,128 +1667,14 @@ function applyGeometryLocally(
 // Suppress unused-symbol churn for the geometry types we re-export.
 export type { GeometryUpdate, NormalizedPoint, NormalizedRect };
 
-function TextGlyph({
-  point,
-  body,
-  size,
-  weight,
-  imageWidthPx,
-  imageHeightPx,
-  sourceWidthPx,
-  sourceHeightPx,
-  storedSizePx,
-  color
-}: {
-  point: { x: number; y: number };
-  body: string;
-  size: "small" | "medium" | "large";
-  /** Persisted `TextOverlay.sizePx` (pwrdrvr/PwrSnap#110). When
-   *  present overrides the bucket math — keeps the row at a stable
-   *  physical size across crops. Legacy rows pass undefined and fall
-   *  back to the bucket × source-shortSide formula. */
-  storedSizePx?: number | undefined;
-  /** Resolved CSS font-weight number — pass through `readTextWeight`
-   *  from `@pwrsnap/shared` so the legacy fallback (600) and the
-   *  popover values (regular=400, bold=700) all funnel through one
-   *  place. */
-  weight: number;
-  /** CANVAS dims (`record.width_px` / `record.height_px`) — shrink
-   *  with each crop. Drive the viewBox-relative `fontSize`. */
-  imageWidthPx: number;
-  imageHeightPx: number;
-  /** SOURCE raster dims (raster layer's natural_*_px). INVARIANT
-   *  across crops — drive `sizePx` so text overlays don't silently
-   *  resize every crop (pwrdrvr/PwrSnap#110). */
-  sourceWidthPx: number;
-  sourceHeightPx: number;
-  /** See ArrowGlyph.color. */
-  color?: "auto" | string | undefined;
-}): ReactElement {
-  // Font size derivation lives in `computeTextGlyphSize` (testable
-  // in isolation; pinned by pwrdrvr/PwrSnap#110). The key invariant:
-  // `sizePx` is the pixel-space text height in canvas pixels (= source
-  // pixels in v2 — crop is a viewport change, not a resampling) and
-  // stays CONSTANT across crops, derived from the SOURCE raster's
-  // short side. Main's #121 arrow refactor moved OverlaySvg's
-  // geometry to pixel space, so we use the helper's `sizePx`
-  // directly as `fontSizePx`.
-  //
-  //   small  ≈ sourceShortSide / 50  (e.g. 38 px on a 1920-px-tall image)
-  //   medium ≈ sourceShortSide / 30  (e.g. 64 px)
-  //   large  ≈ sourceShortSide / 18  (e.g. 107 px)
-  //
-  // Pre-fix this used the CANVAS short side for sizePx — for an
-  // already-cropped v2 capture (canvas H = 1239), a "medium" text
-  // re-rendered as 1239/30 = 41 source-px tall instead of the
-  // original 64. Visible symptom: text body shrinks horizontally,
-  // more chars fit before the canvas right edge, user perceives
-  // the crop as "wider than I drew it".
-  const { sizePx: fontSizePx } = computeTextGlyphSize({
-    size,
-    sourceWidthPx,
-    sourceHeightPx,
-    canvasWidthPx: imageWidthPx,
-    canvasHeightPx: imageHeightPx,
-    // Persisted absolute size (pwrdrvr/PwrSnap#110) — when present
-    // overrides the bucket math so the same row renders at a stable
-    // physical size across crops + across native/cropped captures of
-    // the same dim.
-    storedSizePx
-  });
-  const accent =
-    color !== undefined && color !== "auto" ? color : "var(--accent, #ff8a1f)";
-  // Multi-line support: body may contain "\n" from the Shift+Enter
-  // path in the draft input. Split, emit one <tspan> per line with
-  // dy="1.2em" advancing the baseline. Single-line bodies keep their
-  // original placement exactly (the first tspan has dy="0").
-  const lines = body.split("\n");
-  // Pixel-space anchor. The historical aspectCompensation `scale(H/W,1)`
-  // wrapper is gone — that hack only existed to undo the non-uniform
-  // viewBox stretch from preserveAspectRatio="none" on a 1×1 viewBox.
-  // With a pixel-space viewBox text renders isotropically by default,
-  // no extra transform needed.
-  //
-  // Vertically center the FIRST line on the click point — matches the
-  // draft input's `translateY(-50%)` so the text doesn't jump on
-  // commit. Subsequent lines extend downward via `dy="1.2em"` per
-  // tspan, which is the conventional layout for multi-line annotation.
-  const px = point.x * imageWidthPx;
-  const py = point.y * imageHeightPx;
-  return (
-    <g transform={`translate(${px} ${py})`}>
-      <text
-        x={0}
-        y={0}
-        fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSizePx}
-        fontWeight={weight}
-        fill="white"
-        stroke="rgba(0,0,0,0.6)"
-        strokeWidth={fontSizePx * 0.08}
-        paintOrder="stroke"
-        dominantBaseline="central"
-      >
-        {lines.map((line, i) => (
-          <tspan key={i} x={0} dy={i === 0 ? "0em" : "1.2em"}>
-            {line}
-          </tspan>
-        ))}
-      </text>
-      <text
-        x={0}
-        y={0}
-        fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontSize={fontSizePx}
-        fontWeight={weight}
-        fill={accent}
-        dominantBaseline="central"
-      >
-        {lines.map((line, i) => (
-          <tspan key={i} x={0} dy={i === 0 ? "0em" : "1.2em"}>
-            {line}
-          </tspan>
-        ))}
-      </text>
-    </g>
-  );
-}
+// TextGlyph (the SVG <text> renderer) was deleted in the HTML-text
+// unification. Persisted text overlays now render via <TextHtml> as
+// absolute-positioned HTML divs in the EDITOR; the bake (compose.ts
+// textSvgForV2) still uses SVG via librsvg/sharp — a future PR will
+// unify bake rendering through a hidden BrowserWindow capture so
+// editor-display = editor-edit = baked-PNG end-to-end. See:
+//   • apps/desktop/src/renderer/src/features/editor/TextHtml.tsx
+//   • apps/desktop/src/renderer/src/features/editor/TextHtmlOverlays.tsx
+//   • packages/shared/src/text-html-style.ts
+// `computeTextGlyphSize` is still used by `textBoundsBox` /
+// `SelectionOutline` for hit-test + selection-outline geometry.

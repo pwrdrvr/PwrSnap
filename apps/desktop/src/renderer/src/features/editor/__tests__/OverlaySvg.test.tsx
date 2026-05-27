@@ -57,6 +57,32 @@ async function renderOverlaySvg(
   return svg as SVGSVGElement;
 }
 
+function textRow(
+  id: string,
+  data: Partial<Extract<OverlayRow["data"], { kind: "text" }>> = {}
+): OverlayRow {
+  return {
+    id,
+    capture_id: "cap_1",
+    data: {
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "hello",
+      size: "medium",
+      color: "auto",
+      ...data
+    },
+    schema_version: 1,
+    created_at: "2026-05-24T00:00:00Z",
+    applied_at: "2026-05-24T00:00:00Z",
+    rejected_at: null,
+    superseded_by: null,
+    ai_run_id: null,
+    source: "user",
+    z_index: 0
+  };
+}
+
 function arrowRow(
   data: Partial<Extract<OverlayRow["data"], { kind: "arrow" }>> = {}
 ): OverlayRow {
@@ -382,6 +408,28 @@ describe("OverlaySvg ArrowGlyph — combinations", () => {
       }
     }
   }
+});
+
+describe("OverlaySvg — text overlays moved to HTML rendering", () => {
+  // After the HTML-text unification, persisted TextOverlays render via
+  // <TextHtmlOverlays> (HTML divs) NOT via SVG <text>. OverlaySvg's
+  // text branch is intentionally a no-op for text rows — any non-zero
+  // <text> count here would mean the SVG path is back. Coverage of the
+  // "suppress the editing overlay" rule lives in TextHtmlOverlays.test.tsx
+  // (the new owner of that filtering logic).
+
+  test("text overlays never produce <text> elements in the SVG", async () => {
+    const svg = await renderOverlaySvg([textRow("text_1")]);
+    expect(svg.querySelectorAll("text").length).toBe(0);
+  });
+
+  test("multiple text overlays produce zero <text> elements (suppression is enforced upstream by TextHtmlOverlays)", async () => {
+    const svg = await renderOverlaySvg([
+      textRow("text_1"),
+      textRow("text_2", { point: { x: 0.3, y: 0.3 } })
+    ]);
+    expect(svg.querySelectorAll("text").length).toBe(0);
+  });
 });
 
 describe("OverlaySvg ArrowGlyph — portrait images (the original symptom)", () => {

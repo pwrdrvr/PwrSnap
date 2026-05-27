@@ -30,15 +30,29 @@ export function useSizzleProjects(): {
     let active = true;
     void dispatch("sizzle:list", {}).then((r) => {
       if (!active) return;
-      if (r.ok) setProjects(r.value.projects);
+      // Defensive against tests that don't stub `sizzle:list` —
+      // a missing `value` should leave us at `[]`, not crash. Same
+      // shape-check on the broadcast handler below.
+      if (
+        r.ok &&
+        typeof r.value === "object" &&
+        r.value !== null &&
+        Array.isArray((r.value as { projects?: unknown }).projects)
+      ) {
+        setProjects((r.value as { projects: SizzleProject[] }).projects);
+      }
       setLoading(false);
     });
     const unsubscribe = subscribe(
       EVENT_CHANNELS.sizzleProjectsChanged,
       (payload) => {
-        // Payload shape is `{ projects: SizzleProject[] }`.
-        const next = (payload as { projects: SizzleProject[] }).projects;
-        if (Array.isArray(next)) setProjects(next);
+        if (
+          typeof payload === "object" &&
+          payload !== null &&
+          Array.isArray((payload as { projects?: unknown }).projects)
+        ) {
+          setProjects((payload as { projects: SizzleProject[] }).projects);
+        }
       }
     );
     return () => {

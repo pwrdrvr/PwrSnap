@@ -49,7 +49,8 @@ import {
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
 import { ChatPanel } from "../editor/panels/ChatPanel";
-import { dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 
@@ -126,6 +127,36 @@ export function DetailRail({
   const [localActiveTab, setLocalActiveTab] = useState<SidebarTab>("info");
   const [localPinned, setLocalPinned] = useState<boolean>(true);
   const initialReadDoneRef = useRef<boolean>(false);
+  // Subscribe to the canonical sizzle project list so the Project
+  // tab can appear/disappear without a relaunch. The hook fetches
+  // once on mount + subscribes to events:sizzle:projects:changed.
+  const { projects: sizzleProjects } = useSizzleProjects();
+  // Projects this capture is a scene of. The Project tab only
+  // appears when projects.length > 0 (any project exists) — when
+  // the capture isn't in any project the panel renders an empty
+  // state with a "Add to a Sizzle Reel…" picker.
+  const containingProjects = useMemo(
+    () =>
+      record === null
+        ? []
+        : sizzleProjects.filter((p) =>
+            p.scenes.some((s) => s.captureId === record.id)
+          ),
+    [sizzleProjects, record]
+  );
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  // Keep activeProjectId valid as the containingProjects set changes
+  // (e.g. user removed the capture from this project elsewhere).
+  useEffect(() => {
+    if (
+      activeProjectId !== null &&
+      !containingProjects.some((p) => p.id === activeProjectId)
+    ) {
+      setActiveProjectId(containingProjects[0]?.id ?? null);
+    } else if (activeProjectId === null && containingProjects.length > 0) {
+      setActiveProjectId(containingProjects[0]!.id);
+    }
+  }, [containingProjects, activeProjectId]);
 
   const isPinControlled =
     pinnedProp !== undefined && onPinChange !== undefined;
@@ -294,9 +325,27 @@ export function DetailRail({
         label: "Chat",
         title: "Chat with Codex",
         icon: CHAT_ICON
-      }
+      },
+      // Project tab appears only when any sizzle project exists in
+      // the workspace. The panel itself handles the "this capture
+      // isn't in any project yet" case so the tab itself is a
+      // workspace-level affordance, not a per-capture one.
+      ...(sizzleProjects.length > 0
+        ? [
+            {
+              id: "project" as const,
+              label: "Project",
+              title:
+                containingProjects.length > 0
+                  ? `In ${containingProjects.length} Sizzle Reel${containingProjects.length === 1 ? "" : "s"}`
+                  : "Not yet in a Sizzle Reel",
+              badge: containingProjects.length > 0,
+              icon: PROJECT_ICON
+            }
+          ]
+        : [])
     ],
-    [hasOcrText]
+    [hasOcrText, sizzleProjects.length, containingProjects.length]
   );
 
   // Grid mode: rail not rendered. Future surfaces that want a rail
@@ -362,6 +411,19 @@ export function DetailRail({
       return (
         <div className="psl__right-body">
           <OcrTab record={record} enrichment={enrichment} />
+        </div>
+      );
+    }
+    if (id === "project") {
+      return (
+        <div className="psl__right-body">
+          <ProjectTab
+            record={record}
+            allProjects={sizzleProjects}
+            containingProjects={containingProjects}
+            activeProjectId={activeProjectId}
+            onSelectProject={setActiveProjectId}
+          />
         </div>
       );
     }
@@ -618,6 +680,24 @@ const CHAT_ICON: ReactElement = (
     aria-hidden="true"
   >
     <path d="M4 5h16v11H8l-4 4z" />
+  </svg>
+);
+
+/** Stacked-film icon for the Project tab. Same "play strip"
+ *  language used by the sidebar Sizzle Reels rows, to keep the
+ *  Library/Right-Rail/Sidebar visual triad consistent. */
+const PROJECT_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="3" y="6" width="14" height="12" rx="2" />
+    <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
   </svg>
 );
 
@@ -1302,4 +1382,213 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type ProjectTabProps = {
+  readonly record: CaptureRecord;
+  readonly allProjects: ReadonlyArray<import("@pwrsnap/shared").SizzleProject>;
+  readonly containingProjects: ReadonlyArray<import("@pwrsnap/shared").SizzleProject>;
+  readonly activeProjectId: string | null;
+  readonly onSelectProject: (id: string | null) => void;
+};
+
+/**
+ * Project Assets right-rail tab. Shows which sizzle reels the
+ * current capture belongs to, an ordered scene list, and a button
+ * that opens the project in the sizzle editor window. When the
+ * capture isn't in any project, surfaces an "Add to Sizzle Reel"
+ * picker drawn from the project list.
+ *
+ * Notes:
+ *   - Drag-to-reorder is deliberately out of scope; ordering is
+ *     edited in the sizzle window. The list here is read-only with
+ *     order badges + a kind chip per scene.
+ *   - The picker uses sizzle:toggleScene which appends or removes a
+ *     scene; this matches the in-library +/✓ flow.
+ */
+function ProjectTab({
+  record,
+  allProjects,
+  containingProjects,
+  activeProjectId,
+  onSelectProject
+}: ProjectTabProps): ReactElement {
+  const active =
+    activeProjectId === null
+      ? null
+      : containingProjects.find((p) => p.id === activeProjectId) ?? null;
+
+  // Captures referenced by the active project's scenes — for the
+  // body list we render each scene's thumbnail + scriptLine snippet.
+  // Pulled in one round via library:listByIds, fall-through is the
+  // capture for THIS row (already known) so the very common
+  // "single-scene project" case doesn't pay a fetch.
+  type SceneCapture = { sceneIdx: number; record: CaptureRecord | null };
+  const [sceneCaptures, setSceneCaptures] = useState<SceneCapture[]>([]);
+  useEffect(() => {
+    if (active === null) {
+      setSceneCaptures([]);
+      return;
+    }
+    let mounted = true;
+    const ids = active.scenes.map((s) => s.captureId);
+    void dispatch("library:listByIds", { ids }).then((r) => {
+      if (!mounted) return;
+      if (!r.ok) {
+        setSceneCaptures([]);
+        return;
+      }
+      const byId = new Map(r.value.rows.map((c) => [c.id, c]));
+      setSceneCaptures(
+        active.scenes.map((s, i) => ({
+          sceneIdx: i,
+          record: byId.get(s.captureId) ?? null
+        }))
+      );
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [active]);
+
+  if (containingProjects.length === 0) {
+    // Empty state: this capture isn't in any project. Show every
+    // existing project as a +chip so adding is one click away.
+    return (
+      <div className="psl__proj-tab">
+        <p className="psl__proj-empty">
+          This capture isn't in any Sizzle Reel yet.
+        </p>
+        {allProjects.length === 0 ? (
+          <p className="psl__proj-hint">
+            Create your first Sizzle Reel from the Library sidebar or the
+            File menu.
+          </p>
+        ) : (
+          <>
+            <p className="psl__proj-hint">Add to:</p>
+            <ul className="psl__proj-picker">
+              {allProjects.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    className="psl__proj-picker-row"
+                    onClick={() => {
+                      void dispatch("sizzle:toggleScene", {
+                        projectId: p.id,
+                        captureId: record.id
+                      });
+                    }}
+                  >
+                    <span className="psl__proj-picker-name">{p.name}</span>
+                    <span className="psl__proj-picker-meta">
+                      {p.scenes.length} scene{p.scenes.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="psl__proj-picker-add" aria-hidden="true">+</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="psl__proj-tab">
+      {containingProjects.length > 1 ? (
+        <label className="psl__proj-pick">
+          <span>Project</span>
+          <select
+            value={active?.id ?? ""}
+            onChange={(e) => onSelectProject(e.target.value)}
+          >
+            {containingProjects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <div className="psl__proj-header">
+          <span className="psl__proj-name">{active?.name}</span>
+        </div>
+      )}
+
+      <ul className="psl__proj-scenes">
+        {sceneCaptures.length === 0 ? (
+          <li className="psl__proj-hint">Loading scenes…</li>
+        ) : (
+          sceneCaptures.map(({ sceneIdx, record: r }) => {
+            const scene = active!.scenes[sceneIdx]!;
+            const isCurrent = r?.id === record.id;
+            return (
+              <li
+                key={scene.id}
+                className={"psl__proj-scene" + (isCurrent ? " is-current" : "")}
+              >
+                <span className="psl__proj-scene-order">
+                  {(sceneIdx + 1).toString().padStart(2, "0")}
+                </span>
+                <span className="psl__proj-scene-thumb">
+                  {r !== null ? (
+                    <img
+                      src={cacheUrl(r.id, 96, "webp", r.edits_version)}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <span className="psl__proj-scene-missing">×</span>
+                  )}
+                  {r?.kind === "video" ? (
+                    <span className="psl__proj-scene-kind" aria-hidden="true">▶</span>
+                  ) : null}
+                </span>
+                <span className="psl__proj-scene-body">
+                  <span className="psl__proj-scene-app">
+                    {r?.source_app_name ?? "—"}
+                  </span>
+                  <span className="psl__proj-scene-script">
+                    {scene.scriptLine.trim().length === 0
+                      ? "— no script —"
+                      : scene.scriptLine.length > 60
+                        ? scene.scriptLine.slice(0, 57) + "…"
+                        : scene.scriptLine}
+                  </span>
+                </span>
+              </li>
+            );
+          })
+        )}
+      </ul>
+
+      <div className="psl__proj-actions">
+        <button
+          type="button"
+          className="psl__proj-btn"
+          onClick={() => {
+            void dispatch("sizzle:toggleScene", {
+              projectId: active!.id,
+              captureId: record.id
+            });
+          }}
+          title="Remove this capture from the project"
+        >
+          Remove from project
+        </button>
+        <button
+          type="button"
+          className="psl__proj-btn psl__proj-btn--primary"
+          onClick={() => {
+            void dispatch("sizzle:open", { projectId: active!.id });
+          }}
+        >
+          Open editor
+        </button>
+      </div>
+    </div>
+  );
 }

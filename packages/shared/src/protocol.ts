@@ -874,14 +874,18 @@ export type EditorSettings = {
 
 /** Tab identifier for the Library DetailRail right-side activity bar.
  *  Mirrors `EditorSidebarPanel` for symmetry but scoped to the
- *  Library — the available surfaces (Info / OCR / Chat) are
- *  different from the editor's (Info / Chat / Tool Config / Help). */
-export type LibrarySidebarTab = "info" | "ocr" | "chat";
+ *  Library — the available surfaces (Info / OCR / Chat / Project)
+ *  are different from the editor's (Info / Chat / Tool Config / Help).
+ *  `project` is gated at render time to only appear when at least
+ *  one sizzle project exists and the active capture is one of its
+ *  scenes; absent otherwise. */
+export type LibrarySidebarTab = "info" | "ocr" | "chat" | "project";
 
 export const LIBRARY_SIDEBAR_TABS = [
   "info",
   "ocr",
-  "chat"
+  "chat",
+  "project"
 ] as const satisfies readonly LibrarySidebarTab[];
 
 export function isLibrarySidebarTab(value: unknown): value is LibrarySidebarTab {

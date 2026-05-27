@@ -7,8 +7,10 @@ import {
   err,
   EVENT_CHANNELS,
   AddUserTagRequestSchema,
-  RemoveUserTagRequestSchema
+  RemoveUserTagRequestSchema,
+  type CaptureRecord
 } from "@pwrsnap/shared";
+import { validateLibraryListByIds } from "./sizzle-validators";
 import { z } from "zod";
 import { bus } from "../command-bus";
 import {
@@ -127,6 +129,28 @@ export function registerLibraryHandlers(): void {
   bus.register("library:byId", async (req) => {
     const record = getCaptureById(req.id);
     return ok(record);
+  });
+
+  bus.register("library:listByIds", async (req) => {
+    // Validates the ids array (length cap + non-empty strings).
+    const v = validateLibraryListByIds(req);
+    if (!v.ok) return err(v.error);
+    // Per-id lookup preserves input order — getCaptureById is keyed
+    // by the row's primary key index, so this is N point lookups vs
+    // one batched WHERE id IN (...) with a sort. For projects with
+    // ≤200 scenes (the validator cap) the round-trip cost is
+    // negligible and we avoid the IN-list ordering headache.
+    const rows: CaptureRecord[] = [];
+    for (const id of v.ids) {
+      const r = getCaptureById(id);
+      // Drop soft-deleted + missing rows. The sizzle project view
+      // shows what currently exists; if a scene's capture got deleted
+      // the row vanishes from the filtered grid (the underlying
+      // SizzleScene stays in the project file, so undeleting the
+      // capture brings it back).
+      if (r !== null && r.deleted_at === null) rows.push(r);
+    }
+    return ok({ rows });
   });
 
   bus.register("library:delete", async (req) => {

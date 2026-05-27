@@ -84,13 +84,19 @@ describe("SizzleStore", () => {
           id: "",
           captureId: "cap_1",
           scriptLine: "first",
-          durationOverrideSec: -5
+          durationOverrideSec: -5,
+          mediaTrim: null,
+          audioSource: "auto",
+          transition: "crossfade"
         },
         {
           id: "sc_keep",
           captureId: "cap_2",
           scriptLine: "second",
-          durationOverrideSec: 4
+          durationOverrideSec: 4,
+          mediaTrim: null,
+          audioSource: "auto",
+          transition: "crossfade"
         }
       ]
     });

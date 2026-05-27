@@ -133,30 +133,46 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     return { durationSec, nbReadFrames, width, height };
   }
 
+  // Tiny helper so the test bodies don't have to repeat the
+  // discriminator + transition field on every SceneInput literal.
+  function imageScene(args: {
+    imagePath: string;
+    audioPath: string;
+    durationSec: number;
+  }): SceneInput {
+    return {
+      kind: "image",
+      imagePath: args.imagePath,
+      audioPath: args.audioPath,
+      durationSec: args.durationSec,
+      transition: "cut"
+    };
+  }
+
   it(
     "produces video whose frame count and duration match all input scenes (not just the first)",
     async () => {
       const scenes: SceneInput[] = [
-        {
+        imageScene({
           imagePath: await makeImage("img1.png", "red"),
           audioPath: await makeSilentMp3("aud1.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img2.png", "green"),
           audioPath: await makeSilentMp3("aud2.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img3.png", "blue"),
           audioPath: await makeSilentMp3("aud3.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img4.png", "yellow"),
           audioPath: await makeSilentMp3("aud4.mp3", 1.5),
           durationSec: 1.5
-        }
+        })
       ];
       const outputPath = join(tmpDir, "out.mp4");
       const fps = 30;
@@ -190,11 +206,13 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     ];
     const scenes: SceneInput[] = [];
     for (let i = 0; i < colors.length; i++) {
-      scenes.push({
-        imagePath: await makeImage(`c${i}.png`, colors[i]!.hex),
-        audioPath: await makeSilentMp3(`s${i}.mp3`, 1.0),
-        durationSec: 1.0
-      });
+      scenes.push(
+        imageScene({
+          imagePath: await makeImage(`c${i}.png`, colors[i]!.hex),
+          audioPath: await makeSilentMp3(`s${i}.mp3`, 1.0),
+          durationSec: 1.0
+        })
+      );
     }
     const outputPath = join(tmpDir, "colors.mp4");
     await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
@@ -271,11 +289,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     // gets SIGKILL'd within the 100ms abort window and compose
     // rejects with a `cancelled` ComposeError.
     const scenes: SceneInput[] = [
-      {
+      imageScene({
         imagePath: await makeImage("abort.png", "red"),
         audioPath: await makeSilentMp3("abort.mp3", 10),
         durationSec: 10
-      }
+      })
     ];
     const outputPath = join(tmpDir, "abort.mp4");
     const controller = new AbortController();
@@ -304,11 +322,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
 
   it("compose cleans up the .audio-list.txt temp file on success", async () => {
     const scenes: SceneInput[] = [
-      {
+      imageScene({
         imagePath: await makeImage("cleanup.png", "blue"),
         audioPath: await makeSilentMp3("cleanup.mp3", 0.5),
         durationSec: 0.5
-      }
+      })
     ];
     const outputPath = join(tmpDir, "cleanup.mp4");
     await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
@@ -329,7 +347,15 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     // This assertion locks the invocation contract in.
     const args = buildCompositionArgs(
       {
-        scenes: [{ imagePath: "/x/a.png", audioPath: "/x/a.mp3", durationSec: 1 }],
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/a.mp3",
+            durationSec: 1,
+            transition: "cut"
+          }
+        ],
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
@@ -353,8 +379,20 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     const args = buildCompositionArgs(
       {
         scenes: [
-          { imagePath: "/x/a.png", audioPath: "/x/a.mp3", durationSec: 2 },
-          { imagePath: "/x/b.png", audioPath: "/x/b.mp3", durationSec: 3 }
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/a.mp3",
+            durationSec: 2,
+            transition: "cut"
+          },
+          {
+            kind: "image",
+            imagePath: "/x/b.png",
+            audioPath: "/x/b.mp3",
+            durationSec: 3,
+            transition: "cut"
+          }
         ],
         outputPath: "/x/out.mp4",
         width: 1920,

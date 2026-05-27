@@ -176,7 +176,15 @@ function sanitizeScenes(scenes: SizzleScene[]): SizzleScene[] {
     durationOverrideSec:
       typeof s.durationOverrideSec === "number" && s.durationOverrideSec > 0
         ? s.durationOverrideSec
-        : null
+        : null,
+    // New fields with backward-compatible defaults. Older projects on
+    // disk predate these — readBlob hands them through here.
+    mediaTrim:
+      s.mediaTrim !== undefined && s.mediaTrim !== null
+        ? { startSec: s.mediaTrim.startSec, endSec: s.mediaTrim.endSec }
+        : null,
+    audioSource: s.audioSource ?? "auto",
+    transition: s.transition ?? "crossfade"
   }));
 }
 

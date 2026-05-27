@@ -24,9 +24,14 @@
 // validators here stay surgical (one verb each, shallow shape).
 
 import {
+  SIZZLE_AUDIO_SOURCES,
+  SIZZLE_TRANSITIONS,
   SIZZLE_VOICES,
+  type SizzleAudioSource,
+  type SizzleMediaTrim,
   type SizzleProject,
   type SizzleScene,
+  type SizzleTransition,
   type SizzleTtsModel,
   type SizzleTtsProvider,
   type SizzleVoice,
@@ -42,7 +47,17 @@ export const SIZZLE_LIMITS = {
   sceneScriptLineMax: 4000,
   scenesPerProjectMax: 200,
   durationOverrideSecMin: 0.5,
-  durationOverrideSecMax: 60
+  durationOverrideSecMax: 60,
+  /** Hard cap on a video scene's trim range. Matches the OpenAI TTS
+   *  practical-length cap and keeps the rendered reel under a few
+   *  minutes per scene. */
+  mediaTrimSecMin: 0.1,
+  mediaTrimSecMax: 60,
+  /** Cap on bulk capture lookups via `library:listByIds`. The Library
+   *  project view fetches a project's scenes in one go; 500 is well
+   *  beyond the scenes-per-project cap and gives any caller a generous
+   *  headroom. */
+  listByIdsMax: 500
 } as const;
 
 const TTS_MODELS: readonly SizzleTtsModel[] = ["tts-1", "tts-1-hd"];
@@ -219,6 +234,60 @@ function validateScenesArray(
   return { ok: true, value: out };
 }
 
+function isAudioSource(v: unknown): v is SizzleAudioSource {
+  return typeof v === "string" && (SIZZLE_AUDIO_SOURCES as readonly string[]).includes(v);
+}
+
+function isTransition(v: unknown): v is SizzleTransition {
+  return typeof v === "string" && (SIZZLE_TRANSITIONS as readonly string[]).includes(v);
+}
+
+function validateMediaTrim(
+  v: unknown,
+  idx: number
+):
+  | { ok: true; value: SizzleMediaTrim | null }
+  | { ok: false; error: PwrSnapError } {
+  if (v === null || v === undefined) return { ok: true, value: null };
+  if (!isRecord(v)) {
+    return {
+      ok: false,
+      error: validationError("scene_mediaTrim_invalid", `scene[${idx}].mediaTrim must be an object`)
+    };
+  }
+  const startSec = v.startSec;
+  const endSec = v.endSec;
+  if (typeof startSec !== "number" || !Number.isFinite(startSec) || startSec < 0) {
+    return {
+      ok: false,
+      error: validationError(
+        "scene_mediaTrim_start_invalid",
+        `scene[${idx}].mediaTrim.startSec must be a finite number ≥ 0`
+      )
+    };
+  }
+  if (typeof endSec !== "number" || !Number.isFinite(endSec) || endSec <= startSec) {
+    return {
+      ok: false,
+      error: validationError(
+        "scene_mediaTrim_end_invalid",
+        `scene[${idx}].mediaTrim.endSec must be a finite number > startSec`
+      )
+    };
+  }
+  const duration = endSec - startSec;
+  if (duration < SIZZLE_LIMITS.mediaTrimSecMin || duration > SIZZLE_LIMITS.mediaTrimSecMax) {
+    return {
+      ok: false,
+      error: validationError(
+        "scene_mediaTrim_duration_out_of_range",
+        `scene[${idx}].mediaTrim duration must be in [${SIZZLE_LIMITS.mediaTrimSecMin}, ${SIZZLE_LIMITS.mediaTrimSecMax}]`
+      )
+    };
+  }
+  return { ok: true, value: { startSec, endSec } };
+}
+
 function validateScene(
   v: unknown,
   idx: number
@@ -276,13 +345,48 @@ function validateScene(
       )
     };
   }
+  const trimResult = validateMediaTrim(v.mediaTrim, idx);
+  if (!trimResult.ok) return trimResult;
+  // audioSource is optional in the wire format (older projects predate
+  // this field); absent / undefined defaults to "auto".
+  let audioSource: SizzleAudioSource = "auto";
+  if (v.audioSource !== undefined && v.audioSource !== null) {
+    if (!isAudioSource(v.audioSource)) {
+      return {
+        ok: false,
+        error: validationError(
+          "scene_audioSource_invalid",
+          `scene[${idx}].audioSource must be one of ${SIZZLE_AUDIO_SOURCES.join(", ")}`
+        )
+      };
+    }
+    audioSource = v.audioSource;
+  }
+  // transition is optional in the wire format (older projects predate
+  // this field); absent / undefined defaults to "crossfade".
+  let transition: SizzleTransition = "crossfade";
+  if (v.transition !== undefined && v.transition !== null) {
+    if (!isTransition(v.transition)) {
+      return {
+        ok: false,
+        error: validationError(
+          "scene_transition_invalid",
+          `scene[${idx}].transition must be one of ${SIZZLE_TRANSITIONS.join(", ")}`
+        )
+      };
+    }
+    transition = v.transition;
+  }
   return {
     ok: true,
     value: {
       id: v.id,
       captureId: v.captureId,
       scriptLine: v.scriptLine,
-      durationOverrideSec
+      durationOverrideSec,
+      mediaTrim: trimResult.value,
+      audioSource,
+      transition
     }
   };
 }
@@ -314,6 +418,58 @@ export function validateSizzlePreviewRequest(
     return { ok: false, error: validationError("sceneId_required", "sceneId must be a non-empty string") };
   }
   return { ok: true, projectId: req.projectId, sceneId: req.sceneId };
+}
+
+export function validateSizzleToggleScene(
+  req: unknown
+):
+  | { ok: true; projectId: string; captureId: string }
+  | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (typeof req.projectId !== "string" || req.projectId.length === 0) {
+    return { ok: false, error: validationError("projectId_required", "projectId must be a non-empty string") };
+  }
+  if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+    return { ok: false, error: validationError("captureId_required", "captureId must be a non-empty string") };
+  }
+  return { ok: true, projectId: req.projectId, captureId: req.captureId };
+}
+
+export function validateLibraryListByIds(
+  req: unknown
+): { ok: true; ids: string[] } | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  if (!Array.isArray(req.ids)) {
+    return { ok: false, error: validationError("ids_required", "ids must be an array of strings") };
+  }
+  if (req.ids.length > SIZZLE_LIMITS.listByIdsMax) {
+    return {
+      ok: false,
+      error: validationError(
+        "ids_too_many",
+        `ids must be ≤ ${SIZZLE_LIMITS.listByIdsMax} (got ${req.ids.length})`
+      )
+    };
+  }
+  const out: string[] = [];
+  for (let i = 0; i < req.ids.length; i++) {
+    const id = req.ids[i];
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        error: validationError(
+          "id_invalid",
+          `ids[${i}] must be a non-empty string`
+        )
+      };
+    }
+    out.push(id);
+  }
+  return { ok: true, ids: out };
 }
 
 export function validateSizzleOpenRequest(

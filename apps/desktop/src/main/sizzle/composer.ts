@@ -1,16 +1,50 @@
 import { spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { SIZZLE_CROSSFADE_SEC, type SizzleTransition } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
 
-export type SceneInput = {
+/**
+ * Per-scene input descriptor. Discriminated by `kind`:
+ *
+ *   - "image": single PNG/JPEG frame, rendered with zoompan ken-burns.
+ *   - "video": trimmed video clip, no zoompan (the video already
+ *      has motion). `startSec` + `durationSec` apply as `-ss start -t
+ *      duration` on the input side.
+ *
+ * Both shapes carry an `audioPath` — the composer treats it as a
+ * black-box mp3/m4a that's already the right length for the scene.
+ * The handler decides whether it's a TTS voiceover, the video's
+ * extracted native audio, or a synthesized silent stretch.
+ *
+ * `transition` describes the transition INTO this scene from the
+ * previous one. Ignored on scene 0 (nothing precedes it).
+ */
+export type ImageSceneInput = {
+  kind: "image";
   imagePath: string;
   audioPath: string;
   durationSec: number;
+  transition: SizzleTransition;
 };
+
+export type VideoSceneInput = {
+  kind: "video";
+  videoPath: string;
+  /** Trim start in the source file, seconds. Passed to ffmpeg as
+   *  `-ss` BEFORE `-i` so seeking is fast. */
+  startSec: number;
+  /** Trim length in seconds. Passed as `-t` BEFORE `-i` so the
+   *  decoder stops at this duration. */
+  durationSec: number;
+  audioPath: string;
+  transition: SizzleTransition;
+};
+
+export type SceneInput = ImageSceneInput | VideoSceneInput;
 
 export type ComposeRequest = {
   scenes: SceneInput[];
@@ -81,35 +115,48 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *
  * Architecture:
  *
- * - Each scene gets its own input as `-i image` — exactly ONE frame
- *   per scene goes in. NOT `-loop 1 ... -i image`: with -loop the
- *   input stream is infinite, and zoompan with `d=N` emits N output
- *   frames PER input frame. Pairing infinite input with zoompan
- *   produces an unbounded output that `-shortest` truncates to audio
- *   length — so only the first scene's zoompan run survives in the
- *   final mux. (This was the "only one image shows" bug in the first
- *   two cuts of the composer.)
+ * - Image scene input: bare `-i image` (single frame). zoompan with
+ *   `d=N` time-stretches it to N output frames at fps. MUST NOT use
+ *   `-loop 1` or `-framerate` — the input would become multi-frame
+ *   and zoompan would emit N outputs PER input, overflowing.
  *
- * - Each `[i:v]` is scaled with `force_original_aspect_ratio=decrease`
- *   + `pad` for honest letterboxing on portrait / odd-aspect captures.
- *   We scale to 2× the output canvas so zoompan has headroom to zoom
- *   in/out without hitting a hard edge.
+ * - Video scene input: `-ss startSec -t durationSec -i videoPath`.
+ *   Input-side seek means ffmpeg fast-decodes only the trim range.
+ *   No zoompan — the video has its own motion.
  *
- * - `zoompan` does the ken-burns. With a single input frame, `d=N`
- *   makes zoompan emit exactly N output frames at the configured
- *   `fps`, so each scene's video length is `N / fps` ≡ `durationSec`.
- *   Zoom direction alternates per scene (in / out) for visual variety.
- *   The `on` variable is the output frame index within zoompan's
- *   current input frame, [0..N), which lets us interpolate linearly:
- *   `1.0 + DELTA * on / N`.
+ * - Each `[i:v]` is normalized into a fixed-shape stream — same
+ *   resolution (output W×H), same pixfmt (yuv420p), same SAR (1:1),
+ *   same framerate (fps). This is the precondition for `concat` and
+ *   `xfade` chaining: they require homogeneous inputs.
  *
- * - The N scene videos go into `concat=n=N:v=1:a=0[vout]`, audio comes
- *   from the concat-demuxer input that follows the scene inputs.
+ * - **Image branch** scales to 4× output before zoompan so a 1-pixel
+ *   crop step becomes a 1/4-pixel output step (invisible). Trunc-
+ *   to-even forces deterministic rounding so the ken-burns motion is
+ *   smooth and yuv420p chroma stays clean.
  *
- * - `-shortest` is intentional: rounds total length to the shorter of
- *   (video, audio). Per-scene durations are derived from per-scene
- *   audio durations + a 350ms tail, so total video should be within
- *   ~1.4s of total audio.
+ * - **Video branch** scales to output W×H with letterbox padding,
+ *   forces fps + SAR + yuv420p. Cheap — the video already has motion
+ *   and pixel detail, no need to round-trip through a higher canvas.
+ *
+ * - Boundaries between scenes are built as a left-fold over the
+ *   scene list. For each pair (chain-so-far, next scene):
+ *     • `transition: "crossfade"` → splice an `xfade` filter with
+ *       SIZZLE_CROSSFADE_SEC overlap; the resulting chain duration
+ *       shrinks by SIZZLE_CROSSFADE_SEC.
+ *     • `transition: "cut"` → a 2-input `concat` (drops to a hard
+ *       cut, no audio drift, chain duration is the sum).
+ *
+ * - Audio comes from the concat-demuxer input that follows the scene
+ *   inputs. Audio sees only cuts — every scene's `audioPath` is
+ *   stitched end-to-end. With crossfades the audio is ~SIZZLE_CROSSFADE_SEC
+ *   per crossfade longer than video; `-shortest` truncates to the
+ *   shorter, so the trailing silence at the end of the last audio
+ *   gets clipped. Acceptable for narration-paced content; audio-side
+ *   crossfade (`acrossfade`) is a future enhancement.
+ *
+ * - `-shortest` rounds total length to min(video, audio). Per-scene
+ *   audio durations are tuned to match per-scene video durations
+ *   (`measured + 0.35s` tail) so the trim is small.
  */
 export function buildCompositionArgs(
   req: ComposeRequest,
@@ -117,101 +164,84 @@ export function buildCompositionArgs(
 ): string[] {
   const args: string[] = ["-y", "-hide_banner"];
   for (const scene of req.scenes) {
-    // One frame of input per scene. zoompan's `d=N` does the time-
-    // stretching to N output frames; we MUST NOT add `-loop 1` or
-    // `-framerate` here or the input becomes a multi-frame stream and
-    // zoompan emits N output frames per input frame.
-    args.push("-i", scene.imagePath);
+    if (scene.kind === "image") {
+      // Single-frame input. zoompan time-stretches in the filter graph.
+      args.push("-i", scene.imagePath);
+    } else {
+      // Input-side -ss + -t for fast trim. -ss must come BEFORE -i;
+      // -t too (so decoder stops at the trim, not just the demuxer).
+      args.push(
+        "-ss",
+        scene.startSec.toFixed(3),
+        "-t",
+        scene.durationSec.toFixed(3),
+        "-i",
+        scene.videoPath
+      );
+    }
   }
   args.push("-f", "concat", "-safe", "0", "-i", audioListPath);
 
   const filters: string[] = [];
+
+  // === Per-scene normalization filters ===
   req.scenes.forEach((scene, i) => {
-    const nFrames = Math.max(2, Math.round(scene.durationSec * req.fps));
-    const directionIn = i % 2 === 0;
-    // Linear zoom across the scene: 1.0 → 1.10 (in) or 1.10 → 1.0 (out).
-    // `on` is zoompan's per-input-frame output counter; with one input
-    // frame and d=N, on runs [0..N).
-    const zoomExpr = directionIn
-      ? `1.0+0.10*on/${nFrames}`
-      : `1.10-0.10*on/${nFrames}`;
-    // Scale input to 4× output (was 2×) BEFORE zoompan. zoompan rounds
-    // its crop x/y to integer pixels each frame; with a 4× canvas, a
-    // 1-pixel rounding step in the crop becomes a 1/4-pixel step in
-    // the final output and the wiggle drops below human perception.
-    // (Was visibly jumping at 2× for images whose aspect didn't match
-    // 16:9 — the pad bars amplified the rounding seam.)
-    const wScale = req.width * 4;
-    const hScale = req.height * 4;
-    // `trunc((...)/2)*2` rounds the crop origin down to the nearest
-    // EVEN pixel. Two reasons:
-    //   • Deterministic rounding direction (always down) — without
-    //     trunc(), zoompan's internal round-to-nearest oscillates
-    //     across the .5 boundary as the float x/y slowly increase,
-    //     which is what the user saw as the image "re-deciding" its
-    //     alignment 1-2 frames at a time.
-    //   • yuv420p chroma subsampling stores chroma at half resolution;
-    //     odd-pixel offsets force the subsampler to interpolate and
-    //     that interpolation drifts frame-to-frame. Aligning to even
-    //     pixels gives a clean chroma sample on every frame.
-    const xExpr = `trunc((iw-iw/zoom)/4)*2`;
-    const yExpr = `trunc((ih-ih/zoom)/4)*2`;
-    filters.push(
-      `[${i}:v]` +
-        `scale=${wScale}:${hScale}:force_original_aspect_ratio=decrease,` +
-        `pad=${wScale}:${hScale}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-        `zoompan=z='${zoomExpr}':` +
-        `x='${xExpr}':y='${yExpr}':` +
-        `d=${nFrames}:s=${req.width}x${req.height}:fps=${req.fps},` +
-        `setsar=1,format=yuv420p[v${i}]`
-    );
+    if (scene.kind === "image") {
+      const nFrames = Math.max(2, Math.round(scene.durationSec * req.fps));
+      const directionIn = i % 2 === 0;
+      // Linear zoom across the scene: 1.0 → 1.10 (in) or 1.10 → 1.0 (out).
+      const zoomExpr = directionIn
+        ? `1.0+0.10*on/${nFrames}`
+        : `1.10-0.10*on/${nFrames}`;
+      const wScale = req.width * 4;
+      const hScale = req.height * 4;
+      // trunc((...)/4)*2 rounds the crop origin DOWN to the nearest
+      // even pixel — deterministic rounding direction (no oscillation
+      // across the .5 boundary) + yuv420p chroma alignment.
+      const xExpr = `trunc((iw-iw/zoom)/4)*2`;
+      const yExpr = `trunc((ih-ih/zoom)/4)*2`;
+      filters.push(
+        `[${i}:v]` +
+          `scale=${wScale}:${hScale}:force_original_aspect_ratio=decrease,` +
+          `pad=${wScale}:${hScale}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+          `zoompan=z='${zoomExpr}':` +
+          `x='${xExpr}':y='${yExpr}':` +
+          `d=${nFrames}:s=${req.width}x${req.height}:fps=${req.fps},` +
+          `setsar=1,format=yuv420p[v${i}]`
+      );
+    } else {
+      // Video: scale to fit, letterbox, force uniform fps + SAR + pixfmt.
+      // No zoompan — the video already has motion of its own.
+      filters.push(
+        `[${i}:v]` +
+          `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
+          `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+          `fps=${req.fps},setsar=1,format=yuv420p[v${i}]`
+      );
+    }
   });
 
-  const concatInputs = req.scenes.map((_, i) => `[v${i}]`).join("");
-  filters.push(
-    `${concatInputs}concat=n=${req.scenes.length}:v=1:a=0[vout]`
-  );
-
+  // === Build the transition chain ===
+  // Left-fold over scenes: chain[0] = v0; for each next scene apply
+  // its transition (xfade for crossfade, concat for cut). Final label
+  // is `chainOut`.
+  const finalLabel = buildTransitionChain(req.scenes, filters);
   args.push(
     "-filter_complex",
     filters.join(";"),
     "-map",
-    "[vout]",
+    `[${finalLabel}]`,
     "-map",
     `${req.scenes.length}:a:0`,
-    // `h264_videotoolbox`: macOS-native hardware H.264 encoder via
-    // Apple's VideoToolbox framework. Two reasons we use it instead
-    // of `libx264`:
-    //
-    // 1. **License**: libx264 is GPL. Our composer would actively
-    //    *invoke* the GPL component every render, which complicates
-    //    PwrSnap's MIT posture and the .app's redistribution story.
-    //    VideoToolbox is part of macOS, included under Apple's
-    //    platform license — no GPL invocation, no patent dance.
-    //
-    // 2. **Speed**: VT runs on the Media Engine on Apple Silicon and
-    //    on the iGPU on Intel Macs. A 4-scene 1080p reel encodes in
-    //    a few seconds vs. tens of seconds with libx264 veryfast.
-    //
-    // Issue #127 tracks switching the *bundled* ffmpeg binary itself
-    // to a non-GPL build so the GPL code isn't even shipped. This
-    // codec switch is the invocation-layer half of that work.
-    //
-    // Quality is controlled by `-q:v` (1=best, 100=worst) rather than
-    // `-crf` — VT's rate-control parameter is different. q=50 is the
-    // VT default and is visually transparent for screenshot-style
-    // material; we use 45 for a slight quality bump.
+    // h264_videotoolbox: macOS-native hardware H.264 encoder. NOT
+    // libx264 (GPL — issue #127 tracks switching the bundled binary).
     "-c:v",
     "h264_videotoolbox",
     "-q:v",
     "45",
     "-pix_fmt",
     "yuv420p",
-    // `aac` here is ffmpeg's *native* AAC encoder (LGPL), NOT the
-    // nonfree `libfdk_aac`. Quality is good enough for narration at
-    // 192k. Explicitly preferred over auto-selection so a future
-    // ffmpeg build with libfdk-aac enabled can't accidentally bring
-    // in a nonfree codec.
+    // ffmpeg's native AAC (LGPL), NOT nonfree libfdk_aac.
     "-c:a",
     "aac",
     "-b:a",
@@ -222,6 +252,53 @@ export function buildCompositionArgs(
     req.outputPath
   );
   return args;
+}
+
+/**
+ * Walk the scene list, splicing xfade / concat filters into `filters`
+ * for each scene→scene boundary. Returns the final output label name
+ * (`v0` for a single-scene reel; `xN_M` or `cN_M` for multi-scene).
+ *
+ * The chain's running duration is tracked in `chainEndSec` so each
+ * subsequent xfade can compute its `offset=` correctly. Crossfade
+ * shrinks the chain by SIZZLE_CROSSFADE_SEC per fade; cut keeps it
+ * the sum of inputs.
+ */
+function buildTransitionChain(
+  scenes: SceneInput[],
+  filters: string[]
+): string {
+  if (scenes.length === 1) return "v0";
+
+  let chainLabel = "v0";
+  let chainEndSec = scenes[0]!.durationSec;
+
+  for (let i = 1; i < scenes.length; i++) {
+    const next = scenes[i]!;
+    const nextLabel = `chain${i}`;
+    if (next.transition === "crossfade") {
+      // xfade overlaps the last SIZZLE_CROSSFADE_SEC of the chain
+      // with the first SIZZLE_CROSSFADE_SEC of the next scene.
+      // `offset` is when the crossfade begins in the chain's
+      // timeline, so chainEndSec - SIZZLE_CROSSFADE_SEC.
+      const offsetSec = Math.max(0, chainEndSec - SIZZLE_CROSSFADE_SEC);
+      filters.push(
+        `[${chainLabel}][v${i}]xfade=transition=fade:` +
+          `duration=${SIZZLE_CROSSFADE_SEC}:offset=${offsetSec.toFixed(3)}` +
+          `[${nextLabel}]`
+      );
+      // Chain duration grows by next.durationSec but loses the overlap.
+      chainEndSec = chainEndSec + next.durationSec - SIZZLE_CROSSFADE_SEC;
+    } else {
+      // Hard cut — concat with n=2.
+      filters.push(
+        `[${chainLabel}][v${i}]concat=n=2:v=1:a=0[${nextLabel}]`
+      );
+      chainEndSec = chainEndSec + next.durationSec;
+    }
+    chainLabel = nextLabel;
+  }
+  return chainLabel;
 }
 
 export async function compose(req: ComposeRequest): Promise<void> {
@@ -245,6 +322,8 @@ export async function compose(req: ComposeRequest): Promise<void> {
     const args = buildCompositionArgs(req, audioListPath);
     log.info("ffmpeg compose", {
       scenes: req.scenes.length,
+      kinds: req.scenes.map((s) => s.kind),
+      transitions: req.scenes.slice(1).map((s) => s.transition),
       width: req.width,
       height: req.height,
       fps: req.fps,
@@ -267,7 +346,6 @@ function runFfmpeg(
   signal: AbortSignal | undefined
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Already aborted before we started? Bail without spawning.
     if (signal?.aborted === true) {
       reject(new ComposeError("cancelled", "Render was cancelled before start"));
       return;
@@ -277,9 +355,6 @@ function runFfmpeg(
     let aborted = false;
     const onAbort = (): void => {
       aborted = true;
-      // SIGKILL — ffmpeg ignores SIGTERM mid-encode in some
-      // configurations. We've already committed to discarding the
-      // partial output.
       proc.kill("SIGKILL");
     };
     if (signal !== undefined) {
@@ -288,10 +363,6 @@ function runFfmpeg(
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       tail = (tail + text).slice(-8192);
-      // Use .match with /g instead of .exec — .exec with a global
-      // regex stashes lastIndex on the regex object and is awkward
-      // here. We want the LAST time= line in this chunk so progress
-      // tracks the current encoder position.
       const matches = text.match(/time=(\d+):(\d+):(\d+\.\d+)/g);
       if (matches !== null && totalDurationSec > 0 && onProgress) {
         const last = matches[matches.length - 1]!;

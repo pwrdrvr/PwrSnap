@@ -612,6 +612,110 @@
   background: var(--bg-input);
 }
 
+.szl__picker-thumb-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.szl__picker-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 18px/1 var(--font-sans);
+  color: white;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.szl__picker-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.szl__scene-thumb {
+  position: relative;
+}
+
+.szl__scene-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 22px/1 var(--font-sans);
+  color: white;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.szl__scene-thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+/* Transition chip between scenes. The chip sits in its own <li>
+   between scene rows; sized to overlap the gap so it reads as a
+   boundary, not a third row in the list. */
+.szl__transition {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  margin: -2px 0;
+  pointer-events: none;
+}
+
+.szl__transition::before,
+.szl__transition::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 0 12px;
+}
+
+.szl__transition-chip {
+  pointer-events: auto;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.szl__transition-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+}
+
+.szl__transition--crossfade .szl__transition-chip {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
 .szl__picker-label {
   font: 500 10px/1.2 var(--font-mono);
   color: var(--text-muted);

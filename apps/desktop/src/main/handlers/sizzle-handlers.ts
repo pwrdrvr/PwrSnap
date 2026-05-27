@@ -1,6 +1,7 @@
 import { BrowserWindow, app, shell } from "electron";
 import { join } from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import {
   EVENT_CHANNELS,
   err,
@@ -8,7 +9,10 @@ import {
   type CaptureRecord,
   type PwrSnapError,
   type Result,
-  type SizzleRenderProgressEvent
+  type SizzleAudioSource,
+  type SizzleProject,
+  type SizzleRenderProgressEvent,
+  type SizzleScene
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
@@ -20,6 +24,11 @@ import {
   probeDurationSec,
   type SceneInput
 } from "../sizzle/composer";
+import {
+  AudioExtractError,
+  extractVideoAudio,
+  synthesizeSilence
+} from "../sizzle/audio-extract";
 import { createSizzleWindow, findSizzleWindow } from "../window";
 import {
   DesktopSecretStore,
@@ -31,6 +40,7 @@ import {
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
   validateSizzlePreviewRequest,
+  validateSizzleToggleScene,
   validateSizzleUpdate
 } from "./sizzle-validators";
 
@@ -47,9 +57,22 @@ function getSecrets(): DesktopSecretStore {
   return secretStore;
 }
 
-function broadcast(event: SizzleRenderProgressEvent): void {
+function broadcastRenderProgress(event: SizzleRenderProgressEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(EVENT_CHANNELS.sizzleRenderProgress, event);
+  }
+}
+
+/**
+ * Broadcast the latest project list to every BrowserWindow. The
+ * Library sidebar's "Sizzle Reels" section + the DetailRail Project
+ * tab subscribe here so they refresh without polling. Fire-and-
+ * forget — the caller doesn't await the broadcast itself, just
+ * needs the snapshot read to happen.
+ */
+async function broadcastProjectsChanged(projects: SizzleProject[]): Promise<void> {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, { projects });
   }
 }
 
@@ -58,6 +81,14 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
     return { kind: "render", code: cause.code, message: cause.message };
   }
   if (cause instanceof ComposeError) {
+    return {
+      kind: "render",
+      code: cause.code,
+      message: cause.message,
+      cause: cause.details
+    };
+  }
+  if (cause instanceof AudioExtractError) {
     return {
       kind: "render",
       code: cause.code,
@@ -96,11 +127,33 @@ async function resolveImagePath(
 ): Promise<string | null> {
   // resolveCacheFile renders the capture at the requested width via
   // the same pipeline `pwrsnap-cache://` uses. Works for v1 + v2
-  // bundles, soft-deleted rows, and legacy captures alike — and
-  // returns a real on-disk PNG/WebP we can hand to ffmpeg. Falling
-  // back to record.flat_png_path would miss v2 captures (where the
-  // sibling PNG is regenerated lazily and often null).
+  // bundles, soft-deleted rows, and legacy captures alike.
   return resolveCacheFile({ captureId, width, format: "png" });
+}
+
+/**
+ * Per-scene audio policy resolver. `scene.audioSource === "auto"`
+ * collapses to the natural default for the capture kind:
+ *
+ *   image capture → always "voiceover" (no native audio possible).
+ *   video capture, no script → "native" (drop in the clip, hear it).
+ *   video capture, with script → "voiceover" (TTS over muted video).
+ *
+ * Explicit `audioSource` values pass through, except `native` on an
+ * image scene falls back to `muted` (image scenes have no source
+ * audio to extract).
+ */
+export function resolveAudioSource(
+  audioSource: SizzleAudioSource,
+  captureKind: "image" | "video",
+  scriptLine: string
+): "native" | "voiceover" | "muted" {
+  if (audioSource !== "auto") {
+    if (captureKind === "image" && audioSource === "native") return "muted";
+    return audioSource;
+  }
+  if (captureKind === "image") return "voiceover";
+  return scriptLine.trim().length === 0 ? "native" : "voiceover";
 }
 
 export function registerSizzleHandlers(): void {
@@ -129,6 +182,8 @@ export function registerSizzleHandlers(): void {
     const v = validateSizzleCreate(req);
     if (!v.ok) return err(v.error);
     const project = await store.create(v.name);
+    const all = await store.list();
+    await broadcastProjectsChanged(all);
     return ok(project);
   });
 
@@ -137,6 +192,8 @@ export function registerSizzleHandlers(): void {
     if (!v.ok) return err(v.error);
     try {
       const project = await store.update(v.value.id, v.value.patch);
+      const all = await store.list();
+      await broadcastProjectsChanged(all);
       return ok(project);
     } catch (cause) {
       return err(toError(cause, "sizzle_update_failed"));
@@ -147,7 +204,47 @@ export function registerSizzleHandlers(): void {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
     await store.delete(v.id);
+    const all = await store.list();
+    await broadcastProjectsChanged(all);
     return ok(undefined);
+  });
+
+  bus.register("sizzle:toggleScene", async (req) => {
+    const v = validateSizzleToggleScene(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.projectId);
+    if (project === null) {
+      return err({ kind: "validation", code: "not_found", message: "Project not found" });
+    }
+    const existingIdx = project.scenes.findIndex((s) => s.captureId === v.captureId);
+    let nextScenes: SizzleScene[];
+    if (existingIdx >= 0) {
+      // Remove the existing scene
+      nextScenes = project.scenes.filter((_, i) => i !== existingIdx);
+    } else {
+      // Append a new scene with empty script — the user fills it in
+      // from the sizzle editor. (The editor's "Add scene" flow does
+      // a separate Codex enrichment prefill; for the in-library +/✓
+      // toggle we keep it cheap and snappy.)
+      const newScene: SizzleScene = {
+        id: `sc_${randomUUID().slice(0, 10)}`,
+        captureId: v.captureId,
+        scriptLine: "",
+        durationOverrideSec: null,
+        mediaTrim: null,
+        audioSource: "auto",
+        transition: "crossfade"
+      };
+      nextScenes = [...project.scenes, newScene];
+    }
+    try {
+      const updated = await store.update(project.id, { scenes: nextScenes });
+      const all = await store.list();
+      await broadcastProjectsChanged(all);
+      return ok(updated);
+    } catch (cause) {
+      return err(toError(cause, "sizzle_toggle_failed"));
+    }
   });
 
   bus.register("sizzle:previewSceneAudio", async (req) => {
@@ -161,54 +258,108 @@ export function registerSizzleHandlers(): void {
     if (scene === undefined) {
       return err({ kind: "validation", code: "not_found", message: "Scene not found" });
     }
+    const capture = await loadCapture(scene.captureId);
+    if (capture === null) {
+      return err({
+        kind: "validation",
+        code: "capture_missing",
+        message: "The capture for this scene was deleted"
+      });
+    }
+    const effectiveAudio = resolveAudioSource(
+      scene.audioSource,
+      capture.kind,
+      scene.scriptLine
+    );
     log.info("sizzle:previewSceneAudio", {
       projectId: project.id,
       sceneId: scene.id,
+      captureKind: capture.kind,
+      effectiveAudio,
       voice: project.voice,
       model: project.ttsModel,
-      scriptLen: scene.scriptLine.length,
-      scriptPreview:
-        scene.scriptLine.length > 60
-          ? scene.scriptLine.slice(0, 57) + "…"
-          : scene.scriptLine
+      scriptLen: scene.scriptLine.length
     });
-    const text = scene.scriptLine.trim();
-    if (text.length === 0) {
+
+    try {
+      if (effectiveAudio === "voiceover") {
+        const text = scene.scriptLine.trim();
+        if (text.length === 0) {
+          return err({
+            kind: "validation",
+            code: "empty_script",
+            message: "Write a script line first, then preview"
+          });
+        }
+        let apiKey: string | null;
+        try {
+          apiKey = await getSecrets().getValue(
+            project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
+          );
+        } catch (cause) {
+          return err(toError(cause, "secret_read_failed"));
+        }
+        if (apiKey === null || apiKey.length === 0) {
+          return err({
+            kind: "validation",
+            code: "no_api_key",
+            message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
+          });
+        }
+        const tts = await synthesize({
+          provider: project.ttsProvider,
+          apiKey,
+          text,
+          voice: project.voice,
+          model: project.ttsModel
+        });
+        const durationSec = await probeDurationSec(tts.audioPath);
+        const bytes = await readFile(tts.audioPath);
+        return ok({
+          audioBase64: bytes.toString("base64"),
+          mimeType: "audio/mpeg" as const,
+          durationSec
+        });
+      }
+      if (effectiveAudio === "native") {
+        // Preview the video's native audio for the trim range.
+        const video = capture.kind === "video" ? capture.video : null;
+        if (video === null || video === undefined) {
+          return err({
+            kind: "validation",
+            code: "no_native_audio",
+            message: "This scene's capture has no audio to preview"
+          });
+        }
+        if (capture.legacy_src_path === null) {
+          return err({
+            kind: "validation",
+            code: "no_video_path",
+            message: "Video file path is not yet available for this capture"
+          });
+        }
+        const trim = scene.mediaTrim ?? {
+          startSec: video.defaultRange.start,
+          endSec: video.defaultRange.end
+        };
+        const audioPath = await extractVideoAudio({
+          videoPath: capture.legacy_src_path,
+          startSec: trim.startSec,
+          durationSec: trim.endSec - trim.startSec
+        });
+        const durationSec = await probeDurationSec(audioPath);
+        const bytes = await readFile(audioPath);
+        return ok({
+          audioBase64: bytes.toString("base64"),
+          mimeType: "audio/mpeg" as const,
+          durationSec
+        });
+      }
+      // muted
       return err({
         kind: "validation",
-        code: "empty_script",
-        message: "Write a script line first, then preview"
-      });
-    }
-    let apiKey: string | null;
-    try {
-      apiKey = await getSecrets().getValue(
-        project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
-      );
-    } catch (cause) {
-      return err(toError(cause, "secret_read_failed"));
-    }
-    if (apiKey === null || apiKey.length === 0) {
-      return err({
-        kind: "validation",
-        code: "no_api_key",
-        message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
-      });
-    }
-    try {
-      const tts = await synthesize({
-        provider: project.ttsProvider,
-        apiKey,
-        text,
-        voice: project.voice,
-        model: project.ttsModel
-      });
-      const durationSec = await probeDurationSec(tts.audioPath);
-      const bytes = await readFile(tts.audioPath);
-      return ok({
-        audioBase64: bytes.toString("base64"),
-        mimeType: "audio/mpeg" as const,
-        durationSec
+        code: "muted_scene",
+        message: "This scene is muted — nothing to preview"
       });
     } catch (cause) {
       return err(toError(cause, "preview_failed"));
@@ -245,108 +396,195 @@ export function registerSizzleHandlers(): void {
       });
     }
 
-    // Refuse to render if any scene has an empty script. The previous
-    // behavior was to fall back to "." which OpenAI happily synthesized
-    // as ~0.3s of click — produced a 3s reel of clicks instead of a
-    // narrated walkthrough. Better to error loudly and let the user
-    // know they need to write (or auto-fill) the script lines.
-    const emptyIdx = project.scenes.findIndex(
-      (s) => s.scriptLine.trim().length === 0
-    );
-    if (emptyIdx !== -1) {
-      const message = `Scene ${emptyIdx + 1} has no script line — write what the narrator should say, then render`;
-      broadcast({
-        projectId: project.id,
-        phase: "failed",
-        message,
-        ratio: 0,
-        error: { code: "empty_script", message }
-      });
-      return err({ kind: "validation", code: "empty_script", message });
-    }
-
-    broadcast({ projectId: project.id, phase: "tts", message: "Generating voiceover", ratio: 0 });
-
-    let apiKey: string | null;
-    try {
-      apiKey = await getSecrets().getValue(
-        project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
-      );
-    } catch (cause) {
-      const e = toError(cause, "secret_read_failed");
-      broadcast({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
-      return err(e);
-    }
-    if (apiKey === null || apiKey.length === 0) {
-      const message = `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`;
-      broadcast({ projectId: project.id, phase: "failed", message, ratio: 0, error: { code: "no_api_key", message } });
-      return err({ kind: "validation", code: "no_api_key", message });
-    }
-
     const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
+
+    broadcastRenderProgress({ projectId: project.id, phase: "tts", message: "Resolving scenes", ratio: 0 });
+
+    // Pre-load every scene's capture so we can validate audio policy
+    // for the whole project before kicking off any TTS or extraction
+    // work. Avoids spending OpenAI tokens / disk extraction on a
+    // project that's about to fail with "scene 5 has no script".
+    const captures: Array<{ scene: SizzleScene; capture: CaptureRecord; effectiveAudio: "native" | "voiceover" | "muted" }> = [];
+    for (let i = 0; i < project.scenes.length; i++) {
+      const scene = project.scenes[i]!;
+      const capture = await loadCapture(scene.captureId);
+      if (capture === null) {
+        const message = `Scene ${i + 1}: capture ${scene.captureId} not found (it may have been deleted)`;
+        broadcastRenderProgress({
+          projectId: project.id,
+          phase: "failed",
+          message,
+          ratio: 0,
+          error: { code: "capture_missing", message }
+        });
+        return err({ kind: "validation", code: "capture_missing", message });
+      }
+      const effectiveAudio = resolveAudioSource(
+        scene.audioSource,
+        capture.kind,
+        scene.scriptLine
+      );
+      if (effectiveAudio === "voiceover" && scene.scriptLine.trim().length === 0) {
+        const message = `Scene ${i + 1}: voiceover audio source requires a non-empty script line`;
+        broadcastRenderProgress({
+          projectId: project.id,
+          phase: "failed",
+          message,
+          ratio: 0,
+          error: { code: "empty_script", message }
+        });
+        return err({ kind: "validation", code: "empty_script", message });
+      }
+      if (effectiveAudio === "native" && (capture.kind !== "video" || capture.legacy_src_path === null)) {
+        const message = `Scene ${i + 1}: native audio requires a video capture with a source file`;
+        broadcastRenderProgress({
+          projectId: project.id,
+          phase: "failed",
+          message,
+          ratio: 0,
+          error: { code: "no_native_audio", message }
+        });
+        return err({ kind: "validation", code: "no_native_audio", message });
+      }
+      captures.push({ scene, capture, effectiveAudio });
+    }
+
+    // Resolve OpenAI key once for the project (if any scene uses
+    // voiceover). The early-out matches the validation strictness
+    // above.
+    const anyVoiceover = captures.some((c) => c.effectiveAudio === "voiceover");
+    let apiKey: string | null = null;
+    if (anyVoiceover) {
+      try {
+        apiKey = await getSecrets().getValue(
+          project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
+        );
+      } catch (cause) {
+        const e = toError(cause, "secret_read_failed");
+        broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
+        return err(e);
+      }
+      if (apiKey === null || apiKey.length === 0) {
+        const message = `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`;
+        broadcastRenderProgress({ projectId: project.id, phase: "failed", message, ratio: 0, error: { code: "no_api_key", message } });
+        return err({ kind: "validation", code: "no_api_key", message });
+      }
+    }
 
     log.info("sizzle:render starting", {
       projectId: project.id,
       voice: project.voice,
       model: project.ttsModel,
-      scenes: project.scenes.map((s, i) => ({
+      scenes: captures.map((c, i) => ({
         idx: i + 1,
-        sceneId: s.id,
-        captureId: s.captureId,
-        scriptPreview:
-          s.scriptLine.length > 60
-            ? s.scriptLine.slice(0, 57) + "…"
-            : s.scriptLine,
-        scriptLen: s.scriptLine.length
+        kind: c.capture.kind,
+        effectiveAudio: c.effectiveAudio,
+        transition: c.scene.transition
       }))
     });
 
     const sceneInputs: SceneInput[] = [];
     try {
-      for (let i = 0; i < project.scenes.length; i++) {
-        const scene = project.scenes[i]!;
-        const capture = await loadCapture(scene.captureId);
-        if (capture === null) {
-          throw new SceneError(`Capture ${scene.captureId} not found`);
+      for (let i = 0; i < captures.length; i++) {
+        const { scene, capture, effectiveAudio } = captures[i]!;
+
+        // Resolve audio + duration first since durations depend on
+        // either the TTS audio (image scenes) or the video trim
+        // (video scenes).
+        let audioPath: string;
+        let durationSec: number;
+
+        if (capture.kind === "video") {
+          const trim = scene.mediaTrim ?? {
+            startSec: capture.video?.defaultRange.start ?? 0,
+            endSec:
+              capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
+          };
+          const trimDur = trim.endSec - trim.startSec;
+          durationSec =
+            scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+              ? scene.durationOverrideSec
+              : trimDur;
+
+          if (effectiveAudio === "voiceover") {
+            const tts = await synthesize({
+              provider: project.ttsProvider,
+              apiKey: apiKey!,
+              text: scene.scriptLine.trim(),
+              voice: project.voice,
+              model: project.ttsModel
+            });
+            audioPath = tts.audioPath;
+          } else if (effectiveAudio === "native") {
+            audioPath = await extractVideoAudio({
+              videoPath: capture.legacy_src_path!,
+              startSec: trim.startSec,
+              durationSec: trimDur
+            });
+          } else {
+            // muted
+            audioPath = await synthesizeSilence(durationSec);
+          }
+
+          sceneInputs.push({
+            kind: "video",
+            videoPath: capture.legacy_src_path!,
+            startSec: trim.startSec,
+            durationSec,
+            audioPath,
+            transition: scene.transition
+          });
+        } else {
+          // image
+          const imagePath = await resolveImagePath(scene.captureId, dims.w);
+          if (imagePath === null) {
+            throw new SceneError(`Scene ${i + 1}: could not render capture image`);
+          }
+          if (effectiveAudio === "voiceover") {
+            const tts = await synthesize({
+              provider: project.ttsProvider,
+              apiKey: apiKey!,
+              text: scene.scriptLine.trim(),
+              voice: project.voice,
+              model: project.ttsModel
+            });
+            const measured = await probeDurationSec(tts.audioPath);
+            durationSec =
+              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+                ? scene.durationOverrideSec
+                : measured + 0.35;
+            audioPath = tts.audioPath;
+          } else {
+            // image + muted (or image + native that fell back to muted)
+            durationSec =
+              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+                ? scene.durationOverrideSec
+                : 3.0;
+            audioPath = await synthesizeSilence(durationSec);
+          }
+          sceneInputs.push({
+            kind: "image",
+            imagePath,
+            audioPath,
+            durationSec,
+            transition: scene.transition
+          });
         }
-        const imagePath = await resolveImagePath(scene.captureId, dims.w);
-        if (imagePath === null) {
-          throw new SceneError(`Could not render capture ${scene.captureId}`);
-        }
-        const text = scene.scriptLine.trim();
-        const tts = await synthesize({
-          provider: project.ttsProvider,
-          apiKey,
-          text,
-          voice: project.voice,
-          model: project.ttsModel
-        });
-        const measured = await probeDurationSec(tts.audioPath);
-        // Scene duration = audio duration + a 350ms tail so the image
-        // doesn't cut on the last syllable. NO floor: matching audio
-        // exactly is critical, otherwise `-shortest` in the composer
-        // truncates the video to the longer of the two and we lose
-        // scenes. The script-validation above guarantees `measured`
-        // is meaningful (real speech, not a "." click).
-        const durationSec =
-          scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-            ? scene.durationOverrideSec
-            : measured + 0.35;
-        sceneInputs.push({ imagePath, audioPath: tts.audioPath, durationSec });
-        broadcast({
+
+        broadcastRenderProgress({
           projectId: project.id,
           phase: "tts",
-          message: `Voiced scene ${i + 1}/${project.scenes.length}`,
-          ratio: ((i + 1) / project.scenes.length) * 0.5
+          message: `Prepared scene ${i + 1}/${captures.length}`,
+          ratio: ((i + 1) / captures.length) * 0.5
         });
       }
     } catch (cause) {
-      const e = toError(cause, "tts_failed");
-      broadcast({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
+      const e = toError(cause, "scene_prep_failed");
+      broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
       return err(e);
     }
 
-    broadcast({ projectId: project.id, phase: "compose", message: "Composing video", ratio: 0.5 });
+    broadcastRenderProgress({ projectId: project.id, phase: "compose", message: "Composing video", ratio: 0.5 });
 
     const outDir = join(app.getPath("videos"), "PwrSnap");
     await mkdir(outDir, { recursive: true });
@@ -361,7 +599,7 @@ export function registerSizzleHandlers(): void {
         fps: 30,
         signal: ctx.signal,
         onProgress: (ratio) => {
-          broadcast({
+          broadcastRenderProgress({
             projectId: project.id,
             phase: "encode",
             message: "Encoding",
@@ -371,7 +609,7 @@ export function registerSizzleHandlers(): void {
       });
     } catch (cause) {
       const e = toError(cause, "compose_failed");
-      broadcast({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
+      broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
       return err(e);
     }
 
@@ -380,15 +618,10 @@ export function registerSizzleHandlers(): void {
       outputPath,
       lastRenderedAt: new Date().toISOString()
     });
+    const all = await store.list();
+    await broadcastProjectsChanged(all);
     log.info("sizzle:render done", { id: next.id, totalSec, outputPath });
-    broadcast({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
-    // Post-render GC: every script-line edit creates a new cache
-    // entry, and the old ones drift out of any project's live set
-    // immediately. Running the sweep right after a successful render
-    // is the right cadence — we already paid the IO budget for the
-    // ffmpeg encode, and the user is about to look at the output
-    // rather than the cache. Fire-and-forget; the render result
-    // doesn't depend on the sweep.
+    broadcastRenderProgress({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
     void store.list().then((projects) => pruneTtsCache(projects)).catch((cause) => {
       log.warn("tts cache sweep failed", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -407,26 +640,13 @@ class SceneError extends Error {
 
 /**
  * Sanitize a user-supplied project name for use as the leading
- * component of the output filename.
- *
- *   - Strip everything outside [word chars, dot, dash, space].
- *   - Strip leading dots — defense in depth against `..`, `.hidden`,
- *     etc. even though the project.id suffix that follows would
- *     prevent escaping the output dir.
- *   - Trim whitespace.
- *   - Cap to 60 chars.
- *   - Fall back to "sizzle" if the result is empty.
- *
- * Exported for unit testing — the security contract here is "the
- * caller cannot escape `~/Movies/PwrSnap/`" and we want explicit
- * coverage of the edge cases.
+ * component of the output filename. See sizzle-handlers.test.ts for
+ * the full behavior contract.
  */
 export function sanitizeProjectFilename(name: string): string {
   const stripped = name
     .replace(/[^\w.\- ]+/g, "_")
     .replace(/^\.+/, "_")
-    // Collapse runs of underscores so "../etc/passwd" → "_etc_passwd"
-    // instead of "__etc_passwd". Cosmetic, not security-bearing.
     .replace(/_+/g, "_")
     .trim()
     .slice(0, 60);

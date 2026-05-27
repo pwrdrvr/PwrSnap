@@ -904,6 +904,92 @@ describe("DetailRail", () => {
     }
   });
 
+  test("uncontrolled: user click before settings:read resolves is preserved (race guard)", async () => {
+    // Race: settings:read is a real IPC round-trip (~10-50ms). If
+    // the user clicks the toggle during the in-flight window, the
+    // resolved settings value would overwrite their click without
+    // the `initialReadDoneRef` gate — surfacing as "I clicked and
+    // nothing happened." This spec wires a deferred settings:read
+    // mock so we can interleave the click before resolution.
+    const accepted = enrichment();
+    let resolveSettingsRead: (value: unknown) => void = () => undefined;
+    const settingsReadPromise = new Promise<unknown>((resolve) => {
+      resolveSettingsRead = resolve;
+    });
+
+    const dispatch = vi.fn(async (name: string) => {
+      if (name === "settings:read") return settingsReadPromise;
+      if (name === "codex:enrichment") return { ok: true, value: accepted };
+      if (name === "capture:presetMetrics") {
+        return { ok: true, value: { metrics: [] } };
+      }
+      return { ok: true, value: undefined };
+    });
+    (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
+      dispatch,
+      on: () => () => undefined,
+      startCaptureDrag: () => undefined
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    // Mount uncontrolled — settings:read in-flight, default pinned=true.
+    await act(async () => {
+      root?.render(
+        createElement(DetailRail, {
+          view: {
+            kind: "focus",
+            selectedRecordId: record.id,
+            returnAnchor: { scrollTop: 0, cellId: record.id }
+          } as LibraryView,
+          record
+        })
+      );
+      await Promise.resolve();
+    });
+
+    // Default pinned=true ⇒ pinned panel is rendered.
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).not.toBeNull();
+
+    // User clicks the active Info tab BEFORE settings:read resolves.
+    // The rail demotes to hover-pop (unpinned).
+    await act(async () => {
+      container?.querySelector<HTMLButtonElement>(
+        '[data-testid="psl-right-tab-info"]'
+      )?.click();
+      await Promise.resolve();
+    });
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-hover"]')
+    ).not.toBeNull();
+
+    // Now settings:read resolves with the OPPOSITE saved value (pinned=true).
+    // The race-guard must bail before re-applying the saved value.
+    await act(async () => {
+      resolveSettingsRead({
+        ok: true,
+        value: {
+          library: {
+            detailRail: { pinned: true, lastSelectedTab: "info" }
+          }
+        }
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // User's click survives — the rail stays unpinned.
+    expect(
+      container.querySelector('[data-testid="psl-right-panel-pinned"]')
+    ).toBeNull();
+  });
+
   test("controlled mode: clicking active tab fires onPinChange(false), not local state", async () => {
     const onPinChange = vi.fn();
     installFakeApi(enrichment());

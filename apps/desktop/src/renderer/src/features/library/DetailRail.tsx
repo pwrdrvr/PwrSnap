@@ -150,10 +150,12 @@ export function DetailRail({
   //   • `pinned` without `onPinChange` (or vice versa)
   //   • `activeTab` without `onActiveTabChange` (or vice versa)
   // Each is a likely bug — the caller probably intended to control
-  // that pair and forgot the handler half. We log once per mismatch
-  // transition; React StrictMode's double-invoke is harmless here
-  // because the log message is informational, not a side effect.
+  // that pair and forgot the handler half. Gated on
+  // `import.meta.env.DEV` so the entire block tree-shakes out of
+  // production bundles AND so React StrictMode's double-invoke
+  // doesn't produce duplicate console output during dev.
   useEffect(() => {
+    if (!import.meta.env.DEV) return;
     const pinHalf = pinnedProp !== undefined;
     const pinHandler = onPinChange !== undefined;
     if (pinHalf !== pinHandler) {
@@ -172,10 +174,18 @@ export function DetailRail({
     }
   }, [pinnedProp, onPinChange, activeTabProp, onActiveTabChange]);
 
+  // Inside the branches below TypeScript can't narrow `onPinChange`
+  // through the separately-computed `isPinControlled`, so we check
+  // the handler directly. The READ path above uses `isPinControlled`
+  // (both halves must agree to USE pinnedProp); the WRITE path here
+  // routes through the handler whenever it's defined — even if the
+  // controlled half is missing the value, the user's click should
+  // still surface to the parent rather than silently dropping. The
+  // partial-control warning above fires first to surface the bug.
   const writePinned = useCallback(
     (next: boolean): void => {
-      if (isPinControlled) {
-        onPinChange?.(next);
+      if (onPinChange !== undefined) {
+        onPinChange(next);
         return;
       }
       initialReadDoneRef.current = true;
@@ -184,13 +194,13 @@ export function DetailRail({
         library: { detailRail: { pinned: next } }
       });
     },
-    [isPinControlled, onPinChange]
+    [onPinChange]
   );
 
   const writeActiveTab = useCallback(
     (next: SidebarTab): void => {
-      if (isTabControlled) {
-        onActiveTabChange?.(next);
+      if (onActiveTabChange !== undefined) {
+        onActiveTabChange(next);
         return;
       }
       initialReadDoneRef.current = true;
@@ -199,7 +209,7 @@ export function DetailRail({
         library: { detailRail: { lastSelectedTab: next } }
       });
     },
-    [isTabControlled, onActiveTabChange]
+    [onActiveTabChange]
   );
 
   useEffect(() => {

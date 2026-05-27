@@ -279,49 +279,69 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // it, a fresh launch paints with the in-memory default (pinned:
   // true) for the ~50ms before settings:read resolves, then snaps to
   // the user's saved choice. Worth a flag to avoid the visual stutter.
+  //
+  // `userTouchedRailRef` guards against a click-before-hydrate race:
+  // settings:read is a real IPC round-trip and can take 10–50ms. If
+  // the user presses ⌘⌥B (or clicks the toggle chip) within that
+  // window, their click moves the state to the OPPOSITE of the saved
+  // value. Without the gate, the settings:read resolution would then
+  // overwrite the user's choice — surfacing as "I clicked the toggle
+  // and nothing happened." The ref is mutated synchronously by every
+  // user-driven setter so the in-flight settings read knows to bail.
   const [rightPinned, setRightPinnedState] = useState<boolean>(true);
   const [rightActiveTab, setRightActiveTabState] =
     useState<LibrarySidebarTab>("info");
   const [settingsHydrated, setSettingsHydrated] = useState<boolean>(false);
+  const userTouchedRailRef = useRef<boolean>(false);
+  // Mirror of `rightPinned` kept in a ref so `toggleRightPinned` can
+  // compute `!current` without subscribing to the state and triggering
+  // a callback-identity churn (which would make the
+  // LayoutToggleButtons keydown listener re-attach on every toggle).
+  // The companion effect updates the ref whenever React commits a new
+  // value; reads from the ref are always one render fresh.
+  const rightPinnedRef = useRef<boolean>(true);
+  useEffect(() => {
+    rightPinnedRef.current = rightPinned;
+  }, [rightPinned]);
   useEffect(() => {
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
       if (cancelled) return;
-      if (!result.ok) {
-        // Even on read failure we mark hydrated — the in-memory
-        // defaults are what the user gets, and we don't want the
-        // rail to stay invisible forever.
-        setSettingsHydrated(true);
-        return;
+      if (result.ok && !userTouchedRailRef.current) {
+        const rail = (result.value as Settings | undefined)?.library
+          ?.detailRail;
+        if (rail !== undefined) {
+          setRightPinnedState(rail.pinned);
+          setRightActiveTabState(rail.lastSelectedTab);
+        }
       }
-      const rail = (result.value as Settings | undefined)?.library
-        ?.detailRail;
-      if (rail !== undefined) {
-        setRightPinnedState(rail.pinned);
-        setRightActiveTabState(rail.lastSelectedTab);
-      }
+      // Always mark hydrated — even on read failure / user-touched
+      // bail — so the rail doesn't stay in its pre-hydration phantom
+      // state forever. Mirror of the same pattern in DetailRail's
+      // uncontrolled-mode read.
       setSettingsHydrated(true);
     });
     return () => {
       cancelled = true;
     };
   }, []);
-  // The setters use the functional `setState((prev) => …)` form so
-  // they have stable identity (no closure-over-current-value
-  // dependency). Toggle callbacks then depend only on the stable
-  // setters and are themselves stable — which means the
-  // LayoutToggleButtons' window-level keydown listener attaches
-  // ONCE on mount instead of re-attaching every time the pin state
-  // flips. Same shape across `setRightPinned`, `setRightActiveTab`,
-  // and their two toggle siblings; see code-review thread on PR
-  // #122 for the perf concern this addresses.
+  // All three setters mark `userTouchedRailRef` synchronously BEFORE
+  // any state write. The settings:read resolution checks this flag
+  // and bails — see the race-guard comment above. The setters use
+  // direct value writes (not functional `setState((prev) => …)`)
+  // because the dispatch must run OUTSIDE the React state-setter
+  // callback; functional setters are meant to be pure and StrictMode
+  // double-invokes them in dev, which would fire `settings:write`
+  // twice per toggle.
   const setRightPinned = useCallback((next: boolean): void => {
+    userTouchedRailRef.current = true;
     setRightPinnedState(next);
     void dispatch("settings:write", {
       library: { detailRail: { pinned: next } }
     });
   }, []);
   const setRightActiveTab = useCallback((next: LibrarySidebarTab): void => {
+    userTouchedRailRef.current = true;
     setRightActiveTabState(next);
     void dispatch("settings:write", {
       library: { detailRail: { lastSelectedTab: next } }
@@ -330,13 +350,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const toggleLeftPinned = useCallback((): void => {
     setLeftPinned((v) => !v);
   }, []);
+  // Reads `rightPinnedRef.current` (synced via the effect above) so
+  // the toggle has stable identity — no `rightPinned` in deps. The
+  // chord listener in LayoutToggleButtons attaches once on mount.
   const toggleRightPinned = useCallback((): void => {
-    setRightPinnedState((prev) => {
-      const next = !prev;
-      void dispatch("settings:write", {
-        library: { detailRail: { pinned: next } }
-      });
-      return next;
+    userTouchedRailRef.current = true;
+    const next = !rightPinnedRef.current;
+    setRightPinnedState(next);
+    void dispatch("settings:write", {
+      library: { detailRail: { pinned: next } }
     });
   }, []);
 

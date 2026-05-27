@@ -1209,6 +1209,433 @@ describe("schema-permits + paint-clips: out-of-canvas overlay coords don't bleed
   });
 });
 
+// ---------------------------------------------------------------------
+// Scale-aware accumulator WYSIWYG (PR #129 bake-WYSIWYG follow-up).
+//
+// The bake-WYSIWYG PR introduced a scale-aware accumulator: when the
+// requested output width exceeds canvas width (MED on a small capture,
+// LOW on an even smaller one), the accumulator is built at render dims
+// instead of canvas dims so every layer rasterizes at output resolution
+// (crisp text, visible halos).
+//
+// The first ship of that change had a CRITICAL bug: the raster layer
+// compositor (`compositeRasterOntoAccumulator`) still placed the source
+// PNG at its NATURAL dims (e.g. 400×300) onto the render-dim accumulator
+// (e.g. 1440×1080). Result: the image landed in the upper-left quadrant
+// while VECTOR overlays (whose fractional point coords are scaled
+// against the accumulator's full dims) spread across the entire render
+// canvas. WYSIWYG completely broken — text overlays floated outside
+// the visible image.
+//
+// The effect layer compositor (`applyEffectOntoAccumulator`) had the
+// same class of bug — `clip_rect` is in CANVAS coords but extract+
+// composite ran against the render-dim accumulator, mis-positioning
+// blur and highlight rects.
+//
+// These tests pin the fix end-to-end. They use a NON-WHITE source
+// (cyan) so transparent-vs-raster pixels are unambiguously
+// distinguishable — the existing matrix tests use white sources and
+// can't catch this class (transparent reads like white to a naive
+// "is this red?" check).
+//
+// If either test fails, the symptom on the user's screen is:
+// "raster in upper-left corner, annotations scattered across an
+//  otherwise transparent canvas."
+// ---------------------------------------------------------------------
+
+const SCALE_TEST_CANVAS_W = 400;
+const SCALE_TEST_CANVAS_H = 300;
+// Distinct enough from white and from the overlay red that all three
+// states (transparent, raster, overlay) are unambiguous in the assertion.
+const SCALE_TEST_RASTER_R = 0;
+const SCALE_TEST_RASTER_G = 200;
+const SCALE_TEST_RASTER_B = 220;
+
+async function seedV2CaptureCyanRaster(id: string): Promise<void> {
+  // 400×300 source PNG, ALL CYAN. Canvas matches source dims (no crop).
+  // The interesting axis is render dims = canvas × renderScale (MED on
+  // 400-wide canvas → 1440-wide render → 3.6× upscale).
+  const sourcePng = await sharp({
+    create: {
+      width: SCALE_TEST_CANVAS_W,
+      height: SCALE_TEST_CANVAS_H,
+      channels: 3,
+      background: {
+        r: SCALE_TEST_RASTER_R,
+        g: SCALE_TEST_RASTER_G,
+        b: SCALE_TEST_RASTER_B
+      }
+    }
+  })
+    .png()
+    .toBuffer();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const bundlePath = join(workDir, "captures", `${id}.pwrsnap`);
+  const flatPngPath = join(workDir, "captures", `${id}.png`);
+  await writeFile(flatPngPath, sourcePng);
+  const now = new Date().toISOString();
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: {
+      width_px: SCALE_TEST_CANVAS_W,
+      height_px: SCALE_TEST_CANVAS_H
+    },
+    paired_png_filename: `${id}.png`,
+    created_at: now,
+    bundle_modified_at: now
+  };
+  const rootGroupId = "grp_scale_test_0";
+  const rasterId = "ras_scale_test_0";
+  const common = {
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+  const layers: BundleLayerNode[] = [
+    {
+      ...common,
+      id: rootGroupId,
+      kind: "group",
+      parent_id: null,
+      z_index: 0,
+      collapsed: false
+    },
+    {
+      ...common,
+      id: rasterId,
+      kind: "raster",
+      parent_id: rootGroupId,
+      z_index: 0,
+      source_ref: { kind: "embedded", sha256: sourceSha },
+      natural_width_px: SCALE_TEST_CANVAS_W,
+      natural_height_px: SCALE_TEST_CANVAS_H
+    }
+  ];
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 0,
+    layers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sourceSha, sourcePng]]),
+    layerBytes: new Map(),
+    thumbnailJpg
+  });
+  await writeFile(bundlePath, bundleBuf);
+  getDb()
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at, source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio, byte_size,
+        sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', @captured_at, NULL, NULL,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
+        2, 0,
+        @w, @h, 2.0, @bs,
+        @sha, 0, NULL
+      )`
+    )
+    .run({
+      id,
+      captured_at: now,
+      bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
+      w: SCALE_TEST_CANVAS_W,
+      h: SCALE_TEST_CANVAS_H,
+      bs: bundleBuf.length,
+      sha: sourceSha
+    });
+  insertLayerTreeForCapture(id, layers);
+}
+
+async function seedV2CaptureCyanRasterWithHighlight(id: string): Promise<void> {
+  // Same cyan raster as above + a highlight EFFECT layer covering the
+  // CENTER of the canvas. The effect compositor extracts from the
+  // accumulator at clip_rect bounds, applies the tint, composites back.
+  // If clip_rect isn't scaled by renderScale, the effect lands in the
+  // upper-left of the render canvas instead of the canvas center.
+  const sourcePng = await sharp({
+    create: {
+      width: SCALE_TEST_CANVAS_W,
+      height: SCALE_TEST_CANVAS_H,
+      channels: 3,
+      background: {
+        r: SCALE_TEST_RASTER_R,
+        g: SCALE_TEST_RASTER_G,
+        b: SCALE_TEST_RASTER_B
+      }
+    }
+  })
+    .png()
+    .toBuffer();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
+  const bundlePath = join(workDir, "captures", `${id}.pwrsnap`);
+  const flatPngPath = join(workDir, "captures", `${id}.png`);
+  await writeFile(flatPngPath, sourcePng);
+  const now = new Date().toISOString();
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
+    capture_id: id,
+    canvas_dimensions: {
+      width_px: SCALE_TEST_CANVAS_W,
+      height_px: SCALE_TEST_CANVAS_H
+    },
+    paired_png_filename: `${id}.png`,
+    created_at: now,
+    bundle_modified_at: now
+  };
+  const rootGroupId = "grp_highlight_x0";
+  const rasterId = "ras_highlight_x0";
+  const effectId = "eff_highlight_x0";
+  const common = {
+    name: "",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal" as const,
+    transform: [1, 0, 0, 1, 0, 0] as [number, number, number, number, number, number],
+    source: "user" as const,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+  const layers: BundleLayerNode[] = [
+    {
+      ...common,
+      id: rootGroupId,
+      kind: "group",
+      parent_id: null,
+      z_index: 0,
+      collapsed: false
+    },
+    {
+      ...common,
+      id: rasterId,
+      kind: "raster",
+      parent_id: rootGroupId,
+      z_index: 0,
+      source_ref: { kind: "embedded", sha256: sourceSha },
+      natural_width_px: SCALE_TEST_CANVAS_W,
+      natural_height_px: SCALE_TEST_CANVAS_H
+    },
+    {
+      ...common,
+      id: effectId,
+      kind: "effect",
+      parent_id: rootGroupId,
+      z_index: 1,
+      // Pure red tint at full opacity so the post-effect pixels are
+      // unambiguously red (not pink-cyan blend).
+      effect: { type: "highlight", tint_hex: "#ff0000", opacity: 1 },
+      // clip_rect in CANVAS coords: a 100×100 box at canvas position
+      // (250, 100). At MED scale=3.6 it must land at render position
+      // (900, 360) covering 360×360 px. Pre-fix, the effect used the
+      // raw clip_rect against the render-dim accumulator — so the
+      // effect would land at the SAME pixel coords (250..350, 100..200)
+      // which is the UPPER-LEFT quadrant of the render canvas, NOT
+      // the canvas center.
+      clip_rect: { x: 250, y: 100, w: 100, h: 100 }
+    }
+  ];
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 1,
+    layers,
+    tags: [],
+    description: null,
+    ai_runs: []
+  };
+  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
+  const bundleBuf = await packBundleV2({
+    manifest,
+    document,
+    sources: new Map([[sourceSha, sourcePng]]),
+    layerBytes: new Map(),
+    thumbnailJpg
+  });
+  await writeFile(bundlePath, bundleBuf);
+  getDb()
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at, source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+        bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio, byte_size,
+        sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', @captured_at, NULL, NULL,
+        NULL, @bundle_path, @flat_png_path, @captured_at,
+        2, 1,
+        @w, @h, 2.0, @bs,
+        @sha, 1, NULL
+      )`
+    )
+    .run({
+      id,
+      captured_at: now,
+      bundle_path: bundlePath,
+      flat_png_path: flatPngPath,
+      w: SCALE_TEST_CANVAS_W,
+      h: SCALE_TEST_CANVAS_H,
+      bs: bundleBuf.length,
+      sha: sourceSha
+    });
+  insertLayerTreeForCapture(id, layers);
+}
+
+/** Read a single pixel's RGBA at output coords. Returns {r,g,b,a} so
+ *  callers can distinguish transparent (alpha=0) from raster-colored. */
+async function readPixel(
+  pngBytes: Buffer,
+  x: number,
+  y: number
+): Promise<{ r: number; g: number; b: number; a: number }> {
+  const { data, info } = await sharp(pngBytes)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const idx = (y * info.width + x) * info.channels;
+  return {
+    r: data[idx] ?? 0,
+    g: data[idx + 1] ?? 0,
+    b: data[idx + 2] ?? 0,
+    a: data[idx + 3] ?? 0
+  };
+}
+
+describe("scale-aware accumulator: raster + effect layers respect renderScale", () => {
+  test("raster layer fills the FULL output dims at MED on a small canvas (not the upper-left quadrant)", async () => {
+    // Pre-fix this test fails: the raster lands at source dims
+    // (400×300) in the upper-left of the render-dim accumulator
+    // (1440×1080), so the bottom-right is transparent.
+    const captureId = "t_scale_raster_fill_x";
+    await seedV2CaptureCyanRaster(captureId);
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    const last = clipboardCaptured.at(-1);
+    if (last === undefined || last.kind !== "writeImage") {
+      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
+    }
+    const pngBytes = last.bytes;
+
+    // Confirm the output dims actually upscaled (sanity — if this
+    // fails, the scale-aware accumulator change reverted).
+    const meta = await sharp(pngBytes).metadata();
+    expect(meta.width).toBe(1440);
+    expect(meta.height).toBe(1080);
+
+    // Sample a pixel well past the source-dims (400×300) upper-left
+    // region but well inside the canvas. This is the load-bearing
+    // assertion — pre-fix it would be transparent (alpha=0); post-fix
+    // it must be the raster's cyan color.
+    const samples: Array<{ name: string; x: number; y: number }> = [
+      { name: "center of render", x: 720, y: 540 },
+      { name: "render right-half", x: 1000, y: 540 },
+      { name: "render bottom-half", x: 720, y: 800 },
+      { name: "render bottom-right", x: 1300, y: 1000 }
+    ];
+    for (const s of samples) {
+      const px = await readPixel(pngBytes, s.x, s.y);
+      expect(
+        px.a,
+        `Pixel at ${s.name} (${s.x}, ${s.y}) should be OPAQUE (raster present). ` +
+          `If alpha=0, the raster layer was placed at its natural dims ` +
+          `(400×300) in the upper-left of the render-dim accumulator ` +
+          `(${meta.width}×${meta.height}) instead of being upscaled to ` +
+          `fill it. Got rgba(${px.r}, ${px.g}, ${px.b}, ${px.a}).`
+      ).toBeGreaterThan(200);
+      // And the color should be approximately the source cyan
+      // (lanczos upscale doesn't change a flat fill, so this is exact
+      // modulo rounding).
+      expect(
+        Math.abs(px.r - SCALE_TEST_RASTER_R) +
+          Math.abs(px.g - SCALE_TEST_RASTER_G) +
+          Math.abs(px.b - SCALE_TEST_RASTER_B),
+        `Pixel at ${s.name} (${s.x}, ${s.y}) should be the raster's ` +
+          `cyan (${SCALE_TEST_RASTER_R}, ${SCALE_TEST_RASTER_G}, ` +
+          `${SCALE_TEST_RASTER_B}). Got rgba(${px.r}, ${px.g}, ${px.b}, ${px.a}).`
+      ).toBeLessThan(30);
+    }
+  });
+
+  test("highlight effect clip_rect lands at the SCALED canvas position at MED (not upper-left at unscaled coords)", async () => {
+    // Pre-fix: clip_rect is in canvas coords but applied directly to
+    // the render-dim accumulator, so a clip_rect at canvas (250..350,
+    // 100..200) extracts the upper-left rect (250..350, 100..200) of
+    // the render canvas — the wrong region. Post-fix: scaled to render
+    // coords (900..1260, 360..720).
+    const captureId = "t_scale_effect_pos_xx";
+    await seedV2CaptureCyanRasterWithHighlight(captureId);
+
+    const result = await bus.dispatch(
+      "clipboard:copy",
+      { captureId, preset: "med" },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    const last = clipboardCaptured.at(-1);
+    if (last === undefined || last.kind !== "writeImage") {
+      throw new Error(`expected writeImage on clipboard, got ${JSON.stringify(last)}`);
+    }
+    const pngBytes = last.bytes;
+    const meta = await sharp(pngBytes).metadata();
+    expect(meta.width).toBe(1440);
+    expect(meta.height).toBe(1080);
+
+    // EXPECTED region (post-fix): canvas (250..350, 100..200) ×
+    // renderScale 3.6 → render (900..1260, 360..720). Sample the
+    // center: (1080, 540).
+    const insideExpected = await readPixel(pngBytes, 1080, 540);
+    expect(
+      insideExpected.r,
+      `Pixel at scaled effect center (1080, 540) should be red ` +
+        `(highlight tint). If R is low, the effect's clip_rect wasn't ` +
+        `scaled by renderScale. Got rgba(${insideExpected.r}, ` +
+        `${insideExpected.g}, ${insideExpected.b}, ${insideExpected.a}).`
+    ).toBeGreaterThan(180);
+    expect(insideExpected.g).toBeLessThan(80);
+
+    // INSIDE THE BUG REGION (canvas-px coords applied without scale):
+    // (250..350, 100..200), center (300, 150). Post-fix this is just
+    // the raster cyan; pre-fix it would be red.
+    const insideBugRegion = await readPixel(pngBytes, 300, 150);
+    expect(
+      insideBugRegion.r,
+      `Pixel at (300, 150) — where pre-fix the effect would have been ` +
+        `applied (clip_rect not scaled) — should NOT be red. Got ` +
+        `rgba(${insideBugRegion.r}, ${insideBugRegion.g}, ` +
+        `${insideBugRegion.b}, ${insideBugRegion.a}).`
+    ).toBeLessThan(80);
+    expect(insideBugRegion.g).toBeGreaterThan(150);
+  });
+});
+
 function idForCell(surfaceName: string, variantName: string): string {
   // Captures table + BundleManifestV1/V2 cap capture_id at 32 chars.
   // Derive a short, stable id from a sha256 of the cell coordinates

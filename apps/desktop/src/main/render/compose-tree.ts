@@ -163,7 +163,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       canvasInfo,
       req,
       sourceWidthPx,
-      sourceHeightPx
+      sourceHeightPx,
+      renderScale
     );
   }
 
@@ -248,8 +249,15 @@ async function renderNode(
    *  Threaded only as far as `compositeVectorOntoAccumulator` cares
    *  (TEXT shapes use it). Raster + effect layers compute their own
    *  sizing from `canvasInfo` + node fields. */
-  sourceWidthPx?: number,
-  sourceHeightPx?: number
+  sourceWidthPx: number | undefined,
+  sourceHeightPx: number | undefined,
+  /** Ratio renderDims / canvasDims. Equals 1 for HIGH or any tier where
+   *  req.width ≤ canvasWidth (the accumulator is at canvas dims and no
+   *  per-layer upscale is needed). Greater than 1 for LOW/MED on small
+   *  captures (accumulator at render dims; raster + effect layers must
+   *  scale their CANVAS-coord positions/dims by this factor or they end
+   *  up in the wrong place). */
+  renderScale: number
 ): Promise<Buffer> {
   if (!node.visible) return accumulator;
 
@@ -260,7 +268,13 @@ async function renderNode(
       return accumulator;
 
     case "raster":
-      return compositeRasterOntoAccumulator(node, accumulator, canvasInfo, req);
+      return compositeRasterOntoAccumulator(
+        node,
+        accumulator,
+        canvasInfo,
+        req,
+        renderScale
+      );
 
     case "vector":
       return compositeVectorOntoAccumulator(
@@ -278,7 +292,7 @@ async function renderNode(
       );
 
     case "effect":
-      return applyEffectOntoAccumulator(node, accumulator, canvasInfo);
+      return applyEffectOntoAccumulator(node, accumulator, canvasInfo, renderScale);
   }
 }
 
@@ -298,24 +312,42 @@ async function compositeRasterOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "raster" }>,
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
-  req: ComposeTreeRequest
+  req: ComposeTreeRequest,
+  /** Render-vs-canvas dim ratio. For scale > 1 (LOW/MED on small
+   *  captures) the accumulator is at render dims but the raster's
+   *  transform[4]/[5] (tx, ty) and natural_*_px are in CANVAS coords.
+   *  Scale both so the raster lands at the correct position AND fills
+   *  the same proportional region of the (larger) accumulator. Without
+   *  this, the raster ends up in the upper-left at unscaled dims and
+   *  vector overlays — which DO scale to render dims via SVG width=
+   *  renderWidthPx — spread across the rest of the canvas. */
+  renderScale: number
 ): Promise<Buffer> {
   const sourceBytes = await readSourceFromBundle(req.bundlePath, node.source_ref.sha256);
-  const tx = Math.round(node.transform[4]);
-  const ty = Math.round(node.transform[5]);
+  // CANVAS-coord position. Scaled below into render coords for placement
+  // on the accumulator.
+  const tx = Math.round(node.transform[4] * renderScale);
+  const ty = Math.round(node.transform[5] * renderScale);
 
-  // Decode source → raw RGBA at natural dims.
+  // Decode source → raw RGBA at natural dims, scaled to render dims.
+  // The raster's `natural_*_px` is in CANVAS pixels (matches what the
+  // editor saved — for an unmodified capture, natural dims = source
+  // PNG dims = canvas dims). At renderScale > 1 we need to upscale the
+  // raster to render dims so it covers the same proportional region of
+  // the accumulator that it covers in the canvas.
   let layerInput: Buffer = sourceBytes;
   let layerInputInfo: sharp.OverlayOptions["raw"] | undefined = undefined;
 
-  // If transform contains non-identity scale (transform[0] or [3] != 1)
-  // resize accordingly. For v2.0 the editor doesn't expose scale, so
-  // most layers will be identity.
+  // Effective target dims = natural × transform-scale × renderScale.
+  // transform[0]/[3] are the affine scale (1 for identity); renderScale
+  // is the bake-pipeline scale (1 for HIGH or any scale-down tier).
   const scaleX = node.transform[0];
   const scaleY = node.transform[3];
-  if (scaleX !== 1 || scaleY !== 1) {
-    const targetW = Math.max(1, Math.round(node.natural_width_px * scaleX));
-    const targetH = Math.max(1, Math.round(node.natural_height_px * scaleY));
+  const effectiveScaleX = scaleX * renderScale;
+  const effectiveScaleY = scaleY * renderScale;
+  if (effectiveScaleX !== 1 || effectiveScaleY !== 1) {
+    const targetW = Math.max(1, Math.round(node.natural_width_px * effectiveScaleX));
+    const targetH = Math.max(1, Math.round(node.natural_height_px * effectiveScaleY));
     const rawScaled = await sharp(sourceBytes)
       .resize(targetW, targetH, { fit: "fill" })
       .ensureAlpha()
@@ -485,16 +517,28 @@ async function compositeVectorOntoAccumulator(
 async function applyEffectOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "effect" }>,
   accumulator: Buffer,
-  canvasInfo: { width: number; height: number; channels: 4 }
+  canvasInfo: { width: number; height: number; channels: 4 },
+  /** Render-vs-canvas dim ratio. `clip_rect` is in CANVAS coords; when
+   *  the accumulator is at render dims (scale > 1) the rect must be
+   *  scaled or the effect lands at the wrong region (typically the
+   *  upper-left at unscaled coords). When `clip_rect` is null
+   *  (adjustment-layer scope) the fallback uses `canvasInfo` dims
+   *  directly — those are ALREADY render dims, so no scaling needed
+   *  for that branch. */
+  renderScale: number
 ): Promise<Buffer> {
   // Determine the clip rect. null = entire canvas (adjustment-layer
-  // scope). Clamp to canvas bounds.
-  const rect = node.clip_rect ?? {
-    x: 0,
-    y: 0,
-    w: canvasInfo.width,
-    h: canvasInfo.height
-  };
+  // scope, in render coords already). Otherwise scale CANVAS-coord
+  // rect into render coords, then clamp to accumulator bounds.
+  const rect =
+    node.clip_rect !== null
+      ? {
+          x: node.clip_rect.x * renderScale,
+          y: node.clip_rect.y * renderScale,
+          w: node.clip_rect.w * renderScale,
+          h: node.clip_rect.h * renderScale
+        }
+      : { x: 0, y: 0, w: canvasInfo.width, h: canvasInfo.height };
   const x = Math.max(0, Math.min(canvasInfo.width, Math.round(rect.x)));
   const y = Math.max(0, Math.min(canvasInfo.height, Math.round(rect.y)));
   const w = Math.max(0, Math.min(canvasInfo.width - x, Math.round(rect.w)));
@@ -656,8 +700,14 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *    "2" — scale-aware accumulator (renders at target dims for
  *           upscale tiers), force RGBA PNG output (palette: false),
  *           HTML text bake via hidden BrowserWindow. The WYSIWYG
- *           shipment. */
-const BAKE_PIPELINE_VERSION = "2";
+ *           shipment. SHIPPED BROKEN — raster + effect compositors
+ *           didn't scale their canvas-coord positions/dims by
+ *           renderScale, leaving the image in the upper-left and
+ *           overlays scattered across the full render canvas.
+ *    "3" — fix v2's positioning bug: raster's tx/ty + natural_*_px
+ *           and effect's clip_rect now scale by renderScale so the
+ *           bake matches the editor across all preset tiers. */
+const BAKE_PIPELINE_VERSION = "3";
 
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

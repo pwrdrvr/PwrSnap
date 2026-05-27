@@ -428,8 +428,15 @@ function CountdownLeader({ value }: { value: number }): ReactElement {
              o'clock and the line ended up 90° ahead of the wedge
              edge. Default "from" keeps both anchored at 12 so the
              line rides the leading edge exactly. */
+          /* 0.12 alpha — keeps the film-leader "lead-in wipe" cue
+             visible while letting the recording surface stay
+             readable through the tint. Was 0.42 originally, which
+             effectively obscured a PwrSnap window subject during
+             the last frames of each 1s tick (the orange becomes
+             dominant once the wedge has nearly full-circled).
+             0.12 reads as a faint accent over any background. */
           background: conic-gradient(
-            rgba(255, 138, 31, 0.42) var(--ps-sweep-angle),
+            rgba(255, 138, 31, 0.12) var(--ps-sweep-angle),
             transparent var(--ps-sweep-angle)
           );
           animation: ps-leader-sweep-fill 1s linear forwards;

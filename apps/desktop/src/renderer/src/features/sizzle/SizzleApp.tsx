@@ -26,6 +26,27 @@ const IDLE_STATUS: RenderStatus = {
   error: null
 };
 
+/**
+ * Apply a debounced edit's patch to the local project state. Used to
+ * keep the renderer's view of the project in sync with what the user
+ * just typed/picked, before the dispatched write hits disk.
+ *
+ * `scenes` is replaced wholesale (the patch carries the full array
+ * because in-place scene mutation is wrong — the parent passes a new
+ * array on every edit). Every other field is a shallow assign.
+ */
+function mergeProjectPatch(
+  p: SizzleProject,
+  patch: Partial<Omit<SizzleProject, "id" | "createdAt">>
+): SizzleProject {
+  return {
+    ...p,
+    ...patch,
+    scenes: patch.scenes ?? p.scenes,
+    modifiedAt: new Date().toISOString()
+  };
+}
+
 export function SizzleApp(): ReactElement {
   const [projects, setProjects] = useState<SizzleProject[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -90,15 +111,85 @@ export function SizzleApp(): ReactElement {
     }
   }, []);
 
-  const onUpdate = useCallback(
-    async (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
-      const r = await dispatch("sizzle:update", { id, patch });
-      if (r.ok) {
-        setProjects((prev) => prev.map((p) => (p.id === id ? r.value : p)));
-      }
-    },
-    []
+  // Per-project debounce timers + pending-patch coalescing. Multiple
+  // edits to the same project within DEBOUNCE_MS get merged into one
+  // disk write. Critical for fast-typed text fields — the previous
+  // dispatch-per-keystroke pattern raced: each in-flight dispatch
+  // carried a snapshot built from STALE local state (since setProjects
+  // only ran after the dispatch returned), so only the last typed
+  // character survived a sustained burst of typing.
+  const DEBOUNCE_MS = 350;
+  const pendingPatches = useRef<
+    Map<string, Partial<Omit<SizzleProject, "id" | "createdAt">>>
+  >(new Map());
+  const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map()
   );
+
+  const flushPatch = useCallback(async (id: string): Promise<void> => {
+    const pending = pendingPatches.current.get(id);
+    pendingPatches.current.delete(id);
+    const timer = debounceTimers.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      debounceTimers.current.delete(id);
+    }
+    if (pending === undefined) return;
+    const r = await dispatch("sizzle:update", { id, patch: pending });
+    if (!r.ok) {
+      // Surface persistence failures so the user knows their edit
+      // didn't land. Local state already reflects the optimistic
+      // value, but disk is out of sync.
+      // eslint-disable-next-line no-console
+      console.warn("[sizzle] update failed", r.error);
+      return;
+    }
+    // After a successful flush, reconcile the server's modifiedAt back
+    // into local state — but ONLY if there's no further pending patch
+    // for this id (otherwise we'd overwrite text the user typed during
+    // the flush). The scenes field is intentionally NOT echoed back:
+    // local state is the source of truth for in-flight edits.
+    if (pendingPatches.current.has(id)) return;
+    setProjects((prev) =>
+      prev.map((p) =>
+        p.id === id ? { ...p, modifiedAt: r.value.modifiedAt } : p
+      )
+    );
+  }, []);
+
+  const onUpdate = useCallback(
+    (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
+      // 1. Optimistic local update — text fields reflect immediately,
+      //    next keystroke sees the latest value.
+      setProjects((prev) =>
+        prev.map((p) => (p.id === id ? mergeProjectPatch(p, patch) : p))
+      );
+      // 2. Coalesce into the pending patch bag (later writes win
+      //    per-field; scenes patches replace wholesale).
+      const prev = pendingPatches.current.get(id) ?? {};
+      pendingPatches.current.set(id, { ...prev, ...patch });
+      // 3. Reset the debounce timer.
+      const existing = debounceTimers.current.get(id);
+      if (existing !== undefined) clearTimeout(existing);
+      debounceTimers.current.set(
+        id,
+        setTimeout(() => {
+          void flushPatch(id);
+        }, DEBOUNCE_MS)
+      );
+    },
+    [flushPatch]
+  );
+
+  // Flush any pending edits on unmount so the on-disk state catches up
+  // when the window closes mid-debounce.
+  useEffect(() => {
+    return () => {
+      for (const id of pendingPatches.current.keys()) {
+        void flushPatch(id);
+      }
+    };
+  }, [flushPatch]);
 
   const onDelete = useCallback(
     async (id: string) => {
@@ -117,6 +208,11 @@ export function SizzleApp(): ReactElement {
 
   const onRender = useCallback(async () => {
     if (active === null) return;
+    // Critical: drain any pending debounced edits before the render
+    // reads the project off disk. Otherwise typed-but-not-yet-saved
+    // script lines would be missing — the render would either fail on
+    // "empty script" or synthesize stale text.
+    await flushPatch(active.id);
     setStatus({ phase: "tts", message: "Starting…", ratio: 0, error: null });
     const r = await dispatch("sizzle:render", { id: active.id });
     if (!r.ok) {
@@ -127,7 +223,7 @@ export function SizzleApp(): ReactElement {
         error: r.error.message
       });
     }
-  }, [active]);
+  }, [active, flushPatch]);
 
   const onReveal = useCallback(async () => {
     if (active === null) return;
@@ -232,6 +328,7 @@ export function SizzleApp(): ReactElement {
               onUpdate(active.id, { resolution })
             }
             onScenes={(scenes) => onUpdate(active.id, { scenes })}
+            onFlushPending={() => flushPatch(active.id)}
             onPickCapture={() => setPicker(true)}
             onRender={onRender}
             onReveal={onReveal}
@@ -280,6 +377,7 @@ type EditorProps = {
   onProvider: (provider: "openai" | "xai") => void;
   onResolution: (resolution: "1080p" | "720p") => void;
   onScenes: (scenes: SizzleScene[]) => void;
+  onFlushPending: () => Promise<void>;
   onPickCapture: () => void;
   onRender: () => void;
   onReveal: () => void;
@@ -298,6 +396,7 @@ function Editor(props: EditorProps): ReactElement {
     onProvider,
     onResolution,
     onScenes,
+    onFlushPending,
     onPickCapture,
     onRender,
     onReveal,
@@ -328,6 +427,9 @@ function Editor(props: EditorProps): ReactElement {
     }
     setPreviewError(null);
     setPreviewLoadingSceneId(sceneId);
+    // Flush pending text edits so the preview synthesizes what's on
+    // screen, not what was last flushed to disk.
+    await onFlushPending();
     const result = await dispatch("sizzle:previewSceneAudio", {
       projectId: project.id,
       sceneId

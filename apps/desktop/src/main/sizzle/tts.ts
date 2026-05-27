@@ -45,12 +45,41 @@ export async function synthesize(req: TtsRequest): Promise<TtsResult> {
   await mkdir(cacheDir, { recursive: true });
   const hash = hashKey(req);
   const audioPath = join(cacheDir, `${hash}.mp3`);
+  // Diagnostic: prove out exactly which (text, voice, model, provider)
+  // tuple we resolve to which cache file. The user reported TTS not
+  // re-triggering after script edits; this trace lets us confirm
+  // whether (a) the disk has the new text but the hash collides with
+  // old, (b) the disk has stale text, or (c) the cache file resolution
+  // is correct and an upstream consumer is showing old audio.
+  const textPreview = req.text.length > 80 ? req.text.slice(0, 77) + "…" : req.text;
   if (await fileExists(audioPath)) {
+    log.info("tts cache HIT", {
+      hash,
+      provider: req.provider,
+      model: req.model,
+      voice: req.voice,
+      textLen: req.text.length,
+      textPreview,
+      audioPath
+    });
     return { audioPath, cached: true };
   }
+  log.info("tts cache MISS — fetching", {
+    hash,
+    provider: req.provider,
+    model: req.model,
+    voice: req.voice,
+    textLen: req.text.length,
+    textPreview
+  });
   const audio = await fetchSynthesis(req);
   await mkdir(dirname(audioPath), { recursive: true });
   await writeFile(audioPath, audio);
+  log.info("tts fetched + cached", {
+    hash,
+    byteSize: audio.length,
+    audioPath
+  });
   return { audioPath, cached: false };
 }
 

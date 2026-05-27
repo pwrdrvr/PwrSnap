@@ -144,6 +144,17 @@ export function registerSizzleHandlers(): void {
     if (scene === undefined) {
       return err({ kind: "validation", code: "not_found", message: "Scene not found" });
     }
+    log.info("sizzle:previewSceneAudio", {
+      projectId: project.id,
+      sceneId: scene.id,
+      voice: project.voice,
+      model: project.ttsModel,
+      scriptLen: scene.scriptLine.length,
+      scriptPreview:
+        scene.scriptLine.length > 60
+          ? scene.scriptLine.slice(0, 57) + "…"
+          : scene.scriptLine
+    });
     const text = scene.scriptLine.trim();
     if (text.length === 0) {
       return err({
@@ -252,6 +263,22 @@ export function registerSizzleHandlers(): void {
     }
 
     const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
+
+    log.info("sizzle:render starting", {
+      projectId: project.id,
+      voice: project.voice,
+      model: project.ttsModel,
+      scenes: project.scenes.map((s, i) => ({
+        idx: i + 1,
+        sceneId: s.id,
+        captureId: s.captureId,
+        scriptPreview:
+          s.scriptLine.length > 60
+            ? s.scriptLine.slice(0, 57) + "…"
+            : s.scriptLine,
+        scriptLen: s.scriptLine.length
+      }))
+    });
 
     const sceneInputs: SceneInput[] = [];
     try {

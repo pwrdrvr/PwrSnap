@@ -31,16 +31,25 @@ export class SizzleStore {
   }
 
   async list(): Promise<SizzleProject[]> {
-    const blob = await this.readBlob();
-    return [...blob.projects].sort(
-      (a, b) =>
-        new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
-    );
+    // Reads go through the same serialize queue as writes so a read
+    // that races an in-flight rename (e.g., user clicks Render while
+    // the debounced script-edit dispatch is mid-write) sees the
+    // post-write state, not the pre-write file. Without this the
+    // render handler can read stale text and synthesize from it.
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      return [...blob.projects].sort(
+        (a, b) =>
+          new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+      );
+    });
   }
 
   async get(id: string): Promise<SizzleProject | null> {
-    const blob = await this.readBlob();
-    return blob.projects.find((p) => p.id === id) ?? null;
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      return blob.projects.find((p) => p.id === id) ?? null;
+    });
   }
 
   async create(name: string): Promise<SizzleProject> {

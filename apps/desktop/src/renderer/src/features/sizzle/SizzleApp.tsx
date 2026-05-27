@@ -418,22 +418,51 @@ function Editor(props: EditorProps): ReactElement {
   const [previewLoadingSceneId, setPreviewLoadingSceneId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
+  // Per-scene preview-request generation counter. Each click of ▶
+  // bumps it; the response only applies if it's still current.
+  // Editing a scene's script also bumps it so an in-flight response
+  // for the OLD text can't auto-play after the user moved on.
+  //
+  // Key safety properties:
+  //   • Only one preview play-back per scene can be "current" at a
+  //     time. Older in-flight responses are silently discarded.
+  //   • TTS audio files are content-addressed (sha256 of provider +
+  //     model + voice + text), so a late-arriving response for the
+  //     OLD text writes to its OWN file. It can never overwrite the
+  //     cache file for the NEW text. The discard prevents stale
+  //     PLAYBACK; the file system layout prevents stale OVERWRITES.
+  const previewGenerationRef = useRef<Map<string, number>>(new Map());
+  const bumpPreviewGeneration = (sceneId: string): number => {
+    const next = (previewGenerationRef.current.get(sceneId) ?? 0) + 1;
+    previewGenerationRef.current.set(sceneId, next);
+    return next;
+  };
+  const isPreviewCurrent = (sceneId: string, gen: number): boolean => {
+    return previewGenerationRef.current.get(sceneId) === gen;
+  };
+
   const onPreviewScene = async (sceneId: string): Promise<void> => {
-    // Toggle: if this scene is already playing, stop it.
+    // Toggle: if this scene is already playing, stop it. Bump the
+    // generation so any in-flight load gets discarded.
     if (previewingSceneId === sceneId && audioRef.current !== null) {
       audioRef.current.pause();
+      bumpPreviewGeneration(sceneId);
       setPreviewingSceneId(null);
+      setPreviewLoadingSceneId(null);
       return;
     }
+    const gen = bumpPreviewGeneration(sceneId);
     setPreviewError(null);
     setPreviewLoadingSceneId(sceneId);
     // Flush pending text edits so the preview synthesizes what's on
     // screen, not what was last flushed to disk.
     await onFlushPending();
+    if (!isPreviewCurrent(sceneId, gen)) return;
     const result = await dispatch("sizzle:previewSceneAudio", {
       projectId: project.id,
       sceneId
     });
+    if (!isPreviewCurrent(sceneId, gen)) return;
     setPreviewLoadingSceneId(null);
     if (!result.ok) {
       setPreviewError(result.error.message);
@@ -450,6 +479,26 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewingSceneId(null);
     }
   };
+
+  // Watch the local copy of every scene's scriptLine. When any of
+  // them changes, bump that scene's preview generation so a still-
+  // in-flight response for the old text gets discarded instead of
+  // playing audio that doesn't match the textbox.
+  const lastScriptByScene = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    for (const scene of project.scenes) {
+      const prev = lastScriptByScene.current.get(scene.id);
+      if (prev !== undefined && prev !== scene.scriptLine) {
+        bumpPreviewGeneration(scene.id);
+        // If this scene was actively playing stale audio, stop it.
+        if (previewingSceneId === scene.id && audioRef.current !== null) {
+          audioRef.current.pause();
+          setPreviewingSceneId(null);
+        }
+      }
+      lastScriptByScene.current.set(scene.id, scene.scriptLine);
+    }
+  }, [project.scenes, previewingSceneId]);
 
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();

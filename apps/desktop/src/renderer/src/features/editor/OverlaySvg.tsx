@@ -40,6 +40,7 @@ import {
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
+import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 
 /** Phase 3.3 — draft style overrides threaded from `useEditorToolState`.
  *  When the user picks "red" for the arrow tool, the draft preview
@@ -78,7 +79,6 @@ export function OverlaySvg({
   sourceWidthPx,
   sourceHeightPx,
   selectedLayerId = null,
-  editingLayerId = null,
   liveOverride = null
 }: {
   overlays: OverlayRow[];
@@ -101,15 +101,6 @@ export function OverlaySvg({
    *  glyph is drawn over that overlay's bounding box so the user can
    *  see what they've selected and confirm before Delete/Backspace. */
   selectedLayerId?: string | null;
-  /** Id of the text overlay currently open in the in-canvas
-   *  `TextDraftInput`, or null when no edit is in progress. The matching
-   *  TextGlyph is suppressed so the draft input isn't painted on top of
-   *  the persisted glyph (visible duplication; the two layers use
-   *  different sizing pipelines and only happen to align on uncropped
-   *  landscape captures). The draft input is responsible for painting
-   *  the text while the user is editing; once they commit/cancel the
-   *  caller clears this id and the glyph returns. */
-  editingLayerId?: string | null;
   /** Live-drag geometry override. When set, the row whose id matches
    *  `layerId` is rendered with the overridden geometry instead of
    *  its persisted `data.*` fields — so e.g. an arrow's endpoint
@@ -180,14 +171,8 @@ export function OverlaySvg({
   // unification (see TextHtmlOverlays). The SVG side handles non-text
   // shapes + the selection outline; TextHtml renders persisted text
   // glyphs as absolute-positioned <div>s in the canvas-wrap so display
-  // / edit / bake all go through Chromium's HTML text pipeline. The
-  // `texts` memo is retained at zero-length to keep the SelectionOutline
-  // lookup below (which still needs to find the row by id when text is
-  // the selected overlay) on a stable reference.
-  // editingLayerId is still consumed by SelectionOutline indirectly via
-  // the find() below and stays in the prop list — drift-free with the
-  // editor's draft state.
-  void editingLayerId;
+  // + edit go through Chromium's HTML text pipeline. The "suppress
+  // the editing overlay" rule lives in TextHtmlOverlays.tsx now.
 
   // Live-rect for rect/highlight/blur drags, computed once so all
   // three branches can share.
@@ -937,13 +922,13 @@ function textBoundsBox(
   const lines = data.body.split("\n");
   const lineCount = Math.max(1, lines.length);
   const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 0);
-  // Approximate proportional-font advance — still a heuristic, but
-  // good enough for the selection outline to wrap the glyph without
-  // egregious slop. Doesn't need to be pixel-perfect (the outline is
-  // a 1px dashed border, the user reads it as "this is the selected
-  // overlay"; an extra few percent of width is fine).
-  const charAdvance = 0.55;
-  const naturalWidthPx = maxChars * fontSizePx * charAdvance;
+  // Approximate proportional-font advance for the SELECTION OUTLINE
+  // — tight wrap around the rendered glyph. The hit-test
+  // (`hitTestOverlays` in Editor.tsx) uses a slightly LOOSER advance
+  // so clicks just past the right edge still register. Both constants
+  // live in text-bbox-constants.ts with the rationale; see it before
+  // changing either value.
+  const naturalWidthPx = maxChars * fontSizePx * TEXT_BBOX_CHAR_ADVANCE_OUTLINE;
   // line-height: 1 on the HTML div → total block height is exactly
   // `lineCount * fontSize`. No extra 1.2× spacing, no 0.2 trailing
   // subtraction (that was for SVG dy="1.2em").

@@ -77,6 +77,7 @@ import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
+import { TEXT_BBOX_CHAR_ADVANCE_HIT } from "./text-bbox-constants";
 import { ZoomMenu } from "./ZoomMenu";
 import { CropTool } from "./CropTool";
 import { EditorChrome } from "./EditorChrome";
@@ -564,15 +565,17 @@ export function hitTestOverlays(
       const lines = o.body.split("\n");
       const lineCount = Math.max(1, lines.length);
       const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
-      // 0.65 char-advance is slightly wider than the 0.55 used in
-      // textBoundsBox so the hit target reaches past the rendered
-      // glyph's right edge (users pointing at characters near the
-      // right side were misfiring on the empty space just past the
-      // glyph). Width also has a floor of 1× fontSize so a 1-char
-      // line still has a reasonable click target.
+      // Char-advance for the HIT TEST — intentionally LOOSER than the
+      // selection outline's so clicks landing just past the right edge
+      // of the rendered text still register (users pointing at
+      // characters near the right side were misfiring on the empty
+      // space just past the glyph). Both constants + rationale live in
+      // text-bbox-constants.ts; see it before tweaking either value.
+      // Width also has a floor of 1× fontSize so a 1-char line still
+      // has a reasonable click target.
       const naturalWidthPx = Math.max(
         sizePx,
-        maxChars * sizePx * 0.65
+        maxChars * sizePx * TEXT_BBOX_CHAR_ADVANCE_HIT
       );
       const naturalHeightPx = sizePx * lineCount;
       // Box centered vertically on the anchor (matches the HTML
@@ -2604,22 +2607,18 @@ function EditorLoaded({
             sourceWidthPx={sourceWidthPx}
             sourceHeightPx={sourceHeightPx}
             selectedLayerId={selectedLayerId}
-            editingLayerId={
-              draft?.kind === "text" && draft.editingId !== undefined
-                ? draft.editingId
-                : null
-            }
             liveOverride={draftGeometry}
           />
           {/* HTML-text overlay layer — replaces the SVG TextGlyph that
               previously lived inside OverlaySvg. Sits ABOVE the SVG
               shapes (so text reads on top of background rects /
               highlights) and BELOW the TransformHandles (so handles
-              still catch pointer events). Display + edit (textarea)
-              + bake (hidden BrowserWindow → PNG) all share
-              `computeTextHtmlStyle` from @pwrsnap/shared, so the
-              rendered glyph is pixel-identical across every surface
-              the user sees. */}
+              still catch pointer events). Display + edit (visible div
+              + invisible textarea) share `computeTextHtmlStyle` from
+              @pwrsnap/shared so the rendered glyph is pixel-identical
+              between the two surfaces. The export bake still goes
+              through compose.ts textSvgForV2 (librsvg+SVG); a future
+              PR will unify it too. */}
           <TextHtmlOverlays
             overlays={overlays}
             editingLayerId={

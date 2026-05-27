@@ -136,9 +136,25 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
   };
 
   // Inner glyph element styling — IDENTICAL between display, edit and
-  // bake. Every property here matters; see TextDraftInput.tsx for the
-  // long-form reasoning on the SVG-parity controls
+  // (future) bake. Every property here matters; see TextDraftInput.tsx
+  // for the long-form reasoning on the SVG-parity controls
   // (-webkit-font-smoothing, text-rendering, font-kerning, etc.).
+  //
+  // This block deliberately FUSES two concerns:
+  //   • Layout properties — fontSize, lineHeight, whiteSpace, margin,
+  //     padding. Drive the glyph's box dimensions and where characters
+  //     land. Display/edit MUST agree on these to keep position parity.
+  //   • Rendering properties — WebkitFontSmoothing, textRendering,
+  //     fontKerning, fontFeatureSettings, fontVariantLigatures,
+  //     WebkitTextStroke, paintOrder, color. Drive how Chromium PAINTS
+  //     each glyph (weight, halo, antialiasing path). Display/edit
+  //     MUST agree on these to keep visual parity.
+  //
+  // We fuse them because the contract is "one decision point per
+  // overlay" — splitting layout vs rendering would mean two
+  // synchronized property maps, two places to change in lockstep,
+  // and two places to audit. The single-map design is the property
+  // any reasonable caller (renderer or future bake) wants.
   const glyph: Record<string, string | number> = {
     fontFamily: FONT_FAMILY,
     fontWeight: weight,

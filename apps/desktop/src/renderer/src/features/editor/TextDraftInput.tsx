@@ -16,7 +16,13 @@
 //      set to the accent so the blinking caret remains visible.
 //      `value` and `onChange` are bound to the parent's draft state.
 //      All keyboard handling (Enter commits, Shift+Enter newline,
-//      Escape cancels, paste sanitization) lives on the textarea.
+//      Escape cancels) lives on the textarea.
+//
+// Paste sanitization is intentionally NOT handled — `<textarea>`
+// already accepts plain text only (browsers strip rich content
+// automatically, unlike `contentEditable`). If a future requirement
+// adds paste filtering (e.g., normalize line endings), wire it via
+// an `onPaste` handler on the textarea.
 //
 // Why this beats `contentEditable` (the previous attempt): Chromium
 // strips / fails-to-apply `-webkit-text-stroke` on contentEditable
@@ -226,18 +232,6 @@ export function TextDraftInput({
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
         onKeyDown={onKeyDown}
-        // Plain-text paste — drop any incoming HTML formatting so the
-        // body stays plain text. Without this, paste from a styled
-        // source (browsers, rich-text editors) would smuggle styled
-        // chunks in via the textarea's value.
-        onPaste={(e) => {
-          // Textareas already paste as plain text — no special
-          // handling needed. (Browsers strip rich content for
-          // textareas automatically, unlike contentEditable divs.)
-          // This handler exists only as a documentation hook in
-          // case we ever need to inspect / filter paste content.
-          void e;
-        }}
         rows={1}
         spellCheck={false}
         aria-label="Edit text annotation"

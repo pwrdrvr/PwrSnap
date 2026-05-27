@@ -28,8 +28,7 @@ async function renderOverlaySvg(
   dims: { imageWidthPx: number; imageHeightPx: number } = {
     imageWidthPx: 800,
     imageHeightPx: 600
-  },
-  extraProps: { editingLayerId?: string | null } = {}
+  }
 ): Promise<SVGSVGElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -46,8 +45,7 @@ async function renderOverlaySvg(
         // default to source == canvas (uncropped); per-test overrides
         // pass distinct values to exercise the cropped scenario.
         sourceWidthPx: dims.imageWidthPx,
-        sourceHeightPx: dims.imageHeightPx,
-        ...extraProps
+        sourceHeightPx: dims.imageHeightPx
       })
     );
   });
@@ -417,7 +415,7 @@ describe("OverlaySvg — text overlays moved to HTML rendering", () => {
   // <TextHtmlOverlays> (HTML divs) NOT via SVG <text>. OverlaySvg's
   // text branch is intentionally a no-op for text rows — any non-zero
   // <text> count here would mean the SVG path is back. Coverage of the
-  // editingLayerId-suppression rule moved to TextHtmlOverlays.test.tsx
+  // "suppress the editing overlay" rule lives in TextHtmlOverlays.test.tsx
   // (the new owner of that filtering logic).
 
   test("text overlays never produce <text> elements in the SVG", async () => {
@@ -425,10 +423,11 @@ describe("OverlaySvg — text overlays moved to HTML rendering", () => {
     expect(svg.querySelectorAll("text").length).toBe(0);
   });
 
-  test("text overlays do not produce <text> elements even when editingLayerId is set", async () => {
-    const svg = await renderOverlaySvg([textRow("text_1")], undefined, {
-      editingLayerId: "text_1"
-    });
+  test("multiple text overlays produce zero <text> elements (suppression is enforced upstream by TextHtmlOverlays)", async () => {
+    const svg = await renderOverlaySvg([
+      textRow("text_1"),
+      textRow("text_2", { point: { x: 0.3, y: 0.3 } })
+    ]);
     expect(svg.querySelectorAll("text").length).toBe(0);
   });
 });

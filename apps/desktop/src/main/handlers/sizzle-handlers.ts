@@ -13,7 +13,7 @@ import {
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
-import { synthesize, TtsError } from "../sizzle/tts";
+import { pruneTtsCache, synthesize, TtsError } from "../sizzle/tts";
 import {
   compose,
   ComposeError,
@@ -26,6 +26,13 @@ import {
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import { resolveCacheFile } from "../render/coordinator";
+import {
+  validateSizzleCreate,
+  validateSizzleIdRequest,
+  validateSizzleOpenRequest,
+  validateSizzlePreviewRequest,
+  validateSizzleUpdate
+} from "./sizzle-validators";
 
 const log = getMainLogger("pwrsnap:sizzle-handlers");
 
@@ -100,13 +107,15 @@ export function registerSizzleHandlers(): void {
   const store = getSizzleStore();
 
   bus.register("sizzle:open", async (req) => {
+    const v = validateSizzleOpenRequest(req);
+    if (!v.ok) return err(v.error);
     const existing = findSizzleWindow();
     const window = existing ?? createSizzleWindow();
     if (existing !== null && existing.isMinimized()) existing.restore();
     window.show();
     window.focus();
-    if (req.projectId !== undefined) {
-      window.webContents.send("events:sizzle:nav", { projectId: req.projectId });
+    if (v.projectId !== undefined) {
+      window.webContents.send("events:sizzle:nav", { projectId: v.projectId });
     }
     return ok(undefined);
   });
@@ -117,13 +126,17 @@ export function registerSizzleHandlers(): void {
   });
 
   bus.register("sizzle:create", async (req) => {
-    const project = await store.create(req.name);
+    const v = validateSizzleCreate(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.create(v.name);
     return ok(project);
   });
 
   bus.register("sizzle:update", async (req) => {
+    const v = validateSizzleUpdate(req);
+    if (!v.ok) return err(v.error);
     try {
-      const project = await store.update(req.id, req.patch);
+      const project = await store.update(v.value.id, v.value.patch);
       return ok(project);
     } catch (cause) {
       return err(toError(cause, "sizzle_update_failed"));
@@ -131,16 +144,20 @@ export function registerSizzleHandlers(): void {
   });
 
   bus.register("sizzle:delete", async (req) => {
-    await store.delete(req.id);
+    const v = validateSizzleIdRequest(req);
+    if (!v.ok) return err(v.error);
+    await store.delete(v.id);
     return ok(undefined);
   });
 
   bus.register("sizzle:previewSceneAudio", async (req) => {
-    const project = await store.get(req.projectId);
+    const v = validateSizzlePreviewRequest(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.projectId);
     if (project === null) {
       return err({ kind: "validation", code: "not_found", message: "Project not found" });
     }
-    const scene = project.scenes.find((s) => s.id === req.sceneId);
+    const scene = project.scenes.find((s) => s.id === v.sceneId);
     if (scene === undefined) {
       return err({ kind: "validation", code: "not_found", message: "Scene not found" });
     }
@@ -199,7 +216,9 @@ export function registerSizzleHandlers(): void {
   });
 
   bus.register("sizzle:revealOutput", async (req) => {
-    const project = await store.get(req.id);
+    const v = validateSizzleIdRequest(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.id);
     if (project === null || project.outputPath === null) {
       return err({
         kind: "validation",
@@ -211,10 +230,12 @@ export function registerSizzleHandlers(): void {
     return ok(undefined);
   });
 
-  bus.register("sizzle:render", async (req): Promise<Result<{ outputPath: string; durationSec: number }, PwrSnapError>> => {
-    const project = await store.get(req.id);
+  bus.register("sizzle:render", async (req, ctx): Promise<Result<{ outputPath: string; durationSec: number }, PwrSnapError>> => {
+    const v = validateSizzleIdRequest(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.id);
     if (project === null) {
-      return err({ kind: "validation", code: "not_found", message: `Project ${req.id} not found` });
+      return err({ kind: "validation", code: "not_found", message: `Project ${v.id} not found` });
     }
     if (project.scenes.length === 0) {
       return err({
@@ -329,8 +350,7 @@ export function registerSizzleHandlers(): void {
 
     const outDir = join(app.getPath("videos"), "PwrSnap");
     await mkdir(outDir, { recursive: true });
-    const safeName = project.name.replace(/[^\w.\- ]+/g, "_").slice(0, 60).trim() || "sizzle";
-    const outputPath = join(outDir, `${safeName}-${project.id}.mp4`);
+    const outputPath = join(outDir, `${sanitizeProjectFilename(project.name)}-${project.id}.mp4`);
 
     try {
       await compose({
@@ -339,6 +359,7 @@ export function registerSizzleHandlers(): void {
         width: dims.w,
         height: dims.h,
         fps: 30,
+        signal: ctx.signal,
         onProgress: (ratio) => {
           broadcast({
             projectId: project.id,
@@ -361,6 +382,18 @@ export function registerSizzleHandlers(): void {
     });
     log.info("sizzle:render done", { id: next.id, totalSec, outputPath });
     broadcast({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
+    // Post-render GC: every script-line edit creates a new cache
+    // entry, and the old ones drift out of any project's live set
+    // immediately. Running the sweep right after a successful render
+    // is the right cadence — we already paid the IO budget for the
+    // ffmpeg encode, and the user is about to look at the output
+    // rather than the cache. Fire-and-forget; the render result
+    // doesn't depend on the sweep.
+    void store.list().then((projects) => pruneTtsCache(projects)).catch((cause) => {
+      log.warn("tts cache sweep failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
     return ok({ outputPath, durationSec: totalSec });
   });
 }
@@ -370,4 +403,32 @@ class SceneError extends Error {
     super(message);
     this.name = "SceneError";
   }
+}
+
+/**
+ * Sanitize a user-supplied project name for use as the leading
+ * component of the output filename.
+ *
+ *   - Strip everything outside [word chars, dot, dash, space].
+ *   - Strip leading dots — defense in depth against `..`, `.hidden`,
+ *     etc. even though the project.id suffix that follows would
+ *     prevent escaping the output dir.
+ *   - Trim whitespace.
+ *   - Cap to 60 chars.
+ *   - Fall back to "sizzle" if the result is empty.
+ *
+ * Exported for unit testing — the security contract here is "the
+ * caller cannot escape `~/Movies/PwrSnap/`" and we want explicit
+ * coverage of the edge cases.
+ */
+export function sanitizeProjectFilename(name: string): string {
+  const stripped = name
+    .replace(/[^\w.\- ]+/g, "_")
+    .replace(/^\.+/, "_")
+    // Collapse runs of underscores so "../etc/passwd" → "_etc_passwd"
+    // instead of "__etc_passwd". Cosmetic, not security-bearing.
+    .replace(/_+/g, "_")
+    .trim()
+    .slice(0, 60);
+  return stripped.length > 0 ? stripped : "sizzle";
 }

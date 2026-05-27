@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
@@ -19,11 +19,20 @@ export type ComposeRequest = {
   height: number;
   fps: number;
   onProgress?: (ratio: number) => void;
+  /** AbortSignal threaded from the bus's per-dispatch controller. On
+   *  abort, the in-flight ffmpeg child gets SIGKILL and the compose
+   *  promise rejects with a `cancelled` ComposeError. The temp audio-
+   *  list file is cleaned up either way. */
+  signal?: AbortSignal;
 };
 
 export class ComposeError extends Error {
   constructor(
-    public readonly code: "ffmpeg_missing" | "no_scenes" | "ffmpeg_failed",
+    public readonly code:
+      | "ffmpeg_missing"
+      | "no_scenes"
+      | "ffmpeg_failed"
+      | "cancelled",
     message: string,
     public readonly details?: string
   ) {
@@ -151,14 +160,39 @@ export function buildCompositionArgs(
     "[vout]",
     "-map",
     `${req.scenes.length}:a:0`,
+    // `h264_videotoolbox`: macOS-native hardware H.264 encoder via
+    // Apple's VideoToolbox framework. Two reasons we use it instead
+    // of `libx264`:
+    //
+    // 1. **License**: libx264 is GPL. Our composer would actively
+    //    *invoke* the GPL component every render, which complicates
+    //    PwrSnap's MIT posture and the .app's redistribution story.
+    //    VideoToolbox is part of macOS, included under Apple's
+    //    platform license — no GPL invocation, no patent dance.
+    //
+    // 2. **Speed**: VT runs on the Media Engine on Apple Silicon and
+    //    on the iGPU on Intel Macs. A 4-scene 1080p reel encodes in
+    //    a few seconds vs. tens of seconds with libx264 veryfast.
+    //
+    // Issue #127 tracks switching the *bundled* ffmpeg binary itself
+    // to a non-GPL build so the GPL code isn't even shipped. This
+    // codec switch is the invocation-layer half of that work.
+    //
+    // Quality is controlled by `-q:v` (1=best, 100=worst) rather than
+    // `-crf` — VT's rate-control parameter is different. q=50 is the
+    // VT default and is visually transparent for screenshot-style
+    // material; we use 45 for a slight quality bump.
     "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "20",
+    "h264_videotoolbox",
+    "-q:v",
+    "45",
     "-pix_fmt",
     "yuv420p",
+    // `aac` here is ffmpeg's *native* AAC encoder (LGPL), NOT the
+    // nonfree `libfdk_aac`. Quality is good enough for narration at
+    // 192k. Explicitly preferred over auto-selection so a future
+    // ffmpeg build with libfdk-aac enabled can't accidentally bring
+    // in a nonfree codec.
     "-c:a",
     "aac",
     "-b:a",
@@ -188,38 +222,77 @@ export async function compose(req: ComposeRequest): Promise<void> {
     .join("\n");
   await writeFile(audioListPath, audioConcat, "utf8");
 
-  const args = buildCompositionArgs(req, audioListPath);
-  log.info("ffmpeg compose", {
-    scenes: req.scenes.length,
-    width: req.width,
-    height: req.height,
-    fps: req.fps,
-    totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
-  });
-  const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
-  await runFfmpeg(ffmpeg, args, totalSec, req.onProgress);
+  try {
+    const args = buildCompositionArgs(req, audioListPath);
+    log.info("ffmpeg compose", {
+      scenes: req.scenes.length,
+      width: req.width,
+      height: req.height,
+      fps: req.fps,
+      totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
+    });
+    const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
+    await runFfmpeg(ffmpeg, args, totalSec, req.onProgress, req.signal);
+  } finally {
+    // Clean up the audio concat list whether ffmpeg succeeded, failed,
+    // or was aborted. Don't leak temp files into ~/Movies/PwrSnap/.
+    await unlink(audioListPath).catch(() => undefined);
+  }
 }
 
 function runFfmpeg(
   bin: string,
   args: string[],
   totalDurationSec: number,
-  onProgress: ((ratio: number) => void) | undefined
+  onProgress: ((ratio: number) => void) | undefined,
+  signal: AbortSignal | undefined
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Already aborted before we started? Bail without spawning.
+    if (signal?.aborted === true) {
+      reject(new ComposeError("cancelled", "Render was cancelled before start"));
+      return;
+    }
     const proc = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
     let tail = "";
+    let aborted = false;
+    const onAbort = (): void => {
+      aborted = true;
+      // SIGKILL — ffmpeg ignores SIGTERM mid-encode in some
+      // configurations. We've already committed to discarding the
+      // partial output.
+      proc.kill("SIGKILL");
+    };
+    if (signal !== undefined) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       tail = (tail + text).slice(-8192);
-      const m = /time=(\d+):(\d+):(\d+\.\d+)/g.exec(text);
-      if (m !== null && totalDurationSec > 0 && onProgress) {
-        const elapsed = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
-        onProgress(Math.min(0.99, elapsed / totalDurationSec));
+      // Use .match with /g instead of .exec — .exec with a global
+      // regex stashes lastIndex on the regex object and is awkward
+      // here. We want the LAST time= line in this chunk so progress
+      // tracks the current encoder position.
+      const matches = text.match(/time=(\d+):(\d+):(\d+\.\d+)/g);
+      if (matches !== null && totalDurationSec > 0 && onProgress) {
+        const last = matches[matches.length - 1]!;
+        const m = /time=(\d+):(\d+):(\d+\.\d+)/.exec(last);
+        if (m !== null) {
+          const elapsed = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+          onProgress(Math.min(0.99, elapsed / totalDurationSec));
+        }
       }
     });
-    proc.on("error", reject);
+    proc.on("error", (cause) => {
+      if (signal !== undefined) signal.removeEventListener("abort", onAbort);
+      reject(cause);
+    });
     proc.on("close", (code) => {
+      if (signal !== undefined) signal.removeEventListener("abort", onAbort);
+      if (aborted) {
+        reject(new ComposeError("cancelled", "Render was cancelled"));
+        return;
+      }
       if (code === 0) {
         if (onProgress) onProgress(1);
         resolve();

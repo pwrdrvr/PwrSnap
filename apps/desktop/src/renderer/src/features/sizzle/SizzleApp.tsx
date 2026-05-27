@@ -414,6 +414,22 @@ function Editor(props: EditorProps): ReactElement {
   }, [autoFocusTitle, onTitleFocused]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Hold the currently-mounted object URL so we can revoke it before
+  // assigning a new src. A data: URL would leak ~33% memory per
+  // preview AND keep the prior buffer pinned in memory; object URLs
+  // can be revoked deterministically. Without revoke, repeated
+  // previews would steadily grow the renderer's heap.
+  const audioObjectUrlRef = useRef<string | null>(null);
+  const revokeAudioObjectUrl = (): void => {
+    const url = audioObjectUrlRef.current;
+    if (url !== null) {
+      URL.revokeObjectURL(url);
+      audioObjectUrlRef.current = null;
+    }
+  };
+  useEffect(() => {
+    return () => revokeAudioObjectUrl();
+  }, []);
   const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
   const [previewLoadingSceneId, setPreviewLoadingSceneId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -470,7 +486,17 @@ function Editor(props: EditorProps): ReactElement {
     }
     const el = audioRef.current;
     if (el === null) return;
-    el.src = `data:${result.value.mimeType};base64,${result.value.audioBase64}`;
+    // Decode the base64 into a Blob, hand the audio element an
+    // object URL, and revoke the previous one. This keeps a single
+    // buffer alive at a time instead of accumulating data URLs.
+    const binary = atob(result.value.audioBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: result.value.mimeType });
+    revokeAudioObjectUrl();
+    const objectUrl = URL.createObjectURL(blob);
+    audioObjectUrlRef.current = objectUrl;
+    el.src = objectUrl;
     setPreviewingSceneId(sceneId);
     try {
       await el.play();

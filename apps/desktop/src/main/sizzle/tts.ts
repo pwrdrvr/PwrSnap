@@ -1,8 +1,13 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
-import type { SizzleTtsModel, SizzleTtsProvider, SizzleVoice } from "@pwrsnap/shared";
+import type {
+  SizzleProject,
+  SizzleTtsModel,
+  SizzleTtsProvider,
+  SizzleVoice
+} from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:sizzle-tts");
@@ -139,4 +144,84 @@ async function fileExists(p: string): Promise<boolean> {
 
 export async function readAudio(audioPath: string): Promise<Buffer> {
   return readFile(audioPath);
+}
+
+/**
+ * Compute the cache filename (basename, no directory) for a given
+ * `(provider, model, voice, text)` tuple. Exposed so the GC sweep can
+ * build the set of "currently-referenced" filenames from the live
+ * project list without having to call `synthesize()`.
+ */
+export function ttsCacheFilename(args: {
+  provider: SizzleTtsProvider;
+  model: SizzleTtsModel;
+  voice: SizzleVoice;
+  text: string;
+}): string {
+  return `${hashKey(args)}.mp3`;
+}
+
+export function ttsCacheDir(): string {
+  return join(app.getPath("userData"), "sizzle-cache", "tts");
+}
+
+/**
+ * Sweep the TTS cache directory and delete files NOT referenced by any
+ * current project. "Referenced" = `hashKey({ provider, model, voice,
+ * scene.scriptLine.trim() })` matches the file's basename.
+ *
+ * Safe to run while other operations are in flight: synthesize() writes
+ * a missing file under the same hash, so the worst case if a sweep
+ * races a write is the just-written file gets deleted and the next
+ * call re-fetches it. Cheap correctness over cheap performance.
+ *
+ * Returns the count of files removed for observability + tests.
+ */
+export async function pruneTtsCache(projects: SizzleProject[]): Promise<{
+  scanned: number;
+  removed: number;
+  kept: number;
+}> {
+  const dir = ttsCacheDir();
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch (cause) {
+    if (isNodeError(cause) && cause.code === "ENOENT") {
+      return { scanned: 0, removed: 0, kept: 0 };
+    }
+    throw cause;
+  }
+  const live = new Set<string>();
+  for (const project of projects) {
+    for (const scene of project.scenes) {
+      const text = scene.scriptLine.trim();
+      if (text.length === 0) continue;
+      live.add(
+        ttsCacheFilename({
+          provider: project.ttsProvider,
+          model: project.ttsModel,
+          voice: project.voice,
+          text
+        })
+      );
+    }
+  }
+  let removed = 0;
+  let kept = 0;
+  for (const entry of entries) {
+    if (!entry.endsWith(".mp3")) continue;
+    if (live.has(entry)) {
+      kept++;
+      continue;
+    }
+    await unlink(join(dir, entry)).catch(() => undefined);
+    removed++;
+  }
+  log.info("tts cache swept", { scanned: entries.length, removed, kept });
+  return { scanned: entries.length, removed, kept };
+}
+
+function isNodeError(value: unknown): value is NodeJS.ErrnoException {
+  return value instanceof Error && typeof (value as NodeJS.ErrnoException).code === "string";
 }

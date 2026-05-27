@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { buildCompositionArgs, compose, type SceneInput } from "../composer";
+import { buildCompositionArgs, compose, ComposeError, type SceneInput } from "../composer";
 import { resolveFfmpegPath } from "../../recording/ffmpeg-resolver";
 
 // These tests shell out to the real ffmpeg binary (the same
@@ -253,6 +253,84 @@ skipIfNoFfmpeg("sizzle composer", () => {
       ).toBe(true);
     }
   }, 90_000);
+
+  it("compose aborts when the AbortSignal fires mid-encode", async () => {
+    // Build a deliberately long-running scene (10s) so we can fire
+    // the abort signal while ffmpeg is still encoding. Without the
+    // abort wire, this would hang for 10+ seconds; with it, ffmpeg
+    // gets SIGKILL'd within the 100ms abort window and compose
+    // rejects with a `cancelled` ComposeError.
+    const scenes: SceneInput[] = [
+      {
+        imagePath: await makeImage("abort.png", "red"),
+        audioPath: await makeSilentMp3("abort.mp3", 10),
+        durationSec: 10
+      }
+    ];
+    const outputPath = join(tmpDir, "abort.mp4");
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const start = Date.now();
+    let caught: unknown = null;
+    try {
+      await compose({
+        scenes,
+        outputPath,
+        width: 320,
+        height: 180,
+        fps: 30,
+        signal: controller.signal
+      });
+    } catch (cause) {
+      caught = cause;
+    }
+    const elapsed = Date.now() - start;
+    expect(caught).toBeInstanceOf(ComposeError);
+    expect((caught as ComposeError).code).toBe("cancelled");
+    // Should return well before the 10s scene duration would naturally
+    // complete. Pad generously for CI latency.
+    expect(elapsed).toBeLessThan(5_000);
+  }, 30_000);
+
+  it("compose cleans up the .audio-list.txt temp file on success", async () => {
+    const scenes: SceneInput[] = [
+      {
+        imagePath: await makeImage("cleanup.png", "blue"),
+        audioPath: await makeSilentMp3("cleanup.mp3", 0.5),
+        durationSec: 0.5
+      }
+    ];
+    const outputPath = join(tmpDir, "cleanup.mp4");
+    await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
+    const { existsSync } = await import("node:fs");
+    expect(existsSync(`${outputPath}.audio-list.txt`)).toBe(false);
+  }, 30_000);
+
+  it("buildCompositionArgs: video codec is h264_videotoolbox (no libx264 invocation)", () => {
+    // GPL compliance + cost: libx264 must never be invoked from this
+    // path. issue #127 tracks switching the bundled binary itself.
+    // This assertion locks the invocation contract in.
+    const args = buildCompositionArgs(
+      {
+        scenes: [{ imagePath: "/x/a.png", audioPath: "/x/a.mp3", durationSec: 1 }],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio-list.txt"
+    );
+    const codecIdx = args.indexOf("-c:v");
+    expect(codecIdx).toBeGreaterThan(0);
+    expect(args[codecIdx + 1]).toBe("h264_videotoolbox");
+    expect(args).not.toContain("libx264");
+    expect(args).not.toContain("libx265");
+    // Audio codec is ffmpeg's native (LGPL), not libfdk-aac (nonfree).
+    const aIdx = args.indexOf("-c:a");
+    expect(aIdx).toBeGreaterThan(0);
+    expect(args[aIdx + 1]).toBe("aac");
+    expect(args).not.toContain("libfdk_aac");
+  });
 
   it("buildCompositionArgs: image inputs are single-frame (no -loop, no -t, no -framerate)", () => {
     const args = buildCompositionArgs(

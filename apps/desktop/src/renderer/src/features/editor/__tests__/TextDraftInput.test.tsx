@@ -29,7 +29,7 @@ afterEach(async () => {
   root = null;
 });
 
-async function renderInput(): Promise<HTMLTextAreaElement> {
+async function renderInput(body = "hello"): Promise<HTMLTextAreaElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -41,7 +41,7 @@ async function renderInput(): Promise<HTMLTextAreaElement> {
   await act(async () => {
     root?.render(
       createElement(TextDraftInput, {
-        draft: { kind: "text", xn: 0.5, yn: 0.5, body: "hello" },
+        draft: { kind: "text", xn: 0.5, yn: 0.5, body },
         inputRef,
         imageWidthPx: 1920,
         imageHeightPx: 1080,
@@ -122,5 +122,59 @@ describe("TextDraftInput — line-height", () => {
     // We set the longhand explicitly to 1 so caret + glyph match.
     const ta = await renderInput();
     expect(ta.style.lineHeight).toBe("1");
+  });
+});
+
+describe("TextDraftInput — empty-state affordances", () => {
+  // Regression for the "I clicked text tool, clicked the canvas,
+  // nothing happened" bug. Before these fixes the visible div had 0
+  // dimensions when `draft.body === ""`, the textarea (sized via
+  // inset:0) inherited 0 dimensions, and the user saw no caret + no
+  // bounding box → zero feedback that the system was waiting for
+  // keystrokes. Both affordances live on the VISIBLE DIV (not the
+  // textarea); these tests find the visible div as the wrapper's
+  // first <div> child.
+
+  function visibleDiv(): HTMLDivElement {
+    if (container === null) throw new Error("container is null");
+    // Structure: container > wrapper-div > [visible-div, textarea].
+    // Both the container's child (wrapper) and the wrapper's child
+    // (visible div) match `div > div` — pick the deeper one.
+    const all = container.querySelectorAll("div");
+    // all[0] = wrapper (container > wrapper), all[1] = visible div
+    // (wrapper > visible-div). The textarea isn't a div so it doesn't
+    // count.
+    const div = all[1];
+    if (div === undefined) throw new Error("visible div not found");
+    return div;
+  }
+
+  test("min-width + min-height keep the wrapper visible when body is empty", async () => {
+    await renderInput("");
+    const div = visibleDiv();
+    expect(div.style.minWidth).toBe("1ch");
+    expect(div.style.minHeight).toBe("1em");
+  });
+
+  test("placeholder dashed outline only renders on empty body", async () => {
+    await renderInput("");
+    const empty = visibleDiv();
+    // jsdom's CSSOM doesn't always parse `outline` shorthand cleanly
+    // (especially with `var()` values) — fall back to inspecting the
+    // raw inline-style attribute string, which React serializes
+    // verbatim from the camelCase keys we set.
+    const styleAttr = empty.getAttribute("style") ?? "";
+    expect(styleAttr).toMatch(/outline:\s*[^;]*dashed/);
+    expect(styleAttr).toMatch(/outline-offset:\s*2px/);
+  });
+
+  test("no placeholder outline once content lands", async () => {
+    await renderInput("hello");
+    const filled = visibleDiv();
+    // Either no outline declaration at all, or empty value. The
+    // production code drops the entire outline + outlineOffset block
+    // from the style object when body is non-empty.
+    const styleAttr = filled.getAttribute("style") ?? "";
+    expect(styleAttr).not.toMatch(/outline:\s*[^;]*dashed/);
   });
 });

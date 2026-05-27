@@ -113,6 +113,25 @@ export function TextDraftInput({
     ...(style.wrapper as CSSProperties),
     pointerEvents: "auto"
   };
+  // Empty-state detection — fresh placements start with `body: ""`.
+  // Drives two affordances below:
+  //   1. Min-dimensions on the visible div so the textarea (sized via
+  //      inset:0) has a non-zero box → the blinking caret is visible
+  //      BEFORE the user types the first character. Without this the
+  //      visible div has 0 dimensions when body is empty, the textarea
+  //      inherits 0 dimensions, and the user gets zero feedback that
+  //      they can type. Pre-unification the textarea had
+  //      `field-sizing: content` + `min-width: 1ch` which kept it
+  //      visible while empty; the visible-div + invisible-textarea
+  //      architecture has to re-establish that property.
+  //   2. A dashed accent placeholder outline on the empty visible div
+  //      — the "your text will go here" affordance so the user sees a
+  //      bounding box BEFORE typing. Matches the pattern Cleanshot /
+  //      Skitch use for fresh text annotations. Disappears as soon as
+  //      content lands (the user no longer needs the affordance once
+  //      they see their typed glyphs).
+  const isEmptyDraft = draft.body === "";
+
   // Visible glyph element — same style as TextHtml.tsx's display div.
   // Identical rendering, identical halo, identical metrics.
   const visibleGlyphStyle: CSSProperties = {
@@ -122,7 +141,25 @@ export function TextDraftInput({
     // The textarea is `position: absolute` on top of this; we need
     // this div to lay out the wrapper's intrinsic dimensions so the
     // textarea's `inset: 0` can size against it.
-    position: "relative"
+    position: "relative",
+    // Minimum dimensions so the wrapper has a clickable + caret-
+    // rendering box even when `draft.body === ""`. `1ch` ≈ width of
+    // "0" in the active font (~0.5em on most fonts); `1em` = exactly
+    // one line of the inherited font-size. Both auto-scale with the
+    // current bucket's fontPx.
+    minWidth: "1ch",
+    minHeight: "1em",
+    // Placeholder outline on fresh placement. `outline` (not `border`)
+    // because outline doesn't affect layout — the visible div's
+    // dimensions stay locked to the glyph extent (or the min above
+    // when empty), and the outline draws OUTSIDE that box. Removed
+    // automatically when the user types the first character.
+    ...(isEmptyDraft
+      ? {
+          outline: "1px dashed var(--accent, #ff8a1f)",
+          outlineOffset: "2px"
+        }
+      : {})
   };
   // Invisible textarea — captures keystrokes, shows caret + selection.
   // Inherits sizing from the same `style.glyph` so its internal line

@@ -8,15 +8,25 @@ import { resolveFfmpegPath } from "../../recording/ffmpeg-resolver";
 
 // These tests shell out to the real ffmpeg binary (the same
 // @ffmpeg-installer copy the app ships). They're tagged with a long
-// timeout because libx264 encode of a few seconds of 720p video takes
-// 1-3s on CI. If ffmpeg isn't resolvable the whole suite is skipped —
-// it never breaks the rest of the matrix.
+// timeout because hardware H.264 encode of a few seconds of 720p
+// video takes 1-3s on CI.
+//
+// **macOS-only**: our composer pins `h264_videotoolbox` (Apple's
+// hardware encoder) for the GPL-free path — that encoder simply
+// doesn't exist on Linux CI runners. PwrSnap is macOS-first (Phase
+// 8 cross-platform; see CLAUDE.md note about Linux CI skipping
+// macOS-only specs); these tests sit in the same bucket.
+//
+// `buildCompositionArgs` tests (pure args-shape, no ffmpeg invocation)
+// still run on every platform so the codec-contract assertion can't
+// regress silently on Linux.
 const FFMPEG = resolveFfmpegPath();
+const IS_DARWIN = process.platform === "darwin";
 
-const shouldRun = FFMPEG !== null;
-const skipIfNoFfmpeg = shouldRun ? describe : describe.skip;
+const canInvokeFfmpeg = FFMPEG !== null && IS_DARWIN;
+const skipIfCantInvokeFfmpeg = canInvokeFfmpeg ? describe : describe.skip;
 
-skipIfNoFfmpeg("sizzle composer", () => {
+skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
   let tmpDir = "";
   beforeAll(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), "pwrsnap-sizzle-composer-"));
@@ -306,9 +316,16 @@ skipIfNoFfmpeg("sizzle composer", () => {
     expect(existsSync(`${outputPath}.audio-list.txt`)).toBe(false);
   }, 30_000);
 
-  it("buildCompositionArgs: video codec is h264_videotoolbox (no libx264 invocation)", () => {
+});
+
+// Pure args-shape tests — no ffmpeg invocation. Run on every
+// platform so the codec contract (and the "no -loop on inputs"
+// regression guard) can't drift on Linux CI even though the
+// invoking tests above only run on macOS.
+describe("buildCompositionArgs (cross-platform args contract)", () => {
+  it("video codec is h264_videotoolbox (no GPL libx264 / libx265 / nonfree libfdk_aac)", () => {
     // GPL compliance + cost: libx264 must never be invoked from this
-    // path. issue #127 tracks switching the bundled binary itself.
+    // path. Issue #127 tracks switching the bundled binary itself.
     // This assertion locks the invocation contract in.
     const args = buildCompositionArgs(
       {
@@ -332,7 +349,7 @@ skipIfNoFfmpeg("sizzle composer", () => {
     expect(args).not.toContain("libfdk_aac");
   });
 
-  it("buildCompositionArgs: image inputs are single-frame (no -loop, no -t, no -framerate)", () => {
+  it("image inputs are single-frame (no -loop, no -t, no -framerate)", () => {
     const args = buildCompositionArgs(
       {
         scenes: [

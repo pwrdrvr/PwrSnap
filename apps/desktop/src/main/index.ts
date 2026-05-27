@@ -1,14 +1,27 @@
 import { join } from "node:path";
-import { app, clipboard, dialog, globalShortcut, Menu, Notification, shell } from "electron";
-import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  globalShortcut,
+  Menu,
+  Notification,
+  screen,
+  shell
+} from "electron";
+import type { Rect, RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
+  getLastWindowListSnapshot,
   hideSelector,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, listWindows } from "./capture/window-list";
+import { activateApp } from "./capture/window-list";
+import { rectIntersectsBounds } from "./capture/rect-overlap";
+import { resolveSelectionSourceApp } from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
@@ -516,6 +529,41 @@ async function runInteractiveCapture(
 }
 
 /**
+ * Top-level PwrSnap windows visible on screen that intersect the
+ * recording rect. Used to decide whether `runInteractiveRecord` should
+ * yield focus back to the previously-frontmost app (the normal flow)
+ * or raise our own window(s) so the recording captures live PwrSnap
+ * pixels.
+ *
+ * `isVisible()` alone is the practical filter here: by the time the
+ * caller hits this check the selector is hidden, the tray popover +
+ * float-over toast were dismissed pre-pickRegion via
+ * `keepPwrSnapChrome: false`, the recording HUD hasn't been created
+ * yet, and the focus-sink lives at (-10000, -10000) off-screen — none
+ * of those can pass the visibility + intersection gates. The only
+ * windows that match in practice are the user-facing Library /
+ * Settings / Sizzle / edit windows.
+ */
+function appWindowsOverlappingRecording(
+  rect: Rect,
+  displayId: number
+): BrowserWindow[] {
+  const display = screen.getAllDisplays().find((d) => d.id === displayId);
+  if (display === undefined) return [];
+  const globalRect = {
+    x: rect.x + display.bounds.x,
+    y: rect.y + display.bounds.y,
+    w: rect.w,
+    h: rect.h
+  };
+  return BrowserWindow.getAllWindows().filter((win) => {
+    if (win.isDestroyed()) return false;
+    if (!win.isVisible()) return false;
+    return rectIntersectsBounds(globalRect, win.getBounds());
+  });
+}
+
+/**
  * Fast Video Capture entry (issue #64). Opens the selector to pick a
  * region/window, then routes the commit to `recording:start` instead
  * of `capture:interactive`. The Snap-vs-Video chooser ships later;
@@ -562,7 +610,25 @@ async function runInteractiveRecord(): Promise<void> {
   // is also outside the selector's lifecycle.
   hideSelector();
   void releaseSnapshot(screenSnapshotId);
-  if (previousAppPid !== null) {
+
+  // If the user picked a region that contains one of our own visible
+  // windows (Library, edit, Sizzle, Settings), DO NOT yield focus to
+  // the previously-frontmost app — that would push our window behind
+  // for the countdown + recording, and the user would record an empty
+  // shell of whatever was behind it. Raise our window(s) instead so
+  // the recording captures live PwrSnap pixels.
+  const overlapping = appWindowsOverlappingRecording(
+    selection.rect,
+    selection.displayId
+  );
+  if (overlapping.length > 0) {
+    for (const win of overlapping) {
+      if (win.isMinimized()) win.restore();
+      if (!win.isVisible()) win.show();
+      win.moveTop();
+    }
+    overlapping[overlapping.length - 1]?.focus();
+  } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
   }
   const settings = await new DesktopSettingsService({
@@ -574,24 +640,34 @@ async function runInteractiveRecord(): Promise<void> {
     systemAudio: settings.recording.includeSystemAudio,
     microphone: settings.recording.includeMicrophone
   };
-  // For window-snapped subjects, look up the app name/bundleId via
-  // the window-list helper so the Library shows "Microsoft Edge"
-  // rather than "Unknown App". The lookup is ~30-50ms — runs in the
-  // pre-countdown window where the user has already committed, so
-  // it adds no perceived latency. If the helper is unavailable or
-  // the window has moved/closed since selection, we fall back to
-  // null fields and the row reads "Unknown App" (same as today).
+  // Source-app attribution mirrors the image-capture path
+  // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
+  // helper: snap-target id first, rect-center hit test as fallback,
+  // null if neither resolves. This runs whether the user held ⇧ at
+  // commit time or just clicked — both shapes attribute the same app
+  // for the same selection. We also reuse the cached window-list
+  // snapshot rather than re-running `listWindows()`, so the lookup
+  // matches the list the user actually picked against (no drift if
+  // a window moved/closed in the ~50ms between hideSelector + here).
+  const sourceApp = resolveSelectionSourceApp(
+    selection.rect,
+    selection.snappedWindowId,
+    getLastWindowListSnapshot()
+  );
+  // A snapshot windowId in the selection means the user pointed at a
+  // specific window (with or without ⇧). Persist that as a `window`
+  // subject so the Library row shows the source app even when the
+  // user didn't opt into the full-window capture path. Region kind
+  // is reserved for free-hand drags where no window was snapped.
   let subject: RecordingSubject;
-  if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
-    const windows = await listWindows();
-    const match = windows.find((w) => w.windowId === selection.snappedWindowId);
+  if (selection.snappedWindowId !== undefined) {
     subject = {
       kind: "window",
       windowId: selection.snappedWindowId,
       rect: selection.rect,
       displayId: selection.displayId,
-      appName: match?.appName ?? null,
-      appBundleId: match?.bundleId ?? null
+      appName: sourceApp?.appName ?? null,
+      appBundleId: sourceApp?.bundleId ?? null
     };
   } else {
     subject = {

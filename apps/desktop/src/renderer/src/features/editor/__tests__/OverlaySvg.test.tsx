@@ -28,7 +28,8 @@ async function renderOverlaySvg(
   dims: { imageWidthPx: number; imageHeightPx: number } = {
     imageWidthPx: 800,
     imageHeightPx: 600
-  }
+  },
+  extraProps: { editingLayerId?: string | null } = {}
 ): Promise<SVGSVGElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -45,7 +46,8 @@ async function renderOverlaySvg(
         // default to source == canvas (uncropped); per-test overrides
         // pass distinct values to exercise the cropped scenario.
         sourceWidthPx: dims.imageWidthPx,
-        sourceHeightPx: dims.imageHeightPx
+        sourceHeightPx: dims.imageHeightPx,
+        ...extraProps
       })
     );
   });
@@ -55,6 +57,32 @@ async function renderOverlaySvg(
   const svg = container.querySelector("svg.editor-svg");
   if (svg === null) throw new Error("OverlaySvg did not render an svg element");
   return svg as SVGSVGElement;
+}
+
+function textRow(
+  id: string,
+  data: Partial<Extract<OverlayRow["data"], { kind: "text" }>> = {}
+): OverlayRow {
+  return {
+    id,
+    capture_id: "cap_1",
+    data: {
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "hello",
+      size: "medium",
+      color: "auto",
+      ...data
+    },
+    schema_version: 1,
+    created_at: "2026-05-24T00:00:00Z",
+    applied_at: "2026-05-24T00:00:00Z",
+    rejected_at: null,
+    superseded_by: null,
+    ai_run_id: null,
+    source: "user",
+    z_index: 0
+  };
 }
 
 function arrowRow(
@@ -382,6 +410,27 @@ describe("OverlaySvg ArrowGlyph — combinations", () => {
       }
     }
   }
+});
+
+describe("OverlaySvg — text overlays moved to HTML rendering", () => {
+  // After the HTML-text unification, persisted TextOverlays render via
+  // <TextHtmlOverlays> (HTML divs) NOT via SVG <text>. OverlaySvg's
+  // text branch is intentionally a no-op for text rows — any non-zero
+  // <text> count here would mean the SVG path is back. Coverage of the
+  // editingLayerId-suppression rule moved to TextHtmlOverlays.test.tsx
+  // (the new owner of that filtering logic).
+
+  test("text overlays never produce <text> elements in the SVG", async () => {
+    const svg = await renderOverlaySvg([textRow("text_1")]);
+    expect(svg.querySelectorAll("text").length).toBe(0);
+  });
+
+  test("text overlays do not produce <text> elements even when editingLayerId is set", async () => {
+    const svg = await renderOverlaySvg([textRow("text_1")], undefined, {
+      editingLayerId: "text_1"
+    });
+    expect(svg.querySelectorAll("text").length).toBe(0);
+  });
 });
 
 describe("OverlaySvg ArrowGlyph — portrait images (the original symptom)", () => {

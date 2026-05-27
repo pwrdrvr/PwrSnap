@@ -75,6 +75,8 @@ import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
 import { OverlaySvg, TransformHandles, type DraftStyle } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
+import { TextHtmlOverlays } from "./TextHtmlOverlays";
+import { resolveTextDraftStyle } from "./text-draft-style";
 import { ZoomMenu } from "./ZoomMenu";
 import { CropTool } from "./CropTool";
 import { EditorChrome } from "./EditorChrome";
@@ -461,7 +463,19 @@ export function hitTestOverlays(
   overlays: OverlayRow[],
   xn: number,
   yn: number,
-  canvasPxShortSide: number
+  canvasPxShortSide: number,
+  /** Optional canvas + source pixel dims. When provided, text hit-
+   *  testing uses the full bounding rectangle of the rendered glyph
+   *  (matching the HTML wrapper's actual on-screen extent). When
+   *  omitted (older test call sites), falls back to a tiny point-
+   *  radius around the anchor — kept for backwards compat with the
+   *  existing hitTestOverlays.test.ts that doesn't thread dims. */
+  textDims?: {
+    canvasWidthPx: number;
+    canvasHeightPx: number;
+    sourceWidthPx: number;
+    sourceHeightPx: number;
+  }
 ): string | null {
   // ~10px hit radius on a 1000px short-side canvas → 0.01 in
   // normalized coords. Scales inversely with size for a roughly
@@ -501,11 +515,85 @@ export function hitTestOverlays(
       continue;
     }
     if (o.kind === "text") {
-      // Approximate text hit by a small radius around the anchor
-      // point. The font scales with image short-side; this gives a
-      // generous click target without measuring rendered glyphs.
-      const distN = Math.hypot(xn - o.point.x, yn - o.point.y);
-      if (distN <= hitRadiusN * 4) return row.id;
+      // Full bounding-rect hit so the user can click ANYWHERE inside
+      // the text's visible extent — not just the glyph strokes. Pre-
+      // fix this used a tiny `hitRadiusN * 4` circle around the
+      // anchor point, which meant tiny text (small bucket) had a
+      // ~10px-square click target stuck right in the middle of the
+      // first line. Users reported having to pixel-hunt the strokes.
+      //
+      // Box dimensions mirror what `textBoundsBox` in OverlaySvg.tsx
+      // computes for the selection outline (after the HTML-text
+      // unification: `height = lineCount * fontSize` with
+      // `translateY(-50%)` centering on the anchor). Width uses a
+      // GENEROUS per-character advance (0.65) plus a small padding
+      // so trailing characters and inter-line gaps don't fall just
+      // outside the box.
+      //
+      // Falls back to the pre-fix point-radius when `textDims` isn't
+      // threaded — keeps the existing hitTestOverlays.test.ts
+      // compatible without forcing every test to inflate its args.
+      if (textDims === undefined) {
+        const distN = Math.hypot(xn - o.point.x, yn - o.point.y);
+        if (distN <= hitRadiusN * 4) return row.id;
+        continue;
+      }
+      const { canvasWidthPx, canvasHeightPx, sourceWidthPx, sourceHeightPx } =
+        textDims;
+      // sizePx in canvas/source pixel space — same precedence as
+      // every other text-sizing call site (storedSizePx wins, then
+      // bucket × source-shortSide). Inlined here so we don't have to
+      // import @pwrsnap/shared into hitTestOverlays (the helper
+      // requires more args than the rest of this function uses).
+      const sourceShort = Math.max(
+        1,
+        Math.min(sourceWidthPx, sourceHeightPx)
+      );
+      const bucketSizePx =
+        o.size === "large"
+          ? sourceShort / 18
+          : o.size === "medium"
+            ? sourceShort / 30
+            : sourceShort / 50;
+      const sizePx =
+        o.sizePx !== undefined &&
+        Number.isFinite(o.sizePx) &&
+        o.sizePx > 0
+          ? o.sizePx
+          : bucketSizePx;
+      const lines = o.body.split("\n");
+      const lineCount = Math.max(1, lines.length);
+      const maxChars = lines.reduce((m, l) => Math.max(m, l.length), 1);
+      // 0.65 char-advance is slightly wider than the 0.55 used in
+      // textBoundsBox so the hit target reaches past the rendered
+      // glyph's right edge (users pointing at characters near the
+      // right side were misfiring on the empty space just past the
+      // glyph). Width also has a floor of 1× fontSize so a 1-char
+      // line still has a reasonable click target.
+      const naturalWidthPx = Math.max(
+        sizePx,
+        maxChars * sizePx * 0.65
+      );
+      const naturalHeightPx = sizePx * lineCount;
+      // Box centered vertically on the anchor (matches the HTML
+      // wrapper's `translateY(-50%)` layout); left edge at anchor.x.
+      const boxXn = o.point.x;
+      const boxYn = o.point.y - naturalHeightPx / 2 / canvasHeightPx;
+      const boxWn = naturalWidthPx / canvasWidthPx;
+      const boxHn = naturalHeightPx / canvasHeightPx;
+      // Add a small padding (half a hitRadius) on every edge so the
+      // user can click slightly past the rendered glyph and still
+      // land on the layer. Matches the affordance Cleanshot / Skitch
+      // ship for text annotations.
+      const padN = hitRadiusN * 0.5;
+      if (
+        xn >= boxXn - padN &&
+        xn <= boxXn + boxWn + padN &&
+        yn >= boxYn - padN &&
+        yn <= boxYn + boxHn + padN
+      ) {
+        return row.id;
+      }
       continue;
     }
     // crop / step: not user-selectable in Phase 3.2 (crop is a
@@ -664,8 +752,25 @@ export function Editor({
   // (after the model resolves); we project a v1-shaped view of it
   // here for the synchronous click handler.
   const overlaysRef = useRef<OverlayRow[]>([]);
+  // Canvas + source dims read by `hitTestOverlays` so text overlays
+  // get a FULL bounding-rect hit target (matches the on-screen
+  // rendered glyph extent), not a tiny radius around the anchor.
+  // EditorLoaded populates this ref each render — same pattern as
+  // `overlaysRef`. Null until the model resolves.
+  const textHitDimsRef = useRef<{
+    canvasWidthPx: number;
+    canvasHeightPx: number;
+    sourceWidthPx: number;
+    sourceHeightPx: number;
+  } | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  // Edit-mode keystroke sink — an invisible (color: transparent)
+  // textarea that overlays a visible display div in TextDraftInput.
+  // The visible text is NEVER rendered by an editable element, so
+  // contentEditable rendering quirks (missing text-stroke, line-
+  // height drift, DOM normalization) cannot cause display-vs-edit
+  // visual deltas by construction.
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // True while undo/redo is replaying an op via the IPC. The
   // events:overlays:changed broadcast will fire and refetch; we
@@ -763,7 +868,13 @@ export function Editor({
       const shortSide =
         rect === undefined ? 1000 : Math.min(rect.width, rect.height);
       const overlays = overlaysRef.current;
-      const hit = hitTestOverlays(overlays, start.xn, start.yn, shortSide);
+      const hit = hitTestOverlays(
+        overlays,
+        start.xn,
+        start.yn,
+        shortSide,
+        textHitDimsRef.current ?? undefined
+      );
       setSelectedLayerId(hit);
       return;
     }
@@ -771,12 +882,38 @@ export function Editor({
     // If we're mid-text and the user clicks elsewhere, commit/cancel
     // the text first (the input's blur handler will fire).
     if (draft?.kind === "text") return;
-    // Drawing a new annotation deselects any previous selection so
-    // the outline doesn't linger on top of the new draft.
-    if (selectedLayerId !== null) setSelectedLayerId(null);
 
     const start = clientToNormalized(event.clientX, event.clientY);
     if (start === null) return;
+
+    // Drawing tools (arrow / rect / highlight / blur / text) hit-test
+    // existing layers BEFORE starting a new draft. A click that lands
+    // on an existing overlay should select it (so TransformHandles
+    // renders and the user can move/resize/delete via handles or
+    // Delete-key), NOT silently draw a fresh layer on top — the user
+    // typically wants to edit the thing they clicked, not stack
+    // another one over it. Miss → fall through to the drawing-tool
+    // branches below.
+    {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const shortSide =
+        rect === undefined ? 1000 : Math.min(rect.width, rect.height);
+      const overlays = overlaysRef.current;
+      const hit = hitTestOverlays(
+        overlays,
+        start.xn,
+        start.yn,
+        shortSide,
+        textHitDimsRef.current ?? undefined
+      );
+      if (hit !== null) {
+        setSelectedLayerId(hit);
+        return;
+      }
+    }
+    // Drawing a new annotation on empty canvas deselects any previous
+    // selection so the outline doesn't linger on top of the new draft.
+    if (selectedLayerId !== null) setSelectedLayerId(null);
     event.preventDefault();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
 
@@ -1215,15 +1352,11 @@ export function Editor({
         body: overlay.data.body,
         editingId: overlay.id
       });
-      // Focus the textarea once it mounts. queueMicrotask gives React
-      // one paint cycle to render the input before we focus it.
-      queueMicrotask(() => {
-        textInputRef.current?.focus();
-        // Place caret at end so additions append rather than
-        // overwriting from the start.
-        const t = textInputRef.current;
-        if (t !== null) t.setSelectionRange(t.value.length, t.value.length);
-      });
+      // TextDraftInput's mount effect handles focus + caret-at-end
+      // for the contentEditable div (the equivalent of the old
+      // textarea's `setSelectionRange(value.length, value.length)`).
+      // Nothing to do here — the draft state change triggers the
+      // mount, which seeds the body + positions the caret.
     },
     [effectiveToolState]
   );
@@ -1334,6 +1467,10 @@ export function Editor({
   // we deliberately do this before returning EditorLoaded so a click
   // landing in the same commit reads the up-to-date overlay list.
   overlaysRef.current = overlaysForRender;
+  // `textHitDimsRef` is populated lower in this render — after
+  // `sourceWidthPx` / `sourceHeightPx` are resolved via the raster-
+  // layer scan below. See the assignment near `return <EditorLoaded
+  // ... />`.
   // Clear stale selection when the selected overlay is no longer in
   // the list (e.g. another window deleted it via the events:overlays:
   // changed broadcast, or the capture switched).
@@ -1394,6 +1531,18 @@ export function Editor({
       }
     }
   }
+
+  // Sync-write the text-hit dims AFTER `sourceWidthPx` / `sourceHeightPx`
+  // are resolved. onPointerDown (outer Editor scope) reads this ref to
+  // size text overlays' bounding rectangles correctly during hit-
+  // testing — without it, text overlays use a tiny point-radius hit
+  // target that's near-impossible to click on multi-line bodies.
+  textHitDimsRef.current = {
+    canvasWidthPx: model.record.width_px,
+    canvasHeightPx: model.record.height_px,
+    sourceWidthPx,
+    sourceHeightPx
+  };
 
   return (
     <EditorLoaded
@@ -1578,6 +1727,33 @@ function EditorLoaded({
     imageHeightPx: record.height_px,
     wrapRef: canvasWrapRef
   });
+
+  // CANONICAL canvas CSS-pixel height — the single source of truth that
+  // every text glyph (display + edit) reads to derive its on-screen
+  // font-size. Lifted to EditorLoaded so display overlays
+  // (TextHtmlOverlays) and the edit overlay (TextDraftInput) consume
+  // the EXACT same value in the same render pass. Pre-fix the two
+  // components each measured the canvas independently — TextHtmlOverlays
+  // via ResizeObserver-backed state, TextDraftInput via a synchronous
+  // getBoundingClientRect on each render. Disagreement between the two
+  // (e.g. mid-resize, or stale observer state) produced a visible
+  // ~11% font-size delta between display and edit. One source = zero
+  // drift by construction.
+  const [canvasCssHeight, setCanvasCssHeight] = useState<number>(0);
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (el === null) return;
+    const update = (): void => {
+      const rect = el.getBoundingClientRect();
+      setCanvasCssHeight((prev) =>
+        Math.abs(prev - rect.height) < 0.5 ? prev : rect.height
+      );
+    };
+    update();
+    const obs = new ResizeObserver(update);
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [canvasRef]);
 
   // Surface zoom state to Library (so its floating EditToolbar can
   // render zoom controls without overlaying the image). Split into
@@ -2428,7 +2604,34 @@ function EditorLoaded({
             sourceWidthPx={sourceWidthPx}
             sourceHeightPx={sourceHeightPx}
             selectedLayerId={selectedLayerId}
+            editingLayerId={
+              draft?.kind === "text" && draft.editingId !== undefined
+                ? draft.editingId
+                : null
+            }
             liveOverride={draftGeometry}
+          />
+          {/* HTML-text overlay layer — replaces the SVG TextGlyph that
+              previously lived inside OverlaySvg. Sits ABOVE the SVG
+              shapes (so text reads on top of background rects /
+              highlights) and BELOW the TransformHandles (so handles
+              still catch pointer events). Display + edit (textarea)
+              + bake (hidden BrowserWindow → PNG) all share
+              `computeTextHtmlStyle` from @pwrsnap/shared, so the
+              rendered glyph is pixel-identical across every surface
+              the user sees. */}
+          <TextHtmlOverlays
+            overlays={overlays}
+            editingLayerId={
+              draft?.kind === "text" && draft.editingId !== undefined
+                ? draft.editingId
+                : null
+            }
+            imageWidthPx={record.width_px}
+            imageHeightPx={record.height_px}
+            sourceWidthPx={sourceWidthPx}
+            sourceHeightPx={sourceHeightPx}
+            canvasCssHeight={canvasCssHeight}
           />
           {/* Phase 3.5 — transform handles rendered on top of OverlaySvg
               so the selected overlay can be resized/moved via drag. The
@@ -2456,42 +2659,39 @@ function EditorLoaded({
           )}
           {draft?.kind === "text" &&
             (() => {
-              // Resolve the active text style the same way commitText
-              // does, so the in-canvas input renders at the eventual
-              // committed glyph's color + size. Without this, the
-              // draft used a hardcoded `--accent-bright` + `small`
-              // size regardless of what the user picked — they typed
-              // tiny orange text, committed, and watched it become
-              // large dark-blue text on a different baseline. The two
-              // must match.
-              const textStyleSrc =
+              // Re-edit MUST mirror the persisted row, NOT the current
+              // tool style — commitText only patches the body during
+              // re-edit, so any tool-style derived size/color/weight
+              // shown in the draft would visually disagree with the
+              // row it's editing AND with the row after commit. Fresh-
+              // placement (editingId undefined) falls through to the
+              // tool style so the live preview matches what's about to
+              // be persisted. All branching lives in
+              // `resolveTextDraftStyle`; see text-draft-style.ts.
+              const editingRow =
+                draft.editingId !== undefined
+                  ? overlays.find((o) => o.id === draft.editingId)
+                  : undefined;
+              const editingOverlay =
+                editingRow !== undefined && editingRow.data.kind === "text"
+                  ? { data: editingRow.data }
+                  : null;
+              const activeToolStyle =
                 toolState.activeStyle.tool === "text"
                   ? toolState.activeStyle.style
                   : null;
-              const resolvedColor =
-                textStyleSrc !== null
-                  ? resolveToolColor(textStyleSrc.color)
-                  : "auto";
-              const colorHex =
-                resolvedColor === "auto"
-                  ? "var(--accent, #ff8a1f)"
-                  : resolvedColor;
-              const size =
-                textStyleSrc !== null
-                  ? resolveTextSize(textStyleSrc.fontSize)
-                  : "medium";
-              // Resolve the draft's font-weight via the SAME helper
-              // commitText and TextGlyph use, so the live preview can't
-              // diverge from the commit. Legacy/missing weight falls
-              // back to 600 (historical hardcoded value).
-              const weight = readTextWeight({ weight: textStyleSrc?.weight });
+              const { colorHex, size, weight, storedSizePx } =
+                resolveTextDraftStyle({ editingOverlay, activeToolStyle });
               return (
                 <TextDraftInput
                   draft={draft}
                   inputRef={textInputRef}
                   imageWidthPx={record.width_px}
                   imageHeightPx={record.height_px}
-                  canvasRef={canvasRef}
+                  sourceWidthPx={sourceWidthPx}
+                  sourceHeightPx={sourceHeightPx}
+                  storedSizePx={storedSizePx}
+                  canvasCssHeight={canvasCssHeight}
                   colorHex={colorHex}
                   size={size}
                   weight={weight}

@@ -1,29 +1,51 @@
 // In-canvas text-entry overlay used while the user is typing a text
-// annotation. Replaced on commit by the SVG TextGlyph (rendered by
-// OverlaySvg).
+// annotation. The architecture is the only one that CAN'T regress on
+// the "text changes appearance in edit mode" bug class, because the
+// VISIBLE TEXT IS NOT RENDERED BY AN EDITABLE ELEMENT.
 //
-// WYSIWYG design rules — every visible property here must mirror what
-// TextGlyph renders. If TextGlyph changes, change this too, in
-// lockstep.
+// Two elements share the wrapper:
 //
-// Layout contract (so click position matches commit position):
-//   • The wrapper is absolutely positioned at the click point and
-//     translateY(-50%)'d so the FIRST line's glyph center sits exactly
-//     on the click point. TextGlyph uses `dominantBaseline="central"`
-//     for the same reason — click and commit agree on vertical center.
-//   • The textarea is `field-sizing: content`, so it auto-grows in
-//     both axes as the user types. Multi-line via Shift+Enter; Enter
-//     alone commits.
-//   • Caret height = font-size (we set lineHeight: 1 with explicit
-//     longhand properties; the `font` shorthand silently resets
-//     line-height to "normal" so we avoid it).
+//   1. A visible `<div>` styled by the same `computeTextHtmlStyle`
+//      helper that `TextHtml` (the display surface) uses. Shows
+//      `draft.body`. Not editable. Renders the glyphs + the
+//      `-webkit-text-stroke` halo identically to the display.
 //
-// Size buckets (match TextGlyph + compose.ts textSvg in lockstep):
-//   small  ≈ shortSide / 50
-//   medium ≈ shortSide / 30   ← default for new captures
-//   large  ≈ shortSide / 18
+//   2. An absolutely-positioned `<textarea>` on TOP of the visible
+//      div. `color: transparent` so its OWN glyphs are invisible —
+//      the user sees the visible div underneath. `caret-color` is
+//      set to the accent so the blinking caret remains visible.
+//      `value` and `onChange` are bound to the parent's draft state.
+//      All keyboard handling (Enter commits, Shift+Enter newline,
+//      Escape cancels, paste sanitization) lives on the textarea.
+//
+// Why this beats `contentEditable` (the previous attempt): Chromium
+// strips / fails-to-apply `-webkit-text-stroke` on contentEditable
+// elements in some configurations (observed in PwrSnap: display had
+// the dark glyph halo, edit didn't — user-visible visible drift).
+// `contentEditable` also normalizes `\n` to nested `<div>`/`<br>` on
+// first focus (even with `plaintext-only` in some Chromium versions),
+// which breaks line-height parity. None of those quirks can affect
+// our visible text because our visible element is just a plain `div`
+// with React-controlled children — identical to what `TextHtml`
+// renders for the display surface.
+//
+// Why this beats "use the SAME div, just toggle contentEditable":
+// even toggling contentEditable on the same element triggers the
+// Chromium quirks. The contract this architecture enforces is "the
+// visible element is NEVER editable" — that's the load-bearing
+// invariant.
 
-import type { CSSProperties, KeyboardEvent, ReactElement } from "react";
+import {
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactElement
+} from "react";
+import {
+  computeTextHtmlStyle,
+  type TextSizeBucket
+} from "@pwrsnap/shared";
 import type { DraftText } from "./editor-types";
 
 export function TextDraftInput({
@@ -31,194 +53,195 @@ export function TextDraftInput({
   inputRef,
   imageWidthPx,
   imageHeightPx,
-  canvasRef,
-  /** Resolved committed-glyph color as a `#rrggbb` hex string OR a CSS
-   *  var() expression. The caller resolves the active TextToolStyle's
-   *  `color` via `resolveToolColor`; this component does not see the
-   *  unresolved ToolColor union (which would re-introduce the "draft
-   *  in --accent-bright vs commit in user-picked blue" mismatch). */
+  sourceWidthPx,
+  sourceHeightPx,
+  storedSizePx,
+  canvasCssHeight,
   colorHex,
-  /** Resolved committed-glyph size bucket. Identical mapping to the
-   *  one used in `commitText` (see `resolveTextSize` in Editor.tsx).
-   *  Drives the textarea's font-size so the typing surface is the
-   *  same px height as the committed glyph. */
   size,
-  /** Resolved CSS font-weight number. Pass through `readTextWeight`
-   *  on the active TextToolStyle.weight so the draft renders at the
-   *  same weight the commit will produce — picking "regular" in the
-   *  popover used to display as 600 here and 600 in the commit, so
-   *  the draft was effectively WYSIWYG with itself but lying about
-   *  the user's pick. */
   weight,
   onChange,
   onCommit,
   onCancel
 }: {
   draft: DraftText;
+  /** Caller-owned ref to the textarea. Used for programmatic focus +
+   *  caret placement (e.g., on re-edit, caret lands at body end). */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   imageWidthPx: number;
   imageHeightPx: number;
-  canvasRef: React.RefObject<HTMLDivElement | null>;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  storedSizePx: number | undefined;
+  /** Editor canvas CSS-pixel height — supplied by EditorLoaded which
+   *  owns the canonical observation. Pre-refactor this component
+   *  measured the canvas itself via getBoundingClientRect; that
+   *  disagreed with TextHtmlOverlays's ResizeObserver-backed state
+   *  mid-resize, producing visible font-size drift between display
+   *  and edit. Now both consume one upstream value. */
+  canvasCssHeight: number;
   colorHex: string;
-  size: "small" | "medium" | "large";
+  size: TextSizeBucket;
   weight: number;
   onChange: (body: string) => void;
   onCommit: () => void;
   onCancel: () => void;
 }): ReactElement {
-  // Mirror TextGlyph's px math EXACTLY — any drift here is a visible
-  // "text jumps on commit" bug.
-  //
-  // `fontPx` is the screen-pixel font-size that should land on the
-  // canvas during the draft. The canvas preserves the image aspect
-  // ratio, so the CSS→image scale factor is the same on both axes
-  // (canvasCssWidth/imageWidthPx === canvasCssHeight/imageHeightPx).
-  // We want the rendered draft to be `scaleFactor × sizePx` screen
-  // px so it matches:
-  //   - the SVG TextGlyph (which now renders at sizePx in pixel-
-  //     space viewBox units, scaled by the SVG-to-canvas mapping →
-  //     same product)
-  //   - the bake (compose.ts textSvg renders at sizePx image-px,
-  //     authoritative)
-  //
-  // Pre-fix this used `canvasCssHeight × sizePx/shortSide`, which
-  // accidentally evaluates to `canvasCssHeight × sizePx/imageWidth`
-  // on portrait images (where shortSide = imageWidth, not
-  // imageHeight). That came out to `scaleFactor × sizePx × imageH/
-  // imageW` — too big by the aspect ratio on portrait, exactly right
-  // on landscape (where shortSide = imageHeight and the formula
-  // collapses to `scaleFactor × sizePx`).
-  //
-  // The bug was invisible until PR #121 fixed the SVG side; pre-PR
-  // the SVG TextGlyph was *also* wrong-by-the-same-factor on
-  // portrait (via the `preserveAspectRatio="none"` non-uniform
-  // stretch), so draft + commit matched. After PR #121 the SVG
-  // renders correctly and this stale formula was the only thing
-  // left producing the oversized draft.
-  //
-  // The dimensionally-clean form: `(canvasCssHeight / imageHeightPx)
-  // × sizePx` — pulled the scale factor out, multiplied by image-
-  // pixel font size. Identical on landscape, correct on portrait.
-  const rect = canvasRef.current?.getBoundingClientRect() ?? null;
-  const canvasCssHeight = rect?.height ?? 0;
-  const shortSide = Math.min(imageWidthPx, imageHeightPx);
-  const sizePx =
-    size === "large" ? shortSide / 18 : size === "medium" ? shortSide / 30 : shortSide / 50;
-  const fontPx =
-    canvasCssHeight > 0
-      ? (canvasCssHeight / imageHeightPx) * sizePx
-      : 16;
-  // Halo MUST use the SAME technique as TextGlyph's SVG stroke or
-  // Regular-weight glyphs render visibly wider on commit than they did
-  // in draft. Why: SVG strokes are GEOMETRIC outlines that follow the
-  // glyph path exactly, while CSS text-shadow at 8 cardinal offsets is
-  // an APPROXIMATION made of duplicate glyph shapes. The approximation
-  // works fine for Bold (thick glyphs swallow the rendering
-  // differences) but breaks for Regular (thin glyphs where the SVG
-  // stroke adds a lot of visible thickness relative to the fill, and
-  // the text-shadow approximation doesn't quite match). Net effect:
-  // Regular weight looked wider after Enter — different rendering
-  // pipelines, different effective halo, even at matching widths.
-  //
-  // Chromium supports `-webkit-text-stroke` + `paint-order: stroke fill`
-  // on HTML text — that gives us the same GEOMETRIC stroke as SVG.
-  // Width matches TextGlyph's `strokeWidth = fontSize * 0.08`. paint-
-  // order=stroke means stroke paints first, fill on top — matching
-  // TextGlyph's `paintOrder="stroke"`. Net visible halo (outside-half
-  // of the centered stroke) = fontPx * 0.04, same as SVG, same render
-  // algorithm.
-  //
-  // Clamped to 1px minimum so small fonts still show a halo.
-  const strokePx = Math.max(1, fontPx * 0.08);
-  // Font family stack — verbatim from TextGlyph. Apple system fonts
-  // render slightly differently from HTML's default "system-ui" alias,
-  // so being explicit here keeps the rendered glyph metrics identical.
-  const fontFamily =
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  // Same helper TextHtml uses — display + edit visible-text go through
+  // ONE decision tree for sizing, color, weight, halo, smoothing,
+  // kerning. Any change here AUTOMATICALLY moves the display surface
+  // in lockstep (and vice versa).
+  const style = computeTextHtmlStyle({
+    point: { x: draft.xn, y: draft.yn },
+    size,
+    weight,
+    storedSizePx,
+    colorHex,
+    sourceWidthPx,
+    sourceHeightPx,
+    canvasWidthPx: imageWidthPx,
+    canvasHeightPx: imageHeightPx,
+    canvasCssHeight
+  });
   const wrapperStyle: CSSProperties = {
-    position: "absolute",
-    left: `${draft.xn * 100}%`,
-    top: `${draft.yn * 100}%`,
-    // Center the wrapper's vertical midpoint on the click point. With
-    // lineHeight:1 on a single line, the textarea's vertical center
-    // is roughly the glyph center, which matches TextGlyph's
-    // dominantBaseline="central". On Shift+Enter (additional lines),
-    // the textarea grows DOWNWARD past the click point — same as the
-    // committed multi-line layout (subsequent <tspan>s flow down).
-    transform: "translateY(-50%)",
+    ...(style.wrapper as CSSProperties),
     pointerEvents: "auto"
   };
-  const inputStyle: CSSProperties = {
-    // Explicit font longhand — the `font` shorthand resets
-    // `line-height` to "normal" (≈ 1.2), making the caret taller than
-    // the font-size. We need lineHeight: 1 to land for caret height
-    // to match the glyph height, so write each longhand individually.
-    fontFamily,
-    fontWeight: weight,
-    fontSize: `${fontPx}px`,
-    lineHeight: 1,
-    color: colorHex,
+  // Visible glyph element — same style as TextHtml.tsx's display div.
+  // Identical rendering, identical halo, identical metrics.
+  const visibleGlyphStyle: CSSProperties = {
+    ...(style.glyph as CSSProperties),
+    userSelect: "none",
+    WebkitUserSelect: "none",
+    // The textarea is `position: absolute` on top of this; we need
+    // this div to lay out the wrapper's intrinsic dimensions so the
+    // textarea's `inset: 0` can size against it.
+    position: "relative"
+  };
+  // Invisible textarea — captures keystrokes, shows caret + selection.
+  // Inherits sizing from the same `style.glyph` so its internal line
+  // metrics match the visible div (caret height + advance per
+  // character agree with where the visible glyphs actually sit).
+  // `color: transparent` hides the textarea's own glyphs so the user
+  // only sees the visible div underneath; `caret-color` overrides
+  // the (transparent) color for the blinking caret. `selection`
+  // background remains visible via the system selection styling.
+  const textareaStyle: CSSProperties = {
+    ...(style.glyph as CSSProperties),
+    position: "absolute",
+    // Cover the visible div exactly. The visible div has
+    // `position: relative` so this textarea's `inset: 0` resolves
+    // against the visible div's box.
+    inset: 0,
+    // Hide the textarea's own text rendering. The visible div
+    // underneath shows the body.
+    color: "transparent",
+    // Hide the text-stroke halo on the textarea too — we don't want
+    // a SECOND halo painted over the visible div's halo.
+    WebkitTextStroke: "0",
     caretColor: "var(--accent, #ff8a1f)",
-    // Geometric outline matching TextGlyph's SVG stroke — see the
-    // strokePx comment above for why this MUST be text-stroke and not
-    // text-shadow. `paint-order: stroke` makes the stroke paint first,
-    // fill on top — covering the inner half of the centered stroke.
-    WebkitTextStroke: `${strokePx}px rgba(0,0,0,0.6)`,
-    paintOrder: "stroke" as CSSProperties["paintOrder"],
-    // No chrome — must visually match the committed glyph.
     background: "transparent",
     border: "none",
     outline: "none",
-    padding: 0,
-    margin: 0,
-    // Multi-line textarea: don't wrap (annotations sit anywhere on
-    // the canvas; auto-wrapping at the wrapper's edge would surprise
-    // the user). The user controls line breaks via Shift+Enter.
-    whiteSpace: "pre",
     resize: "none",
     overflow: "hidden",
-    // Auto-grow with content in both axes. Chrome 123+ ships this;
-    // Electron 41 includes it.
-    fieldSizing: "content" as CSSProperties["fieldSizing"],
-    minWidth: "1ch",
-    // Keep the textarea readable on dark photos via the halo above;
-    // also disable browser default scrollbar that would appear once
-    // content exceeds the natural box (field-sizing: content already
-    // grows, so overflow: hidden is just belt-and-suspenders).
-    boxSizing: "content-box"
+    margin: 0,
+    padding: 0,
+    // Match the visible div's box exactly. content-box keeps the
+    // textarea's content area equal to the wrapper's inner box (no
+    // border/padding to subtract — both are zero).
+    boxSizing: "content-box",
+    // Width = 100% of the visible div. `inset: 0` already handles
+    // this on both axes, but Safari has historically ignored inset
+    // on textareas — be explicit.
+    width: "100%",
+    height: "100%"
   };
+  // Cancel flag — set by Escape, checked by onBlur. Without this,
+  // the textarea's `onBlur` (which auto-commits — the conventional
+  // annotation-tool UX of "click away to save") races with Escape's
+  // `onCancel` and commits the in-flight body even though the user
+  // asked to abort. Refs survive unmount-time blur firing where
+  // setState updates from Escape haven't been flushed yet.
+  const cancelledRef = useRef<boolean>(false);
+
+  // Initial focus + caret-at-end. Runs once on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (ta === null) return;
+    ta.focus();
+    // Place caret at end so additions append rather than overwriting.
+    const len = ta.value.length;
+    ta.setSelectionRange(len, len);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>): void {
     if (e.key === "Escape") {
       e.preventDefault();
+      // Mark as cancelled BEFORE onCancel so the imminent onBlur
+      // (fired by the textarea losing focus when it unmounts) sees
+      // the flag and short-circuits without committing the in-flight
+      // body. Restoring `initialBodyRef.current` via onChange would
+      // race the same way — by the time setState flushes, onCommit
+      // has already read the stale `draft.body`. The cancel flag is
+      // the only fix that doesn't depend on state-flush timing.
+      cancelledRef.current = true;
       onCancel();
       return;
     }
-    // Enter alone commits; Shift+Enter inserts a newline. Match
-    // conventional annotation-tool UX (Cleanshot, Skitch, etc.).
-    // Without preventDefault, the textarea would also insert a newline
-    // before our onCommit runs (since onCommit reads `draft.body`,
-    // which hasn't seen the keystroke yet — the timing is fine but
-    // we still want to suppress the default insertion).
     if (e.key === "Enter" && !e.shiftKey) {
+      // Enter alone commits. preventDefault stops the textarea from
+      // inserting a newline before our onCommit runs.
       e.preventDefault();
       onCommit();
+      return;
     }
+    // Shift+Enter falls through — the textarea's default behavior
+    // inserts a `\n` into its value, which onChange picks up.
   }
+
+  function onBlur(): void {
+    if (cancelledRef.current) {
+      // Escape already aborted — don't commit. The parent's
+      // setDraft(null) from onCancel will unmount us shortly.
+      return;
+    }
+    onCommit();
+  }
+
   return (
     <div style={wrapperStyle}>
+      {/* Visible text — same `<div>` shape and CSS as
+          TextHtml.tsx's display surface. NOT editable. Renders glyphs
+          + halo identically to display. */}
+      <div style={visibleGlyphStyle}>{draft.body}</div>
+      {/* Invisible textarea — captures keyboard, shows caret. The
+          user can't see the textarea's own glyphs (color:
+          transparent), only the visible div underneath. */}
       <textarea
         ref={inputRef}
         value={draft.body}
-        rows={1}
         onChange={(e) => onChange(e.target.value)}
-        onBlur={onCommit}
+        onBlur={onBlur}
         onKeyDown={onKeyDown}
-        // No placeholder text — a "Type to annotate…" hint inside the
-        // textarea would itself be WYSIWYG-incorrect (it'd appear in
-        // the input's color/size/font, and disappear on first
-        // keypress). The blinking caret + cursor position are the
-        // affordance.
-        style={inputStyle}
+        // Plain-text paste — drop any incoming HTML formatting so the
+        // body stays plain text. Without this, paste from a styled
+        // source (browsers, rich-text editors) would smuggle styled
+        // chunks in via the textarea's value.
+        onPaste={(e) => {
+          // Textareas already paste as plain text — no special
+          // handling needed. (Browsers strip rich content for
+          // textareas automatically, unlike contentEditable divs.)
+          // This handler exists only as a documentation hook in
+          // case we ever need to inspect / filter paste content.
+          void e;
+        }}
+        rows={1}
+        spellCheck={false}
+        aria-label="Edit text annotation"
+        style={textareaStyle}
       />
     </div>
   );

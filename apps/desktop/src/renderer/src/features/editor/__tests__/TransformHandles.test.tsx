@@ -114,6 +114,10 @@ interface HarnessProps {
   onGeometryDrag?: (g: GeometryUpdate) => void;
   onDragStart?: (row: OverlayRow) => void;
   onDragEnd?: () => void;
+  /** Threaded into TransformHandles so the click-to-edit path on
+   *  selected text overlays can be exercised end-to-end (synthetic
+   *  click events fired after pointerup). */
+  onRequestEdit?: (row: OverlayRow) => void;
 }
 
 async function render(props: HarnessProps): Promise<HTMLElement> {
@@ -126,10 +130,13 @@ async function render(props: HarnessProps): Promise<HTMLElement> {
         selectedOverlay: props.selectedOverlay,
         imageWidthPx: 1920,
         imageHeightPx: 1080,
+        sourceWidthPx: 1920,
+        sourceHeightPx: 1080,
         onGeometryChange: props.onGeometryChange ?? (() => undefined),
         onGeometryDrag: props.onGeometryDrag,
         onDragStart: props.onDragStart,
-        onDragEnd: props.onDragEnd
+        onDragEnd: props.onDragEnd,
+        onRequestEdit: props.onRequestEdit
       } as Parameters<typeof TransformHandles>[0])
     );
   });
@@ -177,6 +184,24 @@ function firePointer(
         clientX,
         clientY,
         pointerId: 1
+      })
+    );
+  });
+}
+
+/** Synthesizes the DOM `click` that the browser fires after a
+ *  mousedown + mouseup land on the same element without a drag. jsdom
+ *  doesn't derive `click` from our dispatched `pointer*` events, so
+ *  tests for the click-to-edit branch fire it explicitly. */
+function fireClick(el: Element, clientX: number, clientY: number): void {
+  act(() => {
+    el.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        clientX,
+        clientY
       })
     );
   });
@@ -519,6 +544,78 @@ describe("TransformHandles", () => {
       expect(commit.point.x).toBeCloseTo(0.6, 3);
       expect(commit.point.y).toBeCloseTo(0.4, 3);
     }
+  });
+
+  test("click-without-drag on selected text body fires onRequestEdit (not onGeometryChange)", async () => {
+    // The "I selected the text — now how do I get a caret in it?" gap.
+    // Previously the only edit affordance was a double-click on the
+    // body-hit rect, which is fiddly (first click is intercepted by
+    // the canvas to select; the second click needs to land on the
+    // body-hit rect within the dblclick window). Now a plain click on
+    // an already-selected text overlay enters edit mode immediately —
+    // matches Figma's "select → click again to edit" gesture.
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Pointerdown + pointerup at identical coords = no drag. The
+    // pointerup branch must short-circuit before onGeometryChange
+    // fires (so we don't write a no-op move that pushes a redundant
+    // undo entry). Then the click event triggers onRequestEdit.
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointerup", 500, 500);
+    fireClick(body, 500, 500);
+    expect(onGeometryChange).not.toHaveBeenCalled();
+    expect(onRequestEdit).toHaveBeenCalledTimes(1);
+    expect(onRequestEdit.mock.calls[0]?.[0]?.id).toBe("text_1");
+  });
+
+  test("click-without-drag on selected rect body fires NEITHER onRequestEdit NOR onGeometryChange", async () => {
+    // Non-text kinds don't have an "edit body" affordance — they
+    // commit on placement (rect outline, arrow vector, etc.). A bare
+    // click on a selected rect must be a no-op: no onRequestEdit
+    // (none of those layer kinds is editable in-place), no
+    // onGeometryChange (no movement happened).
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: rectRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 300, 300);
+    firePointer(body, "pointerup", 300, 300);
+    fireClick(body, 300, 300);
+    expect(onGeometryChange).not.toHaveBeenCalled();
+    expect(onRequestEdit).not.toHaveBeenCalled();
+  });
+
+  test("drag on selected text body still moves the layer (onClick suppressed by browser drag threshold)", async () => {
+    // The click-to-edit branch must NOT fire when the user actually
+    // dragged the text. The browser only emits `click` on a
+    // mousedown→mouseup with no significant movement, so a real drag
+    // path emits no `click` event — onRequestEdit stays quiet and
+    // onGeometryChange fires with the translated point. We omit the
+    // synthetic click here to mirror that browser behavior.
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    // Substantive drag — well past the no-drag threshold.
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 700, 600);
+    firePointer(body, "pointerup", 700, 600);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    expect(onRequestEdit).not.toHaveBeenCalled();
   });
 
   test("returns null for crop overlay (no handles)", async () => {

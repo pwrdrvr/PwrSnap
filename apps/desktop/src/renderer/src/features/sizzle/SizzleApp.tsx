@@ -33,6 +33,7 @@ export function SizzleApp(): ReactElement {
   const [picker, setPicker] = useState(false);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
+  const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -77,12 +78,15 @@ export function SizzleApp(): ReactElement {
   }, [activeId, reloadProjects]);
 
   const onCreate = useCallback(async () => {
-    const name = window.prompt("Name your sizzle reel", "Untitled Sizzle");
-    if (name === null) return;
-    const r = await dispatch("sizzle:create", { name });
+    // Electron deliberately doesn't implement window.prompt — it
+    // silently returns null. Skip the dialog: create with a default
+    // name and auto-focus the editor's title input so the user can
+    // rename in one keystroke.
+    const r = await dispatch("sizzle:create", { name: "Untitled Sizzle" });
     if (r.ok) {
       setProjects((prev) => [r.value, ...prev]);
       setActiveId(r.value.id);
+      setFocusTitleForId(r.value.id);
     }
   }, []);
 
@@ -202,6 +206,8 @@ export function SizzleApp(): ReactElement {
           <Editor
             project={active}
             captures={captures}
+            autoFocusTitle={focusTitleForId === active.id}
+            onTitleFocused={() => setFocusTitleForId(null)}
             onRename={(name) => onUpdate(active.id, { name })}
             onVoice={(voice) => onUpdate(active.id, { voice })}
             onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
@@ -250,6 +256,8 @@ type EditorProps = {
   project: SizzleProject;
   captures: CaptureRecord[];
   status: RenderStatus;
+  autoFocusTitle: boolean;
+  onTitleFocused: () => void;
   onRename: (name: string) => void;
   onVoice: (voice: SizzleVoice) => void;
   onProvider: (provider: "openai" | "xai") => void;
@@ -266,6 +274,8 @@ function Editor(props: EditorProps): ReactElement {
     project,
     captures,
     status,
+    autoFocusTitle,
+    onTitleFocused,
     onRename,
     onVoice,
     onProvider,
@@ -276,6 +286,16 @@ function Editor(props: EditorProps): ReactElement {
     onReveal,
     onDelete
   } = props;
+
+  const titleRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!autoFocusTitle) return;
+    const el = titleRef.current;
+    if (el === null) return;
+    el.focus();
+    el.select();
+    onTitleFocused();
+  }, [autoFocusTitle, onTitleFocused]);
 
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();
@@ -311,6 +331,7 @@ function Editor(props: EditorProps): ReactElement {
     <div className="szl__editor">
       <header className="szl__editor-head">
         <input
+          ref={titleRef}
           className="szl__editor-title"
           value={project.name}
           onChange={(e) => onRename(e.target.value)}

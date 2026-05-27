@@ -759,7 +759,7 @@
 }
 .psl-proj__btn--primary {
   background: var(--accent);
-  color: var(--button-text-on-accent, #000);
+  color: var(--button-text-on-accent);
   border-color: var(--accent);
 }
 .psl-proj__btn--primary:hover {
@@ -836,8 +836,8 @@
   top: 8px;
   padding: 3px 7px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
   font: 700 10px/1 var(--font-mono);
   letter-spacing: 0.06em;
 }
@@ -852,8 +852,8 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
   font: 500 12px/1 var(--font-sans);
 }
 
@@ -867,13 +867,13 @@
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
   font: 700 13px/1 var(--font-sans);
 }
 .psl-proj__cell-toggle.is-on {
   background: var(--accent);
-  color: var(--button-text-on-accent, #000);
+  color: var(--button-text-on-accent);
 }
 
 .psl-proj__cell-label {
@@ -1674,8 +1674,8 @@
   right: 3px;
   bottom: 3px;
   font: 500 10px/1 var(--font-sans);
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  color: var(--media-scrim-text);
+  text-shadow: 0 1px 3px var(--media-scrim-shadow);
 }
 .psl__proj-scene-missing {
   color: var(--text-muted);
@@ -1723,7 +1723,7 @@
 }
 .psl__proj-btn--primary {
   background: var(--accent);
-  color: var(--button-text-on-accent, #000);
+  color: var(--button-text-on-accent);
   border-color: var(--accent);
 }
 .psl__proj-btn--primary:hover {

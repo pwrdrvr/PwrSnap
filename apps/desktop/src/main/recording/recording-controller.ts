@@ -12,6 +12,7 @@
 
 import { BrowserWindow, screen } from "electron";
 import type { RecordingState } from "@pwrsnap/shared";
+import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
 import { subscribeToRecordingState } from "./recording-state";
@@ -126,10 +127,35 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // click-through; recording phase flips it back off so the
       // Stop button is interactive.
       win.setIgnoreMouseEvents(true);
-      // Make the HUD window BE the recorded rect — the SVG leader
-      // fills 100% via viewBox, so the user sees the countdown
-      // exactly inside the area being captured.
-      fillRect(win, state.rect, state.displayId);
+      // Two HUD shapes for the pre-roll:
+      //
+      //   • Default — fillRect: HUD becomes the recorded rect, the
+      //     SVG leader paints inside it, and the user sees the
+      //     countdown EXACTLY on the surface that's about to be
+      //     captured. The translucent orange sweep covers the rect
+      //     entirely during the 1s tick animation.
+      //
+      //   • Subject overlaps a PwrSnap window — anchorTopCenter
+      //     with a compact size. The rect-fill is what made the
+      //     Library "hide during the countdown" — the image-capture
+      //     flow never covers our own surface and the video flow has
+      //     to match for PwrSnap-window subjects. Top-center keeps
+      //     the countdown visible while leaving the user's Library /
+      //     edit / Sizzle / Settings on screen behind it.
+      if (appWindowsOverlappingRect(state.rect, state.displayId).length > 0) {
+        // Compact preflight size — wide enough for the SVG leader
+        // (capped at 320px) plus a small margin; tall enough that
+        // the ring + numeral don't get cropped. The renderer's
+        // CountdownLeader uses `width: min(70vmin, 320px)` so it
+        // sizes down naturally inside the smaller window.
+        win.setContentSize(280, 220, false);
+        anchorTopCenter(win, state.displayId);
+      } else {
+        // Make the HUD window BE the recorded rect — the SVG leader
+        // fills 100% via viewBox, so the user sees the countdown
+        // exactly inside the area being captured.
+        fillRect(win, state.rect, state.displayId);
+      }
       if (!win.isVisible()) {
         win.showInactive();
       } else {

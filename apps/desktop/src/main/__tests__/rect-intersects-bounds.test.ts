@@ -1,9 +1,12 @@
 // Unit tests for the pure rect-intersection seam used by
-// `appWindowsOverlappingRecording` in main/index.ts. The wider helper
-// touches `BrowserWindow.getAllWindows()` / `screen.getAllDisplays()`
-// and isn't worth mocking out — testing the geometry primitive in
-// isolation is enough to lock the behavior that gates the
-// "skip activateApp + raise our window" branch.
+// `appWindowsOverlappingRect` (capture/rect-overlap.ts) — both the
+// post-commit raise gate in main/index.ts AND the per-phase HUD-shape
+// gate in recording-controller.ts call it. The wider helper touches
+// `BrowserWindow.getAllWindows()` / `screen.getAllDisplays()` and
+// isn't worth mocking out — testing the geometry primitive in
+// isolation is enough to lock the behavior that gates "skip
+// activateApp / raise our window" AND "anchor HUD top-center instead
+// of filling the rect."
 
 import { describe, expect, test } from "vitest";
 import { rectIntersectsBounds } from "../capture/rect-overlap";

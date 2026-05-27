@@ -7,10 +7,9 @@ import {
   globalShortcut,
   Menu,
   Notification,
-  screen,
   shell
 } from "electron";
-import type { Rect, RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
   getLastWindowListSnapshot,
@@ -20,7 +19,7 @@ import {
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
 import { activateApp, selfPidSet } from "./capture/window-list";
-import { rectIntersectsBounds } from "./capture/rect-overlap";
+import { appWindowsOverlappingRect } from "./capture/rect-overlap";
 import {
   resolveSelectionSourceApp,
   shouldConsiderRaisingOurWindows
@@ -532,41 +531,6 @@ async function runInteractiveCapture(
 }
 
 /**
- * Top-level PwrSnap windows visible on screen that intersect the
- * recording rect. Used to decide whether `runInteractiveRecord` should
- * yield focus back to the previously-frontmost app (the normal flow)
- * or raise our own window(s) so the recording captures live PwrSnap
- * pixels.
- *
- * `isVisible()` alone is the practical filter here: by the time the
- * caller hits this check the selector is hidden, the tray popover +
- * float-over toast were dismissed pre-pickRegion via
- * `keepPwrSnapChrome: false`, the recording HUD hasn't been created
- * yet, and the focus-sink lives at (-10000, -10000) off-screen — none
- * of those can pass the visibility + intersection gates. The only
- * windows that match in practice are the user-facing Library /
- * Settings / Sizzle / edit windows.
- */
-function appWindowsOverlappingRecording(
-  rect: Rect,
-  displayId: number
-): BrowserWindow[] {
-  const display = screen.getAllDisplays().find((d) => d.id === displayId);
-  if (display === undefined) return [];
-  const globalRect = {
-    x: rect.x + display.bounds.x,
-    y: rect.y + display.bounds.y,
-    w: rect.w,
-    h: rect.h
-  };
-  return BrowserWindow.getAllWindows().filter((win) => {
-    if (win.isDestroyed()) return false;
-    if (!win.isVisible()) return false;
-    return rectIntersectsBounds(globalRect, win.getBounds());
-  });
-}
-
-/**
  * Choose which of the overlapping PwrSnap windows to give keyboard
  * focus when we raise them for a recording. Prefer the Library (the
  * primary user-facing window in this app); fall back to the first
@@ -650,7 +614,7 @@ async function runInteractiveRecord(): Promise<void> {
     selfPidSet()
   );
   const overlapping = shouldRaise
-    ? appWindowsOverlappingRecording(selection.rect, selection.displayId)
+    ? appWindowsOverlappingRect(selection.rect, selection.displayId)
     : [];
   if (overlapping.length > 0) {
     for (const win of overlapping) {

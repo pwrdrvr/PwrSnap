@@ -123,6 +123,17 @@ export class SizzleStore {
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (!isStoredBlob(parsed)) return clone(DEFAULT_BLOB);
+      // Normalize scenes on the read path so every consumer sees the
+      // new SizzleScene fields (mediaTrim, audioSource, transition)
+      // with sensible defaults, regardless of when the project was
+      // first written. Without this, projects created before these
+      // fields existed have undefined values and crash any consumer
+      // doing `scene.mediaTrim.endSec` etc.
+      for (const project of parsed.projects) {
+        if (Array.isArray(project.scenes)) {
+          project.scenes = sanitizeScenes(project.scenes);
+        }
+      }
       return parsed;
     } catch (cause) {
       this.log.warn("sizzle-store: parse failed, quarantining", {

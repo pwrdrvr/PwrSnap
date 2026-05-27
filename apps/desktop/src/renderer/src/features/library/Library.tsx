@@ -1725,9 +1725,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             {sizzleProjects.map((p) => {
               const totalSec = p.scenes.reduce((acc, s) => {
                 const explicit = s.durationOverrideSec;
-                if (explicit !== null && explicit > 0) return acc + explicit;
-                if (s.mediaTrim !== null)
-                  return acc + (s.mediaTrim.endSec - s.mediaTrim.startSec);
+                if (typeof explicit === "number" && explicit > 0) {
+                  return acc + explicit;
+                }
+                // Use `!= null` (loose) so undefined-from-disk for
+                // older projects falls through to the 3s estimate
+                // instead of NaN-ing the sum.
+                const trim = s.mediaTrim;
+                if (trim != null) return acc + (trim.endSec - trim.startSec);
                 return acc + 3; // rough estimate when unknown
               }, 0);
               const isActive =

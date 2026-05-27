@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 
-import { TextHtmlOverlays } from "../TextHtmlOverlays";
+import { TextHtmlOverlays, type TextHtmlOverlaysProps } from "../TextHtmlOverlays";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -70,6 +70,7 @@ function textRow(
 function Harness(props: {
   overlays: OverlayRow[];
   editingLayerId?: string | null;
+  liveOverride?: TextHtmlOverlaysProps["liveOverride"];
 }): ReturnType<typeof TextHtmlOverlays> {
   return createElement(TextHtmlOverlays, {
     overlays: props.overlays,
@@ -78,19 +79,21 @@ function Harness(props: {
     imageHeightPx: 400,
     sourceWidthPx: 800,
     sourceHeightPx: 400,
-    canvasCssHeight: 400
+    canvasCssHeight: 400,
+    liveOverride: props.liveOverride ?? null
   });
 }
 
 async function render(
   overlays: OverlayRow[],
-  editingLayerId: string | null = null
+  editingLayerId: string | null = null,
+  liveOverride: TextHtmlOverlaysProps["liveOverride"] = null
 ): Promise<void> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(createElement(Harness, { overlays, editingLayerId }));
+    root?.render(createElement(Harness, { overlays, editingLayerId, liveOverride }));
   });
   // useLayoutEffect runs inside the act; one extra flush lets the
   // canvasCssHeight state update propagate.
@@ -170,6 +173,70 @@ describe("TextHtmlOverlays — editingLayerId suppression", () => {
     const bodies = textBodies();
     expect(bodies).toContain("first");
     expect(bodies).toContain("second");
+  });
+});
+
+describe("TextHtmlOverlays — liveOverride drag preview", () => {
+  // Live-drag preview parity with OverlaySvg / BlurOverlays. When the
+  // user grabs a text overlay by its TransformHandles body-hit rect and
+  // drags, the parent stashes the in-progress geometry as `draftGeometry`
+  // and threads it into every renderer that paints overlays. Pre-fix,
+  // TextHtmlOverlays didn't accept the override at all — the painted
+  // glyph stayed at its persisted anchor and the user only saw the
+  // dashed selection outline + handles move, with the text snapping
+  // into place at pointerup. Same regression class the SVG-side fix
+  // already protects against (see OverlaySvg.tsx `effectiveOverlays`).
+  // computeTextHtmlStyle emits `position: absolute` ONLY on the
+  // outer wrapper (the glyph is a static-position child). Use that
+  // to pick the wrapper out of `div`s without having to know the
+  // exact DOM nesting.
+  function findWrapper(body: string): HTMLElement {
+    if (container === null) throw new Error("container missing");
+    const wrappers = Array.from(
+      container.querySelectorAll<HTMLDivElement>("div")
+    ).filter((el) => el.style.position === "absolute");
+    const hit = wrappers.find((el) => el.textContent === body);
+    if (hit === undefined) {
+      throw new Error(`wrapper for body=${JSON.stringify(body)} not found`);
+    }
+    return hit;
+  }
+
+  test("override on a text row repositions the rendered wrapper", async () => {
+    await render(
+      [textRow("t1", { body: "moving", point: { x: 0.5, y: 0.5 } })],
+      null,
+      {
+        layerId: "t1",
+        geometry: { kind: "text", point: { x: 0.8, y: 0.3 } }
+      }
+    );
+    const wrapper = findWrapper("moving");
+    // computeTextHtmlStyle emits `left: ${point.x * 100}%` on the
+    // wrapper — the override's point.x = 0.8 → 80%.
+    expect(wrapper.style.left).toBe("80%");
+    expect(wrapper.style.top).toBe("30%");
+  });
+
+  test("override only affects the matching row; other rows render at persisted point", async () => {
+    await render(
+      [
+        textRow("t1", { body: "moving", point: { x: 0.5, y: 0.5 } }),
+        textRow("t2", { body: "static", point: { x: 0.2, y: 0.7 } })
+      ],
+      null,
+      {
+        layerId: "t1",
+        geometry: { kind: "text", point: { x: 0.9, y: 0.1 } }
+      }
+    );
+    const movingWrapper = findWrapper("moving");
+    const staticWrapper = findWrapper("static");
+    expect(movingWrapper.style.left).toBe("90%");
+    expect(movingWrapper.style.top).toBe("10%");
+    // Untouched row stays at its persisted point.
+    expect(staticWrapper.style.left).toBe("20%");
+    expect(staticWrapper.style.top).toBe("70%");
   });
 });
 

@@ -66,50 +66,75 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
   });
 }
 
-export async function compose(req: ComposeRequest): Promise<void> {
-  const ffmpeg = resolveFfmpegPath();
-  if (ffmpeg === null) {
-    throw new ComposeError("ffmpeg_missing", "ffmpeg binary not found");
-  }
-  if (req.scenes.length === 0) {
-    throw new ComposeError("no_scenes", "Sizzle reel must have at least one scene");
-  }
-
-  await mkdir(dirname(req.outputPath), { recursive: true });
-
-  const audioListPath = `${req.outputPath}.audio-list.txt`;
-  const audioConcat = req.scenes
-    .map((s) => `file '${s.audioPath.replace(/'/g, "'\\''")}'`)
-    .join("\n");
-  await writeFile(audioListPath, audioConcat, "utf8");
-
+/**
+ * Build the ffmpeg args for a sizzle reel. Exposed for tests so they
+ * can assert on the structure without invoking ffmpeg every run.
+ *
+ * Architecture:
+ *
+ * - Each scene gets its own input as `-i image` — exactly ONE frame
+ *   per scene goes in. NOT `-loop 1 ... -i image`: with -loop the
+ *   input stream is infinite, and zoompan with `d=N` emits N output
+ *   frames PER input frame. Pairing infinite input with zoompan
+ *   produces an unbounded output that `-shortest` truncates to audio
+ *   length — so only the first scene's zoompan run survives in the
+ *   final mux. (This was the "only one image shows" bug in the first
+ *   two cuts of the composer.)
+ *
+ * - Each `[i:v]` is scaled with `force_original_aspect_ratio=decrease`
+ *   + `pad` for honest letterboxing on portrait / odd-aspect captures.
+ *   We scale to 2× the output canvas so zoompan has headroom to zoom
+ *   in/out without hitting a hard edge.
+ *
+ * - `zoompan` does the ken-burns. With a single input frame, `d=N`
+ *   makes zoompan emit exactly N output frames at the configured
+ *   `fps`, so each scene's video length is `N / fps` ≡ `durationSec`.
+ *   Zoom direction alternates per scene (in / out) for visual variety.
+ *   The `on` variable is the output frame index within zoompan's
+ *   current input frame, [0..N), which lets us interpolate linearly:
+ *   `1.0 + DELTA * on / N`.
+ *
+ * - The N scene videos go into `concat=n=N:v=1:a=0[vout]`, audio comes
+ *   from the concat-demuxer input that follows the scene inputs.
+ *
+ * - `-shortest` is intentional: rounds total length to the shorter of
+ *   (video, audio). Per-scene durations are derived from per-scene
+ *   audio durations + a 350ms tail, so total video should be within
+ *   ~1.4s of total audio.
+ */
+export function buildCompositionArgs(
+  req: ComposeRequest,
+  audioListPath: string
+): string[] {
   const args: string[] = ["-y", "-hide_banner"];
   for (const scene of req.scenes) {
-    args.push(
-      "-loop",
-      "1",
-      "-t",
-      scene.durationSec.toFixed(3),
-      "-i",
-      scene.imagePath
-    );
+    // One frame of input per scene. zoompan's `d=N` does the time-
+    // stretching to N output frames; we MUST NOT add `-loop 1` or
+    // `-framerate` here or the input becomes a multi-frame stream and
+    // zoompan emits N output frames per input frame.
+    args.push("-i", scene.imagePath);
   }
   args.push("-f", "concat", "-safe", "0", "-i", audioListPath);
 
   const filters: string[] = [];
-  const kenBurnsFrames = Math.max(2, Math.round(req.fps * Math.max(...req.scenes.map((s) => s.durationSec))));
   req.scenes.forEach((scene, i) => {
-    const frames = Math.max(2, Math.round(scene.durationSec * req.fps));
-    const direction = i % 2 === 0 ? "in" : "out";
-    const zoomExpr =
-      direction === "in"
-        ? `min(1.10,1.00+0.001*on)`
-        : `max(1.00,1.10-0.001*on)`;
+    const nFrames = Math.max(2, Math.round(scene.durationSec * req.fps));
+    const directionIn = i % 2 === 0;
+    // Linear zoom across the scene: 1.0 → 1.10 (in) or 1.10 → 1.0 (out).
+    // `on` is zoompan's per-input-frame output counter; with one input
+    // frame and d=N, on runs [0..N).
+    const zoomExpr = directionIn
+      ? `1.0+0.10*on/${nFrames}`
+      : `1.10-0.10*on/${nFrames}`;
+    const w2 = req.width * 2;
+    const h2 = req.height * 2;
     filters.push(
-      `[${i}:v]scale=${req.width * 2}:${req.height * 2}:force_original_aspect_ratio=increase,` +
-        `crop=${req.width * 2}:${req.height * 2},` +
-        `zoompan=z='${zoomExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-        `d=${frames}:s=${req.width}x${req.height}:fps=${req.fps},` +
+      `[${i}:v]` +
+        `scale=${w2}:${h2}:force_original_aspect_ratio=decrease,` +
+        `pad=${w2}:${h2}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+        `zoompan=z='${zoomExpr}':` +
+        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `d=${nFrames}:s=${req.width}x${req.height}:fps=${req.fps},` +
         `setsar=1,format=yuv420p[v${i}]`
     );
   });
@@ -143,11 +168,36 @@ export async function compose(req: ComposeRequest): Promise<void> {
     "+faststart",
     req.outputPath
   );
+  return args;
+}
 
-  log.info("ffmpeg compose", { args: args.slice(0, 4), scenes: req.scenes.length });
+export async function compose(req: ComposeRequest): Promise<void> {
+  const ffmpeg = resolveFfmpegPath();
+  if (ffmpeg === null) {
+    throw new ComposeError("ffmpeg_missing", "ffmpeg binary not found");
+  }
+  if (req.scenes.length === 0) {
+    throw new ComposeError("no_scenes", "Sizzle reel must have at least one scene");
+  }
+
+  await mkdir(dirname(req.outputPath), { recursive: true });
+
+  const audioListPath = `${req.outputPath}.audio-list.txt`;
+  const audioConcat = req.scenes
+    .map((s) => `file '${s.audioPath.replace(/'/g, "'\\''")}'`)
+    .join("\n");
+  await writeFile(audioListPath, audioConcat, "utf8");
+
+  const args = buildCompositionArgs(req, audioListPath);
+  log.info("ffmpeg compose", {
+    scenes: req.scenes.length,
+    width: req.width,
+    height: req.height,
+    fps: req.fps,
+    totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
+  });
   const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
   await runFfmpeg(ffmpeg, args, totalSec, req.onProgress);
-  void kenBurnsFrames;
 }
 
 function runFfmpeg(

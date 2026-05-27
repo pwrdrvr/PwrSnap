@@ -19,9 +19,12 @@ import {
   preWarmRegionSelector
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp } from "./capture/window-list";
+import { activateApp, selfPidSet } from "./capture/window-list";
 import { rectIntersectsBounds } from "./capture/rect-overlap";
-import { resolveSelectionSourceApp } from "./capture/source-app";
+import {
+  resolveSelectionSourceApp,
+  shouldConsiderRaisingOurWindows
+} from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
@@ -564,6 +567,22 @@ function appWindowsOverlappingRecording(
 }
 
 /**
+ * Choose which of the overlapping PwrSnap windows to give keyboard
+ * focus when we raise them for a recording. Prefer the Library (the
+ * primary user-facing window in this app); fall back to the first
+ * entry in the overlap set. `BrowserWindow.getAllWindows()` ordering
+ * isn't documented as z-order, so a stable tie-breaker beats letting
+ * implementation order decide.
+ */
+function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindow {
+  const library = findMainLibraryWindow();
+  if (library !== null && overlapping.includes(library)) {
+    return library;
+  }
+  return overlapping[0]!;
+}
+
+/**
  * Fast Video Capture entry (issue #64). Opens the selector to pick a
  * region/window, then routes the commit to `recording:start` instead
  * of `capture:interactive`. The Snap-vs-Video chooser ships later;
@@ -611,23 +630,35 @@ async function runInteractiveRecord(): Promise<void> {
   hideSelector();
   void releaseSnapshot(screenSnapshotId);
 
-  // If the user picked a region that contains one of our own visible
-  // windows (Library, edit, Sizzle, Settings), DO NOT yield focus to
-  // the previously-frontmost app — that would push our window behind
-  // for the countdown + recording, and the user would record an empty
-  // shell of whatever was behind it. Raise our window(s) instead so
-  // the recording captures live PwrSnap pixels.
-  const overlapping = appWindowsOverlappingRecording(
-    selection.rect,
-    selection.displayId
+  // Focus / z-order policy. Three cases:
+  //
+  //   • Snap to one of OUR windows, OR free-region drag whose rect
+  //     overlaps one of ours → raise our window(s). The user clearly
+  //     wants PwrSnap visible in the recording.
+  //   • Snap to ANOTHER app's window → leave our windows alone and run
+  //     activateApp(previousAppPid). Raising the Library here would
+  //     obscure the very window the user picked (e.g. Library sitting
+  //     partially behind Claude on screen — overlap detection would
+  //     match, but the recording subject is Claude, not us).
+  //   • Snap to one of ours but the rect doesn't actually intersect
+  //     any visible BrowserWindow (e.g. that window just closed) →
+  //     fall through to the previous-app activation; nothing to raise.
+  const cachedSnapshot = getLastWindowListSnapshot();
+  const shouldRaise = shouldConsiderRaisingOurWindows(
+    selection.snappedWindowId,
+    cachedSnapshot,
+    selfPidSet()
   );
+  const overlapping = shouldRaise
+    ? appWindowsOverlappingRecording(selection.rect, selection.displayId)
+    : [];
   if (overlapping.length > 0) {
     for (const win of overlapping) {
       if (win.isMinimized()) win.restore();
       if (!win.isVisible()) win.show();
       win.moveTop();
     }
-    overlapping[overlapping.length - 1]?.focus();
+    pickFocusTargetForRecording(overlapping).focus();
   } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
   }

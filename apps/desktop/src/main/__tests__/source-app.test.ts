@@ -10,7 +10,8 @@ import type { WindowInfo } from "../capture/window-list";
 import {
   findWindowById,
   resolveSelectionSourceApp,
-  resolveSourceAppByRect
+  resolveSourceAppByRect,
+  shouldConsiderRaisingOurWindows
 } from "../capture/source-app";
 
 function win(
@@ -123,5 +124,74 @@ describe("resolveSelectionSourceApp", () => {
     const rect = { x: 100, y: 100, w: 100, h: 100 };
     expect(resolveSelectionSourceApp(rect, undefined, [])).toBeNull();
     expect(resolveSelectionSourceApp(rect, 42, [])).toBeNull();
+  });
+});
+
+describe("shouldConsiderRaisingOurWindows", () => {
+  // PwrSnap = pid 1234; Claude = pid 5678.
+  const OUR_PID = 1234;
+  const CLAUDE_PID = 5678;
+  const ourPids = new Set<number>([OUR_PID]);
+
+  const ourLibrary = win({
+    windowId: 10,
+    pid: OUR_PID,
+    appName: "PwrSnap",
+    bundleId: "com.pwrdrvr.pwrsnap"
+  });
+  const claudeWindow = win({
+    windowId: 20,
+    pid: CLAUDE_PID,
+    appName: "Claude",
+    bundleId: "com.anthropic.claudefordesktop"
+  });
+  const snapshot = [claudeWindow, ourLibrary];
+
+  test("free-region drag (no snap) → consider raising", () => {
+    // The user drew a region without snapping. If it happens to
+    // overlap one of our windows, we want to honor that — see the
+    // outer caller's intersection check.
+    expect(shouldConsiderRaisingOurWindows(undefined, snapshot, ourPids)).toBe(true);
+  });
+
+  test("snapped to one of our windows → consider raising", () => {
+    // User clicked the Library. We explicitly want it on top so the
+    // recording captures live PwrSnap pixels.
+    expect(shouldConsiderRaisingOurWindows(10, snapshot, ourPids)).toBe(true);
+  });
+
+  test("snapped to another app's window → DO NOT raise — the bug fix", () => {
+    // User shift-clicked Claude (or just clicked it). Even if the
+    // Library is sitting partially behind Claude (overlap-true under
+    // the bounds intersection check), we must NOT raise the Library —
+    // doing so would obscure the recording subject the user actually
+    // picked.
+    expect(shouldConsiderRaisingOurWindows(20, snapshot, ourPids)).toBe(false);
+  });
+
+  test("snap id not found in snapshot → consider raising (defensive)", () => {
+    // The snapped window disappeared between the selector show and
+    // the post-commit lookup. We've got no signal about whose window
+    // it was; fall back to the overlap-driven raise (which may end
+    // up not raising anything either, depending on what intersects).
+    expect(shouldConsiderRaisingOurWindows(999, snapshot, ourPids)).toBe(true);
+  });
+
+  test("empty snapshot is treated like 'unknown' regardless of snap id", () => {
+    expect(shouldConsiderRaisingOurWindows(20, [], ourPids)).toBe(true);
+    expect(shouldConsiderRaisingOurWindows(undefined, [], ourPids)).toBe(true);
+  });
+
+  test("multiple our-pids — any match treats the snap target as ours", () => {
+    // Defensive — `selfPidSet()` is single-pid today but the API
+    // signature accepts a set; renderer pids might be added later.
+    const multiPid = new Set<number>([OUR_PID, 9999]);
+    const claudeFromOurSecondPid = win({
+      windowId: 30,
+      pid: 9999,
+      appName: "PwrSnap (renderer)"
+    });
+    const richSnapshot = [claudeFromOurSecondPid, ...snapshot];
+    expect(shouldConsiderRaisingOurWindows(30, richSnapshot, multiPid)).toBe(true);
   });
 });

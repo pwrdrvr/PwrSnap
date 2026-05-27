@@ -4,6 +4,11 @@
 // module is their single source of truth so the two paths can't drift
 // (image → "Claude", video → "Unknown App" was the symptom of an
 // earlier drift).
+//
+// Also home to the pure decision helper that the video-recording entry
+// uses to gate "raise our window vs. yield focus to the previous app"
+// — same input shape (selection + snapshot + our pids), kept here
+// alongside the resolver so both decisions stay aligned.
 
 import type { Rect } from "@pwrsnap/shared";
 import { findWindowAt, type WindowInfo } from "./window-list";
@@ -56,4 +61,39 @@ export function resolveSelectionSourceApp(
     return findWindowById(windows, snappedWindowId) ?? resolveSourceAppByRect(rect, windows);
   }
   return resolveSourceAppByRect(rect, windows);
+}
+
+/**
+ * Decide whether the video-recording flow should consider raising our
+ * own windows after the user commits a selection. The actual raise
+ * looks up live `BrowserWindow` instances by intersecting the rect
+ * with their bounds — this helper just gates whether that step should
+ * run at all.
+ *
+ * Rules:
+ *   - User snapped to one of OUR windows → consider raising. The user
+ *     explicitly pointed at PwrSnap; we want it on top.
+ *   - User snapped to ANOTHER app's window → leave focus alone. They
+ *     picked Claude / Finder / etc.; raising the Library would obscure
+ *     the very window they wanted to record (e.g. when the Library is
+ *     sitting partially behind Claude on screen).
+ *   - No snap (free-region drag) → consider raising. If the rect
+ *     happens to overlap our window, the user clearly meant to include
+ *     it in the recording, so it should be visible during capture.
+ *
+ * `ourPids` is the result of `selfPidSet()`. Pid-matching for the
+ * snapped window is sufficient for the user-facing snap target case
+ * (Library / Settings / Sizzle / edit). DevTools windows share our
+ * pid but the user explicitly opened them and is unlikely to mind
+ * either branch's behavior — pragmatic over perfect.
+ */
+export function shouldConsiderRaisingOurWindows(
+  snappedWindowId: number | undefined,
+  snapshot: readonly WindowInfo[],
+  ourPids: ReadonlySet<number>
+): boolean {
+  if (snappedWindowId === undefined) return true;
+  const snapped = findWindowById(snapshot, snappedWindowId);
+  if (snapped === null) return true; // unknown snap target → fall back to overlap check
+  return ourPids.has(snapped.pid);
 }

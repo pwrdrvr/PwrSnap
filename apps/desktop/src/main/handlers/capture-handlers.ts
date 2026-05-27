@@ -42,7 +42,6 @@ import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
 import { activateApp, type WindowInfo } from "../capture/window-list";
 import {
-  findWindowById,
   resolveSelectionSourceApp,
   resolveSourceAppByRect
 } from "../capture/source-app";
@@ -213,23 +212,24 @@ export function registerCaptureHandlers(): void {
       //     capture — by definition, the snapshot is frozen-in-
       //     time.
       const snapshot = getLastWindowListSnapshot();
-      let captureResult;
-      let sourceApp;
-      if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
-        captureResult = await captureWindow(selection.snappedWindowId);
-        sourceApp = findWindowById(snapshot, selection.snappedWindowId);
-      } else {
-        captureResult = await cropScreenSnapshot(
-          screenSnapshotPath,
-          selection.rect,
-          selection.displayId
-        );
-        sourceApp = resolveSelectionSourceApp(
-          selection.rect,
-          selection.snappedWindowId,
-          snapshot
-        );
-      }
+      const captureResult =
+        selection.fullWindow === true && selection.snappedWindowId !== undefined
+          ? await captureWindow(selection.snappedWindowId)
+          : await cropScreenSnapshot(
+              screenSnapshotPath,
+              selection.rect,
+              selection.displayId
+            );
+      // Source-app resolution is the same on both capture branches —
+      // the choice of pixel-fetch path (full-window vs. cropped
+      // snapshot) doesn't change WHO owned the window. Single shared
+      // helper keeps the snap-id-first / rect-fallback / null tiering
+      // identical to the video-recording entry point.
+      const sourceApp = resolveSelectionSourceApp(
+        selection.rect,
+        selection.snappedWindowId,
+        snapshot
+      );
       if (!captureResult.ok) {
         return err({
           kind: "capture",

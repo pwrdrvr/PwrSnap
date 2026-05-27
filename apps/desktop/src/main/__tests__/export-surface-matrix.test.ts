@@ -943,50 +943,71 @@ describe("text overlay sizing — bake honors source shortSide across crops (pwr
     }
     const pngBytes = last.bytes;
 
-    // Output dims: clipboard:copy renders the canvas, then sharp's
-    // resize honors `withoutEnlargement: true` (compose-tree.ts) so
-    // small canvases stay at their native pixel count even when the
-    // MED preset asks for 1440 wide. Our canvas is 400×300; the
-    // resize doesn't enlarge so the output is also 400×300. That's
-    // fine for the size assertion — text fontSize math is unchanged
-    // by whether the resize enlarges or not.
+    // Output dims: post bake-WYSIWYG fix, the compose-tree's final
+    // resize NO LONGER honors `withoutEnlargement` — the accumulator
+    // is built at the upscaled render dims (renderScale = req.width /
+    // canvasWidthPx) and the output emerges at the requested preset
+    // width. For MED (1440) on a 400×300 canvas: renderScale = 3.6 →
+    // output 1440×1080. Pre-fix this same call would have produced
+    // 400×300 (clamped by withoutEnlargement); now it produces the
+    // proper preset-sized PNG with crisp text rendered at the higher
+    // resolution.
     const meta = await sharp(pngBytes).metadata();
-    expect(meta.width).toBe(CROPPED_TEXT_CANVAS_W);
-    expect(meta.height).toBe(CROPPED_TEXT_CANVAS_H);
+    expect(meta.width).toBeGreaterThan(CROPPED_TEXT_CANVAS_W); // upscale happened
+    const outputWidth = meta.width;
+    const outputHeight = meta.height;
+    if (outputWidth === undefined || outputHeight === undefined) {
+      throw new Error("sharp.metadata() returned undefined dims");
+    }
+    const renderScale = outputWidth / CROPPED_TEXT_CANVAS_W;
 
     // Text anchor at canvas (200, 150). SVG `text-anchor` defaults
-    // to "start" so the M's left edge sits at x=200; with fontSize ≈
-    // 33 the glyph extends roughly x=200..226. The left vertical of
-    // "M" sits at ~x=202 reliably for any non-zero fontSize. Pick
-    // x=202 as the column to scan.
+    // to "start" so the M's left edge sits at x=200×scale; with
+    // fontSize × scale the glyph extends rightward from there. Scale
+    // the scan column + window so the assertion works at ANY render
+    // scale.
     //
-    // fontSize derivation:
-    //   CORRECT (uses sourceShortSide=600): 600/18 = 33.3 px tall
-    //   BUG     (uses canvasShortSide=300): 300/18 = 16.7 px tall
+    // fontSize derivation (the load-bearing assertion):
+    //   CORRECT (uses sourceShortSide=600): 600/18 = 33.3 source-px
+    //   BUG     (uses canvasShortSide=300): 300/18 = 16.7 source-px
+    // In the rendered output, both get multiplied by renderScale:
+    //   CORRECT: 33.3 × scale (≈120 PNG-px at MED 3.6× scale)
+    //   BUG:     16.7 × scale (≈60 PNG-px)
     //
-    // The vertical stroke of "M" fills a contiguous block at its
-    // column. A taller fontSize means more rows of dark pixels in
-    // that column:
-    //   • CORRECT yields ~30+ dark rows (≈ fontSize 33)
-    //   • BUG     yields ~15 dark rows  (≈ fontSize 17)
-    //
-    // Pick > 22 as the assertion: above the bug's max, below the
-    // correct's min. Anti-alias slack on both sides makes a strict
-    // "exactly 33" check brittle; the magnitude difference between
-    // the two regimes is what we're pinning.
-    const x = 202;
-    const windowStart = 120; // y=150 - 30
-    const windowEnd = 180; // y=150 + 30
+    // The "M" vertical stroke fills a contiguous block at its column.
+    // We pick the scan x at "anchor + 2 canvas-px" (the left vertical
+    // of the M, reliable for any fontSize) and the scan y as
+    // ±half-the-expected-text-height around the anchor in scaled
+    // coords. Threshold scales with renderScale so the test stays
+    // valid at LOW / MED / HIGH alike.
+    const anchorXCanvas = 200;
+    const anchorYCanvas = 150;
+    const scanX = Math.round((anchorXCanvas + 2) * renderScale);
+    // Scan a window of ±half-text-height around the anchor in canvas
+    // px, scaled to render px. ±30 canvas-px is wider than 16.7 but
+    // narrower than 33.3 — keeps the bug regime under threshold while
+    // the correct regime saturates.
+    const windowHalfCanvasPx = 30;
+    const windowStart = Math.round(
+      (anchorYCanvas - windowHalfCanvasPx) * renderScale
+    );
+    const windowEnd = Math.round(
+      (anchorYCanvas + windowHalfCanvasPx) * renderScale
+    );
     const darkCount = await darkPixelCountInColumn(
       pngBytes,
-      x,
+      scanX,
       windowStart,
       windowEnd
     );
+    // Threshold = 22 canvas-px (the original threshold, picked
+    // between the bug's 17 max and the correct's 33 min) × renderScale
+    // so it stays valid across preset tiers.
+    const threshold = 22 * renderScale;
     expect(
       darkCount,
-      `Dark-pixel count in vertical column at x=${x}, y=[${windowStart}, ${windowEnd}) should reflect CORRECT (source-shortSide) text height (~33 px) — saw ${darkCount}. Bug rendering would shrink the text to ~17 px tall and miss this threshold; the bake's textSvg used canvas shortSide instead of sourceShortSide.`
-    ).toBeGreaterThan(22);
+      `Dark-pixel count in vertical column at scaled x=${scanX}, y=[${windowStart}, ${windowEnd}) (renderScale=${renderScale}) should reflect CORRECT (source-shortSide) text height (~${Math.round(33.3 * renderScale)} px) — saw ${darkCount}. Bug rendering would shrink the text to ~${Math.round(16.7 * renderScale)} px tall and miss the ${threshold.toFixed(0)} threshold; the bake's textSvg used canvas shortSide instead of sourceShortSide.`
+    ).toBeGreaterThan(threshold);
   });
 });
 

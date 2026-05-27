@@ -93,9 +93,30 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   }
   await mkdir(cacheDir, { recursive: true });
 
+  // Render scale: when the requested output width is LARGER than the
+  // canvas width (LOW / MED tiers on small captures), we upscale the
+  // whole composite so every layer rasterizes at the output
+  // resolution — crisp glyphs, visible halos, no blurry source-pixel-
+  // then-lanczos-upscale chain. When the requested width is the same
+  // or smaller (HIGH on small captures, or any tier on large
+  // captures), scale stays at 1 and the final resize handles the
+  // downscale at the end (same behavior as before).
+  //
+  // This is the load-bearing change for editor=baked-PNG WYSIWYG:
+  // pre-fix, text glyphs at a 361×187 source rendered at 6.23 source
+  // pixels tall regardless of LOW/MED tier — too small to show a
+  // visible text-stroke halo, palette-quantized in the output. Post-
+  // fix, LOW (req.width=800) renders the entire composite at scale
+  // 800/361 ≈ 2.21× so glyphs are ~14 px tall in the PNG with full
+  // RGBA antialiasing on the halo.
+  const renderScale =
+    req.width > req.canvasWidthPx ? req.width / req.canvasWidthPx : 1;
+  const renderWidthPx = Math.max(1, Math.round(req.canvasWidthPx * renderScale));
+  const renderHeightPx = Math.max(1, Math.round(req.canvasHeightPx * renderScale));
+
   const canvasInfo = {
-    width: req.canvasWidthPx,
-    height: req.canvasHeightPx,
+    width: renderWidthPx,
+    height: renderHeightPx,
     channels: 4 as const
   };
 
@@ -103,8 +124,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // RGBA buffer when fed back through `.raw().toBuffer()`.
   let accumulator = await sharp({
     create: {
-      width: req.canvasWidthPx,
-      height: req.canvasHeightPx,
+      width: renderWidthPx,
+      height: renderHeightPx,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     }
@@ -163,15 +184,32 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       node.effect.type === "blur" &&
       (node.effect.style ?? "gaussian") === "pixelate"
   );
-  const downscaling = req.width < req.canvasWidthPx;
+  // Downscaling = accumulator is BIGGER than the requested output.
+  // Post-scale-fix the accumulator dims = renderWidthPx × renderHeightPx,
+  // so downscaling happens when req.width < renderWidthPx — which is
+  // the case for large captures (renderScale=1, accumulator at canvas
+  // dims, target smaller). For upscale tiers (scale > 1) the
+  // accumulator already matches target → this resize is a no-op
+  // (sharp short-circuits same-size resizes).
+  //
+  // withoutEnlargement was dropped because the upscale now happens
+  // UPSTREAM (in the per-layer rasterization), not here. Leaving it
+  // would prevent any rounding-correction at the very end.
+  const downscaling = req.width < renderWidthPx;
   const sized = sharp(accumulator, { raw: canvasInfo }).resize({
     width: req.width,
-    withoutEnlargement: true,
     ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
+  // PNG: force palette: false so the encoder writes full RGBA (32-bit
+  // truecolor + alpha) instead of an 8-bit colormap. Palette mode is
+  // sharp's default for "simple" images and silently quantizes the
+  // text-stroke halo's subpixel antialiasing — the halo turns
+  // banded/lost. Editor renders at full RGBA; export should too.
   const outputBuf =
     req.format === "png"
-      ? await sized.png({ compressionLevel: 6, effort: 4 }).toBuffer()
+      ? await sized
+          .png({ compressionLevel: 6, effort: 4, palette: false })
+          .toBuffer()
       : await sized.webp({ lossless: true, effort: 4 }).toBuffer();
 
   const tmpPath = `${cachePath}.tmp-${process.pid}`;
@@ -229,6 +267,12 @@ async function renderNode(
         node,
         accumulator,
         canvasInfo,
+        // UNSCALED canvas dims from the request — distinct from
+        // canvasInfo.width/height which are the post-scale RENDER
+        // dims. The HTML text bake needs the unscaled dims for
+        // sizePx math anchored to the source raster's short side.
+        req.canvasWidthPx,
+        req.canvasHeightPx,
         sourceWidthPx,
         sourceHeightPx
       );
@@ -360,6 +404,13 @@ async function compositeVectorOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "vector" }>,
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
+  /** UNSCALED canvas dims from the capture record. Distinct from
+   *  `canvasInfo.width/height` which are the RENDER dims (post
+   *  scale-aware upscale in composeV2). Passed through so the HTML
+   *  text bake's sizePx math stays anchored to the source raster's
+   *  short side regardless of the bake's render scale. */
+  canvasWidthPx: number,
+  canvasHeightPx: number,
   /** SOURCE raster's natural dims, captured upstream in `composeV2`
    *  from the root raster layer's `natural_*_px`. Threaded through so
    *  TEXT vector shapes can derive fontSize from sourceShortSide (per
@@ -398,13 +449,21 @@ async function compositeVectorOntoAccumulator(
   }
 
   const { buildCompositeLayersForV2 } = await import("./compose-tree-vector");
-  const layers = await buildCompositeLayersForV2(
-    fakeRow,
-    canvasInfo.width,
-    canvasInfo.height,
+  const layers = await buildCompositeLayersForV2(fakeRow, {
+    // canvasInfo.width/height are the RENDER dims (post-scale). SVG
+    // renderers + the HTML text bake produce output at these.
+    renderWidthPx: canvasInfo.width,
+    renderHeightPx: canvasInfo.height,
+    // UNSCALED canvas dims from the capture record. Threaded so the
+    // text bake's sizePx math can derive
+    //   fontPx = (renderHeight / canvasHeight) × sizePx
+    // — produces text at `renderScale × sizePx` pixels, matching the
+    // editor's display behavior.
+    canvasWidthPx,
+    canvasHeightPx,
     sourceWidthPx,
     sourceHeightPx
-  );
+  });
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })
     .composite(layers)
@@ -585,6 +644,21 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  * Effect-layer hashing naturally includes "what's below" because
  * we hash the full flattened sequence in order.
  */
+/** Sentinel version bumped whenever the bake pipeline produces
+ *  different OUTPUT bytes for the same input layer tree + dims +
+ *  format. Included in the renderHash so a pipeline change cleanly
+ *  invalidates the existing render-cache without requiring users to
+ *  nuke `~/Library/Application Support/PwrSnap/render-cache/`.
+ *
+ *  Bump history:
+ *    "1" — original (canvas-dims accumulator, withoutEnlargement,
+ *           default sharp.png() palette mode)
+ *    "2" — scale-aware accumulator (renders at target dims for
+ *           upscale tiers), force RGBA PNG output (palette: false),
+ *           HTML text bake via hidden BrowserWindow. The WYSIWYG
+ *           shipment. */
+const BAKE_PIPELINE_VERSION = "2";
+
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];
   canvasWidthPx: number;
@@ -596,6 +670,7 @@ function computeTreeRenderHash(input: {
   const hash = createHash("sha256");
   hash.update(
     JSON.stringify({
+      v: BAKE_PIPELINE_VERSION,
       canvas: [input.canvasWidthPx, input.canvasHeightPx],
       width: input.width,
       format: input.format,

@@ -135,14 +135,33 @@ export function buildCompositionArgs(
     const zoomExpr = directionIn
       ? `1.0+0.10*on/${nFrames}`
       : `1.10-0.10*on/${nFrames}`;
-    const w2 = req.width * 2;
-    const h2 = req.height * 2;
+    // Scale input to 4× output (was 2×) BEFORE zoompan. zoompan rounds
+    // its crop x/y to integer pixels each frame; with a 4× canvas, a
+    // 1-pixel rounding step in the crop becomes a 1/4-pixel step in
+    // the final output and the wiggle drops below human perception.
+    // (Was visibly jumping at 2× for images whose aspect didn't match
+    // 16:9 — the pad bars amplified the rounding seam.)
+    const wScale = req.width * 4;
+    const hScale = req.height * 4;
+    // `trunc((...)/2)*2` rounds the crop origin down to the nearest
+    // EVEN pixel. Two reasons:
+    //   • Deterministic rounding direction (always down) — without
+    //     trunc(), zoompan's internal round-to-nearest oscillates
+    //     across the .5 boundary as the float x/y slowly increase,
+    //     which is what the user saw as the image "re-deciding" its
+    //     alignment 1-2 frames at a time.
+    //   • yuv420p chroma subsampling stores chroma at half resolution;
+    //     odd-pixel offsets force the subsampler to interpolate and
+    //     that interpolation drifts frame-to-frame. Aligning to even
+    //     pixels gives a clean chroma sample on every frame.
+    const xExpr = `trunc((iw-iw/zoom)/4)*2`;
+    const yExpr = `trunc((ih-ih/zoom)/4)*2`;
     filters.push(
       `[${i}:v]` +
-        `scale=${w2}:${h2}:force_original_aspect_ratio=decrease,` +
-        `pad=${w2}:${h2}:(ow-iw)/2:(oh-ih)/2:color=black,` +
+        `scale=${wScale}:${hScale}:force_original_aspect_ratio=decrease,` +
+        `pad=${wScale}:${hScale}:(ow-iw)/2:(oh-ih)/2:color=black,` +
         `zoompan=z='${zoomExpr}':` +
-        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+        `x='${xExpr}':y='${yExpr}':` +
         `d=${nFrames}:s=${req.width}x${req.height}:fps=${req.fps},` +
         `setsar=1,format=yuv420p[v${i}]`
     );

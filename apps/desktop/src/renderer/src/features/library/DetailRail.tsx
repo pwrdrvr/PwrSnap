@@ -49,7 +49,7 @@ import {
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
 import { ChatPanel } from "../editor/panels/ChatPanel";
-import { cacheUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
@@ -1533,15 +1533,22 @@ function ProjectTab({
                   {(sceneIdx + 1).toString().padStart(2, "0")}
                 </span>
                 <span className="psl__proj-scene-thumb">
-                  {r !== null ? (
+                  {r === null ? (
+                    <span className="psl__proj-scene-missing">×</span>
+                  ) : r.kind === "video" ? (
+                    <video
+                      src={captureSrcUrl(r.id)}
+                      preload="metadata"
+                      muted
+                      playsInline
+                    />
+                  ) : (
                     <img
                       src={cacheUrl(r.id, 96, "webp", r.edits_version)}
                       alt=""
                       loading="lazy"
                       decoding="async"
                     />
-                  ) : (
-                    <span className="psl__proj-scene-missing">×</span>
                   )}
                   {r?.kind === "video" ? (
                     <span className="psl__proj-scene-kind" aria-hidden="true">▶</span>

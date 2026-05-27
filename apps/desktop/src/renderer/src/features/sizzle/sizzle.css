@@ -366,10 +366,12 @@
   justify-content: center;
 }
 
-.szl__scene-thumb img {
+.szl__scene-thumb img,
+.szl__scene-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .szl__scene-missing {
@@ -604,12 +606,14 @@
   outline-offset: -1px;
 }
 
-.szl__picker-cell img {
+.szl__picker-cell img,
+.szl__picker-cell video {
   width: 100%;
   aspect-ratio: 16/10;
   object-fit: cover;
   border-radius: 5px;
   background: var(--bg-input);
+  display: block;
 }
 
 .szl__picker-thumb-wrap {

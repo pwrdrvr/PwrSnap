@@ -8,7 +8,7 @@ import {
   type SizzleScene,
   type SizzleVoice
 } from "@pwrsnap/shared";
-import { cacheUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import "./sizzle.css";
 
@@ -726,7 +726,16 @@ function Editor(props: EditorProps): ReactElement {
                 <div className="szl__scene-thumb">
                   {capture ? (
                     <>
-                      <img src={thumb} alt="" />
+                      {isVideo ? (
+                        <video
+                          src={captureSrcUrl(scene.captureId)}
+                          preload="metadata"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img src={thumb} alt="" />
+                      )}
                       {isVideo ? (
                         <>
                           <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
@@ -1037,20 +1046,31 @@ function CapturePicker({
                     title={c.source_app_name ?? ""}
                   >
                     <span className="szl__picker-thumb-wrap">
-                      <img
-                        src={cacheUrl(c.id, 240, "webp", c.edits_version)}
-                        alt=""
-                        // loading=lazy + decoding=async + the cell's
-                        // content-visibility:auto skip the cache-protocol
-                        // fetch for offscreen cells. Without these, opening
-                        // the picker fires hundreds of pwrsnap-cache://
-                        // requests at once — each one runs the full v2
-                        // compose-tree pipeline for a 240w thumbnail.
-                        // Same trick the Library grid uses (Library.tsx
-                        // CellThumb).
-                        loading="lazy"
-                        decoding="async"
-                      />
+                      {isVideo ? (
+                        // `pwrsnap-cache://` doesn't render image
+                        // thumbnails for video captures — it's an
+                        // image-render pipeline. Use the source video
+                        // directly with `preload="metadata"` so we get
+                        // just the first frame as a poster without
+                        // decoding the whole clip. Same pattern as
+                        // VideoCellThumb in Library.tsx.
+                        <video
+                          src={captureSrcUrl(c.id)}
+                          preload="metadata"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img
+                          src={cacheUrl(c.id, 240, "webp", c.edits_version)}
+                          alt=""
+                          // loading=lazy + decoding=async + the cell's
+                          // content-visibility:auto skip the cache-protocol
+                          // fetch for offscreen cells.
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      )}
                       {isVideo ? (
                         <>
                           <span className="szl__picker-play" aria-hidden="true">▶</span>

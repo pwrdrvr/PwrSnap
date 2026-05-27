@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
-import { cacheUrl, dispatch } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
 
 type LibraryProjectViewProps = {
   project: SizzleProject | null;
@@ -217,12 +217,26 @@ export function LibraryProjectView({
                 }
               >
                 <span className="psl-proj__cell-thumb">
-                  <img
-                    src={cacheUrl(c.id, 320, "webp", c.edits_version)}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                  />
+                  {c.kind === "video" ? (
+                    // Video captures don't have image thumbnails via
+                    // pwrsnap-cache://; render the source clip with
+                    // preload="metadata" so we get the first frame as
+                    // a poster. Same trick VideoCellThumb uses in
+                    // Library.tsx.
+                    <video
+                      src={captureSrcUrl(c.id)}
+                      preload="metadata"
+                      muted
+                      playsInline
+                    />
+                  ) : (
+                    <img
+                      src={cacheUrl(c.id, 320, "webp", c.edits_version)}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  )}
                   {badge !== null ? (
                     <span className="psl-proj__cell-order">
                       {badge.toString().padStart(2, "0")}

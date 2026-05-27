@@ -816,10 +816,12 @@
   border: 1px solid var(--border-subtle);
   background: var(--bg-input);
 }
-.psl-proj__cell-thumb img {
+.psl-proj__cell-thumb img,
+.psl-proj__cell-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 .psl-proj__cell.is-used .psl-proj__cell-thumb {
   outline: 2px solid var(--accent);
@@ -1664,10 +1666,12 @@
   overflow: hidden;
   background: var(--bg-input);
 }
-.psl__proj-scene-thumb img {
+.psl__proj-scene-thumb img,
+.psl__proj-scene-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 .psl__proj-scene-kind {
   position: absolute;

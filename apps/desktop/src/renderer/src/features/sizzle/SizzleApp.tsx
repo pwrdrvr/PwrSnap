@@ -578,7 +578,7 @@ function CapturePicker({
         ) : (
           <div className="szl__picker-grid">
             {captures
-              .filter((c) => c.kind === "image" && c.flat_png_path !== null)
+              .filter((c) => c.kind === "image" && c.deleted_at === null)
               .map((c) => (
                 <button
                   key={c.id}

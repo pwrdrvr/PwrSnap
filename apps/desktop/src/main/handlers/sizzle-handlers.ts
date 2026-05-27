@@ -25,6 +25,7 @@ import {
   DesktopSecretStore,
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
+import { resolveCacheFile } from "../render/coordinator";
 
 const log = getMainLogger("pwrsnap:sizzle-handlers");
 
@@ -82,11 +83,17 @@ async function loadCapture(captureId: string): Promise<CaptureRecord | null> {
   return result.value;
 }
 
-function resolveImagePath(record: CaptureRecord): string | null {
-  if (record.flat_png_path !== null && record.flat_png_path.length > 0) {
-    return record.flat_png_path;
-  }
-  return null;
+async function resolveImagePath(
+  captureId: string,
+  width: number
+): Promise<string | null> {
+  // resolveCacheFile renders the capture at the requested width via
+  // the same pipeline `pwrsnap-cache://` uses. Works for v1 + v2
+  // bundles, soft-deleted rows, and legacy captures alike — and
+  // returns a real on-disk PNG/WebP we can hand to ffmpeg. Falling
+  // back to record.flat_png_path would miss v2 captures (where the
+  // sibling PNG is regenerated lazily and often null).
+  return resolveCacheFile({ captureId, width, format: "png" });
 }
 
 export function registerSizzleHandlers(): void {
@@ -172,6 +179,8 @@ export function registerSizzleHandlers(): void {
       return err({ kind: "validation", code: "no_api_key", message });
     }
 
+    const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
+
     const sceneInputs: SceneInput[] = [];
     try {
       for (let i = 0; i < project.scenes.length; i++) {
@@ -180,9 +189,9 @@ export function registerSizzleHandlers(): void {
         if (capture === null) {
           throw new SceneError(`Capture ${scene.captureId} not found`);
         }
-        const imagePath = resolveImagePath(capture);
+        const imagePath = await resolveImagePath(scene.captureId, dims.w);
         if (imagePath === null) {
-          throw new SceneError(`Capture ${scene.captureId} has no flat PNG yet`);
+          throw new SceneError(`Could not render capture ${scene.captureId}`);
         }
         const text = scene.scriptLine.trim() || ".";
         const tts = await synthesize({
@@ -218,7 +227,6 @@ export function registerSizzleHandlers(): void {
     const safeName = project.name.replace(/[^\w.\- ]+/g, "_").slice(0, 60).trim() || "sizzle";
     const outputPath = join(outDir, `${safeName}-${project.id}.mp4`);
 
-    const dims = project.resolution === "720p" ? { w: 1280, h: 720 } : { w: 1920, h: 1080 };
     try {
       await compose({
         scenes: sceneInputs,

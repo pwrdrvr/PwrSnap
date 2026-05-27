@@ -243,8 +243,9 @@ export function AIProvidersPage(): ReactElement {
           sub="Grok API key. Stored in the system keychain via Electron safeStorage — never written to config files or shipped to the renderer."
           tag="keychain"
         >
-          <GrokKeyControl
+          <SecretKeyControl
             status={secrets?.grokApiKey ?? null}
+            placeholder="xai-…"
             onReplace={async (value) => {
               await replaceSecret("grokApiKey", value);
             }}
@@ -290,8 +291,9 @@ export function AIProvidersPage(): ReactElement {
           sub="OpenAI API key. Used by the Sizzle Reels composer for text-to-speech voiceover. Stored in the system keychain via Electron safeStorage."
           tag="keychain"
         >
-          <GrokKeyControl
+          <SecretKeyControl
             status={secrets?.openaiApiKey ?? null}
+            placeholder="sk-…"
             onReplace={async (value) => {
               await replaceSecret("openaiApiKey", value);
             }}
@@ -386,17 +388,19 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
   );
 }
 
-type GrokKeyControlProps = {
+type SecretKeyControlProps = {
   status: { configured: boolean; lastSetAt: string | null } | null;
+  placeholder: string;
   onReplace: (value: string) => Promise<void>;
   onClear: () => Promise<void>;
 };
 
-function GrokKeyControl({
+function SecretKeyControl({
   status,
+  placeholder,
   onReplace,
   onClear
-}: GrokKeyControlProps): ReactElement {
+}: SecretKeyControlProps): ReactElement {
   const [editing, setEditing] = useState<boolean>(false);
   const [draft, setDraft] = useState<string>("");
   const [working, setWorking] = useState<boolean>(false);
@@ -439,7 +443,7 @@ function GrokKeyControl({
               type="password"
               autoFocus
               value={draft}
-              placeholder="xai-…"
+              placeholder={placeholder}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {

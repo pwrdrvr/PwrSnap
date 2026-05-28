@@ -440,14 +440,7 @@ export function registerRecordingHandlers(): void {
     try {
       const { result, record, video } = resolved.value;
       const ext = req.format;
-      // Human-friendly drop filename — captured-app + preset + format
-      // tag means Finder shows something legible. Sanitize the app
-      // name so spaces / slashes don't poison the path.
-      const appSlug = (record.source_app_name ?? "PwrSnap")
-        .replace(/[^A-Za-z0-9_-]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 32) || "PwrSnap";
-      const displayName = `${appSlug}__${req.preset}.${ext}`;
+      const displayName = `${slugifyAppName(record.source_app_name)}__${req.preset}.${ext}`;
       const aliasPath = await prepareRenderedFileAlias(result.path, displayName);
       const iconPath = await ensureVideoPoster(record, video);
       log.info("video drag prepared", {
@@ -533,4 +526,27 @@ function estimateVideoByteSize(
     bitrateBps = Math.round(pixels * sourceFps * 0.1);
   }
   return Math.round((bitrateBps / 8) * durationSec);
+}
+
+/** Sanitize a source app name into a filesystem-friendly slug for the
+ *  drag-out display name (`<slug>__<preset>.<ext>`).
+ *
+ *  Uses Unicode property escapes (`\p{L}`/`\p{N}`) so non-ASCII app
+ *  names (`카카오톡`, `微信`, `WhatsApp 🟢`) round-trip with their
+ *  letters intact instead of collapsing to "PwrSnap". NFC-normalized
+ *  first so visually-equivalent code-point sequences (precomposed vs
+ *  decomposed Hangul, etc.) produce the same slug.
+ *
+ *  Empty / null / sanitize-to-empty cases all fall back to "PwrSnap"
+ *  so the alias filename is never something like `__med.mp4`. */
+export function slugifyAppName(name: string | null | undefined): string {
+  const trimmed = (name ?? "").normalize("NFC").trim();
+  if (trimmed.length === 0) return "PwrSnap";
+  const cleaned = trimmed
+    // Keep Unicode letters + numbers + ASCII underscore/hyphen.
+    // Everything else becomes a single hyphen separator.
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return cleaned.length === 0 ? "PwrSnap" : cleaned;
 }

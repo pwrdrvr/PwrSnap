@@ -53,7 +53,7 @@ import {
 import { broadcastCapturesChanged } from "../events";
 import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
-import { reclaimDockIconIfLibraryAlive } from "../window";
+import { findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
@@ -174,14 +174,37 @@ export function registerCaptureHandlers(): void {
       hideSelector();
       if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
         await activateApp(selection.previousAppPid);
-        // activateApp deactivates PwrSnap to return focus to the
-        // previous app. With our floating-level panels in the window
-        // list, AppKit can demote our activation policy to Accessory
-        // as a side-effect, which strips the Dock icon and orphans
-        // the Library. Re-assert Regular policy without yanking focus
-        // from the previous app (app.dock.show() doesn't activate).
-        reclaimDockIconIfLibraryAlive();
+      } else {
+        // No previous app to restore — the Library (or another
+        // PwrSnap window) was topmost when the capture started.
+        // After hideSelector, Cocoa's window-cascade picks the next
+        // key-window candidate; the floating-level focus-sink wins
+        // because it sits above the Library at level 0. Without an
+        // explicit refocus the user is left staring at whatever was
+        // behind PwrSnap (the Library is alive but not key/front),
+        // which reads as "the Library got hidden on cancel." Bring
+        // it back to its pre-capture state.
+        const library = findMainLibraryWindow();
+        if (library !== null && !library.isDestroyed()) {
+          if (library.isMinimized()) library.restore();
+          if (!library.isVisible()) library.show();
+          library.focus();
+        }
       }
+      // Always re-assert Regular activation policy after cancel —
+      // not just on the activateApp branch. Showing the screen-
+      // saver-level selector alongside our persistent floating-
+      // level panels (focus-sink, tray, float-over) is enough for
+      // AppKit to demote PwrSnap to Accessory as a focus-cascade
+      // side-effect on the selector's hide, even when we never
+      // explicitly deactivated to another app. Demotion strips the
+      // Dock icon and orphans the Library — the user reads it as
+      // "Library got closed and the Dock icon disappeared." The
+      // reclaim is a no-op when the Library is gone (the dock-icon-
+      // tied-to-Library invariant means there's no icon to reclaim)
+      // and a no-op when the dock is already visible, so it's safe
+      // to call unconditionally.
+      reclaimDockIconIfLibraryAlive();
       return err({
         kind: "capture",
         code: selection.reason,
@@ -258,13 +281,16 @@ export function registerCaptureHandlers(): void {
       void releaseSnapshot(screenSnapshotId);
       if (previousAppPid !== null) {
         await activateApp(previousAppPid);
-        // See cancel branch above + reclaimDockIconIfLibraryAlive in
-        // window.ts. activateApp deactivates PwrSnap; with our
-        // floating panels in the window list AppKit demotes us to
-        // Accessory and the Dock icon goes away. Re-assert Regular
-        // immediately so the Library stays reachable via the Dock.
-        reclaimDockIconIfLibraryAlive();
       }
+      // See cancel branch above for the full rationale. activateApp
+      // is the most obvious demotion trigger (deactivates PwrSnap;
+      // with our floating-level panels in the window list AppKit
+      // demotes us to Accessory) but the selector hide alone is
+      // enough to trip the same focus-cascade side-effect when no
+      // previous app exists (Library-was-topmost case). Reclaim
+      // unconditionally so the Library stays reachable via the
+      // Dock either way.
+      reclaimDockIconIfLibraryAlive();
     }
   });
 

@@ -70,6 +70,29 @@ const AUTO_ACCENT_HEX = "#ff8a1f";
 // Singleton pool — null before first bake.
 let poolWindow: BrowserWindow | null = null;
 
+// Serialization queue. The pool BrowserWindow is shared across all
+// concurrent bake calls — `webContents.loadURL` cancels any in-flight
+// load on the same webContents (rejecting it with ERR_ABORTED -3).
+// When the renderer fans out bakes in parallel (library grid scroll,
+// capture flow), unserialized access to the pool causes the loser of
+// each race to fail with ERR_ABORTED and crash the bake.
+//
+// Pattern mirrors DesktopSettingsService.write() — chain via .catch
+// → .then so a rejected task doesn't poison the queue for the next.
+// Cost: parallel bakes become sequential on the pool. For ~6-12
+// captures on a library scroll burst that's ~100-200ms × N, well
+// inside the user-perceptible budget for thumbnail rendering.
+let poolQueue: Promise<unknown> = Promise.resolve();
+
+function runOnPool<T>(task: () => Promise<T>): Promise<T> {
+  const next = poolQueue.then(task, task);
+  // Insulate the queue tail from this task's rejection so the next
+  // task starts cleanly. The original `next` still rejects to the
+  // caller — only the chained `poolQueue` swallows the error.
+  poolQueue = next.catch(() => undefined);
+  return next;
+}
+
 /** Lazily creates or returns the pool window. Hidden (show: false) +
  *  transparent so its content can be captured directly to a
  *  transparent PNG. `hasShadow: false` matters because OS shadow
@@ -200,35 +223,43 @@ export async function rasterizeTextHtmlForV2(
   sourceWidthPx: number,
   sourceHeightPx: number
 ): Promise<sharp.OverlayOptions> {
-  const win = ensurePoolWindow();
-  // Resize the pool window to the target render dims BEFORE loading
-  // so first paint already lands at the right size. setContentSize
-  // accepts CSS px; the OS may render at DPR-multiplied pixel dims,
-  // which we normalize back to renderWidthPx × renderHeightPx via
-  // sharp.resize below.
-  win.setContentSize(renderWidthPx, renderHeightPx);
-  const html = buildBakeHtml({
-    data,
-    renderWidthPx,
-    renderHeightPx,
-    canvasWidthPx,
-    canvasHeightPx,
-    sourceWidthPx,
-    sourceHeightPx
+  // Pool window operations (setContentSize → loadURL → fonts.ready →
+  // capturePage) all touch a shared webContents. Run through the
+  // serialization queue so concurrent callers don't ERR_ABORTED each
+  // other. The sharp.resize after capturePage doesn't need the pool
+  // and runs outside the queue — frees the next bake to start
+  // immediately after capturePage returns its bytes.
+  const png = await runOnPool(async () => {
+    const win = ensurePoolWindow();
+    // Resize the pool window to the target render dims BEFORE loading
+    // so first paint already lands at the right size. setContentSize
+    // accepts CSS px; the OS may render at DPR-multiplied pixel dims,
+    // which we normalize back to renderWidthPx × renderHeightPx via
+    // sharp.resize below.
+    win.setContentSize(renderWidthPx, renderHeightPx);
+    const html = buildBakeHtml({
+      data,
+      renderWidthPx,
+      renderHeightPx,
+      canvasWidthPx,
+      canvasHeightPx,
+      sourceWidthPx,
+      sourceHeightPx
+    });
+    // Data URL — no temp file, no http server. encodeURIComponent
+    // wraps the inline `style="..."` attribute strings safely.
+    await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    // Await fonts to resolve before capturing. Without this the first
+    // capture can land on a fallback font (Chromium hasn't loaded the
+    // Apple system font yet). Inline literal — no user-controlled
+    // string interpolation, safe per the project's executeJavaScript
+    // caveat.
+    await win.webContents.executeJavaScript(
+      "document.fonts.ready.then(() => true)"
+    );
+    const image = await win.webContents.capturePage();
+    return image.toPNG();
   });
-  // Data URL — no temp file, no http server. encodeURIComponent
-  // wraps the inline `style="..."` attribute strings safely.
-  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  // Await fonts to resolve before capturing. Without this the first
-  // capture can land on a fallback font (Chromium hasn't loaded the
-  // Apple system font yet). Inline literal — no user-controlled
-  // string interpolation, safe per the project's executeJavaScript
-  // caveat.
-  await win.webContents.executeJavaScript(
-    "document.fonts.ready.then(() => true)"
-  );
-  const image = await win.webContents.capturePage();
-  const png = image.toPNG();
   // capturePage returns at OS DPR (e.g., 2× on retina). sharp.resize
   // downscales to exact render dims. fit: "fill" because the captured
   // image already matches the render aspect — we just need to swap

@@ -69,12 +69,34 @@ function blurRow(
   };
 }
 
-function render(props: Parameters<typeof BlurOverlays>[0]): HTMLDivElement {
+/** Render BlurOverlays with uncropped-capture defaults for the four
+ *  source/translate props. Tests that pin the cropped-capture sampling
+ *  branch pass explicit overrides; everything else degenerates to the
+ *  uncropped identity (sourceWidth == canvasWidth, no rasterTranslate)
+ *  which matches the pre-#147-followup test expectations. */
+type RenderProps = Omit<
+  Parameters<typeof BlurOverlays>[0],
+  "sourceWidthPx" | "sourceHeightPx" | "rasterTranslateXPx" | "rasterTranslateYPx"
+> & {
+  sourceWidthPx?: number;
+  sourceHeightPx?: number;
+  rasterTranslateXPx?: number;
+  rasterTranslateYPx?: number;
+};
+
+function render(props: RenderProps): HTMLDivElement {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const fullProps: Parameters<typeof BlurOverlays>[0] = {
+    ...props,
+    sourceWidthPx: props.sourceWidthPx ?? props.canvasWidthPx,
+    sourceHeightPx: props.sourceHeightPx ?? props.canvasHeightPx,
+    rasterTranslateXPx: props.rasterTranslateXPx ?? 0,
+    rasterTranslateYPx: props.rasterTranslateYPx ?? 0
+  };
   act(() => {
-    root!.render(createElement(BlurOverlays, props));
+    root!.render(createElement(BlurOverlays, fullProps));
   });
   return container;
 }
@@ -607,6 +629,178 @@ describe("BlurOverlays — rotated blur mirrors bake AABB + mask (issue #147)", 
     // Tolerance of 1 absorbs the Math.round in the component.
     expect(Math.abs(call.dstW - aabb.w)).toBeLessThanOrEqual(1);
     expect(Math.abs(call.dstH - aabb.h)).toBeLessThanOrEqual(1);
+  });
+
+  test("drawImage source rect for ROTATED blur on a CROPPED capture subtracts rasterTranslate + scales by natural/source", async () => {
+    // The full general case (PR #148 follow-up): the canvas dims describe
+    // the document's drawable area (post-crop), the source raster's
+    // natural dims describe what the source PNG actually holds, and the
+    // raster layer's transform[4]/[5] tells us WHERE in canvas-pixel
+    // space the source raster's (0, 0) sits. For an off-origin crop
+    // (e.g., user cropped down to the right-half), the rasterTranslate
+    // is NEGATIVE — the source's origin sits OFF the left edge of the
+    // canvas.
+    //
+    // canvasRectToImgNaturalRect should compute:
+    //   srcX = (canvasX - rasterTranslateXPx) × (naturalWidth / sourceWidthPx)
+    // For our setup: canvas=200×100, source=400×300, natural=800×600
+    // (Retina source, 2× DPR), rasterTranslate=(-50, -25).
+    //   scale = 800/400 = 2
+    //   AABB at (76.3, 26.3, 247.4, 247.4) — wait, that's the 400×300
+    //   case. Let me use a clean rect that fits the 200×100 canvas.
+    //
+    // Use a rect at (10%, 20%, 30%, 40%) of the canvas:
+    //   canvas-px rect: (20, 20, 60, 40)
+    //   no rotation for the AABB math here — easier hand-check. We use
+    //   a small rotation to route through RotatedEffectCanvas.
+    const drawImageCalls: Array<{
+      srcX: number;
+      srcY: number;
+      srcW: number;
+      srcH: number;
+    }> = [];
+    const drawImageMock = vi.fn(
+      (
+        _img: unknown,
+        srcX: number,
+        srcY: number,
+        srcW: number,
+        srcH: number
+      ) => {
+        drawImageCalls.push({ srcX, srcY, srcW, srcH });
+      }
+    );
+    const ctx2dMock = {
+      drawImage: drawImageMock,
+      clearRect: vi.fn(),
+      filter: "",
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "high" as const
+    };
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ctx2dMock) as never;
+
+    // Retina source 800×600; canvas (post-crop) 200×100; raster sits at
+    // (-50, -25) so canvas shows the source region [50..250, 25..125]
+    // in source-pixel coords.
+    const ref = createRef<HTMLImageElement>();
+    const img = document.createElement("img");
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    (ref as { current: HTMLImageElement }).current = img;
+
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+    const rotation = Math.PI / 6;
+    const canvasWidthPx = 200;
+    const canvasHeightPx = 100;
+    const sourceWidthPx = 400;
+    const sourceHeightPx = 300;
+    const rasterTranslateXPx = -50;
+    const rasterTranslateYPx = -25;
+    render({
+      overlays: [rotatedBlurRow("blur_crop", "gaussian", rotation, rect)],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx,
+      canvasHeightPx,
+      sourceWidthPx,
+      sourceHeightPx,
+      rasterTranslateXPx,
+      rasterTranslateYPx
+    });
+    await act(async () => undefined);
+    expect(drawImageCalls).toHaveLength(1);
+    const call = drawImageCalls[0]!;
+    const aabb = expectedAabb({ rect, rotation, canvasWidthPx, canvasHeightPx });
+    // scale = naturalWidth / sourceWidthPx = 800 / 400 = 2.
+    // Expected source rect = (AABB - rasterTranslate) × scale
+    const scaleX = 800 / 400;
+    const scaleY = 600 / 300;
+    expect(
+      call.srcX,
+      "cropped+rotated source X should subtract rasterTranslate THEN scale by " +
+        "natural/source. Without the rasterTranslate subtract the editor " +
+        "samples from the WRONG region of the source raster."
+    ).toBeCloseTo((aabb.x - rasterTranslateXPx) * scaleX, 4);
+    expect(call.srcY).toBeCloseTo((aabb.y - rasterTranslateYPx) * scaleY, 4);
+    expect(call.srcW).toBeCloseTo(aabb.w * scaleX, 4);
+    expect(call.srcH).toBeCloseTo(aabb.h * scaleY, 4);
+  });
+
+  test("drawImage source rect for UNROTATED pixelate on a CROPPED capture subtracts rasterTranslate + scales by natural/source", async () => {
+    // Sister test of the rotated one above — same scenario, but the
+    // unrotated pixelate path runs through PixelateMosaicCanvas instead
+    // of RotatedEffectCanvas. Both must respect the cropped-capture
+    // sampling invariant or the editor's pixelate preview shows the
+    // wrong region of the source.
+    const drawImageCalls: Array<{
+      srcX: number;
+      srcY: number;
+      srcW: number;
+      srcH: number;
+    }> = [];
+    const drawImageMock = vi.fn(
+      (
+        _img: unknown,
+        srcX: number,
+        srcY: number,
+        srcW: number,
+        srcH: number
+      ) => {
+        drawImageCalls.push({ srcX, srcY, srcW, srcH });
+      }
+    );
+    const ctx2dMock = {
+      drawImage: drawImageMock,
+      clearRect: vi.fn(),
+      filter: "",
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "high" as const
+    };
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ctx2dMock) as never;
+
+    const ref = createRef<HTMLImageElement>();
+    const img = document.createElement("img");
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    (ref as { current: HTMLImageElement }).current = img;
+
+    const rect = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+    const canvasWidthPx = 200;
+    const canvasHeightPx = 100;
+    const sourceWidthPx = 400;
+    const sourceHeightPx = 300;
+    const rasterTranslateXPx = -50;
+    const rasterTranslateYPx = -25;
+    // rotation: 0 → unrotated path → PixelateMosaicCanvas.
+    render({
+      overlays: [rotatedBlurRow("blur_crop_pix", "pixelate", 0, rect)],
+      draft: null,
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx,
+      canvasHeightPx,
+      sourceWidthPx,
+      sourceHeightPx,
+      rasterTranslateXPx,
+      rasterTranslateYPx
+    });
+    await act(async () => undefined);
+    expect(drawImageCalls).toHaveLength(1);
+    const call = drawImageCalls[0]!;
+    // Rect in canvas-px: (rect.x × canvasW, rect.y × canvasH, …)
+    const rectXPx = rect.x * canvasWidthPx;
+    const rectYPx = rect.y * canvasHeightPx;
+    const rectWPx = rect.w * canvasWidthPx;
+    const rectHPx = rect.h * canvasHeightPx;
+    const scaleX = 800 / 400;
+    const scaleY = 600 / 300;
+    expect(call.srcX).toBeCloseTo((rectXPx - rasterTranslateXPx) * scaleX, 4);
+    expect(call.srcY).toBeCloseTo((rectYPx - rasterTranslateYPx) * scaleY, 4);
+    expect(call.srcW).toBeCloseTo(rectWPx * scaleX, 4);
+    expect(call.srcH).toBeCloseTo(rectHPx * scaleY, 4);
   });
 
   test("drawImage source rect accounts for source-vs-canvas natural-dim scaling", async () => {

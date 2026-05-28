@@ -57,7 +57,11 @@ export function BlurOverlays({
   liveOverride = null,
   editorImageRef,
   canvasWidthPx,
-  canvasHeightPx
+  canvasHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
+  rasterTranslateXPx,
+  rasterTranslateYPx
 }: {
   overlays: OverlayRow[];
   draft: Draft | null;
@@ -85,6 +89,22 @@ export function BlurOverlays({
    *  in lockstep even if the renderer's display transform changes. */
   canvasWidthPx: number;
   canvasHeightPx: number;
+  /** Source raster's natural pixel dims. For uncropped v1/v2 captures
+   *  these equal canvasWidthPx/H (= raster fills the canvas); for v2
+   *  cropped captures sourceWidth > canvasWidth and the raster
+   *  overflows the canvas wrap (clipped by overflow: hidden). Threading
+   *  these in lets the canvas-based sampling paths convert canvas-px
+   *  coords to img-natural-px coords correctly. See
+   *  `computeEditorImageStyle` for the matching CSS sizing math. */
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  /** Raster layer transform[4]/[5] — source-pixel translation applied
+   *  to the editor's `<img>` so off-origin crops display the user's
+   *  chosen region. Identity (0, 0) for uncropped captures + v1
+   *  rows. Canvas sampling subtracts these from the AABB coords so the
+   *  off-screen region of the source maps to the right natural-px. */
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
 }): ReactElement {
   const effectiveOverlays = useMemo(() => {
     if (liveOverride === null || liveOverride.size === 0) return overlays;
@@ -131,7 +151,11 @@ export function BlurOverlays({
           style,
           editorImageRef,
           canvasWidthPx,
-          canvasHeightPx
+          canvasHeightPx,
+          sourceWidthPx,
+          sourceHeightPx,
+          rasterTranslateXPx,
+          rasterTranslateYPx
         });
       })}
       {liveRect !== null &&
@@ -145,6 +169,10 @@ export function BlurOverlays({
           editorImageRef,
           canvasWidthPx,
           canvasHeightPx,
+          sourceWidthPx,
+          sourceHeightPx,
+          rasterTranslateXPx,
+          rasterTranslateYPx,
           isDraft: true
         })}
     </div>
@@ -163,6 +191,10 @@ function renderBlur(args: {
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
   isDraft?: boolean;
 }): ReactElement {
   const { key, rect, rotation, style, isDraft = false } = args;
@@ -181,6 +213,10 @@ function renderBlur(args: {
         editorImageRef={args.editorImageRef}
         canvasWidthPx={args.canvasWidthPx}
         canvasHeightPx={args.canvasHeightPx}
+        sourceWidthPx={args.sourceWidthPx}
+        sourceHeightPx={args.sourceHeightPx}
+        rasterTranslateXPx={args.rasterTranslateXPx}
+        rasterTranslateYPx={args.rasterTranslateYPx}
         isDraft={isDraft}
       />
     );
@@ -195,6 +231,10 @@ function renderBlur(args: {
         editorImageRef={args.editorImageRef}
         canvasWidthPx={args.canvasWidthPx}
         canvasHeightPx={args.canvasHeightPx}
+        sourceWidthPx={args.sourceWidthPx}
+        sourceHeightPx={args.sourceHeightPx}
+        rasterTranslateXPx={args.rasterTranslateXPx}
+        rasterTranslateYPx={args.rasterTranslateYPx}
         isDraft={isDraft}
       />
     );
@@ -258,6 +298,57 @@ function BlurOverlayItem({
 // Sigma derivation lives in `@pwrsnap/shared deriveBlurRadiusPx` —
 // shared across the editor commit path, the v1→v2 doctor, and the
 // rotated-gaussian canvas preview here so the three stay in lockstep.
+
+/** Map a CANVAS-coord rect to the equivalent IMG-NATURAL-pixel source
+ *  rect for `ctx.drawImage`. Mirrors the editor's `<img>` CSS sizing
+ *  math from `computeEditorImageStyle`:
+ *
+ *    - The img is sized to `sourceWidth/canvasWidth × parent` so source
+ *      raster pixels map 1:1 to canvas-px AT DISPLAY (modulo the
+ *      naturalWidth/sourceWidth DPR ratio).
+ *    - The img is CSS-translated by `rasterTranslate / source × 100%`
+ *      so off-origin crops appear shifted. That translation, expressed
+ *      in canvas-px, IS `rasterTranslateXPx`.
+ *
+ *  Inverse: a pixel at canvas-coord `cx` corresponds to img-natural-px
+ *  `(cx - rasterTranslateXPx) × (naturalWidth / sourceWidthPx)`. The
+ *  identity simplification (uncropped + natural == canvas) gives
+ *  `srcX = cx` — what the previous code did. The general formula here
+ *  handles cropped + DPR'd captures correctly.
+ *
+ *  Returns the source rect to pass as the first 4 numeric args to
+ *  `ctx.drawImage(img, srcX, srcY, srcW, srcH, ...)`. */
+function canvasRectToImgNaturalRect(args: {
+  /** Canvas-pixel coords (the units in which rect.x*canvasWidthPx is
+   *  expressed). Same coord space as the AABB returned by
+   *  `computeRotatedAabb`. */
+  canvasX: number;
+  canvasY: number;
+  canvasW: number;
+  canvasH: number;
+  img: HTMLImageElement;
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
+}): { srcX: number; srcY: number; srcW: number; srcH: number } {
+  // naturalWidth might differ from sourceWidthPx on Retina captures
+  // where the source PNG is at DPR-multiplied resolution. For most
+  // captures the two are equal and the scale is 1. Guard against the
+  // pathological zero-source case (would NaN the math).
+  const safeSourceW = args.sourceWidthPx > 0 ? args.sourceWidthPx : 1;
+  const safeSourceH = args.sourceHeightPx > 0 ? args.sourceHeightPx : 1;
+  const scaleX = args.img.naturalWidth / safeSourceW;
+  const scaleY = args.img.naturalHeight / safeSourceH;
+  return {
+    srcX: (args.canvasX - args.rasterTranslateXPx) * scaleX,
+    srcY: (args.canvasY - args.rasterTranslateYPx) * scaleY,
+    srcW: args.canvasW * scaleX,
+    srcH: args.canvasH * scaleY
+  };
+}
 
 /** Compute the rotated rect's AABB + corner coordinates in canvas-
  *  pixel space. Mirrors the bake's rotation math in
@@ -346,6 +437,10 @@ function RotatedEffectCanvas({
   editorImageRef,
   canvasWidthPx,
   canvasHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
+  rasterTranslateXPx,
+  rasterTranslateYPx,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
@@ -357,6 +452,10 @@ function RotatedEffectCanvas({
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
   isDraft?: boolean;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -398,14 +497,26 @@ function RotatedEffectCanvas({
       if (ctx === null) return;
       ctx.clearRect(0, 0, aabbW, aabbH);
 
-      // Source coords → image NATURAL pixels. Editor's <img> is sized
-      // so source-raster coords map 1:1 to canvas-pixel coords AT
-      // DISPLAY. For sampling we want CANVAS-px → image NATURAL-px,
-      // so multiply by `naturalWidth / canvasWidthPx`. Uncropped
-      // captures have natural == canvas; cropped captures get a slight
-      // offset (deferred follow-up; see issue #147 doc-block).
-      const scaleX = img.naturalWidth / canvasWidthPx;
-      const scaleY = img.naturalHeight / canvasHeightPx;
+      // Source coords → image NATURAL pixels. `canvasRectToImgNaturalRect`
+      // handles the canvas-px → img-natural-px conversion AND the
+      // crop-translation subtract in one place. Uncropped captures with
+      // natural == canvas degenerate to identity (srcX === aabbX).
+      // Cropped captures correctly subtract `rasterTranslateXPx` so the
+      // off-origin region of the source raster maps to the right
+      // natural-px in `drawImage`'s source rect.
+      const src = canvasRectToImgNaturalRect({
+        canvasX: aabb.aabbX,
+        canvasY: aabb.aabbY,
+        canvasW: aabb.aabbW,
+        canvasH: aabb.aabbH,
+        img,
+        canvasWidthPx,
+        canvasHeightPx,
+        sourceWidthPx,
+        sourceHeightPx,
+        rasterTranslateXPx,
+        rasterTranslateYPx
+      });
 
       if (style === "gaussian") {
         // ctx.filter applies to the NEXT drawImage. σ matches the
@@ -418,10 +529,10 @@ function RotatedEffectCanvas({
         ctx.filter = `blur(${sigma}px)`;
         ctx.drawImage(
           img,
-          aabb.aabbX * scaleX,
-          aabb.aabbY * scaleY,
-          aabb.aabbW * scaleX,
-          aabb.aabbH * scaleY,
+          src.srcX,
+          src.srcY,
+          src.srcW,
+          src.srcH,
           0,
           0,
           aabbW,
@@ -451,10 +562,10 @@ function RotatedEffectCanvas({
         tinyCtx.imageSmoothingQuality = "high";
         tinyCtx.drawImage(
           img,
-          aabb.aabbX * scaleX,
-          aabb.aabbY * scaleY,
-          aabb.aabbW * scaleX,
-          aabb.aabbH * scaleY,
+          src.srcX,
+          src.srcY,
+          src.srcW,
+          src.srcH,
           0,
           0,
           downW,
@@ -486,6 +597,10 @@ function RotatedEffectCanvas({
     style,
     canvasWidthPx,
     canvasHeightPx,
+    sourceWidthPx,
+    sourceHeightPx,
+    rasterTranslateXPx,
+    rasterTranslateYPx,
     editorImageRef
   ]);
 
@@ -540,12 +655,20 @@ function PixelateMosaicCanvas({
   editorImageRef,
   canvasWidthPx,
   canvasHeightPx,
+  sourceWidthPx,
+  sourceHeightPx,
+  rasterTranslateXPx,
+  rasterTranslateYPx,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  rasterTranslateXPx: number;
+  rasterTranslateYPx: number;
   isDraft?: boolean;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -569,15 +692,31 @@ function PixelateMosaicCanvas({
       if (ctx === null) return;
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      const scaleX = img.naturalWidth / canvasWidthPx;
-      const scaleY = img.naturalHeight / canvasHeightPx;
+      // Canvas-px → img-natural-px conversion via the shared helper.
+      // Handles the uncropped degenerate case (srcX === rectXPx when
+      // natural == canvas and rasterTranslate is identity) AND the
+      // cropped case (subtract rasterTranslate so off-origin source
+      // raster maps to the right natural-px region).
+      const src = canvasRectToImgNaturalRect({
+        canvasX: rectXPx,
+        canvasY: rectYPx,
+        canvasW: rectWPx,
+        canvasH: rectHPx,
+        img,
+        canvasWidthPx,
+        canvasHeightPx,
+        sourceWidthPx,
+        sourceHeightPx,
+        rasterTranslateXPx,
+        rasterTranslateYPx
+      });
       ctx.clearRect(0, 0, downW, downH);
       ctx.drawImage(
         img,
-        rectXPx * scaleX,
-        rectYPx * scaleY,
-        rectWPx * scaleX,
-        rectHPx * scaleY,
+        src.srcX,
+        src.srcY,
+        src.srcW,
+        src.srcH,
         0,
         0,
         downW,
@@ -600,6 +739,10 @@ function PixelateMosaicCanvas({
     rect.h,
     canvasWidthPx,
     canvasHeightPx,
+    sourceWidthPx,
+    sourceHeightPx,
+    rasterTranslateXPx,
+    rasterTranslateYPx,
     editorImageRef
   ]);
   return (

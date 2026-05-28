@@ -955,3 +955,104 @@ async function findOrphanTempFiles(rows: readonly ReconcileRow[]): Promise<strin
 // inside migrateBundleV1ToV2 to avoid a top-level cycle (same
 // pattern bundle-store itself uses for layers-repo when seeding
 // the initial v2 layer tree).
+
+// ────────────────────────────────────────────────────────────────────
+// migrateAllV1OnBoot — eager bulk sweep
+// ────────────────────────────────────────────────────────────────────
+
+type EagerSweepRow = { id: string };
+
+/**
+ * Boot-time eager sweep that upgrades every remaining v1 capture to
+ * v2 by chaining `migrateBundleV1ToV2` row-by-row. Runs after
+ * `reconcileV1ToV2OnBoot` so any mid-crash states have already been
+ * healed, then walks `WHERE bundle_format_version = 1 AND
+ * bundle_path IS NOT NULL`.
+ *
+ * Sequential by design — the per-capture doctor already coordinates
+ * with `scheduleRepack` via a per-capture mutex and the layers-repo
+ * write path serializes through SQLite. Running multiple migrations
+ * concurrently would race on the shared bundle-store + DB
+ * connection without speeding the user's wait meaningfully (each
+ * upgrade is bound by sharp re-decode, not by parallelism).
+ *
+ * Parked captures (v1_to_v2_attempts ≥ MAX_ATTEMPTS) are skipped —
+ * the eager sweep is opportunistic; the user-visible Retry button
+ * on the editor banner remains the recovery path for those.
+ *
+ * Failures inside the per-capture doctor count toward the retry
+ * budget naturally. Failures at the eager-sweep level (e.g. a
+ * thrown promise that escapes `migrateBundleV1ToV2`) are logged
+ * and counted but never block the rest of the sweep.
+ *
+ * This sweep is the bridge between the v1 default-write era and a
+ * future PR that removes the v1 read path entirely — once the
+ * library is fully v2 (`SELECT COUNT(*) FROM captures WHERE
+ * bundle_format_version = 1` returns 0), the doctor + dual-read
+ * path can be deleted.
+ */
+export async function migrateAllV1OnBoot(): Promise<void> {
+  const db = getDb();
+  const rows = db
+    .prepare<[number], EagerSweepRow>(
+      `SELECT id FROM captures
+        WHERE bundle_format_version = 1
+          AND bundle_path IS NOT NULL
+          AND deleted_at IS NULL
+          AND v1_to_v2_attempts < ?
+        ORDER BY captured_at ASC`
+    )
+    .all(MAX_ATTEMPTS);
+
+  if (rows.length === 0) {
+    log.info("v1-to-v2-eager-sweep: nothing to do");
+    return;
+  }
+
+  log.info("v1-to-v2-eager-sweep: start", { total: rows.length });
+
+  let migrated = 0;
+  let alreadyV2 = 0;
+  let parked = 0;
+  let noBundle = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    try {
+      const result = await migrateBundleV1ToV2(row.id);
+      if (!result.ok) {
+        failed += 1;
+        log.warn("v1-to-v2-eager-sweep: capture upgrade failed", {
+          captureId: row.id,
+          code: result.error.code,
+          message: result.error.message
+        });
+        continue;
+      }
+      if (result.value.migrated) {
+        migrated += 1;
+      } else if (result.value.reason === "already_v2") {
+        alreadyV2 += 1;
+      } else if (result.value.reason === "parked") {
+        parked += 1;
+      } else if (result.value.reason === "no_bundle") {
+        noBundle += 1;
+      }
+    } catch (cause) {
+      failed += 1;
+      log.warn("v1-to-v2-eager-sweep: unexpected throw from doctor", {
+        captureId: row.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
+
+  log.info("v1-to-v2-eager-sweep: done", {
+    total: rows.length,
+    migrated,
+    alreadyV2,
+    parked,
+    noBundle,
+    failed
+  });
+}

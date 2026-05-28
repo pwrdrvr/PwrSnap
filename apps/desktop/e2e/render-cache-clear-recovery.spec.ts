@@ -10,7 +10,7 @@
 // This spec exercises the end-to-end loop the user actually hit:
 //
 //   1. Seed a real bundle-backed capture (production
-//      persistCaptureFromTemp path). Verify the per-capture
+//      persistCaptureFromTempV2 path). Verify the per-capture
 //      source.png lives under render-cache.
 //   2. Delete the cache source.png from disk — same observable
 //      end state as `storage:maintainRenderCache mode='clear'`,
@@ -43,7 +43,7 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 const isMac = process.platform === "darwin";
 
 /**
- * Write a real PNG to a temp dir for persistCaptureFromTemp to
+ * Write a real PNG to a temp dir for persistCaptureFromTempV2 to
  * adopt. The dimensions are picked so the clipboard:copy preset
  * widths (low=800, med=1440) actually exercise the resize path.
  */
@@ -70,7 +70,7 @@ type BundleSeed = {
 };
 
 /**
- * Run the production persistCaptureFromTemp pipeline through the
+ * Run the production persistCaptureFromTempV2 pipeline through the
  * E2E bridge so the seeded capture has a real .pwrsnap bundle on
  * disk and a real per-capture source.png under render-cache. Returns
  * the captureId + the expected cache source.png path so the spec
@@ -152,7 +152,7 @@ test.describe("render-cache clear → bundle source recovery", () => {
   test("clipboard:copy recovers after the per-capture cache source.png is wiped", async () => {
     const app = await launchPwrSnap();
     try {
-      // 1. Seed a real bundle capture — persistCaptureFromTemp packs
+      // 1. Seed a real bundle capture — persistCaptureFromTempV2 packs
       //    the .pwrsnap and materializes <userData>/render-cache/<id>/source.png.
       //    outputDir under homeRoot keeps the bundle out of the host's
       //    real ~/Documents/PwrSnap (PWRSNAP_USER_DATA only rebases userData,
@@ -162,7 +162,7 @@ test.describe("render-cache clear → bundle source recovery", () => {
       const { captureId, cacheSourcePath } = await seedBundleCapture(app, tempPath, bundleDir);
       expect(
         existsSync(cacheSourcePath),
-        "persistCaptureFromTemp should materialize source.png under render-cache"
+        "persistCaptureFromTempV2 should materialize source.png under render-cache"
       ).toBe(true);
 
       // 2. Reproduce the post-wipe state by deleting the cache file

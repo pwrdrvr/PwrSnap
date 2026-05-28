@@ -77,10 +77,10 @@ import {
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
-import { persistCaptureFromTemp, sweepBundleTrash } from "./persistence/bundle-store";
+import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
-import { reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
+import { migrateAllV1OnBoot, reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -1093,13 +1093,13 @@ export function bootstrapApp(): void {
         seedVideoMetadata: (input: Parameters<typeof insertVideoMetadata>[0]) =>
           insertVideoMetadata(input),
         // Seed a real bundle-backed capture by running the production
-        // persistCaptureFromTemp pipeline — packs `.pwrsnap`, writes
+        // persistCaptureFromTempV2 pipeline — packs `.pwrsnap`, writes
         // the per-capture source.png cache under <userData>/render-cache/<id>/.
         // Specs that need to exercise bundle-vs-legacy code paths
-        // (clear-render-cache recovery, v1 read paths, etc.) seed
-        // through here instead of the row-only `seedCapture` helper.
-        persistBundleCapture: (input: Parameters<typeof persistCaptureFromTemp>[0]) =>
-          persistCaptureFromTemp(input),
+        // (clear-render-cache recovery, etc.) seed through here instead
+        // of the row-only `seedCapture` helper.
+        persistBundleCapture: (input: Parameters<typeof persistCaptureFromTempV2>[0]) =>
+          persistCaptureFromTempV2(input),
         // Resolve a capture's expected on-disk source.png cache path.
         // Specs use this to assert the file was created at capture
         // time, wiped by Clear, and re-materialized on the next read.
@@ -1243,14 +1243,22 @@ export function bootstrapApp(): void {
     // a previous boot's mid-doctor crash (orphan temp files, DB-says-
     // v2-but-bundle-says-v1 mismatches, orphan overlays rows for v2
     // captures). Runs AFTER `runLegacyBundleMigration` above on purpose
-    // — we don't want to sweep half-wrapped legacy bundles. Per-capture
-    // lazy upgrades fire from the renderer via `v1ToV2:upgrade` when
-    // the user opens a v1 capture for editing.
-    void reconcileV1ToV2OnBoot().catch((err: unknown) => {
-      log.warn("v1 → v2 doctor reconcile sweep failed at boot", {
-        message: err instanceof Error ? err.message : String(err)
+    // — we don't want to sweep half-wrapped legacy bundles.
+    //
+    // The eager sweep `migrateAllV1OnBoot` runs immediately after
+    // reconcile to upgrade every remaining v1 capture to v2 in one
+    // pass. This is the bridge between the v1 default-write era and
+    // a future PR that removes the v1 read path; once the library is
+    // fully v2 the doctor itself can be deleted. Renderer-driven lazy
+    // upgrades via `v1ToV2:upgrade` remain as a safety net for any
+    // capture that fails the eager pass.
+    void reconcileV1ToV2OnBoot()
+      .then(() => migrateAllV1OnBoot())
+      .catch((err: unknown) => {
+        log.warn("v1 → v2 doctor boot pipeline failed", {
+          message: err instanceof Error ? err.message : String(err)
+        });
       });
-    });
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

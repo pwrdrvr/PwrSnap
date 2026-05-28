@@ -664,3 +664,148 @@ describe("migrateBundleV1ToV2 — idempotency + parked state", () => {
     expect(snap === null || typeof snap === "object").toBe(true);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// migrateAllV1OnBoot — eager sweep
+// ────────────────────────────────────────────────────────────────────
+
+describe("migrateAllV1OnBoot — eager bulk sweep", () => {
+  // The sweep delegates each row to `migrateBundleV1ToV2`. Stubbing
+  // `readBundleManifest` to return a v2 manifest forces that per-
+  // capture function down its `already_v2` short-circuit — no
+  // bundle writes, no DB mutations, but the manifest *read* still
+  // happens. So the manifest-read call count is a direct proxy for
+  // "which rows did the sweep visit?" — exactly what we need to
+  // assert the SQL filter is correct.
+  async function stubManifestAlwaysV2(): Promise<void> {
+    const bundleStore = await import("../bundle-store");
+    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async (path: string) => {
+      const captureId = path.split("/").pop()?.replace(".pwrsnap", "") ?? "unknown";
+      return {
+        bundle_format_version: 2,
+        capture_id: captureId,
+        canvas_dimensions: { width_px: 2000, height_px: 1000 },
+        paired_png_filename: `${captureId}.png`,
+        created_at: "2026-05-23T12:00:00.000Z",
+        bundle_modified_at: "2026-05-23T12:00:00.000Z"
+      };
+    });
+  }
+
+  test("empty library: no-op", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    await migrateAllV1OnBoot();
+
+    expect(bundleStore.readBundleManifest).not.toHaveBeenCalled();
+  });
+
+  test("only visits v1 rows — skips v2, deleted, and bundle-less", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    insertCaptureRow(mocks.db!, { id: "cap_v1a_xxxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_v1b_xxxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, {
+      id: "cap_v2x_xxxxxxxx".slice(0, 16),
+      bundleFormatVersion: 2
+    });
+    // Bundle-less row (`bundle_path IS NULL`) — pre-bundle legacy
+    // capture. `insertCaptureRow`'s `bundlePath ?? default` collapses
+    // an explicit null to the default, so we insert raw to get a
+    // real NULL.
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           '/tmp/legacy.png', NULL, NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-nob', 0, NULL, 0
+         )`
+      )
+      .run("cap_nob_xxxxxxxx".slice(0, 16));
+    // Soft-deleted row (deleted_at IS NOT NULL).
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           NULL, '/tmp/captures/cap_del.pwrsnap', NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-del', 0, '2026-05-23T12:00:00.000Z', 0
+         )`
+      )
+      .run("cap_del_xxxxxxxx".slice(0, 16));
+
+    await migrateAllV1OnBoot();
+
+    // Two v1 rows visited; v2 + bundle-less + deleted skipped.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(2);
+  });
+
+  test("parked rows skipped — v1_to_v2_attempts >= MAX_ATTEMPTS", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    insertCaptureRow(mocks.db!, {
+      id: "cap_park_a_xxxxx".slice(0, 16),
+      v1ToV2Attempts: 5
+    });
+    insertCaptureRow(mocks.db!, {
+      id: "cap_live_b_xxxxx".slice(0, 16),
+      v1ToV2Attempts: 4
+    });
+
+    await migrateAllV1OnBoot();
+
+    // Only the live row (attempts < 5) is visited; parked filtered out.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
+  });
+
+  test("per-capture failure does not block remaining rows", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+
+    insertCaptureRow(mocks.db!, { id: "cap_fail_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_ok_b_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_ok_c_xxxxxxx".slice(0, 16) });
+
+    // First row throws on manifest read; subsequent rows resolve to v2.
+    let call = 0;
+    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async (path: string) => {
+      call += 1;
+      if (call === 1) {
+        throw new Error("simulated read failure");
+      }
+      const captureId = path.split("/").pop()?.replace(".pwrsnap", "") ?? "unknown";
+      return {
+        bundle_format_version: 2,
+        capture_id: captureId,
+        canvas_dimensions: { width_px: 2000, height_px: 1000 },
+        paired_png_filename: `${captureId}.png`,
+        created_at: "2026-05-23T12:00:00.000Z",
+        bundle_modified_at: "2026-05-23T12:00:00.000Z"
+      };
+    });
+
+    await migrateAllV1OnBoot();
+
+    // All three rows attempted despite the first throwing.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(3);
+  });
+});

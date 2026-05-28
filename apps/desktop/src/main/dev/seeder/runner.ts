@@ -629,7 +629,7 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
       // Perf seeder uses the legacy capture-flow (putCaptureSource +
       // insertOrFindCapture) — synthesized rows always have
       // legacy_src_path populated. Bundle-flow captures (live ⌘⇧P)
-      // route through persistCaptureFromTemp and use bundle_path
+      // route through persistCaptureFromTempV2 and use bundle_path
       // instead.
       srcPath: result.value.record.legacy_src_path ?? "",
       widthPx: result.value.record.width_px,

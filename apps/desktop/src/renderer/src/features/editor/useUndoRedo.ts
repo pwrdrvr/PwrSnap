@@ -176,11 +176,14 @@ export type UseUndoRedoResult = {
    *  post-edit overlay id (typically `result.value.artifact.row.id`
    *  or `.node.id`). The caller is responsible for updating the
    *  selection model to follow `currentIdRef.current` on undo/redo. */
-  recordGeometry: (entry: {
-    currentIdRef: { current: string };
-    previousGeometry: GeometryUpdate;
-    nextGeometry: GeometryUpdate;
-  }) => void;
+  recordGeometry: (
+    entry: {
+      currentIdRef: { current: string };
+      previousGeometry: GeometryUpdate;
+      nextGeometry: GeometryUpdate;
+    },
+    opts?: RecordOptions
+  ) => void;
   /** Phase 3.5 — record a style change from the selected-overlay
    *  popover edit. `previousPatch` reverts to the pre-edit state;
    *  `nextPatch` is the patch the user just applied. Same id-chain
@@ -414,17 +417,23 @@ export function useUndoRedo(opts: {
   );
 
   const recordGeometry = useCallback(
-    (entry: {
-      currentIdRef: { current: string };
-      previousGeometry: GeometryUpdate;
-      nextGeometry: GeometryUpdate;
-    }) =>
-      push({
-        kind: "geometry",
-        currentIdRef: entry.currentIdRef,
-        previousGeometry: entry.previousGeometry,
-        nextGeometry: entry.nextGeometry
-      }),
+    (
+      entry: {
+        currentIdRef: { current: string };
+        previousGeometry: GeometryUpdate;
+        nextGeometry: GeometryUpdate;
+      },
+      opts?: RecordOptions
+    ) =>
+      push(
+        {
+          kind: "geometry",
+          currentIdRef: entry.currentIdRef,
+          previousGeometry: entry.previousGeometry,
+          nextGeometry: entry.nextGeometry
+        },
+        opts
+      ),
     [push]
   );
 

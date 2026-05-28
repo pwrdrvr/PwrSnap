@@ -63,6 +63,7 @@ import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
 import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
+import { decideClickSelection } from "./decideClickSelection";
 import {
   useCaptureModel,
   type EditOpResult,
@@ -1000,6 +1001,34 @@ export function Editor({
   // (after the model resolves); we project a v1-shaped view of it
   // here for the synchronous click handler.
   const overlaysRef = useRef<OverlayRow[]>([]);
+  // Multi-select drag state. Populated by `onPointerDown` when the
+  // user clicks a layer already in a multi-selection (= the
+  // `decideClickSelection` "keep" action with selection size > 1).
+  // Holds the pre-drag pointer position plus per-layer geometry
+  // snapshots; `onPointerUp` reads it back to compute the cursor
+  // delta and dispatch one updateGeometry per layer. Cleared on
+  // pointerup OR if the user releases outside the canvas. No live
+  // preview during the drag for v1 — the layers jump to the final
+  // position on pointerup; a follow-up can add a multi-id
+  // liveOverride for the in-flight preview if desired.
+  const multiDragStartRef = useRef<{
+    startXn: number;
+    startYn: number;
+    pointerId: number;
+    snapshots: { id: string; data: OverlayRow["data"] }[];
+  } | null>(null);
+  // EditorLoaded populates this with a closure over `dispatchEdit` +
+  // `undo` so the outer onPointerUp (which doesn't have direct access
+  // to either) can commit the multi-drag. Same ref pattern as
+  // `deleteSelectedRef` / `nudgeSelectedRef`.
+  const commitMultiDragRef = useRef<
+    | ((
+        snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        dxn: number,
+        dyn: number
+      ) => Promise<void>)
+    | null
+  >(null);
   // Canvas + source dims read by `hitTestOverlays` so text overlays
   // get a FULL bounding-rect hit target (matches the on-screen
   // rendered glyph extent), not a tiny radius around the anchor.
@@ -1128,16 +1157,50 @@ export function Editor({
         shortSide,
         textHitDimsRef.current ?? undefined
       );
-      // Cmd/Ctrl-click extends the selection (toggle membership);
-      // plain click replaces. Empty-canvas plain click clears; empty-
-      // canvas Cmd-click leaves the selection alone (additive gesture
-      // shouldn't drop everything when the user misses).
+      // Decision matrix lives in `decideClickSelection` so both the
+      // pointer-tool and drawing-tool branches share one source of
+      // truth (and one regression-tested module). The `keep` action
+      // is the load-bearing addition for multi-select drag: plain
+      // click on a layer ALREADY in the selection preserves the
+      // group instead of collapsing it to a singleton, so the user
+      // can drag the whole group together.
       const additive = event.metaKey || event.ctrlKey;
-      if (hit !== null) {
-        if (additive) toggleSelection(hit);
-        else replaceSelection(hit);
-      } else if (!additive) {
-        clearSelection();
+      const action = decideClickSelection({
+        hit,
+        currentSelection: selectedLayerIds,
+        additive
+      });
+      if (action.type === "replace") replaceSelection(action.id);
+      else if (action.type === "toggle") toggleSelection(action.id);
+      else if (action.type === "clear") clearSelection();
+      // `keep` = selection unchanged.
+      // If the click landed on a layer already in a MULTI-selection
+      // (selection size > 1) — initiate a group drag-to-move.
+      // Single-selected drags still go through TransformHandles'
+      // body-hit rect (which catches the pointerdown before this
+      // code runs), so we only kick off the multi-drag when the
+      // selection actually has >1 member.
+      if (
+        action.type === "keep" &&
+        hit !== null &&
+        selectedLayerIds.length > 1 &&
+        selectedLayerIds.includes(hit)
+      ) {
+        const snapshots = selectedLayerIds
+          .map((id) => {
+            const row = overlays.find((o) => o.id === id);
+            return row !== undefined ? { id, data: row.data } : null;
+          })
+          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
+        if (snapshots.length > 0) {
+          multiDragStartRef.current = {
+            startXn: start.xn,
+            startYn: start.yn,
+            pointerId: event.pointerId,
+            snapshots
+          };
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        }
       }
       return;
     }
@@ -1172,9 +1235,44 @@ export function Editor({
         textHitDimsRef.current ?? undefined
       );
       if (hit !== null) {
+        // Same decision logic as the pointer-tool branch above.
+        // Drawing-tool clicks that land on an existing overlay
+        // route through the same selection model so the multi-
+        // select drag-to-move gesture works whether the user is on
+        // the pointer tool or any drawing tool.
         const additive = event.metaKey || event.ctrlKey;
-        if (additive) toggleSelection(hit);
-        else replaceSelection(hit);
+        const action = decideClickSelection({
+          hit,
+          currentSelection: selectedLayerIds,
+          additive
+        });
+        if (action.type === "replace") replaceSelection(action.id);
+        else if (action.type === "toggle") toggleSelection(action.id);
+        else if (action.type === "clear") clearSelection();
+        // Multi-drag init — mirror of the pointer-tool branch.
+        if (
+          action.type === "keep" &&
+          selectedLayerIds.length > 1 &&
+          selectedLayerIds.includes(hit)
+        ) {
+          const snapshots = selectedLayerIds
+            .map((id) => {
+              const row = overlays.find((o) => o.id === id);
+              return row !== undefined ? { id, data: row.data } : null;
+            })
+            .filter(
+              (s): s is { id: string; data: OverlayRow["data"] } => s !== null
+            );
+          if (snapshots.length > 0) {
+            multiDragStartRef.current = {
+              startXn: start.xn,
+              startYn: start.yn,
+              pointerId: event.pointerId,
+              snapshots
+            };
+            (event.target as HTMLElement).setPointerCapture(event.pointerId);
+          }
+        }
         return;
       }
     }
@@ -1242,6 +1340,42 @@ export function Editor({
   }
 
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    // Multi-select drag commit runs BEFORE the draft branch. If
+    // `multiDragStartRef` is set the user dragged a group; compute
+    // the cursor delta in normalized coords and call into the
+    // EditorLoaded-populated `commitMultiDragRef` to translate every
+    // selected layer by that delta in one coalesced undo entry.
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      multiDragStartRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
+      } catch {
+        // Capture may have already been lost (window blur, etc.) —
+        // best-effort release.
+      }
+      const endPt = clientToNormalized(event.clientX, event.clientY);
+      if (endPt !== null) {
+        const dxn = endPt.xn - multiDrag.startXn;
+        const dyn = endPt.yn - multiDrag.startYn;
+        // No-drag threshold: a click without movement on a selected
+        // group should NOT commit a no-op translation onto every
+        // layer (which would push a noisy "moved by 0" undo entry
+        // and bump every row id via the supersede chain for nothing).
+        // Matches TransformHandles' MIN_DRAG_LENGTH-ish budget but
+        // in normalized coords so the threshold scales with canvas
+        // size. 0.002 ≈ 2px on a 1000px short-side canvas — tight
+        // enough that a deliberate drag always trips it.
+        const MIN_MULTI_DRAG_N = 0.002;
+        if (Math.hypot(dxn, dyn) >= MIN_MULTI_DRAG_N) {
+          const commit = commitMultiDragRef.current;
+          if (commit !== null) {
+            await commit(multiDrag.snapshots, dxn, dyn);
+          }
+        }
+      }
+      return;
+    }
     if (draft === null) return;
     if (draft.kind === "text") return;
     (event.target as HTMLElement).releasePointerCapture(event.pointerId);
@@ -2243,6 +2377,7 @@ export function Editor({
       deleteSelectedRef={deleteSelectedRef}
       nudgeSelectedRef={nudgeSelectedRef}
       reorderSelectedRef={reorderSelectedRef}
+      commitMultiDragRef={commitMultiDragRef}
       modelFormat={model.format}
       modelLayers={model.format === 2 ? model.layers : []}
       dispatchEdit={dispatchEditErased}
@@ -2292,6 +2427,7 @@ function EditorLoaded({
   deleteSelectedRef,
   nudgeSelectedRef,
   reorderSelectedRef,
+  commitMultiDragRef,
   modelFormat,
   modelLayers,
   dispatchEdit,
@@ -2400,6 +2536,22 @@ function EditorLoaded({
    *  their respective :reorder IPCs. */
   reorderSelectedRef: React.RefObject<
     ((variant: "forward" | "backward" | "toFront" | "toBack") => void) | null
+  >;
+  /** Outer onPointerUp calls this when a multi-select drag commits.
+   *  EditorLoaded populates it with the format-aware dispatcher loop
+   *  (same shape nudgeSelectedRef uses but driven by a normalized
+   *  pointer delta instead of arrow-key steps). `dxn` / `dyn` are
+   *  the cursor delta in normalized [0,1] canvas coords; the closure
+   *  translates each pre-drag-snapshot geometry by that delta,
+   *  dispatches updateGeometry per layer, and records the burst as
+   *  ONE coalesced undo entry. */
+  commitMultiDragRef: React.RefObject<
+    | ((
+        snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        dxn: number,
+        dyn: number
+      ) => Promise<void>)
+    | null
   >;
   /** Resolved bundle format from the model (1 or 2). EditorLoaded uses
    *  it to branch overlay-delete IPC selection. */
@@ -2780,6 +2932,94 @@ function EditorLoaded({
     dispatchEdit,
     record.width_px,
     record.height_px,
+    setSelectionTrustingDispatch,
+    undo,
+    undoApplyingRef,
+    beginInteractionRef,
+    endInteractionRef
+  ]);
+
+  // Multi-select drag commit — wired to the outer Editor's
+  // `multiDragStartRef` via `commitMultiDragRef`. The OUTER pointer
+  // handlers initiate the gesture (snapshot + setPointerCapture on
+  // pointerdown over an already-multi-selected layer; compute delta
+  // on pointerup) and call this closure with the snapshots + delta.
+  // Same shape as `nudgeSelectedRef` (translate every snapshot by
+  // (dxn, dyn), dispatch updateGeometry per layer, coalesce into ONE
+  // undo entry via a shared bracket) — the only difference is the
+  // delta source: keyboard steps for nudge, pointer-delta here.
+  useEffect(() => {
+    commitMultiDragRef.current = async (
+      snapshots,
+      dxn,
+      dyn
+    ): Promise<void> => {
+      if (snapshots.length === 0) return;
+      // Open the coalescing bracket — same key shape the multi-delete
+      // handler uses. Every recordGeometry inside the loop tags with
+      // the same { opKind, layerId } so push()'s `insideInteraction`
+      // check fires and all N entries collapse into 1 undo step.
+      const begin = beginInteractionRef.current;
+      const end = endInteractionRef.current;
+      const token =
+        begin !== null ? begin("multi-drag", "pointer-multi-drag") : null;
+      try {
+        const newIds: string[] = [];
+        for (const snapshot of snapshots) {
+          const geometry = translateOverlayGeometry(snapshot.data, dxn, dyn);
+          if (geometry === null) {
+            // Kind has no geometry semantics (crop) — preserve in
+            // selection but skip the dispatch.
+            newIds.push(snapshot.id);
+            continue;
+          }
+          const previousGeometry = overlayDataToGeometry(snapshot.data);
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: snapshot.id,
+            geometry
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("multi-drag dispatch failed", result.error);
+            newIds.push(snapshot.id);
+            continue;
+          }
+          if (result.value.kind !== "update") {
+            newIds.push(snapshot.id);
+            continue;
+          }
+          const artifact = result.value.artifact;
+          const newId =
+            artifact.format === 1 ? artifact.row.id : artifact.node.id;
+          newIds.push(newId);
+          if (!undoApplyingRef.current && previousGeometry !== null) {
+            undo.recordGeometry(
+              {
+                currentIdRef: { current: newId },
+                previousGeometry,
+                nextGeometry: geometry
+              },
+              { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+            );
+          }
+        }
+        // Re-anchor the selection on the post-dispatch ids — each
+        // updateGeometry mints a new row id (delete-plus-insert),
+        // so the original ids in `snapshots` are gone after the
+        // burst. setSelectionTrustingDispatch holds them in the
+        // in-flight set until the broadcast confirms they landed.
+        setSelectionTrustingDispatch(newIds);
+      } finally {
+        if (token !== null && end !== null) end(token);
+      }
+    };
+    return () => {
+      commitMultiDragRef.current = null;
+    };
+  }, [
+    commitMultiDragRef,
+    dispatchEdit,
     setSelectionTrustingDispatch,
     undo,
     undoApplyingRef,

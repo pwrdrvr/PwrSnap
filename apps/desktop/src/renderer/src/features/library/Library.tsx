@@ -18,7 +18,7 @@ import type {
   ScrollProbeRequest,
   Settings
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type SizzleProject } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -34,7 +34,6 @@ import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
-import { LibraryProjectView } from "./LibraryProjectView";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -372,6 +371,25 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const { projects: sizzleProjects } = useSizzleProjects();
+  // Library "Types" multi-pick filter. All three on by default so the
+  // library looks the same as before for users who don't touch it.
+  // Right-click / shift-click on a row sets that row as "Only" (the
+  // others get unchecked) — see onTypeRowClick below.
+  const [visibleTypes, setVisibleTypes] = useState<{
+    images: boolean;
+    videos: boolean;
+    projects: boolean;
+  }>({ images: true, videos: true, projects: true });
+  const toggleType = (key: "images" | "videos" | "projects"): void => {
+    setVisibleTypes((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const onlyType = (key: "images" | "videos" | "projects"): void => {
+    setVisibleTypes({
+      images: key === "images",
+      videos: key === "videos",
+      projects: key === "projects"
+    });
+  };
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
@@ -626,11 +644,25 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // applies when viewing live captures.
   const sourceAppState =
     activeSourceAppId === null ? undefined : sourceAppRows[activeSourceAppId];
-  const universeRecords = isTrashView
+  const universeRecordsRaw = isTrashView
     ? trashRecords
     : sourceAppState?.bundleKey === sourceAppBundleKey
     ? sourceAppState.rows
     : liveRecords;
+  // Apply the Types filter (Images / Videos) to the universe before
+  // the fixtureBacking wraps it. This way every downstream consumer
+  // (grouped, visible, gridHasMore, etc.) sees a coherent filtered
+  // view without each having to learn about the type filter.
+  // Trash view bypasses the type filter — trash is its own mode.
+  const universeRecords = useMemo(() => {
+    if (isTrashView) return universeRecordsRaw;
+    if (visibleTypes.images && visibleTypes.videos) return universeRecordsRaw;
+    return universeRecordsRaw.filter((r) => {
+      if (r.kind === "image") return visibleTypes.images;
+      if (r.kind === "video") return visibleTypes.videos;
+      return true;
+    });
+  }, [universeRecordsRaw, visibleTypes.images, visibleTypes.videos, isTrashView]);
   const gridHasMore = isSourceAppView ? false : hasMore;
   const gridIsLoadingMore = isSourceAppView ? sourceAppState?.loading ?? false : isLoadingMore;
 
@@ -1686,6 +1718,72 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__nav-count">{trashRecords.length}</span>
         </button>
 
+        <div className="psl__left-section">Types</div>
+        {(
+          [
+            {
+              key: "images" as const,
+              label: "Images",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="5" width="18" height="14" rx="2" />
+                  <circle cx="9" cy="11" r="1.4" fill="currentColor" />
+                  <path d="m21 17-5-5-7 7" />
+                </svg>
+              )
+            },
+            {
+              key: "videos" as const,
+              label: "Videos",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="6" width="14" height="12" rx="1.5" />
+                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                </svg>
+              )
+            },
+            {
+              key: "projects" as const,
+              label: "Projects",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="6" width="14" height="12" rx="2" />
+                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                </svg>
+              )
+            }
+          ] as const
+        ).map(({ key, label, icon }) => (
+          <button
+            key={key}
+            type="button"
+            className={
+              "psl__nav psl__type-row" + (visibleTypes[key] ? " is-on" : " is-off")
+            }
+            onClick={(e) => {
+              // shift-click → "Only this" (uncheck the other two).
+              // Plain click → toggle this one.
+              if (e.shiftKey) onlyType(key);
+              else toggleType(key);
+            }}
+            title={
+              visibleTypes[key]
+                ? `Hide ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
+                : `Show ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
+            }
+          >
+            <span className="psl__type-check" aria-hidden="true">
+              {visibleTypes[key] ? (
+                <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m5 12 5 5 9-11" />
+                </svg>
+              ) : null}
+            </span>
+            <span className="psl__nav-icon">{icon}</span>
+            <span className="psl__nav-label">{label}</span>
+          </button>
+        ))}
+
         <div className="psl__left-section">Source App</div>
         {visibleApps.map(({ app, name, bundleId }) => (
           <button
@@ -1701,7 +1799,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </button>
         ))}
 
-        {sizzleProjects.length > 0 ? (
+        {sizzleProjects.length > 0 && visibleTypes.projects ? (
           <>
             <div className="psl__left-section psl__left-section--with-action">
               <span>Sizzle Reels</span>
@@ -1735,16 +1833,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                 if (trim != null) return acc + (trim.endSec - trim.startSec);
                 return acc + 3; // rough estimate when unknown
               }, 0);
-              const isActive =
-                view.kind === "project" && view.projectId === p.id;
               return (
                 <button
                   key={p.id}
-                  className={"psl__nav" + (isActive ? " is-active" : "")}
-                  onClick={() =>
-                    viewDispatch({ type: "OPEN_PROJECT", projectId: p.id })
-                  }
-                  title={`Open ${p.name} in Library project mode`}
+                  className="psl__nav"
+                  onClick={() => {
+                    void dispatch("sizzle:open", { projectId: p.id });
+                  }}
+                  title={`Open ${p.name} in the Sizzle Reels editor`}
                 >
                   <span className="psl__nav-icon">
                     <svg
@@ -1807,21 +1903,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       </aside>
 
       <main className="psl__main">
-        {view.kind === "project" ? (
-          <LibraryProjectView
-            project={
-              sizzleProjects.find((p) => p.id === view.projectId) ?? null
-            }
-            onClose={() => viewDispatch({ type: "CLOSE_PROJECT" })}
-          />
-        ) : null}
         {/* Grid pane — visible in grid mode only via .psl[data-mode="grid"]
             CSS toggle. All day groups render (the prior .slice(0, 2)
             band-aid is removed per Phase B.10; perf hygiene of B.9 —
             loading="lazy" + content-visibility:auto on cells — carries
-            us through ~1000 captures without virtualization). Hidden
-            when in project mode (LibraryProjectView takes over the
-            main pane).
+            us through ~1000 captures without virtualization).
 
             Note: the filmstrip used to render here in a `.psl__reel-wrap`
             section, but as of Phase C/D it's passed into <Stage> as the
@@ -1850,6 +1936,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
+          {visibleTypes.projects && sizzleProjects.length > 0 && !isTrashView ? (
+            <SizzleReelsBand
+              projects={sizzleProjects}
+              onOpen={(projectId) => {
+                void dispatch("sizzle:open", { projectId });
+              }}
+            />
+          ) : null}
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
@@ -2553,5 +2647,98 @@ function CellRow({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Sizzle Reels band rendered at the top of the Library grid when the
+ * Types filter has "Projects" on. Each cell is 16:10 (matches capture
+ * cells) — first scene's thumbnail forms the background; project name
+ * + scene count overlay at the bottom; clicking opens the project in
+ * the standalone sizzle editor window.
+ *
+ * Deliberately NOT integrated into the day-grouped VirtualizedGrid:
+ * projects don't belong to a capture day, and threading a second cell
+ * type through the virtualizer's row layout is a deeper refactor than
+ * this PR wants. A horizontal band is enough to satisfy the
+ * "projects appear in the library list like other items" intent
+ * without re-architecting the grid renderer.
+ */
+function SizzleReelsBand({
+  projects,
+  onOpen
+}: {
+  projects: ReadonlyArray<SizzleProject>;
+  onOpen: (projectId: string) => void;
+}): React.ReactElement {
+  return (
+    <section className="psl__sizzle-band" aria-label="Sizzle Reels">
+      <header className="psl__sizzle-band-head">
+        <span className="psl__sizzle-band-title">Sizzle Reels</span>
+        <span className="psl__sizzle-band-count">
+          {projects.length} reel{projects.length === 1 ? "" : "s"}
+        </span>
+      </header>
+      <div className="psl__sizzle-band-grid">
+        {projects.map((p) => {
+          const firstSceneCaptureId = p.scenes[0]?.captureId ?? null;
+          const sceneCount = p.scenes.length;
+          const totalSec = p.scenes.reduce((acc, s) => {
+            const explicit = s.durationOverrideSec;
+            if (typeof explicit === "number" && explicit > 0) return acc + explicit;
+            const trim = s.mediaTrim;
+            if (trim != null) return acc + (trim.endSec - trim.startSec);
+            return acc + 3;
+          }, 0);
+          const durLabel =
+            totalSec >= 60
+              ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
+                  .toString()
+                  .padStart(2, "0")}`
+              : `${Math.round(totalSec)}s`;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              className="psl__sizzle-cell"
+              onClick={() => onOpen(p.id)}
+              title={`Open ${p.name} in the Sizzle Reels editor`}
+            >
+              <span className="psl__sizzle-cell-thumb">
+                {firstSceneCaptureId !== null ? (
+                  <img
+                    src={cacheUrl(firstSceneCaptureId, 320, "webp")}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                  />
+                ) : (
+                  <span className="psl__sizzle-cell-placeholder" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <rect x="3" y="6" width="14" height="12" rx="2" />
+                      <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                    </svg>
+                  </span>
+                )}
+                <span className="psl__sizzle-cell-kind" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="6" width="14" height="12" rx="2" />
+                    <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                  </svg>
+                </span>
+                {sceneCount > 0 ? (
+                  <span className="psl__sizzle-cell-meta">
+                    {sceneCount} · {durLabel}
+                  </span>
+                ) : (
+                  <span className="psl__sizzle-cell-meta">empty</span>
+                )}
+              </span>
+              <span className="psl__sizzle-cell-name">{p.name}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }

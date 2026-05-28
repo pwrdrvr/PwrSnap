@@ -692,122 +692,77 @@
   background: var(--accent-soft);
 }
 
-/* === Project mode main pane === */
-.psl-proj {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg-app);
+/* === Types multi-pick rows in the sidebar === */
+.psl__type-row {
+  position: relative;
 }
-
-.psl-proj__head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.psl-proj__close {
-  width: 28px;
-  height: 28px;
+.psl__type-check {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-panel-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: 500 14px/1 var(--font-sans);
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--accent);
+  margin-right: 2px;
+  flex: 0 0 12px;
 }
-.psl-proj__close:hover {
-  color: var(--text-primary);
-  border-color: var(--accent-border);
+.psl__type-row.is-on .psl__type-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__type-row.is-off {
+  color: var(--text-muted);
+}
+.psl__type-row.is-off .psl__nav-icon,
+.psl__type-row.is-off .psl__nav-label {
+  opacity: 0.55;
 }
 
-.psl-proj__title {
+/* === Sizzle Reels band at top of grid === */
+.psl__sizzle-band {
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.psl__sizzle-band-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
 }
-.psl-proj__name {
-  font: 700 18px/1.15 var(--font-display);
-  letter-spacing: -0.012em;
-  color: var(--text-primary);
-}
-.psl-proj__meta {
-  font: 500 10px/1 var(--font-mono);
+.psl__sizzle-band-title {
+  font: 600 11px/1 var(--font-sans);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--text-muted);
+}
+.psl__sizzle-band-count {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-subtle);
   letter-spacing: 0.04em;
 }
-.psl-proj__spacer { flex: 1; }
-
-.psl-proj__btn {
-  padding: 7px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-panel-elevated);
-  color: var(--text-primary);
-  font: 600 12px/1 var(--font-sans);
-  cursor: pointer;
-}
-.psl-proj__btn:hover {
-  background: var(--bg-panel-hover);
-}
-.psl-proj__btn--primary {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-  border-color: var(--accent);
-}
-.psl-proj__btn--primary:hover {
-  background: var(--accent-strong);
-}
-
-.psl-proj__hint {
-  margin: 12px 20px 0;
-  padding: 8px 12px;
-  background: var(--accent-soft);
-  border: 1px dashed var(--accent-border);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  font: 500 12px/1.4 var(--font-sans);
-}
-
-.psl-proj__empty {
-  margin: auto;
-  padding: 60px 32px;
-  color: var(--text-muted);
-  font: 500 13px/1.5 var(--font-sans);
-  text-align: center;
-}
-
-.psl-proj__grid {
+.psl__sizzle-band-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
-  padding: 20px;
-  overflow-y: auto;
-  flex: 1;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
 }
-
-.psl-proj__cell {
+.psl__sizzle-cell {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 0;
   border: none;
   background: transparent;
+  color: inherit;
   cursor: pointer;
   text-align: left;
-  color: inherit;
   content-visibility: auto;
-  contain-intrinsic-size: 0 180px;
+  contain-intrinsic-size: 0 150px;
 }
-
-.psl-proj__cell-thumb {
+.psl__sizzle-cell-thumb {
   position: relative;
   display: block;
   aspect-ratio: 16/10;
@@ -816,74 +771,58 @@
   border: 1px solid var(--border-subtle);
   background: var(--bg-input);
 }
-.psl-proj__cell-thumb img,
-.psl-proj__cell-thumb video {
+.psl__sizzle-cell-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
-.psl-proj__cell.is-used .psl-proj__cell-thumb {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+.psl__sizzle-cell-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
 }
-.psl-proj__cell.is-toggling {
-  opacity: 0.6;
-  pointer-events: none;
+.psl__sizzle-cell:hover .psl__sizzle-cell-thumb {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
 }
-
-.psl-proj__cell-order {
+.psl__sizzle-cell-kind {
   position: absolute;
   left: 8px;
   top: 8px;
-  padding: 3px 7px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
   background: var(--media-scrim-bg);
-  color: var(--media-scrim-text);
-  font: 700 10px/1 var(--font-mono);
-  letter-spacing: 0.06em;
+  color: var(--accent-bright);
 }
-
-.psl-proj__cell-kind {
+.psl__sizzle-cell-meta {
   position: absolute;
   right: 8px;
   bottom: 8px;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
+  padding: 2px 6px;
+  border-radius: 4px;
   background: var(--media-scrim-bg);
   color: var(--media-scrim-text);
-  font: 500 12px/1 var(--font-sans);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
 }
-
-.psl-proj__cell-toggle {
-  position: absolute;
-  right: 8px;
-  top: 8px;
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--media-scrim-bg);
-  color: var(--media-scrim-text);
-  font: 700 13px/1 var(--font-sans);
-}
-.psl-proj__cell-toggle.is-on {
-  background: var(--accent);
-  color: var(--button-text-on-accent);
-}
-
-.psl-proj__cell-label {
-  font: 500 11px/1.2 var(--font-mono);
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
+.psl__sizzle-cell-name {
+  font: 600 12px/1.25 var(--font-sans);
+  color: var(--text-primary);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0 4px;
 }
+
 .psl__nav {
   display: flex; align-items: center; gap: 9px;
   height: 30px; padding: 0 10px;
@@ -942,8 +881,6 @@
    as `.psl__reel-wrap` but moved into <Stage>'s aboveStageSlot in
    Phase C/D so it doesn't fight Stage for the same grid cell. */
 .psl[data-mode="reel"] .psl__grid-wrap { display: none; }
-.psl[data-mode="project"] .psl__grid-wrap { display: none; }
-.psl[data-mode="focus"] .psl__grid-wrap { display: none; }
 
 .psl__main {
   grid-column: 2; grid-row: 2;

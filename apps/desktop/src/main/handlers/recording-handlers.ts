@@ -14,13 +14,16 @@ import type {
   PwrSnapError,
   RecordingPermission,
   Result,
-  VideoExportRequest
+  VideoExportRequest,
+  VideoPreset,
+  VideoPresetMetric
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
 import {
   getVideoMetadata,
+  lookupExport,
   normalizeRange,
   setDefaultRange
 } from "../persistence/video-repo";
@@ -34,7 +37,16 @@ import {
   type RecordingService
 } from "../recording/recording-service";
 import { getRecordingState } from "../recording/recording-state";
-import { exportVideoRange } from "../recording/recording-exporter";
+import {
+  computeOutputDimensions,
+  exportVideoRange
+} from "../recording/recording-exporter";
+import {
+  mapVideoResolveError,
+  resolveVideoExport
+} from "../recording/video-export-resolver";
+import { ensureVideoPoster } from "../recording/video-poster";
+import { prepareRenderedFileAlias } from "../render/file-alias";
 
 const log = getMainLogger("pwrsnap:recording-handlers");
 
@@ -349,4 +361,182 @@ export function registerRecordingHandlers(): void {
       return err({ kind: "render", code: "video_export_failed", message, cause });
     }
   });
+
+  // ── video:presetMetrics ───────────────────────────────────────────
+  //
+  // Returns six entries (2 formats × 3 presets) describing the
+  // estimated or exact output dims + byte size for each combination.
+  // The renderer's 6-card grid calls this on mount to populate the
+  // cards before any user click. Cache hits return exact byte
+  // counts (read off the cache row); cache misses return estimated
+  // bytes computed from the source resolution + preset scale.
+  bus.register("video:presetMetrics", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:presetMetrics: captureId must be a non-empty string"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err(validationError("not_found", `video:presetMetrics: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:presetMetrics: ${req.captureId} is not a video`));
+    }
+    const range = record.video.defaultRange;
+    const normalized = normalizeRange(range, record.video.durationSec);
+    const durationSec = normalized.end - normalized.start;
+    // Default audio choice mirrors the same fallback the encoder
+    // uses when audio is omitted: GIF silent, MP4 inherits the
+    // recorded tracks. We compute metrics against this default so
+    // cache lookups land on the same row a default-args click would
+    // populate.
+    const mp4Audio = {
+      includeSystemAudio: record.video.hasSystemAudio,
+      includeMicrophone: record.video.hasMicrophoneAudio
+    };
+    const presets: readonly VideoPreset[] = ["low", "med", "high"];
+    const metrics: VideoPresetMetric[] = [];
+    for (const format of ["gif", "mp4"] as const) {
+      for (const preset of presets) {
+        const dims = computePresetDimensions(format, preset, record.width_px, record.height_px);
+        const cached = lookupExport({
+          captureId: record.id,
+          range: normalized,
+          format,
+          preset,
+          audio: format === "gif" ? { includeSystemAudio: false, includeMicrophone: false } : mp4Audio
+        });
+        const byteSize =
+          cached !== null
+            ? cached.byteSize
+            : estimateVideoByteSize(format, preset, dims.widthPx, dims.heightPx, durationSec);
+        metrics.push({
+          format,
+          preset,
+          widthPx: dims.widthPx,
+          heightPx: dims.heightPx,
+          byteSize,
+          fromCache: cached !== null
+        });
+      }
+    }
+    return ok({ metrics });
+  });
+
+  // ── video:prepareDrag ─────────────────────────────────────────────
+  //
+  // Mirrors `capture:prepareDrag` for video: ensures the encoded
+  // file exists (cache-hit or fresh encode), extracts a poster frame
+  // for the drag icon, and creates a human-friendly file alias via
+  // `prepareRenderedFileAlias`. The main-side IPC listener for
+  // `video:drag-start` (in `apps/desktop/src/main/ipc.ts`) calls
+  // this then fires `event.sender.startDrag({ file, icon })`.
+  bus.register("video:prepareDrag", async (req) => {
+    const resolved = await resolveVideoExport(req);
+    if (!resolved.ok) {
+      return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
+    }
+    try {
+      const { result, record, video } = resolved.value;
+      const ext = req.format;
+      // Human-friendly drop filename — captured-app + preset + format
+      // tag means Finder shows something legible. Sanitize the app
+      // name so spaces / slashes don't poison the path.
+      const appSlug = (record.source_app_name ?? "PwrSnap")
+        .replace(/[^A-Za-z0-9_-]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 32) || "PwrSnap";
+      const displayName = `${appSlug}__${req.preset}.${ext}`;
+      const aliasPath = await prepareRenderedFileAlias(result.path, displayName);
+      const iconPath = await ensureVideoPoster(record, video);
+      log.info("video drag prepared", {
+        captureId: record.id,
+        format: req.format,
+        preset: req.preset,
+        fromCache: result.fromCache,
+        aliasPath
+      });
+      return ok({ path: aliasPath, iconPath });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:prepareDrag failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message
+      });
+      return err({ kind: "render", code: "video_prepare_drag_failed", message, cause });
+    }
+  });
+}
+
+/** Output dimensions for a (format, preset) pair against a source.
+ *  Wraps `computeOutputDimensions` from the encoder with the per-
+ *  format preset width tables — the encoder owns the canonical
+ *  spec, this is a renderer-facing read accessor. */
+function computePresetDimensions(
+  format: "gif" | "mp4",
+  preset: VideoPreset,
+  sourceWidth: number,
+  sourceHeight: number
+): { widthPx: number; heightPx: number } {
+  // GIF widths: 480 / 720 / source. MP4 widths: 720 / 1080 / source.
+  // Kept in lockstep with `recording-exporter.ts::GIF_PRESETS /
+  // MP4_PRESETS`; if those move, update here.
+  let targetWidth: number | null;
+  if (format === "gif") {
+    targetWidth = preset === "low" ? 480 : preset === "med" ? 720 : null;
+  } else {
+    targetWidth = preset === "low" ? 720 : preset === "med" ? 1080 : null;
+  }
+  return computeOutputDimensions(targetWidth, sourceWidth, sourceHeight);
+}
+
+/** Rough byte-size estimate for a (format, preset) pair. Used as a
+ *  placeholder in `video:presetMetrics` while the actual file
+ *  hasn't been encoded yet. The math is calibrated for "screen
+ *  content" (mostly-static UI, with motion at cursor / scroll
+ *  bursts) — typical PwrSnap recordings.
+ *
+ *  GIF: ~10 KB per frame for 720p, scaled with pixel count. fps
+ *  picked from the preset's frame rate.
+ *
+ *  MP4: bitrate model. HIGH is stream-copy so estimate from source
+ *  resolution (we don't know the actual source bitrate, so 0.1 bpp
+ *  × pixel count × fps is a reasonable proxy). LOW / MED use the
+ *  CRF as a rough bitrate proxy (lower CRF = higher bitrate).
+ *
+ *  All of this is replaced by the exact cache row size once the
+ *  user clicks the card. Estimates only feed the renderer's
+ *  pre-click "what to expect" subtitle. */
+function estimateVideoByteSize(
+  format: "gif" | "mp4",
+  preset: VideoPreset,
+  widthPx: number,
+  heightPx: number,
+  durationSec: number
+): number {
+  const pixels = widthPx * heightPx;
+  if (format === "gif") {
+    const fps = preset === "low" ? 15 : preset === "med" ? 24 : 30;
+    // 0.20 bpp per palette-encoded GIF frame — calibrated for
+    // screen content with bayer dither at the LMH fps tiers.
+    const frameBytes = pixels * 0.20;
+    return Math.round(frameBytes * fps * durationSec);
+  }
+  // MP4 — model bitrate from CRF / source. Numbers are deliberate
+  // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
+  // is acceptable.
+  const sourceFps = 30;
+  let bitrateBps: number;
+  if (preset === "low") {
+    bitrateBps = 3_000_000;
+  } else if (preset === "med") {
+    bitrateBps = 6_500_000;
+  } else {
+    // HIGH: stream-copy. ~0.1 bpp × pixels × fps approximates h.264
+    // at the recorder's quality setting; close enough to "source"
+    // until the cache returns exact bytes.
+    bitrateBps = Math.round(pixels * sourceFps * 0.1);
+  }
+  return Math.round((bitrateBps / 8) * durationSec);
 }

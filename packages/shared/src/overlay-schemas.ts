@@ -245,11 +245,28 @@ export const RectOverlay = z.object({
   /** When true, the rect renders as a solid fill in the resolved color
    *  rather than the default stroke-only outline. Optional for back-
    *  compat: legacy rows render as outline-only. */
-  filled: z.boolean().optional()
+  filled: z.boolean().optional(),
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  Optional for back-compat: legacy rows render as if `rotation = 0`.
+   *  Range: any finite number (callers normalize to (-π, π] when it
+   *  matters; renderers just pass through). */
+  rotation: z.number().finite().optional()
 });
 
 export function readRectFilled(data: { filled?: boolean | undefined }): boolean {
   return data.filled ?? false;
+}
+
+/** Read the rotation (radians, clockwise) off any overlay kind that
+ *  carries one. Legacy rows + arrow / step (which don't carry rotation)
+ *  resolve to 0. Renderers + bake call this rather than touching
+ *  `data.rotation` directly so the back-compat default lives in one
+ *  place. */
+export function readOverlayRotation(data: {
+  rotation?: number | undefined;
+}): number {
+  if (data.rotation === undefined || !Number.isFinite(data.rotation)) return 0;
+  return data.rotation;
 }
 
 /** Blend mode for highlight overlays. Mirrors `HighlightBlendMode` in
@@ -277,7 +294,10 @@ export const HighlightOverlay = z.object({
    *  `readHighlightOpacity`. */
   opacity: z.number().min(0).max(1).optional(),
   /** CSS-style blend mode. Optional for back-compat. */
-  blend: HighlightBlendModeSchema.optional()
+  blend: HighlightBlendModeSchema.optional(),
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  See RectOverlay.rotation. */
+  rotation: z.number().finite().optional()
 });
 
 /** Mirrors `readBlurStyle` / `readArrowEndStyle`: applies the legacy
@@ -322,7 +342,15 @@ export const BlurOverlay = z.object({
    *  parsed as `"gaussian"` via the default in `readBlurStyle` below. */
   style: BlurStyle.optional(),
   /** Why the blur was applied — for the AI suggestion strip. */
-  reason: z.string().max(80).optional()
+  reason: z.string().max(80).optional(),
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  Honored by the live editor (CSS transform on the backdrop-filter
+   *  div); the v1 bake currently composites blur unrotated — sharp's
+   *  extract+blur pipeline doesn't support rotated clip regions
+   *  directly, so v1 export ignores `rotation` on blur. Captured here
+   *  so the field round-trips through copy/paste/undo and so a future
+   *  bake pass can honor it without a schema migration. */
+  rotation: z.number().finite().optional()
 });
 
 /** Read the style off a blur overlay, applying the default for legacy
@@ -371,7 +399,10 @@ export const TextOverlay = z.object({
    *  Optional for back-compat: legacy rows (no sizePx) keep
    *  rendering via the bucket + source-shortSide formula in
    *  `computeTextGlyphSize`. */
-  sizePx: z.number().positive().finite().optional()
+  sizePx: z.number().positive().finite().optional(),
+  /** Clockwise rotation in radians around the anchor point. See
+   *  RectOverlay.rotation. */
+  rotation: z.number().finite().optional()
 });
 
 /** Map the optional `weight` field to a CSS font-weight number.

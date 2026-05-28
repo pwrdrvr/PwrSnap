@@ -34,6 +34,7 @@ import {
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
+  readOverlayRotation,
   readOverlayThickness,
   readRectFilled
 } from "@pwrsnap/shared";
@@ -79,7 +80,7 @@ export function OverlaySvg({
   imageHeightPx,
   sourceWidthPx,
   sourceHeightPx,
-  selectedLayerId = null,
+  selectedLayerIds = [],
   liveOverride = null
 }: {
   overlays: OverlayRow[];
@@ -92,24 +93,34 @@ export function OverlaySvg({
   imageWidthPx: number;
   imageHeightPx: number;
   /** SOURCE raster dims — raster layer's `natural_*_px`. Used by
-   *  TextGlyph's `computeTextGlyphSize` so text overlays don't
-   *  silently resize after a v2 crop (pwrdrvr/PwrSnap#110). v1
-   *  callers pass canvas dims (no separate source). */
+   *  `textBoundsBox` + `SelectionOutline` via `computeTextGlyphSize`
+   *  so text overlays don't silently resize after a v2 crop
+   *  (pwrdrvr/PwrSnap#110). v1 callers pass canvas dims (no separate
+   *  source). */
   sourceWidthPx: number;
   sourceHeightPx: number;
-  /** Phase 3.2 selection model — id of the currently-selected overlay
-   *  row, or null for none. When set, a 1px accent-colored outline
-   *  glyph is drawn over that overlay's bounding box so the user can
-   *  see what they've selected and confirm before Delete/Backspace. */
-  selectedLayerId?: string | null;
+  /** Multi-select model — ids of every currently-selected overlay.
+   *  Empty array means nothing selected. One 1px accent-colored
+   *  outline glyph is drawn over each selected overlay's bounding box
+   *  so the user can see what they've selected and confirm before
+   *  Delete/Backspace. Defaults to `[]` so existing tests that don't
+   *  pass the prop keep working. */
+  selectedLayerIds?: readonly string[];
   /** Live-drag geometry override. When set, the row whose id matches
-   *  `layerId` is rendered with the overridden geometry instead of
-   *  its persisted `data.*` fields — so e.g. an arrow's endpoint
-   *  visibly follows the cursor during a TransformHandles drag,
-   *  rather than staying at its old position until pointerup commits.
-   *  Cleared by the parent on drag end. The selection outline also
-   *  follows the override (drawn from the overridden box). */
-  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
+   *  `id` IS A KEY in the map is rendered with the overridden
+   *  geometry instead of its persisted `data.*` fields — so e.g.
+   *  an arrow's endpoint visibly follows the cursor during a
+   *  TransformHandles drag, rather than staying at its old position
+   *  until pointerup commits. Cleared by the parent on drag end.
+   *  The selection outline also follows the override (drawn from
+   *  the overridden box).
+   *
+   *  Map shape (vs the previous single-id object) so multi-drag —
+   *  the gesture that translates an entire multi-selection in one
+   *  go — can paint N concurrent previews through the same renderer
+   *  contract. Single-select drags pass a 1-entry map; the kind-
+   *  bucket projections below don't care about the cardinality. */
+  liveOverride?: ReadonlyMap<string, GeometryUpdate> | null;
 }): ReactElement {
   // Blur overlays render outside this SVG via <BlurOverlays> — HTML
   // divs with backdrop-filter, so the live preview ACTUALLY blurs
@@ -132,10 +143,11 @@ export function OverlaySvg({
   // this the underlying arrow / rect stays at its pre-drag position
   // and the user sees "the line vanishes" until pointerup.
   const effectiveOverlays = useMemo(() => {
-    if (liveOverride === null) return overlays;
+    if (liveOverride === null || liveOverride.size === 0) return overlays;
     return overlays.map((row) => {
-      if (row.id !== liveOverride.layerId) return row;
-      const merged = applyGeometryLocally(row.data, liveOverride.geometry);
+      const geom = liveOverride.get(row.id);
+      if (geom === undefined) return row;
+      const merged = applyGeometryLocally(row.data, geom);
       if (merged === null) return row;
       return { ...row, data: merged };
     });
@@ -179,13 +191,22 @@ export function OverlaySvg({
   // three branches can share.
   const liveRect = draft !== null && draft.kind === "rect-drag" ? rectFromDrag(draft) : null;
 
+  // `overflow="visible"` on the svg element AND `overflow: visible`
+  // in the CSS — belt-and-suspenders. SVG 1.1 spec says the
+  // outermost <svg> defaults to overflow:hidden via the SVG
+  // attribute, and CSS `overflow:visible` doesn't always win
+  // against the SVG attribute in every Chromium version. With
+  // both set, content drawn past the viewBox (a rect dragged
+  // partway off the canvas, its selection outline, etc.) is
+  // guaranteed to render past the SVG's CSS box.
   return (
-    <svg className="editor-svg" viewBox={viewBox}>
+    <svg className="editor-svg" viewBox={viewBox} overflow="visible">
       {/* Highlights painted first so they sit beneath rects/arrows. */}
       {highlights.map(({ row, data }) => (
         <HighlightGlyph
           key={row.id}
           rect={data.rect}
+          rotation={readOverlayRotation(data)}
           color={data.color}
           opacity={data.opacity}
           blend={data.blend}
@@ -197,6 +218,7 @@ export function OverlaySvg({
         <RectGlyph
           key={row.id}
           rect={data.rect}
+          rotation={readOverlayRotation(data)}
           color={data.color}
           thickness={data.thickness}
           filled={readRectFilled(data)}
@@ -222,18 +244,23 @@ export function OverlaySvg({
         />
       ))}
       {/* Text overlays render outside the SVG via <TextHtmlOverlays>
-          so display/edit/bake share Chromium's HTML text pipeline. */}
+          so display/edit/bake share Chromium's HTML text pipeline.
+          Rotation is applied via CSS transform on the wrapper there
+          (see TextHtml.tsx + computeTextHtmlStyle); the SelectionOutline
+          below still rotates the text's bounding-box outline so the
+          dashed selection rect tracks rotated text. */}
 
-      {/* Phase 3.2 selection outline — rendered after all overlays but
-          before drafts so a draft-in-progress doesn't hide the
-          selection. Resolves the selected row + draws a thin accent
-          outline around its bounding box. Out of scope: handle glyphs
-          and color-of-selected-glyph editing (Phase 4). */}
-      {selectedLayerId !== null && (() => {
-        const sel = effectiveOverlays.find((r) => r.id === selectedLayerId);
+      {/* Multi-select outlines — rendered after all overlays but before
+          drafts so a draft-in-progress doesn't hide them. One outline
+          per selected id; ids missing from the current overlay list are
+          silently skipped (the parent's stale-id cleanup will catch up
+          on the next render). */}
+      {selectedLayerIds.map((id) => {
+        const sel = effectiveOverlays.find((r) => r.id === id);
         if (sel === undefined) return null;
         return (
           <SelectionOutline
+            key={id}
             data={sel.data}
             imageWidthPx={imageWidthPx}
             imageHeightPx={imageHeightPx}
@@ -241,7 +268,7 @@ export function OverlaySvg({
             sourceHeightPx={sourceHeightPx}
           />
         );
-      })()}
+      })}
 
       {/* Drafts (live-drag preview) rendered last so they're on top.
           Phase 3.3 — the draft now consumes `draftStyle.color` so the
@@ -711,6 +738,7 @@ function ArrowHead({
 
 function RectGlyph({
   rect,
+  rotation = 0,
   imageWidthPx,
   imageHeightPx,
   color,
@@ -719,6 +747,11 @@ function RectGlyph({
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  Default 0 (legacy / unrotated rows). Applied as an SVG transform
+   *  on the wrapping `<g>` so both halo + colored stroke rotate as one
+   *  rigid body. */
+  rotation?: number;
   imageWidthPx: number;
   imageHeightPx: number;
   /** See ArrowGlyph.color for the resolution rationale. Same shape. */
@@ -759,12 +792,21 @@ function RectGlyph({
       : isDraft
       ? "var(--accent-strong, #ffa33d)"
       : "var(--accent, #ff8a1f)";
+  // Rotation: apply ONE transform on the wrapping <g> so halo + colored
+  // strokes rotate together. Center of rotation is the rect's geometric
+  // center in PIXEL-SPACE viewBox units. SVG `rotate(deg cx cy)` takes
+  // degrees; our schema stores radians.
+  const rotateDeg = (rotation * 180) / Math.PI;
+  const cx = rx + rw / 2;
+  const cy = ry + rh / 2;
+  const groupTransform =
+    rotation !== 0 ? `rotate(${rotateDeg} ${cx} ${cy})` : undefined;
   if (filled) {
     // Solid fill — single rect, no halo. The fill IS the glyph; a
     // halo around a solid fill would just shrink-wrap the same color
     // and add nothing.
     return (
-      <g>
+      <g {...(groupTransform !== undefined ? { transform: groupTransform } : {})}>
         <rect
           x={rx}
           y={ry}
@@ -777,7 +819,7 @@ function RectGlyph({
     );
   }
   return (
-    <g>
+    <g {...(groupTransform !== undefined ? { transform: groupTransform } : {})}>
       <rect
         x={rx}
         y={ry}
@@ -804,6 +846,7 @@ function RectGlyph({
 
 function HighlightGlyph({
   rect,
+  rotation = 0,
   color,
   opacity,
   blend,
@@ -812,6 +855,10 @@ function HighlightGlyph({
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  Default 0 (legacy / unrotated rows). Applied as an SVG `transform`
+   *  attribute on the rect so the highlight rotates rigidly. */
+  rotation?: number;
   /** Optional explicit color. v2-editor refresh: legacy rows (no
    *  color field) fall back to the historical yellow marker hue. */
   color?: "auto" | string | undefined;
@@ -852,16 +899,28 @@ function HighlightGlyph({
   // rect blends only with the canvas below — NOT with other overlays
   // (which sit in the same SVG and don't have blend modes applied).
   const resolvedBlend = blend ?? "multiply";
+  // Rotation transform — same convention as RectGlyph: SVG `rotate(deg
+  // cx cy)` in pixel-space, with `cx, cy` at the rect's center.
+  const rx = rect.x * imageWidthPx;
+  const ry = rect.y * imageHeightPx;
+  const rw = rect.w * imageWidthPx;
+  const rh = rect.h * imageHeightPx;
+  const rotateDeg = (rotation * 180) / Math.PI;
+  const transformAttr =
+    rotation !== 0
+      ? `rotate(${rotateDeg} ${rx + rw / 2} ${ry + rh / 2})`
+      : undefined;
   return (
     <rect
-      x={rect.x * imageWidthPx}
-      y={rect.y * imageHeightPx}
-      width={rect.w * imageWidthPx}
-      height={rect.h * imageHeightPx}
+      x={rx}
+      y={ry}
+      width={rw}
+      height={rh}
       fill={baseHex}
       fillOpacity={fillOpacity}
       stroke="none"
       style={{ mixBlendMode: resolvedBlend }}
+      {...(transformAttr !== undefined ? { transform: transformAttr } : {})}
     />
   );
 }
@@ -967,13 +1026,46 @@ function SelectionOutline({
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     box = data.rect;
   } else if (data.kind === "arrow") {
-    // No bounding box for arrows. An axis-aligned rect drawn around the
-    // arrow's extents is the WRONG shape (the arrow itself is a line,
-    // not a rect) — it just adds visual noise. The TransformHandles
-    // component renders 2 endpoint handles (`from` + `to`) which
-    // already communicate "this arrow is selected" without redrawing
-    // the user's annotation as a misleading box. Return null.
-    return null;
+    // Arrows don't get a bounding-box outline — an axis-aligned rect
+    // around a line glyph is the wrong shape, just visual noise.
+    // Instead, render two small accent-colored endpoint dots at
+    // `from` and `to`. This is a CRITICAL multi-select affordance:
+    // TransformHandles (which used to be the sole arrow-selection
+    // indicator) only renders for single-selection, so without this
+    // path a Cmd-multi-selected arrow had ZERO visual feedback — the
+    // user saw nothing to confirm the click landed. Pre-fix the
+    // SelectionOutline branch returned null and the comment claimed
+    // TransformHandles owned the affordance; that assumption breaks
+    // the moment a second layer joins the selection.
+    //
+    // The dots intentionally stack cleanly under TransformHandles'
+    // larger square endpoint handles in the single-select case —
+    // the dot is decorative, the handle is interactive. No
+    // pointer-events override needed; the outer SVG is already
+    // `pointer-events: none`.
+    const shortSide = Math.min(imageWidthPx, imageHeightPx);
+    // Dot radius tracks the same scale as the dashed-outline stroke
+    // so multi-select feedback reads consistently across overlay
+    // kinds (rect/highlight/blur/text get a dashed bbox, arrow gets
+    // dots, but both at the same visual weight). Min 3px so a very
+    // small canvas still shows something hit-testable visually.
+    const dotR = Math.max(3, shortSide * 0.008);
+    const haloW = Math.max(1, shortSide * 0.003);
+    const fromX = data.from.x * imageWidthPx;
+    const fromY = data.from.y * imageHeightPx;
+    const toX = data.to.x * imageWidthPx;
+    const toY = data.to.y * imageHeightPx;
+    const stroke = "var(--accent, #ff8a1f)";
+    return (
+      <g data-testid="selection-outline" data-kind="arrow-endpoints">
+        {/* White halo per dot for contrast on dark images. Painted
+            first so the colored fill sits on top. */}
+        <circle cx={fromX} cy={fromY} r={dotR} fill="white" stroke="white" strokeWidth={haloW * 2} />
+        <circle cx={toX} cy={toY} r={dotR} fill="white" stroke="white" strokeWidth={haloW * 2} />
+        <circle cx={fromX} cy={fromY} r={dotR - haloW} fill={stroke} />
+        <circle cx={toX} cy={toY} r={dotR - haloW} fill={stroke} />
+      </g>
+    );
   } else if (data.kind === "text") {
     box = textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   } else if (data.kind === "crop") {
@@ -982,11 +1074,24 @@ function SelectionOutline({
   if (box === null) return null;
   // Pad slightly so the outline doesn't sit ON the stroke. Normalized
   // padding (0.006 of each axis) converts cleanly to pixel space below.
+  //
+  // No [0, 1] clamp. Pre-fix this used Math.max(0, …) / Math.min(1 –
+  // …, …) which made the outline "allergic to the canvas edge" — when
+  // the asset was dragged partly off-canvas, the outline shrank to
+  // only the on-canvas portion (visibly looked like the asset
+  // changed size). On rotated rects the clamp ALSO shifted the
+  // computed center (pivotX/pivotY below = clamped center, not the
+  // rect's actual center), so the outline rotated around the wrong
+  // point. The outline must bound the FULL asset wherever it is;
+  // overflow:visible on .editor-svg + .editor-canvas lets the off-
+  // canvas portion paint. The bake clips at canvas bounds, so off-
+  // canvas content doesn't ship — but in the editor we want the user
+  // to see it.
   const pad = 0.006;
-  const xn = Math.max(0, box.x - pad);
-  const yn = Math.max(0, box.y - pad);
-  const wn = Math.min(1 - xn, box.w + pad * 2);
-  const hn = Math.min(1 - yn, box.h + pad * 2);
+  const xn = box.x - pad;
+  const yn = box.y - pad;
+  const wn = box.w + pad * 2;
+  const hn = box.h + pad * 2;
   const x = xn * imageWidthPx;
   const y = yn * imageHeightPx;
   const w = wn * imageWidthPx;
@@ -999,8 +1104,33 @@ function SelectionOutline({
   const dashOn = shortSide * 0.012;
   const dashOff = shortSide * 0.008;
   const dashArray = `${dashOn} ${dashOff}`;
+  // Rotate the outline so it follows the rotated glyph beneath. Pivot
+  // matches each kind's glyph:
+  //   • rect / highlight / blur — center of the rect
+  //   • text                    — center of the textBoundsBox (the
+  //                                visible body-box). TextGlyph
+  //                                rotates around this same center so
+  //                                the outline tracks the glyphs.
+  //
+  // Unrotated rows skip the transform attribute entirely so the
+  // SelectionOutline DOM stays byte-identical for the common case.
+  const rotation =
+    data.kind === "rect" ||
+    data.kind === "highlight" ||
+    data.kind === "blur" ||
+    data.kind === "text"
+      ? readOverlayRotation(data)
+      : 0;
+  const pivotX = x + w / 2;
+  const pivotY = y + h / 2;
+  const rotateDeg = (rotation * 180) / Math.PI;
+  const outlineTransform =
+    rotation !== 0 ? `rotate(${rotateDeg} ${pivotX} ${pivotY})` : undefined;
   return (
-    <g data-testid="selection-outline">
+    <g
+      data-testid="selection-outline"
+      {...(outlineTransform !== undefined ? { transform: outlineTransform } : {})}
+    >
       {/* White halo for contrast on dark images. */}
       <rect
         x={x}
@@ -1062,7 +1192,18 @@ type HandleKind =
   // resize handle; rendered as a transparent rect under the resize
   // handles so resize-handle pointerdowns take priority via z-order
   // + stopPropagation.
-  | "body";
+  | "body"
+  // Rotation handle — rendered above the bbox top-center. Drag
+  // pivots the layer around its geometric center (rect/highlight/
+  // blur) or anchor point (text). Arrow is exempt because direction
+  // is already encoded in from/to.
+  | "rotate";
+
+/** Vertical offset (normalized coords) for the rotation handle above
+ *  the bbox's top edge. ~3% of the canvas — small enough to keep the
+ *  handle close to the glyph, big enough that it doesn't collide
+ *  with the top edge resize handle. */
+const ROTATE_HANDLE_OFFSET_N = 0.03;
 
 interface HandleDescriptor {
   /** Stable identifier — also used in data-testid. */
@@ -1082,24 +1223,173 @@ function edgeCursor(kind: "n" | "e" | "s" | "w"): string {
   return kind === "n" || kind === "s" ? "ns-resize" : "ew-resize";
 }
 
+/** CSS cursor for a resize handle on a ROTATED rect. The handle's
+ *  shape stays axis-aligned (Figma / Illustrator / PowerPoint
+ *  convention — square handles are easier to click + read than
+ *  diamond handles), but the CURSOR rotates so its diagonal /
+ *  axial direction follows the visible edge.
+ *
+ *  Bucket the rotated direction vector into 8 octants:
+ *    E / W       → ew-resize (horizontal)
+ *    N / S       → ns-resize (vertical)
+ *    NW / SE     → nwse-resize (\\ diagonal)
+ *    NE / SW     → nesw-resize (/ diagonal)
+ *
+ *  When `rotation === 0` returns the original cursor — bit-identical
+ *  to the axis-aligned cornerCursor / edgeCursor output, so unrotated
+ *  rows keep their cursors exactly as before. */
+function rotatedHandleCursor(
+  kind: "nw" | "ne" | "se" | "sw" | "n" | "e" | "s" | "w",
+  rotation: number
+): string {
+  if (rotation === 0) {
+    return kind === "n" || kind === "e" || kind === "s" || kind === "w"
+      ? edgeCursor(kind)
+      : cornerCursor(kind);
+  }
+  // Unrotated screen-direction vector. +y is DOWN in screen space.
+  const dirs: Record<typeof kind, readonly [number, number]> = {
+    nw: [-1, -1], n: [0, -1], ne: [1, -1],
+    e: [1, 0],
+    se: [1, 1], s: [0, 1], sw: [-1, 1],
+    w: [-1, 0]
+  };
+  const [vx, vy] = dirs[kind];
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const rx = vx * cos - vy * sin;
+  const ry = vx * sin + vy * cos;
+  // Angle in [0, 2π). Bucket into 8 sectors centered on multiples
+  // of π/4: 0=E, 1=SE, 2=S, 3=SW, 4=W, 5=NW, 6=N, 7=NE.
+  let angle = Math.atan2(ry, rx);
+  if (angle < 0) angle += 2 * Math.PI;
+  const sector = Math.round(angle / (Math.PI / 4)) % 8;
+  switch (sector) {
+    case 0:
+    case 4:
+      return "ew-resize";
+    case 2:
+    case 6:
+      return "ns-resize";
+    case 1:
+    case 5:
+      return "nwse-resize";
+    case 3:
+    case 7:
+      return "nesw-resize";
+    default:
+      return "default";
+  }
+}
+
 /** Compute handle positions for a given overlay. Returns null for
  *  overlay kinds that don't expose drag handles in Phase 3.5 (crop —
  *  has its own CropTool overlay). */
-function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null {
+/** Rotate a handle's position around the layer's pivot. Math is done
+ *  in PIXEL space so non-square canvases don't skew the rotated
+ *  positions — a 45°-rotated handle on a portrait image should land
+ *  on the visible corner, not somewhere off the rect.
+ *
+ *  Takes the handle's UNROTATED position in normalized coords, the
+ *  pivot also in normalized, and image dims so the local offset
+ *  from pivot can be expressed in pixels before the rotation matrix
+ *  is applied. Returns the rotated position in normalized coords. */
+function rotateNormalizedAroundPivot(
+  xn: number,
+  yn: number,
+  pivotXn: number,
+  pivotYn: number,
+  rotation: number,
+  imageWidthPx: number,
+  imageHeightPx: number
+): { xn: number; yn: number } {
+  if (rotation === 0) return { xn, yn };
+  const dxPx = (xn - pivotXn) * imageWidthPx;
+  const dyPx = (yn - pivotYn) * imageHeightPx;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const rotatedDxPx = dxPx * cos - dyPx * sin;
+  const rotatedDyPx = dxPx * sin + dyPx * cos;
+  return {
+    xn: pivotXn + rotatedDxPx / imageWidthPx,
+    yn: pivotYn + rotatedDyPx / imageHeightPx
+  };
+}
+
+function handlesForOverlay(
+  data: OverlayRow["data"],
+  bodyBox: { x: number; y: number; w: number; h: number } | null,
+  imageWidthPx: number,
+  imageHeightPx: number
+): HandleDescriptor[] | null {
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     const { x, y, w, h } = data.rect;
+    const rotation = readOverlayRotation(data);
+    const pivotXn = x + w / 2;
+    const pivotYn = y + h / 2;
+    // Each handle's UNROTATED position. We rotate around the pivot
+    // below so the visible handles land on the rotated rect's
+    // corners + edge midpoints — without this, rotating a rect
+    // leaves the resize squares stuck on the original axis-aligned
+    // bbox while the glyph rotates beneath them.
+    // Cursors are rotation-aware — the handle SHAPE stays axis-
+    // aligned (industry convention) but the cursor's diagonal /
+    // axial direction follows the visible edge. Without this, a
+    // 90°-rotated NE handle would still show the unrotated
+    // nesw-resize cursor even though the visible edge there is
+    // now horizontal.
+    const unrotated: ReadonlyArray<Omit<HandleDescriptor, "xn" | "yn"> & {
+      xn: number;
+      yn: number;
+    }> = [
+      { kind: "nw", xn: x, yn: y, cursor: rotatedHandleCursor("nw", rotation) },
+      { kind: "ne", xn: x + w, yn: y, cursor: rotatedHandleCursor("ne", rotation) },
+      { kind: "se", xn: x + w, yn: y + h, cursor: rotatedHandleCursor("se", rotation) },
+      { kind: "sw", xn: x, yn: y + h, cursor: rotatedHandleCursor("sw", rotation) },
+      { kind: "n", xn: x + w / 2, yn: y, cursor: rotatedHandleCursor("n", rotation) },
+      { kind: "e", xn: x + w, yn: y + h / 2, cursor: rotatedHandleCursor("e", rotation) },
+      { kind: "s", xn: x + w / 2, yn: y + h, cursor: rotatedHandleCursor("s", rotation) },
+      { kind: "w", xn: x, yn: y + h / 2, cursor: rotatedHandleCursor("w", rotation) }
+    ];
+    const rotated = unrotated.map((h) => {
+      const r = rotateNormalizedAroundPivot(
+        h.xn,
+        h.yn,
+        pivotXn,
+        pivotYn,
+        rotation,
+        imageWidthPx,
+        imageHeightPx
+      );
+      return { kind: h.kind, xn: r.xn, yn: r.yn, cursor: h.cursor };
+    });
+    // Rotation handle: positioned above the top edge midpoint, then
+    // rotated with the rest. The local offset is in pixel space
+    // (ROTATE_HANDLE_OFFSET_N × imageHeightPx) so it stays a
+    // consistent visual distance regardless of canvas aspect.
+    const rotateLocalY = y - ROTATE_HANDLE_OFFSET_N;
+    const r = rotateNormalizedAroundPivot(
+      x + w / 2,
+      rotateLocalY,
+      pivotXn,
+      pivotYn,
+      rotation,
+      imageWidthPx,
+      imageHeightPx
+    );
+    // Clamp y so the handle stays at least slightly inside the
+    // canvas even when the glyph hugs the top edge (drag math
+    // reads pointer pos vs pivot, not handle render location, so
+    // clamping doesn't affect angles).
+    const clampedRotateYn = Math.max(0.005, r.yn);
     return [
-      { kind: "nw", xn: x, yn: y, cursor: cornerCursor("nw") },
-      { kind: "ne", xn: x + w, yn: y, cursor: cornerCursor("ne") },
-      { kind: "se", xn: x + w, yn: y + h, cursor: cornerCursor("se") },
-      { kind: "sw", xn: x, yn: y + h, cursor: cornerCursor("sw") },
-      { kind: "n", xn: x + w / 2, yn: y, cursor: edgeCursor("n") },
-      { kind: "e", xn: x + w, yn: y + h / 2, cursor: edgeCursor("e") },
-      { kind: "s", xn: x + w / 2, yn: y + h, cursor: edgeCursor("s") },
-      { kind: "w", xn: x, yn: y + h / 2, cursor: edgeCursor("w") }
+      ...rotated,
+      { kind: "rotate", xn: r.xn, yn: clampedRotateYn, cursor: "grab" }
     ];
   }
   if (data.kind === "arrow") {
+    // Arrow exempt from rotation — direction is already encoded in
+    // from/to. Use the endpoint handles to reshape.
     return [
       { kind: "arrow-from", xn: data.from.x, yn: data.from.y, cursor: "move" },
       { kind: "arrow-to", xn: data.to.x, yn: data.to.y, cursor: "move" }
@@ -1114,7 +1404,40 @@ function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null 
     // "this is selected"; the transparent body-hit rect (sized via
     // `textBoundsBox` — same math as the outline) catches drag and
     // double-click. No extra glyph needed.
-    return [];
+    //
+    // The rotation handle IS rendered for text — positioned above the
+    // glyph's bbox top edge (resolved via `bodyBox`, which uses the
+    // same `textBoundsBox` math as the outline). For rotated text,
+    // the handle rotates AROUND the body-box CENTER (not the anchor
+    // point) so it stays visually attached to the top of the rotated
+    // glyph. Pivoting on the anchor (data.point — the left edge of
+    // the rendered text) made the handle swing in a giant arc as
+    // rotation increased; pivoting on the body-box center keeps the
+    // handle close to the glyph at every angle.
+    if (bodyBox === null) return [];
+    const rotation = readOverlayRotation(data);
+    const pivotXn = bodyBox.x + bodyBox.w / 2;
+    const pivotYn = bodyBox.y + bodyBox.h / 2;
+    const unrotatedXn = bodyBox.x + bodyBox.w / 2;
+    const unrotatedYn = bodyBox.y - ROTATE_HANDLE_OFFSET_N;
+    const r = rotateNormalizedAroundPivot(
+      unrotatedXn,
+      unrotatedYn,
+      pivotXn,
+      pivotYn,
+      rotation,
+      imageWidthPx,
+      imageHeightPx
+    );
+    const clampedYn = Math.max(0.005, r.yn);
+    return [
+      {
+        kind: "rotate",
+        xn: r.xn,
+        yn: clampedYn,
+        cursor: "grab"
+      }
+    ];
   }
   if (data.kind === "step") {
     return [
@@ -1128,56 +1451,122 @@ function handlesForOverlay(data: OverlayRow["data"]): HandleDescriptor[] | null 
 /** Geometry update for the active drag, derived from the descriptor's
  *  handle kind and a fresh pointer position. The `startPt` argument
  *  is the pointer position at pointerdown — used by the `body`
- *  handle to compute a translation delta. Resize handles ignore it. */
+ *  handle to compute a translation delta. Resize handles ignore it.
+ *
+ *  Image dims drive the rotation math: handle positions, the rotation
+ *  angle, the body-drag clamp, and resize math all need to convert
+ *  between normalized + pixel space so rotation behaves correctly on
+ *  non-square canvases. */
 function geometryFromDrag(
   data: OverlayRow["data"],
   handle: HandleKind,
   newXn: number,
   newYn: number,
-  startPt: { xn: number; yn: number }
+  startPt: { xn: number; yn: number },
+  imageWidthPx: number,
+  imageHeightPx: number,
+  sourceWidthPx: number,
+  sourceHeightPx: number
 ): GeometryUpdate | null {
-  // Body-translate: shift every coordinate by the pointer delta from
-  // pointerdown, clamping so no part of the layer escapes the canvas.
-  // The translation is computed against the PRE-DRAG `data` snapshot,
-  // so successive pointermoves don't compound drift.
+  // Rotation handle — compute the angle from the layer's pivot point.
+  // Pivot:
+  //   • rect / highlight / blur → bbox center.
+  //   • text → BODY-BOX center (textBoundsBox center), NOT data.point.
+  //     The anchor is on the LEFT edge of the rendered glyphs (text
+  //     extends rightward from the click point). Rotating around it
+  //     made the text swing in a giant arc around an off-glyph
+  //     point. Pivoting on the body-box center matches what the user
+  //     sees as "the middle of the text" and produces a tight,
+  //     intuitive rotation.
+  // The delta is (current angle from pivot) - (down angle from
+  // pivot); applied to the layer's PRE-DRAG rotation. Angles are
+  // computed in PIXEL space so non-square canvases don't skew the
+  // rotation — atan2 in normalized coords would map equal visual
+  // angles to unequal normalized angles on a portrait image.
+  if (handle === "rotate") {
+    let pivotXn: number;
+    let pivotYn: number;
+    let preRotation = 0;
+    if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+      pivotXn = data.rect.x + data.rect.w / 2;
+      pivotYn = data.rect.y + data.rect.h / 2;
+      preRotation = data.rotation ?? 0;
+    } else if (data.kind === "text") {
+      const box = textBoundsBox(
+        data,
+        imageWidthPx,
+        imageHeightPx,
+        sourceWidthPx,
+        sourceHeightPx
+      );
+      pivotXn = box.x + box.w / 2;
+      pivotYn = box.y + box.h / 2;
+      preRotation = data.rotation ?? 0;
+    } else {
+      // arrow / step / crop — no rotation handle exposed.
+      return null;
+    }
+    const startDxPx = (startPt.xn - pivotXn) * imageWidthPx;
+    const startDyPx = (startPt.yn - pivotYn) * imageHeightPx;
+    const currDxPx = (newXn - pivotXn) * imageWidthPx;
+    const currDyPx = (newYn - pivotYn) * imageHeightPx;
+    const startAngle = Math.atan2(startDyPx, startDxPx);
+    const currAngle = Math.atan2(currDyPx, currDxPx);
+    const newRotation = preRotation + (currAngle - startAngle);
+    if (data.kind === "text") {
+      return { kind: "text", point: data.point, rotation: newRotation };
+    }
+    // rect / highlight / blur — emit unchanged rect so the merger
+    // writes only the rotation field.
+    return { kind: "rect", rect: data.rect, rotation: newRotation };
+  }
+
   if (handle === "body") {
     const dx = newXn - startPt.xn;
     const dy = newYn - startPt.yn;
+    // No canvas-edge clamp on body-translate — user wants to be able
+    // to drag a shape mostly off-canvas (e.g., "I only want a corner
+    // visible at the edge"). The underlying NormalizedScalar schema
+    // accepts any finite number; coords outside [0, 1] are valid + the
+    // bake clips them at the canvas edge automatically. Clamping was
+    // an early defensive measure that's now actively in the way:
+    // rotated rects with their AABB hugging the edge couldn't be
+    // dragged further, and unrotated shapes couldn't be partially
+    // pushed off (a common cropping-style annotation gesture).
     if (data.kind === "arrow") {
-      // Clamp the delta so neither endpoint leaves [0,1]. Compute
-      // the tightest min/max delta across both endpoints, then clamp.
-      const minDx = -Math.min(data.from.x, data.to.x);
-      const maxDx = 1 - Math.max(data.from.x, data.to.x);
-      const minDy = -Math.min(data.from.y, data.to.y);
-      const maxDy = 1 - Math.max(data.from.y, data.to.y);
-      const ddx = Math.max(minDx, Math.min(maxDx, dx));
-      const ddy = Math.max(minDy, Math.min(maxDy, dy));
       return {
         kind: "arrow",
-        from: { x: data.from.x + ddx, y: data.from.y + ddy },
-        to: { x: data.to.x + ddx, y: data.to.y + ddy }
+        from: { x: data.from.x + dx, y: data.from.y + dy },
+        to: { x: data.to.x + dx, y: data.to.y + dy }
       };
     }
     if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
-      const { x, y, w, h } = data.rect;
-      const ddx = Math.max(-x, Math.min(1 - (x + w), dx));
-      const ddy = Math.max(-y, Math.min(1 - (y + h), dy));
-      return { kind: "rect", rect: { x: x + ddx, y: y + ddy, w, h } };
+      // Preserve rotation across the translation so a body-drag
+      // doesn't accidentally reset it. The merger writes both fields.
+      const rotation = readOverlayRotation(data);
+      return {
+        kind: "rect",
+        rect: {
+          x: data.rect.x + dx,
+          y: data.rect.y + dy,
+          w: data.rect.w,
+          h: data.rect.h
+        },
+        ...(rotation !== 0 ? { rotation } : {})
+      };
     }
     if (data.kind === "text") {
-      const ddx = Math.max(-data.point.x, Math.min(1 - data.point.x, dx));
-      const ddy = Math.max(-data.point.y, Math.min(1 - data.point.y, dy));
+      const rotation = readOverlayRotation(data);
       return {
         kind: "text",
-        point: { x: data.point.x + ddx, y: data.point.y + ddy }
+        point: { x: data.point.x + dx, y: data.point.y + dy },
+        ...(rotation !== 0 ? { rotation } : {})
       };
     }
     if (data.kind === "step") {
-      const ddx = Math.max(-data.point.x, Math.min(1 - data.point.x, dx));
-      const ddy = Math.max(-data.point.y, Math.min(1 - data.point.y, dy));
       return {
         kind: "step",
-        point: { x: data.point.x + ddx, y: data.point.y + ddy }
+        point: { x: data.point.x + dx, y: data.point.y + dy }
       };
     }
     return null;
@@ -1190,67 +1579,165 @@ function geometryFromDrag(
 
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     const { x, y, w, h } = data.rect;
-    let nx = x;
-    let ny = y;
-    let nw = w;
-    let nh = h;
-    // Corner / edge resize. Each handle pins the OPPOSITE edge(s) and
-    // moves its own edge to the new pointer position.
+    const rotation = readOverlayRotation(data);
+    if (rotation === 0) {
+      // Axis-aligned resize path (legacy behavior). For unrotated
+      // rows this is bit-for-bit the same math + result as before
+      // the rotation work landed.
+      let nx = x;
+      let ny = y;
+      let nw = w;
+      let nh = h;
+      // Corner / edge resize. Each handle pins the OPPOSITE edge(s) and
+      // moves its own edge to the new pointer position.
+      switch (handle) {
+        case "nw":
+          nw = x + w - cx;
+          nh = y + h - cy;
+          nx = cx;
+          ny = cy;
+          break;
+        case "ne":
+          nw = cx - x;
+          nh = y + h - cy;
+          ny = cy;
+          break;
+        case "se":
+          nw = cx - x;
+          nh = cy - y;
+          break;
+        case "sw":
+          nw = x + w - cx;
+          nh = cy - y;
+          nx = cx;
+          break;
+        case "n":
+          nh = y + h - cy;
+          ny = cy;
+          break;
+        case "e":
+          nw = cx - x;
+          break;
+        case "s":
+          nh = cy - y;
+          break;
+        case "w":
+          nw = x + w - cx;
+          nx = cx;
+          break;
+        default:
+          return null;
+      }
+      // Normalize negative width/height by flipping rect coords. Users
+      // who drag a corner past the opposite edge get a "flip" effect.
+      if (nw < 0) {
+        nx += nw;
+        nw = -nw;
+      }
+      if (nh < 0) {
+        ny += nh;
+        nh = -nh;
+      }
+      // Minimum size — keep at least 0.005 in normalized units so the
+      // overlay doesn't collapse to a zero-area sliver the user can't
+      // grab again.
+      const MIN = 0.005;
+      if (nw < MIN) nw = MIN;
+      if (nh < MIN) nh = MIN;
+      return { kind: "rect", rect: { x: nx, y: ny, w: nw, h: nh } };
+    }
+
+    // Rotation-aware resize. Strategy: pin the opposite corner / edge
+    // midpoint's WORLD position, compute the pointer's position in the
+    // rect's LOCAL frame (centered on old center, axes aligned with
+    // the unrotated rect), derive new (w, h) from the local-frame
+    // delta vs the pinned local corner, then compute the new world-
+    // space center so the pinned point stays put.
+    //
+    // Pinned local position by handle (in HALF-rect units, so (-1, -1)
+    // means NW, (+1, +1) means SE, (0, +1) means S-edge midpoint).
+    // sxSign / sySign also tell us how the local delta from the
+    // pinned point maps to (newW, newH). For a corner: both axes
+    // active. For an edge midpoint: only the perpendicular axis
+    // changes; the parallel axis preserves the old size.
+    let pinSx: number;
+    let pinSy: number;
+    let activeX: boolean;
+    let activeY: boolean;
     switch (handle) {
       case "nw":
-        nw = x + w - cx;
-        nh = y + h - cy;
-        nx = cx;
-        ny = cy;
-        break;
+        pinSx = 1;  pinSy = 1;  activeX = true;  activeY = true;  break;
       case "ne":
-        nw = cx - x;
-        nh = y + h - cy;
-        ny = cy;
-        break;
+        pinSx = -1; pinSy = 1;  activeX = true;  activeY = true;  break;
       case "se":
-        nw = cx - x;
-        nh = cy - y;
-        break;
+        pinSx = -1; pinSy = -1; activeX = true;  activeY = true;  break;
       case "sw":
-        nw = x + w - cx;
-        nh = cy - y;
-        nx = cx;
-        break;
+        pinSx = 1;  pinSy = -1; activeX = true;  activeY = true;  break;
       case "n":
-        nh = y + h - cy;
-        ny = cy;
-        break;
+        pinSx = 0;  pinSy = 1;  activeX = false; activeY = true;  break;
       case "e":
-        nw = cx - x;
-        break;
+        pinSx = -1; pinSy = 0;  activeX = true;  activeY = false; break;
       case "s":
-        nh = cy - y;
-        break;
+        pinSx = 0;  pinSy = -1; activeX = false; activeY = true;  break;
       case "w":
-        nw = x + w - cx;
-        nx = cx;
-        break;
+        pinSx = 1;  pinSy = 0;  activeX = true;  activeY = false; break;
       default:
         return null;
     }
-    // Normalize negative width/height by flipping rect coords. Users
-    // who drag a corner past the opposite edge get a "flip" effect.
-    if (nw < 0) {
-      nx += nw;
-      nw = -nw;
-    }
-    if (nh < 0) {
-      ny += nh;
-      nh = -nh;
-    }
-    // Minimum size — keep at least 0.005 in normalized units so the
-    // overlay doesn't collapse to a zero-area sliver the user can't
-    // grab again.
-    const MIN = 0.005;
-    if (nw < MIN) nw = MIN;
-    if (nh < MIN) nh = MIN;
-    return { kind: "rect", rect: { x: nx, y: ny, w: nw, h: nh } };
+    const oldCxPx = (x + w / 2) * imageWidthPx;
+    const oldCyPx = (y + h / 2) * imageHeightPx;
+    const oldWPx = w * imageWidthPx;
+    const oldHPx = h * imageHeightPx;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    // Pinned point in WORLD (pixel) space — rotate the local pinned
+    // position by θ, add the old center.
+    const pinLocalXPx = (pinSx * oldWPx) / 2;
+    const pinLocalYPx = (pinSy * oldHPx) / 2;
+    const pinWorldXPx = oldCxPx + pinLocalXPx * cos - pinLocalYPx * sin;
+    const pinWorldYPx = oldCyPx + pinLocalXPx * sin + pinLocalYPx * cos;
+    // Pointer in world pixel space (clamped to canvas).
+    const pointerWorldXPx = cx * imageWidthPx;
+    const pointerWorldYPx = cy * imageHeightPx;
+    // Inverse-rotate (pointer - pin) into local frame. That delta is
+    // the rect's diagonal in local coords:
+    //   localDelta.x = (pinSx * -1) * newW   (if active)
+    //   localDelta.y = (pinSy * -1) * newH   (if active)
+    // i.e. for NE (pinSx=-1, pinSy=1), localDelta = (newW, -newH).
+    const wdx = pointerWorldXPx - pinWorldXPx;
+    const wdy = pointerWorldYPx - pinWorldYPx;
+    const localDxPx = wdx * cos + wdy * sin;   // rotate by -θ
+    const localDyPx = -wdx * sin + wdy * cos;
+    let newWPx = activeX ? localDxPx * -pinSx : oldWPx;
+    let newHPx = activeY ? localDyPx * -pinSy : oldHPx;
+    // Flip on negative (user dragged past the pin). Mirror the
+    // pinned-corner: e.g., dragging NE past SW flips to SW behavior.
+    // Simpler: just take absolute values + clamp to MIN. The pin
+    // stays where it is; only the rect's local-coord extent changes.
+    newWPx = Math.abs(newWPx);
+    newHPx = Math.abs(newHPx);
+    const MIN_PX = Math.max(2, Math.min(imageWidthPx, imageHeightPx) * 0.005);
+    if (newWPx < MIN_PX) newWPx = MIN_PX;
+    if (newHPx < MIN_PX) newHPx = MIN_PX;
+    // New CENTER world position so the pinned local point lands back
+    // on the same world coords. The pinned local position in the NEW
+    // rect is (pinSx * newW/2, pinSy * newH/2).
+    const newPinLocalXPx = (pinSx * newWPx) / 2;
+    const newPinLocalYPx = (pinSy * newHPx) / 2;
+    const newCxPx =
+      pinWorldXPx - (newPinLocalXPx * cos - newPinLocalYPx * sin);
+    const newCyPx =
+      pinWorldYPx - (newPinLocalXPx * sin + newPinLocalYPx * cos);
+    // Project back to normalized rect coords.
+    const newW = newWPx / imageWidthPx;
+    const newH = newHPx / imageHeightPx;
+    const newX = newCxPx / imageWidthPx - newW / 2;
+    const newY = newCyPx / imageHeightPx - newH / 2;
+    return {
+      kind: "rect",
+      rect: { x: newX, y: newY, w: newW, h: newH },
+      rotation
+    };
   }
   if (data.kind === "arrow") {
     if (handle === "arrow-from") {
@@ -1364,13 +1851,18 @@ export function TransformHandles({
   }, [selectedOverlay.id]);
 
   const data = liveData ?? selectedOverlay.data;
-  const handles = useMemo(() => handlesForOverlay(data), [data]);
-  // Bounding box for the body-hit rect, computed from the same
-  // `data` snapshot the handles use so the body follows during a
-  // live drag.
+  // Bounding box for the body-hit rect AND the text-kind rotation
+  // handle's position (computed from the same `data` snapshot the
+  // handles use so the body + rotate handle follow during a live drag).
+  // bodyBox MUST be computed before handles so handlesForOverlay can
+  // read it.
   const bodyBox = useMemo(
     () => bodyBoxForOverlay(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx),
     [data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx]
+  );
+  const handles = useMemo(
+    () => handlesForOverlay(data, bodyBox, imageWidthPx, imageHeightPx),
+    [data, bodyBox, imageWidthPx, imageHeightPx]
   );
 
   // Translate a pointer event's client coordinates back into normalized
@@ -1393,6 +1885,21 @@ export function TransformHandles({
   const onPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, handle: HandleKind): void => {
       if (event.button !== 0) return;
+      // Cmd/Ctrl-click on the BODY-HIT rect is a multi-select gesture,
+      // not a drag-init. Without this branch the body-hit unconditionally
+      // stopPropagation'd, swallowing the event before Editor's
+      // onPointerDown could hit-test for the layer underneath (the
+      // body-hit of an already-selected layer is huge for rects / wide
+      // arrows / multi-line text, so it covers most neighbors a user
+      // would Cmd-click to extend selection). Let the event bubble so
+      // Editor.hitTestOverlays runs and toggleSelection fires. Resize
+      // and rotation handles stay drag-only — Cmd-clicking them isn't
+      // a defined gesture (they're tiny dedicated affordances; a
+      // modifier-click there should just be a no-op, not a selection
+      // change), so the handle branch keeps the original behavior.
+      if (handle === "body" && (event.metaKey || event.ctrlKey)) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -1413,7 +1920,17 @@ export function TransformHandles({
       if (startData === null || handle === null || startPt === null) return;
       const pt = clientToNormalized(event.clientX, event.clientY);
       if (pt === null) return;
-      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn, startPt);
+      const geometry = geometryFromDrag(
+        startData,
+        handle,
+        pt.xn,
+        pt.yn,
+        startPt,
+        imageWidthPx,
+        imageHeightPx,
+        sourceWidthPx,
+        sourceHeightPx
+      );
       if (geometry === null) return;
       // Project the geometry onto a fresh data snapshot for live render.
       const merged = applyGeometryLocally(startData, geometry);
@@ -1426,7 +1943,7 @@ export function TransformHandles({
       // `liveOverride`.
       onGeometryDrag?.(geometry);
     },
-    [clientToNormalized, onGeometryDrag]
+    [clientToNormalized, onGeometryDrag, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx]
   );
 
   const onPointerUp = useCallback(
@@ -1484,7 +2001,17 @@ export function TransformHandles({
         onDragEnd?.();
         return;
       }
-      const geometry = geometryFromDrag(startData, handle, pt.xn, pt.yn, startPt);
+      const geometry = geometryFromDrag(
+        startData,
+        handle,
+        pt.xn,
+        pt.yn,
+        startPt,
+        imageWidthPx,
+        imageHeightPx,
+        sourceWidthPx,
+        sourceHeightPx
+      );
       if (geometry !== null) {
         onGeometryChange(geometry);
       }
@@ -1493,7 +2020,17 @@ export function TransformHandles({
       // selectedOverlay.id above clears it when the new layer arrives.
       onDragEnd?.();
     },
-    [clientToNormalized, onDragEnd, onGeometryChange, onRequestEdit, selectedOverlay]
+    [
+      clientToNormalized,
+      onDragEnd,
+      onGeometryChange,
+      onRequestEdit,
+      selectedOverlay,
+      imageWidthPx,
+      imageHeightPx,
+      sourceWidthPx,
+      sourceHeightPx
+    ]
   );
 
   if (handles === null) return null;
@@ -1536,59 +2073,105 @@ export function TransformHandles({
           // even one the browser still emits `click` for, since it
           // fires on every mousedown→mouseup pair targeting the same
           // element with no movement threshold — never trips the edit
-          // branch. First-click-to-select happens in Editor.onPointerDown
+          // branch.
+          //
+          // The Cmd/Ctrl-click multi-select gesture is also handled
+          // here without an onClick: `onPointerDown` above early-returns
+          // when modifier is held (handle === "body"), so the event
+          // bubbles to Editor and `dragStartDataRef` never gets set →
+          // onPointerUp's edit branch sees `startData === null` and
+          // returns immediately. No double-fire of "deselect then
+          // open edit input".
+          //
+          // First-click-to-select happens in Editor.onPointerDown
           // before TransformHandles even mounts; this body's pointerup
           // only ever fires on the SECOND click on an already-selected
           // overlay — and that pointerup IS the edit trigger when no
-          // drag happened. A native dblclick on the body never reaches
-          // this element in practice: by the time the second click's
-          // pointerup runs, onRequestEdit has cleared selectedLayerId
-          // and TransformHandles has unmounted, so the dblclick has no
-          // listener target. The previous onDoubleClick handler was
+          // drag happened. The previous onDoubleClick handler was
           // load-bearing dead code; removed.
-          style={{
-            position: "absolute",
-            left: `${bodyBox.x * 100}%`,
-            top: `${bodyBox.y * 100}%`,
-            width: `${bodyBox.w * 100}%`,
-            height: `${bodyBox.h * 100}%`,
-            cursor: selectedOverlay.data.kind === "text" ? "text" : "move",
-            pointerEvents: "auto",
-            // Transparent — the body is a hit target only. Painting
-            // is owned by OverlaySvg / BlurOverlays.
-            background: "transparent"
-          }}
+          style={(() => {
+            // Rotate the body-hit rect to follow the visible glyph
+            // when the underlying overlay has a non-zero rotation. CSS
+            // `transform: rotate(...)` defaults to `transform-origin:
+            // center`, which matches the renderer's pivot for ALL
+            // four supported kinds now:
+            //   • rect / highlight / blur — bbox center
+            //   • text                    — body-box center (this is
+            //                                 also the body-hit rect's
+            //                                 CSS center since the
+            //                                 rect IS the body-box)
+            // No transform-origin override needed; CSS default
+            // matches the SVG glyph's pivot.
+            const d = selectedOverlay.data;
+            const rotation =
+              d.kind === "rect" ||
+              d.kind === "highlight" ||
+              d.kind === "blur" ||
+              d.kind === "text"
+                ? readOverlayRotation(d)
+                : 0;
+            const rotateDeg = (rotation * 180) / Math.PI;
+            const transformAttr =
+              rotation !== 0 ? `rotate(${rotateDeg}deg)` : undefined;
+            return {
+              position: "absolute" as const,
+              left: `${bodyBox.x * 100}%`,
+              top: `${bodyBox.y * 100}%`,
+              width: `${bodyBox.w * 100}%`,
+              height: `${bodyBox.h * 100}%`,
+              cursor: d.kind === "text" ? "text" : "move",
+              pointerEvents: "auto" as const,
+              // Transparent — the body is a hit target only. Painting
+              // is owned by OverlaySvg / BlurOverlays.
+              background: "transparent",
+              ...(transformAttr !== undefined ? { transform: transformAttr } : {})
+            };
+          })()}
         />
       )}
-      {handles.map((h) => (
-        <div
-          key={h.kind}
-          className="editor-transform-handle"
-          data-testid={`transform-handle-${h.kind}`}
-          data-handle-kind={h.kind}
-          role="button"
-          aria-label={`Resize handle ${h.kind}`}
-          tabIndex={-1}
-          onPointerDown={(e) => onPointerDown(e, h.kind)}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          style={{
-            position: "absolute",
-            left: `${h.xn * 100}%`,
-            top: `${h.yn * 100}%`,
-            width: HANDLE_SIZE_PX,
-            height: HANDLE_SIZE_PX,
-            // Center the handle on the geometric point.
-            transform: "translate(-50%, -50%)",
-            cursor: h.cursor,
-            pointerEvents: "auto",
-            // Keep handles above the body-hit rect so resize-handle
-            // pointerdowns win over body pointerdowns when the cursor
-            // overlaps both.
-            zIndex: 1
-          }}
-        />
-      ))}
+      {handles.map((h) => {
+        // Rotation handle gets a distinct circular shape (vs the
+        // square resize handles) so the affordance is unambiguous.
+        // Same size + center-on-point + zIndex policy as the rest;
+        // the only delta is `borderRadius: 50%` and the modifier
+        // class so per-handle styling can apply (currently no
+        // separate CSS rules — both kinds share .editor-transform-
+        // handle; the modifier exists for future polish).
+        const isRotate = h.kind === "rotate";
+        return (
+          <div
+            key={h.kind}
+            className={
+              "editor-transform-handle" +
+              (isRotate ? " editor-transform-handle--rotate" : "")
+            }
+            data-testid={`transform-handle-${h.kind}`}
+            data-handle-kind={h.kind}
+            role="button"
+            aria-label={isRotate ? "Rotate" : `Resize handle ${h.kind}`}
+            tabIndex={-1}
+            onPointerDown={(e) => onPointerDown(e, h.kind)}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            style={{
+              position: "absolute",
+              left: `${h.xn * 100}%`,
+              top: `${h.yn * 100}%`,
+              width: HANDLE_SIZE_PX,
+              height: HANDLE_SIZE_PX,
+              // Center the handle on the geometric point.
+              transform: "translate(-50%, -50%)",
+              cursor: h.cursor,
+              pointerEvents: "auto",
+              // Keep handles above the body-hit rect so resize-handle
+              // pointerdowns win over body pointerdowns when the cursor
+              // overlaps both.
+              zIndex: 1,
+              ...(isRotate ? { borderRadius: "50%" } : {})
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -1655,3 +2238,14 @@ export type { GeometryUpdate, NormalizedPoint, NormalizedRect };
 //   • packages/shared/src/text-html-style.ts
 // `computeTextGlyphSize` is still used by `textBoundsBox` /
 // `SelectionOutline` for hit-test + selection-outline geometry.
+//
+// Text rotation: the rotation field is honored by:
+//   • TextHtml — CSS transform: rotate(deg) on the wrapper, with
+//     transform-origin at the body-box center (auto since the
+//     wrapper's intrinsic box IS the body-box after translateY(-50%)).
+//   • TextDraftInput — same CSS transform path so edit-mode matches.
+//   • SelectionOutline (below) — SVG rotate(deg cx cy) around the
+//     textBoundsBox center so the dashed outline tracks rotated text.
+//   • TransformHandles rotate handle — pivots on textBoundsBox center.
+//   • compose.ts textSvg/textSvgForV2 — same body-box center pivot
+//     (matches the editor render so re-edit doesn't drift).

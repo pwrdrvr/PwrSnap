@@ -130,6 +130,12 @@ async function render(props: HarnessProps): Promise<HTMLElement> {
         selectedOverlay: props.selectedOverlay,
         imageWidthPx: 1920,
         imageHeightPx: 1080,
+        // Source dims drive textBoundsBox via computeTextGlyphSize.
+        // The text-rotation-pivot path NaNs out without these
+        // because fontSizePx = sourceShortSide / divisor → NaN when
+        // sources are undefined. Match canvas dims so the bucket
+        // math gives the same result as it would in production for
+        // an uncropped capture.
         sourceWidthPx: 1920,
         sourceHeightPx: 1080,
         onGeometryChange: props.onGeometryChange ?? (() => undefined),
@@ -223,20 +229,21 @@ function countResizeHandles(): number {
 }
 
 describe("TransformHandles", () => {
-  test("rect: renders 8 handles (4 corners + 4 edges)", async () => {
+  test("rect: renders 9 handles (4 corners + 4 edges + rotate)", async () => {
     await render({ selectedOverlay: rectRow() });
-    expect(countResizeHandles()).toBe(8);
+    // 8 resize handles + 1 rotation handle = 9.
+    expect(countResizeHandles()).toBe(9);
     // Verify each handle kind is present.
-    for (const k of ["nw", "ne", "se", "sw", "n", "e", "s", "w"]) {
+    for (const k of ["nw", "ne", "se", "sw", "n", "e", "s", "w", "rotate"]) {
       const h = document.querySelector(`[data-testid="transform-handle-${k}"]`);
       expect(h, `missing ${k} handle`).not.toBeNull();
     }
-    // Body-hit rect for drag-to-move sits alongside the 8 resize
-    // handles for rect-shaped layers.
+    // Body-hit rect for drag-to-move sits alongside the resize +
+    // rotate handles for rect-shaped layers.
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
-  test("highlight: 8 handles (rect/highlight/blur share the rect layout)", async () => {
+  test("highlight: 9 handles (rect/highlight/blur share the rect+rotate layout)", async () => {
     const hl: OverlayRow = {
       ...rectRow(),
       data: {
@@ -245,11 +252,12 @@ describe("TransformHandles", () => {
       }
     };
     await render({ selectedOverlay: hl });
-    expect(countResizeHandles()).toBe(8);
+    expect(countResizeHandles()).toBe(9);
+    expect(document.querySelector('[data-testid="transform-handle-rotate"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
-  test("blur: 8 handles", async () => {
+  test("blur: 9 handles", async () => {
     const blur: OverlayRow = {
       ...rectRow(),
       data: {
@@ -258,7 +266,8 @@ describe("TransformHandles", () => {
       }
     };
     await render({ selectedOverlay: blur });
-    expect(countResizeHandles()).toBe(8);
+    expect(countResizeHandles()).toBe(9);
+    expect(document.querySelector('[data-testid="transform-handle-rotate"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
@@ -273,17 +282,18 @@ describe("TransformHandles", () => {
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
   });
 
-  test("text: no anchor handle (drag uses the body-hit rect only)", async () => {
+  test("text: only the rotation handle (move + edit go through the body-hit rect)", async () => {
     // The standalone anchor handle was a 10×10 white square at the
     // glyph's anchor point — users mistook it for a checkbox and it
     // was redundant with the body-hit rect that already catches
-    // drag-to-move across the entire bounding box. Now text has just
-    // the body-hit rect (sized to the actual text bounds via
-    // `textBoundsBox`); the dashed SelectionOutline shows the user
-    // what's selected.
+    // drag-to-move across the entire bounding box. Now text has the
+    // body-hit rect (sized to the actual text bounds via
+    // `textBoundsBox`) plus the rotation handle above the top edge.
+    // The dashed SelectionOutline shows what's selected.
     await render({ selectedOverlay: textRow() });
-    expect(countResizeHandles()).toBe(0);
+    expect(countResizeHandles()).toBe(1);
     expect(document.querySelector('[data-testid="transform-handle-anchor"]')).toBeNull();
+    expect(document.querySelector('[data-testid="transform-handle-rotate"]')).not.toBeNull();
     // Body-hit rect IS present — drag-to-move + double-click-to-edit
     // both go through it.
     expect(document.querySelector('[data-testid="transform-handle-body"]')).not.toBeNull();
@@ -504,23 +514,29 @@ describe("TransformHandles", () => {
     }
   });
 
-  test("body drag clamps so the layer cannot leave [0,1]", async () => {
+  test("body drag passes coordinates through without clamping (user can push layer off-canvas)", async () => {
+    // Pre-fix this test asserted the body-drag clamp held the rect at
+    // (0, 0). The clamp was removed in the "drag past edge" fix —
+    // users want to push a shape mostly off-canvas (e.g., only a
+    // corner peeks out). The underlying NormalizedScalar schema
+    // accepts any finite number; the bake clips at canvas bounds
+    // automatically.
     const onGeometryChange = vi.fn();
     await render({
       selectedOverlay: rectRow(),
       onGeometryChange
     });
     const body = document.querySelector('[data-testid="transform-handle-body"]')!;
-    // Initial rect: x=0.1, y=0.1, w=0.4, h=0.3. Try to drag way
-    // off-canvas (delta = (-5000px, -5000px)). The clamp should pin
-    // x and y to 0 (so w+h remain inside [0,1]).
+    // Initial rect: x=0.1, y=0.1, w=0.4, h=0.3. Drag from (300,300)
+    // to (-5000,-5000) → delta (-5.3, -5.3) in normalized coords.
+    // Expected new rect: x = 0.1 + (-5.3) = -5.2; y = -5.2; same w/h.
     firePointer(body, "pointerdown", 300, 300);
     firePointer(body, "pointermove", -5000, -5000);
     firePointer(body, "pointerup", -5000, -5000);
     const commit = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
     if (commit.kind === "rect") {
-      expect(commit.rect.x).toBeCloseTo(0, 3);
-      expect(commit.rect.y).toBeCloseTo(0, 3);
+      expect(commit.rect.x).toBeCloseTo(-5.2, 3);
+      expect(commit.rect.y).toBeCloseTo(-5.2, 3);
       expect(commit.rect.w).toBeCloseTo(0.4, 3);
       expect(commit.rect.h).toBeCloseTo(0.3, 3);
     }
@@ -707,5 +723,272 @@ describe("TransformHandles", () => {
       );
     });
     expect(container.querySelector('[data-testid="transform-handles"]')).toBeNull();
+  });
+
+  test("rect rotation handle drag → onGeometryChange fires with new rotation around bbox center", async () => {
+    // rectRow: { x: 0.1, y: 0.1, w: 0.4, h: 0.3 } → center at (0.3, 0.25)
+    // With 1000×1000 client rect, center is (300, 250) in client px.
+    //
+    // Start the drag directly right of the pivot (angle 0); move
+    // directly below the pivot (angle π/2). Expected new rotation is
+    // π/2 (90° clockwise) since the pre-drag rotation is 0.
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: rectRow(), onGeometryChange });
+    const rotate = document.querySelector('[data-testid="transform-handle-rotate"]')!;
+    firePointer(rotate, "pointerdown", 400, 250); // (400-300, 250-250) = (+100, 0) → angle 0
+    firePointer(rotate, "pointermove", 300, 350); // (300-300, 350-250) = (0, +100) → angle π/2
+    firePointer(rotate, "pointerup", 300, 350);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    expect(geom.kind).toBe("rect");
+    if (geom.kind === "rect") {
+      // Rect unchanged — rotation handle only writes the rotation
+      // field; the rect comes through as the pre-drag value so the
+      // merger preserves it.
+      expect(geom.rect.x).toBeCloseTo(0.1, 6);
+      expect(geom.rect.y).toBeCloseTo(0.1, 6);
+      expect(geom.rect.w).toBeCloseTo(0.4, 6);
+      expect(geom.rect.h).toBeCloseTo(0.3, 6);
+      expect(geom.rotation).toBeCloseTo(Math.PI / 2, 6);
+    }
+  });
+
+  test("rect rotation drag with pre-existing rotation accumulates the delta", async () => {
+    // Pre-drag rotation = π/4. Drag adds another π/2. Expected total:
+    // 3π/4. Confirms the merge reads `startData.rotation` (the
+    // pre-drag value), not the live `data.rotation` that the live-
+    // preview branch updates on every move.
+    const onGeometryChange = vi.fn();
+    const row = rectRow();
+    const rowWithRotation: OverlayRow = {
+      ...row,
+      data: { ...row.data, rotation: Math.PI / 4 } as OverlayRow["data"]
+    };
+    await render({ selectedOverlay: rowWithRotation, onGeometryChange });
+    const rotate = document.querySelector('[data-testid="transform-handle-rotate"]')!;
+    firePointer(rotate, "pointerdown", 400, 250);
+    firePointer(rotate, "pointermove", 300, 350);
+    firePointer(rotate, "pointerup", 300, 350);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    if (geom.kind === "rect") {
+      expect(geom.rotation).toBeCloseTo(Math.PI / 4 + Math.PI / 2, 6);
+    }
+  });
+
+  test("text rotation handle pivots around the body-box CENTER, not the anchor", async () => {
+    // textRow has body "hello", size "small", point (0.5, 0.5).
+    // Body-box for "small" on a 1920×1080 source:
+    //   fontSizePx = min(1920, 1080) / 50 = 21.6  (small bucket)
+    //   naturalWidthPx  = 5 chars × 21.6 × 0.55 ≈ 59.4
+    //   naturalHeightPx = 21.6
+    //   box = { x: 0.5, y: 0.49, w: 0.0309, h: 0.02 }
+    // Body-box center in NORMALIZED coords: (0.5155, 0.5).
+    // In client px (test harness has a 1000×1000 client rect):
+    // (515.5, 500).
+    //
+    // Drag the rotate handle from RIGHT of the pivot (angle 0) to
+    // BELOW the pivot (angle π/2):
+    //   • pointerdown at (615.5, 500): dx = +100 from pivot,
+    //     dy = 0 → atan2(0, +) = 0.
+    //   • pointermove + up at (515.5, 600): dx = 0, dy = +100 from
+    //     pivot → atan2(+, 0) = π/2.
+    // Expected rotation delta = π/2.
+    //
+    // Pre-fix this test asserted pivot at the ANCHOR (data.point =
+    // 0.5, 0.5) — but the anchor is the LEFT EDGE of the rendered
+    // text, not its visible center. Rotating around it swung the
+    // text in a wide arc, which is what the user reported in a
+    // screenshot ("Text is rotating on an imaginary point on the
+    // left corner"). The pivot now matches what the user sees as
+    // the middle of the text.
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: textRow(), onGeometryChange });
+    const rotate = document.querySelector('[data-testid="transform-handle-rotate"]')!;
+    firePointer(rotate, "pointerdown", 615.5, 500);
+    firePointer(rotate, "pointermove", 515.5, 600);
+    firePointer(rotate, "pointerup", 515.5, 600);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    expect(geom.kind).toBe("text");
+    if (geom.kind === "text") {
+      // Anchor unchanged (rotation handle only writes the rotation
+      // field; the merger keeps point as-is).
+      expect(geom.point.x).toBeCloseTo(0.5, 6);
+      expect(geom.point.y).toBeCloseTo(0.5, 6);
+      // Rotation delta = π/2 because we started at angle 0 from the
+      // body-box center and ended at angle π/2 from it.
+      expect(geom.rotation).toBeCloseTo(Math.PI / 2, 2);
+    }
+  });
+
+  test("rotated rect: resize handles render at the rotated corner positions", async () => {
+    // 0.4 × 0.3 rect rotated 90° around its center (0.3, 0.25). In
+    // the unrotated frame, NE is at (x+w, y) = (0.5, 0.1). After
+    // 90° CW rotation around (0.3, 0.25), the NE corner lands where
+    // SE used to be (in canvas terms, "right-then-up" becomes
+    // "down-then-right"): (0.45, 0.45) on the 1920×1080 canvas.
+    //
+    // We're on a NON-SQUARE canvas (1920×1080) so pure-normalized
+    // rotation math would land the handle at the wrong place; the
+    // pixel-space rotation we now apply lands it correctly.
+    const row = rectRow();
+    const rotated: OverlayRow = {
+      ...row,
+      data: { ...row.data, rotation: Math.PI / 2 } as OverlayRow["data"]
+    };
+    await render({ selectedOverlay: rotated });
+    const ne = document.querySelector(
+      '[data-testid="transform-handle-ne"]'
+    ) as HTMLElement | null;
+    expect(ne).not.toBeNull();
+    // Center of rect in PIXEL space: (0.3 * 1920, 0.25 * 1080) =
+    // (576, 270). The original NE corner local offset (in pixels)
+    // is (+0.2 * 1920, -0.15 * 1080) = (+384, -162). After 90° CW
+    // rotation: (+162, +384). So NE world = (576 + 162, 270 + 384)
+    // = (738, 654). Normalized: (738 / 1920, 654 / 1080) =
+    // (0.384375, 0.605555…).
+    const left = ne!.style.left;
+    const top = ne!.style.top;
+    // Style values are like "38.4375%" — parse + compare.
+    expect(parseFloat(left)).toBeCloseTo(38.4375, 2);
+    expect(parseFloat(top)).toBeCloseTo(60.5555, 1);
+  });
+
+  test("body-drag lets shapes go off-canvas (user can drag a shape mostly past the edge)", async () => {
+    // Body-drag used to clamp the rect / AABB to the canvas bounds,
+    // which made it impossible to push a shape so only a corner
+    // peeks out at the edge (a common cropping-style annotation
+    // gesture). Now uncapped: the underlying NormalizedScalar schema
+    // accepts any finite number, and the bake clips at canvas bounds
+    // automatically. This test pins the new behavior so a future
+    // "add the clamp back" doesn't sneak in unnoticed.
+    const row = rectRow();
+    const rotated: OverlayRow = {
+      ...row,
+      data: { ...row.data, rotation: Math.PI / 4 } as OverlayRow["data"]
+    };
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: rotated, onGeometryChange });
+    const body = document.querySelector(
+      '[data-testid="transform-handle-body"]'
+    )!;
+    // Drag massively left + up so the resulting rect lands at
+    // x, y << 0 (well off-canvas). Pointerdown at (300, 250),
+    // pointermove to (-500, -500) = a delta of (-800, -750) in
+    // client px. Normalized against the test harness's 1000×1000
+    // client rect: dx = -0.8, dy = -0.75. Applied to rect.x = 0.1
+    // → new x = -0.7; rect.y = 0.1 → new y = -0.65.
+    firePointer(body, "pointerdown", 300, 250);
+    firePointer(body, "pointermove", -500, -500);
+    firePointer(body, "pointerup", -500, -500);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    expect(geom.kind).toBe("rect");
+    if (geom.kind === "rect") {
+      // The rect is allowed off-canvas — no clamp held it back.
+      expect(geom.rect.x).toBeCloseTo(-0.7, 6);
+      expect(geom.rect.y).toBeCloseTo(-0.65, 6);
+      // Rotation preserved across the translation.
+      expect(geom.rotation).toBeCloseTo(Math.PI / 4, 6);
+      // Width / height unchanged (body drag never resizes).
+      expect(geom.rect.w).toBeCloseTo(0.4, 6);
+      expect(geom.rect.h).toBeCloseTo(0.3, 6);
+    }
+  });
+
+  test("rotated rect resize: dragging NE on a 90°-rotated rect pivots around the rotated SW", async () => {
+    // Unrotated rect (0.1, 0.1, 0.4, 0.3). Rotated 90° CW around its
+    // center (0.3, 0.25). The rotated NE corner is where SE was in
+    // pixel-space terms; the SW pivot (which stays put) is at the
+    // ROTATED SW world position.
+    //
+    // For the test we don't need to assert the exact resulting rect;
+    // we just verify the resize:
+    //   1. Returns a geometry update (the rotated-resize path didn't
+    //      fall back to null).
+    //   2. PRESERVES rotation (the rect stays rotated, doesn't snap
+    //      back to axis-aligned).
+    //   3. Width / height are non-zero (the resize math produced a
+    //      sensible result rather than collapsing to MIN_PX).
+    const row = rectRow();
+    const rotated: OverlayRow = {
+      ...row,
+      data: { ...row.data, rotation: Math.PI / 2 } as OverlayRow["data"]
+    };
+    const onGeometryChange = vi.fn();
+    await render({ selectedOverlay: rotated, onGeometryChange });
+    const ne = document.querySelector(
+      '[data-testid="transform-handle-ne"]'
+    )!;
+    // The NE handle's CSS position is at the rotated location (per
+    // the test above). Drag it diagonally to grow the rect.
+    const neRect = (ne as HTMLElement).getBoundingClientRect();
+    const startX = neRect.left + neRect.width / 2;
+    const startY = neRect.top + neRect.height / 2;
+    firePointer(ne, "pointerdown", startX, startY);
+    firePointer(ne, "pointermove", startX + 100, startY + 100);
+    firePointer(ne, "pointerup", startX + 100, startY + 100);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    const geom = onGeometryChange.mock.calls[0]?.[0] as GeometryUpdate;
+    expect(geom.kind).toBe("rect");
+    if (geom.kind === "rect") {
+      // Rotation preserved through resize.
+      expect(geom.rotation).toBeCloseTo(Math.PI / 2, 6);
+      // Width / height positive (didn't collapse).
+      expect(geom.rect.w).toBeGreaterThan(0);
+      expect(geom.rect.h).toBeGreaterThan(0);
+    }
+  });
+
+  test("rect cursors rotate with the rect (NE handle on 90°-rotated rect shows nwse-resize)", async () => {
+    // The handle SHAPE stays axis-aligned (industry convention) but
+    // the CURSOR's diagonal / axial direction should follow the
+    // visible edge so the user knows which way they're resizing.
+    //
+    // Unrotated: NE handle has cursor `nesw-resize` (/ diagonal).
+    // After 90° CW rotation: the NE handle is at the visible
+    // top-right-ish-but-now-rotated corner; its effective direction
+    // vector (originally (+1, -1) in screen coords with +y down)
+    // rotates to (+1, +1) — which is the \\ diagonal → `nwse-resize`.
+    const row = rectRow();
+    const rotated: OverlayRow = {
+      ...row,
+      data: { ...row.data, rotation: Math.PI / 2 } as OverlayRow["data"]
+    };
+    await render({ selectedOverlay: rotated });
+    const ne = document.querySelector(
+      '[data-testid="transform-handle-ne"]'
+    ) as HTMLElement;
+    expect(ne).not.toBeNull();
+    expect(ne.style.cursor).toBe("nwse-resize");
+    // The N handle (axially vertical when unrotated → ns-resize)
+    // rotates by 90° to become horizontally aligned → ew-resize.
+    const n = document.querySelector(
+      '[data-testid="transform-handle-n"]'
+    ) as HTMLElement;
+    expect(n.style.cursor).toBe("ew-resize");
+  });
+
+  test("unrotated rect cursors match the original axis-aligned convention", async () => {
+    // Belt-and-suspenders for the rotation === 0 short-circuit:
+    // existing cursors stay bit-identical (nwse / nesw / ns / ew)
+    // so unrotated rows don't see any regression.
+    await render({ selectedOverlay: rectRow() });
+    const cursors: Record<string, string> = {};
+    for (const k of ["nw", "ne", "se", "sw", "n", "e", "s", "w"]) {
+      const el = document.querySelector(
+        `[data-testid="transform-handle-${k}"]`
+      ) as HTMLElement;
+      cursors[k] = el.style.cursor;
+    }
+    expect(cursors.nw).toBe("nwse-resize");
+    expect(cursors.se).toBe("nwse-resize");
+    expect(cursors.ne).toBe("nesw-resize");
+    expect(cursors.sw).toBe("nesw-resize");
+    expect(cursors.n).toBe("ns-resize");
+    expect(cursors.s).toBe("ns-resize");
+    expect(cursors.e).toBe("ew-resize");
+    expect(cursors.w).toBe("ew-resize");
   });
 });

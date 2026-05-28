@@ -66,6 +66,7 @@ export function TextDraftInput({
   colorHex,
   size,
   weight,
+  rotation,
   onChange,
   onCommit,
   onCancel
@@ -89,6 +90,12 @@ export function TextDraftInput({
   colorHex: string;
   size: TextSizeBucket;
   weight: number;
+  /** Optional rotation in radians. Re-edit path: pulled from the
+   *  persisted row so the in-progress text rotates with the visible
+   *  glyph beneath. New-placement path: undefined (no rotation set
+   *  yet). Threaded into computeTextHtmlStyle which appends rotate()
+   *  on the wrapper transform. */
+  rotation?: number | undefined;
   onChange: (body: string) => void;
   onCommit: () => void;
   onCancel: () => void;
@@ -107,7 +114,8 @@ export function TextDraftInput({
     sourceHeightPx,
     canvasWidthPx: imageWidthPx,
     canvasHeightPx: imageHeightPx,
-    canvasCssHeight
+    canvasCssHeight,
+    ...(rotation !== undefined ? { rotation } : {})
   });
   const wrapperStyle: CSSProperties = {
     ...(style.wrapper as CSSProperties),

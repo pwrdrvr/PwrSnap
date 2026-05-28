@@ -81,8 +81,22 @@ export type NormalizedRect = {
  *  arrow uses both endpoints; step uses { point }. */
 export type GeometryUpdate =
   | { readonly kind: "arrow"; readonly from: NormalizedPoint; readonly to: NormalizedPoint }
-  | { readonly kind: "rect"; readonly rect: NormalizedRect }
-  | { readonly kind: "text"; readonly point: NormalizedPoint }
+  | {
+      readonly kind: "rect";
+      readonly rect: NormalizedRect;
+      /** Optional clockwise rotation (radians) around the rect's
+       *  geometric center. Omitted = "don't change rotation" (the
+       *  merger preserves whatever the overlay currently has). The
+       *  rotation handle drags pass this through. */
+      readonly rotation?: number;
+    }
+  | {
+      readonly kind: "text";
+      readonly point: NormalizedPoint;
+      /** Optional clockwise rotation (radians) around the anchor
+       *  point. See `rect.rotation` above. */
+      readonly rotation?: number;
+    }
   | { readonly kind: "step"; readonly point: NormalizedPoint };
 
 /** Generic patch applied to the overlay's `data.*` JSON. Only the
@@ -193,7 +207,13 @@ export type OverlayEditOp =
    *  defaults). Same dispatch shape as updateGeometry — fetch row,
    *  shallow-merge `patch` into `data.*`, re-upsert with the original
    *  id. */
-  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch };
+  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch }
+  /** Z-order change. Maps directly to `overlays:reorder` — a single-
+   *  row atomic UPDATE on `z_index` that preserves the row id
+   *  (unlike updateGeometry / updateOverlay which are delete-plus-
+   *  insert). Same semantics as the v2 reorder; the renderer's z-
+   *  order algorithm ships one code path across both formats. */
+  | { kind: "reorder"; layerId: string; zIndex: number };
 
 export type LayerEditOp =
   | { kind: "upsert"; node: BundleLayerNode }
@@ -221,7 +241,15 @@ export type LayerEditOp =
    *  vector kinds, merges into `shape.*`; for effect kinds, merges
    *  the relevant style fields into `effect.*` (e.g. blur style /
    *  highlight opacity). */
-  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch };
+  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch }
+  /** Z-order change for one layer. Maps directly to `layers:reorder` —
+   *  a single-row UPDATE on `z_index`. Layer id is preserved (unlike
+   *  updateGeometry / updateOverlay which are delete-plus-insert), so
+   *  the caller's selection stays valid without re-anchoring. The
+   *  caller computes the new z_index value; the renderer-side helper
+   *  uses gaps (e.g. 1000-step) so most reorders avoid touching
+   *  neighbors. */
+  | { kind: "reorder"; layerId: string; zIndex: number };
 
 export type CaptureModelLoading = {
   kind: "loading";
@@ -245,7 +273,13 @@ export type EditOpResult =
   | { kind: "upsert"; artifact: EditUpsertArtifact }
   | { kind: "delete" }
   | { kind: "crop"; artifact: EditCropArtifact }
-  | { kind: "update"; artifact: EditUpsertArtifact };
+  | { kind: "update"; artifact: EditUpsertArtifact }
+  /** Z-order change. Ids don't change in v2 (layers:reorder is a true
+   *  in-place UPDATE on `z_index`), so the artifact is empty — callers
+   *  keep their existing selection ids. v1 returns a typed validation
+   *  error from this op because the v1 IPC surface is insert-only and
+   *  delete-plus-insert would churn ids on every reorder. */
+  | { kind: "reorder" };
 
 export type CaptureModelV1 = {
   kind: "loaded";
@@ -530,10 +564,24 @@ export function applyGeometryToOverlay(
       ) {
         return null;
       }
-      return { ...overlay, rect: geometry.rect };
+      // Rotation is OPTIONAL on the geometry — omit = "leave it
+      // alone" (preserve overlay.rotation). Same shape semantics as
+      // shallow merge: a translation-only drag should never wipe a
+      // pre-existing rotation, and the rotation-handle drag pre-fills
+      // `rect` with the unchanged value so its update reads as
+      // "preserve rect, set rotation".
+      return {
+        ...overlay,
+        rect: geometry.rect,
+        ...(geometry.rotation !== undefined ? { rotation: geometry.rotation } : {})
+      };
     case "text":
       if (overlay.kind !== "text") return null;
-      return { ...overlay, point: geometry.point };
+      return {
+        ...overlay,
+        point: geometry.point,
+        ...(geometry.rotation !== undefined ? { rotation: geometry.rotation } : {})
+      };
     case "step":
       if (overlay.kind !== "step") return null;
       return { ...overlay, point: geometry.point };
@@ -667,9 +715,21 @@ export function applyGeometryToLayer(
   if (layer.kind === "effect") {
     // Only rect-shaped geometry maps onto an effect's clip_rect.
     if (geometry.kind !== "rect") return null;
+    // Rotation lives on the effect spec for blur (no `shape` slot).
+    // Highlight effects don't have a renderer surface in this slice;
+    // they keep their effect spec verbatim. Skipping the rotation
+    // write on non-blur effects is a no-op rather than a bug — the
+    // editor's rotation handle only fires for blur effect rows
+    // (effect/highlight isn't projected to an overlay row today; see
+    // projectV2LayersToOverlayRows).
+    const nextEffect =
+      layer.effect.type === "blur" && geometry.rotation !== undefined
+        ? { ...layer.effect, rotation: geometry.rotation }
+        : layer.effect;
     return {
       ...layer,
       id: nanoid(16),
+      effect: nextEffect,
       clip_rect: {
         x: geometry.rect.x * canvas.width,
         y: geometry.rect.y * canvas.height,
@@ -705,10 +765,16 @@ export function applyPatchToLayer(
     // popover surface in this slice.)
     if (patch.kind === "blur" && layer.effect.type === "blur") {
       const styleUpdate = patch.style;
+      const rotationUpdate = patch.rotation;
       const effect = layer.effect;
       const newEffect: typeof effect = {
         ...effect,
-        ...(styleUpdate !== undefined ? { style: styleUpdate } : {})
+        ...(styleUpdate !== undefined ? { style: styleUpdate } : {}),
+        // Rotation rides on the effect spec for blur (see schema +
+        // applyGeometryToLayer effect branch). Style patches can
+        // change rotation via this path; rotation-handle drags go
+        // through updateGeometry above.
+        ...(rotationUpdate !== undefined ? { rotation: rotationUpdate } : {})
       };
       // Apply rect part if present (treat as geometry).
       const next: BundleLayerNode = {
@@ -1045,6 +1111,18 @@ export function useCaptureModel(captureId: string): CaptureModel {
               artifact: { format: 1, row: insResult.value }
             }
           };
+        }
+        case "reorder": {
+          // Single-row z_index UPDATE via the dedicated overlays:reorder
+          // IPC. Same shape + semantics as layers:reorder for v2 —
+          // row id preserved (no delete-plus-insert churn) so the
+          // caller's selection stays valid as-is.
+          const result = await dispatch("overlays:reorder", {
+            id: op.layerId,
+            zIndex: op.zIndex
+          });
+          if (!result.ok) return err(result.error);
+          return { ok: true, value: { kind: "reorder" } };
         }
         default: {
           const _exhaustive: never = op;
@@ -1448,6 +1526,17 @@ export function useCaptureModel(captureId: string): CaptureModel {
               artifact: { format: 2, node: insResult.value }
             }
           };
+        }
+        case "reorder": {
+          // Single-row z_index UPDATE via the dedicated layers:reorder
+          // IPC. Layer id is preserved (no delete-plus-insert churn),
+          // so the caller's selection stays valid as-is.
+          const result = await dispatch("layers:reorder", {
+            id: op.layerId,
+            zIndex: op.zIndex
+          });
+          if (!result.ok) return err(result.error);
+          return { ok: true, value: { kind: "reorder" } };
         }
         default: {
           const _exhaustive: never = op;

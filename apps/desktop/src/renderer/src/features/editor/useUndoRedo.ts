@@ -80,9 +80,31 @@ import type {
  * captures. v1 captures don't actually mutate canvas dims, so the
  * previous values are surfaced uniformly but only acted on for v2.
  */
+/** Single create-or-delete entry — the data the inverse needs to
+ *  re-upsert (on delete-undo) or re-delete (on create-undo). Stored
+ *  inside the items[] array on create/delete EditOps so a coalesced
+ *  burst can carry MULTIPLE distinct layers' state without dropping
+ *  any (the pre-fix shape held one row per EditOp and the coalesce
+ *  path REPLACED it with the latest push — silently discarding
+ *  earlier rows in a multi-delete / multi-paste burst). */
+export type CreateDeleteItem = {
+  row: OverlayRow;
+  node: BundleLayerNode | null;
+};
+
+/** Single geometry-change entry — same array discipline as
+ *  CreateDeleteItem. Each item tracks ONE logical layer's id chain
+ *  via `currentIdRef`; multi-drag bursts carry N such items (one per
+ *  layer the user grabbed) in a single coalesced EditOp. */
+export type GeometryItem = {
+  currentIdRef: { current: string };
+  previousGeometry: GeometryUpdate;
+  nextGeometry: GeometryUpdate;
+};
+
 export type EditOp =
-  | { kind: "create"; row: OverlayRow; node: BundleLayerNode | null }
-  | { kind: "delete"; row: OverlayRow; node: BundleLayerNode | null }
+  | { kind: "create"; items: CreateDeleteItem[] }
+  | { kind: "delete"; items: CreateDeleteItem[] }
   | {
       kind: "crop";
       /** Normalized rect that produced this crop — re-dispatched on
@@ -113,12 +135,7 @@ export type EditOp =
    *
    *  Both kinds use the format-aware dispatcher's `updateGeometry` /
    *  `updateOverlay` verbs — no direct bus access from this hook. */
-  | {
-      kind: "geometry";
-      currentIdRef: { current: string };
-      previousGeometry: GeometryUpdate;
-      nextGeometry: GeometryUpdate;
-    }
+  | { kind: "geometry"; items: GeometryItem[] }
   | {
       kind: "style";
       currentIdRef: { current: string };
@@ -127,6 +144,33 @@ export type EditOp =
     };
 
 const MAX_DEPTH = 100;
+
+/** Merge the new op's items into the existing entry's items array
+ *  per the requested mergeMode. Each op produced by recordCreate /
+ *  recordDelete / recordGeometry carries exactly one item (the
+ *  public API is single-row); push()'s coalesce path is where
+ *  multiple items accumulate (append) or replace (drag bursts).
+ *  Hoisted out of push() because the same shape applies across
+ *  create / delete / geometry kinds. */
+function mergeItems<T>(
+  existing: readonly T[],
+  incoming: readonly T[],
+  mergeMode: "replace" | "append"
+): T[] {
+  if (mergeMode === "append") {
+    return [...existing, ...incoming];
+  }
+  // "replace": swap the LAST item only. Preserves items[0..-2]
+  // if the caller built up a multi-layer prefix earlier in the
+  // bracket and then a same-layer rapid burst follows on the
+  // last layer. In practice every same-bracket call uses the
+  // same mergeMode so existing.length is usually 1 here and the
+  // result is just `incoming` — slice() handles the general
+  // case defensively.
+  if (existing.length === 0) return [...incoming];
+  if (incoming.length === 0) return [...existing];
+  return [...existing.slice(0, -1), incoming[incoming.length - 1]!];
+}
 /** Coalescing grace window for non-drag bursts (color clicks etc).
  *  Consecutive writes against the SAME (opKind, layerId) inside this
  *  window collapse into the most-recent entry's "to" state. Tuned to
@@ -176,11 +220,14 @@ export type UseUndoRedoResult = {
    *  post-edit overlay id (typically `result.value.artifact.row.id`
    *  or `.node.id`). The caller is responsible for updating the
    *  selection model to follow `currentIdRef.current` on undo/redo. */
-  recordGeometry: (entry: {
-    currentIdRef: { current: string };
-    previousGeometry: GeometryUpdate;
-    nextGeometry: GeometryUpdate;
-  }) => void;
+  recordGeometry: (
+    entry: {
+      currentIdRef: { current: string };
+      previousGeometry: GeometryUpdate;
+      nextGeometry: GeometryUpdate;
+    },
+    opts?: RecordOptions
+  ) => void;
   /** Phase 3.5 — record a style change from the selected-overlay
    *  popover edit. `previousPatch` reverts to the pre-edit state;
    *  `nextPatch` is the patch the user just applied. Same id-chain
@@ -225,6 +272,26 @@ export type RecordOptions = {
    *  half of the coalescing key. v1 row ids work — pass `row.id` for
    *  edits to the same overlay. */
   readonly layerId?: string;
+  /** How to coalesce when this push matches an open bracket's key:
+   *   - `"replace"` (default): the NEW row/geometry REPLACES the last
+   *     item in the entry's items[] array. This is the correct mode
+   *     for SAME-LAYER bursts where each push is an intermediate
+   *     state of the same logical edit (pointermove during a drag,
+   *     rapid color clicks on one layer) — undo should restore the
+   *     pre-burst state and the items[] keeps a single most-recent
+   *     "after" for redo.
+   *   - `"append"`: the NEW item is APPENDED to the entry's items[]
+   *     array. This is the correct mode for DIFFERENT-LAYER bursts
+   *     where each push describes a distinct layer's state
+   *     (multi-delete, multi-drag, multi-paste). Undo loops over
+   *     every item and dispatches the inverse for each.
+   *
+   *  Pre-fix, push() only had the replace shape, which silently
+   *  DROPPED earlier rows in a different-layer burst — the user
+   *  reported "I selected two text items, hit delete, only ONE
+   *  came back on undo and the other was unrecoverable." That's
+   *  the bug `mergeMode: "append"` exists to prevent. */
+  readonly mergeMode?: "replace" | "append";
 };
 
 export function useUndoRedo(opts: {
@@ -332,28 +399,53 @@ export function useUndoRedo(opts: {
 
     const shouldCoalesce = insideInteraction || insideGraceWindow;
 
+    const mergeMode = recordOpts?.mergeMode ?? "replace";
     setPast((prev) => {
       if (shouldCoalesce && prev.length > 0) {
-        // Replace the latest entry's "after" state with the new op's
-        // row, preserving the original "before" (the first push of
-        // the run). For a create-followed-by-create this means: keep
-        // the FIRST entry's op kind/structure, swap its row. So the
-        // undo replays the inverse of the LATEST state — exactly
-        // what the user expects ("undo the whole burst").
         const next = prev.slice(0, -1);
         const lastEntry = prev[prev.length - 1]!;
-        // Preserve the entry's kind (create vs delete) and just swap
-        // the row to the newest one — the inverse op on undo will
-        // then target the latest IPC artifact. crop ops don't
-        // coalesce — there's no meaningful "swap rect" semantics
-        // mid-burst, and the coalescing keys for ops are pointer
-        // drags which don't fire on crop commit.
+        // Coalesce only when both entries are the SAME op kind
+        // (mixing create/delete/geometry inside one bracket would
+        // be a programming bug — push standalone for safety).
+        // Within the matching-kind branches the merge SHAPE depends
+        // on mergeMode:
+        //
+        //   "replace" (default): swap the LAST item in the entry's
+        //     items[] with the new op's first item. The "before"
+        //     stored at items[0..-2] (if any) is preserved. For a
+        //     pure same-layer burst (e.g. a drag with 5 intermediate
+        //     writes), items[] stays length 1 — first push sets
+        //     it, subsequent pushes replace it. Undo restores the
+        //     pre-burst state via the entry's previousGeometry /
+        //     row data; redo replays the LATEST.
+        //
+        //   "append": append the new op's first item to items[].
+        //     Multi-delete / multi-drag / multi-paste all use this
+        //     so the undo loop can dispatch one inverse per layer
+        //     rather than restoring only the most-recent and
+        //     dropping the rest (the user-reported "one of two
+        //     deleted layers cannot be recovered" bug).
         let merged: EditOp = lastEntry;
         if (lastEntry.kind === "create" && op.kind === "create") {
-          merged = { kind: "create", row: op.row, node: op.node };
+          merged = {
+            kind: "create",
+            items: mergeItems(lastEntry.items, op.items, mergeMode)
+          };
         } else if (lastEntry.kind === "delete" && op.kind === "delete") {
-          merged = { kind: "delete", row: op.row, node: op.node };
+          merged = {
+            kind: "delete",
+            items: mergeItems(lastEntry.items, op.items, mergeMode)
+          };
+        } else if (lastEntry.kind === "geometry" && op.kind === "geometry") {
+          merged = {
+            kind: "geometry",
+            items: mergeItems(lastEntry.items, op.items, mergeMode)
+          };
         }
+        // style + crop never coalesce — there's no meaningful
+        // multi-X bracket for them in the editor today, and
+        // crop's inverse depends on previous canvas dims which
+        // can't be merged.
         return [...next, merged];
       }
       const trimmed = prev.length >= MAX_DEPTH ? prev.slice(1) : prev;
@@ -384,14 +476,28 @@ export function useUndoRedo(opts: {
     (
       row: OverlayRow,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
-    ) => push({ kind: "create", row, node: opts?.node ?? null }, opts),
+    ) =>
+      push(
+        {
+          kind: "create",
+          items: [{ row, node: opts?.node ?? null }]
+        },
+        opts
+      ),
     [push]
   );
   const recordDelete = useCallback(
     (
       row: OverlayRow,
       opts?: RecordOptions & { node?: BundleLayerNode | null }
-    ) => push({ kind: "delete", row, node: opts?.node ?? null }, opts),
+    ) =>
+      push(
+        {
+          kind: "delete",
+          items: [{ row, node: opts?.node ?? null }]
+        },
+        opts
+      ),
     [push]
   );
   const recordCrop = useCallback(
@@ -414,17 +520,27 @@ export function useUndoRedo(opts: {
   );
 
   const recordGeometry = useCallback(
-    (entry: {
-      currentIdRef: { current: string };
-      previousGeometry: GeometryUpdate;
-      nextGeometry: GeometryUpdate;
-    }) =>
-      push({
-        kind: "geometry",
-        currentIdRef: entry.currentIdRef,
-        previousGeometry: entry.previousGeometry,
-        nextGeometry: entry.nextGeometry
-      }),
+    (
+      entry: {
+        currentIdRef: { current: string };
+        previousGeometry: GeometryUpdate;
+        nextGeometry: GeometryUpdate;
+      },
+      opts?: RecordOptions
+    ) =>
+      push(
+        {
+          kind: "geometry",
+          items: [
+            {
+              currentIdRef: entry.currentIdRef,
+              previousGeometry: entry.previousGeometry,
+              nextGeometry: entry.nextGeometry
+            }
+          ]
+        },
+        opts
+      ),
     [push]
   );
 
@@ -493,59 +609,85 @@ export function useUndoRedo(opts: {
       // crop, the inverse is restoring the previous canvas dims.
       if (op.kind === "create") {
         const isInverse = direction === "undo";
-        if (isInverse) {
-          // Delete the just-created row/layer.
+        // Loop over every recorded item so multi-create bursts
+        // (paste, duplicate, etc.) restore/redo EVERY layer, not
+        // just the most recent. Pre-fix the EditOp held a single
+        // row and the coalesce path swapped it on each push —
+        // earlier rows in a burst were silently lost.
+        for (const item of op.items) {
+          if (isInverse) {
+            // Delete the just-created row/layer.
+            if (dispatchEdit !== null) {
+              // eslint-disable-next-line no-await-in-loop
+              await dispatchEdit({ kind: "delete", id: item.row.id });
+            } else {
+              // Legacy fallback: direct v1 dispatch.
+              // eslint-disable-next-line no-await-in-loop
+              await dispatch("overlays:delete", { id: item.row.id });
+            }
+            continue;
+          }
+          // redo of create — re-upsert. On v2 we need the original
+          // layer node so layers:upsert lands a structurally-
+          // identical layer. On v1 we re-upsert the overlay data;
+          // insertOverlay mints a fresh id, fine for session-only
+          // undo.
           if (dispatchEdit !== null) {
-            await dispatchEdit({ kind: "delete", id: op.row.id });
-            return;
+            if (item.node !== null) {
+              // eslint-disable-next-line no-await-in-loop
+              await dispatchEdit({ kind: "upsert", node: item.node });
+            } else {
+              // eslint-disable-next-line no-await-in-loop
+              await dispatchEdit({ kind: "upsert", row: item.row });
+            }
+            continue;
           }
-          // Legacy fallback: direct v1 dispatch.
-          await dispatch("overlays:delete", { id: op.row.id });
-          return;
+          // eslint-disable-next-line no-await-in-loop
+          await dispatch("overlays:upsert", {
+            captureId,
+            overlay: item.row.data
+          });
         }
-        // redo of create — re-upsert. On v2 we need the original
-        // layer node so layers:upsert lands a structurally-identical
-        // layer. On v1 we re-upsert the overlay data; insertOverlay
-        // mints a fresh id, fine for session-only undo.
-        if (dispatchEdit !== null) {
-          if (op.node !== null) {
-            await dispatchEdit({ kind: "upsert", node: op.node });
-          } else {
-            await dispatchEdit({ kind: "upsert", row: op.row });
-          }
-          return;
-        }
-        await dispatch("overlays:upsert", {
-          captureId,
-          overlay: op.row.data
-        });
         return;
       }
       if (op.kind === "delete") {
         const isInverse = direction === "undo";
-        if (isInverse) {
-          // Undo of delete — re-create. Same shape rules as the
-          // create→redo branch above.
-          if (dispatchEdit !== null) {
-            if (op.node !== null) {
-              await dispatchEdit({ kind: "upsert", node: op.node });
-            } else {
-              await dispatchEdit({ kind: "upsert", row: op.row });
+        // Same loop discipline as create above. The user-reported
+        // bug ("I selected two text items, hit delete, only ONE
+        // came back on undo and the other CANNOT BE RECOVERED")
+        // was the pre-fix shape losing earlier items when push()
+        // coalesced — fixed by accumulating into items[] and
+        // looping here.
+        for (const item of op.items) {
+          if (isInverse) {
+            // Undo of delete — re-create. Same shape rules as the
+            // create→redo branch above.
+            if (dispatchEdit !== null) {
+              if (item.node !== null) {
+                // eslint-disable-next-line no-await-in-loop
+                await dispatchEdit({ kind: "upsert", node: item.node });
+              } else {
+                // eslint-disable-next-line no-await-in-loop
+                await dispatchEdit({ kind: "upsert", row: item.row });
+              }
+              continue;
             }
-            return;
+            // eslint-disable-next-line no-await-in-loop
+            await dispatch("overlays:upsert", {
+              captureId,
+              overlay: item.row.data
+            });
+            continue;
           }
-          await dispatch("overlays:upsert", {
-            captureId,
-            overlay: op.row.data
-          });
-          return;
+          // redo of delete — re-delete.
+          if (dispatchEdit !== null) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: item.row.id });
+            continue;
+          }
+          // eslint-disable-next-line no-await-in-loop
+          await dispatch("overlays:delete", { id: item.row.id });
         }
-        // redo of delete — re-delete.
-        if (dispatchEdit !== null) {
-          await dispatchEdit({ kind: "delete", id: op.row.id });
-          return;
-        }
-        await dispatch("overlays:delete", { id: op.row.id });
         return;
       }
       if (op.kind === "crop") {
@@ -619,26 +761,33 @@ export function useUndoRedo(opts: {
         // dispatcher delete-plus-inserts a new row; we capture the
         // fresh id and write it back onto currentIdRef so the next
         // undo/redo targets the latest live row.
+        //
+        // Loop over EVERY item so multi-drag undo restores every
+        // layer's geometry, not just the first. Same items[]
+        // discipline as create/delete above.
         if (dispatchEdit === null) return;
-        const targetGeometry =
-          direction === "undo" ? op.previousGeometry : op.nextGeometry;
-        const result = await dispatchEdit({
-          kind: "updateGeometry",
-          layerId: op.currentIdRef.current,
-          geometry: targetGeometry
-        });
-        if (
-          result.ok &&
-          result.value.kind === "update" &&
-          result.value.artifact.format === 1
-        ) {
-          op.currentIdRef.current = result.value.artifact.row.id;
-        } else if (
-          result.ok &&
-          result.value.kind === "update" &&
-          result.value.artifact.format === 2
-        ) {
-          op.currentIdRef.current = result.value.artifact.node.id;
+        for (const item of op.items) {
+          const targetGeometry =
+            direction === "undo" ? item.previousGeometry : item.nextGeometry;
+          // eslint-disable-next-line no-await-in-loop
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: item.currentIdRef.current,
+            geometry: targetGeometry
+          });
+          if (
+            result.ok &&
+            result.value.kind === "update" &&
+            result.value.artifact.format === 1
+          ) {
+            item.currentIdRef.current = result.value.artifact.row.id;
+          } else if (
+            result.ok &&
+            result.value.kind === "update" &&
+            result.value.artifact.format === 2
+          ) {
+            item.currentIdRef.current = result.value.artifact.node.id;
+          }
         }
         return;
       }

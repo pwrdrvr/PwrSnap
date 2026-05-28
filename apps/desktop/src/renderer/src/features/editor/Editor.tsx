@@ -62,7 +62,8 @@ import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
-import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
+import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
+import { decideClickSelection } from "./decideClickSelection";
 import {
   useCaptureModel,
   type EditOpResult,
@@ -102,6 +103,7 @@ import {
 } from "./editor-types";
 import { usePasteImage, type PasteImagePosition } from "./usePasteImage";
 import { useDropImage } from "./useDropImage";
+import { computeNewOrder, diffChanges } from "./z-order";
 import "./editor.css";
 
 /** Three structural shapes for the editor:
@@ -219,6 +221,95 @@ function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
   }
   if (data.kind === "step") {
     return { kind: "step", point: data.point };
+  }
+  return null;
+}
+
+/** Translate the full `data` payload of an overlay by a normalized
+ *  delta. Used by the copy/paste/duplicate flow — preserves every
+ *  non-geometry field (color, thickness, body, etc.) and shifts only
+ *  the spatial anchors. Returns the original unchanged for kinds
+ *  without geometry semantics (crop). */
+export function translateOverlayData(
+  data: Overlay,
+  dxn: number,
+  dyn: number
+): Overlay {
+  if (data.kind === "arrow") {
+    return {
+      ...data,
+      from: { x: data.from.x + dxn, y: data.from.y + dyn },
+      to: { x: data.to.x + dxn, y: data.to.y + dyn }
+    };
+  }
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    return {
+      ...data,
+      rect: {
+        x: data.rect.x + dxn,
+        y: data.rect.y + dyn,
+        w: data.rect.w,
+        h: data.rect.h
+      }
+    } as Overlay;
+  }
+  if (data.kind === "text") {
+    return {
+      ...data,
+      point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
+  }
+  if (data.kind === "step") {
+    return {
+      ...data,
+      point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
+  }
+  // crop — no anchor to translate; pass through unchanged. Crop is
+  // never in the paste flow (it's its own canvas-side mutation) but
+  // we'd rather no-op than throw.
+  return data;
+}
+
+/** Translate an overlay's geometry by a normalized delta. Used by the
+ *  arrow-key nudge flow — `dxn` / `dyn` are in [0,1]² space (a 1px
+ *  step is `1 / canvas dim`). Returns the translated GeometryUpdate
+ *  ready to feed into `dispatchEdit({ kind: 'updateGeometry', ... })`.
+ *  Returns null for overlay kinds without geometry semantics (crop). */
+export function translateOverlayGeometry(
+  data: Overlay,
+  dxn: number,
+  dyn: number
+): GeometryUpdate | null {
+  if (data.kind === "arrow") {
+    return {
+      kind: "arrow",
+      from: { x: data.from.x + dxn, y: data.from.y + dyn },
+      to: { x: data.to.x + dxn, y: data.to.y + dyn }
+    };
+  }
+  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    return {
+      kind: "rect",
+      rect: {
+        x: data.rect.x + dxn,
+        y: data.rect.y + dyn,
+        w: data.rect.w,
+        h: data.rect.h
+      }
+    };
+  }
+  if (data.kind === "text") {
+    return {
+      kind: "text",
+      point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
+  }
+  if (data.kind === "step") {
+    return {
+      kind: "step",
+      point: { x: data.point.x + dxn, y: data.point.y + dyn }
+    };
   }
   return null;
 }
@@ -429,7 +520,15 @@ function projectV2LayersToOverlayRows(
           // Phase 3.4: read the v2 BlurEffect's `style` field (optional;
           // older v2 bundles without it fall back to DEFAULT_BLUR_STYLE
           // — same gaussian default the renderer always assumed).
-          style: layer.effect.style ?? DEFAULT_BLUR_STYLE
+          style: layer.effect.style ?? DEFAULT_BLUR_STYLE,
+          // Rotation lives on the effect spec (not on the layer's
+          // transform matrix). Vector layers carry rotation inside
+          // `shape.rotation`; effect layers can't (no `shape`) so the
+          // field rides on `effect.rotation`. Legacy v2 bundles
+          // without it render unrotated (the field is optional).
+          ...(layer.effect.rotation !== undefined
+            ? { rotation: layer.effect.rotation }
+            : {})
         },
         schema_version: 1,
         source: layer.source,
@@ -460,18 +559,33 @@ function projectV2LayersToOverlayRows(
  *  {from,to}. The threshold scales with the canvas's pixel extent
  *  (passed in) so the click radius is roughly constant in screen-
  *  px regardless of canvas size.
- */
+ *
+ *  Rotation support: when `imageDims` is provided AND the overlay
+ *  has a non-zero `rotation` field, the click point is rotated INTO
+ *  the overlay's local (unrotated) frame before the bbox test so
+ *  the hit follows the visible glyph. The pixel-space pivot matches
+ *  what the renderer applies — `(rect.center * imageDims)` for
+ *  rect/highlight/blur and `data.point * imageDims` for text. When
+ *  `imageDims` is omitted (legacy call sites + most tests), every
+ *  overlay is tested in its unrotated frame — the historical
+ *  behavior. */
 export function hitTestOverlays(
   overlays: OverlayRow[],
   xn: number,
   yn: number,
   canvasPxShortSide: number,
-  /** Optional canvas + source pixel dims. When provided, text hit-
-   *  testing uses the full bounding rectangle of the rendered glyph
-   *  (matching the HTML wrapper's actual on-screen extent). When
-   *  omitted (older test call sites), falls back to a tiny point-
-   *  radius around the anchor — kept for backwards compat with the
-   *  existing hitTestOverlays.test.ts that doesn't thread dims. */
+  /** Optional canvas + source pixel dims. Powers TWO improvements:
+   *    • rect / highlight / blur: when present, click points are
+   *      inverse-rotated into the layer's local frame before bbox
+   *      testing so rotated shapes are selectable under their visible
+   *      glyph (not just the original axis-aligned bbox).
+   *    • text: when present, the hit-test uses the full bounding
+   *      rectangle of the rendered glyph instead of a tiny point-
+   *      radius. Matches the HTML wrapper's actual on-screen extent.
+   *  When omitted (older test call sites), rotated rects fall back
+   *  to AABB hit-test + text falls back to point-radius — keeps the
+   *  existing hitTestOverlays.test.ts that doesn't thread dims
+   *  compatible without forcing every test to inflate its args. */
   textDims?: {
     canvasWidthPx: number;
     canvasHeightPx: number;
@@ -479,20 +593,75 @@ export function hitTestOverlays(
     sourceHeightPx: number;
   }
 ): string | null {
+  const imageDims =
+    textDims !== undefined
+      ? { widthPx: textDims.canvasWidthPx, heightPx: textDims.canvasHeightPx }
+      : undefined;
   // ~10px hit radius on a 1000px short-side canvas → 0.01 in
   // normalized coords. Scales inversely with size for a roughly
   // constant pixel tolerance.
   const hitRadiusN = Math.max(0.008, 10 / Math.max(1, canvasPxShortSide));
+  /** Apply the INVERSE of an overlay's rotation to (xn, yn), pivoting
+   *  on (pivotXn, pivotYn). Returns the click point in the overlay's
+   *  local (unrotated) frame so a bbox test "just works" against the
+   *  unrotated rect coords. Rotation around 0 short-circuits.
+   *
+   *  We rotate in PIXEL space (multiplied through imageDims) so the
+   *  result matches what the renderer's `<g transform="rotate(deg cx
+   *  cy)">` produces visually. Doing it directly in normalized space
+   *  would skew the angle on non-square images (a "90°" rotation
+   *  takes the visible top-right to the BOTTOM-right on a portrait
+   *  canvas because the normalized y-axis is stretched). */
+  const inverseRotateNormalized = (
+    px: number,
+    py: number,
+    pivotXn: number,
+    pivotYn: number,
+    rotation: number
+  ): { xn: number; yn: number } => {
+    if (rotation === 0 || imageDims === undefined) {
+      return { xn: px, yn: py };
+    }
+    const W = imageDims.widthPx;
+    const H = imageDims.heightPx;
+    // Pixel-space deltas from pivot.
+    const dxPx = (px - pivotXn) * W;
+    const dyPx = (py - pivotYn) * H;
+    // Counter-rotate by `-rotation` (the renderer rotated by
+    // `+rotation`; the inverse undoes that).
+    const cos = Math.cos(-rotation);
+    const sin = Math.sin(-rotation);
+    const rotatedDxPx = dxPx * cos - dyPx * sin;
+    const rotatedDyPx = dxPx * sin + dyPx * cos;
+    return {
+      xn: pivotXn + rotatedDxPx / W,
+      yn: pivotYn + rotatedDyPx / H
+    };
+  };
   for (let i = overlays.length - 1; i >= 0; i -= 1) {
     const row = overlays[i];
     if (row === undefined) continue;
     const o = row.data;
     if (o.kind === "rect" || o.kind === "highlight" || o.kind === "blur") {
+      // Inverse-rotate the click point into the rect's local frame
+      // before the bbox test. Rotation === 0 (and the legacy no-
+      // imageDims caller) short-circuits the rotation and falls
+      // through to the historical axis-aligned check.
+      const rotation = o.rotation ?? 0;
+      const pivotXn = o.rect.x + o.rect.w / 2;
+      const pivotYn = o.rect.y + o.rect.h / 2;
+      const { xn: tx, yn: ty } = inverseRotateNormalized(
+        xn,
+        yn,
+        pivotXn,
+        pivotYn,
+        rotation
+      );
       if (
-        xn >= o.rect.x &&
-        xn <= o.rect.x + o.rect.w &&
-        yn >= o.rect.y &&
-        yn <= o.rect.y + o.rect.h
+        tx >= o.rect.x &&
+        tx <= o.rect.x + o.rect.w &&
+        ty >= o.rect.y &&
+        ty <= o.rect.y + o.rect.h
       ) {
         return row.id;
       }
@@ -585,16 +754,35 @@ export function hitTestOverlays(
       const boxYn = o.point.y - naturalHeightPx / 2 / canvasHeightPx;
       const boxWn = naturalWidthPx / canvasWidthPx;
       const boxHn = naturalHeightPx / canvasHeightPx;
+      // Inverse-rotate the click into the text's local frame so the
+      // bbox test "just works" against the unrotated box coords —
+      // same pattern as the rect/highlight/blur branch above. Pivot
+      // is the BODY-BOX center (same as TextHtml + SelectionOutline
+      // + compose.ts use); inverse-rotating in pixel space keeps the
+      // angle visually correct on non-square canvases (a "90°"
+      // rotation visually drops the top edge to the right edge on a
+      // wide canvas; normalized-space rotation would skew the angle
+      // because the y-axis is stretched).
+      const textRotation = o.rotation ?? 0;
+      const textPivotXn = boxXn + boxWn / 2;
+      const textPivotYn = boxYn + boxHn / 2;
+      const { xn: tx, yn: ty } = inverseRotateNormalized(
+        xn,
+        yn,
+        textPivotXn,
+        textPivotYn,
+        textRotation
+      );
       // Add a small padding (half a hitRadius) on every edge so the
       // user can click slightly past the rendered glyph and still
       // land on the layer. Matches the affordance Cleanshot / Skitch
       // ship for text annotations.
       const padN = hitRadiusN * 0.5;
       if (
-        xn >= boxXn - padN &&
-        xn <= boxXn + boxWn + padN &&
-        yn >= boxYn - padN &&
-        yn <= boxYn + boxHn + padN
+        tx >= boxXn - padN &&
+        tx <= boxXn + boxWn + padN &&
+        ty >= boxYn - padN &&
+        ty <= boxYn + boxHn + padN
       ) {
         return row.id;
       }
@@ -739,23 +927,126 @@ export function Editor({
   }, [blurStyleProp, effectiveToolState.activeStyle]);
 
   const [draft, setDraft] = useState<Draft | null>(null);
-  // Phase 3.2 — minimal selection model. Tracks the id of the
-  // currently-selected overlay/layer; null means nothing selected.
-  // Used to render a selection outline and to delete on backspace/
-  // delete. Click on the pointer tool hit-tests against existing
-  // overlays; click on empty canvas clears. Escape clears too.
+  // Multi-select model. Tracks the ids of all currently-selected
+  // overlays/layers; empty array means nothing selected.
   //
-  // Out of scope (deferred to Phase 4): transform handles (move /
-  // resize / rotate), color/style editing of the selected glyph,
-  // multi-select. Just enough state for the user to clean up wrong
-  // annotations without rebuilding the whole capture.
-  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  // Selection gestures:
+  //   • Plain click on a layer → replaces selection with [hit]
+  //   • Cmd/Ctrl-click on a layer → toggles membership of hit
+  //   • Click on empty canvas → clears
+  //   • Cmd+A → select all
+  //   • Escape → clears
+  //
+  // Operations on selection:
+  //   • Delete / Backspace → delete every selected layer
+  //   • Arrow keys → nudge every selected by 1px (Shift = 10px)
+  //   • Cmd+C / Cmd+V / Cmd+D → copy / paste / duplicate selected
+  //   • Cmd+] / Cmd+[ → bring forward / send backward
+  //   • Cmd+Shift+] / Cmd+Shift+[ → bring to front / send to back
+  //
+  // Single-selection-only features (TransformHandles, popover-
+  // switches-to-selected-style) read `primarySelectedLayerId` below
+  // — they render only when exactly one layer is selected. Resize +
+  // per-layer style edits still require single-select; everything
+  // else honours the full selection.
+  const [selectedLayerIds, setSelectedLayerIds] = useState<readonly string[]>([]);
+  // IDs that we just set via `setSelectionTrustingDispatch` (nudge,
+  // paste, duplicate, create) but that may not yet have landed in
+  // `overlaysForRender` because the events:overlays:changed broadcast
+  // → refetch round-trip hadn't finished by the next render. The
+  // stale-id cleanup below skips removal of any id in this set so the
+  // selection isn't wiped between the dispatch resolving and the
+  // broadcast arriving. Each id is dropped from the set as soon as it
+  // appears in `alive` (= broadcast caught up).
+  //
+  // Without this, nudge looked broken: arrow-key dispatched, row id
+  // changed to a NEW value, setSelectedLayerIds([newId]) ran, render
+  // ran with overlaysForRender STILL pointing at the old row → the
+  // cleanup saw [newId] absent from alive → queueMicrotask wiped the
+  // selection → the user saw the layer move 1px and the grippers
+  // vanish. Subsequent arrow keys fell through to the Library reel.
+  const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
+  /** Replace selection with ids that just came back from a successful
+   *  dispatch. The ids exist in the DB but may not be in
+   *  `overlaysForRender` yet — the in-flight set keeps the cleanup
+   *  honest until the broadcast lands. */
+  const setSelectionTrustingDispatch = (newIds: readonly string[]): void => {
+    if (newIds.length > 0) {
+      const next = new Set(inFlightSelectionIdsRef.current);
+      for (const id of newIds) next.add(id);
+      inFlightSelectionIdsRef.current = next;
+    }
+    setSelectedLayerIds(newIds);
+  };
+  // Convenience helpers for callers that don't want to manage the
+  // readonly-array dance. Stable identity isn't required since they
+  // call setState directly.
+  const replaceSelection = (id: string | null): void => {
+    setSelectedLayerIds(id === null ? [] : [id]);
+  };
+  const toggleSelection = (id: string): void => {
+    setSelectedLayerIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+  const clearSelection = (): void => setSelectedLayerIds([]);
+  // Primary id for single-selection-only features. Null when nothing
+  // is selected OR when multiple are selected — both cases hide the
+  // transform handles and the per-layer style popover surface.
+  const primarySelectedLayerId: string | null =
+    selectedLayerIds.length === 1 ? (selectedLayerIds[0] ?? null) : null;
   // Mirror of the resolved overlay list, kept in a ref so
   // onPointerDown's hit-test reads the latest value without bouncing
   // through state. The list itself lives in the EditorLoaded child
   // (after the model resolves); we project a v1-shaped view of it
   // here for the synchronous click handler.
   const overlaysRef = useRef<OverlayRow[]>([]);
+  // Multi-select drag state. Populated by `onPointerDown` when the
+  // user clicks a layer already in a multi-selection (= the
+  // `decideClickSelection` "keep" action with selection size > 1).
+  // Holds the pre-drag pointer position plus per-layer geometry
+  // snapshots; `onPointerUp` reads it back to compute the cursor
+  // delta and dispatch one updateGeometry per layer. Cleared on
+  // pointerup OR if the user releases outside the canvas. No live
+  // preview during the drag for v1 — the layers jump to the final
+  // position on pointerup; a follow-up can add a multi-id
+  // liveOverride for the in-flight preview if desired.
+  const multiDragStartRef = useRef<{
+    startXn: number;
+    startYn: number;
+    pointerId: number;
+    snapshots: { id: string; data: OverlayRow["data"] }[];
+  } | null>(null);
+  // EditorLoaded populates this with a closure over `dispatchEdit` +
+  // `undo` so the outer onPointerUp (which doesn't have direct access
+  // to either) can commit the multi-drag. Same ref pattern as
+  // `deleteSelectedRef` / `nudgeSelectedRef`.
+  const commitMultiDragRef = useRef<
+    | ((
+        snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        dxn: number,
+        dyn: number
+      ) => Promise<void>)
+    | null
+  >(null);
+  // Live-drag preview: a map of layer id → in-progress geometry that
+  // every overlay renderer (OverlaySvg / BlurOverlays /
+  // TextHtmlOverlays) projects onto the matching row so the painted
+  // glyph follows the user's cursor in real time. Lives at the outer
+  // Editor scope (rather than inside EditorLoaded where the
+  // renderers themselves live) because the multi-drag gesture's
+  // pointermove / cancel / up handlers — defined HERE in the outer
+  // function — set it. EditorLoaded receives both halves via props
+  // and threads `draftGeometry` down to the three renderers as
+  // `liveOverride`.
+  //
+  // Map shape (vs the previous single-id `{ layerId, geometry }`)
+  // because multi-drag needs N concurrent overrides — one per
+  // selected layer. Single-select drags emit a 1-entry map through
+  // the same path so both gestures share one renderer contract.
+  const [draftGeometry, setDraftGeometry] = useState<
+    ReadonlyMap<string, GeometryUpdate> | null
+  >(null);
   // Canvas + source dims read by `hitTestOverlays` so text overlays
   // get a FULL bounding-rect hit target (matches the on-screen
   // rendered glyph extent), not a tiny radius around the anchor.
@@ -858,6 +1149,16 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
+    // Defensive clear of any stale multi-drag state. The arming path
+    // below stores snapshots in `multiDragStartRef.current` and
+    // relies on `onPointerUp` / `onPointerCancel` to clear it; if
+    // either of those was skipped (OS cancellation, window blur
+    // mid-drag, hot-reload during dev) the next pointerdown would
+    // see a stale ref. Without this reset, the next pointerup would
+    // commit a translation against the OLD snapshots using the NEW
+    // cursor delta — totally unrelated layers would jump. Cheap
+    // unconditional reset is the right discipline.
+    multiDragStartRef.current = null;
     // Phase 3.2 selection: pointer tool clicks hit-test against
     // existing overlays. Hit → select that overlay. Miss → clear.
     // The hit-test runs against `overlaysRef.current` which the
@@ -872,6 +1173,11 @@ export function Editor({
       const shortSide =
         rect === undefined ? 1000 : Math.min(rect.width, rect.height);
       const overlays = overlaysRef.current;
+      // textHitDimsRef carries canvas + source dims for the hit-test:
+      //   • text overlays get full bounding-rect hit (vs point-radius)
+      //   • rect / highlight / blur with rotation get inverse-rotated
+      //     into local frame before bbox testing so the visible
+      //     rotated glyph is what's selectable.
       const hit = hitTestOverlays(
         overlays,
         start.xn,
@@ -879,7 +1185,51 @@ export function Editor({
         shortSide,
         textHitDimsRef.current ?? undefined
       );
-      setSelectedLayerId(hit);
+      // Decision matrix lives in `decideClickSelection` so both the
+      // pointer-tool and drawing-tool branches share one source of
+      // truth (and one regression-tested module). The `keep` action
+      // is the load-bearing addition for multi-select drag: plain
+      // click on a layer ALREADY in the selection preserves the
+      // group instead of collapsing it to a singleton, so the user
+      // can drag the whole group together.
+      const additive = event.metaKey || event.ctrlKey;
+      const action = decideClickSelection({
+        hit,
+        currentSelection: selectedLayerIds,
+        additive
+      });
+      if (action.type === "replace") replaceSelection(action.id);
+      else if (action.type === "toggle") toggleSelection(action.id);
+      else if (action.type === "clear") clearSelection();
+      // `keep` = selection unchanged.
+      // If the click landed on a layer already in a MULTI-selection
+      // (selection size > 1) — initiate a group drag-to-move.
+      // Single-selected drags still go through TransformHandles'
+      // body-hit rect (which catches the pointerdown before this
+      // code runs), so we only kick off the multi-drag when the
+      // selection actually has >1 member.
+      if (
+        action.type === "keep" &&
+        hit !== null &&
+        selectedLayerIds.length > 1 &&
+        selectedLayerIds.includes(hit)
+      ) {
+        const snapshots = selectedLayerIds
+          .map((id) => {
+            const row = overlays.find((o) => o.id === id);
+            return row !== undefined ? { id, data: row.data } : null;
+          })
+          .filter((s): s is { id: string; data: OverlayRow["data"] } => s !== null);
+        if (snapshots.length > 0) {
+          multiDragStartRef.current = {
+            startXn: start.xn,
+            startYn: start.yn,
+            pointerId: event.pointerId,
+            snapshots
+          };
+          (event.target as HTMLElement).setPointerCapture(event.pointerId);
+        }
+      }
       return;
     }
     if (tool === "crop") return;
@@ -903,6 +1253,8 @@ export function Editor({
       const shortSide =
         rect === undefined ? 1000 : Math.min(rect.width, rect.height);
       const overlays = overlaysRef.current;
+      // textHitDimsRef carries canvas + source dims — same
+      // rationale as the pointer-tool branch above.
       const hit = hitTestOverlays(
         overlays,
         start.xn,
@@ -911,13 +1263,50 @@ export function Editor({
         textHitDimsRef.current ?? undefined
       );
       if (hit !== null) {
-        setSelectedLayerId(hit);
+        // Same decision logic as the pointer-tool branch above.
+        // Drawing-tool clicks that land on an existing overlay
+        // route through the same selection model so the multi-
+        // select drag-to-move gesture works whether the user is on
+        // the pointer tool or any drawing tool.
+        const additive = event.metaKey || event.ctrlKey;
+        const action = decideClickSelection({
+          hit,
+          currentSelection: selectedLayerIds,
+          additive
+        });
+        if (action.type === "replace") replaceSelection(action.id);
+        else if (action.type === "toggle") toggleSelection(action.id);
+        else if (action.type === "clear") clearSelection();
+        // Multi-drag init — mirror of the pointer-tool branch.
+        if (
+          action.type === "keep" &&
+          selectedLayerIds.length > 1 &&
+          selectedLayerIds.includes(hit)
+        ) {
+          const snapshots = selectedLayerIds
+            .map((id) => {
+              const row = overlays.find((o) => o.id === id);
+              return row !== undefined ? { id, data: row.data } : null;
+            })
+            .filter(
+              (s): s is { id: string; data: OverlayRow["data"] } => s !== null
+            );
+          if (snapshots.length > 0) {
+            multiDragStartRef.current = {
+              startXn: start.xn,
+              startYn: start.yn,
+              pointerId: event.pointerId,
+              snapshots
+            };
+            (event.target as HTMLElement).setPointerCapture(event.pointerId);
+          }
+        }
         return;
       }
     }
     // Drawing a new annotation on empty canvas deselects any previous
     // selection so the outline doesn't linger on top of the new draft.
-    if (selectedLayerId !== null) setSelectedLayerId(null);
+    if (selectedLayerIds.length > 0) clearSelection();
     event.preventDefault();
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
 
@@ -964,6 +1353,44 @@ export function Editor({
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    // Multi-select drag live preview. While the user is dragging a
+    // multi-selection (armed by `onPointerDown` when they clicked an
+    // already-selected layer), every pointermove translates each
+    // selected layer's pre-drag snapshot by the cursor delta and
+    // stashes the result in `draftGeometry` as a Map<id, geometry>.
+    // OverlaySvg / BlurOverlays / TextHtmlOverlays all consume that
+    // map and paint each entry's row at its overridden geometry.
+    // pointerup commits the same delta via dispatchEdit and clears
+    // the override.
+    //
+    // Runs BEFORE the draft branch — the multi-drag gesture is
+    // unrelated to drafts (which only fire when a drawing tool was
+    // selected and the user is mid-shape).
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      const cur = clientToNormalized(event.clientX, event.clientY);
+      if (cur === null) return;
+      const dxn = cur.xn - multiDrag.startXn;
+      const dyn = cur.yn - multiDrag.startYn;
+      // Don't paint a preview until the user has moved past the
+      // no-drag threshold. Below that, the gesture is still
+      // ambiguous (click-without-drag) and showing a 0-delta
+      // override would just rebuild the Map for nothing. Same
+      // threshold the commit path uses.
+      const MIN_MULTI_DRAG_N = 0.002;
+      if (Math.hypot(dxn, dyn) < MIN_MULTI_DRAG_N) return;
+      // Build the per-layer override map. translateOverlayGeometry
+      // returns null for layer kinds with no geometry (crop) — skip
+      // those entries (the unrelated bbox of the on-canvas crop tool
+      // shouldn't follow a drag of arrows).
+      const next = new Map<string, GeometryUpdate>();
+      for (const snapshot of multiDrag.snapshots) {
+        const geom = translateOverlayGeometry(snapshot.data, dxn, dyn);
+        if (geom !== null) next.set(snapshot.id, geom);
+      }
+      setDraftGeometry(next.size > 0 ? next : null);
+      return;
+    }
     if (draft === null) return;
     if (draft.kind === "text") return;
     const cur = clientToNormalized(event.clientX, event.clientY);
@@ -978,7 +1405,84 @@ export function Editor({
     }
   }
 
+  function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // OS-level pointer cancellation (window blur during a drag,
+    // Mission Control, three-finger swipe, etc.) — drop any armed
+    // multi-drag state so the next pointerdown doesn't see stale
+    // snapshots. The pointerup path also does this in its `try/finally`
+    // shape, but pointerup never fires if the OS cancels first, so
+    // this handler is the second leg of the cleanup pair. Releasing
+    // capture is a no-op if it was already released by the cancel
+    // itself; wrap in try/catch defensively.
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      multiDragStartRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
+      // Clear any in-flight live preview so layers snap back to their
+      // persisted positions (the cancel means "no commit", so the
+      // override should evaporate immediately). Cleared only when WE
+      // armed the override via multi-drag — leaving a single-select
+      // drag's override alone (TransformHandles owns that lifecycle
+      // and may still be mid-drag through its own capture).
+      setDraftGeometry(null);
+    }
+  }
+
   async function onPointerUp(event: React.PointerEvent<HTMLDivElement>): Promise<void> {
+    // Multi-select drag commit runs BEFORE the draft branch. If
+    // `multiDragStartRef` is set the user dragged a group; compute
+    // the cursor delta in normalized coords and call into the
+    // EditorLoaded-populated `commitMultiDragRef` to translate every
+    // selected layer by that delta in one coalesced undo entry.
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      multiDragStartRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
+      } catch {
+        // Capture may have already been lost (window blur, etc.) —
+        // best-effort release.
+      }
+      const endPt = clientToNormalized(event.clientX, event.clientY);
+      if (endPt !== null) {
+        const dxn = endPt.xn - multiDrag.startXn;
+        const dyn = endPt.yn - multiDrag.startYn;
+        // No-drag threshold: a click without movement on a selected
+        // group should NOT commit a no-op translation onto every
+        // layer (which would push a noisy "moved by 0" undo entry
+        // and bump every row id via the supersede chain for nothing).
+        // Matches TransformHandles' MIN_DRAG_LENGTH-ish budget but
+        // in normalized coords so the threshold scales with canvas
+        // size. 0.002 ≈ 2px on a 1000px short-side canvas — tight
+        // enough that a deliberate drag always trips it.
+        const MIN_MULTI_DRAG_N = 0.002;
+        if (Math.hypot(dxn, dyn) >= MIN_MULTI_DRAG_N) {
+          const commit = commitMultiDragRef.current;
+          if (commit !== null) {
+            await commit(multiDrag.snapshots, dxn, dyn);
+          }
+        } else {
+          // Under threshold — no commit, but the user may have moved
+          // PAST the threshold during the drag (setting the override
+          // via pointermove) and then back UNDER it before releasing.
+          // Clear the override now so the layers snap to their
+          // persisted positions — otherwise the override would
+          // linger at the last paint location until something else
+          // bumped the overlays list.
+          setDraftGeometry(null);
+        }
+      }
+      // For above-threshold commits we LEAVE draftGeometry in place;
+      // the cleanup effect drops it once the broadcast lands and the
+      // new ids replace the OLD ones in `overlays` (zero-flash
+      // pointerup → persisted state, same discipline as
+      // single-select drag's onHandleGeometryChange).
+      return;
+    }
     if (draft === null) return;
     if (draft.kind === "text") return;
     (event.target as HTMLElement).releasePointerCapture(event.pointerId);
@@ -1044,7 +1548,7 @@ export function Editor({
       setDraft(null);
       const wrote = await persistOverlay(arrowOverlay);
       closeInteraction();
-      if (wrote && !isControlled) {
+      if (wrote.ok && !isControlled) {
         // Standalone Editor: the canvas-side affordance reads
         // anchorPoint in canvas-px from this same hook instance, so
         // post directly.
@@ -1114,7 +1618,7 @@ export function Editor({
       setDraft(null);
       const wrote = await persistOverlay(overlay);
       closeInteraction();
-      if (wrote && !isControlled) {
+      if (wrote.ok && !isControlled) {
         effectiveToolState.onAnnotationPlaced({ tool: placedKind });
       }
       return;
@@ -1139,7 +1643,17 @@ export function Editor({
    * dispatchEdit too, so the v2 inverse (`layers:delete` /
    * `layers:upsert`) lands without the v2-guard refusal.
    */
-  async function persistOverlay(overlay: Overlay): Promise<boolean> {
+  async function persistOverlay(
+    overlay: Overlay,
+    /** Optional coalescing tags forwarded to `recordCreate` via the
+     *  auto-bridge. Multi-create bursts (paste, duplicate, future
+     *  multi-* flows) pass `{ opKind, layerId, mergeMode: "append" }`
+     *  so push() accumulates every newly-inserted row into a single
+     *  undo entry's items[] array. Single-shot callers (drawing-tool
+     *  pointerup, text commit) omit it and keep their existing
+     *  standalone-entry behavior. */
+    recordOpts?: RecordOptions
+  ): Promise<{ ok: true; newId: string } | { ok: false }> {
     // Snapshot the model at call time. The model branch is the only
     // thing we read; subsequent state changes (e.g. a captures:changed
     // broadcast) re-render but don't race this in-flight write — the
@@ -1148,7 +1662,7 @@ export function Editor({
       // No record yet — drop the write. Shouldn't happen since the
       // editor wraps EditorLoaded inside a model.kind === "loaded"
       // guard, but be defensive.
-      return false;
+      return { ok: false };
     }
     if (model.format === 2) {
       // v2 path: adapt the Overlay → BundleLayerNode + route through
@@ -1163,7 +1677,7 @@ export function Editor({
       if (!adapted.ok) {
         // eslint-disable-next-line no-console
         console.error("overlayToBundleLayerNode failed", adapted.error);
-        return false;
+        return { ok: false };
       }
       const result = await model.dispatchEdit({
         kind: "upsert",
@@ -1172,34 +1686,41 @@ export function Editor({
       if (!result.ok) {
         // eslint-disable-next-line no-console
         console.error("layers:upsert via dispatchEdit failed", result.error);
-        return false;
+        return { ok: false };
       }
-      if (!undoApplyingRef.current && result.value.kind === "upsert") {
+      let newId = "";
+      if (result.value.kind === "upsert") {
         const artifact = result.value.artifact;
         if (artifact.format === 2) {
-          // Pass the inserted layer node so undo→redo can re-insert
-          // the structurally-identical layer via layers:upsert. The
-          // synthetic OverlayRow gives the v1-shaped recorder a
-          // working .id for the delete-side of undo (matches the
-          // layer's id since the v2-to-row projection in
-          // projectV2LayersToOverlayRows uses layer.id as row.id).
-          const syntheticRow: OverlayRow = {
-            id: artifact.node.id,
-            capture_id: captureId,
-            data: overlay,
-            schema_version: 1,
-            source: artifact.node.source,
-            ai_run_id: artifact.node.ai_run_id,
-            z_index: artifact.node.z_index,
-            rejected_at: artifact.node.rejected_at,
-            applied_at: artifact.node.applied_at,
-            superseded_by: artifact.node.superseded_by,
-            created_at: artifact.node.created_at
-          };
-          recordCreateRef.current?.(syntheticRow, { node: artifact.node });
+          newId = artifact.node.id;
+          if (!undoApplyingRef.current) {
+            // Pass the inserted layer node so undo→redo can re-insert
+            // the structurally-identical layer via layers:upsert. The
+            // synthetic OverlayRow gives the v1-shaped recorder a
+            // working .id for the delete-side of undo (matches the
+            // layer's id since the v2-to-row projection in
+            // projectV2LayersToOverlayRows uses layer.id as row.id).
+            const syntheticRow: OverlayRow = {
+              id: artifact.node.id,
+              capture_id: captureId,
+              data: overlay,
+              schema_version: 1,
+              source: artifact.node.source,
+              ai_run_id: artifact.node.ai_run_id,
+              z_index: artifact.node.z_index,
+              rejected_at: artifact.node.rejected_at,
+              applied_at: artifact.node.applied_at,
+              superseded_by: artifact.node.superseded_by,
+              created_at: artifact.node.created_at
+            };
+            recordCreateRef.current?.(syntheticRow, {
+              node: artifact.node,
+              ...(recordOpts ?? {})
+            });
+          }
         }
       }
-      return true;
+      return { ok: true, newId };
     }
 
     // v1 path — same dispatchEdit indirection. The synthesized
@@ -1229,16 +1750,23 @@ export function Editor({
     if (!result.ok) {
       // eslint-disable-next-line no-console
       console.error("overlays:upsert via dispatchEdit failed", result.error);
-      return false;
+      return { ok: false };
     }
-    if (!undoApplyingRef.current && result.value.kind === "upsert") {
+    let newId = "";
+    if (result.value.kind === "upsert") {
       const artifact = result.value.artifact;
       if (artifact.format === 1) {
-        recordCreateRef.current?.(artifact.row, { node: null });
+        newId = artifact.row.id;
+        if (!undoApplyingRef.current) {
+          recordCreateRef.current?.(artifact.row, {
+            node: null,
+            ...(recordOpts ?? {})
+          });
+        }
       }
     }
     // events:overlays:changed broadcast triggers refetch.
-    return true;
+    return { ok: true, newId };
   }
 
   async function commitText(): Promise<void> {
@@ -1324,7 +1852,7 @@ export function Editor({
       return;
     }
     const wrote = await persistOverlay(overlay);
-    if (wrote && !isControlled) {
+    if (wrote.ok && !isControlled) {
       effectiveToolState.onAnnotationPlaced({ tool: "text" });
     }
   }
@@ -1347,7 +1875,7 @@ export function Editor({
   const onRequestEditOverlay = useCallback(
     (overlay: OverlayRow): void => {
       if (overlay.data.kind !== "text") return;
-      setSelectedLayerId(null);
+      clearSelection();
       effectiveToolState.setActiveTool("text");
       setDraft({
         kind: "text",
@@ -1364,6 +1892,159 @@ export function Editor({
     },
     [effectiveToolState]
   );
+
+  /** Copy / paste / duplicate helpers. All three operate on the
+   *  current `selectedLayerIds` snapshot at call time.
+   *
+   *  • copySelected — snapshot each selected overlay's `data` into
+   *    `clipboardRef`. Cheap; no IPC. Replaces any previous clipboard
+   *    contents (consistent with OS clipboard semantics).
+   *
+   *  • pasteFromClipboard — for each clipboard entry, translate by a
+   *    small offset (so the paste is visually distinct from the
+   *    original) and persist as a new overlay. Awaits all persist
+   *    dispatches, collects the new ids, and re-anchors the selection
+   *    on the pasted layers so the user can immediately continue
+   *    manipulating them.
+   *
+   *  • duplicateSelected — equivalent to "copy + paste without
+   *    touching the clipboard." Useful when the user wants a quick
+   *    duplicate but already has something on the clipboard they
+   *    don't want to lose.
+   *
+   *  Limitations (deferred):
+   *  - Repeated Cmd+V always paste at the same offset from the
+   *    original, so back-to-back pastes overlap. A future pass can
+   *    bump a per-clipboard counter so each paste lands at a fresh
+   *    offset (Cleanshot-style).
+   *  - In-memory only — no cross-capture / cross-editor paste. The
+   *    main-side `clipboard:copyLayerFragment` private-UTI flow is
+   *    intentionally separate; wiring the renderer to it ships in a
+   *    follow-up so the in-app gesture lands first.
+   *  - Each paste produces one undo entry per pasted layer. Wrap in
+   *    a coalescing bracket for "undo restores all pastes" in a
+   *    future polish pass. */
+  function copySelected(): void {
+    if (selectedLayerIds.length === 0) return;
+    const snapshot = overlaysRef.current;
+    const items: Overlay[] = [];
+    for (const id of selectedLayerIds) {
+      const row = snapshot.find((o) => o.id === id);
+      if (row !== undefined) items.push(row.data);
+    }
+    clipboardRef.current = items;
+    // Also push to the OS clipboard for cross-capture / cross-instance
+    // paste. v2-only — the main-side handler refuses v1 captures (no
+    // layer tree to serialize). For v1, in-memory paste-within-capture
+    // is the only mode; cross-capture paste in v1 isn't supported.
+    // Fire-and-forget — the in-memory clipboard is the load-bearing
+    // path for same-capture paste, and the user shouldn't have to wait
+    // for the OS write to complete on Cmd+C.
+    if (model.kind === "loaded" && model.format === 2) {
+      void dispatch("clipboard:copyLayerFragment", {
+        captureId,
+        layerIds: selectedLayerIds.slice()
+      });
+    }
+  }
+
+  /** Paste-with-offset helper used by both Cmd+V and Cmd+D. The offset
+   *  is fixed (20 source-pixels in each axis) for v1. Returns once
+   *  every dispatch has settled. */
+  async function pasteOverlaysWithOffset(items: readonly Overlay[]): Promise<void> {
+    if (items.length === 0) return;
+    if (model.kind !== "loaded") return;
+    const w = model.record.width_px;
+    const h = model.record.height_px;
+    if (w <= 0 || h <= 0) return;
+    const OFFSET_PX = 20;
+    const dxn = OFFSET_PX / w;
+    const dyn = OFFSET_PX / h;
+    // Open a coalescing bracket so every persistOverlay's auto-
+    // recordCreate lands in ONE undo entry — pressing Undo once
+    // removes the whole batch of pasted layers as a group. Without
+    // the bracket (and the matching `{ opKind, layerId, mergeMode }`
+    // tags below) the user'd have to mash Undo N times to clean up
+    // a paste of N layers. The bracket key + mergeMode pair MUST
+    // agree with the recordOpts threaded through persistOverlay
+    // below — push()'s `insideInteraction` check needs both halves
+    // of the key matched, and the items[] accumulator needs
+    // `mergeMode: "append"` so earlier pasted rows aren't dropped.
+    const begin = beginInteractionRef.current;
+    const end = endInteractionRef.current;
+    const token = begin !== null ? begin("create", "kbd-paste") : null;
+    try {
+      const newIds: string[] = [];
+      for (const item of items) {
+        const translated = translateOverlayData(item, dxn, dyn);
+        const wrote = await persistOverlay(translated, {
+          opKind: "create",
+          layerId: "kbd-paste",
+          mergeMode: "append"
+        });
+        if (wrote.ok && wrote.newId !== "") newIds.push(wrote.newId);
+      }
+      if (newIds.length > 0) setSelectionTrustingDispatch(newIds);
+    } finally {
+      if (token !== null && end !== null) end(token);
+    }
+  }
+
+  function pasteFromClipboard(): void {
+    // Priority: OS clipboard fragment > in-memory clipboard.
+    //
+    // OS fragment is what enables cross-capture / cross-instance
+    // paste — it survives capture switches (which unmount the
+    // Editor + lose the in-memory ref) and other PwrSnap windows
+    // / processes. The IPC handler auto-detects between the
+    // private UTI (fragment) and PNG-fallback (creates a raster
+    // layer); both count as a successful OS paste.
+    //
+    // In-memory wins as a fallback for two cases:
+    //   • v1 captures, where the OS IPC is refused (no layer tree
+    //     to deserialize into; rasterize via PNG fallback is the
+    //     v2-only branch).
+    //   • OS clipboard is empty (most common when the user just
+    //     copied within the same capture and hasn't touched the
+    //     OS clipboard — in-memory has the data, no IPC needed).
+    //
+    // We attempt OS first only for v2 captures. The OS call is
+    // async; on no-fragment + no-image, it returns
+    // `insertedLayerIds: []` which signals "fall back to in-memory".
+    if (model.kind === "loaded" && model.format === 2) {
+      void (async (): Promise<void> => {
+        const result = await dispatch("clipboard:pasteLayerFragment", {
+          captureId,
+          parentId: null
+        });
+        if (result.ok && result.value.insertedLayerIds.length > 0) {
+          // OS clipboard had a fragment (or PNG fallback inserted a
+          // raster layer). Select what landed so the user can
+          // immediately nudge / re-style / delete it.
+          setSelectionTrustingDispatch(result.value.insertedLayerIds);
+          return;
+        }
+        // OS clipboard had nothing actionable — fall back to the
+        // in-memory clipboard so a same-capture copy → paste still
+        // works even if the OS clipboard is empty.
+        void pasteOverlaysWithOffset(clipboardRef.current);
+      })();
+      return;
+    }
+    // v1 capture (or model not loaded) — in-memory only.
+    void pasteOverlaysWithOffset(clipboardRef.current);
+  }
+
+  function duplicateSelected(): void {
+    if (selectedLayerIds.length === 0) return;
+    const snapshot = overlaysRef.current;
+    const items: Overlay[] = [];
+    for (const id of selectedLayerIds) {
+      const row = snapshot.find((o) => o.id === id);
+      if (row !== undefined) items.push(row.data);
+    }
+    void pasteOverlaysWithOffset(items);
+  }
 
   // Keyboard shortcuts: tool selection + Esc cancels drag.
   //
@@ -1387,29 +2068,207 @@ export function Editor({
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
       if (target?.isContentEditable === true) return;
-      // Phase 3.2 selection: Escape clears the selection (when not
-      // mid-draft — that case was handled above). Delete / Backspace
-      // soft-deletes the selected overlay. We route through the
+      // Multi-select keyboard ops. Escape clears the selection (when
+      // not mid-draft — that case was handled above). Delete / Backspace
+      // soft-deletes every selected overlay. We route through the
       // overlays:delete IPC for v1; v2 layers use layers:delete.
       // Branching on bundle_format_version lives in the deletion
       // helper below (set up in EditorLoaded which has the record).
-      if (event.key === "Escape" && selectedLayerId !== null) {
+      if (event.key === "Escape" && selectedLayerIds.length > 0) {
         event.preventDefault();
-        setSelectedLayerId(null);
+        clearSelection();
         return;
       }
       if (
         (event.key === "Delete" || event.key === "Backspace") &&
-        selectedLayerId !== null
+        selectedLayerIds.length > 0
       ) {
         event.preventDefault();
-        const id = selectedLayerId;
-        setSelectedLayerId(null);
-        deleteSelectedRef.current?.(id);
+        // Snapshot the rows before clearSelection wipes the ids and
+        // before the deletes start landing (each delete refetches
+        // the overlay list). Looking up by id from overlaysRef gives
+        // us the full row data each deleter needs for its undo entry.
+        const overlaysSnapshot = overlaysRef.current;
+        const rows: OverlayRow[] = [];
+        for (const id of selectedLayerIds) {
+          const row = overlaysSnapshot.find((o) => o.id === id);
+          if (row !== undefined) rows.push(row);
+        }
+        clearSelection();
+        // Open a coalescing bracket so every deletion in this batch
+        // records into a SINGLE undo entry — pressing Undo once
+        // restores all of them as a group.
+        //
+        // Two load-bearing details for the coalescing to actually
+        // work, both of which were wrong pre-fix:
+        //
+        //   1. AWAIT each `deleteSelectedRef` call before closing the
+        //      bracket. `deleteSelectedRef` is async (it awaits
+        //      `dispatchEdit` before calling `recordDelete`); without
+        //      the await here, the synchronous for-loop kicked off
+        //      every delete as fire-and-forget and ran `end(token)`
+        //      microseconds later — every recordDelete then fired
+        //      OUTSIDE the bracket and got its own undo entry. The
+        //      user reported "Cmd+Z after multi-delete only restored
+        //      one layer at a time" — that's the symptom.
+        //
+        //   2. Tag each `recordDelete` with the SAME
+        //      `{ opKind: "delete", layerId: "kbd-multi-delete" }`
+        //      as `begin(...)`. push()'s `insideInteraction` check
+        //      requires both keys to match the open bracket's keys;
+        //      untagged pushes never coalesce even when a bracket is
+        //      open. The shared layerId "kbd-multi-delete" is a
+        //      LOGICAL group key, not any individual layer's id.
+        const begin = beginInteractionRef.current;
+        const end = endInteractionRef.current;
+        const token = begin !== null ? begin("delete", "kbd-multi-delete") : null;
+        void (async (): Promise<void> => {
+          try {
+            for (const row of rows) {
+              const deleter = deleteSelectedRef.current;
+              if (deleter !== null) {
+                await deleter(row, {
+                  opKind: "delete",
+                  layerId: "kbd-multi-delete",
+                  // Multi-delete bursts each push a DIFFERENT row.
+                  // "append" tells push() to ACCUMULATE every row
+                  // into the entry's items[] array — otherwise the
+                  // coalesce path REPLACES the last row and earlier
+                  // deletes are silently lost on undo (the user-
+                  // reported "1 of 2 came back, the other is gone").
+                  mergeMode: "append"
+                });
+              }
+            }
+          } finally {
+            if (token !== null && end !== null) end(token);
+          }
+        })();
+        return;
+      }
+      // ⌘A / ⌃A — select every overlay on the current capture.
+      if (
+        (event.key === "a" || event.key === "A") &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        setSelectedLayerIds(overlaysRef.current.map((o) => o.id));
+        return;
+      }
+      // ⌘C / ⌃C — copy selected layers into the in-memory clipboard.
+      // Skipped when nothing's selected so the system Cmd+C (browser
+      // "Copy" of any selected text on the page) still wins.
+      if (
+        (event.key === "c" || event.key === "C") &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        selectedLayerIds.length > 0
+      ) {
+        event.preventDefault();
+        copySelected();
+        return;
+      }
+      // ⌘V / ⌃V — paste. Prefers OS clipboard fragment / image on v2
+      // captures (handles cross-capture + cross-instance), falls back
+      // to the in-memory clipboard otherwise. We can't easily query
+      // OS clipboard contents synchronously here, so we always
+      // preventDefault on Cmd+V from the editor canvas (the inner
+      // text-draft input is already early-returned above via the
+      // INPUT/TEXTAREA guard). pasteFromClipboard internally no-ops
+      // when both OS + in-memory are empty.
+      if (
+        (event.key === "v" || event.key === "V") &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        pasteFromClipboard();
+        return;
+      }
+      // ⌘D / ⌃D — duplicate selected layers in place (at an offset).
+      // Doesn't touch the clipboard. No-op when nothing's selected.
+      if (
+        (event.key === "d" || event.key === "D") &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        selectedLayerIds.length > 0
+      ) {
+        event.preventDefault();
+        duplicateSelected();
+        return;
+      }
+      // ⌘] / ⌘[ — bring forward / send backward (one step).
+      // ⌘⇧] / ⌘⇧[ — bring to front / send to back.
+      // No-op when nothing's selected so the system shortcut wins.
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        selectedLayerIds.length > 0 &&
+        (event.key === "]" || event.key === "[")
+      ) {
+        event.preventDefault();
+        const isBracketClose = event.key === "]";
+        const variant: "forward" | "backward" | "toFront" | "toBack" =
+          event.shiftKey
+            ? isBracketClose
+              ? "toFront"
+              : "toBack"
+            : isBracketClose
+              ? "forward"
+              : "backward";
+        reorderSelectedRef.current?.(variant);
+        return;
+      }
+      // Arrow-key nudge of every selected overlay. Plain arrow = 1
+      // source-pixel; Shift+arrow = 10. ⌘/⌃ arrow are reserved for
+      // future tool shortcuts (text caret navigation in the draft
+      // input is handled by the textarea itself, which we early-
+      // returned out of above).
+      //
+      // stopImmediatePropagation + the {capture: true} registration
+      // below is what prevents Library.tsx's Focus / Reel mode
+      // arrow-key navigation from ALSO firing on the same event and
+      // navigating to the next capture instead of nudging the
+      // selected layer. Library's listener is bubble-phase + ran
+      // first (registered earlier in Focus mode mount order), so
+      // without these two, every nudge ALSO swaps the capture.
+      // We only do this when the editor IS handling the key —
+      // empty-selection arrow keys still fall through so reel
+      // navigation works when nothing's selected.
+      if (
+        selectedLayerIds.length > 0 &&
+        draft === null &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (event.key === "ArrowLeft" ||
+          event.key === "ArrowRight" ||
+          event.key === "ArrowUp" ||
+          event.key === "ArrowDown")
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const stepPx = event.shiftKey ? 10 : 1;
+        // The keyboard handler doesn't have direct access to canvas
+        // dims (those live in EditorLoaded). Push the step through
+        // the ref so the child can do the source-pixel → normalized
+        // conversion in its own closure. (1 source-px = 1 / dim_px
+        // in normalized space.)
+        let dxnSteps = 0;
+        let dynSteps = 0;
+        if (event.key === "ArrowLeft") dxnSteps = -stepPx;
+        if (event.key === "ArrowRight") dxnSteps = stepPx;
+        if (event.key === "ArrowUp") dynSteps = -stepPx;
+        if (event.key === "ArrowDown") dynSteps = stepPx;
+        nudgeSelectedRef.current?.(dxnSteps, dynSteps);
         return;
       }
       // Modifier presses (⌘/⌃/⌥) belong to other handlers — don't eat
-      // ⌘A or similar as the arrow shortcut.
+      // ⌘A or similar as the arrow shortcut. (⌘A handled above.)
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const upper = event.key.toUpperCase();
       const matched = TOOLS.find((t) => t.key === upper);
@@ -1431,15 +2290,60 @@ export function Editor({
         setTool(matched.id);
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [draft, isControlled, selectedLayerId, setTool, tool]);
+    // Capture-phase registration: window-level capture-phase listeners
+    // fire BEFORE bubble-phase listeners on the same target. Library's
+    // arrow-key navigation handler is bubble-phase, so registering here
+    // with { capture: true } guarantees the editor sees the keydown
+    // first and can stopImmediatePropagation when it owns the gesture
+    // (currently the arrow-key nudge branch above — the other
+    // shortcuts use their own modifier patterns that don't collide).
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [draft, isControlled, selectedLayerIds, setTool, tool]);
 
   // Hook-owned deleter (populated by EditorLoaded once it knows the
   // bundle format). Like recordCreateRef, this lives in the outer
   // function because the keyboard handler is here but the model
   // resolution + format branching lives in the child.
-  const deleteSelectedRef = useRef<((id: string) => void) | null>(null);
+  //
+  // Takes the full OverlayRow (not just an id) so the deleter can
+  // record a proper undo entry — recordDelete needs `row.data` to
+  // re-upsert on undo, plus the matching v2 layer node when
+  // applicable. The outer keyboard handler grabs the row from
+  // overlaysRef before calling in.
+  const deleteSelectedRef = useRef<
+    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+  >(null);
+  // Hook-owned nudger (same pattern as deleteSelectedRef). Translates
+  // every selected overlay by (dxn, dyn) in normalized [0,1]² space —
+  // EditorLoaded populates this with a closure that knows the canvas
+  // dims + dispatchEdit. The outer keyboard handler computes (dxn,
+  // dyn) from the arrow-key + Shift modifier and calls in.
+  const nudgeSelectedRef =
+    useRef<((dxn: number, dyn: number) => void) | null>(null);
+  // Hook-owned reorderer. Same pattern as deleteSelectedRef /
+  // nudgeSelectedRef — EditorLoaded populates with a closure that
+  // owns the current overlay list + dispatchEdit, so the outer
+  // keyboard handler can fire reorder shortcuts without knowing about
+  // the v1/v2 split.
+  const reorderSelectedRef =
+    useRef<
+      ((variant: "forward" | "backward" | "toFront" | "toBack") => void) | null
+    >(null);
+  // In-memory editor clipboard for copy / paste. Stores the immutable
+  // `data` payload of every overlay that was selected at Cmd+C time —
+  // not full OverlayRow values, since ids are regenerated on paste.
+  // Outlives the current selection: after copy, the user can click
+  // away, then Cmd+V to paste at the original geometry + offset.
+  //
+  // Scope: in-memory, this editor instance only. The Phase 4-ish
+  // cross-capture clipboard fragment (private UTI via
+  // `clipboard:copyLayerFragment` / `pasteLayerFragment`) is a
+  // separate layer that PwrSnap already has in main-side handlers —
+  // wiring the renderer end of that is deferred so the in-app
+  // gesture lands first.
+  const clipboardRef = useRef<readonly Overlay[]>([]);
 
   if (model.kind === "loading") {
     return (
@@ -1475,15 +2379,42 @@ export function Editor({
   // `sourceWidthPx` / `sourceHeightPx` are resolved via the raster-
   // layer scan below. See the assignment near `return <EditorLoaded
   // ... />`.
-  // Clear stale selection when the selected overlay is no longer in
-  // the list (e.g. another window deleted it via the events:overlays:
-  // changed broadcast, or the capture switched).
-  if (
-    selectedLayerId !== null &&
-    overlaysForRender.find((r) => r.id === selectedLayerId) === undefined
-  ) {
-    // Schedule via microtask so we don't setState during render.
-    queueMicrotask(() => setSelectedLayerId(null));
+  // Drop any ids from the selection that are no longer in the list
+  // (e.g. another window deleted them via the events:overlays:changed
+  // broadcast, or the capture switched). Skip the setState when no
+  // ids fell out — avoids a render loop.
+  //
+  // In-flight discipline: ids passed through
+  // `setSelectionTrustingDispatch` (post-nudge / paste / duplicate /
+  // create) are kept in `inFlightSelectionIdsRef` until they land in
+  // `alive`. Filter respects them so the cleanup doesn't wipe a
+  // just-dispatched selection while the broadcast is still mid-flight.
+  // Without this, every nudge wiped the selection the user just had
+  // (and the Library reel then stole the next arrow-key press).
+  if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
+    const alive = new Set(overlaysForRender.map((r) => r.id));
+    const inFlight = inFlightSelectionIdsRef.current;
+    // Any in-flight id that has landed in alive = broadcast caught
+    // up. Drop those from the set so a LATER unrelated deletion can
+    // still kick them out of the selection via the normal path.
+    if (inFlight.size > 0) {
+      let landedCount = 0;
+      for (const id of inFlight) if (alive.has(id)) landedCount += 1;
+      if (landedCount > 0) {
+        const stillInFlight = new Set<string>();
+        for (const id of inFlight) if (!alive.has(id)) stillInFlight.add(id);
+        inFlightSelectionIdsRef.current = stillInFlight;
+      }
+    }
+    if (selectedLayerIds.length > 0) {
+      const filtered = selectedLayerIds.filter(
+        (id) => alive.has(id) || inFlightSelectionIdsRef.current.has(id)
+      );
+      if (filtered.length !== selectedLayerIds.length) {
+        // Schedule via microtask so we don't setState during render.
+        queueMicrotask(() => setSelectedLayerIds(filtered));
+      }
+    }
   }
 
   // Type-erase dispatchEdit so EditorLoaded doesn't carry the format
@@ -1568,6 +2499,9 @@ export function Editor({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      draftGeometry={draftGeometry}
+      setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
@@ -1576,10 +2510,16 @@ export function Editor({
       openActivePopoverRef={openActivePopoverRef}
       ensureV2State={ensureV2.state}
       onEnsureV2Retry={ensureV2.retry}
-      selectedLayerId={selectedLayerId}
-      setSelectedLayerId={setSelectedLayerId}
+      selectedLayerIds={selectedLayerIds}
+      setSelectedLayerIds={setSelectedLayerIds}
+      setSelectionTrustingDispatch={setSelectionTrustingDispatch}
+      primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
+      nudgeSelectedRef={nudgeSelectedRef}
+      reorderSelectedRef={reorderSelectedRef}
+      commitMultiDragRef={commitMultiDragRef}
       modelFormat={model.format}
+      modelLayers={model.format === 2 ? model.layers : []}
       dispatchEdit={dispatchEditErased}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
@@ -1612,6 +2552,9 @@ function EditorLoaded({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
+  draftGeometry,
+  setDraftGeometry,
   commitText,
   onZoomChange,
   blurStyle,
@@ -1620,10 +2563,16 @@ function EditorLoaded({
   openActivePopoverRef,
   ensureV2State,
   onEnsureV2Retry,
-  selectedLayerId,
-  setSelectedLayerId,
+  selectedLayerIds,
+  setSelectedLayerIds,
+  setSelectionTrustingDispatch,
+  primarySelectedLayerId,
   deleteSelectedRef,
+  nudgeSelectedRef,
+  reorderSelectedRef,
+  commitMultiDragRef,
   modelFormat,
+  modelLayers,
   dispatchEdit,
   sourceWidthPx,
   sourceHeightPx,
@@ -1673,6 +2622,24 @@ function EditorLoaded({
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
+  /** OS-level pointer cancellation (window blur during drag,
+   *  Mission Control, etc.). Outer Editor uses it to drop any armed
+   *  multi-drag snapshots so the next pointerdown doesn't see stale
+   *  state. EditorLoaded just forwards it to the canvas's
+   *  onPointerCancel attribute. */
+  onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Live-drag geometry override owned by the outer Editor (the
+   *  multi-drag pointermove handler there is the primary writer; the
+   *  single-select drag's onHandleGeometryDrag also writes through
+   *  this setter). EditorLoaded reads `draftGeometry` to thread into
+   *  OverlaySvg / BlurOverlays / TextHtmlOverlays as `liveOverride`,
+   *  and uses `setDraftGeometry(null)` to clear on commit / error /
+   *  drag-end. Map shape covers both single-select (1 entry) and
+   *  multi-drag (N entries) through one contract. */
+  draftGeometry: ReadonlyMap<string, GeometryUpdate> | null;
+  setDraftGeometry: React.Dispatch<
+    React.SetStateAction<ReadonlyMap<string, GeometryUpdate> | null>
+  >;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   blurStyle: BlurStyle;
@@ -1685,22 +2652,77 @@ function EditorLoaded({
   ensureV2State: EnsureV2State;
   /** Bound to the Retry button on the view-only banner. */
   onEnsureV2Retry: () => void;
-  /** Phase 3.2 selection model — id of the currently-selected overlay,
-   *  null if nothing selected. Drives the selection outline glyph in
-   *  OverlaySvg. */
-  selectedLayerId: string | null;
+  /** Multi-select model — ids of every currently-selected overlay.
+   *  Empty array means nothing selected. Drives the selection outline
+   *  glyphs in OverlaySvg (one per id) and the keyboard-Delete /
+   *  arrow-nudge / copy-paste / z-order handlers. */
+  selectedLayerIds: readonly string[];
   /** Phase 3.5 — geometry/style updates land as delete-plus-insert
    *  (id changes on every cycle). EditorLoaded reads this setter to
    *  re-anchor the selection on the new id after a successful
    *  updateGeometry / updateOverlay dispatch. */
-  setSelectedLayerId: (id: string | null) => void;
+  setSelectedLayerIds: (ids: readonly string[]) => void;
+  /** Like `setSelectedLayerIds` but also registers each id with the
+   *  outer in-flight set so the stale-id cleanup in the outer Editor
+   *  doesn't wipe a just-set selection while the
+   *  events:overlays:changed broadcast → refetch round-trip is still
+   *  pending. Use this from any post-dispatch path (nudge, paste,
+   *  duplicate, create — anything whose `result` carries fresh row
+   *  ids). Plain `setSelectedLayerIds` is fine for selections built
+   *  from ids that are already in `overlaysForRender` (e.g. Cmd+A,
+   *  click-to-select). */
+  setSelectionTrustingDispatch: (ids: readonly string[]) => void;
+  /** Convenience derived value — the single selected id when exactly
+   *  one overlay is selected, null otherwise. Drives single-selection-
+   *  only surfaces (transform handles, popover-switches-to-selected-
+   *  style) which intentionally hide when 0 or 2+ are selected. */
+  primarySelectedLayerId: string | null;
   /** Outer Editor's keyboard handler reads this for Delete/Backspace.
    *  EditorLoaded populates it with a format-aware deleter (v1 →
    *  overlays:delete, v2 → layers:delete). */
-  deleteSelectedRef: React.RefObject<((id: string) => void) | null>;
+  deleteSelectedRef: React.RefObject<
+    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+  >;
+  /** Outer keyboard handler calls into this on arrow-key presses with
+   *  source-pixel deltas; EditorLoaded's closure converts to normalized
+   *  coords and dispatches one updateGeometry per selected layer. */
+  nudgeSelectedRef: React.RefObject<
+    ((dxnSteps: number, dynSteps: number) => void) | null
+  >;
+  /** Outer keyboard handler calls into this on ⌘] / ⌘[ / ⌘⇧] / ⌘⇧[
+   *  with the variant name; EditorLoaded's closure resolves the
+   *  current overlay list, computes the new ordering, and dispatches
+   *  one reorder op per item whose z_index moved. Same code path for
+   *  v1 + v2 — both formats expose an in-place z_index UPDATE via
+   *  their respective :reorder IPCs. */
+  reorderSelectedRef: React.RefObject<
+    ((variant: "forward" | "backward" | "toFront" | "toBack") => void) | null
+  >;
+  /** Outer onPointerUp calls this when a multi-select drag commits.
+   *  EditorLoaded populates it with the format-aware dispatcher loop
+   *  (same shape nudgeSelectedRef uses but driven by a normalized
+   *  pointer delta instead of arrow-key steps). `dxn` / `dyn` are
+   *  the cursor delta in normalized [0,1] canvas coords; the closure
+   *  translates each pre-drag-snapshot geometry by that delta,
+   *  dispatches updateGeometry per layer, and records the burst as
+   *  ONE coalesced undo entry. */
+  commitMultiDragRef: React.RefObject<
+    | ((
+        snapshots: readonly { id: string; data: OverlayRow["data"] }[],
+        dxn: number,
+        dyn: number
+      ) => Promise<void>)
+    | null
+  >;
   /** Resolved bundle format from the model (1 or 2). EditorLoaded uses
    *  it to branch overlay-delete IPC selection. */
   modelFormat: 1 | 2;
+  /** v2 layer tree (empty array on v1 captures). The deleter looks up
+   *  the matching layer node by id so `recordDelete` can pass `node`
+   *  to the undo entry — without it, undo of a v2 delete re-upserts
+   *  via `{ row }` which the v2 dispatcher's type doesn't accept,
+   *  silently leaving the delete un-undoable. */
+  modelLayers: readonly BundleLayerNode[];
   /** Type-erased dispatchEdit from the resolved CaptureModel. EditorLoaded
    *  threads it into useUndoRedo (so undo/redo route through the same
    *  format-aware dispatcher as create writes) and into onCropCommit
@@ -1845,21 +2867,386 @@ function EditorLoaded({
   // local branching. The events:overlays:changed broadcast triggers
   // useCaptureModel to refetch and the deleted row drops out.
   useEffect(() => {
-    deleteSelectedRef.current = (id: string): void => {
-      void dispatchEdit({ kind: "delete", id });
+    deleteSelectedRef.current = async (
+      row: OverlayRow,
+      opts?: RecordOptions
+    ): Promise<void> => {
+      // For v2 captures, find the layer node so recordDelete can
+      // re-insert the structurally-identical layer on undo (preserves
+      // parent_id / z_index / transform[] beyond what's in row.data).
+      // For v1, node stays null and undo re-upserts via { row }.
+      const node =
+        modelFormat === 2
+          ? (modelLayers.find((l) => l.id === row.id) ?? null)
+          : null;
+      const result = await dispatchEdit({ kind: "delete", id: row.id });
+      if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.error("delete failed", result.error);
+        return;
+      }
+      // Record on the undo stack. Without this, Delete/Backspace
+      // was silently unundoable (the dispatcher doesn't auto-
+      // record; the only auto-bridge is for create via
+      // recordCreateRef). The outer keyboard handler wraps a
+      // multi-delete loop in beginInteraction/endInteraction so
+      // every recordDelete here collapses into ONE undo entry —
+      // forwarding `opts` (opKind + layerId) is what lets push()'s
+      // `insideInteraction` check actually fire (untagged pushes
+      // never coalesce). Single-delete callers pass no opts; that's
+      // fine — the resulting standalone undo entry is correct UX.
+      if (!undoApplyingRef.current) {
+        undo.recordDelete(row, { node, ...(opts ?? {}) });
+      }
     };
     return () => {
       deleteSelectedRef.current = null;
     };
-  }, [deleteSelectedRef, dispatchEdit]);
+  }, [
+    deleteSelectedRef,
+    dispatchEdit,
+    modelFormat,
+    modelLayers,
+    undo,
+    undoApplyingRef
+  ]);
+
+  // Arrow-key nudge — translate every selected overlay by N source-
+  // pixels along the axis. Each dispatch is delete-plus-insert (id
+  // changes), so we collect the new ids and re-anchor the selection
+  // in one shot at the end. Serialized to avoid two concurrent
+  // updates racing through the same broadcast → refetch cycle.
+  //
+  // Undo coalescing — a burst of arrow-key presses (auto-repeat or
+  // back-to-back manual presses) coalesces into ONE undo entry:
+  //   • First nudge after the bracket is closed → open a fresh
+  //     beginInteraction("nudge", ...) bracket via the bridge refs.
+  //   • Every nudge resets the idle timer (NUDGE_IDLE_MS).
+  //   • Timer fire → endInteraction → bracket closed. Next nudge
+  //     starts a brand-new bracket → brand-new undo entry.
+  //   • Multi-layer nudge in one press → all layers' recordGeometry
+  //     calls land in the SAME bracket (same press = same micro-task
+  //     batch) so they collapse with each other AND with subsequent
+  //     presses in the burst.
+  // Refs live OUTSIDE the effect so the bracket survives the effect's
+  // re-run when `selectedLayerIds` changes after dispatch settles
+  // (the post-dispatch setSelectedLayerIds triggers a re-render →
+  // effect cleanup → effect re-init; without ref-scoping the bracket
+  // would close on every press).
+  const nudgeBracketTokenRef = useRef<InteractionToken | null>(null);
+  const nudgeIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const NUDGE_IDLE_MS = 500;
+  // Set TRUE by nudgeSelectedRef just before its own
+  // `setSelectedLayerIds(newIds)` so the selection-change effect
+  // below can distinguish "nudge replaced the ids of the same
+  // logical selection" from "user clicked a different layer".
+  // Without this distinction the selection-change effect would fire
+  // on EVERY nudge (because dispatching an edit mints new row ids
+  // and the post-dispatch setSelectedLayerIds plumbs them in) and
+  // would close the coalescing bracket after every press — defeats
+  // burst coalescing entirely.
+  const nudgeAdvancingSelectionRef = useRef(false);
+  // Close the bracket exactly once on unmount — re-renders MUST NOT
+  // close it (would defeat coalescing across presses). The cleanup
+  // below is the only callsite besides the idle timer fire AND the
+  // selection-change effect immediately below.
+  useEffect(() => {
+    return () => {
+      if (nudgeIdleTimerRef.current !== null) {
+        clearTimeout(nudgeIdleTimerRef.current);
+        nudgeIdleTimerRef.current = null;
+      }
+      const token = nudgeBracketTokenRef.current;
+      if (token !== null && endInteractionRef.current !== null) {
+        endInteractionRef.current(token);
+      }
+      nudgeBracketTokenRef.current = null;
+    };
+  }, [endInteractionRef]);
+
+  // Close the bracket when the user changes selection mid-burst (e.g.
+  // nudges layer A, then clicks layer B before the 500 ms idle timer
+  // fires). Without this, B's first nudge lands in A's bracket and a
+  // single undo restores BOTH layers — confusing UX. The advancing-
+  // selection ref (set just before the nudge's own setSelectedLayerIds)
+  // lets us tell that case apart from "user really picked something
+  // else" so the in-burst id rotation doesn't close the bracket.
+  useEffect(() => {
+    if (nudgeAdvancingSelectionRef.current) {
+      nudgeAdvancingSelectionRef.current = false;
+      return;
+    }
+    if (nudgeIdleTimerRef.current !== null) {
+      clearTimeout(nudgeIdleTimerRef.current);
+      nudgeIdleTimerRef.current = null;
+    }
+    const token = nudgeBracketTokenRef.current;
+    if (token !== null && endInteractionRef.current !== null) {
+      endInteractionRef.current(token);
+    }
+    nudgeBracketTokenRef.current = null;
+  }, [selectedLayerIds, endInteractionRef]);
+
+  useEffect(() => {
+    nudgeSelectedRef.current = (dxnSteps: number, dynSteps: number): void => {
+      if (selectedLayerIds.length === 0) return;
+      if (record.width_px <= 0 || record.height_px <= 0) return;
+      const dxn = dxnSteps / record.width_px;
+      const dyn = dynSteps / record.height_px;
+      const snapshot = overlays;
+      const targets = selectedLayerIds
+        .map((id) => snapshot.find((o) => o.id === id))
+        .filter((o): o is OverlayRow => o !== undefined);
+      if (targets.length === 0) return;
+
+      // Open or refresh the coalescing bracket. The bracket lives in
+      // refs (not effect-scoped locals) so it survives selection-
+      // change re-renders between presses.
+      if (
+        nudgeBracketTokenRef.current === null &&
+        beginInteractionRef.current !== null
+      ) {
+        nudgeBracketTokenRef.current = beginInteractionRef.current(
+          "nudge",
+          "kbd-nudge"
+        );
+      }
+      if (nudgeIdleTimerRef.current !== null) {
+        clearTimeout(nudgeIdleTimerRef.current);
+      }
+      nudgeIdleTimerRef.current = setTimeout(() => {
+        const token = nudgeBracketTokenRef.current;
+        if (token !== null && endInteractionRef.current !== null) {
+          endInteractionRef.current(token);
+        }
+        nudgeBracketTokenRef.current = null;
+        nudgeIdleTimerRef.current = null;
+      }, NUDGE_IDLE_MS);
+
+      void (async (): Promise<void> => {
+        const newIds: string[] = [];
+        for (const target of targets) {
+          const geometry = translateOverlayGeometry(target.data, dxn, dyn);
+          if (geometry === null) {
+            // Kind has no geometry semantics (crop) — preserve in
+            // selection as-is.
+            newIds.push(target.id);
+            continue;
+          }
+          // Capture the pre-nudge geometry NOW (before dispatch) so
+          // the undo entry can restore it without a refetch race.
+          const previousGeometry = overlayDataToGeometry(target.data);
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: target.id,
+            geometry
+          });
+          if (!result.ok) {
+            newIds.push(target.id);
+            continue;
+          }
+          if (result.value.kind !== "update") {
+            newIds.push(target.id);
+            continue;
+          }
+          const artifact = result.value.artifact;
+          const newId =
+            artifact.format === 1 ? artifact.row.id : artifact.node.id;
+          newIds.push(newId);
+          // Record on the undo stack. Without this, nudge was
+          // silently unundoable (the dispatcher itself doesn't auto-
+          // record; only recordCreate runs through the auto-bridge).
+          // The recordGeometry call lands inside the bracket opened
+          // above, so every nudge in the burst collapses into one
+          // undo entry that restores every layer's pre-burst
+          // geometry in one undo step.
+          if (!undoApplyingRef.current && previousGeometry !== null) {
+            undo.recordGeometry({
+              currentIdRef: { current: newId },
+              previousGeometry,
+              nextGeometry: geometry
+            });
+          }
+        }
+        // Flag the impending selection change as "self-inflicted" so
+        // the selection-change effect (which closes the coalescing
+        // bracket on user-initiated changes) doesn't tear down the
+        // in-flight nudge burst. Reset by the effect on next run.
+        nudgeAdvancingSelectionRef.current = true;
+        // Use the in-flight-aware setter — newIds come from the
+        // dispatch result (so they exist in the DB) but may not have
+        // landed in `overlaysForRender` by the next render, and the
+        // outer stale-id cleanup would otherwise wipe them. Without
+        // this the user saw the layer move 1px then the grippers
+        // vanish, and the next arrow-key was stolen by the Library
+        // reel because nothing was selected.
+        setSelectionTrustingDispatch(newIds);
+      })();
+    };
+    return () => {
+      nudgeSelectedRef.current = null;
+    };
+  }, [
+    nudgeSelectedRef,
+    selectedLayerIds,
+    overlays,
+    dispatchEdit,
+    record.width_px,
+    record.height_px,
+    setSelectionTrustingDispatch,
+    undo,
+    undoApplyingRef,
+    beginInteractionRef,
+    endInteractionRef
+  ]);
+
+  // Multi-select drag commit — wired to the outer Editor's
+  // `multiDragStartRef` via `commitMultiDragRef`. The OUTER pointer
+  // handlers initiate the gesture (snapshot + setPointerCapture on
+  // pointerdown over an already-multi-selected layer; compute delta
+  // on pointerup) and call this closure with the snapshots + delta.
+  // Same shape as `nudgeSelectedRef` (translate every snapshot by
+  // (dxn, dyn), dispatch updateGeometry per layer, coalesce into ONE
+  // undo entry via a shared bracket) — the only difference is the
+  // delta source: keyboard steps for nudge, pointer-delta here.
+  useEffect(() => {
+    commitMultiDragRef.current = async (
+      snapshots,
+      dxn,
+      dyn
+    ): Promise<void> => {
+      if (snapshots.length === 0) return;
+      // Open the coalescing bracket — same key shape the multi-delete
+      // handler uses. Every recordGeometry inside the loop tags with
+      // the same { opKind, layerId } so push()'s `insideInteraction`
+      // check fires and all N entries collapse into 1 undo step.
+      const begin = beginInteractionRef.current;
+      const end = endInteractionRef.current;
+      const token =
+        begin !== null ? begin("multi-drag", "pointer-multi-drag") : null;
+      try {
+        const newIds: string[] = [];
+        for (const snapshot of snapshots) {
+          const geometry = translateOverlayGeometry(snapshot.data, dxn, dyn);
+          if (geometry === null) {
+            // Kind has no geometry semantics (crop) — preserve in
+            // selection but skip the dispatch.
+            newIds.push(snapshot.id);
+            continue;
+          }
+          const previousGeometry = overlayDataToGeometry(snapshot.data);
+          const result = await dispatchEdit({
+            kind: "updateGeometry",
+            layerId: snapshot.id,
+            geometry
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("multi-drag dispatch failed", result.error);
+            newIds.push(snapshot.id);
+            continue;
+          }
+          if (result.value.kind !== "update") {
+            newIds.push(snapshot.id);
+            continue;
+          }
+          const artifact = result.value.artifact;
+          const newId =
+            artifact.format === 1 ? artifact.row.id : artifact.node.id;
+          newIds.push(newId);
+          if (!undoApplyingRef.current && previousGeometry !== null) {
+            undo.recordGeometry(
+              {
+                currentIdRef: { current: newId },
+                previousGeometry,
+                nextGeometry: geometry
+              },
+              {
+                opKind: "multi-drag",
+                layerId: "pointer-multi-drag",
+                // Multi-drag bursts each push a DIFFERENT layer's
+                // geometry. "append" → push() accumulates every
+                // item into the entry's items[] so undo restores
+                // every layer's pre-drag geometry, not just the
+                // first dragged layer.
+                mergeMode: "append"
+              }
+            );
+          }
+        }
+        // Re-anchor the selection on the post-dispatch ids — each
+        // updateGeometry mints a new row id (delete-plus-insert),
+        // so the original ids in `snapshots` are gone after the
+        // burst. setSelectionTrustingDispatch holds them in the
+        // in-flight set until the broadcast confirms they landed.
+        setSelectionTrustingDispatch(newIds);
+      } finally {
+        if (token !== null && end !== null) end(token);
+      }
+    };
+    return () => {
+      commitMultiDragRef.current = null;
+    };
+  }, [
+    commitMultiDragRef,
+    dispatchEdit,
+    setSelectionTrustingDispatch,
+    undo,
+    undoApplyingRef,
+    beginInteractionRef,
+    endInteractionRef
+  ]);
+
+  // Z-order ops — bring forward / send backward / bring to front /
+  // send to back. Computes the new ordering on the renderer side via
+  // `computeNewOrder` (pure, well-tested) and dispatches one reorder
+  // op per item whose POSITION changed. Layer / row ids are preserved
+  // on both formats (reorder is a true in-place UPDATE on `z_index`,
+  // not a delete-plus-insert), so the selection stays valid without
+  // re-anchoring.
+  useEffect(() => {
+    reorderSelectedRef.current = (
+      variant: "forward" | "backward" | "toFront" | "toBack"
+    ): void => {
+      if (selectedLayerIds.length === 0) return;
+      const snapshot = overlays;
+      if (snapshot.length === 0) return;
+      const newOrder = computeNewOrder(snapshot, selectedLayerIds, variant);
+      const changes = diffChanges(snapshot, newOrder);
+      if (changes.length === 0) return;
+      void (async (): Promise<void> => {
+        for (const change of changes) {
+          const result = await dispatchEdit({
+            kind: "reorder",
+            layerId: change.id,
+            zIndex: change.newZIndex
+          });
+          if (!result.ok) {
+            // eslint-disable-next-line no-console
+            console.error("reorder failed", result.error);
+            return;
+          }
+        }
+      })();
+    };
+    return () => {
+      reorderSelectedRef.current = null;
+    };
+  }, [reorderSelectedRef, selectedLayerIds, overlays, dispatchEdit]);
 
   // ----- Phase 3.5: transform handles + selected-style editing -----
   //
   // Resolve the currently-selected overlay row for the handles.
+  // Transform handles + the per-layer style popover render ONLY when
+  // exactly one overlay is selected — multi-select gets the dashed
+  // outline + keyboard ops (delete / nudge / copy / z-order) but no
+  // resize handles (would need union-bbox math) and no style edits
+  // (would need to fan out the patch to every selected layer of the
+  // same kind). Single-select to refine.
   const selectedOverlayForHandles: OverlayRow | null =
-    selectedLayerId === null
+    primarySelectedLayerId === null
       ? null
-      : overlays.find((r) => r.id === selectedLayerId) ?? null;
+      : overlays.find((r) => r.id === primarySelectedLayerId) ?? null;
 
   // Pre-drag snapshot — stashed on pointerdown so the geometry undo
   // entry can record the PRE-DRAG geometry alongside the post-drag
@@ -1874,9 +3261,11 @@ function EditorLoaded({
   // position while the handle is dragged — the user sees the bbox
   // outline + handle move but the painted glyph "vanishes" until
   // commit re-anchors it (the bug we're fixing).
-  const [draftGeometry, setDraftGeometry] = useState<
-    { layerId: string; geometry: GeometryUpdate } | null
-  >(null);
+  // `draftGeometry` + `setDraftGeometry` are lifted to the outer
+  // Editor — the multi-drag pointer handlers there need to write
+  // them, and the single-select drag handlers below read/write them
+  // through the same props. See the outer declaration for the full
+  // rationale and shape comment.
 
   const onHandleDragStart = useCallback((row: OverlayRow): void => {
     preDragRef.current = row;
@@ -1895,12 +3284,15 @@ function EditorLoaded({
     (geometry: GeometryUpdate): void => {
       // Stash the in-progress geometry against the currently-dragged
       // overlay's id so OverlaySvg / BlurOverlays can paint it. Read
-      // the id from the pre-drag snapshot rather than selectedLayerId
+      // the id from the pre-drag snapshot rather than selectedLayerIds
       // so a stray selection-change broadcast mid-drag can't repoint
       // the override at the wrong row.
       const preDrag = preDragRef.current;
       if (preDrag === null) return;
-      setDraftGeometry({ layerId: preDrag.id, geometry });
+      // Single-select drag emits a 1-entry map. Same renderer
+      // contract as multi-drag (which emits N entries), unified
+      // through `ReadonlyMap<string, GeometryUpdate>`.
+      setDraftGeometry(new Map([[preDrag.id, geometry]]));
     },
     []
   );
@@ -1936,19 +3328,31 @@ function EditorLoaded({
         const newId =
           artifact.format === 1 ? artifact.row.id : artifact.node.id;
         // Re-anchor the selection on the new id so the handles + the
-        // selection outline follow the freshly-inserted row.
-        setSelectedLayerId(newId);
-        // Drop the live override now that the new row id is known.
-        // The events:overlays:changed (or v2's events:layers:changed)
-        // broadcast refetches the row list with the persisted
-        // geometry, so the override is no longer load-bearing.
-        // Clearing here avoids a brief flash where the override
-        // (keyed by the OLD id) lingers against a list that no
-        // longer contains that row.
-        setDraftGeometry(null);
-        // Record on the undo stack — capture both the PRE and POST
-        // geometry, with a chain-id ref so subsequent undo/redo cycles
-        // can track the new ids.
+        // selection outline follow the freshly-inserted row. Geometry
+        // drags happen via TransformHandles which only renders for
+        // single-select, so replacing (not merging) is correct here —
+        // multi-select doesn't expose this code path today.
+        //
+        // Use the in-flight-aware setter — the newId is fresh from
+        // the dispatch but the events:overlays:changed (or v2's
+        // events:layers:changed) broadcast that adds it to
+        // `overlaysForRender` is still in flight, so the outer
+        // stale-id cleanup would wipe the selection (= grippers
+        // vanish mid-drag) without the in-flight bookkeeping.
+        setSelectionTrustingDispatch([newId]);
+        // DON'T clear the live override here. Clearing immediately
+        // produces a one-frame flash: at this point the dispatch has
+        // resolved but the events:layers:changed (or v2's
+        // events:layers:changed) broadcast hasn't reached this
+        // renderer yet, so `overlays` STILL contains the OLD row at
+        // its OLD geometry. A bare-list paint would show pre-drag
+        // position briefly, then snap to post-drag once the
+        // broadcast lands. Instead we leave the override in place
+        // (keyed to preDrag.id) so the OLD row keeps painting at
+        // the NEW geometry until the broadcast removes it; the
+        // override is then a visual no-op on the new row and the
+        // cleanup effect below drops it. End result: zero-flash
+        // pointerup → persisted state.
         if (!undoApplyingRef.current) {
           const previousGeometry = overlayDataToGeometry(preDrag.data);
           if (previousGeometry !== null) {
@@ -1961,8 +3365,40 @@ function EditorLoaded({
         }
       })();
     },
-    [dispatchEdit, setSelectedLayerId, undo, undoApplyingRef]
+    [dispatchEdit, setSelectionTrustingDispatch, undo, undoApplyingRef]
   );
+
+  // Cleanup effect — drop the live override once the underlying row
+  // it's keyed to is no longer in the overlay list. That happens when
+  // the dispatcher's broadcast lands and the refetched list replaces
+  // the OLD row with the NEW one (different id, delete-plus-insert
+  // semantics). Without this the override would linger forever on a
+  // missing-id row, which is a no-op visually but slowly accumulates
+  // stale state across drags. Note: when both refetches happen in
+  // one tick (effect runs once with overlays = post-refetch list),
+  // the override is cleared in the same render the new row arrives —
+  // so the override paints on the OLD row in render N (no flash) and
+  // is cleaned up in render N+1.
+  useEffect(() => {
+    if (draftGeometry === null) return;
+    // After the broadcast refetch lands, every dispatched row gets a
+    // NEW id (delete-plus-insert), so the override's keys point at
+    // rows that no longer exist. We clear the override if NONE of
+    // its keys are still in `overlays` (the post-broadcast list has
+    // fully advanced past the burst). For a partially-landed
+    // broadcast (some new ids arrived, others pending), the override
+    // stays — each entry will be removed individually by future
+    // renderer projections naturally as their keys go missing.
+    const aliveIds = new Set(overlays.map((r) => r.id));
+    let anyStillThere = false;
+    for (const id of draftGeometry.keys()) {
+      if (aliveIds.has(id)) {
+        anyStillThere = true;
+        break;
+      }
+    }
+    if (!anyStillThere) setDraftGeometry(null);
+  }, [overlays, draftGeometry]);
 
   // Selected-overlay style edit handler — dispatched when the popover
   // is in selected-overlay mode (selectedOverlay is set). Mirrors the
@@ -2029,7 +3465,14 @@ function EditorLoaded({
         const artifact = result.value.artifact;
         const newId =
           artifact.format === 1 ? artifact.row.id : artifact.node.id;
-        setSelectedLayerId(newId);
+        // Style edits go through onSelectedStyleFieldChange which is
+        // single-selection-only (gated by selectedOverlayForHandles).
+        // Replace, not merge — the new id supersedes the old.
+        //
+        // In-flight-aware setter so the outer stale-id cleanup doesn't
+        // wipe the selection between dispatch resolving and the
+        // broadcast landing — same race as the nudge / drag paths.
+        setSelectionTrustingDispatch([newId]);
         if (!undoApplyingRef.current) {
           // Capture the pre-edit value of the SAME field so undo
           // restores it. For nested objects the caller is expected to
@@ -2047,7 +3490,7 @@ function EditorLoaded({
         }
       })();
     },
-    [dispatchEdit, selectedOverlayForHandles, setSelectedLayerId, undo, undoApplyingRef]
+    [dispatchEdit, selectedOverlayForHandles, setSelectionTrustingDispatch, undo, undoApplyingRef]
   );
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.
@@ -2519,6 +3962,7 @@ function EditorLoaded({
           onPointerDown={wantPan ? undefined : onPointerDown}
           onPointerMove={wantPan ? undefined : onPointerMove}
           onPointerUp={wantPan ? undefined : onPointerUp}
+          onPointerCancel={wantPan ? undefined : onPointerCancel}
           data-tool={tool}
         >
           {/* Phase 3.6 — the <img> is sized so the SOURCE raster's
@@ -2607,7 +4051,7 @@ function EditorLoaded({
             // coord normalization (those scale with the canvas).
             sourceWidthPx={sourceWidthPx}
             sourceHeightPx={sourceHeightPx}
-            selectedLayerId={selectedLayerId}
+            selectedLayerIds={selectedLayerIds}
             liveOverride={draftGeometry}
           />
           {/* HTML-text overlay layer — replaces the SVG TextGlyph that
@@ -2681,7 +4125,7 @@ function EditorLoaded({
                 toolState.activeStyle.tool === "text"
                   ? toolState.activeStyle.style
                   : null;
-              const { colorHex, size, weight, storedSizePx } =
+              const { colorHex, size, weight, storedSizePx, rotation } =
                 resolveTextDraftStyle({ editingOverlay, activeToolStyle });
               return (
                 <TextDraftInput
@@ -2696,6 +4140,7 @@ function EditorLoaded({
                   colorHex={colorHex}
                   size={size}
                   weight={weight}
+                  rotation={rotation}
                   onChange={(body) => setDraft({ ...draft, body })}
                   onCommit={() => void commitText()}
                   onCancel={() => setDraft(null)}
@@ -2896,7 +4341,7 @@ function EditorLoaded({
                 ? { customTextSizeLabel }
                 : {})}
               onClearSelection={() => {
-                setSelectedLayerId(null);
+                setSelectedLayerIds([]);
                 setPopoverOpen(false);
               }}
             />

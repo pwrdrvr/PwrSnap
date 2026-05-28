@@ -63,6 +63,11 @@ export interface TextHtmlProps {
    *  rendered in a list (one per overlay) and we'd be reading the
    *  same ref N times per frame; the caller reads once and threads. */
   canvasCssHeight: number;
+  /** Clockwise rotation in radians from the overlay row. Threaded
+   *  through to computeTextHtmlStyle which appends rotate(rad) to
+   *  the wrapper's CSS transform. Pivot is the visible body-box
+   *  center (see computeTextHtmlStyle for the math). */
+  rotation?: number | undefined;
 }
 
 /** Read-only display surface for a persisted TextOverlay. Renders as
@@ -80,7 +85,8 @@ export function TextHtml(props: TextHtmlProps): ReactElement {
     sourceHeightPx: props.sourceHeightPx,
     canvasWidthPx: props.imageWidthPx,
     canvasHeightPx: props.imageHeightPx,
-    canvasCssHeight: props.canvasCssHeight
+    canvasCssHeight: props.canvasCssHeight,
+    ...(props.rotation !== undefined ? { rotation: props.rotation } : {})
   });
   // pointer-events: none on the wrapper so clicks fall through to the
   // canvas's pointerdown handler. The hit-test there will find the

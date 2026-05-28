@@ -329,6 +329,40 @@
 }
 .ps-mode__hk { display: flex; gap: 2px; }
 .ps-mode__hk .ps-kbd { min-width: 14px; height: 14px; font-size: 9px; padding: 0 3px; border-bottom-width: 1px; }
+/* Segmented toggle on the All Screens tile. Sits where the hotkey
+   chips would on every other tile — same row position, similar
+   density. Active segment uses the accent ring; inactive ones read
+   as muted-but-clickable. */
+.ps-mode__seg {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px;
+  overflow: hidden;
+}
+.ps-mode__seg-opt {
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+  padding: 2px 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 100ms var(--ease-out), color 100ms var(--ease-out);
+}
+.ps-mode__seg-opt:hover { color: var(--text-primary); }
+.ps-mode__seg-opt.is-on {
+  background: var(--accent);
+  color: var(--bg-base);
+}
 .ps-mode.is-disabled,
 .ps-mode[disabled] {
   cursor: not-allowed;

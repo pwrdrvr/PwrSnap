@@ -46,8 +46,8 @@ const MODES: Array<{
   // explicit-mode choice.
   { id: "region", name: "Region", hk: [], available: true },
   { id: "window", name: "Window", hk: [], available: true },
-  { id: "full", name: "Full Screen", hk: ["⌘", "⇧", "F"], available: false },
-  { id: "all", name: "All Screens", hk: ["⌘", "⇧", "A"], available: false },
+  { id: "full", name: "Full Screen", hk: [], available: true },
+  { id: "all", name: "All Screens", hk: [], available: true },
   { id: "scroll", name: "Scrolling", hk: ["⌘", "⇧", "S"], available: false },
   // Timed (5s) is wired to the tray button only; no global chord yet,
   // so the kbd glyphs stay empty to match the Region / Window pattern
@@ -246,6 +246,29 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const { exportState: videoExportState, triggerExport: triggerVideoExport } =
     useVideoExport(videoInput);
 
+  // All-Screens mode: "split" (one capture per display) is the default
+  // since most multi-monitor screenshots want separate files. The
+  // toggle sits inline on the All Screens tile (replaces the hotkey
+  // chips) and persists across tray opens because the tray
+  // BrowserWindow is hidden/shown rather than torn down.
+  const [allScreensMode, setAllScreensMode] = useState<"split" | "stitched">("split");
+
+  // Live display count drives the `N×` / `1×` label on the toggle.
+  // One-shot fetch on mount — the tray window persists for the app's
+  // lifetime, but if the user hotplugs a monitor we'd rather show a
+  // stale label than ping main on every render. Hotplug accuracy can
+  // come back later via a `display-added` / `display-removed`
+  // broadcast subscription.
+  const [displayCount, setDisplayCount] = useState<number>(1);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const result = await dispatch("system:listDisplays", {});
+      if (!cancelled && result.ok) setDisplayCount(result.value.displays.length);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Pull live chord glyphs for the two wired explicit-mode hotkeys.
   // Empty array = unbound (default for both today) → the chip is
   // omitted from the mode tile.
@@ -334,6 +357,15 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
   const onCapture = (mode: "auto" | "region" | "window" | "timed"): void => {
     void dispatch("capture:interactive", { mode });
   };
+  const onCaptureFullScreen = (): void => {
+    // Omit displayId so main resolves to the display the cursor is on.
+    // Lets the renderer stay ignorant of display geometry — no
+    // round-trip to enumerate before clicking.
+    void dispatch("capture:fullScreen", {});
+  };
+  const onCaptureAllScreens = (): void => {
+    void dispatch("capture:allScreens", { mode: allScreensMode });
+  };
   const onCopyLastSnap = (preset: "low" | "med" | "high"): void => {
     if (lastSnap === undefined) return;
     void dispatch("clipboard:copy", { captureId: lastSnap.id, preset });
@@ -410,6 +442,14 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
       <div className="ps-tray__modes">
         {MODES.map((m) => {
           const hk = liveHkFor[m.id];
+          const tileClick = (() => {
+            if (m.id === "region") return () => onCapture("region");
+            if (m.id === "window") return () => onCapture("window");
+            if (m.id === "full") return onCaptureFullScreen;
+            if (m.id === "all") return onCaptureAllScreens;
+            if (m.id === "timed") return () => onCapture("timed");
+            return undefined;
+          })();
           return (
             <button
               key={m.id}
@@ -417,24 +457,71 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
               type="button"
               disabled={!m.available}
               title={m.available ? undefined : "Coming in a later phase"}
-              onClick={(() => {
-                if (m.id === "region") return () => onCapture("region");
-                if (m.id === "window") return () => onCapture("window");
-                if (m.id === "timed") return () => onCapture("timed");
-                return undefined;
-              })()}
+              onClick={tileClick}
             >
               <span className="ps-mode__icon">
                 <ModeIcon kind={m.id} />
               </span>
               <span className="ps-mode__name">{m.name}</span>
-              <span className="ps-mode__hk">
-                {hk.map((k, i) => (
-                  <span key={i} className="ps-kbd">
-                    {k}
+              {m.id === "all" ? (
+                // Segmented toggle: `N×` (one capture per display) /
+                // `1×` (single stitched composite). Span-based (not
+                // nested <button>) because we sit inside the tile's
+                // outer <button> — clicking either segment changes
+                // mode but does NOT fire the capture; the user still
+                // clicks the tile body for that. stopPropagation
+                // keeps the toggle "sticky".
+                <span
+                  className="ps-mode__seg"
+                  role="group"
+                  aria-label="All Screens output mode"
+                >
+                  <span
+                    role="radio"
+                    aria-checked={allScreensMode === "split"}
+                    tabIndex={-1}
+                    className={
+                      "ps-mode__seg-opt" +
+                      (allScreensMode === "split" ? " is-on" : "")
+                    }
+                    title={
+                      displayCount > 1
+                        ? `One capture per display (${displayCount} images)`
+                        : "One capture per display"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAllScreensMode("split");
+                    }}
+                  >
+                    {displayCount}×
                   </span>
-                ))}
-              </span>
+                  <span
+                    role="radio"
+                    aria-checked={allScreensMode === "stitched"}
+                    tabIndex={-1}
+                    className={
+                      "ps-mode__seg-opt" +
+                      (allScreensMode === "stitched" ? " is-on" : "")
+                    }
+                    title="Single stitched image spanning all displays"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAllScreensMode("stitched");
+                    }}
+                  >
+                    1×
+                  </span>
+                </span>
+              ) : (
+                <span className="ps-mode__hk">
+                  {hk.map((k, i) => (
+                    <span key={i} className="ps-kbd">
+                      {k}
+                    </span>
+                  ))}
+                </span>
+              )}
             </button>
           );
         })}

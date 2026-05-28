@@ -7,20 +7,37 @@ import { computeRenderHash } from "../render/overlay-hash";
 import { BAKE_PIPELINE_VERSION } from "../render/compose-tree";
 import { getDb } from "./db";
 import { listLiveOverlays } from "./overlays-repo";
-import { getCacheRoot, getLegacyCacheRoot } from "./paths";
+import { getCacheRoot, getDataRoot, getLegacyCacheRoot } from "./paths";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
 const RAPID_RENDER_WIDTHS = [140, 400] as const;
 
-/** Marker file stem under `getCacheRoot()`. Records the
- *  BAKE_PIPELINE_VERSION that produced the cached bytes — when the
- *  current version differs from this, every cached file is stale by
- *  construction (renderHash incorporates the version) and `enforce-
- *  RenderCacheVersion` wipes the directory.
+/** Marker file recording the BAKE_PIPELINE_VERSION that produced the
+ *  cached bytes — when the current version differs, every cached file
+ *  is stale by construction (renderHash incorporates the version) and
+ *  `enforceRenderCacheVersion` wipes the directory.
  *
- *  Hidden-file convention (`.` prefix) keeps it away from the per-
- *  capture-id subdirs that `trimRenderCache` enumerates. */
+ *  Lives at `<dataRoot>/.bake-pipeline-version` — DELIBERATELY OUTSIDE
+ *  `getCacheRoot()`:
+ *
+ *    1. The storage-accounting UI measures render-cache directory
+ *       size. A marker file inside the cache root would inflate the
+ *       reported size by a few bytes — visible in the E2E "library
+ *       storage popover refreshes" test which asserts "0 B" for an
+ *       empty cache.
+ *
+ *    2. `clearRenderCache()` (called from the user-facing "Clear
+ *       cache" Settings action) wipes everything under `getCacheRoot()`
+ *       and re-creates the dir. If the marker lived inside, that
+ *       action would wipe it too — fine, but means the NEXT boot
+ *       falsely treats a user-cleared cache as a version mismatch
+ *       and runs another sweep over an empty dir. Marker outside
+ *       skips the no-op work. */
 const VERSION_MARKER_FILENAME = ".bake-pipeline-version";
+
+function versionMarkerPath(): string {
+  return join(getDataRoot(), VERSION_MARKER_FILENAME);
+}
 
 type CaptureIdRow = {
   id: string;
@@ -61,9 +78,8 @@ export async function clearRenderCache(): Promise<void> {
  * orphan-cleanup is delayed.
  */
 export async function enforceRenderCacheVersion(): Promise<void> {
-  const root = getCacheRoot();
-  await mkdir(root, { recursive: true });
-  const markerPath = join(root, VERSION_MARKER_FILENAME);
+  await mkdir(getDataRoot(), { recursive: true });
+  const markerPath = versionMarkerPath();
   let lastSeen: string | null = null;
   try {
     lastSeen = (await readFile(markerPath, "utf-8")).trim();
@@ -77,9 +93,11 @@ export async function enforceRenderCacheVersion(): Promise<void> {
   }
   try {
     await clearRenderCache();
-    // clearRenderCache already re-creates the directory; write the
-    // marker AFTER the wipe so a crash between the rm and the write
+    // Marker AFTER the wipe so a crash between the rm and the write
     // leaves the marker stale → next boot sweeps again (idempotent).
+    // Marker is outside getCacheRoot() so it survives later user-
+    // initiated clearRenderCache() calls and doesn't pollute the
+    // storage-accounting view of the cache directory.
     await writeFile(markerPath, BAKE_PIPELINE_VERSION, "utf-8");
     log.info("bake pipeline version changed — render cache swept", {
       lastSeen,

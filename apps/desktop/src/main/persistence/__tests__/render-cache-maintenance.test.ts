@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   currentRoot: "",
   legacyRoot: "",
+  dataRoot: "",
   captureRows: [] as Array<{ id: string }>
 }));
 
@@ -19,7 +20,8 @@ vi.mock("../db", () => ({
 
 vi.mock("../paths", () => ({
   getCacheRoot: () => mocks.currentRoot,
-  getLegacyCacheRoot: () => mocks.legacyRoot
+  getLegacyCacheRoot: () => mocks.legacyRoot,
+  getDataRoot: () => mocks.dataRoot
 }));
 
 vi.mock("../overlays-repo", () => ({
@@ -33,6 +35,10 @@ beforeEach(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-render-cache-maintenance-"));
   mocks.legacyRoot = join(tempRoot, "cache");
   mocks.currentRoot = join(tempRoot, "render-cache");
+  // The marker file lives at `<dataRoot>/.bake-pipeline-version` —
+  // OUTSIDE the cache root so the storage-accounting UI doesn't see
+  // it as cache content. Tests use the temp root as the data root.
+  mocks.dataRoot = tempRoot;
   mocks.captureRows = [];
 });
 
@@ -141,7 +147,7 @@ describe("enforceRenderCacheVersion (#138)", () => {
     const { BAKE_PIPELINE_VERSION } = await import("../../render/compose-tree");
     await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
     await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "kept");
-    await writeFile(join(mocks.currentRoot, MARKER), BAKE_PIPELINE_VERSION);
+    await writeFile(join(mocks.dataRoot, MARKER), BAKE_PIPELINE_VERSION);
 
     const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
     await enforceRenderCacheVersion();
@@ -151,7 +157,7 @@ describe("enforceRenderCacheVersion (#138)", () => {
       readFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "utf8")
     ).resolves.toBe("kept");
     // Marker still says the current version.
-    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+    await expect(readFile(join(mocks.dataRoot, MARKER), "utf8")).resolves.toBe(
       BAKE_PIPELINE_VERSION
     );
   });
@@ -161,7 +167,7 @@ describe("enforceRenderCacheVersion (#138)", () => {
     await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
     await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "stale");
     // Marker from an OLD version — anything that won't equal current.
-    await writeFile(join(mocks.currentRoot, MARKER), "0");
+    await writeFile(join(mocks.dataRoot, MARKER), "0");
 
     const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
     await enforceRenderCacheVersion();
@@ -171,7 +177,7 @@ describe("enforceRenderCacheVersion (#138)", () => {
       readFile(join(mocks.currentRoot, "capture-a", "hash.webp"))
     ).rejects.toThrow();
     // Marker advanced.
-    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+    await expect(readFile(join(mocks.dataRoot, MARKER), "utf8")).resolves.toBe(
       BAKE_PIPELINE_VERSION
     );
     // Root dir still exists (clearRenderCache re-creates it).
@@ -189,7 +195,7 @@ describe("enforceRenderCacheVersion (#138)", () => {
     await expect(
       readFile(join(mocks.currentRoot, "capture-a", "hash.webp"))
     ).rejects.toThrow();
-    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+    await expect(readFile(join(mocks.dataRoot, MARKER), "utf8")).resolves.toBe(
       BAKE_PIPELINE_VERSION
     );
   });

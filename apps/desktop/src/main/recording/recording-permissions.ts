@@ -28,7 +28,7 @@
 // the current fingerprint differs AND any permission needs attention.
 
 import { createHash } from "node:crypto";
-import { shell, systemPreferences } from "electron";
+import { desktopCapturer, shell, systemPreferences } from "electron";
 import type {
   RecordingPermission,
   RecordingPermissionStatus,
@@ -150,11 +150,47 @@ export function needsAttention(readiness: RecordingReadiness): boolean {
 }
 
 /**
- * Trigger an OS-level prompt where one is possible (microphone
- * only — Screen Recording and the ScreenCaptureKit system-audio
- * path require a System Settings round-trip). For the prompt-less
- * cases we open System Settings to the right pane and the caller
- * surfaces "restart PwrSnap after granting" guidance.
+ * Force the macOS Screen Recording TCC prompt the first time
+ * PwrSnap is unknown to TCC. `desktopCapturer.getSources` is the
+ * standard Electron incantation: it touches the screen-capture API
+ * on the user's behalf, which causes the OS to show its standard
+ * consent dialog and to add our bundle ID to System Settings →
+ * Privacy & Security → Screen & System Audio Recording. After the
+ * user has answered once, TCC remembers the decision and this call
+ * resolves immediately without re-prompting; the read-back of
+ * `getMediaAccessStatus` then reflects the new state.
+ *
+ * We discard the returned sources — the call is purely a prompt
+ * trigger. `thumbnailSize` is a 1×1 placeholder so we don't pay for
+ * a real thumbnail render on a path we don't consume.
+ */
+async function triggerScreenCapturePrompt(): Promise<void> {
+  try {
+    await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false
+    });
+  } catch (cause) {
+    log.warn("permissions:request: desktopCapturer.getSources threw", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+  }
+}
+
+/**
+ * Trigger an OS-level prompt where one is possible:
+ *
+ *   • Microphone — `systemPreferences.askForMediaAccess`
+ *     shows the standard TCC dialog directly.
+ *   • Screen Recording / System Audio — no `askForMediaAccess`
+ *     equivalent exists, but issuing a real
+ *     `desktopCapturer.getSources` call drives the same first-grant
+ *     dialog and registers PwrSnap in the Screen Recording pane.
+ *     Used only when current status is `not-determined`; once a
+ *     decision has been recorded we open System Settings instead
+ *     (macOS does not re-prompt) and the caller surfaces "restart
+ *     PwrSnap after granting" guidance.
  */
 export async function requestPermission(
   permission: RecordingPermission
@@ -174,10 +210,24 @@ export async function requestPermission(
     }
     case "screen":
     case "systemAudio": {
-      // No prompt API. The reliable path is: open System Settings,
-      // ask the user to grant, and (on some macOS versions) restart
-      // the app. The renderer surfaces the restart hint when this
-      // returns `openedSettings: true`.
+      // Branch on the current TCC state. `not-determined` means
+      // PwrSnap has never been seen by TCC for this capability — the
+      // Screen Recording pane will not list our bundle, so routing
+      // the user there is a dead-end. Force the prompt by issuing a
+      // real screen-source request via `desktopCapturer.getSources`;
+      // macOS shows the standard "PwrSnap would like to record this
+      // computer's screen" dialog and registers our bundle ID in the
+      // pane regardless of the user's answer.
+      //
+      // Any other recoverable state (`denied`, `unknown`) means we are
+      // already in the list and the user needs to flip a checkbox.
+      // macOS does not re-prompt once a decision has been recorded,
+      // so the only useful action is to open Settings.
+      const current = readScreenStatus();
+      if (current === "not-determined") {
+        await triggerScreenCapturePrompt();
+        return { status: readScreenStatus(), openedSettings: false };
+      }
       try {
         await openSystemSettingsFor(permission);
         return { status: readScreenStatus(), openedSettings: true };

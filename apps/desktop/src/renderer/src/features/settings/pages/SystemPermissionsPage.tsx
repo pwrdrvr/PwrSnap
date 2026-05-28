@@ -2,15 +2,26 @@
 //
 // One row per recording capability (Screen Recording, Microphone,
 // System Audio). Each row shows the current status and offers the
-// most useful next action — `Request` for the prompt-able mic path,
-// `Open System Settings` everywhere else. Refreshes the readiness
-// snapshot on mount and after any action so the row updates without
-// a window restart.
+// most useful next action:
 //
-// The same readiness payload backs the recording-time permission
-// dialog; both render the same human-readable status copy so a user
-// who fixed mic from this page sees consistent language at recording
-// time.
+//   • `not-determined` — the OS has never asked the user about this
+//     capability for PwrSnap, so our bundle is not yet listed in
+//     System Settings → Privacy. Send the user to a prompt path that
+//     triggers the real TCC dialog and registers PwrSnap in the
+//     pane: `permissions:request` for every capability.
+//
+//   • `denied` (or other recoverable state) — PwrSnap is already in
+//     the list and the user needs to flip a checkbox. macOS will
+//     not re-prompt, so route to System Settings via
+//     `permissions:openSystemSettings`. Microphone is the one
+//     exception that `askForMediaAccess` keeps prompting on without
+//     a Settings round-trip.
+//
+// Refreshes the readiness snapshot on mount and after any action so
+// the row updates without a window restart. The same readiness
+// payload backs the recording-time permission dialog; both render
+// the same human-readable status copy so a user who fixed mic from
+// this page sees consistent language at recording time.
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import type {
@@ -91,10 +102,16 @@ export function SystemPermissionsPage(): ReactElement {
   }, [refresh]);
 
   const requestAction = useCallback(
-    async (permission: RecordingPermission) => {
+    async (permission: RecordingPermission, status: RecordingPermissionStatus) => {
       setBusyPermission(permission);
       try {
-        if (permission === "microphone") {
+        // Microphone always uses the prompt API. Screen / system
+        // audio use the prompt API only when TCC has never asked —
+        // otherwise our bundle is already in the Privacy pane and
+        // the user just needs to flip the checkbox, so we open
+        // Settings instead.
+        const usePromptApi = permission === "microphone" || status === "not-determined";
+        if (usePromptApi) {
           const res = await dispatch("permissions:request", { permission });
           if (!res.ok) {
             setLastError(res.error.message);
@@ -179,7 +196,7 @@ export function SystemPermissionsPage(): ReactElement {
                 {showAction && (
                   <button
                     type="button"
-                    onClick={() => void requestAction(row.permission)}
+                    onClick={() => void requestAction(row.permission, status)}
                     disabled={busyPermission === row.permission || readiness === null}
                     style={{
                       padding: "6px 12px",
@@ -195,6 +212,8 @@ export function SystemPermissionsPage(): ReactElement {
                       ? "Working…"
                       : row.permission === "microphone"
                       ? "Ask now"
+                      : status === "not-determined"
+                      ? "Request access"
                       : "Open System Settings"}
                   </button>
                 )}

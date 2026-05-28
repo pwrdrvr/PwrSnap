@@ -8,15 +8,27 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const electronMock = vi.hoisted(() => ({
   status: { screen: "granted", microphone: "granted" } as Record<string, string>,
   askResolved: true as boolean,
-  systemVersion: "14.0.0"
+  systemVersion: "14.0.0",
+  desktopCapturerCalls: 0,
+  shellOpenCalls: 0
 }));
 
 vi.mock("electron", () => ({
   app: { getVersion: () => "1.2.3" },
-  shell: { openExternal: vi.fn().mockResolvedValue(undefined) },
+  shell: {
+    openExternal: vi.fn().mockImplementation(async () => {
+      electronMock.shellOpenCalls += 1;
+    })
+  },
   systemPreferences: {
     getMediaAccessStatus: (perm: string): string => electronMock.status[perm] ?? "unknown",
     askForMediaAccess: vi.fn().mockImplementation(async () => electronMock.askResolved)
+  },
+  desktopCapturer: {
+    getSources: vi.fn().mockImplementation(async () => {
+      electronMock.desktopCapturerCalls += 1;
+      return [];
+    })
   }
 }));
 
@@ -36,6 +48,8 @@ beforeEach(() => {
   vi.resetModules();
   electronMock.status = { screen: "granted", microphone: "granted" };
   electronMock.askResolved = true;
+  electronMock.desktopCapturerCalls = 0;
+  electronMock.shellOpenCalls = 0;
   Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
   (process as { getSystemVersion?: () => string }).getSystemVersion = () => electronMock.systemVersion;
 });
@@ -133,20 +147,48 @@ describe("requestPermission", () => {
     expect(res.openedSettings).toBe(false);
   });
 
-  test("screen routes through System Settings (no prompt API)", async () => {
+  test("screen denied routes through System Settings (TCC won't re-prompt)", async () => {
     electronMock.status = { screen: "denied", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("screen");
     expect(res.openedSettings).toBe(true);
+    expect(electronMock.shellOpenCalls).toBe(1);
+    expect(electronMock.desktopCapturerCalls).toBe(0);
     // status is read back after opening Settings; user hasn't acted
     // yet so it remains denied.
     expect(res.status).toBe("denied");
   });
 
-  test("systemAudio mirrors screen routing", async () => {
+  test("screen not-determined triggers the TCC prompt via desktopCapturer", async () => {
+    // Fresh install: bundle has never been seen by TCC, so the
+    // Screen Recording pane will not list us yet. The prompt path
+    // (desktopCapturer.getSources) shows the OS dialog and registers
+    // the bundle in the pane.
+    electronMock.status = { screen: "not-determined", microphone: "granted" };
+    const { requestPermission } = await import("../recording-permissions");
+    const res = await requestPermission("screen");
+    expect(electronMock.desktopCapturerCalls).toBe(1);
+    expect(electronMock.shellOpenCalls).toBe(0);
+    expect(res.openedSettings).toBe(false);
+    // User hasn't clicked Allow yet — status still not-determined.
+    expect(res.status).toBe("not-determined");
+  });
+
+  test("systemAudio not-determined mirrors the screen prompt path", async () => {
     electronMock.status = { screen: "not-determined", microphone: "granted" };
     const { requestPermission } = await import("../recording-permissions");
     const res = await requestPermission("systemAudio");
+    expect(electronMock.desktopCapturerCalls).toBe(1);
+    expect(electronMock.shellOpenCalls).toBe(0);
+    expect(res.openedSettings).toBe(false);
+  });
+
+  test("systemAudio denied falls back to System Settings", async () => {
+    electronMock.status = { screen: "denied", microphone: "granted" };
+    const { requestPermission } = await import("../recording-permissions");
+    const res = await requestPermission("systemAudio");
     expect(res.openedSettings).toBe(true);
+    expect(electronMock.shellOpenCalls).toBe(1);
+    expect(electronMock.desktopCapturerCalls).toBe(0);
   });
 });

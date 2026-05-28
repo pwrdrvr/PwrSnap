@@ -258,3 +258,263 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     expect(stray, "no canvas should mount for a gaussian live-drag").toBeNull();
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────
+// Issue #147 — rotated blur WYSIWYG mirror of the bake.
+//
+// The v2 bake (`compose-tree.ts applyEffectOntoAccumulator`) handles
+// rotation by:
+//   1. Computing the rotated rect's AABB in canvas-pixel space.
+//   2. Extracting that AABB from the accumulator.
+//   3. Applying the effect (gaussian / pixelate) to the AABB content.
+//   4. Compositing back via a rotation mask so only the rotated-rect
+//      interior shows the effect.
+//
+// The editor must mirror this for rotated gaussian + pixelate. Redact
+// stays a styled div at any rotation — a rotated black square IS a
+// rotated black square, no algorithmic divergence to fix.
+//
+// These tests pin the renderer mirror's contract: the canvas element
+// for a rotated blur sits at the AABB position (not the rect), and
+// CSS clip-path: polygon(...) clips the canvas to the rotated rect
+// interior. If a future refactor breaks the mirror, the divergence
+// surfaces here, not silently on a user's screen.
+// ───────────────────────────────────────────────────────────────────────
+
+function rotatedBlurRow(
+  id: string,
+  style: "gaussian" | "pixelate" | "redact",
+  rotation: number,
+  rect = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 }
+): OverlayRow {
+  return {
+    id,
+    capture_id: "cap_1",
+    data: {
+      kind: "blur",
+      rect,
+      style,
+      rotation
+    },
+    schema_version: 1,
+    source: "user",
+    ai_run_id: null,
+    applied_at: new Date().toISOString(),
+    rejected_at: null,
+    superseded_by: null,
+    z_index: 0,
+    created_at: new Date().toISOString()
+  };
+}
+
+/** AABB math kept in sync with `computeRotatedAabb` in BlurOverlays.tsx.
+ *  Tests use it to derive the EXPECTED canvas position/size for a
+ *  given (rect, rotation, canvasDim) tuple without poking at module
+ *  internals. */
+function expectedAabb(args: {
+  rect: { x: number; y: number; w: number; h: number };
+  rotation: number;
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+}): { x: number; y: number; w: number; h: number } {
+  const { rect, rotation, canvasWidthPx, canvasHeightPx } = args;
+  const rectXPx = rect.x * canvasWidthPx;
+  const rectYPx = rect.y * canvasHeightPx;
+  const rectWPx = rect.w * canvasWidthPx;
+  const rectHPx = rect.h * canvasHeightPx;
+  const cx = rectXPx + rectWPx / 2;
+  const cy = rectYPx + rectHPx / 2;
+  const hw = rectWPx / 2;
+  const hh = rectHPx / 2;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const corners = [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh]
+  ].map(([lx, ly]) => ({
+    x: cx + lx * cos - ly * sin,
+    y: cy + lx * sin + ly * cos
+  }));
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+describe("BlurOverlays — rotated blur mirrors bake AABB + mask (issue #147)", () => {
+  test("rotated gaussian routes to RotatedEffectCanvas (not the CSS backdrop-filter div)", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [rotatedBlurRow("blur_rg", "gaussian", Math.PI / 4)],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const canvas = el.querySelector("canvas.ed-blur-item--rotated-gaussian");
+    expect(
+      canvas,
+      "rotated gaussian should render as a canvas mirror of the bake's " +
+        "rotated-AABB pipeline, not a CSS backdrop-filter div (which only " +
+        "matches the bake at rotation === 0)."
+    ).not.toBeNull();
+    // The un-rotated CSS path must NOT also render.
+    const cssDiv = el.querySelector("div.ed-blur-item--gaussian");
+    expect(cssDiv).toBeNull();
+  });
+
+  test("rotated pixelate routes to RotatedEffectCanvas (not the unrotated mosaic canvas)", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [rotatedBlurRow("blur_rp", "pixelate", Math.PI / 6)],
+      draft: null,
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const canvas = el.querySelector("canvas.ed-blur-item--rotated-pixelate");
+    expect(
+      canvas,
+      "rotated pixelate should route through the rotated-AABB canvas, " +
+        "not the unrotated --pixelate-canvas which samples at the rect " +
+        "(not the AABB) and gets WYSIWYG wrong for rotation !== 0."
+    ).not.toBeNull();
+    // The unrotated canvas class must NOT also be present.
+    const unrotated = el.querySelector("canvas.ed-blur-item--pixelate-canvas");
+    expect(unrotated).toBeNull();
+  });
+
+  test("rotated redact stays a styled div (no algorithmic mismatch to fix)", () => {
+    // A rotated black square is a rotated black square. The bake fills
+    // black inside the rotated-rect mask; the editor rotates a black
+    // div via CSS transform. Both produce the same pixels at any
+    // rotation, so we keep the cheap div path.
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [rotatedBlurRow("blur_rr", "redact", Math.PI / 3)],
+      draft: null,
+      blurStyle: "redact",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const redactDiv = el.querySelector("div.ed-blur-item--redact");
+    expect(redactDiv).not.toBeNull();
+    const stray = el.querySelector("canvas");
+    expect(stray, "no canvas should mount for a rotated redact").toBeNull();
+  });
+
+  test("rotated canvas sits at the rotated rect's AABB (larger than the rect)", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    // 50%×50% rect rotated 45° — AABB corners swing out, the AABB is
+    // larger than the rect in both dimensions.
+    const rect = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+    const rotation = Math.PI / 4;
+    const canvasWidthPx = 400;
+    const canvasHeightPx = 300;
+    const el = render({
+      overlays: [rotatedBlurRow("blur_aabb", "gaussian", rotation, rect)],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx,
+      canvasHeightPx
+    });
+    const canvas = el.querySelector(
+      "canvas.ed-blur-item--rotated-gaussian"
+    ) as HTMLCanvasElement | null;
+    expect(canvas).not.toBeNull();
+    if (canvas === null) return;
+    const aabb = expectedAabb({ rect, rotation, canvasWidthPx, canvasHeightPx });
+    // Position + size as percent-of-parent. Match within a small
+    // tolerance to absorb the AABB Math.round happening in the
+    // component (we don't round here).
+    const leftPct = parseFloat(canvas.style.left);
+    const topPct = parseFloat(canvas.style.top);
+    const widthPct = parseFloat(canvas.style.width);
+    const heightPct = parseFloat(canvas.style.height);
+    expect(leftPct).toBeCloseTo((aabb.x / canvasWidthPx) * 100, 4);
+    expect(topPct).toBeCloseTo((aabb.y / canvasHeightPx) * 100, 4);
+    expect(widthPct).toBeCloseTo((aabb.w / canvasWidthPx) * 100, 4);
+    expect(heightPct).toBeCloseTo((aabb.h / canvasHeightPx) * 100, 4);
+    // Width % should be MEANINGFULLY larger than the rect's 50% — the
+    // AABB at 45° expands to ~√2 × the rect's diagonal. For a 400-wide
+    // canvas with a 200-wide rect, the AABB width is √2/2 × (200+150)
+    // ≈ 247.5 → ~61.9% of 400. Anything under "rect's 50%" would mean
+    // we forgot to take the AABB.
+    expect(
+      widthPct,
+      `rotated rect's AABB width % (${widthPct.toFixed(2)}) should be ` +
+        `meaningfully wider than the unrotated rect's 50%.`
+    ).toBeGreaterThan(55);
+  });
+
+  test("rotated canvas's CSS clip-path is a 4-point polygon (rotation mask mirror)", () => {
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [
+        rotatedBlurRow("blur_cp", "pixelate", Math.PI / 4, {
+          x: 0.25,
+          y: 0.25,
+          w: 0.5,
+          h: 0.5
+        })
+      ],
+      draft: null,
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const canvas = el.querySelector(
+      "canvas.ed-blur-item--rotated-pixelate"
+    ) as HTMLCanvasElement | null;
+    expect(canvas).not.toBeNull();
+    if (canvas === null) return;
+    // clip-path mirrors the bake's SVG `dest-in` rotation mask.
+    // Without it, the user would see a rotated-AABB-shaped blur
+    // instead of a rotated-rect-shaped blur — bigger and wrong shape.
+    const clipPath = canvas.style.clipPath;
+    expect(clipPath, "rotated canvas must have a clip-path mask").toMatch(
+      /^polygon\(/
+    );
+    // The polygon has 4 corners (one per rotated-rect vertex).
+    const commas = (clipPath.match(/,/g) ?? []).length;
+    expect(commas, "polygon should have 4 vertices = 3 commas").toBe(3);
+  });
+
+  test("at rotation === 0 the unrotated fast paths still kick in (regression guard)", () => {
+    // The new RotatedEffectCanvas only activates when rotation !== 0.
+    // At zero rotation we preserve the existing fast paths so the
+    // load-bearing unrotated baseline that #137 fixed doesn't change.
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    // Unrotated pixelate → the existing pixelate-canvas class.
+    const el = render({
+      overlays: [rotatedBlurRow("blur_unrot", "pixelate", 0)],
+      draft: null,
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    expect(
+      el.querySelector("canvas.ed-blur-item--pixelate-canvas"),
+      "rotation === 0 must keep the unrotated --pixelate-canvas fast path"
+    ).not.toBeNull();
+    expect(
+      el.querySelector("canvas.ed-blur-item--rotated-pixelate"),
+      "rotation === 0 must NOT engage the rotated-canvas path"
+    ).toBeNull();
+  });
+});

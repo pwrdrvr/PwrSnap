@@ -6,28 +6,32 @@
 // Why HTML instead of SVG? SVG <filter> can blur SVG content but
 // can't reach behind itself to blur the page <img>. CSS
 // `backdrop-filter` on an HTML element blurs ANYTHING behind it in
-// the same stacking context, including a sibling <img> — exactly
-// what we want for the gaussian-blur live preview.
+// the same stacking context, including a sibling <img> — that's the
+// unrotated gaussian fast path. Rotated blurs go through a canvas
+// element that mirrors the bake's algorithm exactly.
 //
 // Per-style WYSIWYG strategy:
 //
-//   • gaussian — CSS `backdrop-filter: blur(...)`. The bake uses
-//     sharp's gaussian blur with sigma proportional to the rect's
-//     short side; CSS approximates with a flat radius. Close enough
-//     visually that users can place the rect with confidence.
+//   • gaussian — unrotated: CSS `backdrop-filter: blur(...)`.
+//                rotated:   canvas with `ctx.filter = "blur(σpx)"`,
+//                           σ derived from canvas short-side, clip-path
+//                           polygon clipping to the rotated rect.
 //
-//   • pixelate — Issue #137: the prior version was a STATIC decoration
-//     (`backdrop-filter: blur(8px)` + a diagonal-checker CSS pattern)
-//     that "read as mosaic" but bore no resemblance to the bake's
-//     true nearest-neighbor coarse-grid. Replaced by a `<canvas>`
-//     that samples the underlying source image at the same block
-//     size the bake uses (max(4, round(shortSide/16))), drawn down
-//     to a tiny grid then displayed via `image-rendering: pixelated`
-//     so the browser upscales each block with nearest-neighbor.
-//     Editor and bake now produce matching mosaics block-for-block.
+//   • pixelate — unrotated: canvas with the bake's coarse-grid formula
+//                           (issue #137).
+//                rotated:   canvas with the SAME coarse-grid formula
+//                           sized over the rotated rect's AABB, clip-
+//                           path polygon clipping to the rotated rect.
 //
-//   • redact — solid opaque black. Pixel-identical to the bake by
-//     construction.
+//   • redact   — unrotated: solid opaque black `<div>`. Pixel-identical
+//                           to the bake.
+//                rotated:   same `<div>` with a CSS `transform: rotate`.
+//                           Pixel-identical to the bake (a rotated
+//                           black square IS a rotated black square).
+//
+// Issue #147 closed the rotation-WYSIWYG gap for gaussian + pixelate.
+// At rotation === 0 the existing fast paths still drive the preview,
+// so the load-bearing unrotated baseline is unchanged.
 
 import {
   useEffect,
@@ -67,14 +71,14 @@ export function BlurOverlays({
    *  real time. Single-select passes a 1-entry map; multi-drag
    *  passes one entry per selected blur layer. */
   liveOverride?: ReadonlyMap<string, GeometryUpdate> | null;
-  /** Ref to the editor's `<img>` element. The pixelate preview reads
-   *  pixels from it via `canvas.drawImage` to produce a real coarse-
-   *  grid mosaic. Other blur styles ignore this prop. */
+  /** Ref to the editor's `<img>` element. Canvas-based blur paths
+   *  read pixels from it via `drawImage` to produce real mosaic /
+   *  blurred output. The static-div paths ignore this prop. */
   editorImageRef: RefObject<HTMLImageElement | null>;
   /** Canvas dims in canvas pixels — the unit `compose-tree.ts`'s
-   *  pixelate uses for its block-size formula. Passed in rather than
-   *  measured off the DOM so the editor and bake stay in lockstep
-   *  even if the renderer's display transform changes. */
+   *  effect-blur paths use for AABB + sigma + block-size math. Passed
+   *  in rather than measured off the DOM so the editor and bake stay
+   *  in lockstep even if the renderer's display transform changes. */
   canvasWidthPx: number;
   canvasHeightPx: number;
 }): ReactElement {
@@ -92,7 +96,7 @@ export function BlurOverlays({
       if (row.data.kind !== "blur") return row;
       // Carry through the rotation from the live override so the
       // in-progress rotation-handle drag updates the CSS transform
-      // in real time.
+      // (or the canvas's clip-path) in real time.
       return {
         ...row,
         data: {
@@ -116,41 +120,93 @@ export function BlurOverlays({
       {blurs.map(({ row, data }) => {
         const style = readBlurStyle(data);
         const rotation = readOverlayRotation(data);
-        if (style === "pixelate") {
-          return (
-            <PixelateMosaicCanvas
-              key={row.id}
-              rect={data.rect}
-              rotation={rotation}
-              editorImageRef={editorImageRef}
-              canvasWidthPx={canvasWidthPx}
-              canvasHeightPx={canvasHeightPx}
-            />
-          );
-        }
-        return (
-          <BlurOverlayItem
-            key={row.id}
-            rect={data.rect}
-            rotation={rotation}
-            style={style}
-          />
-        );
+        return renderBlur({
+          key: row.id,
+          rect: data.rect,
+          rotation,
+          style,
+          editorImageRef,
+          canvasWidthPx,
+          canvasHeightPx
+        });
       })}
-      {liveRect !== null && blurStyle === "pixelate" && (
-        <PixelateMosaicCanvas
-          rect={liveRect}
-          rotation={0}
-          editorImageRef={editorImageRef}
-          canvasWidthPx={canvasWidthPx}
-          canvasHeightPx={canvasHeightPx}
-          isDraft
-        />
-      )}
-      {liveRect !== null && blurStyle !== "pixelate" && (
-        <BlurOverlayItem rect={liveRect} rotation={0} style={blurStyle} isDraft />
-      )}
+      {liveRect !== null &&
+        renderBlur({
+          rect: liveRect,
+          // Live-drag draft can't yet have a rotation handle interaction
+          // (rotation is applied AFTER commit via TransformHandles).
+          // So the draft is always rotation === 0.
+          rotation: 0,
+          style: blurStyle,
+          editorImageRef,
+          canvasWidthPx,
+          canvasHeightPx,
+          isDraft: true
+        })}
     </div>
+  );
+}
+
+/** Pick the right preview element for a single blur. The decision
+ *  tree is intentionally explicit (rather than a discriminated union
+ *  inside the components) so callers reading this file see every
+ *  rotation × style combo at a glance. */
+function renderBlur(args: {
+  key?: string;
+  rect: { x: number; y: number; w: number; h: number };
+  rotation: number;
+  style: BlurStyle;
+  editorImageRef: RefObject<HTMLImageElement | null>;
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+  isDraft?: boolean;
+}): ReactElement {
+  const { key, rect, rotation, style, isDraft = false } = args;
+  // ROTATED gaussian + pixelate: the bake samples the rotated rect's
+  // AABB, applies the effect, masks to the rotated rect interior. CSS
+  // backdrop-filter and the un-rotated canvas mosaic can't replicate
+  // that. Route through the canvas component, which does the AABB
+  // sample + clip-path mask explicitly.
+  if (rotation !== 0 && (style === "gaussian" || style === "pixelate")) {
+    return (
+      <RotatedEffectCanvas
+        key={key}
+        rect={rect}
+        rotation={rotation}
+        style={style}
+        editorImageRef={args.editorImageRef}
+        canvasWidthPx={args.canvasWidthPx}
+        canvasHeightPx={args.canvasHeightPx}
+        isDraft={isDraft}
+      />
+    );
+  }
+  // UNROTATED pixelate: the canvas-mosaic fast path that issue #137
+  // landed. Bake matches at rotation === 0 by construction.
+  if (style === "pixelate") {
+    return (
+      <PixelateMosaicCanvas
+        key={key}
+        rect={rect}
+        editorImageRef={args.editorImageRef}
+        canvasWidthPx={args.canvasWidthPx}
+        canvasHeightPx={args.canvasHeightPx}
+        isDraft={isDraft}
+      />
+    );
+  }
+  // gaussian (unrotated) + redact (any rotation): styled div. Redact
+  // is pixel-identical to the bake at any rotation because a rotated
+  // black square IS a rotated black square; gaussian unrotated reads
+  // its sigma from a backdrop-filter blur(N) tuned by the existing CSS.
+  return (
+    <BlurOverlayItem
+      key={key}
+      rect={rect}
+      rotation={rotation}
+      style={style}
+      isDraft={isDraft}
+    />
   );
 }
 
@@ -164,10 +220,16 @@ function BlurOverlayItem({
   /** Clockwise rotation in radians around the rect's geometric center.
    *  CSS `transform: rotate(deg)` defaults to rotating around the
    *  element's center, which matches the SelectionOutline / SVG
-   *  glyph rotation pivot for rect/highlight kinds. NOTE: v1 export
-   *  (`compose.ts` blur path) currently ignores rotation — sharp's
-   *  extract+blur pipeline doesn't support rotated clip regions. The
-   *  live editor preview will rotate; the baked PNG will not. */
+   *  glyph rotation pivot for rect/highlight kinds.
+   *
+   *  At non-zero rotation this path is only used for `redact` (solid
+   *  black — pixel-identical to bake at any rotation) and for the v1
+   *  bake fallback. For gaussian + pixelate the rotated case routes
+   *  through `RotatedEffectCanvas` which mirrors the bake's algorithm.
+   *
+   *  NOTE: v1 export (`compose.ts` blur path) currently ignores
+   *  rotation — sharp's extract+blur pipeline doesn't support rotated
+   *  clip regions on v1. v2 (default since PR #129) honors rotation. */
   rotation: number;
   style: BlurStyle;
   isDraft?: boolean;
@@ -189,55 +251,281 @@ function BlurOverlayItem({
   );
 }
 
-/** Canvas-backed pixelate preview. Samples the underlying editor
- *  `<img>` at the rect bounds, downsamples to a coarse grid using
- *  the same block-size formula as `compose-tree.ts`, then displays
- *  the small canvas at the rect's full visual size so the browser's
- *  `image-rendering: pixelated` upscale produces crisp mosaic
- *  blocks. Output is visually identical (modulo lanczos vs canvas
- *  bilinear at the downsample step) to the bake's nearest-neighbor
- *  output.
+/** 1.5% of the canvas short-side, with an 8px floor. Mirrors
+ *  `deriveBlurRadiusPx` in `overlayToLayer.ts` + the v1→v2 doctor.
+ *  Used by the rotated-gaussian canvas path so the editor preview
+ *  uses the SAME σ the bake will. Inlining the formula avoids reaching
+ *  across the source-of-truth boundary (overlayToLayer.ts is concerned
+ *  with persistence; the renderer just needs to pick a sigma). */
+function deriveBlurSigmaPx(canvasWidthPx: number, canvasHeightPx: number): number {
+  const shortSide = Math.min(canvasWidthPx, canvasHeightPx);
+  return Math.max(1, Math.min(200, Math.max(8, Math.round(shortSide * 0.015))));
+}
+
+/** Compute the rotated rect's AABB + corner coordinates in canvas-
+ *  pixel space. Mirrors the bake's rotation math in
+ *  `compose-tree.ts applyEffectOntoAccumulator`:
  *
- *  Block size formula (kept in lockstep with the bake):
- *    shortSide  = min(rect.w × canvasWidthPx, rect.h × canvasHeightPx)
- *    blockSize  = max(4, round(shortSide / 16))
- *    downW/H    = floor(rectPx / blockSize)
+ *    cx, cy = rect's geometric center
+ *    each corner (±w/2, ±h/2) rotated by θ around (cx, cy)
+ *    AABB = bounding box of those rotated corners
  *
- *  Source-image-load handling:
- *    • If `complete && naturalWidth > 0`, draw immediately.
- *    • Otherwise wire a one-shot `load` listener and draw then.
- *    • If the image swaps src mid-mount (e.g. capture switched),
- *      the next render runs the effect again with the new rect deps
- *      — the load listener re-attaches cleanly. */
-function PixelateMosaicCanvas({
+ *  Returns AABB AND the rotated corners in BOTH canvas-pixel coords
+ *  AND canvas-element-local coords (subtract AABB origin) so the
+ *  caller can position the canvas (parent-relative) and the clip-path
+ *  (canvas-relative) without recomputing.
+ */
+function computeRotatedAabb(args: {
+  rect: { x: number; y: number; w: number; h: number };
+  rotation: number;
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+}): {
+  aabbX: number;
+  aabbY: number;
+  aabbW: number;
+  aabbH: number;
+  /** Rotated rect corners in canvas-pixel coords (parent-relative). */
+  cornersParent: Array<{ x: number; y: number }>;
+  /** Same corners shifted to canvas-element-local coords (subtract
+   *  AABB origin). For use in CSS clip-path: polygon(...). */
+  cornersLocal: Array<{ x: number; y: number }>;
+} {
+  const { rect, rotation, canvasWidthPx, canvasHeightPx } = args;
+  const rectXPx = rect.x * canvasWidthPx;
+  const rectYPx = rect.y * canvasHeightPx;
+  const rectWPx = Math.max(1, rect.w * canvasWidthPx);
+  const rectHPx = Math.max(1, rect.h * canvasHeightPx);
+  const cx = rectXPx + rectWPx / 2;
+  const cy = rectYPx + rectHPx / 2;
+  const hw = rectWPx / 2;
+  const hh = rectHPx / 2;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const cornersParent = [
+    { x: -hw, y: -hh },
+    { x: hw, y: -hh },
+    { x: hw, y: hh },
+    { x: -hw, y: hh }
+  ].map(({ x: lx, y: ly }) => ({
+    x: cx + lx * cos - ly * sin,
+    y: cy + lx * sin + ly * cos
+  }));
+  const xs = cornersParent.map((c) => c.x);
+  const ys = cornersParent.map((c) => c.y);
+  const aabbX = Math.min(...xs);
+  const aabbY = Math.min(...ys);
+  const aabbW = Math.max(...xs) - aabbX;
+  const aabbH = Math.max(...ys) - aabbY;
+  const cornersLocal = cornersParent.map(({ x, y }) => ({
+    x: x - aabbX,
+    y: y - aabbY
+  }));
+  return { aabbX, aabbY, aabbW, aabbH, cornersParent, cornersLocal };
+}
+
+/** Canvas-backed rotated-blur preview. Mirrors the bake's
+ *  `compose-tree.ts applyEffectOntoAccumulator` rotation pipeline:
+ *
+ *    1. Compute rotated rect's AABB in canvas-pixel space.
+ *    2. Position a `<canvas>` element at the AABB, sized to its dims.
+ *    3. drawImage the source raster at the AABB region into the canvas.
+ *    4. Apply the effect IN-PLACE in the canvas
+ *       (gaussian: `ctx.filter = "blur(Npx)"`;
+ *        pixelate: down/up resample with `image-rendering: pixelated`).
+ *    5. CSS `clip-path: polygon(corner1, corner2, corner3, corner4)`
+ *       with the rotated rect corners in canvas-element-local coords
+ *       — only the rotated-rect interior shows the effect, AABB
+ *       corners outside the rect get clipped to transparent.
+ *
+ *  Step 5 is the mirror of the bake's SVG rotation mask (`dest-in`
+ *  composite with a white rotated rect): both keep only the rotated-
+ *  rect interior pixels and drop the rest. The editor and bake now
+ *  produce visually matching rotated blur output. */
+function RotatedEffectCanvas({
   rect,
   rotation,
+  style,
   editorImageRef,
   canvasWidthPx,
   canvasHeightPx,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
-  /** Clockwise rotation in radians around the rect's geometric
-   *  center. Applied as a CSS `transform: rotate(...)` on the displayed
-   *  canvas.
-   *
-   *  ⚠️ KNOWN MISMATCH WITH THE BAKE FOR rotation !== 0:
-   *  We sample the source at the UN-ROTATED rect's region (in canvas
-   *  coords) and then CSS-rotate the displayed canvas. The v2 bake
-   *  (`compose-tree.ts applyEffectOntoAccumulator`) samples at the
-   *  ROTATED rect's AABB in the accumulator and composites back via
-   *  a rotation mask — so the bake shows the rotated-rect interior
-   *  pixelated IN PLACE, while the editor shows a rotated mosaic of
-   *  the un-rotated rect's content. For rotation === 0 the two match
-   *  pixel-for-pixel; for non-zero rotations they diverge.
-   *
-   *  This same divergence exists for gaussian (`backdrop-filter` is
-   *  captured pre-rotation in Chromium) and is independent of the
-   *  pixelate fix in this PR. Tracked as a follow-up — the right
-   *  fix samples the source at the rotated-rect AABB and clip-paths
-   *  the canvas to the rotated polygon. */
   rotation: number;
+  /** "gaussian" | "pixelate". Redact at non-zero rotation is handled
+   *  by `BlurOverlayItem` (a rotated black square IS a rotated black
+   *  square — no algorithmic mismatch to fix). */
+  style: "gaussian" | "pixelate";
+  editorImageRef: RefObject<HTMLImageElement | null>;
+  canvasWidthPx: number;
+  canvasHeightPx: number;
+  isDraft?: boolean;
+}): ReactElement {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const aabb = useMemo(
+    () =>
+      computeRotatedAabb({
+        rect,
+        rotation,
+        canvasWidthPx,
+        canvasHeightPx
+      }),
+    [rect.x, rect.y, rect.w, rect.h, rotation, canvasWidthPx, canvasHeightPx]
+  );
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const img = editorImageRef.current;
+    if (canvas === null || img === null) return;
+
+    const draw = (): void => {
+      // Per-style canvas internal resolution + draw:
+      //   gaussian → AABB-display-px (1:1 with the canvas's CSS size).
+      //   pixelate → coarse-grid AABB-display-px / blockSize, like
+      //              the unrotated PixelateMosaicCanvas. Browser
+      //              upscales nearest-neighbor via image-rendering.
+      // Block-size formula matches the bake's pixelate at the AABB
+      // dims (sharp uses min(w, h) of the extracted AABB).
+      const aabbW = Math.max(1, Math.round(aabb.aabbW));
+      const aabbH = Math.max(1, Math.round(aabb.aabbH));
+      let internalW: number;
+      let internalH: number;
+      if (style === "pixelate") {
+        const shortSide = Math.min(aabbW, aabbH);
+        const blockSizePx = Math.max(4, Math.round(shortSide / 16));
+        internalW = Math.max(1, Math.floor(aabbW / blockSizePx));
+        internalH = Math.max(1, Math.floor(aabbH / blockSizePx));
+      } else {
+        // gaussian: full AABB resolution; CSS doesn't upscale.
+        internalW = aabbW;
+        internalH = aabbH;
+      }
+      canvas.width = internalW;
+      canvas.height = internalH;
+      const ctx = canvas.getContext("2d");
+      if (ctx === null) return;
+      ctx.clearRect(0, 0, internalW, internalH);
+
+      // Source coords → image NATURAL pixels. Editor's <img> is sized
+      // so source-raster coords map 1:1 to canvas-pixel coords AT
+      // DISPLAY. For sampling we want CANVAS-px → image NATURAL-px,
+      // so multiply by `naturalWidth / canvasWidthPx`. Uncropped
+      // captures have natural == canvas; cropped captures get a slight
+      // offset (deferred follow-up; see issue #147 doc-block).
+      const scaleX = img.naturalWidth / canvasWidthPx;
+      const scaleY = img.naturalHeight / canvasHeightPx;
+
+      if (style === "gaussian") {
+        // ctx.filter applies to the NEXT drawImage. σ matches the
+        // bake's blur radius (compose-tree.ts calls sharp.blur(σ)
+        // with the same effect.radius_px value).
+        const sigma = deriveBlurSigmaPx(canvasWidthPx, canvasHeightPx);
+        ctx.filter = `blur(${sigma}px)`;
+        ctx.drawImage(
+          img,
+          aabb.aabbX * scaleX,
+          aabb.aabbY * scaleY,
+          aabb.aabbW * scaleX,
+          aabb.aabbH * scaleY,
+          0,
+          0,
+          internalW,
+          internalH
+        );
+        // Reset filter so any subsequent draws (none today) aren't
+        // accidentally blurred.
+        ctx.filter = "none";
+      } else {
+        // pixelate: downsample the AABB region into the coarse grid;
+        // CSS image-rendering: pixelated does the nearest-neighbor
+        // upscale at display time. Matches the bake's
+        //   downsample → resize(w, h, kernel: "nearest")
+        // path block-for-block.
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(
+          img,
+          aabb.aabbX * scaleX,
+          aabb.aabbY * scaleY,
+          aabb.aabbW * scaleX,
+          aabb.aabbH * scaleY,
+          0,
+          0,
+          internalW,
+          internalH
+        );
+      }
+    };
+
+    if (img.complete && img.naturalWidth > 0) {
+      draw();
+      return;
+    }
+    img.addEventListener("load", draw, { once: true });
+    return () => {
+      img.removeEventListener("load", draw);
+    };
+  }, [
+    aabb.aabbX,
+    aabb.aabbY,
+    aabb.aabbW,
+    aabb.aabbH,
+    style,
+    canvasWidthPx,
+    canvasHeightPx,
+    editorImageRef
+  ]);
+
+  // Position the canvas at AABB in parent-relative %; clip-path
+  // expressed in canvas-element-local %s (corner / AABB dim). The
+  // browser interprets the polygon corners as percent of the
+  // canvas's CSS box, which is sized to AABB in display-px.
+  const polygonPoints = aabb.cornersLocal
+    .map(({ x, y }) => `${(x / aabb.aabbW) * 100}% ${(y / aabb.aabbH) * 100}%`)
+    .join(", ");
+  return (
+    <canvas
+      ref={canvasRef}
+      className={
+        `ed-blur-item ed-blur-item--rotated-${style}` + (isDraft ? " is-draft" : "")
+      }
+      style={{
+        position: "absolute",
+        left: `${(aabb.aabbX / canvasWidthPx) * 100}%`,
+        top: `${(aabb.aabbY / canvasHeightPx) * 100}%`,
+        width: `${(aabb.aabbW / canvasWidthPx) * 100}%`,
+        height: `${(aabb.aabbH / canvasHeightPx) * 100}%`,
+        // Pixelate's coarse-grid canvas needs nearest-neighbor upscale
+        // to match the bake; gaussian's internal-res === display-res
+        // so this is a no-op for gaussian.
+        imageRendering: style === "pixelate" ? "pixelated" : undefined,
+        // The mask: only the rotated-rect interior survives. AABB
+        // corners outside the rotated rect get clipped to transparent.
+        clipPath: `polygon(${polygonPoints})`
+      }}
+    />
+  );
+}
+
+/** Canvas-backed pixelate preview for the UN-ROTATED case (issue
+ *  #137). Same algorithm as the bake's pixelate path: sample the
+ *  source at the rect, downsample to a coarse grid, display with
+ *  `image-rendering: pixelated` for nearest-neighbor upscale.
+ *
+ *  Block size formula (in lockstep with compose-tree.ts):
+ *    shortSide  = min(rect.w × canvasWidthPx, rect.h × canvasHeightPx)
+ *    blockSize  = max(4, round(shortSide / 16))
+ *    downW/H    = floor(rectPx / blockSize)
+ *
+ *  Rotated pixelate goes through `RotatedEffectCanvas` instead. */
+function PixelateMosaicCanvas({
+  rect,
+  editorImageRef,
+  canvasWidthPx,
+  canvasHeightPx,
+  isDraft = false
+}: {
+  rect: { x: number; y: number; w: number; h: number };
   editorImageRef: RefObject<HTMLImageElement | null>;
   canvasWidthPx: number;
   canvasHeightPx: number;
@@ -250,8 +538,6 @@ function PixelateMosaicCanvas({
     if (canvas === null || img === null) return;
 
     const draw = (): void => {
-      // Rect in canvas pixels — what the bake's block-size formula
-      // takes as input.
       const rectXPx = rect.x * canvasWidthPx;
       const rectYPx = rect.y * canvasHeightPx;
       const rectWPx = Math.max(1, rect.w * canvasWidthPx);
@@ -260,36 +546,12 @@ function PixelateMosaicCanvas({
       const blockSizePx = Math.max(4, Math.round(shortSide / 16));
       const downW = Math.max(1, Math.floor(rectWPx / blockSizePx));
       const downH = Math.max(1, Math.floor(rectHPx / blockSizePx));
-      // Set canvas's INTERNAL resolution to the coarse grid. CSS
-      // (set via the style attribute below) scales the canvas back up
-      // to its display size; `image-rendering: pixelated` makes that
-      // upscale nearest-neighbor — exactly the bake's `kernel:
-      // "nearest"` on the upsample.
       canvas.width = downW;
       canvas.height = downH;
       const ctx = canvas.getContext("2d");
       if (ctx === null) return;
-      // Bicubic for the downsample (matches sharp's default resize
-      // kernel approximately enough — visual parity is the goal).
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      // The img is the editor's source raster, rendered at canvas
-      // dims by the editor's `<img>` styling. drawImage's source
-      // rect is in NATURAL image coords; for v2 captures the natural
-      // image dims may differ from canvas dims (crop), but the
-      // editor's `<img>` element is sized so the SOURCE-raster
-      // coords map 1:1 to canvas-pixel coords AT THE DISPLAY (via
-      // CSS transform). For sampling we want CANVAS-pixel coords →
-      // image NATURAL coords, which is just `naturalWidth /
-      // canvasWidthPx` for the scale (and zero for the translate in
-      // the un-cropped case).
-      //
-      // For uncropped captures (natural == canvas) this is identity.
-      // For cropped captures we'd need the rasterTranslate offsets
-      // from Editor.tsx; deferring that to a follow-up since the
-      // editor's `<img>` already handles the same translate via CSS
-      // and the current sampling will be visually close (just
-      // offset). Most captures are uncropped.
       const scaleX = img.naturalWidth / canvasWidthPx;
       const scaleY = img.naturalHeight / canvasHeightPx;
       ctx.clearRect(0, 0, downW, downH);
@@ -323,22 +585,19 @@ function PixelateMosaicCanvas({
     canvasHeightPx,
     editorImageRef
   ]);
-  const rotateDeg = (rotation * 180) / Math.PI;
   return (
     <canvas
       ref={canvasRef}
-      className={"ed-blur-item ed-blur-item--pixelate-canvas" + (isDraft ? " is-draft" : "")}
+      className={
+        "ed-blur-item ed-blur-item--pixelate-canvas" + (isDraft ? " is-draft" : "")
+      }
       style={{
         position: "absolute",
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
         width: `${rect.w * 100}%`,
         height: `${rect.h * 100}%`,
-        // The whole point — nearest-neighbor upscale of the coarse
-        // grid. Without this, the browser bilinear-interpolates and
-        // we're back to "looks like a soft blur."
-        imageRendering: "pixelated",
-        ...(rotation !== 0 ? { transform: `rotate(${rotateDeg}deg)` } : {})
+        imageRendering: "pixelated"
       }}
     />
   );

@@ -127,13 +127,12 @@ test("library-right-rail: clicking active tab unpins to hover-pop", async () => 
   }
 });
 
-test("library-right-rail: video capture footer shows GIF + MP4 export buttons, not Low/Med/High", async () => {
-  // Regression for the bug where DetailRail's COPY TO CLIPBOARD row
-  // unconditionally rendered the image-resize presets (LOW / MED /
-  // HIGH with computed PNG-scaled dimensions and KB sizes) for video
-  // captures too. The fix branches on `record.kind === "video"` and
-  // renders two GIF / MP4 export cards instead — same pattern the tray
-  // and float-over already use.
+test("library-right-rail: video capture footer renders the 6-card preset grid", async () => {
+  // The video-branch footer is two `.psl__copy-row` containers — one
+  // GIF row, one MP4 row — with three preset cards each. Each card
+  // carries a FILE chip (click = copy path, drag = native drag-out).
+  // Earlier in #136 this slot was a 2-card minimal UI (just GIF +
+  // MP4 buttons); the 6-card grid is the full-power replacement.
   const app = await launchPwrSnap();
   try {
     const captureId = await seedVideoCapture(app);
@@ -144,30 +143,127 @@ test("library-right-rail: video capture footer shows GIF + MP4 export buttons, n
       .locator('[data-testid="psl-right-tab-info"]')
       .waitFor({ state: "visible", timeout: 15_000 });
 
-    // The video-branch copy row is wired with its own data-testid so a
-    // selector regression here can't silently re-route to the image
-    // branch (which would render with the same outer `.psl__copy-row`
-    // class). Two cards exactly — GIF + MP4, no third "high" slot.
-    const videoCopyRow = win.locator('[data-testid="psl-copy-row-video"]');
-    await expect(videoCopyRow).toBeVisible();
-    await expect(videoCopyRow.locator("button")).toHaveCount(2);
-    await expect(videoCopyRow.getByText("GIF", { exact: true })).toBeVisible();
-    await expect(videoCopyRow.getByText("MP4", { exact: true })).toBeVisible();
+    // Two per-format rows present, each with three buttons (cards)
+    // and three FILE chips (.fo__copy-file).
+    const gifRow = win.locator('[data-testid="psl-copy-row-video-gif"]');
+    const mp4Row = win.locator('[data-testid="psl-copy-row-video-mp4"]');
+    await expect(gifRow).toBeVisible();
+    await expect(mp4Row).toBeVisible();
+    await expect(gifRow.locator(".fo__copy-btn")).toHaveCount(3);
+    await expect(mp4Row.locator(".fo__copy-btn")).toHaveCount(3);
+    await expect(gifRow.locator(".fo__copy-file")).toHaveCount(3);
+    await expect(mp4Row.locator(".fo__copy-file")).toHaveCount(3);
 
-    // None of the image-preset labels should be present for a video.
-    // The DOM has lots of incidental "Med" and "High" text fragments
-    // (tag suggestions, AppIcons, etc.), so scope the negative
-    // assertion to the footer the new code rendered into.
+    // Preset labels appear inside each row — 3 × Low / Med / High
+    // per row × 2 rows = 6 cards. Scope the assertion to the row
+    // containers so unrelated DOM (tag suggestions, AppIcons) can't
+    // satisfy a global match.
+    for (const row of [gifRow, mp4Row]) {
+      await expect(row.getByText("Low", { exact: true })).toHaveCount(1);
+      await expect(row.getByText("Med", { exact: true })).toHaveCount(1);
+      await expect(row.getByText("High", { exact: true })).toHaveCount(1);
+    }
+
+    // Keyboard shortcut hints — ⌘1-⌘3 on the GIF row, ⌘4-⌘6 on
+    // the MP4 row. Each maps to the corresponding card in left-to-
+    // right order. Anchors the layout: a regression that swaps row
+    // order (MP4 on top instead of GIF) would fail here.
+    await expect(gifRow.getByText("⌘1", { exact: true })).toBeVisible();
+    await expect(gifRow.getByText("⌘2", { exact: true })).toBeVisible();
+    await expect(gifRow.getByText("⌘3", { exact: true })).toBeVisible();
+    await expect(mp4Row.getByText("⌘4", { exact: true })).toBeVisible();
+    await expect(mp4Row.getByText("⌘5", { exact: true })).toBeVisible();
+    await expect(mp4Row.getByText("⌘6", { exact: true })).toBeVisible();
+
+    // Eyebrow flipped from "Copy to clipboard" to "Export" for video.
     const footer = win.locator('[data-testid="psl-right-footer"]');
-    await expect(footer.getByText("Low", { exact: true })).toHaveCount(0);
-    await expect(footer.getByText("Med", { exact: true })).toHaveCount(0);
-    await expect(footer.getByText("High", { exact: true })).toHaveCount(0);
-
-    // Eyebrow flips from "Copy to clipboard" to "Export" for video.
     await expect(footer.getByText("Export", { exact: true })).toBeVisible();
     await expect(
       footer.getByText("Copy to clipboard", { exact: true })
     ).toHaveCount(0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("library-right-rail: video preset metrics populate exact dims on cache hit", async () => {
+  // Verifies the lazy estimated-→-exact flow. `video:presetMetrics`
+  // is dispatched on rail mount; cache-miss entries come back with
+  // estimated bytes (rendered with a `~` prefix). After the user
+  // clicks a card, the encode lands a cache row; the next mount
+  // returns exact metrics for that combination. This test calls the
+  // verb directly via the E2E bridge to assert the IPC envelope
+  // shape without paying for an actual ffmpeg encode in CI.
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedVideoCapture(app);
+    const result = await app.dispatch("video:presetMetrics", { captureId });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+
+    // Six entries — 2 formats × 3 presets.
+    expect(result.value.metrics).toHaveLength(6);
+
+    const byKey = new Map<string, (typeof result.value.metrics)[number]>();
+    for (const m of result.value.metrics) {
+      byKey.set(`${m.format}-${m.preset}`, m);
+    }
+    expect([...byKey.keys()].sort()).toEqual([
+      "gif-high",
+      "gif-low",
+      "gif-med",
+      "mp4-high",
+      "mp4-low",
+      "mp4-med"
+    ]);
+
+    // Source is seeded at 1440×960 by `seedVideoCapture` below.
+    // LOW MP4 = 720px wide. HIGH = source. Sanity-check that the
+    // per-preset width math (computeOutputDimensions) lines up.
+    expect(byKey.get("mp4-low")!.widthPx).toBe(720);
+    expect(byKey.get("mp4-high")!.widthPx).toBe(1440);
+    expect(byKey.get("gif-low")!.widthPx).toBe(480);
+    expect(byKey.get("gif-high")!.widthPx).toBe(1440);
+
+    // Cold cache — every entry should report fromCache=false.
+    for (const m of result.value.metrics) {
+      expect(m.fromCache).toBe(false);
+      expect(m.byteSize).toBeGreaterThan(0);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+// Note on coverage: the click-copy / click-path / drag-out paths
+// aren't asserted end-to-end here because `seedVideoCapture` writes
+// a placeholder .mp4 (literal "fake mp4 placeholder bytes") that
+// ffmpeg can't decode. End-to-end coverage of those paths requires
+// a real video fixture (e.g. generating a 1-second test clip via
+// ffmpeg in a beforeAll) and is tracked as a follow-up in #136's
+// "real-video fixture" TODO. The structural assertions above plus
+// the validator + bus-envelope tests cover the contract; the
+// renderer hook tests cover the click → dispatch transition.
+
+test("library-right-rail: video:export rejects unknown preset values", async () => {
+  // Validator coverage — main rejects malformed preset strings
+  // before reaching the encoder. Mirrors the existing format /
+  // range / audio validators that the prior `video:export`
+  // signature already had.
+  const app = await launchPwrSnap();
+  try {
+    const captureId = await seedVideoCapture(app);
+    const result = await app.dispatch("video:export", {
+      captureId,
+      format: "mp4",
+      // @ts-expect-error — testing the runtime validator
+      preset: "ultra",
+      range: { start: 0, end: 1 }
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_preset");
   } finally {
     await app.close();
   }

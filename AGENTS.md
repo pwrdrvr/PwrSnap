@@ -171,6 +171,13 @@ See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)
 §"Shipping Status" for the rollout history.
 
+## Bake render cache — orphans are tolerated, not swept
+
+Content-addressed cache; `BAKE_PIPELINE_VERSION` is in the hash, so a
+bump orphans existing files. We do NOT auto-sweep — see
+[docs/solutions/2026-05-28-bake-render-cache-orphans.md](docs/solutions/2026-05-28-bake-render-cache-orphans.md)
+for rationale, when-to-bump rules, and the adjacent-code map.
+
 ## Repository conventions
 
 - **pnpm workspaces.** Apps in `apps/*`, packages in `packages/*`. Always run

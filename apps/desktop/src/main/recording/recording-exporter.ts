@@ -45,18 +45,30 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 const log = getMainLogger("pwrsnap:recording-exporter");
 
 /** Per-(format, preset) encode profile. Source-resolution presets
- *  (HIGH) set `width: null` to signal "no downscale". MP4 HIGH also
- *  sets `crf: null` to signal "stream-copy" (no re-encode). */
-type GifPresetSpec = { readonly width: number | null; readonly fps: number };
-type Mp4PresetSpec = { readonly width: number | null; readonly crf: number | null };
+ *  (HIGH for MP4) set `width: null` to signal "no downscale". MP4
+ *  HIGH also sets `crf: null` to signal "stream-copy" (no
+ *  re-encode).
+ *
+ *  GIF HIGH does NOT use source resolution. GIFs are palette-frame
+ *  encoded; byte size scales with `pixels × fps × duration` and gets
+ *  unusable fast above ~720p (a 1080p 30fps GIF for 10 seconds is
+ *  routinely 80+ MB — over Slack's 50 MB cap, way past iMessage's
+ *  practical limit, and triggers most platforms' auto-convert-to-
+ *  MP4 paths). The three GIF tiers vary fps within a hard 720p
+ *  resolution cap: HIGH means "smoother", not "bigger". MP4 keeps
+ *  the resolution axis because it has the codec headroom (CRF +
+ *  H.264 motion compensation) to handle high-res screen content
+ *  without exploding. */
+export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
+export type Mp4PresetSpec = { readonly width: number | null; readonly crf: number | null };
 
-const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
+export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
   low: { width: 480, fps: 15 },
   med: { width: 720, fps: 24 },
-  high: { width: null, fps: 30 }
+  high: { width: 720, fps: 30 }
 };
 
-const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
+export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
   low: { width: 720, crf: 28 },
   med: { width: 1080, crf: 23 },
   high: { width: null, crf: null }

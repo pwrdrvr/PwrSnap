@@ -39,7 +39,9 @@ import {
 import { getRecordingState } from "../recording/recording-state";
 import {
   computeOutputDimensions,
-  exportVideoRange
+  exportVideoRange,
+  GIF_PRESETS,
+  MP4_PRESETS
 } from "../recording/recording-exporter";
 import {
   mapVideoResolveError,
@@ -470,24 +472,16 @@ export function registerRecordingHandlers(): void {
 }
 
 /** Output dimensions for a (format, preset) pair against a source.
- *  Wraps `computeOutputDimensions` from the encoder with the per-
- *  format preset width tables — the encoder owns the canonical
- *  spec, this is a renderer-facing read accessor. */
+ *  Reads the canonical preset width table from the encoder so this
+ *  accessor never drifts from what ffmpeg actually produces. */
 function computePresetDimensions(
   format: "gif" | "mp4",
   preset: VideoPreset,
   sourceWidth: number,
   sourceHeight: number
 ): { widthPx: number; heightPx: number } {
-  // GIF widths: 480 / 720 / source. MP4 widths: 720 / 1080 / source.
-  // Kept in lockstep with `recording-exporter.ts::GIF_PRESETS /
-  // MP4_PRESETS`; if those move, update here.
-  let targetWidth: number | null;
-  if (format === "gif") {
-    targetWidth = preset === "low" ? 480 : preset === "med" ? 720 : null;
-  } else {
-    targetWidth = preset === "low" ? 720 : preset === "med" ? 1080 : null;
-  }
+  const targetWidth =
+    format === "gif" ? GIF_PRESETS[preset].width : MP4_PRESETS[preset].width;
   return computeOutputDimensions(targetWidth, sourceWidth, sourceHeight);
 }
 
@@ -517,7 +511,7 @@ function estimateVideoByteSize(
 ): number {
   const pixels = widthPx * heightPx;
   if (format === "gif") {
-    const fps = preset === "low" ? 15 : preset === "med" ? 24 : 30;
+    const fps = GIF_PRESETS[preset].fps;
     // 0.20 bpp per palette-encoded GIF frame — calibrated for
     // screen content with bayer dither at the LMH fps tiers.
     const frameBytes = pixels * 0.20;

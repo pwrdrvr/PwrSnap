@@ -20,7 +20,7 @@ arranged in two rows:
 ```
 ┌──────────────────┬──────────────────┬──────────────────┐
 │      GIF LOW     │      GIF MED     │     GIF HIGH     │
-│  480p · 15 fps   │  720p · 24 fps   │  source · 30 fps │
+│  480p · 15 fps   │  720p · 24 fps   │  720p · 30 fps   │
 │      ⌘1          │       ⌘2         │       ⌘3         │
 ├──────────────────┼──────────────────┼──────────────────┤
 │      ⋮ FILE      │      ⋮ FILE      │      ⋮ FILE      │
@@ -80,7 +80,7 @@ Rationale:
 |---|---|---|
 | **LOW** | 480p · 15 fps · palette-optimized | 720p · CRF 28 · web-friendly |
 | **MED** | 720p · 24 fps | 1080p · CRF 23 |
-| **HIGH** | source resolution · 30 fps | source resolution · stream-copy |
+| **HIGH** | 720p · 30 fps · smoother motion | source resolution · stream-copy |
 
 Mirroring the image side, the preset constants live in a single
 source-of-truth file in `apps/desktop/src/main/recording/` and
@@ -96,11 +96,17 @@ GIF rationale:
 - 720p / 24 fps = "good enough" sharing fidelity. The "film frame
   rate" tier; smooth enough to look polished for showing app
   animations.
-- source / 30 fps = max-quality GIF for users who want it. We
-  could go higher but GIFs are 8-bit palettes, and beyond ~30 fps
-  the file balloons (each frame is full-resolution palette data)
-  without perceptible benefit for the kind of motion screen
-  captures contain.
+- **720p / 30 fps · smoother motion** — same resolution as MED, more
+  frames per second. We deliberately do NOT scale GIF HIGH up to
+  source resolution because GIF byte size scales with
+  `pixels × fps × duration` and gets unusable fast above 720p — a
+  1080p 30 fps GIF for 10 seconds is routinely 80+ MB, over Slack's
+  50 MB cap, past iMessage's compression sweet spot, and triggers
+  most platforms' auto-convert-to-MP4 paths. MP4 keeps the
+  resolution axis because H.264 + CRF handles high-res screen
+  content without exploding; GIF doesn't, so HIGH means "smoother",
+  not "bigger". Users who actually want source-resolution video
+  pick MP4 HIGH (stream-copy, no re-encode, no size hit).
 
 MP4 rationale:
 - 720p / CRF 28 = ~3 Mbps for typical screen content. Drops into

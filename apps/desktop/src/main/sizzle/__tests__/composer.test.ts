@@ -133,30 +133,46 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     return { durationSec, nbReadFrames, width, height };
   }
 
+  // Tiny helper so the test bodies don't have to repeat the
+  // discriminator + transition field on every SceneInput literal.
+  function imageScene(args: {
+    imagePath: string;
+    audioPath: string;
+    durationSec: number;
+  }): SceneInput {
+    return {
+      kind: "image",
+      imagePath: args.imagePath,
+      audioPath: args.audioPath,
+      durationSec: args.durationSec,
+      transition: "cut"
+    };
+  }
+
   it(
     "produces video whose frame count and duration match all input scenes (not just the first)",
     async () => {
       const scenes: SceneInput[] = [
-        {
+        imageScene({
           imagePath: await makeImage("img1.png", "red"),
           audioPath: await makeSilentMp3("aud1.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img2.png", "green"),
           audioPath: await makeSilentMp3("aud2.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img3.png", "blue"),
           audioPath: await makeSilentMp3("aud3.mp3", 1.5),
           durationSec: 1.5
-        },
-        {
+        }),
+        imageScene({
           imagePath: await makeImage("img4.png", "yellow"),
           audioPath: await makeSilentMp3("aud4.mp3", 1.5),
           durationSec: 1.5
-        }
+        })
       ];
       const outputPath = join(tmpDir, "out.mp4");
       const fps = 30;
@@ -190,11 +206,13 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     ];
     const scenes: SceneInput[] = [];
     for (let i = 0; i < colors.length; i++) {
-      scenes.push({
-        imagePath: await makeImage(`c${i}.png`, colors[i]!.hex),
-        audioPath: await makeSilentMp3(`s${i}.mp3`, 1.0),
-        durationSec: 1.0
-      });
+      scenes.push(
+        imageScene({
+          imagePath: await makeImage(`c${i}.png`, colors[i]!.hex),
+          audioPath: await makeSilentMp3(`s${i}.mp3`, 1.0),
+          durationSec: 1.0
+        })
+      );
     }
     const outputPath = join(tmpDir, "colors.mp4");
     await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
@@ -271,11 +289,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     // gets SIGKILL'd within the 100ms abort window and compose
     // rejects with a `cancelled` ComposeError.
     const scenes: SceneInput[] = [
-      {
+      imageScene({
         imagePath: await makeImage("abort.png", "red"),
         audioPath: await makeSilentMp3("abort.mp3", 10),
         durationSec: 10
-      }
+      })
     ];
     const outputPath = join(tmpDir, "abort.mp4");
     const controller = new AbortController();
@@ -304,11 +322,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
 
   it("compose cleans up the .audio-list.txt temp file on success", async () => {
     const scenes: SceneInput[] = [
-      {
+      imageScene({
         imagePath: await makeImage("cleanup.png", "blue"),
         audioPath: await makeSilentMp3("cleanup.mp3", 0.5),
         durationSec: 0.5
-      }
+      })
     ];
     const outputPath = join(tmpDir, "cleanup.mp4");
     await compose({ scenes, outputPath, width: 320, height: 180, fps: 30 });
@@ -329,7 +347,15 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     // This assertion locks the invocation contract in.
     const args = buildCompositionArgs(
       {
-        scenes: [{ imagePath: "/x/a.png", audioPath: "/x/a.mp3", durationSec: 1 }],
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/a.mp3",
+            durationSec: 1,
+            transition: "cut"
+          }
+        ],
         outputPath: "/x/out.mp4",
         width: 1280,
         height: 720,
@@ -353,8 +379,20 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     const args = buildCompositionArgs(
       {
         scenes: [
-          { imagePath: "/x/a.png", audioPath: "/x/a.mp3", durationSec: 2 },
-          { imagePath: "/x/b.png", audioPath: "/x/b.mp3", durationSec: 3 }
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/a.mp3",
+            durationSec: 2,
+            transition: "cut"
+          },
+          {
+            kind: "image",
+            imagePath: "/x/b.png",
+            audioPath: "/x/b.mp3",
+            durationSec: 3,
+            transition: "cut"
+          }
         ],
         outputPath: "/x/out.mp4",
         width: 1920,
@@ -381,5 +419,292 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     expect(before).not.toContain("-loop");
     expect(before).not.toContain("-framerate");
     expect(before).not.toContain("-t");
+  });
+});
+
+// Cross-platform xfade contract tests. The filter graph that ffmpeg
+// consumes is built in `buildCompositionArgs`'s `-filter_complex`
+// arg — a single semicolon-joined string. We assert that string
+// contains the right number + shape of `xfade=` clauses for a few
+// representative transition patterns. Locking this on Linux CI
+// catches transition-chain regressions even though the actual
+// ffmpeg invocation only runs on macOS.
+describe("buildCompositionArgs — xfade transition chain", () => {
+  // Helper — pull the filter-graph string out of the args array.
+  function filterGraph(args: string[]): string {
+    const i = args.indexOf("-filter_complex");
+    expect(i).toBeGreaterThan(0);
+    const graph = args[i + 1];
+    expect(typeof graph).toBe("string");
+    return graph!;
+  }
+
+  function imageScene(idx: number, transition: "cut" | "crossfade"): SceneInput {
+    return {
+      kind: "image",
+      imagePath: `/x/${idx}.png`,
+      audioPath: `/x/${idx}.mp3`,
+      durationSec: 2,
+      transition
+    };
+  }
+
+  it("single-scene reel: no transitions at all", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [imageScene(0, "cut")],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    // No xfade, no inter-scene concat — just the per-scene
+    // normalization filter that emits [v0].
+    expect(graph).not.toContain("xfade=");
+    expect(graph).not.toContain("concat=n=2");
+    // Map output should point to v0 directly.
+    const mapIdx = args.indexOf("-map");
+    expect(mapIdx).toBeGreaterThan(0);
+    expect(args[mapIdx + 1]).toBe("[v0]");
+  });
+
+  it("2 scenes, all-cut: one concat, zero xfade", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [imageScene(0, "cut"), imageScene(1, "cut")],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    expect(graph).not.toContain("xfade=");
+    // Exactly one `concat=n=2` clause for the boundary.
+    const concatMatches = graph.match(/concat=n=2/g) ?? [];
+    expect(concatMatches.length).toBe(1);
+  });
+
+  it("2 scenes, all-crossfade: one xfade clause, zero concat", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [imageScene(0, "cut"), imageScene(1, "crossfade")],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    const xfadeMatches = graph.match(/xfade=/g) ?? [];
+    expect(xfadeMatches.length).toBe(1);
+    // The crossfade duration is the locked SIZZLE_CROSSFADE_SEC value
+    // (currently 0.4). Lock the visible portion of the filter so a
+    // future change to that constant fails the test (forcing the dev
+    // to think about user-visible impact + update the test).
+    expect(graph).toContain("xfade=transition=fade:duration=0.4");
+  });
+
+  it("3 scenes, [cut, crossfade]: one concat + one xfade", () => {
+    // scene[0].transition is ignored (nothing precedes it). The
+    // boundary between scene[0]→scene[1] is determined by
+    // scene[1].transition; scene[1]→scene[2] by scene[2].transition.
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          imageScene(1, "cut"),
+          imageScene(2, "crossfade")
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    expect((graph.match(/xfade=/g) ?? []).length).toBe(1);
+    expect((graph.match(/concat=n=2/g) ?? []).length).toBe(1);
+  });
+
+  it("3 scenes, [cut, crossfade, crossfade]: zero concat + two xfade", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          imageScene(1, "crossfade"),
+          imageScene(2, "crossfade")
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    expect((graph.match(/xfade=/g) ?? []).length).toBe(2);
+    expect((graph.match(/concat=n=2/g) ?? []).length).toBe(0);
+  });
+
+  it("4 scenes, all-crossfade: 3 xfade clauses with monotonically increasing offsets", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          imageScene(1, "crossfade"),
+          imageScene(2, "crossfade"),
+          imageScene(3, "crossfade")
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    const xfadeMatches = graph.match(/xfade=/g) ?? [];
+    expect(xfadeMatches.length).toBe(3);
+
+    // Each xfade carries `offset=<seconds>` indicating where in the
+    // chain's timeline that crossfade begins. With 4 scenes × 2s
+    // duration × 0.4s crossfade overlap, the offsets are:
+    //   boundary 0→1: chainEnd 2.0s, offset = 2.0 - 0.4 = 1.6
+    //   boundary 1→2: chainEnd 3.6s (2 + 2 - 0.4), offset = 3.2
+    //   boundary 2→3: chainEnd 5.2s, offset = 4.8
+    // Walk the offsets and assert strict ordering — a regression that
+    // computes offset from raw scene-start (not chain-end) would
+    // collapse them to constant 1.6.
+    const offsets = [...graph.matchAll(/xfade=transition=fade:duration=0\.4:offset=([\d.]+)/g)]
+      .map((m) => parseFloat(m[1]!));
+    expect(offsets.length).toBe(3);
+    expect(offsets[1]).toBeGreaterThan(offsets[0]!);
+    expect(offsets[2]).toBeGreaterThan(offsets[1]!);
+    // Sanity: first offset ≈ first scene duration - SIZZLE_CROSSFADE_SEC.
+    expect(offsets[0]).toBeCloseTo(2 - 0.4, 2);
+  });
+
+  it("video scene inputs use -ss before -i (input-side trim, fast seek)", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 1.5,
+            trimDurationSec: 3.0,
+            durationSec: 3.0,
+            audioPath: "/x/a.mp3",
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    // -ss must come BEFORE -i for fast input-side seek (ffmpeg has
+    // both an output-side and input-side -ss; the latter is the only
+    // one that doesn't decode every frame from t=0).
+    const iIdx = args.indexOf("-i");
+    const ssIdx = args.indexOf("-ss");
+    const tIdx = args.indexOf("-t");
+    expect(ssIdx).toBeGreaterThanOrEqual(0);
+    expect(ssIdx).toBeLessThan(iIdx);
+    expect(tIdx).toBeGreaterThan(ssIdx);
+    expect(tIdx).toBeLessThan(iIdx);
+    expect(args[ssIdx + 1]).toBe("1.500");
+    expect(args[tIdx + 1]).toBe("3.000");
+  });
+
+  it("video scene with voiceover overrun: tpad freezes the last frame", () => {
+    // durationSec > trimDurationSec → composer appends a tpad clone
+    // filter holding the last frame for the delta. Without this, the
+    // -shortest mux would truncate the reel where the video ended.
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 2.0,
+            durationSec: 4.5, // voiceover overruns by 2.5s
+            audioPath: "/x/a.mp3",
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    // The tpad filter should appear with stop_mode=clone and a
+    // stop_duration matching the overrun (2.500).
+    expect(graph).toContain("tpad=stop_mode=clone:stop_duration=2.500");
+  });
+
+  it("video scene with no overrun: no tpad filter (no spurious frame hold)", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 2.0,
+            durationSec: 2.0,
+            audioPath: "/x/a.mp3",
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    const graph = filterGraph(args);
+    expect(graph).not.toContain("tpad=");
+  });
+
+  it("video scene with sub-50ms overrun: no tpad (small-delta deadband)", () => {
+    // Floating-point math from voiceover-dur measurement can produce
+    // tiny deltas (e.g. 0.001s) where tpad would just waste a filter
+    // slot. The composer's 0.05s deadband prevents that.
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 2.0,
+            durationSec: 2.01, // 0.01s overrun — below the 0.05 deadband
+            audioPath: "/x/a.mp3",
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      },
+      "/x/audio.txt"
+    );
+    expect(filterGraph(args)).not.toContain("tpad=");
   });
 });

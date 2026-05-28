@@ -285,6 +285,7 @@ describe("FILTER_CHANGED", () => {
     );
     expect(next).toEqual({ kind: "grid", selectedRecordId: null });
   });
+
 });
 
 describe("type-system guarantees", () => {

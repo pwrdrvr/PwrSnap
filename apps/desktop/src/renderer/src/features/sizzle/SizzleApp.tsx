@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  resolveSizzleAudioSource,
   type CaptureRecord,
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene,
   type SizzleVoice
 } from "@pwrsnap/shared";
-import { cacheUrl, dispatch, subscribe } from "../../lib/pwrsnap";
+import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import "./sizzle.css";
 
@@ -35,6 +36,20 @@ const IDLE_STATUS: RenderStatus = {
  * because in-place scene mutation is wrong — the parent passes a new
  * array on every edit). Every other field is a shallow assign.
  */
+/**
+ * `M:SS` for durations ≥ 1 minute, else `NNs`. Mirrors
+ * `formatDurationLabel` in Library.tsx (not exported there); kept
+ * inline so the sizzle feature doesn't reach across feature
+ * boundaries for a 6-line helper.
+ */
+function formatDur(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  if (mins === 0) return `${secs}s`;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 function mergeProjectPatch(
   p: SizzleProject,
   patch: Partial<Omit<SizzleProject, "id" | "createdAt">>
@@ -250,11 +265,27 @@ export function SizzleApp(): ReactElement {
           "";
         scriptLine = scriptLine.trim();
       }
+      // Seed video scenes with a trim range from the capture's
+      // `video.defaultRange` so the editor's trim control opens to
+      // sensible bounds instead of [0, 0].
+      const captureRecord = captures.find((c) => c.id === captureId) ?? null;
+      const captureVideo =
+        captureRecord?.kind === "video" ? captureRecord.video ?? null : null;
+      const mediaTrim =
+        captureVideo !== null
+          ? {
+              startSec: captureVideo.defaultRange.start,
+              endSec: captureVideo.defaultRange.end
+            }
+          : null;
       const scene: SizzleScene = {
         id: `sc_${Date.now().toString(36)}`,
         captureId,
         scriptLine,
-        durationOverrideSec: null
+        durationOverrideSec: null,
+        mediaTrim,
+        audioSource: "auto",
+        transition: "crossfade"
       };
       await onUpdate(active.id, { scenes: [...active.scenes, scene] });
       setPicker(false);
@@ -414,6 +445,14 @@ function Editor(props: EditorProps): ReactElement {
   }, [autoFocusTitle, onTitleFocused]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Cache of (sceneId → measured voiceover audio duration in seconds)
+  // populated as the user clicks ▶ to preview each scene. Used to
+  // surface a "voiceover is longer than trim — last frame will hold"
+  // hint on video scenes so the user understands the render math
+  // before hitting Render.
+  const [previewDurations, setPreviewDurations] = useState<
+    Record<string, number>
+  >({});
   // Hold the currently-mounted object URL so we can revoke it before
   // assigning a new src. A data: URL would leak ~33% memory per
   // preview AND keep the prior buffer pinned in memory; object URLs
@@ -484,6 +523,13 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewError(result.error.message);
       return;
     }
+    // Cache the measured audio duration so the editor can surface
+    // an inline "voiceover is X.Xs vs Y.Ys trim" hint on the video
+    // scene's row without forcing the user to render to find out.
+    setPreviewDurations((prev) => ({
+      ...prev,
+      [sceneId]: result.value.durationSec
+    }));
     const el = audioRef.current;
     if (el === null) return;
     // Decode the base64 into a Blob, hand the audio element an
@@ -626,18 +672,95 @@ function Editor(props: EditorProps): ReactElement {
             from your Library.
           </li>
         ) : (
-          project.scenes.map((scene, idx) => {
+          project.scenes.flatMap((scene, idx) => {
             const capture = captureMap.get(scene.captureId) ?? null;
+            const isVideo = capture?.kind === "video";
             const thumb =
               capture?.edits_version !== undefined
                 ? cacheUrl(scene.captureId, 320, "webp", capture.edits_version)
                 : cacheUrl(scene.captureId, 320, "webp");
-            return (
+            // Compute the effective audio source for UI gating via
+            // the SAME `resolveSizzleAudioSource` the main-process
+            // render handler uses. Default to image-kind for the
+            // (transient) case where the capture record isn't loaded
+            // yet — that's the most permissive direction (image
+            // scenes fall through to "voiceover" without needing a
+            // video stream, so the preview button stays clickable).
+            const effectiveAudio = resolveSizzleAudioSource(
+              scene.audioSource,
+              capture?.kind ?? "image",
+              scene.scriptLine
+            );
+            const previewDisabled =
+              previewLoadingSceneId === scene.id ||
+              effectiveAudio === "muted" ||
+              (effectiveAudio === "voiceover" && scene.scriptLine.trim().length === 0);
+            const previewTitle = previewDisabled
+              ? effectiveAudio === "muted"
+                ? "This scene is muted"
+                : "Write a script line to preview"
+              : previewingSceneId === scene.id
+                ? "Stop preview"
+                : effectiveAudio === "native"
+                  ? "Preview native video audio"
+                  : "Preview voiceover";
+
+            const elements: ReactElement[] = [];
+
+            // Transition chip between scenes (skip before the first).
+            if (idx > 0) {
+              elements.push(
+                <li
+                  key={`tr-${scene.id}`}
+                  className={
+                    "szl__transition" +
+                    (scene.transition === "crossfade"
+                      ? " szl__transition--crossfade"
+                      : " szl__transition--cut")
+                  }
+                >
+                  <button
+                    type="button"
+                    className="szl__transition-chip"
+                    onClick={() =>
+                      editScene(scene.id, {
+                        transition:
+                          scene.transition === "crossfade" ? "cut" : "crossfade"
+                      })
+                    }
+                    title="Toggle between Cut and Crossfade"
+                  >
+                    {scene.transition === "crossfade" ? "⌒ Crossfade ⌒" : "─ Cut ─"}
+                  </button>
+                </li>
+              );
+            }
+
+            elements.push(
               <li key={scene.id} className="szl__scene">
                 <span className="szl__scene-num">{idx + 1}</span>
                 <div className="szl__scene-thumb">
                   {capture ? (
-                    <img src={thumb} alt="" />
+                    <>
+                      {isVideo ? (
+                        <video
+                          src={captureSrcUrl(scene.captureId)}
+                          preload="metadata"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img src={thumb} alt="" />
+                      )}
+                      {isVideo ? (
+                        <>
+                          <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
+                          <span className="szl__scene-thumb-duration">
+                            {formatDur(capture.video?.durationSec ?? 0)}
+                          </span>
+                        </>
+                      ) : null}
+                    </>
                   ) : (
                     <span className="szl__scene-missing">missing</span>
                   )}
@@ -645,32 +768,149 @@ function Editor(props: EditorProps): ReactElement {
                 <div className="szl__scene-body">
                   <textarea
                     className="szl__scene-script"
-                    placeholder="What does the narrator say over this scene?"
+                    placeholder={
+                      isVideo
+                        ? "Optional — leave blank to play the video's native audio"
+                        : "What does the narrator say over this scene?"
+                    }
                     value={scene.scriptLine}
                     onChange={(e) =>
                       editScene(scene.id, { scriptLine: e.target.value })
                     }
                   />
+
+                  {isVideo && capture?.video !== null && capture?.video !== undefined ? (
+                    <div className="szl__scene-row">
+                      <label className="szl__scene-dur">
+                        <span>Trim start</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={capture.video.durationSec}
+                          step={0.1}
+                          value={
+                            scene.mediaTrim?.startSec ??
+                            capture.video.defaultRange.start
+                          }
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (!Number.isFinite(v) || v < 0) return;
+                            const currentEnd =
+                              scene.mediaTrim?.endSec ??
+                              capture.video?.defaultRange.end ??
+                              capture.video?.durationSec ??
+                              v + 1;
+                            editScene(scene.id, {
+                              mediaTrim: {
+                                startSec: v,
+                                endSec: Math.max(v + 0.1, currentEnd)
+                              }
+                            });
+                          }}
+                        />
+                        <span className="szl__scene-dur-unit">s</span>
+                      </label>
+                      <label className="szl__scene-dur">
+                        <span>Trim end</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={capture.video.durationSec}
+                          step={0.1}
+                          value={
+                            scene.mediaTrim?.endSec ??
+                            capture.video.defaultRange.end
+                          }
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (!Number.isFinite(v)) return;
+                            const currentStart =
+                              scene.mediaTrim?.startSec ??
+                              capture.video?.defaultRange.start ??
+                              0;
+                            editScene(scene.id, {
+                              mediaTrim: {
+                                startSec: Math.min(currentStart, v - 0.1),
+                                endSec: v
+                              }
+                            });
+                          }}
+                        />
+                        <span className="szl__scene-dur-unit">s</span>
+                      </label>
+                      <label className="szl__scene-dur">
+                        <span>Audio</span>
+                        <select
+                          value={scene.audioSource}
+                          onChange={(e) =>
+                            editScene(scene.id, {
+                              audioSource: e.target.value as
+                                | "auto"
+                                | "native"
+                                | "voiceover"
+                                | "muted"
+                            })
+                          }
+                        >
+                          <option value="auto">Auto ({effectiveAudio})</option>
+                          <option value="native">Native</option>
+                          <option value="voiceover">Voiceover</option>
+                          <option value="muted">Muted</option>
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {(() => {
+                    // Inline mismatch hint for video scenes whose
+                    // voiceover overruns the clip — surfaces the
+                    // composer's "last frame holds while voiceover
+                    // finishes" behavior so the user understands
+                    // what'll happen before clicking Render. Only
+                    // shows once the user has previewed (so we have
+                    // a measured TTS duration to compare against).
+                    if (!isVideo || effectiveAudio !== "voiceover") return null;
+                    const audioDur = previewDurations[scene.id];
+                    if (audioDur === undefined) return null;
+                    const trimDur =
+                      (scene.mediaTrim?.endSec ??
+                        capture?.video?.defaultRange.end ??
+                        0) -
+                      (scene.mediaTrim?.startSec ??
+                        capture?.video?.defaultRange.start ??
+                        0);
+                    if (audioDur + 0.35 <= trimDur + 0.1) return null;
+                    const padSec = audioDur + 0.35 - trimDur;
+                    return (
+                      <div className="szl__scene-hint">
+                        Voiceover is {audioDur.toFixed(1)}s — longer than the {trimDur.toFixed(1)}s trim.
+                        Render will hold the last frame for {padSec.toFixed(1)}s.
+                      </div>
+                    );
+                  })()}
+
                   <div className="szl__scene-row">
-                    <label className="szl__scene-dur">
-                      <span>Duration</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={30}
-                        step={0.5}
-                        placeholder="auto"
-                        value={scene.durationOverrideSec ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value.trim();
-                          editScene(scene.id, {
-                            durationOverrideSec:
-                              v === "" ? null : Number(v)
-                          });
-                        }}
-                      />
-                      <span className="szl__scene-dur-unit">s</span>
-                    </label>
+                    {!isVideo ? (
+                      <label className="szl__scene-dur">
+                        <span>Duration</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={30}
+                          step={0.5}
+                          placeholder="auto"
+                          value={scene.durationOverrideSec ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value.trim();
+                            editScene(scene.id, {
+                              durationOverrideSec:
+                                v === "" ? null : Number(v)
+                            });
+                          }}
+                        />
+                        <span className="szl__scene-dur-unit">s</span>
+                      </label>
+                    ) : null}
                     <span className="szl__scene-app">
                       {capture?.source_app_name ?? "unknown app"}
                     </span>
@@ -678,18 +918,9 @@ function Editor(props: EditorProps): ReactElement {
                     <button
                       className="szl__scene-mini szl__scene-mini--play"
                       onClick={() => void onPreviewScene(scene.id)}
-                      disabled={
-                        scene.scriptLine.trim().length === 0 ||
-                        previewLoadingSceneId === scene.id
-                      }
+                      disabled={previewDisabled}
                       type="button"
-                      title={
-                        scene.scriptLine.trim().length === 0
-                          ? "Write a script line to preview"
-                          : previewingSceneId === scene.id
-                            ? "Stop preview"
-                            : "Preview voiceover"
-                      }
+                      title={previewTitle}
                     >
                       {previewLoadingSceneId === scene.id
                         ? "…"
@@ -727,6 +958,7 @@ function Editor(props: EditorProps): ReactElement {
                 </div>
               </li>
             );
+            return elements;
           })
         )}
       </ul>
@@ -843,36 +1075,61 @@ function CapturePicker({
         ) : (
           <div className="szl__picker-grid">
             {captures
-              .filter((c) => c.kind === "image" && c.deleted_at === null)
-              .map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={
-                    "szl__picker-cell" + (existing.has(c.id) ? " is-used" : "")
-                  }
-                  onClick={() => onPick(c.id)}
-                  title={c.source_app_name ?? ""}
-                >
-                  <img
-                    src={cacheUrl(c.id, 240, "webp", c.edits_version)}
-                    alt=""
-                    // loading=lazy + decoding=async + the cell's
-                    // content-visibility:auto skip the cache-protocol
-                    // fetch for offscreen cells. Without these, opening
-                    // the picker fires hundreds of pwrsnap-cache://
-                    // requests at once — each one runs the full v2
-                    // compose-tree pipeline for a 240w thumbnail.
-                    // Same trick the Library grid uses (Library.tsx
-                    // CellThumb).
-                    loading="lazy"
-                    decoding="async"
-                  />
-                  <span className="szl__picker-label">
-                    {c.source_app_name ?? "—"}
-                  </span>
-                </button>
-              ))}
+              .filter((c) => c.deleted_at === null)
+              .map((c) => {
+                const isVideo = c.kind === "video";
+                const durSec = isVideo ? c.video?.durationSec ?? 0 : 0;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className={
+                      "szl__picker-cell" + (existing.has(c.id) ? " is-used" : "")
+                    }
+                    onClick={() => onPick(c.id)}
+                    title={c.source_app_name ?? ""}
+                  >
+                    <span className="szl__picker-thumb-wrap">
+                      {isVideo ? (
+                        // `pwrsnap-cache://` doesn't render image
+                        // thumbnails for video captures — it's an
+                        // image-render pipeline. Use the source video
+                        // directly with `preload="metadata"` so we get
+                        // just the first frame as a poster without
+                        // decoding the whole clip. Same pattern as
+                        // VideoCellThumb in Library.tsx.
+                        <video
+                          src={captureSrcUrl(c.id)}
+                          preload="metadata"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img
+                          src={cacheUrl(c.id, 240, "webp", c.edits_version)}
+                          alt=""
+                          // loading=lazy + decoding=async + the cell's
+                          // content-visibility:auto skip the cache-protocol
+                          // fetch for offscreen cells.
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      )}
+                      {isVideo ? (
+                        <>
+                          <span className="szl__picker-play" aria-hidden="true">▶</span>
+                          <span className="szl__picker-duration">
+                            {formatDur(durSec)}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                    <span className="szl__picker-label">
+                      {c.source_app_name ?? "—"}
+                    </span>
+                  </button>
+                );
+              })}
           </div>
         )}
       </div>

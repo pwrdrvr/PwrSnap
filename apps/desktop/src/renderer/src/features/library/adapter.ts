@@ -4,9 +4,9 @@
 // refactor will rewrite Library.tsx around the real shape and delete
 // this adapter.
 
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import type { AppId } from "../shared/AppIcons";
-import type { Capture } from "./captures";
+import { PROJECT_APP_KEY, type Capture } from "./captures";
 
 /**
  * Bucket a capture's date into a section header. The returned `day`
@@ -93,7 +93,45 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
     time: timeLabel(captured),
     size: Math.round(record.byte_size / 1024),
     w: record.width_px,
-    h: record.height_px
+    h: record.height_px,
+    kind: record.kind
+  };
+}
+
+/**
+ * Project a SizzleProject into the fixture-shaped Capture so the
+ * Library day-grouped grid + virtualizer can render it as a cell
+ * alongside image/video captures. Day-bucket pivots on
+ * `project.modifiedAt` so a project moves up the grid when the user
+ * edits it (matches what the user expects — "I just touched this,
+ * I want to see it near my recent captures").
+ *
+ * `app` is a synthetic key (`"_sizzle_"`) that the Source App filter
+ * doesn't enumerate; projects never appear under a source-app filter
+ * which is the correct semantic (projects aren't FROM any app).
+ */
+export function projectToFixture(
+  project: SizzleProject,
+  sequence: number,
+  now: Date
+): Capture {
+  const modified = new Date(project.modifiedAt);
+  const { day, date } = dayBucket(modified, now);
+  return {
+    id: sequence,
+    app: PROJECT_APP_KEY,
+    appName: "Sizzle Reel",
+    bundleId: null,
+    n: project.name,
+    tags: [],
+    day,
+    date,
+    time: timeLabel(modified),
+    size: 0,
+    w: 1920,
+    h: 1080,
+    kind: "project",
+    projectId: project.id
   };
 }
 
@@ -159,20 +197,34 @@ export function mapBundleIdToAppId(bundleId: string | null): AppId {
 
 /**
  * Map a fixture Capture back to its underlying real-record id (the
- * UUID string), so click handlers can dispatch against the bus. The
+ * UUID string) so click handlers can dispatch against the bus. The
  * fixture uses sequential numeric ids; the real id is preserved
  * separately via this map.
+ *
+ * Accepts an optional `projects` argument so the grid renders Sizzle
+ * Reels projects inline with captures, ordered into the same
+ * day-buckets by `project.modifiedAt`. Project fixtures get a
+ * synthetic `app: "_sizzle_"` so the Source App filter doesn't
+ * enumerate them. `recordFor` returns null for project fixtures;
+ * call `projectFor(sequence)` instead.
  */
 export class FixtureBackedRecords {
   private readonly bySequence = new Map<number, CaptureRecord>();
   private readonly bySequenceFixture = new Map<number, Capture>();
+  private readonly bySequenceProject = new Map<number, SizzleProject>();
 
-  constructor(records: CaptureRecord[]) {
+  constructor(records: CaptureRecord[], projects: ReadonlyArray<SizzleProject> = []) {
     const now = new Date();
     let seq = 1;
     for (const record of records) {
       const fixture = recordToFixture(record, seq, now);
       this.bySequence.set(seq, record);
+      this.bySequenceFixture.set(seq, fixture);
+      seq += 1;
+    }
+    for (const project of projects) {
+      const fixture = projectToFixture(project, seq, now);
+      this.bySequenceProject.set(seq, project);
       this.bySequenceFixture.set(seq, fixture);
       seq += 1;
     }
@@ -184,5 +236,9 @@ export class FixtureBackedRecords {
 
   recordFor(sequence: number): CaptureRecord | null {
     return this.bySequence.get(sequence) ?? null;
+  }
+
+  projectFor(sequence: number): SizzleProject | null {
+    return this.bySequenceProject.get(sequence) ?? null;
   }
 }

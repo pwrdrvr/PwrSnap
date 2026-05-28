@@ -667,6 +667,97 @@
 }
 .psl__left-section { font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); padding: 10px 10px 6px; }
 .psl__left-section:first-child { padding-top: 0; }
+
+/* === Types multi-pick rows in the sidebar === */
+.psl__type-row {
+  position: relative;
+}
+.psl__type-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--accent);
+  margin-right: 2px;
+  flex: 0 0 12px;
+}
+.psl__type-row.is-on .psl__type-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__type-row.is-off {
+  color: var(--text-muted);
+}
+.psl__type-row.is-off .psl__nav-icon,
+.psl__type-row.is-off .psl__nav-label {
+  opacity: 0.55;
+}
+
+/* === Project cell — Sizzle Reels project rendered inline in the
+   day-grouped grid alongside image/video captures. */
+.psl__cell-project {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-input);
+}
+.psl__cell-project-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.psl__cell-project-kind {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--media-scrim-bg);
+  color: var(--accent-bright);
+}
+.psl__cell-project-meta {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.psl__cell-project-name {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0;
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The accent outline differentiates project cells from regular
+   capture cells at a glance even when they share the day-bucket. */
+.psl__cell--project .psl__cell-thumb {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
+}
+
 .psl__nav {
   display: flex; align-items: center; gap: 9px;
   height: 30px; padding: 0 10px;
@@ -710,6 +801,15 @@
 .psl__nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .psl__nav-count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); flex-shrink: 0; }
 .psl__nav.is-active .psl__nav-count { color: var(--accent-bright); }
+
+/* CTA variant — used by the "New Sizzle Reel" affordance. Tinted in
+   the accent palette so it reads as an *action* rather than a filter,
+   visually distinguishing it from the other `.psl__nav` rows that
+   all toggle/select filters. Slightly bolder hover so the user can
+   tell it's clickable even without reading the label. */
+.psl__nav--cta { color: var(--accent-bright); }
+.psl__nav--cta:hover { background: var(--accent-soft); border-color: var(--accent-border); }
+.psl__nav--cta .psl__nav-icon { color: var(--accent-bright); }
 
 /* Middle: Reel + grid */
 /* Mode-driven layout switching. The `data-mode` attribute on `.psl`
@@ -1348,6 +1448,220 @@
      row, but allow horizontal overflow so the hover-pop panel can
      paint INTO the canvas area to the left of the rail. */
   overflow: visible;
+}
+
+/* === Project Assets right-rail tab === */
+.psl__proj-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.psl__proj-empty {
+  margin: 0;
+  font: 500 13px/1.5 var(--font-sans);
+  color: var(--text-secondary);
+}
+
+.psl__proj-hint {
+  margin: 0;
+  font: 500 11px/1.4 var(--font-sans);
+  color: var(--text-muted);
+}
+
+.psl__proj-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.psl__proj-pick select {
+  padding: 7px 10px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.psl__proj-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.psl__proj-name {
+  font: 700 14px/1.2 var(--font-display);
+  letter-spacing: -0.005em;
+  color: var(--text-primary);
+}
+
+.psl__proj-scenes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.psl__proj-scene {
+  display: grid;
+  grid-template-columns: 22px 64px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.psl__proj-scene.is-current {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: var(--bg-row-active);
+}
+
+.psl__proj-scene-order {
+  font: 700 10px/1 var(--font-mono);
+  color: var(--accent);
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+.psl__proj-scene-thumb {
+  position: relative;
+  display: block;
+  width: 64px;
+  aspect-ratio: 16/10;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-input);
+}
+.psl__proj-scene-thumb img,
+.psl__proj-scene-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.psl__proj-scene-kind {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  font: 500 10px/1 var(--font-sans);
+  color: var(--media-scrim-text);
+  text-shadow: 0 1px 3px var(--media-scrim-shadow);
+}
+.psl__proj-scene-missing {
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+  text-align: center;
+  width: 100%;
+}
+
+.psl__proj-scene-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.psl__proj-scene-app {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.psl__proj-scene-script {
+  font: 400 11px/1.3 var(--font-sans);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.psl__proj-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.psl__proj-btn {
+  flex: 1;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.psl__proj-btn:hover {
+  background: var(--bg-panel-hover);
+}
+.psl__proj-btn--primary {
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+  border-color: var(--accent);
+}
+.psl__proj-btn--primary:hover {
+  background: var(--accent-strong);
+}
+
+.psl__proj-picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.psl__proj-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.psl__proj-picker-row:hover {
+  background: var(--bg-panel-hover);
+  border-color: var(--accent-border);
+}
+.psl__proj-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.psl__proj-picker-meta {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--text-muted);
+}
+.psl__proj-picker-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 600 12px/1 var(--font-mono);
 }
 
 .psl__right-tabs {

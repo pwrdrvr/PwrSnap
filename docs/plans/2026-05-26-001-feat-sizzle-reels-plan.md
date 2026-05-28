@@ -1,12 +1,18 @@
 # Sizzle Reels — Plan
 
-**Status:** MVP shipped on this branch. The Library → Sizzle Reels…
-menu opens a dedicated composer window that can compose voiced
-ken-burns slideshows from existing captures and render them to MP4
-via ffmpeg. Settings → AI Providers grows an OpenAI API key field.
+**Status:** MVP shipped on `main` as PR #124. Phase 2 (in-Library
+project surfacing) + Phase 3a (video scenes + crossfade transitions)
+shipped on PR #130 (branch `feat/sizzle-videos-and-library`). The
+Library → Sizzle Reels… menu opens a dedicated composer window that
+can compose voiced ken-burns slideshows AND video clips with
+crossfade transitions, rendering to MP4 via ffmpeg. Settings → AI
+Providers grows an OpenAI API key field. Projects appear inline as
+cells in the day-grouped Library grid alongside image/video
+captures; click opens them in the dedicated Sizzle window. Phase 3
+WebCodecs in-renderer preview remains deferred to a follow-up PR.
 
-This document covers the design decisions, what is in vs out of the
-MVP, and the follow-up work the design mock implies.
+This document covers the design decisions, what is in vs out, and
+the follow-up work the design mock implies.
 
 ## Source of inputs
 
@@ -81,22 +87,55 @@ as a React tree, so we'd record what we already paint.
 - **Output**: `~/Movies/PwrSnap/<sanitized-name>-<id>.mp4`,
   H.264 1080p or 720p, AAC audio.
 
-## What this MVP does NOT ship (vs the mock)
+## What ships now (after PR #124 + PR #130)
 
-Cut intentionally for the deadline; design lives in `design/src/Sizzle*.jsx`.
+- ✅ Dedicated Sizzle composer window — Library → Sizzle Reels… (or
+  the "+ New Sizzle Reel" sidebar CTA in Library) opens it.
+- ✅ Voiced ken-burns slideshows (image scenes) — OpenAI TTS +
+  ffmpeg `zoompan`.
+- ✅ **Video scenes (PR #130 §Phase 3a)** — the picker accepts
+  `kind === "video"` records. Per-scene trim mini-control (start/end
+  seconds, seeded from `record.video.defaultRange`). Per-scene
+  audioSource: `auto | native | voiceover | muted` — `auto` resolves
+  to `voiceover` when a script is set, `native` when empty. The
+  composer extracts native-audio for video scenes via a small
+  `ffmpeg -ss -t -vn` pre-pass.
+- ✅ **Crossfade transitions (PR #130 §Phase 3a)** — `SizzleScene`
+  grows `transition: "cut" | "crossfade"`. Default for new scenes is
+  `"crossfade"` (the visual win we want). Editor exposes a chip
+  between scene rows. Composer left-folds `xfade=duration=0.4` into
+  the filter graph; audio side is cuts-only this round (acrossfade
+  deferred — documented limitation, narration-style content
+  tolerates it).
+- ✅ **In-Library project surfacing (PR #130 §Phase 2)** — projects
+  appear INLINE as cells in the day-grouped grid (NOT in a separate
+  project-mode pane and NOT enumerated by name in the sidebar — the
+  user explicitly rejected both as not-Library-shaped). The
+  `FixtureBackedRecords` adapter projects each `SizzleProject` into
+  a `Capture` view-model with `kind: "project"` and a synthetic
+  `app: "_sizzle_"` key. Day-bucket pivots on `project.modifiedAt`
+  so freshly-edited reels float up near recent captures.
+- ✅ **Types sidebar filter (PR #130 §Phase 2)** — Images / Videos /
+  Projects three-way multi-pick. Sits in the left sidebar alongside
+  Source App. Plain click toggles; shift-click acts as "Only this".
+  Each row carries `aria-pressed` so screen readers report it as a
+  toggle.
+- ✅ **Project tab on the right rail (PR #130 §Phase 2/Slice C)** —
+  4th tab on `RightActivityBar`. Lists the project's scenes in
+  order, kind chip per row, total duration, "Open editor" CTA.
+- ✅ **Live progress** — `events:sizzle:render:progress` broadcasts
+  on every TTS scene + every ffmpeg time line.
+- ✅ **Hardware-encoded H.264** — `h264_videotoolbox` (macOS
+  Apple-native, BSD-shaped licensing) NOT libx264 (GPL); see
+  CLAUDE.md §"License posture" and issue #127 for the bundled-ffmpeg
+  follow-up.
 
-- ❌ In-library project mode (project chips in left rail, +/✓
-  add-capture overlay on every cell). The composer is a separate
-  window in MVP.
-- ❌ Right-rail "Project Assets" tab — would be the 4th tab on the
-  shared `RightActivityBar`. Right-rail merge from `feat/right-rail-chat-tab`
-  gives us the foundation.
+## What still does NOT ship (vs the full mock)
+
 - ❌ Horizontal NLE timeline + Storyboard timeline variants. Only
   the Script-vertical layout ships.
 - ❌ AI Chat tool-calls ("Edited transitions · 5 changes" with
   Keep/Undo).
-- ❌ Transition picker between scenes — composer hardcodes
-  scene-cuts. `xfade` is a one-filter swap when wanted.
 - ❌ Drag-to-reorder scenes — up/down arrows only.
 - ❌ Multi-target export modal (MP4 + YouTube + X). MP4 to disk
   only.
@@ -104,6 +143,12 @@ Cut intentionally for the deadline; design lives in `design/src/Sizzle*.jsx`.
 - ❌ Voice "Record yourself" / "Upload" — TTS only.
 - ❌ Auto-cut diff notice in the waveform.
 - ❌ Pop out / dock-in choice — sizzle is always a window.
+- ❌ Audio cross-fades between scenes — video cross-fades only;
+  audio side is cuts. Acceptable for narration-style content.
+- ❌ Native-audio + voiceover mixing/ducking — per-scene picks one
+  audio source, not both.
+- ❌ Phase 3 WebCodecs in-renderer preview — deferred to its own PR
+  (architectural shift, see §Phase 3 below).
 
 ## Phased follow-up
 
@@ -118,29 +163,71 @@ Cut intentionally for the deadline; design lives in `design/src/Sizzle*.jsx`.
 - Add an E2E test that creates a project, stubs out OpenAI to a
   local file, and confirms the MP4 lands.
 
-### Phase 2 — promote sizzle into the Library
+### Phase 2 — promote sizzle into the Library — **SHIPPED on PR #130**
 
-Match the mock more faithfully:
+What we **actually built** (which diverges from the original design
+mock — kept here as honest archaeology):
 
-- Add `LibraryViewMode = "all" | "project"`.
-- Sidebar `Types` multi-pick + `Sizzle reels` list (the design
-  already exists in `design/src/SizzleApp.jsx` → `LeftSidebar`).
-- Add captures via the existing capture grid with +/✓ overlay.
-- Right rail: add `Project Assets` as 4th `RightActivityBar` tab.
-  Re-uses `useSettings` for tab persistence (we already store the
-  Library DetailRail last-tab + pin via the Settings substrate
-  per the right-rail branch).
+- ✅ Sidebar `Types` multi-pick (Images / Videos / Projects). Each
+  row carries `aria-pressed` for accessibility. Shift-click =
+  "Only this".
+- ✅ Projects rendered as cells INLINE in the day-grouped grid via
+  `FixtureBackedRecords.projectToFixture` — they live alongside
+  image/video captures in the same virtualized grid. Day-bucket
+  pivots on `project.modifiedAt`. This was the user's explicit ask
+  after an initial iteration that put projects in a separate band
+  at the top of the grid + per-project rows in the sidebar.
+- ✅ Right-rail Project tab (4th tab on `RightActivityBar`). Lists
+  scenes in order; "Open editor" returns to the dedicated Sizzle
+  window. Tab persistence via the existing `library.sidebarTab`
+  setting (extended to allow `"project"`).
+- ✅ "+ New Sizzle Reel" sidebar CTA (single project-creation
+  affordance — no per-project rows; the grid is the project list).
 
-### Phase 3 — switch composer to WebCodecs preview + ffmpeg render
+What we explicitly **did NOT build** (after the user pushed back on
+the initial design):
+
+- ❌ `LibraryView` mode `"project"` — initially built and removed.
+  Projects aren't a filter pane; they're items in the library list.
+- ❌ Per-project rows in the sidebar — initially built and removed.
+  Doesn't scale past ~1 project. The grid IS the project list.
+- ❌ +/✓ add-capture overlay across the grid (the "add captures to
+  project" mode in the mock) — superseded by editing scenes in the
+  dedicated Sizzle window via "Open editor".
+- ❌ Fake "Smart Filters" sidebar section (Pinned / Bug repros /
+  Has annotations) — removed at user's request.
+
+### Phase 3 — composer architectural follow-ups
+
+#### Phase 3a — video scenes + crossfade transitions — **SHIPPED on PR #130**
+
+- ✅ Discriminated `SceneInput` (image | video) in the composer.
+- ✅ Video branch: `-ss start -t duration -i video.mp4`, no
+  zoompan, voiceover-overrun handled by `tpad=stop_mode=clone`.
+- ✅ Per-scene `audioSource: "auto" | "native" | "voiceover" | "muted"`.
+- ✅ `xfade=duration=0.4` chain between scenes when
+  `transition === "crossfade"`. Audio side stays cuts (documented
+  limitation; tracked in the §"What still does NOT ship" list).
+- ✅ Tests for the composer args contract; Darwin-gated specs for
+  the actual ffmpeg invocation (the codec contract assertion is
+  cross-platform so Linux CI still catches regressions).
+
+#### Phase 3b — WebCodecs in-renderer preview + ffmpeg render — **DEFERRED**
+
+Architecturally distinct enough to deserve its own PR:
 
 - Move the composition graph into the renderer (offscreen canvas
   + image bitmaps) so the editor can play back what it draws.
 - For final render, either record the canvas with `MediaRecorder`
   → MP4-muxer, or hand the graph back to the main-process ffmpeg
   pipeline.
-- Adds transition support (cross-fade, dip-to-black, push, slide)
-  and per-scene captions because rendering is React-driven instead
-  of `filter_complex`.
+- Adds transition support (cross-fade variations, dip-to-black,
+  push, slide) and per-scene captions because rendering is
+  React-driven instead of `filter_complex`.
+- Sandboxing — the preview renderer must keep
+  `contextIsolation: true, sandbox: true, nodeIntegration: false`
+  per CLAUDE.md "Renderers stay sandboxed". Render orchestration
+  (the ffmpeg child process) stays in the main process.
 
 ### Phase 4 — multi-destination export + auth
 
@@ -172,6 +259,8 @@ Match the mock more faithfully:
 
 ## Files touched
 
+### PR #124 (MVP)
+
 ```
 packages/shared/src/protocol.ts                              (+types, +commands)
 packages/shared/src/ipc.ts                                   (+sizzleRenderProgress)
@@ -187,4 +276,42 @@ apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx  (new)
 apps/desktop/src/renderer/src/features/sizzle/sizzle.css     (new)
 apps/desktop/src/renderer/src/features/settings/pages/AIProvidersPage.tsx
                                                              (+OpenAI key card)
+```
+
+### PR #130 (Phase 2 + Phase 3a)
+
+```
+packages/shared/src/protocol.ts                              (+SizzleMediaTrim, +SizzleAudioSource, +SizzleTransition,
+                                                              +SIZZLE_CROSSFADE_SEC, +library:listByIds,
+                                                              +sizzle:toggleScene, +sizzle:previewSceneAudio,
+                                                              SizzleScene gains mediaTrim/audioSource/transition,
+                                                              LibrarySidebarTab += "project")
+packages/shared/src/ipc.ts                                   (+sizzleProjectsChanged broadcast channel)
+apps/desktop/src/main/sizzle/composer.ts                     (discriminated SceneInput, xfade chain, tpad pad,
+                                                              h264_videotoolbox codec, AbortSignal plumbing)
+apps/desktop/src/main/sizzle/audio-extract.ts                (new — extract native-audio + synth silence helpers)
+apps/desktop/src/main/sizzle/sizzle-store.ts                 (sanitizeScenes on READ too, for old-project back-compat)
+apps/desktop/src/main/handlers/sizzle-handlers.ts            (resolveAudioSource, scene duration =
+                                                              max(trim, voiceoverDur+0.35), projects:changed broadcast
+                                                              on every mutation, sizzle:toggleScene handler)
+apps/desktop/src/main/handlers/sizzle-validators.ts          (+mediaTrim, +audioSource, +transition validators,
+                                                              relaxed empty-script for video scenes,
+                                                              +listByIds + toggleScene validators)
+apps/desktop/src/main/handlers/library-handlers.ts           (+library:listByIds handler — drops missing + soft-deleted,
+                                                              returns rows in input order)
+apps/desktop/src/renderer/src/lib/useSizzleProjects.ts       (new — fetch + subscribe hook, soft-delete-ready)
+apps/desktop/src/renderer/src/features/library/captures.ts   (Capture.kind non-optional, +PROJECT_APP_KEY constant,
+                                                              +kind: "project")
+apps/desktop/src/renderer/src/features/library/adapter.ts    (+projectToFixture, FixtureBackedRecords gains projects)
+apps/desktop/src/renderer/src/features/library/Library.tsx   (sidebar Types section with aria-pressed,
+                                                              +"New Sizzle Reel" CTA, CellThumb project branch,
+                                                              onSelectCell dispatches sizzle:open for projects)
+apps/desktop/src/renderer/src/features/library/DetailRail.tsx (4th tab: Project)
+apps/desktop/src/renderer/src/features/sizzle/SizzleApp.tsx  (picker accepts videos, per-scene trim/audio dropdown,
+                                                              transition chip, voiceover-overruns-trim hint)
+apps/desktop/src/renderer/src/styles/tokens.css              (+--media-scrim-bg/text/shadow theme-invariant tokens)
+apps/desktop/src/renderer/src/styles/library.css             (+psl__type-row, +psl__cell-project*,
+                                                              +psl__nav--cta for the New Sizzle Reel CTA)
+apps/desktop/src/renderer/src/features/library/__tests__/adapter.test.ts
+                                                             (+projectToFixture + FixtureBackedRecords tests)
 ```

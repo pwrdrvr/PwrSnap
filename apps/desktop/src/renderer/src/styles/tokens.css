@@ -85,6 +85,17 @@
   /* ---------- BUTTON ---------- */
   --button-text-on-accent: #000000;   /* pure black on tangerine fills */
 
+  /* ---------- MEDIA OVERLAYS ----------
+     Badges and pills painted DIRECTLY ON TOP of thumbnail images
+     (video duration label, scene-order pill, play-icon scrim, etc.)
+     need to stay legible regardless of the underlying image content
+     AND regardless of theme. These three are theme-invariant — the
+     same dark scrim + white text in dark mode and light mode, since
+     the underlying thumbnail's colors haven't changed. */
+  --media-scrim-bg:     rgba(0, 0, 0, 0.72);
+  --media-scrim-text:   #ffffff;
+  --media-scrim-shadow: rgba(0, 0, 0, 0.6);
+
   /* ---------- SHADOWS ---------- */
   /* `--shadow-base` is the pure black every drop-shadow derives from
      via color-mix. Stays `#000000` in both themes — drop shadows

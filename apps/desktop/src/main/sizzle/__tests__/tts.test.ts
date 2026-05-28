@@ -270,8 +270,8 @@ describe("pruneTtsCache", () => {
     });
     const project = fakeProject({
       scenes: [
-        { id: "sc1", captureId: "cap1", scriptLine: "kept-1", durationOverrideSec: null },
-        { id: "sc2", captureId: "cap2", scriptLine: " kept-2 ", durationOverrideSec: null }
+        { id: "sc1", captureId: "cap1", scriptLine: "kept-1", durationOverrideSec: null, mediaTrim: null, audioSource: "auto", transition: "crossfade" },
+        { id: "sc2", captureId: "cap2", scriptLine: " kept-2 ", durationOverrideSec: null, mediaTrim: null, audioSource: "auto", transition: "crossfade" }
       ]
     });
     const result = await pruneTtsCache([project]);
@@ -296,7 +296,7 @@ describe("pruneTtsCache", () => {
     });
     const project = fakeProject({
       scenes: [
-        { id: "s", captureId: "c", scriptLine: "  trim-me  \n", durationOverrideSec: null }
+        { id: "s", captureId: "c", scriptLine: "  trim-me  \n", durationOverrideSec: null, mediaTrim: null, audioSource: "auto", transition: "crossfade" }
       ]
     });
     const result = await pruneTtsCache([project]);
@@ -313,7 +313,7 @@ describe("pruneTtsCache", () => {
       model: "tts-1-hd"
     });
     const project = fakeProject({
-      scenes: [{ id: "s", captureId: "c", scriptLine: "  ", durationOverrideSec: null }]
+      scenes: [{ id: "s", captureId: "c", scriptLine: "  ", durationOverrideSec: null, mediaTrim: null, audioSource: "auto", transition: "crossfade" }]
     });
     const result = await pruneTtsCache([project]);
     expect(result.removed).toBe(1);

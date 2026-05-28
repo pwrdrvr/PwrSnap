@@ -18,7 +18,7 @@ import type {
   ScrollProbeRequest,
   Settings
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type SizzleProject } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -33,6 +33,7 @@ import { DetailRail } from "./DetailRail";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
+import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -68,12 +69,69 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
 function CellThumb({
   capture,
   record,
+  project,
   width
 }: {
   capture: Capture;
   record: CaptureRecord | null;
+  project: SizzleProject | null;
   width: number;
 }) {
+  // Sizzle Reels project cell — first scene's thumbnail as the
+  // background + a project-kind badge + a "N scenes · MM:SS" pill.
+  // Click handling is in the parent's onSelectCell, which dispatches
+  // sizzle:open instead of OPEN_FOCUS for project cells.
+  if (capture.kind === "project" && project !== null) {
+    const firstSceneCaptureId = project.scenes[0]?.captureId ?? null;
+    const sceneCount = project.scenes.length;
+    const totalSec = project.scenes.reduce((acc, s) => {
+      const explicit = s.durationOverrideSec;
+      if (typeof explicit === "number" && explicit > 0) return acc + explicit;
+      const trim = s.mediaTrim;
+      if (trim != null) return acc + (trim.endSec - trim.startSec);
+      return acc + 3;
+    }, 0);
+    const durLabel =
+      totalSec >= 60
+        ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
+            .toString()
+            .padStart(2, "0")}`
+        : `${Math.round(totalSec)}s`;
+    return (
+      <div className="psl__cell-project">
+        {firstSceneCaptureId !== null ? (
+          <img
+            src={cacheUrl(firstSceneCaptureId, width, "webp")}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: "block"
+            }}
+          />
+        ) : (
+          <span className="psl__cell-project-empty" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="6" width="14" height="12" rx="2" />
+              <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+            </svg>
+          </span>
+        )}
+        <span className="psl__cell-project-kind" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="6" width="14" height="12" rx="2" />
+            <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+          </svg>
+        </span>
+        <span className="psl__cell-project-meta">
+          {sceneCount === 0 ? "empty" : `${sceneCount} · ${durLabel}`}
+        </span>
+      </div>
+    );
+  }
   if (record !== null && record.kind === "video") {
     return <VideoCellThumb record={record} />;
   }
@@ -369,6 +427,26 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // three-state-view-model-plan.md, Phase A. Tests at
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
+  const { projects: sizzleProjects } = useSizzleProjects();
+  // Library "Types" multi-pick filter. All three on by default so the
+  // library looks the same as before for users who don't touch it.
+  // Right-click / shift-click on a row sets that row as "Only" (the
+  // others get unchecked) — see onTypeRowClick below.
+  const [visibleTypes, setVisibleTypes] = useState<{
+    images: boolean;
+    videos: boolean;
+    projects: boolean;
+  }>({ images: true, videos: true, projects: true });
+  const toggleType = (key: "images" | "videos" | "projects"): void => {
+    setVisibleTypes((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+  const onlyType = (key: "images" | "videos" | "projects"): void => {
+    setVisibleTypes({
+      images: key === "images",
+      videos: key === "videos",
+      projects: key === "projects"
+    });
+  };
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
@@ -623,21 +701,53 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // applies when viewing live captures.
   const sourceAppState =
     activeSourceAppId === null ? undefined : sourceAppRows[activeSourceAppId];
-  const universeRecords = isTrashView
+  const universeRecordsRaw = isTrashView
     ? trashRecords
     : sourceAppState?.bundleKey === sourceAppBundleKey
     ? sourceAppState.rows
     : liveRecords;
+  // Apply the Types filter (Images / Videos) to the universe before
+  // the fixtureBacking wraps it. This way every downstream consumer
+  // (grouped, visible, gridHasMore, etc.) sees a coherent filtered
+  // view without each having to learn about the type filter.
+  // Trash view bypasses the type filter — trash is its own mode.
+  const universeRecords = useMemo(() => {
+    if (isTrashView) return universeRecordsRaw;
+    if (visibleTypes.images && visibleTypes.videos) return universeRecordsRaw;
+    return universeRecordsRaw.filter((r) => {
+      if (r.kind === "image") return visibleTypes.images;
+      if (r.kind === "video") return visibleTypes.videos;
+      return true;
+    });
+  }, [universeRecordsRaw, visibleTypes.images, visibleTypes.videos, isTrashView]);
   const gridHasMore = isSourceAppView ? false : hasMore;
   const gridIsLoadingMore = isSourceAppView ? sourceAppState?.loading ?? false : isLoadingMore;
 
+  // Project fixtures only fold into the grid when:
+  //   • the Types filter has "Projects" on (UI control), AND
+  //   • we're NOT in trash view (projects don't go to trash today), AND
+  //   • we're NOT in a source-app filter (projects aren't FROM any
+  //     app — surfacing them inside e.g. "Safari" would be incoherent).
+  //
+  // Note the deliberate asymmetry with the Images/Videos Types
+  // filter below: those DO apply inside a source-app filter (a user
+  // filtering to "Safari" can still narrow further to just images
+  // from Safari). Projects can't compose that way because they have
+  // no source-app dimension to begin with.
+  const gridProjects = useMemo(
+    () =>
+      visibleTypes.projects && !isTrashView && activeSourceAppId === null
+        ? sizzleProjects
+        : [],
+    [visibleTypes.projects, isTrashView, activeSourceAppId, sizzleProjects]
+  );
   const fixtureBacking = useMemo(
-    () => new FixtureBackedRecords(universeRecords),
+    () => new FixtureBackedRecords(universeRecords, gridProjects),
     // todayDateStr drives the day-bucket inside FixtureBackedRecords;
     // including it forces a rebuild when the local date crosses so the
     // grid's day-hdrs ("Today" / "Yesterday") update without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [universeRecords, todayDateStr]
+    [universeRecords, gridProjects, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
@@ -1260,6 +1370,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    */
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
+    // Project cell → open the sizzle window for that project.
+    // Click handler doesn't transition into focus/reel for projects;
+    // projects are edited in the dedicated Sizzle Reels window.
+    if (c.kind === "project" && c.projectId !== undefined) {
+      void dispatch("sizzle:open", { projectId: c.projectId });
+      return;
+    }
     const record = fixtureBacking.recordFor(c.id);
     if (record === null) {
       // Fixture-only cell (dev placeholder) — no real record to open.
@@ -1683,6 +1800,129 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <span className="psl__nav-count">{trashRecords.length}</span>
         </button>
 
+        <div className="psl__left-section">Types</div>
+        {(
+          [
+            {
+              key: "images" as const,
+              label: "Images",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="5" width="18" height="14" rx="2" />
+                  <circle cx="9" cy="11" r="1.4" fill="currentColor" />
+                  <path d="m21 17-5-5-7 7" />
+                </svg>
+              )
+            },
+            {
+              key: "videos" as const,
+              label: "Videos",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="6" width="14" height="12" rx="1.5" />
+                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                </svg>
+              )
+            },
+            {
+              key: "projects" as const,
+              label: "Projects",
+              icon: (
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <rect x="3" y="6" width="14" height="12" rx="2" />
+                  <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+                </svg>
+              )
+            }
+          ] as const
+        ).map(({ key, label, icon }) => (
+          <button
+            key={key}
+            type="button"
+            // aria-pressed mirrors visibleTypes[key] so screen readers
+            // announce the row as a toggle (rather than a static link)
+            // and report its current on/off state. The `.is-on`/`is-off`
+            // class gives sighted users the same affordance via the
+            // check column on the left edge.
+            aria-pressed={visibleTypes[key]}
+            aria-label={`${label} type filter (${
+              visibleTypes[key] ? "showing" : "hidden"
+            })`}
+            className={
+              "psl__nav psl__type-row" + (visibleTypes[key] ? " is-on" : " is-off")
+            }
+            onClick={(e) => {
+              // shift-click → "Only this" (uncheck the other two).
+              // Plain click → toggle this one.
+              if (e.shiftKey) onlyType(key);
+              else toggleType(key);
+            }}
+            title={
+              visibleTypes[key]
+                ? `Hide ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
+                : `Show ${label.toLowerCase()} (Shift-click to show only ${label.toLowerCase()})`
+            }
+          >
+            <span className="psl__type-check" aria-hidden="true">
+              {visibleTypes[key] ? (
+                <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m5 12 5 5 9-11" />
+                </svg>
+              ) : null}
+            </span>
+            <span className="psl__nav-icon">{icon}</span>
+            <span className="psl__nav-label">{label}</span>
+          </button>
+        ))}
+
+        {/* "+ New Sizzle Reel" CTA — single sidebar affordance for
+            creating a reel. The user explicitly rejected enumerating
+            every project here ("we're not rebuilding the grid in the
+            left bar") — projects appear inline in the day-grouped
+            grid via FixtureBackedRecords. This button is the only
+            project-related action that lives in the sidebar; it
+            creates a project then opens it in the dedicated Sizzle
+            Reels window (mirroring SizzleApp's onCreate flow). The
+            sidebar subscribes to projects:changed broadcasts via
+            useSizzleProjects, so the new project shows up as a cell
+            in the grid as soon as the create returns — no manual
+            re-fetch needed. */}
+        <button
+          type="button"
+          className="psl__nav psl__nav--cta"
+          onClick={() => {
+            void (async () => {
+              const r = await dispatch("sizzle:create", {
+                name: "Untitled Sizzle"
+              });
+              if (r.ok) {
+                // sizzle:open focuses the existing standalone Sizzle
+                // window (or opens it if not yet shown) and selects
+                // the project. The bus broadcast updates this
+                // sidebar's project list as a side effect.
+                void dispatch("sizzle:open", { projectId: r.value.id });
+              }
+            })();
+          }}
+          title="Create a new Sizzle Reel"
+          aria-label="Create a new Sizzle Reel"
+        >
+          <span className="psl__nav-icon">
+            <svg
+              viewBox="0 0 24 24"
+              width="11"
+              height="11"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </span>
+          <span className="psl__nav-label">New Sizzle Reel</span>
+        </button>
+
         <div className="psl__left-section">Source App</div>
         {visibleApps.map(({ app, name, bundleId }) => (
           <button
@@ -1698,35 +1938,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </button>
         ))}
 
-        <div className="psl__left-section">Smart Filters</div>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M12 2 9 9l-7 1 5 5-1 7 6-3 6 3-1-7 5-5-7-1z" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Pinned</span>
-          <span className="psl__nav-count">6</span>
-        </button>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0Z" />
-              <path d="m9 12 2 2 4-4" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Bug repros</span>
-          <span className="psl__nav-count">5</span>
-        </button>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M4 4h16v6H4zM4 14h16v6H4z" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Has annotations</span>
-          <span className="psl__nav-count">11</span>
-        </button>
       </aside>
 
       <main className="psl__main">
@@ -1858,6 +2069,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                               // ←/→ navigation (which dispatches NAVIGATE
                               // against the record id, not the fixture).
                               const record = fixtureBacking.recordFor(c.id);
+                              const project = fixtureBacking.projectFor(c.id);
                               const recordId = record?.id ?? null;
                               const isSelected = recordId === selectedRecordId;
                               return (
@@ -1869,7 +2081,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   }
                                   onClick={() => onSelectFrame(c)}
                                 >
-                                  <CellThumb capture={c} record={record} width={140} />
+                                  <CellThumb capture={c} record={record} project={project} width={140} />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
@@ -2407,19 +2619,31 @@ function CellRow({
     >
       {cells.map((c) => {
         const record = fixtureBacking.recordFor(c.id);
+        const project = fixtureBacking.projectFor(c.id);
+        const isProject = c.kind === "project";
         return (
           <div
             key={c.id}
-            className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
+            className={
+              "psl__cell" +
+              (c.id === selected ? " is-selected" : "") +
+              (isProject ? " psl__cell--project" : "")
+            }
             data-cell-id={record?.id ?? ""}
             onClick={() => onSelectCell(c)}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb capture={c} record={record} width={400} />
+              <CellThumb capture={c} record={record} project={project} width={400} />
               <span className="psl__cell-time">{c.time}</span>
               <span className="psl__cell-app-overlay">
-                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
+                {isProject ? (
+                  // Project cells get the project name as the corner
+                  // chip — there's no source app to attribute.
+                  <span className="psl__cell-project-name">{c.n}</span>
+                ) : (
+                  <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
+                )}
               </span>
               {record !== null &&
                 (isTrashView ? (
@@ -2468,3 +2692,4 @@ function CellRow({
     </div>
   );
 }
+

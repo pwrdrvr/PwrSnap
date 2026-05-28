@@ -301,7 +301,7 @@
 
 .szl__btn-primary {
   background: var(--accent);
-  color: var(--button-text-on-accent, #000);
+  color: var(--button-text-on-accent);
   border-color: var(--accent);
 }
 
@@ -366,10 +366,12 @@
   justify-content: center;
 }
 
-.szl__scene-thumb img {
+.szl__scene-thumb img,
+.szl__scene-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .szl__scene-missing {
@@ -437,6 +439,16 @@
   font: 500 11px/1 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
+}
+
+.szl__scene-hint {
+  margin-top: -2px;
+  padding: 6px 9px;
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent-border);
+  border-radius: 6px;
+  font: 500 11px/1.35 var(--font-sans);
+  color: var(--text-secondary);
 }
 
 .szl__scene-mini {
@@ -551,7 +563,7 @@
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
-  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-lg);
 }
 
 .szl__modal header {
@@ -604,12 +616,118 @@
   outline-offset: -1px;
 }
 
-.szl__picker-cell img {
+.szl__picker-cell img,
+.szl__picker-cell video {
   width: 100%;
   aspect-ratio: 16/10;
   object-fit: cover;
   border-radius: 5px;
   background: var(--bg-input);
+  display: block;
+}
+
+.szl__picker-thumb-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.szl__picker-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 18px/1 var(--font-sans);
+  color: var(--media-scrim-text);
+  text-shadow: 0 2px 6px var(--media-scrim-shadow);
+  pointer-events: none;
+}
+
+.szl__picker-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.szl__scene-thumb {
+  position: relative;
+}
+
+.szl__scene-thumb-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 22px/1 var(--font-sans);
+  color: var(--media-scrim-text);
+  text-shadow: 0 2px 6px var(--media-scrim-shadow);
+  pointer-events: none;
+}
+
+.szl__scene-thumb-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+/* Transition chip between scenes. The chip sits in its own <li>
+   between scene rows; sized to overlap the gap so it reads as a
+   boundary, not a third row in the list. */
+.szl__transition {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  margin: -2px 0;
+  pointer-events: none;
+}
+
+.szl__transition::before,
+.szl__transition::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 0 12px;
+}
+
+.szl__transition-chip {
+  pointer-events: auto;
+  padding: 3px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-elevated);
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.szl__transition-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+}
+
+.szl__transition--crossfade .szl__transition-chip {
+  color: var(--accent);
+  border-color: var(--accent-border);
 }
 
 .szl__picker-label {

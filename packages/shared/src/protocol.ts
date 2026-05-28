@@ -431,11 +431,109 @@ export const SIZZLE_VOICES = [
   "shimmer"
 ] as const satisfies readonly SizzleVoice[];
 
+/**
+ * Trim range for a video-backed scene. start/end are seconds within
+ * the source clip. The composer applies these as `-ss start -t (end-start)`.
+ * NULL for image scenes; required for video scenes (seeded from
+ * `record.video.defaultRange` when a video is first added).
+ */
+export type SizzleMediaTrim = {
+  startSec: number;
+  endSec: number;
+};
+
+/**
+ * Per-scene audio source policy. Resolves at render time based on the
+ * scene's capture kind and script line presence:
+ *
+ *   - "auto" (default):
+ *       • Image scene → behaves like "voiceover" (always TTS).
+ *       • Video scene with non-empty scriptLine → "voiceover" (TTS
+ *         plays, video audio muted).
+ *       • Video scene with empty scriptLine → "native" (the video's
+ *         own audio plays).
+ *   - "native": play the video's recorded audio for the trim range.
+ *       Only meaningful for video scenes; for image scenes the
+ *       composer falls back to "muted".
+ *   - "voiceover": always synthesize TTS from scriptLine. Requires a
+ *       non-empty scriptLine at render time.
+ *   - "muted": no audio for this scene (composer feeds a silent mp3
+ *       of the scene duration into the audio concat list).
+ */
+export type SizzleAudioSource = "auto" | "native" | "voiceover" | "muted";
+
+export const SIZZLE_AUDIO_SOURCES = [
+  "auto",
+  "native",
+  "voiceover",
+  "muted"
+] as const satisfies readonly SizzleAudioSource[];
+
+/**
+ * Transition INTO this scene from the previous one. The first scene's
+ * `transition` is ignored (nothing precedes it). Composer translates
+ * "crossfade" into ffmpeg's `xfade` filter with a fixed 0.4s overlap.
+ */
+export type SizzleTransition = "cut" | "crossfade";
+
+export const SIZZLE_TRANSITIONS = ["cut", "crossfade"] as const satisfies readonly SizzleTransition[];
+
+/** Crossfade duration in seconds. Visible in the UI as just "Crossfade"
+ *  (no per-scene timing); locked to keep the surface area small. */
+export const SIZZLE_CROSSFADE_SEC = 0.4;
+
+/**
+ * Resolve a scene's audio source policy to a concrete choice at
+ * render time. Single source of truth — `auto` collapses based on
+ * the capture kind + script presence; explicit values pass through
+ * with one fallback (`native` on an image scene is impossible →
+ * `muted`).
+ *
+ * Pure, deterministic, no I/O — lives in `@pwrsnap/shared` so both
+ * the main-process render path and the renderer's editor UI gate
+ * preview/script controls off the SAME computation. Previously
+ * duplicated in both processes; that's a guaranteed-divergence
+ * footgun.
+ *
+ * Semantics:
+ *   image, auto                  → "voiceover"  (only meaningful)
+ *   image, voiceover             → "voiceover"
+ *   image, native                → "muted"      (no source audio)
+ *   image, muted                 → "muted"
+ *   video, auto, no script       → "native"     (let the clip talk)
+ *   video, auto, with script     → "voiceover"  (TTS over muted clip)
+ *   video, native                → "native"
+ *   video, voiceover             → "voiceover"
+ *   video, muted                 → "muted"
+ */
+export function resolveSizzleAudioSource(
+  audioSource: SizzleAudioSource,
+  captureKind: "image" | "video",
+  scriptLine: string
+): "native" | "voiceover" | "muted" {
+  if (audioSource !== "auto") {
+    if (captureKind === "image" && audioSource === "native") return "muted";
+    return audioSource;
+  }
+  if (captureKind === "image") return "voiceover";
+  return scriptLine.trim().length === 0 ? "native" : "voiceover";
+}
+
 export type SizzleScene = {
   id: string;
   captureId: string;
   scriptLine: string;
   durationOverrideSec: number | null;
+  /** Trim range for video-backed scenes. NULL for image scenes (the
+   *  composer ignores it for images). Required at render time for
+   *  video scenes; seeded from `record.video.defaultRange` on add. */
+  mediaTrim: SizzleMediaTrim | null;
+  /** See `SizzleAudioSource`. Defaults to "auto" — resolves per-scene
+   *  based on capture kind + scriptLine at render time. */
+  audioSource: SizzleAudioSource;
+  /** Transition INTO this scene. Ignored on scene 0. Defaults to
+   *  "crossfade" for new scenes (the visual win we want). */
+  transition: SizzleTransition;
 };
 
 export type SizzleProject = {
@@ -813,14 +911,18 @@ export type EditorSettings = {
 
 /** Tab identifier for the Library DetailRail right-side activity bar.
  *  Mirrors `EditorSidebarPanel` for symmetry but scoped to the
- *  Library — the available surfaces (Info / OCR / Chat) are
- *  different from the editor's (Info / Chat / Tool Config / Help). */
-export type LibrarySidebarTab = "info" | "ocr" | "chat";
+ *  Library — the available surfaces (Info / OCR / Chat / Project)
+ *  are different from the editor's (Info / Chat / Tool Config / Help).
+ *  `project` is gated at render time to only appear when at least
+ *  one sizzle project exists and the active capture is one of its
+ *  scenes; absent otherwise. */
+export type LibrarySidebarTab = "info" | "ocr" | "chat" | "project";
 
 export const LIBRARY_SIDEBAR_TABS = [
   "info",
   "ocr",
-  "chat"
+  "chat",
+  "project"
 ] as const satisfies readonly LibrarySidebarTab[];
 
 export function isLibrarySidebarTab(value: unknown): value is LibrarySidebarTab {
@@ -1177,6 +1279,17 @@ export type Commands = {
     };
   };
   "library:byId": { req: { id: string }; res: CaptureRecord | null };
+  /**
+   * Bulk lookup. Returns rows in the **input order**, with deleted
+   * rows omitted (NOT included as nulls). Missing ids are silently
+   * dropped. The library Sizzle Reels project-mode view uses this
+   * to render a project's scenes in scene order without N round-trips
+   * through `library:byId`. Capped at 500 ids per call.
+   */
+  "library:listByIds": {
+    req: { ids: string[] };
+    res: { rows: CaptureRecord[] };
+  };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };
   /** Restore a soft-deleted capture: clears deleted_at and moves the source PNG back from <root>/.trash/. */
@@ -1654,6 +1767,20 @@ export type Commands = {
     res: { outputPath: string; durationSec: number };
   };
   "sizzle:revealOutput": { req: { id: string }; res: void };
+  /**
+   * Toggle a capture's membership in a project. If the capture is
+   * already a scene of the project, remove that scene. Otherwise
+   * append a new scene seeded with the capture's Codex enrichment
+   * description (mirrors the editor's "Add scene" flow). Returns the
+   * updated project for optimistic UI rendering.
+   *
+   * Used by the in-Library "Add captures" mode where every grid cell
+   * gets a +/✓ overlay.
+   */
+  "sizzle:toggleScene": {
+    req: { projectId: string; captureId: string };
+    res: SizzleProject;
+  };
   /** Synthesize (or fetch from cache) the per-scene voiceover and
    *  return it as a base64-encoded MP3 the renderer can play in an
    *  <audio> tag. Used by the per-scene ▶ button so users can preview

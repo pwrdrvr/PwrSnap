@@ -154,7 +154,16 @@ export const EVENT_CHANNELS = {
    * resolves on the matching `perfMark` arrival.
    */
   perfScrollProbeRequest: "events:perf:scrollProbe:request",
-  sizzleRenderProgress: "events:sizzle:render:progress"
+  sizzleRenderProgress: "events:sizzle:render:progress",
+  /**
+   * Main → every BrowserWindow: the list of sizzle projects changed
+   * (create / update / delete / toggleScene / render-completion). The
+   * Library sidebar's "Sizzle Reels" section + the DetailRail Project
+   * tab subscribe to this so they refresh without polling. The payload
+   * is the new project list so subscribers don't have to round-trip
+   * `sizzle:list`. Type: `{ projects: SizzleProject[] }`.
+   */
+  sizzleProjectsChanged: "events:sizzle:projects:changed"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -251,3 +260,29 @@ export type PerfMarkPayload =
       kind: "perf:scrollProbe:error";
       reason: "no_scroll_container" | "already_running";
     };
+
+// ---------------------------------------------------------------------
+// Typed event payloads.
+//
+// Strictly opt-in — channels listed here get a typed payload on both
+// the send side (main) and the subscribe side (renderer). Channels
+// NOT listed continue to use the legacy `unknown` payload + per-call
+// structural shape-check pattern.
+//
+// Add a row when a new channel gains a stable contract that callers
+// rely on. Don't add rows speculatively — only when the type would
+// catch a real divergence (e.g. multiple producers, multiple
+// subscribers, schema growth over time).
+// ---------------------------------------------------------------------
+
+import type { SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+
+export type EventPayloads = {
+  [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
+  [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
+};
+
+/** Channel constants that carry a typed payload entry in
+ *  `EventPayloads`. Useful as the parameter type for a typed
+ *  broadcaster helper. */
+export type TypedEventChannel = keyof EventPayloads;

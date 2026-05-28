@@ -15,7 +15,12 @@
 // the SQLite query.
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { CaptureRecord } from "@pwrsnap/shared";
+import type {
+  CaptureEnrichment,
+  CaptureRecord,
+  CaptureSearchRequest,
+  CaptureSearchResultRow
+} from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
@@ -27,7 +32,11 @@ const mocks = vi.hoisted(() => ({
   listCaptures: vi.fn(),
   listSoftDeletedIds: vi.fn(),
   restoreCapture: vi.fn(),
+  searchCaptures: vi.fn<(req: CaptureSearchRequest) => CaptureSearchResultRow[]>(),
   softDeleteCapture: vi.fn(),
+  listEnrichmentsByCaptureIds: vi.fn<
+    (ids: readonly string[]) => Map<string, CaptureEnrichment | null>
+  >(),
   send: vi.fn()
 }));
 
@@ -63,12 +72,14 @@ vi.mock("../../persistence/captures-repo", () => ({
   listCaptures: mocks.listCaptures,
   listSoftDeletedIds: mocks.listSoftDeletedIds,
   restoreCapture: mocks.restoreCapture,
+  searchCaptures: mocks.searchCaptures,
   softDeleteCapture: mocks.softDeleteCapture
 }));
 
 vi.mock("../../persistence/enrichment-repo", () => ({
   addUserTag: vi.fn(),
-  removeTag: vi.fn()
+  removeTag: vi.fn(),
+  listEnrichmentsByCaptureIds: mocks.listEnrichmentsByCaptureIds
 }));
 
 vi.mock("../../persistence/bundle-store", () => ({
@@ -135,6 +146,8 @@ beforeEach(() => {
   vi.resetModules();
   mocks.handlers.clear();
   mocks.getCapturesByIds.mockReset();
+  mocks.searchCaptures.mockReset();
+  mocks.listEnrichmentsByCaptureIds.mockReset();
   mocks.send.mockReset();
 });
 
@@ -279,5 +292,175 @@ describe("library:listByIds — handler contract", () => {
       ids: ["rec-a", "rec-a", "rec-b"]
     })) as { ok: true; value: { rows: CaptureRecord[] } };
     expect(result.value.rows.map((r) => r.id)).toEqual(["rec-a", "rec-b"]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// library:listByIdsWithMetadata — bulk lookup + enrichment join.
+// Same contract as library:listByIds with an extra per-row
+// `enrichment` field. Pinned here so a future change to the handler
+// can't silently drop the enrichment or break input-order preservation.
+describe("library:listByIdsWithMetadata — handler contract", () => {
+  test("returns { record, enrichment } pairs in input order", async () => {
+    mocks.getCapturesByIds.mockImplementation((ids) =>
+      ids.map((id) => makeRecord({ id }))
+    );
+    mocks.listEnrichmentsByCaptureIds.mockImplementation(
+      (ids) => new Map(ids.map((id) => [id, null]))
+    );
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:listByIdsWithMetadata");
+    expect(handler).toBeDefined();
+    const result = (await handler!({ ids: ["c", "a", "b"] })) as {
+      ok: true;
+      value: { rows: Array<{ record: CaptureRecord; enrichment: null }> };
+    };
+    expect(result.value.rows.map((r) => r.record.id)).toEqual(["c", "a", "b"]);
+  });
+
+  test("hydrates per-row enrichment from the bulk helper", async () => {
+    const enrichmentForA: CaptureEnrichment = {
+      captureId: "a",
+      latestRunId: null,
+      status: null,
+      ocrText: "Some OCR",
+      suggestedTitle: null,
+      acceptedTitle: "Title A",
+      titleAcceptedAt: null,
+      suggestedDescription: null,
+      acceptedDescription: "Description A",
+      descriptionAcceptedAt: null,
+      suggestedFilenameStem: null,
+      acceptedFilenameStem: null,
+      filenameAcceptedAt: null,
+      suggestedTags: [],
+      acceptedTags: []
+    };
+    mocks.getCapturesByIds.mockImplementation((ids) =>
+      ids.map((id) => makeRecord({ id }))
+    );
+    mocks.listEnrichmentsByCaptureIds.mockImplementation(
+      (ids) =>
+        new Map(
+          ids.map((id) => [id, id === "a" ? enrichmentForA : null])
+        )
+    );
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:listByIdsWithMetadata");
+    const result = (await handler!({ ids: ["a", "b"] })) as {
+      ok: true;
+      value: { rows: Array<{ record: CaptureRecord; enrichment: CaptureEnrichment | null }> };
+    };
+    expect(result.value.rows[0]!.enrichment?.acceptedTitle).toBe("Title A");
+    expect(result.value.rows[1]!.enrichment).toBeNull();
+  });
+
+  test("soft-deleted captures are dropped BEFORE enrichment lookup", async () => {
+    // Optimization check: the handler shouldn't fetch enrichment for
+    // rows it's about to drop. Verified by inspecting the spy's
+    // call args — the enrichment fetch sees only the live ids.
+    mocks.getCapturesByIds.mockImplementation((ids) =>
+      ids.map((id) =>
+        makeRecord({
+          id,
+          deleted_at: id === "deleted" ? "2026-05-26T00:00:00Z" : null
+        })
+      )
+    );
+    mocks.listEnrichmentsByCaptureIds.mockReturnValue(new Map());
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:listByIdsWithMetadata");
+    await handler!({ ids: ["alive", "deleted", "alive2"] });
+    expect(mocks.listEnrichmentsByCaptureIds).toHaveBeenCalledTimes(1);
+    expect(mocks.listEnrichmentsByCaptureIds).toHaveBeenCalledWith(["alive", "alive2"]);
+  });
+
+  test("validation reuses validateLibraryListByIds (rejects malformed ids)", async () => {
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:listByIdsWithMetadata");
+    const result = await handler!({ ids: "not an array" });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "ids_required" }
+    });
+    expect(mocks.getCapturesByIds).not.toHaveBeenCalled();
+    expect(mocks.listEnrichmentsByCaptureIds).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// library:search — handler envelope. The underlying searchCaptures
+// repo function is exercised in captures-search.test.ts; here we just
+// verify the validator gate + payload forwarding.
+describe("library:search — handler contract", () => {
+  test("forwards validated request to searchCaptures", async () => {
+    mocks.searchCaptures.mockReturnValue([]);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:search");
+    expect(handler).toBeDefined();
+    await handler!({
+      query: "telegram pairing",
+      kinds: ["image"],
+      limit: 25
+    });
+    expect(mocks.searchCaptures).toHaveBeenCalledWith({
+      query: "telegram pairing",
+      kinds: ["image"],
+      limit: 25
+    });
+  });
+
+  test("returns { rows } from searchCaptures", async () => {
+    const fakeRows: CaptureSearchResultRow[] = [
+      { record: makeRecord({ id: "hit-1" }), enrichment: null, matchSnippet: "[hit]pair[/hit]ing" }
+    ];
+    mocks.searchCaptures.mockReturnValue(fakeRows);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:search");
+    const result = (await handler!({ query: "pair" })) as {
+      ok: true;
+      value: { rows: CaptureSearchResultRow[] };
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value.rows).toBe(fakeRows);
+  });
+
+  test("validation rejects malformed query without calling searchCaptures", async () => {
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:search");
+    const result = await handler!({ query: 42 });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "query_invalid" }
+    });
+    expect(mocks.searchCaptures).not.toHaveBeenCalled();
+  });
+
+  test("validation rejects oversized limit", async () => {
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:search");
+    const result = await handler!({ limit: 9999 });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { kind: "validation", code: "limit_too_large" }
+    });
+  });
+
+  test("empty payload is accepted (no filters)", async () => {
+    mocks.searchCaptures.mockReturnValue([]);
+    const { registerLibraryHandlers } = await import("../library-handlers");
+    registerLibraryHandlers();
+    const handler = mocks.handlers.get("library:search");
+    const result = await handler!({});
+    expect(result).toMatchObject({ ok: true, value: { rows: [] } });
+    expect(mocks.searchCaptures).toHaveBeenCalledWith({});
   });
 });

@@ -358,6 +358,47 @@ export type LibraryAppStat = {
   sourceAppName: string | null;
 };
 
+/**
+ * Request shape for `library:search`. Every field is optional; supplied
+ * fields combine conjunctively (AND). An all-empty request returns the
+ * most-recent N captures (effectively `library:list` with a different
+ * envelope) — callers should still pass `limit` so they don't get the
+ * full library.
+ */
+export type CaptureSearchRequest = {
+  /** Free-text query against title / description / OCR / source app
+   *  name via the `capture_search_fts` FTS5 virtual table (migration
+   *  0017). When omitted, the search degenerates to a filter-only
+   *  scan ordered by `captured_at DESC`. */
+  query?: string;
+  /** Restrict to specific source apps. Pass `null` inside the array to
+   *  match captures with no `source_app_bundle_id`. */
+  appBundleIds?: Array<string | null>;
+  /** Restrict to image / video kinds (empty array or absent = both). */
+  kinds?: Array<"image" | "video">;
+  /** ISO-8601 range, inclusive. Matched against `captured_at`. */
+  dateRange?: { start: string; end: string };
+  /** If true, only return captures whose `capture_enrichments.ocr_text`
+   *  is non-empty. If false / absent, no OCR filter. */
+  hasOcr?: boolean;
+  /** Hard cap on rows returned. Defaults to 100; max 500. */
+  limit?: number;
+};
+
+export type CaptureSearchResultRow = {
+  record: CaptureRecord;
+  /** Enrichment row, or `null` if the capture has never been through
+   *  an AI run and has no user tags. (Same null semantics as
+   *  `codex:enrichment`.) */
+  enrichment: CaptureEnrichment | null;
+  /** SQLite `snippet()` output around the FTS5 hit — a short fragment
+   *  with the matched terms highlighted via `[hit]…[/hit]` markers.
+   *  Non-null only when the request had a `query` AND the hit came
+   *  from FTS5 (not a filter-only result). Caller-side renderer can
+   *  strip the markers or render them as `<mark>`. */
+  matchSnippet: string | null;
+};
+
 export type RenderPreset = "low" | "med" | "high";
 
 export type CapturePresetMetric = {
@@ -1346,6 +1387,56 @@ export type Commands = {
   "library:listByIds": {
     req: { ids: string[] };
     res: { rows: CaptureRecord[] };
+  };
+  /**
+   * Bulk lookup PLUS per-row enrichment. Returns `{ record, enrichment }`
+   * pairs in INPUT order; deleted + missing rows are dropped silently
+   * (matches `library:listByIds`). Same 500-id cap.
+   *
+   * Why this exists: the Project Asset Cart's right-rail display needs
+   * the script-line preview (from accepted/suggested description) for
+   * every cart item, and the agent's chat tools need title /
+   * description / OCR to reason about captures. Doing this through
+   * `library:listByIds` + N `codex:enrichment` round-trips is 2N
+   * dispatches; this is 2 (one captures query, one enrichment query
+   * — see `listEnrichmentsByCaptureIds` in enrichment-repo).
+   *
+   * `enrichment` is `null` for captures that have never been through
+   * an AI run AND have no user tags. (Same null semantics as
+   * `codex:enrichment`.)
+   */
+  "library:listByIdsWithMetadata": {
+    req: { ids: string[] };
+    res: {
+      rows: Array<{
+        record: CaptureRecord;
+        enrichment: CaptureEnrichment | null;
+      }>;
+    };
+  };
+  /**
+   * Full-text + filter search across the live capture set.
+   *
+   * Every filter field is optional; they combine conjunctively. The
+   * `query` arg searches an FTS5 virtual table (`capture_search_fts`,
+   * migration 0017) that mirrors `capture_enrichments` and `captures`
+   * — title, description, OCR text, source app name. The returned
+   * `matchSnippet` is the SQLite `snippet()` function output around
+   * the FTS hit; it's only non-null when `query` is set.
+   *
+   * Soft-deleted captures are always excluded.
+   *
+   * Used by the Sizzle Composer Chat agent's `library_search` tool
+   * to let the user write big-prompt video briefs ("show me Telegram
+   * onboarding screens, then the pairing code, then…") and have the
+   * agent pick relevant captures across the user's whole library.
+   *
+   * Result is capped at `limit` (default 100, max 500). No cursor —
+   * if the agent needs more than 500 hits its query is too broad.
+   */
+  "library:search": {
+    req: CaptureSearchRequest;
+    res: { rows: CaptureSearchResultRow[] };
   };
   /** Soft-delete: moves source PNG atomically to <root>/.trash/, schedules GC. */
   "library:delete": { req: { id: string }; res: void };

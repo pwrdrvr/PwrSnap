@@ -2747,6 +2747,13 @@ function EditorLoaded({
    *  a new one. */
   onRequestEditOverlay: (overlay: OverlayRow) => void;
 }) {
+  // Live ref to the editor's source `<img>` element. BlurOverlays'
+  // pixelate preview reads pixels off this image via canvas drawImage
+  // to produce a real coarse-grid mosaic (issue #137); the bake's
+  // mosaic algorithm operates on the same source bytes so the editor
+  // and bake now agree visually block-for-block.
+  const editorImageRef = useRef<HTMLImageElement | null>(null);
+
   const zoom = useZoomPan({
     devicePixelRatio: record.device_pixel_ratio,
     imageWidthPx: record.width_px,
@@ -4007,6 +4014,7 @@ function EditorLoaded({
               though the bake (compose-tree.ts) produces the right
               region. */}
           <img
+            ref={editorImageRef}
             src={captureSrcUrl(record.id)}
             alt={record.source_app_name ?? "Capture"}
             draggable={false}
@@ -4031,6 +4039,9 @@ function EditorLoaded({
             draft={draft}
             blurStyle={blurStyle}
             liveOverride={draftGeometry}
+            editorImageRef={editorImageRef}
+            canvasWidthPx={record.width_px}
+            canvasHeightPx={record.height_px}
           />
           <OverlaySvg
             overlays={overlays}

@@ -6,6 +6,8 @@ import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
+import { VideoExportButtons } from "../shared/VideoExportButtons";
+import type { VideoExportState } from "../shared/useVideoExport";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
@@ -147,19 +149,13 @@ export type FloatOverAsset =
       /** Result of the most recent (or in-flight) export. The toast
        *  reflects this on the button labels so the user can tell what
        *  finished, what's running, what failed. */
-      exportState?: FloatOverExportState;
+      exportState?: VideoExportState;
       /** Discard the just-saved recording. Wired by the host to
        *  `library:delete` + `library:purge` + `float-over:dismiss`
        *  so the Library row, source file, and any cached exports
        *  all disappear. Shown as a destructive footer action. */
       onDiscard?: () => void;
     };
-
-export type FloatOverExportState =
-  | { kind: "idle" }
-  | { kind: "running"; format: "gif" | "mp4" }
-  | { kind: "done"; format: "gif" | "mp4"; path: string }
-  | { kind: "error"; format: "gif" | "mp4"; message: string };
 
 export function FloatOver({
   variant = "standard",
@@ -633,48 +629,17 @@ export function FloatOver({
 
       {asset?.kind === "video" ? (
         // Video export row — sits in the same slot as the image
-        // Low / Med / High copy buttons. Two cards instead of three:
-        // GIF (always silent) + MP4 (carries whatever audio tracks
-        // the source recorded). Same `fo__copy-btn` styling so the
-        // toast feels like the image variant's cousin, not a
-        // different surface. Sub-range selection lives in the
-        // editor; this row is the fast-path full-clip export.
+        // Low / Med / High copy buttons. Shared GIF + MP4 buttons
+        // (see VideoExportButtons) so the toast, tray, and library
+        // rail all render the identical chrome. The grid wrapper is
+        // toast-local because positioning lives here.
         <div className="fo__copy" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-          {(["gif", "mp4"] as const).map((format) => {
-            const running =
-              asset.exportState?.kind === "running" && asset.exportState.format === format;
-            const done =
-              asset.exportState?.kind === "done" && asset.exportState.format === format;
-            const errored =
-              asset.exportState?.kind === "error" && asset.exportState.format === format;
-            const subtitle = running
-              ? "Encoding…"
-              : done
-              ? "Saved"
-              : errored
-              ? "Failed — retry"
-              : format === "gif"
-              ? "Silent · share-friendly"
-              : asset.hasSystemAudio || asset.hasMicrophoneAudio
-              ? "Full clip · with audio"
-              : "Full clip · silent";
-            return (
-              <button
-                key={format}
-                type="button"
-                className="fo__copy-btn"
-                onClick={() => asset.onExport(format)}
-                disabled={asset.exportState?.kind === "running"}
-              >
-                <span className="fo__copy-btn-row1">
-                  <span className="fo__copy-label">{format.toUpperCase()}</span>
-                </span>
-                <span className="fo__copy-meta">
-                  <span className="fo__copy-bytes">{subtitle}</span>
-                </span>
-              </button>
-            );
-          })}
+          <VideoExportButtons
+            exportState={asset.exportState ?? { kind: "idle" }}
+            hasSystemAudio={asset.hasSystemAudio}
+            hasMicrophoneAudio={asset.hasMicrophoneAudio}
+            onExport={asset.onExport}
+          />
         </div>
       ) : (
         <div className="fo__copy">

@@ -27,8 +27,9 @@ import {
   type Settings,
   type SettingsChangedEvent
 } from "@pwrsnap/shared";
-import { FloatOver, type FloatOverExportState } from "./FloatOver";
+import { FloatOver } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { useVideoExport } from "../shared/useVideoExport";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
 type HostState =
@@ -55,12 +56,26 @@ type AiRunUpdatedPayload = {
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
-  // Video toast: tracks the latest GIF / MP4 export dispatched from
-  // the toast's two buttons. Surfaced through `asset.exportState` so
-  // the buttons render `Encoding…` / `Saved` / `Failed`. Reset per-
-  // capture by the `key={record.id}` on <FloatOver/> remounting it
-  // when the user takes a new recording.
-  const [videoExportState, setVideoExportState] = useState<FloatOverExportState>({ kind: "idle" });
+  // Shared GIF / MP4 export machinery. The hook owns the state machine
+  // and the `video:export` dispatch; we feed it the loaded record's
+  // capture id + audio flags (or null when there's no live video) and
+  // wire its `reset()` into the lifecycle events main fires below.
+  const videoInput =
+    state.kind === "loaded" &&
+    state.record.kind === "video" &&
+    state.record.video !== null &&
+    state.record.video !== undefined
+      ? {
+          captureId: state.record.id,
+          hasSystemAudio: state.record.video.hasSystemAudio,
+          hasMicrophoneAudio: state.record.video.hasMicrophoneAudio
+        }
+      : null;
+  const {
+    exportState: videoExportState,
+    reset: resetVideoExport,
+    triggerExport: triggerVideoExport
+  } = useVideoExport(videoInput);
   // capture:presetMetrics returns empty for video captures (the
   // sharp render pipeline is image-only); only request the hook for
   // image-kind captures so we don't fire a no-op IPC on every video
@@ -115,12 +130,12 @@ export function FloatOverHost(): React.ReactElement {
       switch (event.kind) {
         case "show-idle":
           setState({ kind: "idle" });
-          setVideoExportState({ kind: "idle" });
+          resetVideoExport();
           return;
         case "show-loaded":
           // Reset per-capture export state so a new toast doesn't
           // show a stale "Saved" badge from the previous recording.
-          setVideoExportState({ kind: "idle" });
+          resetVideoExport();
           if (event.record !== undefined) {
             setState({
               kind: "loaded",
@@ -138,7 +153,7 @@ export function FloatOverHost(): React.ReactElement {
           // show-idle re-uses a clean React tree (no stale countdown
           // state from the previous LOADED toast).
           setState({ kind: "idle" });
-          setVideoExportState({ kind: "idle" });
+          resetVideoExport();
           return;
       }
     });
@@ -319,26 +334,7 @@ export function FloatOverHost(): React.ReactElement {
           hasSystemAudio: record.video!.hasSystemAudio,
           hasMicrophoneAudio: record.video!.hasMicrophoneAudio,
           exportState: videoExportState,
-          onExport: (format: "gif" | "mp4") => {
-            setVideoExportState({ kind: "running", format });
-            void dispatch("video:export", {
-              captureId: record.id,
-              format,
-              audio:
-                format === "gif"
-                  ? { includeSystemAudio: false, includeMicrophone: false }
-                  : {
-                      includeSystemAudio: record.video!.hasSystemAudio,
-                      includeMicrophone: record.video!.hasMicrophoneAudio
-                    }
-            }).then((res) => {
-              if (res.ok) {
-                setVideoExportState({ kind: "done", format, path: res.value.path });
-              } else {
-                setVideoExportState({ kind: "error", format, message: res.error.message });
-              }
-            });
-          },
+          onExport: triggerVideoExport,
           onDiscard: () => {
             // library:delete (soft-delete + trash move) is the only
             // path that updates app_stats correctly; library:purge

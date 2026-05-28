@@ -12,6 +12,7 @@
 
 import { BrowserWindow, screen } from "electron";
 import type { RecordingState } from "@pwrsnap/shared";
+import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
 import { subscribeToRecordingState } from "./recording-state";
@@ -139,6 +140,27 @@ export function applyRecordingStateToController(state: RecordingState): void {
         win.showInactive();
       } else {
         win.moveTop();
+      }
+      // Re-assert the user's PwrSnap window on TOP of the
+      // normal-level z-order on every pre-roll tick. The
+      // showInactive() above adds the HUD to the window list at
+      // floating level (above Library at normal level) — that's
+      // fine, the HUD IS supposed to overlay the recording rect.
+      // What's NOT fine: between ticks, Cocoa can let another
+      // app's normal-level window (e.g. Claude, Terminal) float
+      // back above the Library at normal level. Empirically the
+      // user sees this as "the Library got pushed under during
+      // the lead-in." moveTop here is per-window-level — it
+      // doesn't fight the HUD's higher floating level, it just
+      // keeps the Library top of normal-level windows for the
+      // duration of the countdown.
+      const ourOverlapping = appWindowsOverlappingRect(
+        state.rect,
+        state.displayId
+      );
+      for (const otherWin of ourOverlapping) {
+        if (otherWin === win) continue;
+        otherWin.moveTop();
       }
       break;
     }

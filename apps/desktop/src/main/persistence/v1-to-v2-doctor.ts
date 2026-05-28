@@ -51,6 +51,7 @@ import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 
 import {
+  deriveBlurRadiusPx,
   EVENT_CHANNELS,
   type BundleDocumentV2,
   type BundleLayerNode,
@@ -621,7 +622,9 @@ export function synthesizeV2DocumentFromV1Overlays(
     if (data.kind === "blur") {
       // Convert to v2 EffectLayer with sample-below semantics. The
       // clip_rect uses ABSOLUTE canvas pixels.
-      const radiusPx = Math.max(1, Math.min(200, Math.round(deriveBlurRadiusPx(source))));
+      // Single source of truth lives in @pwrsnap/shared; the formula
+      // already applies the [1, 200] clamp + 8px floor.
+      const radiusPx = deriveBlurRadiusPx(source);
       const effectLayer: EffectLayer = {
         id: ensureNanoIdShape(overlay.id),
         parent_id: parentId,
@@ -721,18 +724,6 @@ function layerNameForVector(kind: Overlay["kind"]): string {
 function ensureNanoIdShape(id: string): string {
   if (/^[A-Za-z0-9_-]{16}$/.test(id)) return id;
   return nanoid(16);
-}
-
-/**
- * Default blur radius for a v1→v2 blur conversion. v1 blurs had no
- * radius — the renderer derived it from image short-side at paint
- * time. We bake the same calculation into the v2 effect layer.
- *
- * The 1.5% of short-side rule mirrors compose.ts's BLUR_RADIUS_FRAC.
- */
-function deriveBlurRadiusPx(source: { width: number; height: number }): number {
-  const shortSide = Math.min(source.width, source.height);
-  return Math.max(8, Math.round(shortSide * 0.015));
 }
 
 // ────────────────────────────────────────────────────────────────────

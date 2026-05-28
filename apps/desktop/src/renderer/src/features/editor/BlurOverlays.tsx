@@ -41,7 +41,11 @@ import {
   type RefObject
 } from "react";
 import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
-import { readBlurStyle, readOverlayRotation } from "@pwrsnap/shared";
+import {
+  deriveBlurRadiusPx,
+  readBlurStyle,
+  readOverlayRotation
+} from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate } from "./useCaptureModel";
 import "./BlurOverlays.css";
@@ -251,16 +255,9 @@ function BlurOverlayItem({
   );
 }
 
-/** 1.5% of the canvas short-side, with an 8px floor. Mirrors
- *  `deriveBlurRadiusPx` in `overlayToLayer.ts` + the v1→v2 doctor.
- *  Used by the rotated-gaussian canvas path so the editor preview
- *  uses the SAME σ the bake will. Inlining the formula avoids reaching
- *  across the source-of-truth boundary (overlayToLayer.ts is concerned
- *  with persistence; the renderer just needs to pick a sigma). */
-function deriveBlurSigmaPx(canvasWidthPx: number, canvasHeightPx: number): number {
-  const shortSide = Math.min(canvasWidthPx, canvasHeightPx);
-  return Math.max(1, Math.min(200, Math.max(8, Math.round(shortSide * 0.015))));
-}
+// Sigma derivation lives in `@pwrsnap/shared deriveBlurRadiusPx` —
+// shared across the editor commit path, the v1→v2 doctor, and the
+// rotated-gaussian canvas preview here so the three stay in lockstep.
 
 /** Compute the rotated rect's AABB + corner coordinates in canvas-
  *  pixel space. Mirrors the bake's rotation math in
@@ -414,7 +411,10 @@ function RotatedEffectCanvas({
         // ctx.filter applies to the NEXT drawImage. σ matches the
         // bake's blur radius (compose-tree.ts calls sharp.blur(σ)
         // with the same effect.radius_px value).
-        const sigma = deriveBlurSigmaPx(canvasWidthPx, canvasHeightPx);
+        const sigma = deriveBlurRadiusPx({
+          width: canvasWidthPx,
+          height: canvasHeightPx
+        });
         ctx.filter = `blur(${sigma}px)`;
         ctx.drawImage(
           img,

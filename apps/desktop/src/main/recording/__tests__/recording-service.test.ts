@@ -124,9 +124,8 @@ vi.mock("../../handlers/codex-handlers", () => ({
 }));
 
 vi.mock("../../persistence/captures-repo", () => ({
-  insertOrFindCapture: vi.fn(() => ({
-    record: { id: "cap-1", kind: "video" },
-    isNew: true
+  insertCapture: vi.fn(() => ({
+    record: { id: "cap-1", kind: "video" }
   })),
   getCaptureById: vi.fn(() => ({ id: "cap-1", kind: "video", video: {} }))
 }));
@@ -485,7 +484,7 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     await startPromise;
 
     // Now stop and pump the "stopped" event so the post-stop
-    // pipeline (adoptExistingFileAsSource → insertOrFindCapture)
+    // pipeline (adoptExistingFileAsSource → insertCapture)
     // runs to completion.
     const stopPromise = service.stop();
     await vi.advanceTimersByTimeAsync(0);
@@ -500,11 +499,11 @@ describe("RecordingService.stop source-app metadata → capture row", () => {
     await vi.advanceTimersByTimeAsync(0);
     await stopPromise;
 
-    // Pull the row that landed on insertOrFindCapture. The mock at
+    // Pull the row that landed on insertCapture. The mock at
     // the top of this file returns a fixed record; we want the
     // FIRST positional arg of the LAST call.
     const captures = await import("../../persistence/captures-repo");
-    const calls = (captures.insertOrFindCapture as unknown as { mock: { calls: unknown[][] } }).mock
+    const calls = (captures.insertCapture as unknown as { mock: { calls: unknown[][] } }).mock
       .calls;
     expect(calls.length).toBeGreaterThanOrEqual(1);
     return calls.at(-1)![0] as Record<string, unknown>;

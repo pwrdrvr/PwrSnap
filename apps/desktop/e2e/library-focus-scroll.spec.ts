@@ -118,7 +118,7 @@ test.describe("Library Focus close — scroll restoration (macOS)", () => {
 
     // The renderer's `useLibrary` only refetches on the
     // `events:captures:changed` broadcast — `seedCapture` writes
-    // straight through `insertOrFindCapture` and bypasses the bus,
+    // straight through `insertCapture` and bypasses the bus,
     // so kick the broadcast manually after seeding.
     await app.electronApp.evaluate((electronModule) => {
       const { BrowserWindow } = electronModule;

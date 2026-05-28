@@ -72,8 +72,8 @@ import { getMainLogger, initializeMainLogger } from "./log";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
-  insertOrFindCapture,
-  insertOrFindCapturesBatch,
+  insertCapture,
+  insertCapturesBatch,
   listExpiredTrash
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
@@ -1077,7 +1077,7 @@ export function bootstrapApp(): void {
         // name as a back-compat alias. Migration 0005 renamed the
         // column to `legacy_src_path`, but specs pulled from main still
         // use the old name. Normalize here so specs work unchanged.
-        seedCapture: (input: Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }) => {
+        seedCapture: (input: Parameters<typeof insertCapture>[0] & { src_path?: string }) => {
           const { src_path: legacyAlias, ...rest } = input;
           const normalized =
             legacyAlias !== undefined && rest.legacy_src_path === undefined
@@ -1089,14 +1089,14 @@ export function bootstrapApp(): void {
           // model (the v1 read path is gone). An explicit version in the
           // input still wins. (Harmless for `kind: "video"`: nothing reads
           // the flag for videos — they render via pwrsnap-capture://.)
-          return insertOrFindCapture({ bundle_format_version: 2, ...normalized });
+          return insertCapture({ bundle_format_version: 2, ...normalized });
         },
         // Batch variant — runs all inserts inside one SQLite
         // transaction so the chain pays one fsync instead of N.
         // Lets specs seed 100+ captures inside a single
         // `electronApp.evaluate` without blowing their time budget
         // on slow CI disks. Same src_path alias applied to each input.
-        seedCaptures: (inputs: Array<Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }>) => {
+        seedCaptures: (inputs: Array<Parameters<typeof insertCapture>[0] & { src_path?: string }>) => {
           const normalized = inputs.map((input) => {
             const { src_path: legacyAlias, ...rest } = input;
             const withAlias =
@@ -1107,7 +1107,7 @@ export function bootstrapApp(): void {
             // `seedCapture` above for the rationale.
             return { bundle_format_version: 2, ...withAlias };
           });
-          return insertOrFindCapturesBatch(normalized);
+          return insertCapturesBatch(normalized);
         },
         // Insert the video_captures metadata row for a previously-
         // seeded `kind="video"` capture. Specs use this to drive the

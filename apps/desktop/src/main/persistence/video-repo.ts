@@ -1,8 +1,8 @@
 // Video-captures metadata read/write surface. Companion to
 // captures-repo.ts — every video metadata mutation goes through here.
 // The 1:1 FK to `captures.id` means we never INSERT a video_captures
-// row without first calling `insertOrFindCapture` from captures-repo
-// (and ON DELETE CASCADE in the schema means we never need to manually
+// row without first calling `insertCapture` from captures-repo (and
+// ON DELETE CASCADE in the schema means we never need to manually
 // remove this row when the capture goes — hardDeleteCapture handles
 // it for us).
 
@@ -63,8 +63,8 @@ export type InsertVideoMetadata = {
 /**
  * Insert the video-specific metadata for a freshly-persisted video
  * capture. Caller must have already inserted the row in `captures`
- * via `insertOrFindCapture`. Idempotent on capture_id — re-running
- * during a crash-recovery re-import is a no-op (the PK enforces).
+ * via `insertCapture`. Idempotent on capture_id — re-running during
+ * a crash-recovery re-import is a no-op (the PK enforces).
  *
  * `defaultRange` seeds to the full clip (`[0, durationSec]`) so the
  * float-over can paint a full-range scrubber before the user picks a

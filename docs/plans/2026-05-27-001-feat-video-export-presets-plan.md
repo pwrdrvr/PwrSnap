@@ -20,7 +20,7 @@ arranged in two rows:
 ```
 ┌──────────────────┬──────────────────┬──────────────────┐
 │      GIF LOW     │      GIF MED     │     GIF HIGH     │
-│  480p · 12 fps   │  720p · 15 fps   │  source · 24 fps │
+│  480p · 15 fps   │  720p · 24 fps   │  source · 30 fps │
 │      ⌘1          │       ⌘2         │       ⌘3         │
 ├──────────────────┼──────────────────┼──────────────────┤
 │      ⋮ FILE      │      ⋮ FILE      │      ⋮ FILE      │
@@ -78,9 +78,9 @@ Rationale:
 
 | Preset | GIF | MP4 |
 |---|---|---|
-| **LOW** | 480p · 12 fps · palette-optimized | 720p · CRF 28 · web-friendly |
-| **MED** | 720p · 15 fps | 1080p · CRF 23 |
-| **HIGH** | source resolution · 24 fps | source resolution · stream-copy |
+| **LOW** | 480p · 15 fps · palette-optimized | 720p · CRF 28 · web-friendly |
+| **MED** | 720p · 24 fps | 1080p · CRF 23 |
+| **HIGH** | source resolution · 30 fps | source resolution · stream-copy |
 
 Mirroring the image side, the preset constants live in a single
 source-of-truth file in `apps/desktop/src/main/recording/` and
@@ -89,14 +89,18 @@ to populate estimated dimensions + bytes (matching how
 `capture:presetMetrics` works for images).
 
 GIF rationale:
-- 480p / 12 fps · palette-optimized = social-media-friendly (Twitter,
-  Slack will accept under 10 MB for ~10s clips).
-- 720p / 15 fps = "good enough" sharing fidelity. Roughly the current
-  hardcoded default.
-- source / 24 fps = max-quality GIF for users who want it at the cost
-  of size; we cap fps at 24 because beyond that the file balloons
-  without perceptible benefit (GIFs are 8-bit palettes; the eye can
-  carry only so much).
+- 480p / 15 fps · palette-optimized = social-media-friendly (Twitter,
+  Slack will accept under 10 MB for ~10s clips). 15 fps reads as
+  smooth motion for UI scroll / cursor / animation captures, which
+  is the dominant PwrSnap use case.
+- 720p / 24 fps = "good enough" sharing fidelity. The "film frame
+  rate" tier; smooth enough to look polished for showing app
+  animations.
+- source / 30 fps = max-quality GIF for users who want it. We
+  could go higher but GIFs are 8-bit palettes, and beyond ~30 fps
+  the file balloons (each frame is full-resolution palette data)
+  without perceptible benefit for the kind of motion screen
+  captures contain.
 
 MP4 rationale:
 - 720p / CRF 28 = ~3 Mbps for typical screen content. Drops into

@@ -11,6 +11,7 @@ import type {
   VideoCaptureMetadata,
   VideoExportAudio,
   VideoExportResult,
+  VideoPreset,
   VideoRange
 } from "@pwrsnap/shared";
 import { getDb } from "./db";
@@ -220,6 +221,7 @@ type ExportCacheRow = {
   range_start_sec: number;
   range_end_sec: number;
   format: "gif" | "mp4";
+  preset: VideoPreset;
   include_system_audio: number;
   include_microphone: number;
   path: string;
@@ -231,14 +233,22 @@ export type ExportCacheLookup = {
   captureId: string;
   range: VideoRange;
   format: "gif" | "mp4";
+  preset: VideoPreset;
   audio: VideoExportAudio;
 };
 
 /**
  * Cache-lookup. Returns the on-disk artifact if a previous export
- * with the same (capture, range, format, audio choices) is still
- * around. The render-cache eviction policy is shared across image +
- * video caches (see render-cache-maintenance.ts).
+ * with the same (capture, range, format, preset, audio choices) is
+ * still around. The render-cache eviction policy is shared across
+ * image + video caches (see render-cache-maintenance.ts).
+ *
+ * `widthPx` / `heightPx` aren't persisted in the cache table — the
+ * exporter computes them at call time from the source dims + preset
+ * and folds them into the returned `VideoExportResult`. Storing them
+ * in the DB would require backfilling existing rows; deriving them
+ * each call costs ~1µs and stays in lockstep with whatever the
+ * encoder ships at the moment.
  */
 export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
   const db = getDb();
@@ -249,6 +259,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
          AND range_start_sec = @start
          AND range_end_sec = @end
          AND format = @format
+         AND preset = @preset
          AND include_system_audio = @system
          AND include_microphone = @mic`
     )
@@ -257,6 +268,7 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
       start: req.range.start,
       end: req.range.end,
       format: req.format,
+      preset: req.preset,
       system: req.audio.includeSystemAudio ? 1 : 0,
       mic: req.audio.includeMicrophone ? 1 : 0
     }) as ExportCacheRow | undefined;
@@ -265,6 +277,12 @@ export function lookupExport(req: ExportCacheLookup): VideoExportResult | null {
     path: row.path,
     byteSize: row.byte_size,
     durationSec: row.range_end_sec - row.range_start_sec,
+    // Placeholder dims — the exporter overwrites these from the
+    // preset spec + source dims before returning to the caller.
+    // Storing dims on cache rows is a follow-up if anyone needs
+    // them without going back through the exporter.
+    widthPx: 0,
+    heightPx: 0,
     fromCache: true
   };
 }
@@ -273,6 +291,7 @@ export type RecordExportInsert = {
   captureId: string;
   range: VideoRange;
   format: "gif" | "mp4";
+  preset: VideoPreset;
   audio: VideoExportAudio;
   path: string;
   byteSize: number;
@@ -288,16 +307,16 @@ export function recordExport(input: RecordExportInsert): void {
   const db = getDb();
   db.prepare(
     `INSERT INTO video_export_cache (
-       capture_id, range_start_sec, range_end_sec, format,
+       capture_id, range_start_sec, range_end_sec, format, preset,
        include_system_audio, include_microphone,
        path, byte_size, created_at
      ) VALUES (
-       @captureId, @start, @end, @format,
+       @captureId, @start, @end, @format, @preset,
        @system, @mic,
        @path, @size, datetime('now')
      )
      ON CONFLICT (
-       capture_id, range_start_sec, range_end_sec, format,
+       capture_id, range_start_sec, range_end_sec, format, preset,
        include_system_audio, include_microphone
      ) DO UPDATE SET
        path = excluded.path,
@@ -308,6 +327,7 @@ export function recordExport(input: RecordExportInsert): void {
     start: input.range.start,
     end: input.range.end,
     format: input.format,
+    preset: input.preset,
     system: input.audio.includeSystemAudio ? 1 : 0,
     mic: input.audio.includeMicrophone ? 1 : 0,
     path: input.path,

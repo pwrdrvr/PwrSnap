@@ -72,6 +72,14 @@ function validateExportRequest(req: VideoExportRequest): Result<VideoExportReque
   if (req.format !== "gif" && req.format !== "mp4") {
     return err(validationError("invalid_format", "video:export: format must be \"gif\" or \"mp4\""));
   }
+  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
+    return err(
+      validationError(
+        "invalid_preset",
+        "video:export: preset must be \"low\", \"med\", or \"high\""
+      )
+    );
+  }
   if (req.range !== undefined) {
     const r = req.range;
     if (typeof r.start !== "number" || typeof r.end !== "number") {
@@ -323,6 +331,7 @@ export function registerRecordingHandlers(): void {
         record,
         video: record.video,
         format: req.format,
+        preset: req.preset,
         range: normalizeRange(range, record.video.durationSec),
         audio: req.format === "gif"
           ? { includeSystemAudio: false, includeMicrophone: false }
@@ -334,6 +343,7 @@ export function registerRecordingHandlers(): void {
       log.error("video:export failed", {
         captureId: req.captureId,
         format: req.format,
+        preset: req.preset,
         message
       });
       return err({ kind: "render", code: "video_export_failed", message, cause });

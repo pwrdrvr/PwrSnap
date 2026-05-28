@@ -186,7 +186,18 @@ export type EditCropArtifact = {
 };
 
 export type OverlayEditOp =
-  | { kind: "upsert"; row: OverlayRow }
+  /** v1 upsert. `preserveZIndex` (optional, default false) controls
+   *  the new row's z_index. When true, the dispatcher forwards
+   *  `row.z_index` to the IPC's `zIndex` field so the repo stores it
+   *  verbatim (used by undo restore + redo of create — both need the
+   *  layer to come back at its ORIGINAL stacking position). When
+   *  omitted, the dispatcher omits `zIndex` and the repo auto-bumps
+   *  to MAX(existing) + GAP (used by fresh-draw commits). v2 mirror
+   *  is `bumpZIndexToMax` on LayerEditOp.upsert — same discipline
+   *  with opposite default polarity (v2 has the z_index INSIDE the
+   *  layer node so the natural default is "preserve"; v1 has it
+   *  separate so the natural default is "let the repo pick"). */
+  | { kind: "upsert"; row: OverlayRow; preserveZIndex?: boolean }
   | { kind: "delete"; id: string }
   | { kind: "replace"; rows: OverlayRow[] }
   /** v1 crop: writes a normalized CropOverlay through overlays:upsert.
@@ -216,7 +227,15 @@ export type OverlayEditOp =
   | { kind: "reorder"; layerId: string; zIndex: number };
 
 export type LayerEditOp =
-  | { kind: "upsert"; node: BundleLayerNode }
+  /** v2 upsert. `bumpZIndexToMax` (optional, default false) signals
+   *  that the layer is a FRESH DRAW that should land at the top of
+   *  the stack — the repo resolves z_index to MAX(existing) + GAP
+   *  and ignores `node.z_index`. Fresh-draw callers
+   *  (commitArrow / commitRect / etc.) set this to `true`. Update
+   *  paths (delete-plus-insert via updateGeometry / updateOverlay)
+   *  and undo restore leave it OFF so the repo stores `node.z_index`
+   *  verbatim — including 0 (the Send-to-Back regression). */
+  | { kind: "upsert"; node: BundleLayerNode; bumpZIndexToMax?: boolean }
   | { kind: "delete"; id: string }
   | { kind: "upsertBatch"; nodes: BundleLayerNode[] }
   /** v2 crop: writes new canvas dimensions to the captures row via
@@ -960,7 +979,13 @@ export function useCaptureModel(captureId: string): CaptureModel {
         case "upsert": {
           const result = await dispatch("overlays:upsert", {
             captureId,
-            overlay: op.row.data
+            overlay: op.row.data,
+            // Thread `row.z_index` through to the repo when the caller
+            // asks for preservation (undo restore / redo of create).
+            // Fresh-draw callers leave `preserveZIndex` off; the IPC
+            // omits zIndex; the repo auto-bumps. See the doc-block on
+            // OverlayEditOp.upsert for the contract.
+            ...(op.preserveZIndex === true ? { zIndex: op.row.z_index } : {})
           });
           if (!result.ok) return err(result.error);
           return {
@@ -1057,13 +1082,23 @@ export function useCaptureModel(captureId: string): CaptureModel {
           // user can redraw. Failing the other order (insert + delete)
           // would leave duplicate overlays on the canvas on partial
           // failure, which is worse.
+          //
+          // CRITICAL — pass `current.z_index` so the new row preserves
+          // the user's stacking position. Without this the repo auto-
+          // bumps to MAX + GAP on every drag-drop, undoing any
+          // Send-to-Back / Send-Backward the user previously applied.
+          // User repro: "I right-clicked the rotated red rectangle and
+          // chose Send to Back. I dragged it. It jumped in front of the
+          // arrows." See protocol.ts `overlays:upsert` doc-block for
+          // the IPC contract.
           const delResult = await dispatch("overlays:delete", {
             id: op.layerId
           });
           if (!delResult.ok) return err(delResult.error);
           const insResult = await dispatch("overlays:upsert", {
             captureId,
-            overlay: merged
+            overlay: merged,
+            zIndex: current.z_index
           });
           if (!insResult.ok) return err(insResult.error);
           return {
@@ -1099,9 +1134,12 @@ export function useCaptureModel(captureId: string): CaptureModel {
             id: op.layerId
           });
           if (!delResult.ok) return err(delResult.error);
+          // Pass current.z_index for the same reason as updateGeometry
+          // above — style edits shouldn't reshuffle stacking order.
           const insResult = await dispatch("overlays:upsert", {
             captureId,
-            overlay: merged
+            overlay: merged,
+            zIndex: current.z_index
           });
           if (!insResult.ok) return err(insResult.error);
           return {
@@ -1147,7 +1185,12 @@ export function useCaptureModel(captureId: string): CaptureModel {
         case "upsert": {
           const result = await dispatch("layers:upsert", {
             captureId,
-            layer: op.node
+            layer: op.node,
+            // Thread the fresh-draw signal through the IPC. When true,
+            // the repo resolves z_index to MAX(existing) + GAP and
+            // ignores `op.node.z_index`. When omitted, `op.node.z_index`
+            // is stored verbatim — see LayerEditOp.upsert doc-block.
+            ...(op.bumpZIndexToMax === true ? { bumpZIndexToMax: true } : {})
           });
           if (!result.ok) return err(result.error);
           return {

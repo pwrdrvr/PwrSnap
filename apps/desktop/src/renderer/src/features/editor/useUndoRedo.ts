@@ -627,25 +627,35 @@ export function useUndoRedo(opts: {
             }
             continue;
           }
-          // redo of create — re-upsert. On v2 we need the original
-          // layer node so layers:upsert lands a structurally-
-          // identical layer. On v1 we re-upsert the overlay data;
-          // insertOverlay mints a fresh id, fine for session-only
-          // undo.
+          // redo of create — re-upsert with the original z_index
+          // preserved. v2's `kind: "upsert"` defaults to preservation
+          // (the node carries its z_index); v1's defaults to auto-
+          // bump unless `preserveZIndex: true`. Without explicit
+          // preservation the redone layer would land at MAX + GAP
+          // again, which is OK for a redo right after undo but
+          // diverges from "redo restores the same logical state" if
+          // any layers were added in between.
           if (dispatchEdit !== null) {
             if (item.node !== null) {
               // eslint-disable-next-line no-await-in-loop
               await dispatchEdit({ kind: "upsert", node: item.node });
             } else {
               // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({ kind: "upsert", row: item.row });
+              await dispatchEdit({
+                kind: "upsert",
+                row: item.row,
+                preserveZIndex: true
+              });
             }
             continue;
           }
           // eslint-disable-next-line no-await-in-loop
           await dispatch("overlays:upsert", {
             captureId,
-            overlay: item.row.data
+            overlay: item.row.data,
+            // Same preservation discipline on the legacy direct-IPC
+            // fallback — keeps the redone row at its original z_index.
+            zIndex: item.row.z_index
           });
         }
         return;
@@ -660,22 +670,31 @@ export function useUndoRedo(opts: {
         // looping here.
         for (const item of op.items) {
           if (isInverse) {
-            // Undo of delete — re-create. Same shape rules as the
-            // create→redo branch above.
+            // Undo of delete — re-create at the row's ORIGINAL
+            // z_index. Same shape rules as the create→redo branch
+            // above. Without explicit preservation, the v1 fast
+            // path would auto-bump the restored row to the top of
+            // the stack, breaking the user's mental model ("undo
+            // brings it back where it was, not on top").
             if (dispatchEdit !== null) {
               if (item.node !== null) {
                 // eslint-disable-next-line no-await-in-loop
                 await dispatchEdit({ kind: "upsert", node: item.node });
               } else {
                 // eslint-disable-next-line no-await-in-loop
-                await dispatchEdit({ kind: "upsert", row: item.row });
+                await dispatchEdit({
+                  kind: "upsert",
+                  row: item.row,
+                  preserveZIndex: true
+                });
               }
               continue;
             }
             // eslint-disable-next-line no-await-in-loop
             await dispatch("overlays:upsert", {
               captureId,
-              overlay: item.row.data
+              overlay: item.row.data,
+              zIndex: item.row.z_index
             });
             continue;
           }

@@ -133,6 +133,33 @@ function assertTreeDepthBounded(nodes: readonly BundleLayerNode[]): void {
 export type InsertLayerInput = {
   node: BundleLayerNode;
   captureId: string;
+  /** Opt into the monotonic auto-bump behavior: when `true`, the
+   *  resolved z_index for this insert is `MAX(existing z_index for
+   *  this capture) + Z_INDEX_INSERT_GAP`, regardless of what
+   *  `node.z_index` says. Use this for the fresh-draw paths (new
+   *  arrow / rect / text / blur committed by the user) so the new
+   *  layer lands STRICTLY ABOVE every existing layer.
+   *
+   *  When omitted / false, `node.z_index` is stored VERBATIM —
+   *  including the legitimate value `0` (the position a layer
+   *  reaches via "Send to Back" or via the `layers:reorder` /
+   *  `computeNewOrder` pipeline which assigns `position × Z_GAP =
+   *  0 × 1000 = 0` to whatever lands at the bottom of the stack).
+   *
+   *  Pre-fix this distinction was a HEURISTIC inside this function
+   *  (`if (node.z_index !== 0) preserve else auto-bump`), which
+   *  collided with the Send-to-Back case: a row at z_index = 0 sent
+   *  through the dispatcher's updateGeometry delete-plus-insert was
+   *  auto-bumped on the INSERT side, undoing the user's reorder
+   *  every time they drag-dropped, nudged, or style-edited the
+   *  rect. User repro: "I right-clicked the rotated red rectangle
+   *  and chose Send to Back. I dragged it over to the arrows. It
+   *  was behind them while dragging. I let go and it jumped in
+   *  front of them."
+   *
+   *  Same fix shape in `overlays-repo.ts` — both v1 and v2 share
+   *  the discipline. */
+  bumpZIndexToMax?: boolean;
 };
 
 /**
@@ -233,26 +260,28 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
       bumpEditsVersion(input.captureId);
       return;
     }
-    // Compute the z_index for the INSERT path. When the caller
-    // passes the default `node.z_index = 0` (the renderer's
-    // `overlayToBundleLayerNode` default), auto-bump to
-    // `MAX(existing) + Z_INDEX_INSERT_GAP` so the new row lands
-    // STRICTLY ABOVE every existing layer in the capture's
-    // `ORDER BY z_index ASC` render sort. Pre-fix every new layer
-    // got 0 and ties with existing 0-valued rows had non-
-    // deterministic order via SQLite's tiebreaker, surfacing as
-    // the user-reported "new arrow dove under the existing arrow
-    // on commit."
+    // Compute the z_index for the INSERT path. The caller's
+    // EXPLICIT `bumpZIndexToMax` flag determines behavior:
     //
-    // Caller-supplied non-zero z_index wins (the
-    // `layers:reorder` dispatcher + v1→v2 migration both pass
-    // explicit values they computed elsewhere). MAX considers
-    // ALL rows including soft-deleted so a re-insert after undo-
-    // of-delete still lands above any layers added in the meantime.
+    //   • `bumpZIndexToMax: true` — the fresh-draw path. Resolve to
+    //     `MAX(existing z_index for this capture) + Z_INDEX_INSERT_GAP`
+    //     so the new layer lands STRICTLY ABOVE every existing layer
+    //     in `ORDER BY z_index ASC`. MAX considers ALL rows including
+    //     soft-deleted so a re-insert after undo-of-delete still lands
+    //     above any layers added in the meantime.
+    //
+    //   • Omitted / false — preserve `node.z_index` verbatim, including
+    //     0. This is the update-in-place path (drag-drop, nudge, multi-
+    //     drag, style patch, undo restore) where the caller already
+    //     knows the right z_index and just wants the row materialized
+    //     with it.
+    //
+    // Pre-fix this branch checked `if (node.z_index !== 0)` as a
+    // heuristic, which collided with the Send-to-Back case (z_index
+    // legitimately 0). See the `bumpZIndexToMax` doc-block on
+    // InsertLayerInput above for the full repro.
     let resolvedZIndex: number;
-    if (node.z_index !== 0) {
-      resolvedZIndex = node.z_index;
-    } else {
+    if (input.bumpZIndexToMax === true) {
       const row = db
         .prepare<[string], { max_z: number | null }>(
           `SELECT MAX(z_index) AS max_z FROM layers WHERE capture_id = ?`
@@ -262,6 +291,8 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
         row?.max_z !== null && row?.max_z !== undefined
           ? row.max_z + Z_INDEX_INSERT_GAP
           : 0;
+    } else {
+      resolvedZIndex = node.z_index;
     }
     db.prepare(
       `INSERT INTO layers

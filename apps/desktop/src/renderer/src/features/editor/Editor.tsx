@@ -1805,7 +1805,15 @@ export function Editor({
       }
       const result = await model.dispatchEdit({
         kind: "upsert",
-        node: adapted.layer
+        node: adapted.layer,
+        // Fresh-draw commit — land at the top of the stack. Without
+        // this, the new behavior of layers-repo (preserve `node.z_index`
+        // verbatim when bumpZIndexToMax isn't passed) would freeze
+        // every new draw at z_index = 0, colliding with existing
+        // layers. This is the new explicit signal that replaces the
+        // pre-fix heuristic `if (node.z_index !== 0)` inside the repo.
+        // See LayerEditOp.upsert doc-block for the contract.
+        bumpZIndexToMax: true
       });
       if (!result.ok) {
         // eslint-disable-next-line no-console

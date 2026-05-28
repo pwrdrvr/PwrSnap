@@ -91,7 +91,16 @@ export function registerOverlaysHandlers(): void {
     const row = insertOverlay({
       id,
       captureId: req.captureId,
-      data: parseResult.data
+      data: parseResult.data,
+      // Thread the optional zIndex preservation hint through to the
+      // repo. When omitted, the repo's existing auto-bump
+      // (MAX(existing) + GAP) kicks in for fresh draws. When present
+      // (updateGeometry / updateOverlay / undo restore), the repo
+      // stores it verbatim — including 0 (the Send-to-Back case).
+      // See the IPC contract's `zIndex` doc-block + the
+      // `bumpZIndexToMax` discussion in `layers-repo.ts` for the
+      // parallel v2 discipline.
+      ...(req.zIndex !== undefined ? { zIndex: req.zIndex } : {})
     });
     log.info("overlay inserted", {
       id,

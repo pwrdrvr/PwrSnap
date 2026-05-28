@@ -158,9 +158,15 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
+    // Undo of delete preserves the row's original z_index — without
+    // it the restored row auto-bumps to MAX + GAP, breaking the
+    // user-mental-model "undo puts it back where it was." See
+    // OverlayEditOp.upsert + overlays:upsert IPC contract for the
+    // preserveZIndex / zIndex discipline.
     expect(dispatchMock).toHaveBeenCalledWith("overlays:upsert", {
       captureId: "cap-1",
-      overlay: row.data
+      overlay: row.data,
+      zIndex: row.z_index
     });
   });
 
@@ -188,10 +194,14 @@ describe("useUndoRedo", () => {
       await api!.redo();
     });
 
-    // Redoing a `create` re-dispatches the upsert with the row's data.
+    // Redoing a `create` re-dispatches the upsert with the row's data
+    // AND the original z_index — so the redone layer lands at the
+    // same logical position, not on top of any layers added since
+    // the undo. See OverlayEditOp.upsert.preserveZIndex doc-block.
     expect(dispatchMock).toHaveBeenCalledWith("overlays:upsert", {
       captureId: "cap-1",
-      overlay: row.data
+      overlay: row.data,
+      zIndex: row.z_index
     });
     expect(api!.canUndo).toBe(true);
     expect(api!.canRedo).toBe(false);

@@ -1615,6 +1615,322 @@ describe("useCaptureModel", () => {
     expect(sentLayer.id).not.toBe("ly_orig");
   });
 
+  // ───────────────────────────────────────────────────────────────────────
+  // PR #150 follow-up: z_index preservation across updateGeometry /
+  // updateOverlay.
+  //
+  // User-reported bug: "I right-clicked the rotated red rectangle and
+  // chose Send to Back. I dragged it over to the arrows. It was behind
+  // them while dragging. I let go of the mouse and it jumped in front
+  // of them."
+  //
+  // Root cause: both v1 and v2 updateGeometry / updateOverlay implement
+  // edit-in-place as DELETE + INSERT. The INSERT path treats the
+  // operation as "fresh draw" and bumps z_index to MAX + GAP, clobbering
+  // the user's explicit Send-to-Back position. Same shape for nudge
+  // (arrow keys), multi-drag (group pointerup commit), and undo restore.
+  //
+  // Fix contract:
+  //   • v1: the dispatcher reads `current.z_index` and threads it through
+  //     `overlays:upsert` as `req.zIndex` (a new optional field that
+  //     `insertOverlay` already supports as `input.zIndex`).
+  //   • v2: the merged layer node carries the original z_index by
+  //     virtue of `...layer` spread in `applyGeometryToLayer`. The
+  //     dispatcher does NOT pass `bumpZIndexToMax: true`; layers-repo
+  //     stores `node.z_index` verbatim.
+  //
+  // These tests pin the dispatcher's outgoing IPC payloads. If a future
+  // refactor breaks z_index preservation, they fail before any user
+  // sees the regression.
+  // ───────────────────────────────────────────────────────────────────────
+
+  test("13e. v1 dispatchEdit: updateGeometry preserves current.z_index in overlays:upsert payload (Send-to-Back regression)", async () => {
+    const record = makeRecord("cap_1", 1);
+    // The load-bearing setup: existing row is at z_index = 0 (the
+    // user Sent it to Back). After updateGeometry the new row must
+    // ALSO be at z_index = 0 — anything else jumps the rect to the
+    // top of the stack on drag-drop.
+    const existing: OverlayRow = { ...makeOverlayRow("ov_stb", "cap_1"), z_index: 0 };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
+      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 0 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ov_stb",
+      geometry: {
+        kind: "arrow",
+        from: { x: 0.3, y: 0.3 },
+        to: { x: 0.9, y: 0.9 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upserts.length).toBe(1);
+    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
+    // The dispatcher MUST forward the original z_index. Pre-fix this
+    // field was absent → handler called insertOverlay without zIndex
+    // → auto-bump → user's Send-to-Back was undone by every drag.
+    expect(sentReq.zIndex).toBe(0);
+  });
+
+  test("13f. v1 dispatchEdit: updateGeometry preserves current.z_index > 0 in overlays:upsert payload", async () => {
+    // Mid-stack preservation. A row at z_index = 2000 (some middle-
+    // of-stack reorder) must stay at 2000 across drag-drop.
+    const record = makeRecord("cap_1", 1);
+    const existing: OverlayRow = { ...makeOverlayRow("ov_mid", "cap_1"), z_index: 2000 };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
+      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 2000 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ov_mid",
+      geometry: {
+        kind: "arrow",
+        from: { x: 0.4, y: 0.4 },
+        to: { x: 0.8, y: 0.8 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
+    expect(sentReq.zIndex).toBe(2000);
+  });
+
+  test("13g. v1 dispatchEdit: updateOverlay preserves current.z_index in overlays:upsert payload", async () => {
+    // Same shape for style-patch (color/thickness/etc.). Style edits
+    // shouldn't change stacking order.
+    const record = makeRecord("cap_1", 1);
+    const existing: OverlayRow = { ...makeOverlayRow("ov_stl", "cap_1"), z_index: 0 };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
+      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown };
+        return Promise.resolve({
+          ok: true,
+          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 0 }
+        });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateOverlay",
+      layerId: "ov_stl",
+      patch: { kind: "arrow", color: "#00ff00" }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
+    expect(sentReq.zIndex).toBe(0);
+  });
+
+  test("13h. v2 dispatchEdit: updateGeometry preserves layer.z_index = 0 (Send-to-Back regression)", async () => {
+    // v2 mirror of 13e. layers:upsert receives the merged layer with
+    // z_index = 0; the dispatcher must NOT set `bumpZIndexToMax: true`
+    // (which would tell layers-repo to auto-bump).
+    const record = makeRecord("cap_2", 2);
+    const vectorLayer: BundleLayerNode = {
+      id: "ly_stb",
+      parent_id: null,
+      name: "Rect",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0, // ← Sent to Back, the load-bearing field
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
+        color: "auto"
+      }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_stb",
+      geometry: {
+        kind: "rect",
+        rect: { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(upserts.length).toBe(1);
+    const sentReq = upserts[0]?.[1] as {
+      layer: BundleLayerNode;
+      bumpZIndexToMax?: boolean;
+    };
+    // The merged layer must carry the ORIGINAL z_index = 0.
+    expect(sentReq.layer.z_index).toBe(0);
+    // The dispatcher must NOT request auto-bump on an update path —
+    // otherwise the repo would bump the 0 to MAX + GAP, jumping the
+    // rect to the top of the stack.
+    expect(sentReq.bumpZIndexToMax).not.toBe(true);
+  });
+
+  test("13i. v2 dispatchEdit: updateGeometry preserves layer.z_index > 0 in layers:upsert payload", async () => {
+    const record = makeRecord("cap_2", 2);
+    const vectorLayer: BundleLayerNode = {
+      id: "ly_mid",
+      parent_id: null,
+      name: "Arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 3000,
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.1 },
+        to: { x: 0.5, y: 0.5 },
+        color: "auto"
+      }
+    };
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: [vectorLayer] });
+      if (name === "layers:delete") return Promise.resolve({ ok: true, value: undefined });
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+    const r = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_mid",
+      geometry: {
+        kind: "arrow",
+        from: { x: 0.2, y: 0.2 },
+        to: { x: 0.7, y: 0.7 }
+      }
+    });
+    expect(r.ok).toBe(true);
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    const sentReq = upserts[0]?.[1] as {
+      layer: BundleLayerNode;
+      bumpZIndexToMax?: boolean;
+    };
+    expect(sentReq.layer.z_index).toBe(3000);
+    expect(sentReq.bumpZIndexToMax).not.toBe(true);
+  });
+
   test("12. invalid bundle_format_version (99) returns error", async () => {
     const record = makeRecord("cap_weird", 99);
     dispatchMock.mockImplementation((name: string) => {

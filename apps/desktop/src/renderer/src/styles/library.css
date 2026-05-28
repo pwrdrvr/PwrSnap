@@ -668,30 +668,6 @@
 .psl__left-section { font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); padding: 10px 10px 6px; }
 .psl__left-section:first-child { padding-top: 0; }
 
-/* Sizzle Reels section header with inline "+ new" action. */
-.psl__left-section--with-action {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-right: 4px;
-}
-.psl__left-section-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  border: 1px dashed var(--accent-border);
-  background: transparent;
-  color: var(--accent);
-  font: 600 10px/1 var(--font-mono);
-  cursor: pointer;
-}
-.psl__left-section-action:hover {
-  background: var(--accent-soft);
-}
-
 /* === Types multi-pick rows in the sidebar === */
 .psl__type-row {
   position: relative;
@@ -722,62 +698,15 @@
   opacity: 0.55;
 }
 
-/* === Sizzle Reels band at top of grid === */
-.psl__sizzle-band {
-  padding: 16px 20px 12px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.psl__sizzle-band-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.psl__sizzle-band-title {
-  font: 600 11px/1 var(--font-sans);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-.psl__sizzle-band-count {
-  font: 500 10px/1 var(--font-mono);
-  color: var(--text-subtle);
-  letter-spacing: 0.04em;
-}
-.psl__sizzle-band-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
-}
-.psl__sizzle-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  content-visibility: auto;
-  contain-intrinsic-size: 0 150px;
-}
-.psl__sizzle-cell-thumb {
+/* === Project cell — Sizzle Reels project rendered inline in the
+   day-grouped grid alongside image/video captures. */
+.psl__cell-project {
   position: relative;
-  display: block;
-  aspect-ratio: 16/10;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-input);
-}
-.psl__sizzle-cell-thumb img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  display: block;
+  background: var(--bg-input);
 }
-.psl__sizzle-cell-placeholder {
+.psl__cell-project-empty {
   position: absolute;
   inset: 0;
   display: flex;
@@ -785,14 +714,10 @@
   justify-content: center;
   color: var(--text-muted);
 }
-.psl__sizzle-cell:hover .psl__sizzle-cell-thumb {
-  outline: 1px solid var(--accent-border);
-  outline-offset: -1px;
-}
-.psl__sizzle-cell-kind {
+.psl__cell-project-kind {
   position: absolute;
-  left: 8px;
-  top: 8px;
+  left: 6px;
+  top: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -802,10 +727,10 @@
   background: var(--media-scrim-bg);
   color: var(--accent-bright);
 }
-.psl__sizzle-cell-meta {
+.psl__cell-project-meta {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
+  right: 6px;
+  top: 6px;
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--media-scrim-bg);
@@ -813,14 +738,24 @@
   font: 600 10px/1 var(--font-mono);
   letter-spacing: 0.04em;
 }
-.psl__sizzle-cell-name {
-  font: 600 12px/1.25 var(--font-sans);
-  color: var(--text-primary);
-  letter-spacing: -0.005em;
-  white-space: nowrap;
+.psl__cell-project-name {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--media-scrim-bg);
+  color: var(--media-scrim-text);
+  font: 600 10px/1 var(--font-sans);
+  letter-spacing: 0;
+  max-width: 14ch;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 0 4px;
+  white-space: nowrap;
+}
+/* The accent outline differentiates project cells from regular
+   capture cells at a glance even when they share the day-bucket. */
+.psl__cell--project .psl__cell-thumb {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
 }
 
 .psl__nav {

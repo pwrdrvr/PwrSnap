@@ -69,12 +69,69 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
 function CellThumb({
   capture,
   record,
+  project,
   width
 }: {
   capture: Capture;
   record: CaptureRecord | null;
+  project: SizzleProject | null;
   width: number;
 }) {
+  // Sizzle Reels project cell — first scene's thumbnail as the
+  // background + a project-kind badge + a "N scenes · MM:SS" pill.
+  // Click handling is in the parent's onSelectCell, which dispatches
+  // sizzle:open instead of OPEN_FOCUS for project cells.
+  if (capture.kind === "project" && project !== null) {
+    const firstSceneCaptureId = project.scenes[0]?.captureId ?? null;
+    const sceneCount = project.scenes.length;
+    const totalSec = project.scenes.reduce((acc, s) => {
+      const explicit = s.durationOverrideSec;
+      if (typeof explicit === "number" && explicit > 0) return acc + explicit;
+      const trim = s.mediaTrim;
+      if (trim != null) return acc + (trim.endSec - trim.startSec);
+      return acc + 3;
+    }, 0);
+    const durLabel =
+      totalSec >= 60
+        ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
+            .toString()
+            .padStart(2, "0")}`
+        : `${Math.round(totalSec)}s`;
+    return (
+      <div className="psl__cell-project">
+        {firstSceneCaptureId !== null ? (
+          <img
+            src={cacheUrl(firstSceneCaptureId, width, "webp")}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: "block"
+            }}
+          />
+        ) : (
+          <span className="psl__cell-project-empty" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="3" y="6" width="14" height="12" rx="2" />
+              <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+            </svg>
+          </span>
+        )}
+        <span className="psl__cell-project-kind" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="6" width="14" height="12" rx="2" />
+            <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+          </svg>
+        </span>
+        <span className="psl__cell-project-meta">
+          {sceneCount === 0 ? "empty" : `${sceneCount} · ${durLabel}`}
+        </span>
+      </div>
+    );
+  }
   if (record !== null && record.kind === "video") {
     return <VideoCellThumb record={record} />;
   }
@@ -666,13 +723,25 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const gridHasMore = isSourceAppView ? false : hasMore;
   const gridIsLoadingMore = isSourceAppView ? sourceAppState?.loading ?? false : isLoadingMore;
 
+  // Project fixtures only fold into the grid when:
+  //   • the Types filter has "Projects" on (UI control), AND
+  //   • we're NOT in trash view (projects don't go to trash today), AND
+  //   • we're NOT in a source-app filter (projects aren't FROM any
+  //     app — surfacing them inside e.g. "Safari" would be incoherent).
+  const gridProjects = useMemo(
+    () =>
+      visibleTypes.projects && !isTrashView && activeSourceAppId === null
+        ? sizzleProjects
+        : [],
+    [visibleTypes.projects, isTrashView, activeSourceAppId, sizzleProjects]
+  );
   const fixtureBacking = useMemo(
-    () => new FixtureBackedRecords(universeRecords),
+    () => new FixtureBackedRecords(universeRecords, gridProjects),
     // todayDateStr drives the day-bucket inside FixtureBackedRecords;
     // including it forces a rebuild when the local date crosses so the
     // grid's day-hdrs ("Today" / "Yesterday") update without a refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [universeRecords, todayDateStr]
+    [universeRecords, gridProjects, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
@@ -1295,6 +1364,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    */
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
+    // Project cell → open the sizzle window for that project.
+    // Click handler doesn't transition into focus/reel for projects;
+    // projects are edited in the dedicated Sizzle Reels window.
+    if (c.kind === "project" && c.projectId !== undefined) {
+      void dispatch("sizzle:open", { projectId: c.projectId });
+      return;
+    }
     const record = fixtureBacking.recordFor(c.id);
     if (record === null) {
       // Fixture-only cell (dev placeholder) — no real record to open.
@@ -1799,78 +1875,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </button>
         ))}
 
-        {sizzleProjects.length > 0 && visibleTypes.projects ? (
-          <>
-            <div className="psl__left-section psl__left-section--with-action">
-              <span>Sizzle Reels</span>
-              <button
-                type="button"
-                className="psl__left-section-action"
-                title="New Sizzle Reel"
-                onClick={() => {
-                  void dispatch("sizzle:create", { name: "Untitled Sizzle" }).then(
-                    (r) => {
-                      if (r.ok) {
-                        void dispatch("sizzle:open", { projectId: r.value.id });
-                      }
-                    }
-                  );
-                }}
-              >
-                +
-              </button>
-            </div>
-            {sizzleProjects.map((p) => {
-              const totalSec = p.scenes.reduce((acc, s) => {
-                const explicit = s.durationOverrideSec;
-                if (typeof explicit === "number" && explicit > 0) {
-                  return acc + explicit;
-                }
-                // Use `!= null` (loose) so undefined-from-disk for
-                // older projects falls through to the 3s estimate
-                // instead of NaN-ing the sum.
-                const trim = s.mediaTrim;
-                if (trim != null) return acc + (trim.endSec - trim.startSec);
-                return acc + 3; // rough estimate when unknown
-              }, 0);
-              return (
-                <button
-                  key={p.id}
-                  className="psl__nav"
-                  onClick={() => {
-                    void dispatch("sizzle:open", { projectId: p.id });
-                  }}
-                  title={`Open ${p.name} in the Sizzle Reels editor`}
-                >
-                  <span className="psl__nav-icon">
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="11"
-                      height="11"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                    >
-                      <rect x="3" y="6" width="14" height="12" rx="2" />
-                      <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                    </svg>
-                  </span>
-                  <span className="psl__nav-label">{p.name}</span>
-                  <span className="psl__nav-count">
-                    {p.scenes.length === 0
-                      ? "—"
-                      : totalSec >= 60
-                        ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
-                            .toString()
-                            .padStart(2, "0")}`
-                        : `${Math.round(totalSec)}s`}
-                  </span>
-                </button>
-              );
-            })}
-          </>
-        ) : null}
-
         <div className="psl__left-section">Smart Filters</div>
         <button className="psl__nav">
           <span className="psl__nav-icon">
@@ -1936,14 +1940,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
-          {visibleTypes.projects && sizzleProjects.length > 0 && !isTrashView ? (
-            <SizzleReelsBand
-              projects={sizzleProjects}
-              onOpen={(projectId) => {
-                void dispatch("sizzle:open", { projectId });
-              }}
-            />
-          ) : null}
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
@@ -2039,6 +2035,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                               // ←/→ navigation (which dispatches NAVIGATE
                               // against the record id, not the fixture).
                               const record = fixtureBacking.recordFor(c.id);
+                              const project = fixtureBacking.projectFor(c.id);
                               const recordId = record?.id ?? null;
                               const isSelected = recordId === selectedRecordId;
                               return (
@@ -2050,7 +2047,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
                                   }
                                   onClick={() => onSelectFrame(c)}
                                 >
-                                  <CellThumb capture={c} record={record} width={140} />
+                                  <CellThumb capture={c} record={record} project={project} width={140} />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
@@ -2588,19 +2585,31 @@ function CellRow({
     >
       {cells.map((c) => {
         const record = fixtureBacking.recordFor(c.id);
+        const project = fixtureBacking.projectFor(c.id);
+        const isProject = c.kind === "project";
         return (
           <div
             key={c.id}
-            className={"psl__cell" + (c.id === selected ? " is-selected" : "")}
+            className={
+              "psl__cell" +
+              (c.id === selected ? " is-selected" : "") +
+              (isProject ? " psl__cell--project" : "")
+            }
             data-cell-id={record?.id ?? ""}
             onClick={() => onSelectCell(c)}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb capture={c} record={record} width={400} />
+              <CellThumb capture={c} record={record} project={project} width={400} />
               <span className="psl__cell-time">{c.time}</span>
               <span className="psl__cell-app-overlay">
-                <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
+                {isProject ? (
+                  // Project cells get the project name as the corner
+                  // chip — there's no source app to attribute.
+                  <span className="psl__cell-project-name">{c.n}</span>
+                ) : (
+                  <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
+                )}
               </span>
               {record !== null &&
                 (isTrashView ? (
@@ -2650,95 +2659,3 @@ function CellRow({
   );
 }
 
-/**
- * Sizzle Reels band rendered at the top of the Library grid when the
- * Types filter has "Projects" on. Each cell is 16:10 (matches capture
- * cells) — first scene's thumbnail forms the background; project name
- * + scene count overlay at the bottom; clicking opens the project in
- * the standalone sizzle editor window.
- *
- * Deliberately NOT integrated into the day-grouped VirtualizedGrid:
- * projects don't belong to a capture day, and threading a second cell
- * type through the virtualizer's row layout is a deeper refactor than
- * this PR wants. A horizontal band is enough to satisfy the
- * "projects appear in the library list like other items" intent
- * without re-architecting the grid renderer.
- */
-function SizzleReelsBand({
-  projects,
-  onOpen
-}: {
-  projects: ReadonlyArray<SizzleProject>;
-  onOpen: (projectId: string) => void;
-}): React.ReactElement {
-  return (
-    <section className="psl__sizzle-band" aria-label="Sizzle Reels">
-      <header className="psl__sizzle-band-head">
-        <span className="psl__sizzle-band-title">Sizzle Reels</span>
-        <span className="psl__sizzle-band-count">
-          {projects.length} reel{projects.length === 1 ? "" : "s"}
-        </span>
-      </header>
-      <div className="psl__sizzle-band-grid">
-        {projects.map((p) => {
-          const firstSceneCaptureId = p.scenes[0]?.captureId ?? null;
-          const sceneCount = p.scenes.length;
-          const totalSec = p.scenes.reduce((acc, s) => {
-            const explicit = s.durationOverrideSec;
-            if (typeof explicit === "number" && explicit > 0) return acc + explicit;
-            const trim = s.mediaTrim;
-            if (trim != null) return acc + (trim.endSec - trim.startSec);
-            return acc + 3;
-          }, 0);
-          const durLabel =
-            totalSec >= 60
-              ? `${Math.floor(totalSec / 60)}:${Math.round(totalSec % 60)
-                  .toString()
-                  .padStart(2, "0")}`
-              : `${Math.round(totalSec)}s`;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              className="psl__sizzle-cell"
-              onClick={() => onOpen(p.id)}
-              title={`Open ${p.name} in the Sizzle Reels editor`}
-            >
-              <span className="psl__sizzle-cell-thumb">
-                {firstSceneCaptureId !== null ? (
-                  <img
-                    src={cacheUrl(firstSceneCaptureId, 320, "webp")}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                  />
-                ) : (
-                  <span className="psl__sizzle-cell-placeholder" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <rect x="3" y="6" width="14" height="12" rx="2" />
-                      <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                    </svg>
-                  </span>
-                )}
-                <span className="psl__sizzle-cell-kind" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="6" width="14" height="12" rx="2" />
-                    <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-                  </svg>
-                </span>
-                {sceneCount > 0 ? (
-                  <span className="psl__sizzle-cell-meta">
-                    {sceneCount} · {durLabel}
-                  </span>
-                ) : (
-                  <span className="psl__sizzle-cell-meta">empty</span>
-                )}
-              </span>
-              <span className="psl__sizzle-cell-name">{p.name}</span>
-            </button>
-          );
-        })}
-      </div>
-    </section>
-  );
-}

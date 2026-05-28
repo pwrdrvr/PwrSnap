@@ -24,6 +24,17 @@ export type Capture = {
   size: number;
   w: number;
   h: number;
+  /** Item kind. "image" / "video" mirror `CaptureRecord.kind`.
+   *  "project" is a synthetic Capture for a Sizzle Reels project —
+   *  emitted by `FixtureBackedRecords` so projects flow through the
+   *  same day-grouping + virtualizer cell pipeline as captures.
+   *  Optional for back-compat with demo fixtures that predate this
+   *  field; consumers default to "image". */
+  kind?: "image" | "video" | "project";
+  /** Sizzle project id when `kind === "project"`. Click handlers
+   *  branch on this to dispatch `sizzle:open` instead of opening
+   *  the focus editor. */
+  projectId?: string;
 };
 
 const BASE: Array<{ app: AppId; n: string; tags: string[] }> = [

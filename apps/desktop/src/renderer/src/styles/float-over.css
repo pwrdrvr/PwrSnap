@@ -251,14 +251,32 @@
      needing border-radius: inherit on the overlay element. */
   overflow: hidden;
 }
-.fo__copy-btn:hover {
+.fo__copy-btn:hover:not(:disabled):not(.is-running):not(.is-error) {
   /* `--accent-soft` is the themed accent-tinted surface (0.12 alpha
      of the resolved accent — tangerine on dark, deep tangerine on
      light). Replacing the hardcoded `color-mix(in srgb, var(--accent) 8%, transparent)`
-     which only matched the dark accent. */
+     which only matched the dark accent. Gated on `:not(...)` so a
+     disabled (encoding) or errored button doesn't lift on hover. */
   background: var(--accent-soft);
   border-color: var(--accent-border);
   transform: translateY(-1px);
+}
+/* Encoding state — the card is awaiting the ffmpeg encode for its
+   (format, preset). Lower contrast + cursor lock signals "wait."
+   Kept clickable-looking enough that the user can read the dim/byte
+   labels through the dim opacity (the meta swap to "Encoding…"
+   happens in the renderer, not via CSS). */
+.fo__copy-btn.is-running {
+  opacity: 0.65;
+  cursor: progress;
+}
+/* Error state — the encode or clipboard write failed. Subtle
+   danger-tinted border + cursor-pointer makes it obvious the card
+   wants to be re-clicked. The "Failed" label comes from the
+   component; CSS just colors the affordance. */
+.fo__copy-btn.is-error {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
 }
 /* "Copied" overlay — covers the button content with an orange fill
    for ~1.2s after a successful click. The CopyButton component

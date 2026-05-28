@@ -246,14 +246,27 @@ export type RecordingReadiness = {
 export type RecordingPermission = "screen" | "microphone" | "systemAudio";
 
 /**
- * GIF or MP4 export request. `range` defaults to the source
- * `defaultRange` when omitted. `audio` is ignored for GIF (always
- * silent) and validated against the source's available tracks for
- * MP4.
+ * Quality tier for a video export. Mirrors the image `RenderPreset`
+ * shape (low / med / high) so the renderer's preset cards feel like
+ * siblings of the image L/M/H row. Each (format, preset) maps to a
+ * specific encode profile (dimensions, fps, codec params) owned by
+ * the main-side `recording-exporter`. See plan
+ * [docs/plans/2026-05-27-001-feat-video-export-presets-plan.md] §2
+ * for the current tier values.
+ */
+export type VideoPreset = "low" | "med" | "high";
+
+/**
+ * GIF or MP4 export request. `preset` is required — the caller picks
+ * a tier (LMH); the backend never guesses. `range` defaults to the
+ * source `defaultRange` when omitted. `audio` is ignored for GIF
+ * (always silent) and validated against the source's available
+ * tracks for MP4.
  */
 export type VideoExportRequest = {
   captureId: string;
   format: "gif" | "mp4";
+  preset: VideoPreset;
   range?: VideoRange | undefined;
   audio?: VideoExportAudio | undefined;
 };
@@ -267,7 +280,51 @@ export type VideoExportResult = {
   path: string;
   byteSize: number;
   durationSec: number;
+  /** Output width in pixels. Source-resolution presets (HIGH) match
+   *  the source; LOW / MED apply the preset's downscale target. */
+  widthPx: number;
+  heightPx: number;
   fromCache: boolean;
+};
+
+/** Per-(format, preset) metric returned by `video:presetMetrics`.
+ *  Mirrors `CapturePresetMetric` for images. Estimated values come
+ *  back when no cache entry exists yet; exact values land after the
+ *  first encode for that combination. */
+export type VideoPresetMetric = {
+  format: "gif" | "mp4";
+  preset: VideoPreset;
+  widthPx: number;
+  heightPx: number;
+  byteSize: number;
+  fromCache: boolean;
+};
+
+export type VideoPresetMetricsResult = {
+  metrics: VideoPresetMetric[];
+};
+
+/** Response from `video:prepareDrag` — mirrors `capture:prepareDrag`.
+ *  `path` is the human-friendly file alias (e.g.
+ *  `<id>__<title>.<preset>.<ext>`); `iconPath` points at the poster
+ *  PNG used as the drag preview. */
+export type VideoPrepareDragResult = {
+  path: string;
+  iconPath: string;
+};
+
+/** Identifies a specific cached video export. Used as the request
+ *  shape for all the per-preset verbs (`video:prepareDrag`,
+ *  `clipboard:copyVideoFile`, `clipboard:copyVideoPath`) so they
+ *  agree on the same source-of-truth tuple. Range + audio are
+ *  optional — when omitted, the handler fills them from the source
+ *  record's `defaultRange` + recorded audio policy. */
+export type VideoExportCoordinates = {
+  captureId: string;
+  format: "gif" | "mp4";
+  preset: VideoPreset;
+  range?: VideoRange | undefined;
+  audio?: VideoExportAudio | undefined;
 };
 
 export type CaptureFilter = {
@@ -1691,14 +1748,63 @@ export type Commands = {
     res: void;
   };
   /**
-   * Render and return a GIF or MP4 export for the requested range and
-   * audio tracks. Cached against (captureId, range, format, audio
-   * choices) — re-export with the same args returns instantly.
-   * Progress lands on `EVENT_CHANNELS.renderProgress`.
+   * Render and return a GIF or MP4 export for the requested range,
+   * preset (LMH), and audio tracks. Cached against (captureId,
+   * range, format, preset, audio choices) — re-export with the same
+   * args returns instantly. Progress lands on
+   * `EVENT_CHANNELS.renderProgress`.
    */
   "video:export": {
     req: VideoExportRequest;
     res: VideoExportResult;
+  };
+  /**
+   * Per-(format, preset) metrics for a video capture. Mirrors
+   * `capture:presetMetrics` for images. Returns six entries (2
+   * formats × 3 presets). Estimated dims/bytes for combinations that
+   * haven't been encoded yet; exact values once the cache has them.
+   * The renderer's preset grid calls this on mount to populate the
+   * cards before any click.
+   */
+  "video:presetMetrics": {
+    req: { captureId: string };
+    res: VideoPresetMetricsResult;
+  };
+  /**
+   * Prepare a video export for native drag-out. Ensures the encoded
+   * file exists (cache-hit or fresh encode), generates the drag
+   * icon (poster frame), and returns a human-friendly file alias
+   * via `prepareRenderedFileAlias`. The main-side IPC listener for
+   * `video:drag-start` calls this then fires
+   * `event.sender.startDrag({ file, icon })`. Mirrors
+   * `capture:prepareDrag` for images.
+   */
+  "video:prepareDrag": {
+    req: VideoExportCoordinates;
+    res: VideoPrepareDragResult;
+  };
+  /**
+   * Encode (cache-hit if already done) and copy the resulting file
+   * to the system clipboard as a file promise — on macOS, this
+   * writes `public.file-url` to NSPasteboard so paste in
+   * Slack/Mail/Finder drops the binary, plus a text-path fallback
+   * for terminal/editor consumers. Sibling of `clipboard:copy` for
+   * images, but image clipboard:copy writes raw bytes via
+   * nativeImage; videos can't fit through that API so we use file-
+   * url instead.
+   */
+  "clipboard:copyVideoFile": {
+    req: VideoExportCoordinates;
+    res: { path: string };
+  };
+  /**
+   * Encode (cache-hit if already done) and write the encoded file's
+   * POSIX path to the system clipboard as text. Sibling of
+   * `clipboard:copy-path` for images.
+   */
+  "clipboard:copyVideoPath": {
+    req: VideoExportCoordinates;
+    res: { path: string };
   };
 
   // ---- codex (Phase 4+) — declared here so Phase 4 lands without protocol bumps ----

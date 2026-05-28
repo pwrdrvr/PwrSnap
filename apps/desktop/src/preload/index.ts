@@ -54,8 +54,16 @@ try {
 // sandbox: true (which we always run with) doesn't allow arbitrary
 // requires from a preload, so the file would fail silently and
 // pwrsnapApi never reach the renderer.
-import { EVENT_CHANNELS, IPC_CAPTURE_DRAG_START, IPC_CMD } from "@pwrsnap/shared/ipc";
-import type { RenderPreset } from "@pwrsnap/shared/protocol";
+import {
+  EVENT_CHANNELS,
+  IPC_CAPTURE_DRAG_START,
+  IPC_CMD,
+  IPC_VIDEO_DRAG_START
+} from "@pwrsnap/shared/ipc";
+import type {
+  RenderPreset,
+  VideoPreset
+} from "@pwrsnap/shared/protocol";
 import type { PerfMarkPayload } from "@pwrsnap/shared/ipc";
 import { parseAppearanceArg } from "@pwrsnap/shared/appearance-arg";
 
@@ -219,6 +227,21 @@ const pwrsnapApi = {
    */
   startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void {
     ipcRenderer.send(IPC_CAPTURE_DRAG_START, payload);
+  },
+  /**
+   * Renderer -> main native file drag for a VIDEO export. Sibling of
+   * `startCaptureDrag`. Payload identifies (captureId, format,
+   * preset); main encodes (cache-hit if already done), extracts a
+   * poster frame, and calls WebContents.startDrag with the encoded
+   * file + poster icon. The dragged file is a human-friendly alias
+   * (e.g. `Slack__med.mp4`) — never the raw render-cache path.
+   */
+  startVideoDrag(payload: {
+    captureId: string;
+    format: "gif" | "mp4";
+    preset: VideoPreset;
+  }): void {
+    ipcRenderer.send(IPC_VIDEO_DRAG_START, payload);
   },
   /**
    * Subscribe to forwarded-key events from main. globalShortcut on

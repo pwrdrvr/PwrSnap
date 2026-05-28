@@ -15,6 +15,14 @@ export const IPC_CMD = "cmd" as const;
  * the sending WebContents from the drag-start event. */
 export const IPC_CAPTURE_DRAG_START = "capture:drag-start" as const;
 
+/** Renderer -> main native file drag bridge for VIDEO exports
+ *  (GIF / MP4). Same wedge as `IPC_CAPTURE_DRAG_START`: the bus path
+ *  can't carry `event.sender.startDrag`, so we use a plain
+ *  `ipcRenderer.send` with a payload identifying the
+ *  `(captureId, format, preset)` to drag. The main listener
+ *  dispatches `video:prepareDrag` on the bus then calls startDrag. */
+export const IPC_VIDEO_DRAG_START = "video:drag-start" as const;
+
 export const EVENT_CHANNELS = {
   capturesChanged: "events:captures:changed",
   overlaysChanged: "events:overlays:changed",

@@ -11,7 +11,8 @@ import type {
   RenderPreset,
   Req,
   Res,
-  Result
+  Result,
+  VideoPreset
 } from "@pwrsnap/shared";
 
 /**
@@ -69,6 +70,25 @@ export function subscribe(
 
 export function startCaptureDrag(captureId: string, preset: RenderPreset = "high"): void {
   window.pwrsnapApi?.startCaptureDrag({ captureId, preset });
+}
+
+/**
+ * Renderer-side helper for video drag-out. Mirrors `startCaptureDrag`
+ * for images. Fire-and-forget — preload sends `IPC_VIDEO_DRAG_START`
+ * with the (captureId, format, preset) tuple; main encodes (cache-
+ * hit if already done), generates a poster icon, and calls
+ * `webContents.startDrag`. The dragged file is a human-friendly
+ * alias (e.g. `Slack__med.mp4`), not the raw render-cache path.
+ *
+ * Caller invokes this from an `onDragStart` handler after calling
+ * `event.preventDefault()` — same shape as the image equivalent.
+ */
+export function startVideoDrag(
+  captureId: string,
+  format: "gif" | "mp4",
+  preset: VideoPreset
+): void {
+  window.pwrsnapApi?.startVideoDrag({ captureId, format, preset });
 }
 
 /**

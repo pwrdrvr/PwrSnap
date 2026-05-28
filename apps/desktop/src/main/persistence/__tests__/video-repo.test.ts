@@ -209,19 +209,20 @@ describe("video_export_cache", () => {
       captureId: "exp-1",
       range: { start: 0, end: 5 },
       format: "mp4" as const,
+      preset: "med" as const,
       audio: { includeSystemAudio: true, includeMicrophone: false }
     };
     expect(lookupExport(lookup)).toBeNull();
 
     recordExport({
       ...lookup,
-      path: "/tmp/exports/exp-1-0-5-mp4-sys.mp4",
+      path: "/tmp/exports/exp-1-0-5-med-mp4-sys.mp4",
       byteSize: 12345
     });
 
     const hit = lookupExport(lookup);
     expect(hit).not.toBeNull();
-    expect(hit!.path).toBe("/tmp/exports/exp-1-0-5-mp4-sys.mp4");
+    expect(hit!.path).toBe("/tmp/exports/exp-1-0-5-med-mp4-sys.mp4");
     expect(hit!.byteSize).toBe(12345);
     expect(hit!.durationSec).toBe(5);
     expect(hit!.fromCache).toBe(true);
@@ -235,6 +236,7 @@ describe("video_export_cache", () => {
       captureId: "exp-audio",
       range: { start: 0, end: 3 },
       format: "mp4",
+      preset: "med",
       audio: { includeSystemAudio: true, includeMicrophone: false },
       path: "/tmp/sys.mp4",
       byteSize: 100
@@ -243,6 +245,7 @@ describe("video_export_cache", () => {
       captureId: "exp-audio",
       range: { start: 0, end: 3 },
       format: "mp4",
+      preset: "med",
       audio: { includeSystemAudio: false, includeMicrophone: true },
       path: "/tmp/mic.mp4",
       byteSize: 200
@@ -252,16 +255,69 @@ describe("video_export_cache", () => {
       captureId: "exp-audio",
       range: { start: 0, end: 3 },
       format: "mp4",
+      preset: "med",
       audio: { includeSystemAudio: true, includeMicrophone: false }
     });
     const mic = lookupExport({
       captureId: "exp-audio",
       range: { start: 0, end: 3 },
       format: "mp4",
+      preset: "med",
       audio: { includeSystemAudio: false, includeMicrophone: true }
     });
     expect(sys?.byteSize).toBe(100);
     expect(mic?.byteSize).toBe(200);
+  });
+
+  test("different presets cache independently", async () => {
+    const { recordExport, lookupExport } = await import("../video-repo");
+    insertCaptureRow(mocks.db!, "exp-preset", "video");
+
+    // Same capture, range, format, audio — three different presets.
+    // Each should land as a separate cache row.
+    for (const [preset, byteSize] of [
+      ["low", 1_000],
+      ["med", 3_000],
+      ["high", 9_000]
+    ] as const) {
+      recordExport({
+        captureId: "exp-preset",
+        range: { start: 0, end: 4 },
+        format: "mp4",
+        preset,
+        audio: { includeSystemAudio: false, includeMicrophone: false },
+        path: `/tmp/${preset}.mp4`,
+        byteSize
+      });
+    }
+
+    expect(
+      lookupExport({
+        captureId: "exp-preset",
+        range: { start: 0, end: 4 },
+        format: "mp4",
+        preset: "low",
+        audio: { includeSystemAudio: false, includeMicrophone: false }
+      })?.byteSize
+    ).toBe(1_000);
+    expect(
+      lookupExport({
+        captureId: "exp-preset",
+        range: { start: 0, end: 4 },
+        format: "mp4",
+        preset: "med",
+        audio: { includeSystemAudio: false, includeMicrophone: false }
+      })?.byteSize
+    ).toBe(3_000);
+    expect(
+      lookupExport({
+        captureId: "exp-preset",
+        range: { start: 0, end: 4 },
+        format: "mp4",
+        preset: "high",
+        audio: { includeSystemAudio: false, includeMicrophone: false }
+      })?.byteSize
+    ).toBe(9_000);
   });
 
   test("recordExport upserts in place for the same key", async () => {
@@ -272,6 +328,7 @@ describe("video_export_cache", () => {
       captureId: "exp-up",
       range: { start: 1, end: 2 },
       format: "gif",
+      preset: "med",
       audio: { includeSystemAudio: false, includeMicrophone: false },
       path: "/tmp/v1.gif",
       byteSize: 10
@@ -280,6 +337,7 @@ describe("video_export_cache", () => {
       captureId: "exp-up",
       range: { start: 1, end: 2 },
       format: "gif",
+      preset: "med",
       audio: { includeSystemAudio: false, includeMicrophone: false },
       path: "/tmp/v2.gif",
       byteSize: 999
@@ -289,6 +347,7 @@ describe("video_export_cache", () => {
       captureId: "exp-up",
       range: { start: 1, end: 2 },
       format: "gif",
+      preset: "med",
       audio: { includeSystemAudio: false, includeMicrophone: false }
     });
     expect(hit?.path).toBe("/tmp/v2.gif");

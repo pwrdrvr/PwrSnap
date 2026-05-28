@@ -62,6 +62,7 @@ import { renderViaCoordinator } from "../render/coordinator";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { getCacheSourcePath } from "../persistence/paths";
 import { notifyClipboardChanged } from "../clipboard-events";
+import { mapVideoResolveError, resolveVideoExport } from "../recording/video-export-resolver";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:clipboard");
@@ -181,6 +182,101 @@ export function registerClipboardHandlers(): void {
       return err({
         kind: "clipboard",
         code: "render_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
+  // ── clipboard:copyVideoFile (video only) ──────────────────────────
+  //
+  // Encode (cache-hit if already done) and copy the resulting GIF /
+  // MP4 to the system clipboard as a file promise. On macOS this
+  // writes the `public.file-url` UTI to NSPasteboard via
+  // `clipboard.writeBuffer` — paste in Slack / Mail / iMessage /
+  // Finder drops the binary, exactly like Finder's "Copy" + paste.
+  //
+  // First version tried to ALSO co-write `clipboard.writeText(path)`
+  // as a fallback for terminal/editor pastes. Doesn't work: each
+  // Electron clipboard.write* call wraps a ScopedClipboardWriter
+  // that calls [pasteboard clearContents] on construction. So
+  // writeText AFTER writeBuffer wipes the file-url, and iMessage
+  // gets the text. There's no Electron API to atomically write
+  // both a custom UTI and standard text — `clipboard.write({...})`
+  // accepts only text/html/image/rtf/bookmark, no arbitrary UTIs.
+  //
+  // We pick file-url; users who want the path as text use the FILE
+  // chip (which dispatches `clipboard:copyVideoPath`). Clean intent
+  // split: card click = "give me the file"; FILE chip = "give me
+  // the path".
+  bus.register("clipboard:copyVideoFile", async (req) => {
+    const resolved = await resolveVideoExport(req);
+    if (!resolved.ok) {
+      return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoFile", req.captureId));
+    }
+    try {
+      const filePath = resolved.value.result.path;
+      // `file://` URL — encode any non-ASCII in the path so the
+      // pasteboard payload round-trips cleanly through NSURL parsers.
+      const fileUrl = `file://${filePath.split("/").map(encodeURIComponent).join("/")}`;
+      clipboard.writeBuffer("public.file-url", Buffer.from(fileUrl, "utf8"));
+      log.info("copied video file to clipboard", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        fromCache: resolved.value.result.fromCache,
+        path: filePath
+      });
+      return ok({ path: filePath });
+    } catch (cause) {
+      log.error("clipboard:copyVideoFile failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "clipboard",
+        code: "video_clipboard_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+  });
+
+  // ── clipboard:copyVideoPath (video only) ──────────────────────────
+  //
+  // Sibling of `clipboard:copy-path` for video: encode, write the
+  // resulting POSIX path to the clipboard as text only. Used by the
+  // FILE chip click on the new 6-card grid — keyboardless-mouse
+  // equivalent of dragging the file, for pasting paths into a
+  // terminal or editor.
+  bus.register("clipboard:copyVideoPath", async (req) => {
+    const resolved = await resolveVideoExport(req);
+    if (!resolved.ok) {
+      return err(mapVideoResolveError(resolved.error, "clipboard:copyVideoPath", req.captureId));
+    }
+    try {
+      const filePath = resolved.value.result.path;
+      clipboard.writeText(filePath);
+      log.info("copied video path to clipboard", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        fromCache: resolved.value.result.fromCache,
+        path: filePath
+      });
+      return ok({ path: filePath });
+    } catch (cause) {
+      log.error("clipboard:copyVideoPath failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "clipboard",
+        code: "video_clipboard_failed",
         message: cause instanceof Error ? cause.message : String(cause),
         cause
       });
@@ -565,3 +661,4 @@ export function registerClipboardHandlers(): void {
     }
   });
 }
+

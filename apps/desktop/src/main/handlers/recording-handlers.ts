@@ -14,13 +14,16 @@ import type {
   PwrSnapError,
   RecordingPermission,
   Result,
-  VideoExportRequest
+  VideoExportRequest,
+  VideoPreset,
+  VideoPresetMetric
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getCaptureById } from "../persistence/captures-repo";
 import {
   getVideoMetadata,
+  lookupExport,
   normalizeRange,
   setDefaultRange
 } from "../persistence/video-repo";
@@ -34,7 +37,18 @@ import {
   type RecordingService
 } from "../recording/recording-service";
 import { getRecordingState } from "../recording/recording-state";
-import { exportVideoRange } from "../recording/recording-exporter";
+import {
+  computeOutputDimensions,
+  exportVideoRange,
+  GIF_PRESETS,
+  MP4_PRESETS
+} from "../recording/recording-exporter";
+import {
+  mapVideoResolveError,
+  resolveVideoExport
+} from "../recording/video-export-resolver";
+import { ensureVideoPoster } from "../recording/video-poster";
+import { prepareRenderedFileAlias } from "../render/file-alias";
 
 const log = getMainLogger("pwrsnap:recording-handlers");
 
@@ -71,6 +85,14 @@ function validateExportRequest(req: VideoExportRequest): Result<VideoExportReque
   }
   if (req.format !== "gif" && req.format !== "mp4") {
     return err(validationError("invalid_format", "video:export: format must be \"gif\" or \"mp4\""));
+  }
+  if (req.preset !== "low" && req.preset !== "med" && req.preset !== "high") {
+    return err(
+      validationError(
+        "invalid_preset",
+        "video:export: preset must be \"low\", \"med\", or \"high\""
+      )
+    );
   }
   if (req.range !== undefined) {
     const r = req.range;
@@ -323,6 +345,7 @@ export function registerRecordingHandlers(): void {
         record,
         video: record.video,
         format: req.format,
+        preset: req.preset,
         range: normalizeRange(range, record.video.durationSec),
         audio: req.format === "gif"
           ? { includeSystemAudio: false, includeMicrophone: false }
@@ -334,9 +357,196 @@ export function registerRecordingHandlers(): void {
       log.error("video:export failed", {
         captureId: req.captureId,
         format: req.format,
+        preset: req.preset,
         message
       });
       return err({ kind: "render", code: "video_export_failed", message, cause });
     }
   });
+
+  // ── video:presetMetrics ───────────────────────────────────────────
+  //
+  // Returns six entries (2 formats × 3 presets) describing the
+  // estimated or exact output dims + byte size for each combination.
+  // The renderer's 6-card grid calls this on mount to populate the
+  // cards before any user click. Cache hits return exact byte
+  // counts (read off the cache row); cache misses return estimated
+  // bytes computed from the source resolution + preset scale.
+  bus.register("video:presetMetrics", async (req) => {
+    if (typeof req.captureId !== "string" || req.captureId.length === 0) {
+      return err(validationError("invalid_capture_id", "video:presetMetrics: captureId must be a non-empty string"));
+    }
+    const record = getCaptureById(req.captureId);
+    if (record === null || record.deleted_at !== null) {
+      return err(validationError("not_found", `video:presetMetrics: capture not found: ${req.captureId}`));
+    }
+    if (record.kind !== "video" || record.video === null || record.video === undefined) {
+      return err(validationError("not_a_video", `video:presetMetrics: ${req.captureId} is not a video`));
+    }
+    const range = record.video.defaultRange;
+    const normalized = normalizeRange(range, record.video.durationSec);
+    const durationSec = normalized.end - normalized.start;
+    // Default audio choice mirrors the same fallback the encoder
+    // uses when audio is omitted: GIF silent, MP4 inherits the
+    // recorded tracks. We compute metrics against this default so
+    // cache lookups land on the same row a default-args click would
+    // populate.
+    const mp4Audio = {
+      includeSystemAudio: record.video.hasSystemAudio,
+      includeMicrophone: record.video.hasMicrophoneAudio
+    };
+    const presets: readonly VideoPreset[] = ["low", "med", "high"];
+    const metrics: VideoPresetMetric[] = [];
+    for (const format of ["gif", "mp4"] as const) {
+      for (const preset of presets) {
+        const dims = computePresetDimensions(format, preset, record.width_px, record.height_px);
+        const cached = lookupExport({
+          captureId: record.id,
+          range: normalized,
+          format,
+          preset,
+          audio: format === "gif" ? { includeSystemAudio: false, includeMicrophone: false } : mp4Audio
+        });
+        const byteSize =
+          cached !== null
+            ? cached.byteSize
+            : estimateVideoByteSize(format, preset, dims.widthPx, dims.heightPx, durationSec);
+        metrics.push({
+          format,
+          preset,
+          widthPx: dims.widthPx,
+          heightPx: dims.heightPx,
+          byteSize,
+          fromCache: cached !== null
+        });
+      }
+    }
+    return ok({ metrics });
+  });
+
+  // ── video:prepareDrag ─────────────────────────────────────────────
+  //
+  // Mirrors `capture:prepareDrag` for video: ensures the encoded
+  // file exists (cache-hit or fresh encode), extracts a poster frame
+  // for the drag icon, and creates a human-friendly file alias via
+  // `prepareRenderedFileAlias`. The main-side IPC listener for
+  // `video:drag-start` (in `apps/desktop/src/main/ipc.ts`) calls
+  // this then fires `event.sender.startDrag({ file, icon })`.
+  bus.register("video:prepareDrag", async (req) => {
+    const resolved = await resolveVideoExport(req);
+    if (!resolved.ok) {
+      return err(mapVideoResolveError(resolved.error, "video:prepareDrag", req.captureId));
+    }
+    try {
+      const { result, record, video } = resolved.value;
+      const ext = req.format;
+      const displayName = `${slugifyAppName(record.source_app_name)}__${req.preset}.${ext}`;
+      const aliasPath = await prepareRenderedFileAlias(result.path, displayName);
+      const iconPath = await ensureVideoPoster(record, video);
+      log.info("video drag prepared", {
+        captureId: record.id,
+        format: req.format,
+        preset: req.preset,
+        fromCache: result.fromCache,
+        aliasPath
+      });
+      return ok({ path: aliasPath, iconPath });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      log.error("video:prepareDrag failed", {
+        captureId: req.captureId,
+        format: req.format,
+        preset: req.preset,
+        message
+      });
+      return err({ kind: "render", code: "video_prepare_drag_failed", message, cause });
+    }
+  });
+}
+
+/** Output dimensions for a (format, preset) pair against a source.
+ *  Reads the canonical preset width table from the encoder so this
+ *  accessor never drifts from what ffmpeg actually produces. */
+function computePresetDimensions(
+  format: "gif" | "mp4",
+  preset: VideoPreset,
+  sourceWidth: number,
+  sourceHeight: number
+): { widthPx: number; heightPx: number } {
+  const targetWidth =
+    format === "gif" ? GIF_PRESETS[preset].width : MP4_PRESETS[preset].width;
+  return computeOutputDimensions(targetWidth, sourceWidth, sourceHeight);
+}
+
+/** Rough byte-size estimate for a (format, preset) pair. Used as a
+ *  placeholder in `video:presetMetrics` while the actual file
+ *  hasn't been encoded yet. The math is calibrated for "screen
+ *  content" (mostly-static UI, with motion at cursor / scroll
+ *  bursts) — typical PwrSnap recordings.
+ *
+ *  GIF: ~10 KB per frame for 720p, scaled with pixel count. fps
+ *  picked from the preset's frame rate.
+ *
+ *  MP4: bitrate model. HIGH is stream-copy so estimate from source
+ *  resolution (we don't know the actual source bitrate, so 0.1 bpp
+ *  × pixel count × fps is a reasonable proxy). LOW / MED use the
+ *  CRF as a rough bitrate proxy (lower CRF = higher bitrate).
+ *
+ *  All of this is replaced by the exact cache row size once the
+ *  user clicks the card. Estimates only feed the renderer's
+ *  pre-click "what to expect" subtitle. */
+function estimateVideoByteSize(
+  format: "gif" | "mp4",
+  preset: VideoPreset,
+  widthPx: number,
+  heightPx: number,
+  durationSec: number
+): number {
+  const pixels = widthPx * heightPx;
+  if (format === "gif") {
+    const fps = GIF_PRESETS[preset].fps;
+    // 0.20 bpp per palette-encoded GIF frame — calibrated for
+    // screen content with bayer dither at the LMH fps tiers.
+    const frameBytes = pixels * 0.20;
+    return Math.round(frameBytes * fps * durationSec);
+  }
+  // MP4 — model bitrate from CRF / source. Numbers are deliberate
+  // ballpark; the renderer surfaces these as `~N MB` so a 30% miss
+  // is acceptable.
+  const sourceFps = 30;
+  let bitrateBps: number;
+  if (preset === "low") {
+    bitrateBps = 3_000_000;
+  } else if (preset === "med") {
+    bitrateBps = 6_500_000;
+  } else {
+    // HIGH: stream-copy. ~0.1 bpp × pixels × fps approximates h.264
+    // at the recorder's quality setting; close enough to "source"
+    // until the cache returns exact bytes.
+    bitrateBps = Math.round(pixels * sourceFps * 0.1);
+  }
+  return Math.round((bitrateBps / 8) * durationSec);
+}
+
+/** Sanitize a source app name into a filesystem-friendly slug for the
+ *  drag-out display name (`<slug>__<preset>.<ext>`).
+ *
+ *  Uses Unicode property escapes (`\p{L}`/`\p{N}`) so non-ASCII app
+ *  names (`카카오톡`, `微信`, `WhatsApp 🟢`) round-trip with their
+ *  letters intact instead of collapsing to "PwrSnap". NFC-normalized
+ *  first so visually-equivalent code-point sequences (precomposed vs
+ *  decomposed Hangul, etc.) produce the same slug.
+ *
+ *  Empty / null / sanitize-to-empty cases all fall back to "PwrSnap"
+ *  so the alias filename is never something like `__med.mp4`. */
+export function slugifyAppName(name: string | null | undefined): string {
+  const trimmed = (name ?? "").normalize("NFC").trim();
+  if (trimmed.length === 0) return "PwrSnap";
+  const cleaned = trimmed
+    // Keep Unicode letters + numbers + ASCII underscore/hyphen.
+    // Everything else becomes a single hyphen separator.
+    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return cleaned.length === 0 ? "PwrSnap" : cleaned;
 }

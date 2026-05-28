@@ -1,17 +1,25 @@
 // GIF / MP4 quick-output exporter. Reads the original source clip
-// produced by the recorder, slices the requested range, and writes a
-// cache artifact under the render cache root. The cache key is
-// (captureId, range, format, audio choices); identical re-exports
-// return the cached file directly via video-repo.lookupExport.
+// produced by the recorder, slices the requested range, applies the
+// requested quality preset (LMH), and writes a cache artifact under
+// the render cache root. The cache key is (captureId, range, format,
+// preset, audio choices); identical re-exports return the cached file
+// directly via video-repo.lookupExport.
 //
 // GIF: always silent. We use ffmpeg's two-pass `palettegen` +
-// `paletteuse` pipeline for chat-quality output without bloating
-// the encoder dependency.
+// `paletteuse` pipeline for chat-quality output without bloating the
+// encoder dependency. The preset drives target width + fps:
+//   LOW : 480p · 15 fps · social-friendly
+//   MED : 720p · 24 fps · "film frame rate"
+//   HIGH: source resolution · 30 fps · max quality
 //
 // MP4: copies the relevant audio tracks based on the user's toggles.
 // Track selection happens via ffmpeg's `-map` flags; the source
 // container places system audio on track 1, microphone on track 2
 // when both are present (the recorder writes them in that order).
+// The preset drives target width + CRF:
+//   LOW : 720p  · CRF 28 · web-friendly
+//   MED : 1080p · CRF 23 · visually-lossless
+//   HIGH: source resolution · stream-copy (no re-encode)
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -23,6 +31,7 @@ import type {
   VideoExportAudio,
   VideoExportRequest,
   VideoExportResult,
+  VideoPreset,
   VideoRange
 } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
@@ -35,30 +44,190 @@ import { resolveFfmpegPath } from "./ffmpeg-resolver";
 
 const log = getMainLogger("pwrsnap:recording-exporter");
 
+/** Per-(format, preset) encode profile. Source-resolution presets
+ *  (HIGH for MP4) set `width: null` to signal "no downscale". MP4
+ *  HIGH also sets `crf: null` to signal "stream-copy" (no
+ *  re-encode).
+ *
+ *  GIF tiers are picked to land in roughly log-spaced byte sizes for
+ *  a typical PwrSnap recording — each tier ~2× the previous, with
+ *  MED as the geometric midpoint. The resolution axis carries most
+ *  of the weight (byte size scales linearly with pixel count); fps
+ *  is the secondary lever. We deliberately do NOT scale GIF HIGH up
+ *  to source resolution because GIF byte size scales with
+ *  `pixels × fps × duration` and gets unusable fast above ~720p
+ *  (a 1080p 30fps GIF for 10 seconds is routinely 80+ MB — over
+ *  Slack's 50 MB cap, way past iMessage's practical limit, and
+ *  triggers most platforms' auto-convert-to-MP4 paths). MP4 keeps
+ *  the resolution axis up to source because it has the codec
+ *  headroom (CRF + H.264 motion compensation) to handle high-res
+ *  screen content without exploding. */
+export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
+export type Mp4PresetSpec = { readonly width: number | null; readonly crf: number | null };
+
+export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
+  low: { width: 480, fps: 15 },
+  med: { width: 540, fps: 24 },
+  high: { width: 720, fps: 30 }
+};
+
+export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
+  low: { width: 720, crf: 28 },
+  med: { width: 1080, crf: 23 },
+  high: { width: null, crf: null }
+};
+
+/** Compute output dimensions for a given preset against a source
+ *  width × height. LOW / MED scale down (preserving aspect with even
+ *  dimensions for codec compatibility). HIGH passes source through.
+ *  Used both for the encoder's `-vf scale=…` argument and for the
+ *  IPC response's `widthPx` / `heightPx` fields. */
+export function computeOutputDimensions(
+  targetWidth: number | null,
+  sourceWidth: number,
+  sourceHeight: number
+): { widthPx: number; heightPx: number } {
+  if (targetWidth === null || targetWidth >= sourceWidth) {
+    return { widthPx: sourceWidth, heightPx: sourceHeight };
+  }
+  // Round to even — H.264 + libvpx + libx265 all require even dims.
+  // Also matches `-vf scale=W:-2`'s behavior (which is what ffmpeg
+  // emits when we ask for an even-snapped auto-height).
+  const w = targetWidth - (targetWidth % 2);
+  const h = Math.round((sourceHeight * w) / sourceWidth);
+  return { widthPx: w, heightPx: h - (h % 2) };
+}
+
 export type ExportInput = {
   record: CaptureRecord;
   video: VideoCaptureMetadata;
   format: VideoExportRequest["format"];
+  preset: VideoPreset;
   range: VideoRange;
   audio: VideoExportAudio;
 };
+
+// ── Encode concurrency hygiene ──────────────────────────────────────
+//
+// Without guards, six fast clicks on the 6-card grid spawn six
+// concurrent ffmpeg processes. That saturates CPUs / fans / swap on
+// slower machines, and `triggerDrag` would race `triggerCopy` to
+// encode the same file twice. Two guards address this:
+//
+// 1. In-flight de-duplication — a per-cache-key Promise map. If a
+//    second request for the same (captureId, format, preset, range,
+//    audio) tuple arrives while the first is still running, both
+//    await the same Promise. Same ffmpeg run, two callers. This is
+//    how `triggerDrag`'s parallel `video:export` dispatch on the
+//    renderer side avoids paying twice for the encode.
+//
+// 2. Global concurrency cap — a counting semaphore limits how many
+//    ffmpeg processes run simultaneously. MAX_CONCURRENT_ENCODES=2
+//    keeps CPU+memory pressure bounded; extra requests queue until
+//    a slot opens. This is the "user clicks 6 cards fast" guard.
+//
+// Both guards apply only to the ENCODE step. Cache lookups stay
+// synchronous and parallel — instant cache hits don't queue.
+
+const MAX_CONCURRENT_ENCODES = 2;
+let activeEncodeCount = 0;
+const encodeWaitQueue: Array<() => void> = [];
+
+function acquireEncodeSlot(): Promise<void> {
+  if (activeEncodeCount < MAX_CONCURRENT_ENCODES) {
+    activeEncodeCount++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    encodeWaitQueue.push(() => {
+      activeEncodeCount++;
+      resolve();
+    });
+  });
+}
+
+function releaseEncodeSlot(): void {
+  activeEncodeCount--;
+  const next = encodeWaitQueue.shift();
+  if (next !== undefined) next();
+}
+
+/** Cache-key string for in-flight de-dup. Same fields the
+ *  `video_export_cache` PRIMARY KEY uses — two callers asking for
+ *  the same key get the same Promise. */
+function encodeKey(input: ExportInput): string {
+  return [
+    input.record.id,
+    input.format,
+    input.preset,
+    input.range.start.toFixed(3),
+    input.range.end.toFixed(3),
+    input.audio.includeSystemAudio ? 1 : 0,
+    input.audio.includeMicrophone ? 1 : 0
+  ].join("|");
+}
+
+const inFlightEncodes = new Map<string, Promise<VideoExportResult>>();
 
 /**
  * Resolve a cache hit or encode fresh. Caller is responsible for
  * validating the audio toggles against `video.hasSystemAudio` /
  * `video.hasMicrophoneAudio` — the exporter trusts its inputs.
+ *
+ * Concurrent requests for the same cache key share one ffmpeg run
+ * (in-flight de-dup); cross-key requests are bounded by a global
+ * semaphore (concurrency cap). See the header above for rationale.
  */
 export async function exportVideoRange(input: ExportInput): Promise<VideoExportResult> {
+  const { widthPx, heightPx } = computeOutputDimensions(
+    (input.format === "gif" ? GIF_PRESETS : MP4_PRESETS)[input.preset].width,
+    input.record.width_px,
+    input.record.height_px
+  );
+
+  // Cache lookup is always fast (synchronous SQLite point query).
+  // No need to queue it behind the semaphore — instant cache hits
+  // should stay instant.
   const cached = lookupExport({
     captureId: input.record.id,
     range: input.range,
     format: input.format,
+    preset: input.preset,
     audio: input.audio
   });
   if (cached !== null && existsSync(cached.path)) {
-    return cached;
+    return { ...cached, widthPx, heightPx };
   }
 
+  // In-flight de-dup: two callers for the same key share one ffmpeg.
+  // Critical for the `triggerDrag` parallel-dispatch pattern on the
+  // renderer side — the drag's `video:prepareDrag` and the visible-
+  // state `video:export` would otherwise encode the same file twice.
+  const key = encodeKey(input);
+  const existing = inFlightEncodes.get(key);
+  if (existing !== undefined) {
+    const result = await existing;
+    // The first caller returns `fromCache: false`; subsequent callers
+    // get a result that's effectively cached (the file is on disk now,
+    // they didn't pay for the encode). Mark as cache hit so log spans
+    // distinguish "actually encoded" from "rode the in-flight wave".
+    return { ...result, fromCache: true };
+  }
+
+  const promise = encodeAndRecord(input, widthPx, heightPx);
+  inFlightEncodes.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightEncodes.delete(key);
+  }
+}
+
+async function encodeAndRecord(
+  input: ExportInput,
+  widthPx: number,
+  heightPx: number
+): Promise<VideoExportResult> {
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
@@ -73,9 +242,13 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
       ? "silent"
       : `s${input.audio.includeSystemAudio ? 1 : 0}m${input.audio.includeMicrophone ? 1 : 0}`;
   const ext = input.format === "gif" ? "gif" : "mp4";
+  // Filename layout matches the cache key shape: range, then preset,
+  // then audio tag, then extension. Visible-on-disk grouping makes
+  // debugging cache hits / orphans trivial (`ls -lh <captureId>/`
+  // shows all six format/preset combinations for a given range).
   const outputPath = join(
     outputDir,
-    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}.${audioTag}.${ext}`
+    `r${input.range.start.toFixed(3)}-${input.range.end.toFixed(3)}.${input.preset}.${audioTag}.${ext}`
   );
 
   // Video captures always carry a legacy_src_path (the recorded .mp4
@@ -88,10 +261,31 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
       `recording-exporter: capture ${input.record.id} has no legacy_src_path`
     );
   }
-  if (input.format === "gif") {
-    await encodeGif(ffmpeg, input.record.legacy_src_path, input.range, outputPath);
-  } else {
-    await encodeMp4(ffmpeg, input.record.legacy_src_path, input.video, input.range, input.audio, outputPath);
+
+  await acquireEncodeSlot();
+  const startMs = Date.now();
+  try {
+    if (input.format === "gif") {
+      await encodeGif(
+        ffmpeg,
+        input.record.legacy_src_path,
+        input.range,
+        GIF_PRESETS[input.preset],
+        outputPath
+      );
+    } else {
+      await encodeMp4(
+        ffmpeg,
+        input.record.legacy_src_path,
+        input.video,
+        input.range,
+        input.audio,
+        MP4_PRESETS[input.preset],
+        outputPath
+      );
+    }
+  } finally {
+    releaseEncodeSlot();
   }
 
   const sizeInfo = await stat(outputPath);
@@ -99,20 +293,32 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     captureId: input.record.id,
     range: input.range,
     format: input.format,
+    preset: input.preset,
     audio: input.audio,
     path: outputPath,
     byteSize: sizeInfo.size
   });
+  // Capture actual encode duration + byte size for offline estimator
+  // tuning. The renderer's pre-click size labels come from
+  // `estimateVideoByteSize` in recording-handlers.ts — those numbers
+  // were calibrated by hand and want a feedback loop once we have
+  // real data. Grep `video export encoded` in logs to compare.
   log.info("video export encoded", {
     captureId: input.record.id,
     format: input.format,
+    preset: input.preset,
+    widthPx,
+    heightPx,
     byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start
+    durationSec: input.range.end - input.range.start,
+    encodeMs: Date.now() - startMs
   });
   return {
     path: outputPath,
     byteSize: sizeInfo.size,
     durationSec: input.range.end - input.range.start,
+    widthPx,
+    heightPx,
     fromCache: false
   };
 }
@@ -121,13 +327,24 @@ async function encodeGif(
   ffmpeg: string,
   src: string,
   range: VideoRange,
+  spec: GifPresetSpec,
   outPath: string
 ): Promise<void> {
   // Two-pass palette pipeline through a single ffmpeg invocation
-  // using `split` + `palettegen` + `paletteuse`. Output FPS is
-  // capped at 15 — anything faster bloats GIFs without perceptual
-  // win for screen content.
+  // using `split` + `palettegen` + `paletteuse`. The preset drives
+  // target width + fps:
+  //   LOW : 480p @ 15 fps  · social-friendly file sizes
+  //   MED : 720p @ 24 fps  · "film frame rate" smoothness
+  //   HIGH: source @ 30 fps · max-quality (`scale` omitted)
+  // `scale=W:-2:flags=lanczos` snaps height to an even value for
+  // codec compatibility; `flags=lanczos` is a high-quality kernel
+  // that costs negligible CPU vs the default bilinear.
   const duration = (range.end - range.start).toFixed(3);
+  const scaleStep = spec.width === null ? "" : `scale=${spec.width}:-2:flags=lanczos,`;
+  const filterComplex =
+    `[0:v] fps=${spec.fps},${scaleStep}split [a][b];` +
+    `[a] palettegen=stats_mode=diff [p];` +
+    `[b][p] paletteuse=dither=bayer:bayer_scale=5`;
   const args = [
     "-y",
     "-ss",
@@ -137,7 +354,7 @@ async function encodeGif(
     "-i",
     src,
     "-filter_complex",
-    "[0:v] fps=15,scale=720:-2:flags=lanczos,split [a][b];[a] palettegen [p];[b][p] paletteuse",
+    filterComplex,
     outPath
   ];
   await runFfmpeg(ffmpeg, args);
@@ -149,6 +366,7 @@ async function encodeMp4(
   video: VideoCaptureMetadata,
   range: VideoRange,
   audio: VideoExportAudio,
+  spec: Mp4PresetSpec,
   outPath: string
 ): Promise<void> {
   const duration = (range.end - range.start).toFixed(3);
@@ -161,9 +379,35 @@ async function encodeMp4(
     "-i",
     src
   ];
-  // Always copy the video track. The source is already H.264/AAC
-  // (per the recorder config) so a stream copy avoids a re-encode.
-  args.push("-map", "0:v:0", "-c:v", "copy");
+
+  // Video track. HIGH preset = stream-copy (`-c:v copy`) — no
+  // re-encode, no downscale, instant. LOW / MED preset = re-encode
+  // via libx264 with a per-preset CRF + downscale-to-target-width.
+  args.push("-map", "0:v:0");
+  if (spec.width === null || spec.crf === null) {
+    // HIGH: stream-copy. The source is already H.264 (per the
+    // recorder config) so this is a trim + remux, ~instant on disk.
+    args.push("-c:v", "copy");
+  } else {
+    // LOW / MED: scale + re-encode. `-vf scale=W:-2` produces an
+    // even-snapped height; `-preset veryfast` is the sweet-spot
+    // tradeoff between encode CPU and file size at the same CRF
+    // for screen content. `-crf` is the rate-distortion knob (lower
+    // = higher quality + larger file; CRF 23 is x264's "visually
+    // lossless" default, CRF 28 is web-friendly).
+    args.push(
+      "-vf",
+      `scale=${spec.width}:-2:flags=lanczos`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      String(spec.crf),
+      "-pix_fmt",
+      "yuv420p"
+    );
+  }
 
   // Audio track mapping. The recorder writes system audio as the
   // first audio stream and microphone as the second when both are

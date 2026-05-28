@@ -16,7 +16,14 @@
 // can still reuse the state machine without taking the markup.
 
 import { useCallback, useEffect, useState } from "react";
+import type { VideoPreset } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
+
+/** Preset the tray + float-over single-button surfaces ask for when
+ *  the user clicks GIF / MP4. They're space-constrained and don't
+ *  surface a preset picker, so they implicitly take the middle tier.
+ *  DetailRail's 6-card grid passes an explicit preset per card. */
+const DEFAULT_PRESET: VideoPreset = "med";
 
 /** Discriminated-union state for a per-capture GIF / MP4 export. Same
  *  shape that lived in `FloatOver.tsx` as `FloatOverExportState` and
@@ -78,6 +85,7 @@ export function useVideoExport(input: VideoExportInput | null): UseVideoExportRe
       void dispatch("video:export", {
         captureId,
         format,
+        preset: DEFAULT_PRESET,
         audio:
           format === "gif"
             ? { includeSystemAudio: false, includeMicrophone: false }

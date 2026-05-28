@@ -40,8 +40,9 @@ import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton
 import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
-import { useVideoExport } from "../shared/useVideoExport";
-import { VideoExportButtons } from "../shared/VideoExportButtons";
+import { useVideoExportPresets } from "../shared/useVideoExportPresets";
+import { useVideoPresetMetrics } from "../shared/useVideoPresetMetrics";
+import { VideoExportPresetGrid } from "../shared/VideoExportPresetGrid";
 import { AppTag } from "../shared/AppIcons";
 import {
   RightActivityBar,
@@ -98,19 +99,28 @@ export function DetailRail({
     record?.kind === "image" ? record.edits_version : null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
-  // Shared GIF / MP4 export machinery — owns the state machine and
-  // the `video:export` dispatch. Input goes null when the selection
-  // isn't a video so the hook stays idle without firing IPC.
-  const videoInput =
+  // Per-(format, preset) export machinery for the 6-card grid.
+  // Owns six button states + the four bus verbs the cards drive:
+  //   click body → clipboard:copyVideoFile
+  //   click FILE chip → clipboard:copyVideoPath
+  //   drag FILE chip → startVideoDrag (fire-and-forget IPC)
+  // Input goes null when the selection isn't a video so the hook
+  // stays idle and the trigger fns no-op.
+  const videoCaptureId =
     record?.kind === "video" && record.video !== null && record.video !== undefined
-      ? {
-          captureId: record.id,
-          hasSystemAudio: record.video.hasSystemAudio,
-          hasMicrophoneAudio: record.video.hasMicrophoneAudio
-        }
+      ? record.id
       : null;
-  const { exportState: videoExportState, triggerExport: triggerVideoExport } =
-    useVideoExport(videoInput);
+  const {
+    states: videoExportStates,
+    triggerCopy: triggerVideoCopy,
+    triggerCopyPath: triggerVideoCopyPath,
+    triggerDrag: triggerVideoDrag
+  } = useVideoExportPresets(videoCaptureId === null ? null : { captureId: videoCaptureId });
+  // Per-(format, preset) dimensions + byte estimates for the grid
+  // cards. Estimated until the user clicks a card and the cache
+  // row lands; exact thereafter. Mirrors `usePresetRenderMetrics`
+  // for images.
+  const videoPresetMetrics = useVideoPresetMetrics(videoCaptureId);
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
   // (e.g. drive it from a title-bar toggle) while letting the rail
@@ -461,21 +471,18 @@ export function DetailRail({
             )}
           </div>
           {isVideo && videoMeta !== null ? (
-            // Two cards (GIF + MP4) in place of the image L/M/H grid.
-            // The grid wrapper stays local — surface-specific positioning
-            // belongs here — but the buttons themselves come from the
-            // shared component so the tray and float-over render the
-            // identical chrome.
-            <div
-              className="psl__copy-row"
-              style={{ gridTemplateColumns: "repeat(2, 1fr)" }}
-              data-testid="psl-copy-row-video"
-            >
-              <VideoExportButtons
-                exportState={videoExportState}
-                hasSystemAudio={videoMeta.hasSystemAudio}
-                hasMicrophoneAudio={videoMeta.hasMicrophoneAudio}
-                onExport={triggerVideoExport}
+            // 6-card grid (2 rows × 3 cards) — GIF L/M/H on top,
+            // MP4 L/M/H below. Each card supports click-copy +
+            // FILE-chip copy-path + FILE-chip drag-out, mirroring
+            // the image L/M/H affordances. State + metrics live in
+            // the two hooks above; the grid is purely presentational.
+            <div data-testid="psl-copy-row-video">
+              <VideoExportPresetGrid
+                metrics={videoPresetMetrics}
+                states={videoExportStates}
+                onCopy={triggerVideoCopy}
+                onCopyPath={triggerVideoCopyPath}
+                onDrag={triggerVideoDrag}
               />
             </div>
           ) : (
@@ -563,12 +570,13 @@ export function DetailRail({
                     ? "Click to reveal in Finder"
                     : "Drag PNG file or click to reveal in Finder"
                 }
-                // Drag is image-only today — `startCaptureDrag` routes
-                // through sharp's render pipeline, which throws
-                // "Input file contains unsupported image format" on a
-                // `.mp4` source. Tracked in #136 (video drag/copy
-                // parity); until that lands, don't promise a drag we
-                // can't deliver. Click-to-reveal still works for both.
+                // Image: this is the only drag affordance in the
+                // rail, so it carries `draggable` + HIGH preset.
+                // Video: drag-out lives in the 6-card grid above
+                // (each card drags its own format/preset combo via
+                // `startVideoDrag`). The action-row button stays a
+                // simple "click to reveal in Finder" affordance —
+                // no drag for video, no encoding triggered here.
                 draggable={!isVideo}
                 onClick={() => {
                   void dispatch("capture:reveal", { captureId: record.id });

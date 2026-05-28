@@ -12,7 +12,8 @@ import type {
   Req,
   Res,
   PwrSnapError,
-  Result
+  Result,
+  VideoPreset
 } from "@pwrsnap/shared";
 
 export type WindowSnapEntry = {
@@ -68,6 +69,11 @@ declare global {
       requestTrayResize(payload: { width: number; height: number }): void;
       requestFloatOverResize(payload: { width: number; height: number }): void;
       startCaptureDrag(payload: { captureId: string; preset: RenderPreset }): void;
+      startVideoDrag(payload: {
+        captureId: string;
+        format: "gif" | "mp4";
+        preset: VideoPreset;
+      }): void;
       reportSelectorDiagnostics(payload: {
         innerWidth: number;
         innerHeight: number;

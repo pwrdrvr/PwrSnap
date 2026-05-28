@@ -31,37 +31,25 @@
   border-color: rgba(255, 255, 255, 0.5);
 }
 
-/* Pixelate — CSS has no true nearest-neighbor downscale filter on
-   the backdrop, so the live preview approximates: a tighter blur +
-   a thin diagonal-chequer pattern overlay so it reads as "mosaic
-   redaction" instead of "soft blur." Distinct visual silhouette
-   from the gaussian style. The real export uses sharp's
-   resize→nearest-neighbor for true pixelation. */
-.ed-blur-item--pixelate {
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  background-image:
-    linear-gradient(
-      45deg,
-      rgba(255, 255, 255, 0.1) 25%,
-      transparent 25%,
-      transparent 75%,
-      rgba(255, 255, 255, 0.1) 75%
-    ),
-    linear-gradient(
-      45deg,
-      rgba(0, 0, 0, 0.18) 25%,
-      transparent 25%,
-      transparent 75%,
-      rgba(0, 0, 0, 0.18) 75%
-    );
-  background-size: 8px 8px;
-  background-position: 0 0, 4px 4px;
+/* Pixelate — canvas-backed mosaic. The `<canvas>` element samples the
+   underlying source image at the same block size the bake uses
+   (`max(4, round(shortSide/16))`), draws the coarse grid into its
+   internal buffer at that small resolution, then displays at the
+   rect's full visual size via `image-rendering: pixelated` so the
+   browser upscales each block nearest-neighbor. Visually matches the
+   bake's `compose-tree.ts` pixelate path block-for-block. See the
+   doc-block on `PixelateMosaicCanvas` in BlurOverlays.tsx for the
+   rationale. */
+.ed-blur-item--pixelate-canvas {
+  /* No backdrop-filter, no background pattern — the canvas content
+     IS the visual. A thin border distinguishes the rect bounds while
+     editing without obscuring the mosaic. */
   border: 1px dashed rgba(255, 255, 255, 0.32);
+  /* Canvas inherits the absolute positioning from the style attribute
+     applied inline in BlurOverlays.tsx (left/top/width/height as %s
+     of the parent .ed-blur-layer). */
 }
-.ed-blur-item--pixelate.is-draft {
-  backdrop-filter: blur(9px);
-  -webkit-backdrop-filter: blur(9px);
+.ed-blur-item--pixelate-canvas.is-draft {
   border-color: rgba(255, 255, 255, 0.5);
 }
 

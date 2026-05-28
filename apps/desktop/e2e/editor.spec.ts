@@ -54,18 +54,11 @@ test("editor:open creates a new window with the captureId hash", async () => {
   }
 });
 
-test("editor:open returns not_found for a missing capture", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const result = await app.dispatch("editor:open", { captureId: "no-such-capture-xyz" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("not_found");
-    }
-  } finally {
-    await app.close();
-  }
-});
+// `editor:open returns not_found for a missing capture` moved to
+// apps/desktop/src/main/handlers/__tests__/library-handlers-editor-open.test.ts.
+// The handler is one `getCaptureById` lookup + a null-check — the
+// launchPwrSnap round-trip was 100% of the test budget and the dominant
+// source of the Linux/xvfb worker-teardown flakes on PR #125.
 
 test("overlays:upsert + list + delete round-trip", async () => {
   const app = await launchPwrSnap();

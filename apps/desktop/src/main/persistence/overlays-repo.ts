@@ -137,6 +137,38 @@ export function insertOverlay(input: UpsertOverlay): OverlayRow {
  * Returns the capture id of the affected overlay (or null if no row
  * matched) so the caller can broadcast `overlaysChanged` accurately.
  */
+/**
+ * Update an overlay's `z_index`. Atomic UPDATE; id is preserved
+ * (unlike upsert which would mint a new id on every move). Bumps
+ * `captures.edits_version` so any in-flight render cache invalidates.
+ * Returns the affected overlay's capture id so the caller can
+ * broadcast `overlaysChanged`; null when the id doesn't match a row.
+ *
+ * Caller picks new z_index values with a gap (~1000-step increments)
+ * so most reorders avoid touching neighbors — same convention the v2
+ * `setLayerZIndex` uses, so the renderer side of reorder ships one
+ * algorithm across both formats.
+ */
+export function setOverlayZIndex(id: string, zIndex: number): string | null {
+  const db = getDb();
+  const row = db
+    .prepare<[string], { capture_id: string }>(
+      `SELECT capture_id FROM overlays WHERE id = ?`
+    )
+    .get(id);
+  if (row === undefined) return null;
+  const tx = db.transaction(() => {
+    db.prepare<[number, string]>(
+      `UPDATE overlays SET z_index = ? WHERE id = ?`
+    ).run(zIndex, id);
+    db.prepare<[string]>(
+      `UPDATE captures SET edits_version = edits_version + 1 WHERE id = ?`
+    ).run(row.capture_id);
+  });
+  tx();
+  return row.capture_id;
+}
+
 export function rejectOverlay(id: string): string | null {
   const now = new Date().toISOString();
   const db = getDb();

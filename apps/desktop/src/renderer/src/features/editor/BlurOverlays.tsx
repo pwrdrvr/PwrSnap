@@ -13,7 +13,7 @@
 
 import { useMemo, type ReactElement } from "react";
 import type { BlurStyle, OverlayRow } from "@pwrsnap/shared";
-import { readBlurStyle } from "@pwrsnap/shared";
+import { readBlurStyle, readOverlayRotation } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate } from "./useCaptureModel";
 import "./BlurOverlays.css";
@@ -44,13 +44,23 @@ export function BlurOverlays({
     if (geom.kind !== "rect") return overlays;
     // Hoist the narrowed geometry into a local so the closure below
     // preserves the discriminator — TS doesn't carry refinement across
-    // the `.map` callback.
+    // the `.map` callback. Carry through the rotation from the live
+    // override so the in-progress rotation-handle drag updates the
+    // CSS transform in real time.
     const overrideRect = geom.rect;
+    const overrideRotation = geom.rotation;
     const overrideLayerId = liveOverride.layerId;
     return overlays.map((row) => {
       if (row.id !== overrideLayerId) return row;
       if (row.data.kind !== "blur") return row;
-      return { ...row, data: { ...row.data, rect: overrideRect } };
+      return {
+        ...row,
+        data: {
+          ...row.data,
+          rect: overrideRect,
+          ...(overrideRotation !== undefined ? { rotation: overrideRotation } : {})
+        }
+      };
     });
   }, [liveOverride, overlays]);
   const blurs = effectiveOverlays.flatMap((row) =>
@@ -64,10 +74,15 @@ export function BlurOverlays({
   return (
     <div className="ed-blur-layer">
       {blurs.map(({ row, data }) => (
-        <BlurOverlayItem key={row.id} rect={data.rect} style={readBlurStyle(data)} />
+        <BlurOverlayItem
+          key={row.id}
+          rect={data.rect}
+          rotation={readOverlayRotation(data)}
+          style={readBlurStyle(data)}
+        />
       ))}
       {liveRect !== null && (
-        <BlurOverlayItem rect={liveRect} style={blurStyle} isDraft />
+        <BlurOverlayItem rect={liveRect} rotation={0} style={blurStyle} isDraft />
       )}
     </div>
   );
@@ -75,13 +90,23 @@ export function BlurOverlays({
 
 function BlurOverlayItem({
   rect,
+  rotation,
   style,
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
+  /** Clockwise rotation in radians around the rect's geometric center.
+   *  CSS `transform: rotate(deg)` defaults to rotating around the
+   *  element's center, which matches the SelectionOutline / SVG
+   *  glyph rotation pivot for rect/highlight kinds. NOTE: v1 export
+   *  (`compose.ts` blur path) currently ignores rotation — sharp's
+   *  extract+blur pipeline doesn't support rotated clip regions. The
+   *  live editor preview will rotate; the baked PNG will not. */
+  rotation: number;
   style: BlurStyle;
   isDraft?: boolean;
 }): ReactElement {
+  const rotateDeg = (rotation * 180) / Math.PI;
   return (
     <div
       className={
@@ -91,7 +116,8 @@ function BlurOverlayItem({
         left: `${rect.x * 100}%`,
         top: `${rect.y * 100}%`,
         width: `${rect.w * 100}%`,
-        height: `${rect.h * 100}%`
+        height: `${rect.h * 100}%`,
+        ...(rotation !== 0 ? { transform: `rotate(${rotateDeg}deg)` } : {})
       }}
     />
   );

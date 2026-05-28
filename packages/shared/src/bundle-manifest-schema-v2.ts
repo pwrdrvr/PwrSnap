@@ -179,7 +179,19 @@ export const BlurEffect = z.object({
   // bundles produced before Phase 3.4 landed; readers fall back to
   // "gaussian" via DEFAULT_BLUR_STYLE so legacy rows render the
   // same as they always did.
-  style: z.enum(["gaussian", "pixelate", "redact"]).optional()
+  style: z.enum(["gaussian", "pixelate", "redact"]).optional(),
+  // Clockwise rotation (radians) around the clip_rect's geometric
+  // center. Mirrors v1 BlurOverlay's `rotation` field. Optional for
+  // back-compat with v2 bundles produced before rotation shipped —
+  // legacy readers see `undefined`, treat as 0, render the unrotated
+  // axis-aligned blur (no behavioral change). The bake applies the
+  // rotation via an SVG mask + dest-in composite; the live editor
+  // applies it via CSS transform.
+  //
+  // Vector layers carry rotation inside `shape.rotation` (the v1
+  // Overlay payload). Effect layers don't have a `shape`, so the
+  // field lives directly on the effect spec.
+  rotation: FiniteNumber.optional()
 });
 export type BlurEffect = z.infer<typeof BlurEffect>;
 

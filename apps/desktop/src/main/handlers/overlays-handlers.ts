@@ -21,7 +21,8 @@ import { getCaptureById } from "../persistence/captures-repo";
 import {
   insertOverlay,
   listLiveOverlays,
-  rejectOverlay
+  rejectOverlay,
+  setOverlayZIndex
 } from "../persistence/overlays-repo";
 
 const log = getMainLogger("pwrsnap:overlays-handlers");
@@ -108,6 +109,31 @@ export function registerOverlaysHandlers(): void {
     // write to leave v2 state untouched on a misdirected call.
     const captureId = rejectOverlay(req.id);
     log.info("overlay rejected", { id: req.id, captureId });
+    if (captureId !== null) {
+      broadcastOverlaysChanged(captureId);
+      scheduleRepack(captureId);
+    }
+    return ok(undefined);
+  });
+
+  bus.register("overlays:reorder", async (req) => {
+    // Validate at the bus boundary — per CLAUDE.md "Validate at the
+    // bus boundary. Per-verb validators... Add a validator when you
+    // add a verb." Without this, a compromised renderer (or a buggy
+    // caller) could land NaN/Infinity into SQLite's REAL column,
+    // breaking ORDER BY z_index silently for the whole capture. Same
+    // class of bug as bare numeric IPC inputs anywhere else — clamp
+    // at the boundary, don't trust the schema's `number` to mean
+    // "finite number".
+    if (!Number.isFinite(req.zIndex)) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: `overlays:reorder rejected: zIndex must be finite, got ${String(req.zIndex)}`
+      });
+    }
+    const captureId = setOverlayZIndex(req.id, req.zIndex);
+    log.info("overlay reordered", { id: req.id, zIndex: req.zIndex, captureId });
     if (captureId !== null) {
       broadcastOverlaysChanged(captureId);
       scheduleRepack(captureId);

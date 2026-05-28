@@ -36,6 +36,7 @@ import {
   readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity,
+  readOverlayRotation,
   readOverlayThickness,
   readRectFilled,
   readTextWeight
@@ -588,18 +589,29 @@ function rectSvg(
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
   const filled = readRectFilled(data);
+  // Rotation transform — same convention as RectGlyph (live editor):
+  // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the rect's
+  // geometric center. `transform` is omitted entirely when rotation
+  // is 0, so existing unrotated rows bake byte-identical to before.
+  const rotateDeg = (readOverlayRotation(data) * 180) / Math.PI;
+  const cx = xPx + wPx / 2;
+  const cy = yPx + hPx / 2;
+  const groupTransform =
+    rotateDeg !== 0 ? ` transform="rotate(${rotateDeg} ${cx} ${cy})"` : "";
 
   if (filled) {
     // Solid fill — single rect, no stroke / halo. A halo around a
     // solid fill would just visually expand the same color outward
     // by a stroke-width without adding contrast.
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />
+  <g${groupTransform}>
+    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />
+  </g>
 </svg>`;
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <g stroke-linejoin="round">
+  <g stroke-linejoin="round"${groupTransform}>
     <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
           fill="none" stroke="white" stroke-width="${strokeWidthPx + outlinePx * 2}" />
     <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
@@ -630,8 +642,16 @@ function highlightSvg(
   // buildCompositeLayersForV2.
   const fillHex = readHighlightColor(data);
   const fillOpacity = readHighlightOpacity(data);
+  // Rotation transform — same convention as the live HighlightGlyph;
+  // omit attribute entirely when rotation is 0 so unrotated legacy
+  // rows produce byte-identical SVG.
+  const rotateDeg = (readOverlayRotation(data) * 180) / Math.PI;
+  const cx = xPx + wPx / 2;
+  const cy = yPx + hPx / 2;
+  const transformAttr =
+    rotateDeg !== 0 ? ` transform="rotate(${rotateDeg} ${cx} ${cy})"` : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillHex}" fill-opacity="${fillOpacity}" />
+  <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillHex}" fill-opacity="${fillOpacity}"${transformAttr} />
 </svg>`;
 }
 
@@ -705,8 +725,8 @@ function textSvg(
   // put the click at the TOP of the text, causing it to appear below
   // the cursor on commit. The renderer (TextGlyph) does the same.
   // xml-escape each line so user input can't break out of the SVG.
-  const lines = data.body
-    .split("\n")
+  const splitLines = data.body.split("\n");
+  const lines = splitLines
     .map((line, i) => {
       const dy = i === 0 ? "0em" : "1.2em";
       return `<tspan x="${xPx}" dy="${dy}">${escapeXml(line)}</tspan>`;
@@ -717,8 +737,34 @@ function textSvg(
   // bake identically. New rows from the popover land "regular" → 400
   // or "bold" → 700.
   const fontWeight = readTextWeight(data);
+  // Rotation transform — same convention as the live TextGlyph:
+  // rotation pivots around the BODY-BOX CENTER (not the anchor) so
+  // the visible glyph rotates around its visual center instead of
+  // swinging around the off-glyph left-edge anchor point. Body-box
+  // center in viewport coords:
+  //   • cx = xPx + naturalWidthPx / 2
+  //   • cy = yPx + (naturalHeightPx - fontSizePx) / 2
+  //     (yPx is the first line's vertical center via dominant-
+  //     baseline=central; box top is yPx - fontSizePx/2; box height
+  //     is naturalHeightPx; so center = yPx - fontSizePx/2 +
+  //     naturalHeightPx/2 = yPx + (naturalHeightPx - fontSizePx) / 2)
+  // Same charAdvance / line-height constants as `textBoundsBox` in
+  // OverlaySvg.tsx — keeping them in lockstep is what makes the
+  // bake match the live editor on rotated text.
+  const rotateDeg = (readOverlayRotation(data) * 180) / Math.PI;
+  const charAdvance = 0.55;
+  const maxChars = splitLines.reduce((m, l) => Math.max(m, l.length), 0);
+  const naturalWidthPx = maxChars * fontSizePx * charAdvance;
+  const naturalHeightPx = fontSizePx * (splitLines.length * 1.2 - 0.2);
+  const cxPivot = xPx + naturalWidthPx / 2;
+  const cyPivot = yPx + (naturalHeightPx - fontSizePx) / 2;
+  const textOpenG =
+    rotateDeg !== 0
+      ? `<g transform="rotate(${rotateDeg} ${cxPivot} ${cyPivot})">`
+      : "";
+  const textCloseG = rotateDeg !== 0 ? "</g>" : "";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
-  <text x="${xPx}" y="${yPx}"
+  ${textOpenG}<text x="${xPx}" y="${yPx}"
         font-family="Helvetica, Arial, sans-serif"
         font-size="${fontSizePx}"
         font-weight="${fontWeight}"
@@ -726,7 +772,7 @@ function textSvg(
         stroke="rgba(0,0,0,0.7)"
         stroke-width="${fontSizePx * 0.08}"
         paint-order="stroke"
-        dominant-baseline="central">${lines}</text>
+        dominant-baseline="central">${lines}</text>${textCloseG}
 </svg>`;
 }
 
@@ -741,6 +787,94 @@ function escapeXml(s: string): string {
 
 /* ----------------------------- Blur ----------------------------- */
 
+/** Compute the AABB of a rotated rect in pixel space. Used by the
+ *  blur bake to know how much source to extract + how big the mask
+ *  needs to be. The rect's geometric center is the rotation pivot
+ *  (matches the renderer's `RectGlyph` + `compose.ts` `rectSvg`
+ *  conventions). Returns the four bounds + a few derived offsets
+ *  the caller uses to position the mask. */
+function rotatedRectAabbPx(
+  leftPx: number,
+  topPx: number,
+  widthPx: number,
+  heightPx: number,
+  rotation: number
+): {
+  aabbLeft: number;
+  aabbTop: number;
+  aabbWidth: number;
+  aabbHeight: number;
+} {
+  if (rotation === 0) {
+    return {
+      aabbLeft: leftPx,
+      aabbTop: topPx,
+      aabbWidth: widthPx,
+      aabbHeight: heightPx
+    };
+  }
+  const cx = leftPx + widthPx / 2;
+  const cy = topPx + heightPx / 2;
+  const hw = widthPx / 2;
+  const hh = heightPx / 2;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  // Four corners in the rect's local frame; rotate, translate to
+  // pivot, then compute min/max across all four.
+  const corners = [
+    { x: -hw, y: -hh },
+    { x: hw, y: -hh },
+    { x: hw, y: hh },
+    { x: -hw, y: hh }
+  ].map(({ x, y }) => ({
+    x: cx + x * cos - y * sin,
+    y: cy + x * sin + y * cos
+  }));
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    aabbLeft: minX,
+    aabbTop: minY,
+    aabbWidth: maxX - minX,
+    aabbHeight: maxY - minY
+  };
+}
+
+/** SVG mask shaped like a rotated rect, rendered at AABB-local
+ *  coords. White inside the rect, transparent everywhere else —
+ *  ready for sharp's `dest-in` composite to keep only the rect-
+ *  shaped subset of the blurred AABB.
+ *
+ *  Coordinates are AABB-local: caller passes the rect's top-left
+ *  position relative to the AABB's origin, plus the rotation pivot
+ *  (which is the rect center, also in AABB-local coords). For
+ *  unrotated rects the rect fills the AABB exactly (the AABB IS
+ *  the rect), so the mask is a solid white fill — but we still
+ *  emit the rect form for code uniformity. */
+function rotatedRectMaskSvg(args: {
+  aabbWidth: number;
+  aabbHeight: number;
+  rectLocalLeft: number;
+  rectLocalTop: number;
+  rectWidth: number;
+  rectHeight: number;
+  rotation: number;
+}): Buffer {
+  const rotDeg = (args.rotation * 180) / Math.PI;
+  const cx = args.rectLocalLeft + args.rectWidth / 2;
+  const cy = args.rectLocalTop + args.rectHeight / 2;
+  const transformAttr =
+    args.rotation !== 0 ? ` transform="rotate(${rotDeg} ${cx} ${cy})"` : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${args.aabbWidth}" height="${args.aabbHeight}" viewBox="0 0 ${args.aabbWidth} ${args.aabbHeight}">
+  <rect x="${args.rectLocalLeft}" y="${args.rectLocalTop}" width="${args.rectWidth}" height="${args.rectHeight}" fill="white"${transformAttr} />
+</svg>`;
+  return Buffer.from(svg);
+}
+
 async function blurLayer(
   data: Extract<OverlayRow["data"], { kind: "blur" }>,
   srcPath: string,
@@ -752,41 +886,64 @@ async function blurLayer(
   // composite back at the same coords. Cheaper than running the
   // operation on the full source + masking, because the inner pixel
   // cost scales with the rect, not the whole image.
-  const left = Math.round(data.rect.x * imageWidthPx);
-  const top = Math.round(data.rect.y * imageHeightPx);
-  const width = Math.round(data.rect.w * imageWidthPx);
-  const height = Math.round(data.rect.h * imageHeightPx);
-  if (width <= 0 || height <= 0) return null;
+  //
+  // Rotation support: when the row carries a non-zero `rotation`, we
+  // extract the AABB of the ROTATED rect (a few more pixels than the
+  // rect itself), run the operation on the AABB, then mask the result
+  // with a rotated-rect SVG via `dest-in` composite so the visible
+  // blurred region matches the user-rotated shape. Unrotated rows
+  // (rotation === 0) skip the mask step entirely — the operated buffer
+  // is composited back as-is, byte-identical to the pre-rotation bake.
+  const rotation = readOverlayRotation(data);
+  const leftPx = data.rect.x * imageWidthPx;
+  const topPx = data.rect.y * imageHeightPx;
+  const widthPx = data.rect.w * imageWidthPx;
+  const heightPx = data.rect.h * imageHeightPx;
+  if (widthPx <= 0 || heightPx <= 0) return null;
 
-  // Clamp to the image bounds in case the rect crept past the edge
-  // (renderer should clamp too, but defense in depth).
-  const clamped = {
-    left: Math.max(0, Math.min(imageWidthPx - 1, left)),
-    top: Math.max(0, Math.min(imageHeightPx - 1, top)),
-    width: Math.max(1, Math.min(imageWidthPx - left, width)),
-    height: Math.max(1, Math.min(imageHeightPx - top, height))
-  };
+  const aabb = rotatedRectAabbPx(leftPx, topPx, widthPx, heightPx, rotation);
+
+  // Clamp the AABB to image bounds so .extract() doesn't error.
+  // The mask is computed AFTER clamping so partial-off-canvas
+  // rotations still produce a coherent rotated shape.
+  const extractLeft = Math.max(0, Math.floor(aabb.aabbLeft));
+  const extractTop = Math.max(0, Math.floor(aabb.aabbTop));
+  const extractWidth = Math.max(
+    1,
+    Math.min(
+      imageWidthPx - extractLeft,
+      Math.ceil(aabb.aabbLeft + aabb.aabbWidth) - extractLeft
+    )
+  );
+  const extractHeight = Math.max(
+    1,
+    Math.min(
+      imageHeightPx - extractTop,
+      Math.ceil(aabb.aabbTop + aabb.aabbHeight) - extractTop
+    )
+  );
+  if (extractWidth <= 0 || extractHeight <= 0) return null;
 
   const style = readBlurStyle(data);
 
+  // Produce the operated buffer (pre-mask). Three style branches; the
+  // shape of the output is always extractWidth × extractHeight PNG.
+  let operatedBuf: Buffer;
   if (style === "redact") {
     // Solid opaque black — privacy redaction. Cheapest of the three
     // because no source extraction is needed; we just generate a
     // flat PNG of the right dimensions.
-    const buf = await sharp({
+    operatedBuf = await sharp({
       create: {
-        width: clamped.width,
-        height: clamped.height,
+        width: extractWidth,
+        height: extractHeight,
         channels: 4,
         background: { r: 0, g: 0, b: 0, alpha: 1 }
       }
     })
       .png()
       .toBuffer();
-    return { input: buf, top: clamped.top, left: clamped.left };
-  }
-
-  if (style === "pixelate") {
+  } else if (style === "pixelate") {
     // Classic "mosaic" pixelation — downscale the extracted region
     // to a coarse grid (one pixel per visible block), then scale it
     // back up with nearest-neighbor so the blocks stay crisp instead
@@ -796,32 +953,74 @@ async function blurLayer(
     // along the short side at any rect size keeps the visual chunk
     // density consistent. Floor to at least 4×4 pixels per block so
     // tiny rects don't end up looking smooth.
-    const shortSide = Math.min(clamped.width, clamped.height);
+    const shortSide = Math.min(extractWidth, extractHeight);
     const blocksAcrossShortSide = 16;
     const blockSizePx = Math.max(4, Math.round(shortSide / blocksAcrossShortSide));
-    const downW = Math.max(1, Math.floor(clamped.width / blockSizePx));
-    const downH = Math.max(1, Math.floor(clamped.height / blockSizePx));
-    const buf = await sharp(srcPath)
-      .extract(clamped)
+    const downW = Math.max(1, Math.floor(extractWidth / blockSizePx));
+    const downH = Math.max(1, Math.floor(extractHeight / blockSizePx));
+    operatedBuf = await sharp(srcPath)
+      .extract({
+        left: extractLeft,
+        top: extractTop,
+        width: extractWidth,
+        height: extractHeight
+      })
       // First hop: average down to the coarse grid (default bicubic
       // kernel does the averaging — exactly what mosaic wants).
       .resize(downW, downH)
       // Second hop: scale back up with nearest-neighbor so the
       // blocks stay sharp-edged.
-      .resize(clamped.width, clamped.height, { kernel: "nearest" })
+      .resize(extractWidth, extractHeight, { kernel: "nearest" })
       .png()
       .toBuffer();
-    return { input: buf, top: clamped.top, left: clamped.left };
+  } else {
+    // gaussian (default) — soft Gaussian blur. Sigma proportional to
+    // the rect's short side so the blur amount looks similar
+    // regardless of the rect's size. Cap at 60 to keep the kernel
+    // cost bounded.
+    const rectShortSidePx = Math.min(widthPx, heightPx);
+    const sigma = Math.min(60, Math.max(8, rectShortSidePx / 8));
+    operatedBuf = await sharp(srcPath)
+      .extract({
+        left: extractLeft,
+        top: extractTop,
+        width: extractWidth,
+        height: extractHeight
+      })
+      .blur(sigma)
+      .png()
+      .toBuffer();
   }
 
-  // gaussian (default) — soft Gaussian blur. Sigma proportional to
-  // the rect's short side so the blur amount looks similar
-  // regardless of the rect's size. Cap at 60 to keep the kernel
-  // cost bounded.
-  const rectShortSidePx = Math.min(clamped.width, clamped.height);
-  const sigma = Math.min(60, Math.max(8, rectShortSidePx / 8));
-  const buf = await sharp(srcPath).extract(clamped).blur(sigma).png().toBuffer();
-  return { input: buf, top: clamped.top, left: clamped.left };
+  if (rotation === 0) {
+    // Unrotated — operated buffer IS the visible shape. No mask
+    // step; output is byte-identical to the pre-rotation bake (the
+    // AABB equals the rect for rotation 0, and extractLeft/Top/Width/
+    // Height match the old `clamped` values).
+    return { input: operatedBuf, top: extractTop, left: extractLeft };
+  }
+
+  // Rotated — mask the operated buffer with a rotated-rect SVG so
+  // only the rect-shaped subset of the AABB ends up rendered. The
+  // mask's coords are AABB-local: the rect's original top-left is
+  // at `(leftPx - extractLeft, topPx - extractTop)`, and it's
+  // rotated around its center (which is at `leftPx + widthPx/2 -
+  // extractLeft, topPx + heightPx/2 - extractTop` in AABB-local
+  // coords). `rotatedRectMaskSvg` handles the SVG transform.
+  const maskBuf = rotatedRectMaskSvg({
+    aabbWidth: extractWidth,
+    aabbHeight: extractHeight,
+    rectLocalLeft: leftPx - extractLeft,
+    rectLocalTop: topPx - extractTop,
+    rectWidth: widthPx,
+    rectHeight: heightPx,
+    rotation
+  });
+  const maskedBuf = await sharp(operatedBuf)
+    .composite([{ input: maskBuf, blend: "dest-in" }])
+    .png()
+    .toBuffer();
+  return { input: maskedBuf, top: extractTop, left: extractLeft };
 }
 
 function clamp(value: number, min: number, max: number): number {

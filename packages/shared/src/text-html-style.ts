@@ -57,6 +57,18 @@ export interface TextHtmlStyleArgs {
    *  • Bake:    canvasHeightPx (the hidden BrowserWindow is sized to
    *             the canvas's pixel dims, so CSS-px == image-px). */
   canvasCssHeight: number;
+  /** Clockwise rotation in radians. Optional — omitted / 0 means no
+   *  rotation, and the wrapper's transform stays bit-identical to
+   *  the pre-rotation `translateY(-50%)` for legacy / unrotated rows.
+   *
+   *  Applied as `rotate(${rad}rad)` AFTER the translateY in the
+   *  wrapper's transform list. CSS rotation pivots on the wrapper's
+   *  PRE-TRANSFORM box center (default `transform-origin: 50% 50%`),
+   *  which — after the translateY(-50%) — lands at the VISIBLE
+   *  body-box center on screen. So rotation pivots around the
+   *  glyph's visible middle (matches what the user sees as "the
+   *  center of the text"), not around the off-glyph anchor point. */
+  rotation?: number | undefined;
 }
 
 /** Result of the helper — three style maps. All values are
@@ -99,7 +111,8 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
     sourceHeightPx,
     canvasWidthPx,
     canvasHeightPx,
-    canvasCssHeight
+    canvasCssHeight,
+    rotation = 0
   } = args;
 
   // sizePx is in image-pixel units (= source pixel units in v2 since
@@ -128,11 +141,24 @@ export function computeTextHtmlStyle(args: TextHtmlStyleArgs): TextHtmlStyle {
   // centers the wrapper's vertical midpoint on the anchor; lineHeight:1
   // on the glyph means the wrapper's vertical center IS the first
   // line's glyph center. Match: SVG dominantBaseline="central".
+  //
+  // Rotation appends `rotate(${rad}rad)` after the translateY when
+  // the row carries a non-zero rotation. CSS transform-origin defaults
+  // to `50% 50%` (the wrapper's pre-transform box center), which —
+  // after the translateY shifts the box up by half its height — lands
+  // on the wrapper's VISIBLE center. So the rotation pivots around
+  // the visible body-box center (what the user perceives as "the
+  // middle of the text"), not around the off-glyph anchor point.
+  // Unrotated rows omit the rotate fragment entirely so the wrapper
+  // CSS stays bit-identical to the pre-rotation output.
   const wrapper: Record<string, string | number> = {
     position: "absolute",
     left: `${point.x * 100}%`,
     top: `${point.y * 100}%`,
-    transform: "translateY(-50%)"
+    transform:
+      rotation !== 0
+        ? `translateY(-50%) rotate(${rotation}rad)`
+        : "translateY(-50%)"
   };
 
   // Inner glyph element styling — IDENTICAL between display, edit and

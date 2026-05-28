@@ -1289,6 +1289,14 @@ export type Commands = {
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
   "overlays:upsert": { req: { captureId: string; overlay: Overlay }; res: OverlayRow };
   "overlays:delete": { req: { id: string }; res: void };
+  /** Update an overlay's `z_index`. Mirrors `layers:reorder` for v1
+   *  captures so the renderer can use the same `kind: "reorder"`
+   *  dispatch op across both formats without format-specific
+   *  branching. The handler computes the new value; the renderer
+   *  picks values with gap (~1000-step) so most reorders avoid
+   *  re-numbering neighbors. Atomic UPDATE on z_index; id preserved
+   *  (unlike upsert which would churn the id on every move). */
+  "overlays:reorder": { req: { id: string; zIndex: number }; res: void };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is

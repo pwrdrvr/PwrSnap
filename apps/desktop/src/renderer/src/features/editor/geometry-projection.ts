@@ -34,10 +34,33 @@ export function applyGeometryLocally(
       if (data.kind !== "rect" && data.kind !== "highlight" && data.kind !== "blur") {
         return null;
       }
-      return { ...data, rect: geometry.rect };
+      // Rotation is an OPTIONAL field on the geometry update — present
+      // when the rotation handle is in flight, absent for a body drag
+      // or a resize. Omitting means "leave the persisted rotation
+      // alone"; setting overwrites. Without this branch, dragging the
+      // rotation handle of a rect/highlight/blur left the glyph
+      // un-rotated until pointerup (the SelectionOutline rotated via
+      // its own merged copy, but the rendered glyph snapped back
+      // because this helper dropped the rotation field).
+      return {
+        ...data,
+        rect: geometry.rect,
+        ...(geometry.rotation !== undefined ? { rotation: geometry.rotation } : {})
+      };
     case "text":
       if (data.kind !== "text") return null;
-      return { ...data, point: geometry.point };
+      // Same shape as rect — optional rotation, point always
+      // overwritten. The TextHtmlOverlays live-override path depends
+      // on this thread-through so the HTML glyph rotates with the
+      // user's drag (without it, only the SelectionOutline rotates
+      // while the text snaps to the new rotation on pointerup —
+      // visible divergence the user reported as "text rotation is
+      // not live anymore").
+      return {
+        ...data,
+        point: geometry.point,
+        ...(geometry.rotation !== undefined ? { rotation: geometry.rotation } : {})
+      };
     case "step":
       if (data.kind !== "step") return null;
       return { ...data, point: geometry.point };

@@ -13,9 +13,9 @@
 // produced a visible ~11% font-size delta between display and edit.
 // Lifting the measurement upstream eliminates the drift.
 
-import { type ReactElement } from "react";
+import { type ReactElement, useMemo } from "react";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { readTextWeight } from "@pwrsnap/shared";
+import { readOverlayRotation, readTextWeight } from "@pwrsnap/shared";
 import { resolveToolColor } from "./resolveToolColor";
 import { TextHtml } from "./TextHtml";
 import { applyGeometryLocally, type GeometryUpdate } from "./geometry-projection";
@@ -40,29 +40,52 @@ export interface TextHtmlOverlaysProps {
    *  display + edit consume the same value. Drives fontPx via
    *  computeTextHtmlStyle. */
   canvasCssHeight: number;
-  /** Live-drag geometry override. When set, the text row whose id
-   *  matches `layerId` is rendered with the overridden geometry
-   *  instead of its persisted `data.point`, so the painted glyph
-   *  follows the cursor during a TransformHandles drag (same
-   *  contract OverlaySvg / BlurOverlays implement for arrow / rect /
-   *  highlight / blur). Without this, only the bounding box + handles
-   *  move during the drag — the text snaps to the new position on
-   *  pointerup. */
+  /** Live-drag geometry override — same shape OverlaySvg / BlurOverlays
+   *  consume. When a rotation handle / body drag / resize is in flight,
+   *  the matching text row renders with the in-progress geometry
+   *  instead of its persisted `data.*` fields. Without this the
+   *  SelectionOutline (SVG, gets the override) rotated/translated
+   *  during a drag while the HTML glyph (no override) stayed put —
+   *  visible divergence the user reported as "text rotation is not
+   *  live anymore" and "the glyph snaps on pointerup". Cleared by the
+   *  parent on drag end. */
   liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
 }
 
 export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
-  const liveOverride = props.liveOverride ?? null;
-  const texts = props.overlays.flatMap((row) => {
-    if (row.data.kind !== "text" || row.id === props.editingLayerId) return [];
-    if (liveOverride !== null && row.id === liveOverride.layerId) {
-      const merged = applyGeometryLocally(row.data, liveOverride.geometry);
-      if (merged !== null && merged.kind === "text") {
-        return [{ row, data: merged }];
-      }
-    }
-    return [{ row, data: row.data }];
-  });
+  // Project the live-drag override onto the matching row's data so the
+  // text glyph follows the user's gesture in real time. Goes through
+  // the shared `applyGeometryLocally` helper so the merge shape stays
+  // identical to OverlaySvg / BlurOverlays — same contract one place.
+  //
+  // Memoized so that during a rotation drag every pointermove (= new
+  // `liveOverride` reference) doesn't force the downstream `texts.map`
+  // JSX to re-reconcile every `<TextHtml>` child. Memo keys cover the
+  // two axes the projection actually depends on.
+  const effectiveOverlays = useMemo(() => {
+    const override = props.liveOverride;
+    if (override === undefined || override === null) return props.overlays;
+    return props.overlays.map((row) => {
+      if (row.id !== override.layerId) return row;
+      if (row.data.kind !== "text") return row;
+      const merged = applyGeometryLocally(row.data, override.geometry);
+      if (merged === null || merged.kind !== "text") return row;
+      return { ...row, data: merged };
+    });
+  }, [props.overlays, props.liveOverride]);
+  // Second memo keeps the rendered `texts` array reference stable when
+  // no text row changed — avoids re-reconciliation of every glyph on
+  // unrelated overlay updates (e.g., a rect drag elsewhere on the
+  // canvas that bumps `overlays` but doesn't touch any text row).
+  const texts = useMemo(
+    () =>
+      effectiveOverlays.flatMap((row) =>
+        row.data.kind === "text" && row.id !== props.editingLayerId
+          ? [{ row, data: row.data }]
+          : []
+      ),
+    [effectiveOverlays, props.editingLayerId]
+  );
 
   return (
     <>
@@ -84,6 +107,7 @@ export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
             sourceWidthPx={props.sourceWidthPx}
             sourceHeightPx={props.sourceHeightPx}
             canvasCssHeight={props.canvasCssHeight}
+            rotation={readOverlayRotation(data)}
           />
         );
       })}

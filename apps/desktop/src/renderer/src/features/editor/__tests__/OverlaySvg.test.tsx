@@ -28,7 +28,10 @@ async function renderOverlaySvg(
   dims: { imageWidthPx: number; imageHeightPx: number } = {
     imageWidthPx: 800,
     imageHeightPx: 600
-  }
+  },
+  extraProps: {
+    selectedLayerIds?: readonly string[];
+  } = {}
 ): Promise<SVGSVGElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -45,7 +48,8 @@ async function renderOverlaySvg(
         // default to source == canvas (uncropped); per-test overrides
         // pass distinct values to exercise the cropped scenario.
         sourceWidthPx: dims.imageWidthPx,
-        sourceHeightPx: dims.imageHeightPx
+        sourceHeightPx: dims.imageHeightPx,
+        ...extraProps
       })
     );
   });
@@ -324,6 +328,28 @@ function rectRow(
   };
 }
 
+/** Second rect with a distinct id so multi-select tests can exercise
+ *  two selected rows without id collision. */
+function rectRow2(): OverlayRow {
+  return {
+    id: "rect_test_2",
+    capture_id: "cap_1",
+    data: {
+      kind: "rect",
+      rect: { x: 0.6, y: 0.1, w: 0.3, h: 0.3 },
+      color: "auto"
+    },
+    schema_version: 1,
+    created_at: "2026-05-24T00:00:00Z",
+    applied_at: "2026-05-24T00:00:00Z",
+    rejected_at: null,
+    superseded_by: null,
+    ai_run_id: null,
+    source: "user",
+    z_index: 0
+  };
+}
+
 describe("OverlaySvg RectGlyph — filled", () => {
   test("legacy rect (no filled field) renders outline-only (halo + colored rect)", async () => {
     const svg = await renderOverlaySvg([rectRow()]);
@@ -408,6 +434,145 @@ describe("OverlaySvg ArrowGlyph — combinations", () => {
       }
     }
   }
+});
+
+describe("OverlaySvg — multi-select outlines", () => {
+  // Selection outline used to render at most one box (when
+  // selectedLayerId !== null). The multi-select migration renders one
+  // box per id in `selectedLayerIds`. Tests assert that count tracks
+  // the array length and that missing ids are silently skipped (the
+  // parent's stale-id cleanup runs on the next render).
+
+  test("renders no selection outline when selectedLayerIds is empty", async () => {
+    const svg = await renderOverlaySvg([rectRow()], undefined, {
+      selectedLayerIds: []
+    });
+    expect(svg.querySelectorAll("[data-testid='selection-outline']").length).toBe(0);
+  });
+
+  test("renders one outline per id in selectedLayerIds", async () => {
+    // Two rects (text overlays' selection outline is now drawn by
+    // TextHtmlOverlays, not OverlaySvg, since the HTML-text
+    // unification moved text rendering out of the SVG). Arrow
+    // overlays intentionally return null from SelectionOutline
+    // because an axis-aligned bbox around a line glyph is the wrong
+    // shape; the user's affordance for "this arrow is selected" comes
+    // from TransformHandles' endpoint handles, not a bbox.
+    const svg = await renderOverlaySvg(
+      [rectRow(), rectRow2()],
+      undefined,
+      { selectedLayerIds: ["rect_test_1", "rect_test_2"] }
+    );
+    expect(svg.querySelectorAll("[data-testid='selection-outline']").length).toBe(2);
+  });
+
+  test("silently skips ids that don't match any current overlay", async () => {
+    const svg = await renderOverlaySvg(
+      [rectRow()],
+      undefined,
+      { selectedLayerIds: ["rect_test_1", "ghost_id_no_overlay"] }
+    );
+    // One match + one ghost id = exactly one outline. Parent
+    // separately handles the stale-id cleanup on the next render.
+    expect(svg.querySelectorAll("[data-testid='selection-outline']").length).toBe(1);
+  });
+
+  test("bounding box bounds the FULL rect even when the rect is dragged off-canvas", async () => {
+    // Regression test for "the bounding box is allergic to the canvas
+    // edge" — pre-fix, SelectionOutline did Math.max(0, …) +
+    // Math.min(1 – xn, …) on the box, which made the dashed outline
+    // shrink to only the on-canvas portion when the asset was pushed
+    // past the edge. Visually the user reported "the asset changed
+    // size" because the bounding box no longer wrapped the visible
+    // shape (only its on-canvas portion). The outline must bound the
+    // FULL asset wherever it lives — the canvas + svg both run
+    // overflow:visible so the off-canvas portion paints.
+    //
+    // Construct a rect mostly off-canvas: x=0.8, w=0.5 → extends from
+    // 0.8 to 1.3 (40% past the right edge). The dashed <rect>'s
+    // width attribute should reflect the FULL 0.5 (plus a tiny
+    // padding), NOT a clamped 0.2 (which would be `1 - 0.8`).
+    const offCanvasRect: OverlayRow = {
+      ...rectRow(),
+      data: {
+        kind: "rect",
+        rect: { x: 0.8, y: 0.4, w: 0.5, h: 0.2 },
+        color: "auto"
+      }
+    };
+    const svg = await renderOverlaySvg([offCanvasRect], undefined, {
+      selectedLayerIds: ["rect_test_1"]
+    });
+    const outlineGroup = svg.querySelector(
+      "[data-testid='selection-outline']"
+    );
+    expect(outlineGroup).not.toBeNull();
+    // The outline group renders two <rect> elements (white halo +
+    // colored stroke). They share the same width attribute. Grab the
+    // first.
+    const outlineRects = outlineGroup!.querySelectorAll("rect");
+    expect(outlineRects.length).toBeGreaterThan(0);
+    const outlineRect = outlineRects[0]!;
+    const outlineW = Number(outlineRect.getAttribute("width"));
+    // The visible test canvas is 800×600 (test default dims).
+    // Expected width in pixel-space: (rect.w + 2*pad) * canvasW
+    //                              = (0.5 + 0.012) * 800
+    //                              = 409.6 px
+    // Pre-fix (clamped) width would have been: (1 - 0.8 + small pad) *
+    // 800 ≈ 160 px. So `> 400` is a generous "did the clamp regress?"
+    // assertion that's hard to fail by accident.
+    expect(outlineW).toBeGreaterThan(400);
+    expect(outlineW).toBeLessThan(420);
+    // Same check on the x — the clamp would have pulled it to
+    // `Math.max(0, …)` which would be a small positive number; here
+    // we expect the unclamped value (0.8 - pad) * 800 ≈ 635.
+    const outlineX = Number(outlineRect.getAttribute("x"));
+    expect(outlineX).toBeGreaterThan(630);
+    expect(outlineX).toBeLessThan(640);
+  });
+
+  test("bounding box stays consistent across canvas-edge boundary (dragging off doesn't change its WIDTH)", async () => {
+    // Same shape, two positions: ONE that fits entirely on-canvas,
+    // and ONE that's been dragged so part of it extends past. The
+    // outline's WIDTH attribute must be IDENTICAL — the only thing
+    // that changes between the two is the x position. Pre-fix this
+    // failed because the clamp made the second outline narrower than
+    // the first.
+    const onCanvas: OverlayRow = {
+      ...rectRow(),
+      data: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.4, w: 0.5, h: 0.2 },
+        color: "auto"
+      }
+    };
+    const partlyOff: OverlayRow = {
+      ...rectRow(),
+      data: {
+        kind: "rect",
+        rect: { x: 0.7, y: 0.4, w: 0.5, h: 0.2 },
+        color: "auto"
+      }
+    };
+    const svgOn = await renderOverlaySvg([onCanvas], undefined, {
+      selectedLayerIds: ["rect_test_1"]
+    });
+    const svgOff = await renderOverlaySvg([partlyOff], undefined, {
+      selectedLayerIds: ["rect_test_1"]
+    });
+    const widthOn = Number(
+      svgOn
+        .querySelector("[data-testid='selection-outline'] rect")!
+        .getAttribute("width")
+    );
+    const widthOff = Number(
+      svgOff
+        .querySelector("[data-testid='selection-outline'] rect")!
+        .getAttribute("width")
+    );
+    // Same source rect width → same outline width regardless of x.
+    expect(widthOff).toBeCloseTo(widthOn, 6);
+  });
 });
 
 describe("OverlaySvg — text overlays moved to HTML rendering", () => {

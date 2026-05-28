@@ -694,9 +694,14 @@ async function applyEffectOntoAccumulator(
    *  for that branch. */
   renderScale: number
 ): Promise<Buffer> {
-  // Determine the clip rect. null = entire canvas (adjustment-layer
   // scope, in render coords already). Otherwise scale CANVAS-coord
-  // rect into render coords, then clamp to accumulator bounds.
+  // rect into render coords FIRST — `clip_rect` is in canvas pixels
+  // and the accumulator may be at render dims (scale > 1) for MED/
+  // HIGH preset bakes (PR #129 / WYSIWYG). Then compute the rotated
+  // AABB from that scaled rect (the rotation handling); the AABB
+  // tells us how much of the accumulator we need to extract + operate
+  // on, so corners that swing outside the un-rotated rect still land
+  // inside the extraction window.
   const rect =
     node.clip_rect !== null
       ? {
@@ -706,13 +711,70 @@ async function applyEffectOntoAccumulator(
           h: node.clip_rect.h * renderScale
         }
       : { x: 0, y: 0, w: canvasInfo.width, h: canvasInfo.height };
-  const x = Math.max(0, Math.min(canvasInfo.width, Math.round(rect.x)));
-  const y = Math.max(0, Math.min(canvasInfo.height, Math.round(rect.y)));
-  const w = Math.max(0, Math.min(canvasInfo.width - x, Math.round(rect.w)));
-  const h = Math.max(0, Math.min(canvasInfo.height - y, Math.round(rect.h)));
+  // Rotation lives on the effect spec for blur (no `shape` slot on
+  // effect layers). Highlight effects don't carry rotation — they
+  // also don't have a renderer surface in the editor today, so any
+  // rotated highlight would be ignored on the live preview side too.
+  const rotation =
+    node.effect.type === "blur" ? (node.effect.rotation ?? 0) : 0;
+
+  // Compute the AABB of the rotated rect in render-space pixels.
+  // Unrotated rows fall back to the rect itself (no AABB expansion)
+  // so the byte-identical pre-rotation pipeline kicks in for the
+  // common case.
+  let aabbLeft: number;
+  let aabbTop: number;
+  let aabbWidth: number;
+  let aabbHeight: number;
+  if (rotation === 0) {
+    aabbLeft = rect.x;
+    aabbTop = rect.y;
+    aabbWidth = rect.w;
+    aabbHeight = rect.h;
+  } else {
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const hw = rect.w / 2;
+    const hh = rect.h / 2;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const corners = [
+      { x: -hw, y: -hh },
+      { x: hw, y: -hh },
+      { x: hw, y: hh },
+      { x: -hw, y: hh }
+    ].map(({ x: lx, y: ly }) => ({
+      x: cx + lx * cos - ly * sin,
+      y: cy + lx * sin + ly * cos
+    }));
+    const xs = corners.map((c) => c.x);
+    const ys = corners.map((c) => c.y);
+    aabbLeft = Math.min(...xs);
+    aabbTop = Math.min(...ys);
+    aabbWidth = Math.max(...xs) - aabbLeft;
+    aabbHeight = Math.max(...ys) - aabbTop;
+  }
+
+  // Clamp the (possibly rotated) AABB to canvas bounds. Note: we use
+  // floor/ceil here vs round in the pre-rotation path because the
+  // rotated-AABB corners are typically non-integer; floor/ceil
+  // guarantees we extract a window that fully contains the rotated
+  // rect (no half-pixel slivers clipped). For rotation === 0 the
+  // result rounds to the same integer pixel grid as before.
+  const x = Math.max(0, Math.min(canvasInfo.width, Math.floor(aabbLeft)));
+  const y = Math.max(0, Math.min(canvasInfo.height, Math.floor(aabbTop)));
+  const w = Math.max(
+    0,
+    Math.min(canvasInfo.width - x, Math.ceil(aabbLeft + aabbWidth) - x)
+  );
+  const h = Math.max(
+    0,
+    Math.min(canvasInfo.height - y, Math.ceil(aabbTop + aabbHeight) - y)
+  );
   if (w === 0 || h === 0) return accumulator;
 
-  // Extract the rect from the accumulator into a raw RGBA buffer.
+  // Extract the (clamped) AABB from the accumulator into a raw RGBA
+  // buffer.
   const extracted = await sharp(accumulator, { raw: canvasInfo })
     .extract({ left: x, top: y, width: w, height: h })
     .ensureAlpha()
@@ -809,6 +871,33 @@ async function applyEffectOntoAccumulator(
     }
     operated = await sharp(extracted, { raw: extractedInfo })
       .composite([{ input: tintBuf, raw: extractedInfo, blend: "over" }])
+      .ensureAlpha()
+      .raw()
+      .toBuffer();
+  }
+
+  // Rotation mask. Skipped entirely for rotation === 0 so the
+  // composite path is byte-identical to the pre-rotation bake.
+  //
+  // When rotation != 0, the operated buffer spans the rotated AABB,
+  // which is LARGER than the visible rect. Without masking, the
+  // user would see a rotated-AABB-shaped blur — bigger and the
+  // wrong shape. The mask is a rotated-rect SVG at the rect's
+  // position in AABB-local coords; `dest-in` composite keeps only
+  // the operated pixels covered by the white rect, dropping the
+  // rest to transparent. Sharp re-raws the result so the final
+  // composite onto the accumulator stays in the same RGBA pipeline.
+  if (rotation !== 0) {
+    const rectLocalLeft = rect.x - x;
+    const rectLocalTop = rect.y - y;
+    const rotDeg = (rotation * 180) / Math.PI;
+    const cxLocal = rectLocalLeft + rect.w / 2;
+    const cyLocal = rectLocalTop + rect.h / 2;
+    const maskSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+  <rect x="${rectLocalLeft}" y="${rectLocalTop}" width="${rect.w}" height="${rect.h}" fill="white" transform="rotate(${rotDeg} ${cxLocal} ${cyLocal})" />
+</svg>`;
+    operated = await sharp(operated, { raw: extractedInfo })
+      .composite([{ input: Buffer.from(maskSvg), blend: "dest-in" }])
       .ensureAlpha()
       .raw()
       .toBuffer();

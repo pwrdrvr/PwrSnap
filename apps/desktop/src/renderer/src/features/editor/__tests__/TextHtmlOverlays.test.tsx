@@ -9,7 +9,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
 
-import { TextHtmlOverlays, type TextHtmlOverlaysProps } from "../TextHtmlOverlays";
+import {
+  TextHtmlOverlays,
+  type TextHtmlOverlaysProps
+} from "../TextHtmlOverlays";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -176,20 +179,23 @@ describe("TextHtmlOverlays — editingLayerId suppression", () => {
   });
 });
 
-describe("TextHtmlOverlays — liveOverride drag preview", () => {
-  // Live-drag preview parity with OverlaySvg / BlurOverlays. When the
-  // user grabs a text overlay by its TransformHandles body-hit rect and
-  // drags, the parent stashes the in-progress geometry as `draftGeometry`
-  // and threads it into every renderer that paints overlays. Pre-fix,
-  // TextHtmlOverlays didn't accept the override at all — the painted
-  // glyph stayed at its persisted anchor and the user only saw the
-  // dashed selection outline + handles move, with the text snapping
-  // into place at pointerup. Same regression class the SVG-side fix
-  // already protects against (see OverlaySvg.tsx `effectiveOverlays`).
-  // computeTextHtmlStyle emits `position: absolute` ONLY on the
-  // outer wrapper (the glyph is a static-position child). Use that
-  // to pick the wrapper out of `div`s without having to know the
-  // exact DOM nesting.
+describe("TextHtmlOverlays — liveOverride propagation", () => {
+  // Regression for user report: "Text rotation is not live anymore?
+  // Just the box is rotating?" — during a rotation-handle drag, the
+  // SVG selection outline (OverlaySvg.effectiveOverlays) rotated with
+  // the gesture but the HTML text glyph stayed at its persisted
+  // rotation until pointerup, because TextHtmlOverlays wasn't applying
+  // the same `liveOverride` projection OverlaySvg uses. These tests
+  // pin the parity: when a `liveOverride` matches a text row, the
+  // rendered wrapper transform reflects the override's rotation /
+  // point, not the persisted values. Same coverage also pins the
+  // simpler "drag a text by its body to move it" preview behavior.
+
+  // computeTextHtmlStyle emits `position: absolute` ONLY on the outer
+  // wrapper (the glyph is a static-position child). Use that to pick
+  // the wrapper for a specific text body when multiple rows are
+  // rendered. For single-row tests, `wrapper()` below grabs the only
+  // wrapper without needing a body lookup.
   function findWrapper(body: string): HTMLElement {
     if (container === null) throw new Error("container missing");
     const wrappers = Array.from(
@@ -202,20 +208,57 @@ describe("TextHtmlOverlays — liveOverride drag preview", () => {
     return hit;
   }
 
-  test("override on a text row repositions the rendered wrapper", async () => {
-    await render(
-      [textRow("t1", { body: "moving", point: { x: 0.5, y: 0.5 } })],
-      null,
-      {
-        layerId: "t1",
-        geometry: { kind: "text", point: { x: 0.8, y: 0.3 } }
+  function wrapper(): HTMLElement {
+    if (container === null) throw new Error("container not initialized");
+    // TextHtml renders exactly one outer wrapper div per text row;
+    // single-row tests rely on the first div being the wrapper.
+    const w = container.querySelector("div");
+    if (w === null) throw new Error("no wrapper div rendered");
+    return w as HTMLElement;
+  }
+
+  function wrapperTransform(): string {
+    return wrapper().style.transform ?? "";
+  }
+
+  function wrapperLeftTop(): { left: string; top: string } {
+    const w = wrapper();
+    return { left: w.style.left ?? "", top: w.style.top ?? "" };
+  }
+
+  test("override rotation drives the wrapper transform, not persisted rotation", async () => {
+    const persistedRotation = 0;
+    const liveRotation = Math.PI / 4; // 45° during drag
+    const row = textRow("t1", { rotation: persistedRotation });
+    await render([row], null, {
+      layerId: "t1",
+      geometry: {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        rotation: liveRotation
       }
-    );
-    const wrapper = findWrapper("moving");
-    // computeTextHtmlStyle emits `left: ${point.x * 100}%` on the
-    // wrapper — the override's point.x = 0.8 → 80%.
-    expect(wrapper.style.left).toBe("80%");
-    expect(wrapper.style.top).toBe("30%");
+    });
+    // computeTextHtmlStyle emits rotate(<rad>rad) at the end of the
+    // wrapper transform when rotation !== undefined.
+    expect(wrapperTransform()).toContain(`rotate(${liveRotation}rad)`);
+    // And the persisted-zero rotation should NOT have been used — a
+    // rotate(0rad) anywhere would indicate the override was ignored.
+    expect(wrapperTransform()).not.toContain("rotate(0rad)");
+  });
+
+  test("override point drives the wrapper position, not persisted point", async () => {
+    const row = textRow("t1", { point: { x: 0.1, y: 0.1 } });
+    await render([row], null, {
+      layerId: "t1",
+      geometry: {
+        kind: "text",
+        point: { x: 0.9, y: 0.9 }
+      }
+    });
+    // Wrapper position is left/top: percent-of-canvas — driven by
+    // point.x/y * 100. Persisted (0.1, 0.1) would yield 10% / 10%;
+    // override (0.9, 0.9) wins.
+    expect(wrapperLeftTop()).toEqual({ left: "90%", top: "90%" });
   });
 
   test("override only affects the matching row; other rows render at persisted point", async () => {
@@ -237,6 +280,82 @@ describe("TextHtmlOverlays — liveOverride drag preview", () => {
     // Untouched row stays at its persisted point.
     expect(staticWrapper.style.left).toBe("20%");
     expect(staticWrapper.style.top).toBe("70%");
+  });
+
+  test("override targeting a different layer leaves this row alone", async () => {
+    // liveOverride.layerId !== row.id — the projection must be a
+    // no-op and the persisted rotation wins.
+    const persistedRotation = Math.PI / 2; // 90°
+    const row = textRow("t1", { rotation: persistedRotation });
+    await render([row], null, {
+      layerId: "OTHER",
+      geometry: {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        rotation: 0
+      }
+    });
+    expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
+  });
+
+  test("override rotation omitted keeps persisted rotation (point-only drag)", async () => {
+    // Body-drag updates point but not rotation. The merge must only
+    // overwrite rotation when the geometry update carries one — same
+    // shape as applyGeometryLocally for text overlays.
+    const persistedRotation = Math.PI / 6;
+    const row = textRow("t1", {
+      rotation: persistedRotation,
+      point: { x: 0.2, y: 0.2 }
+    });
+    await render([row], null, {
+      layerId: "t1",
+      geometry: {
+        kind: "text",
+        point: { x: 0.7, y: 0.7 }
+        // rotation intentionally absent
+      }
+    });
+    // Point came from override (left/top, not transform).
+    expect(wrapperLeftTop()).toEqual({ left: "70%", top: "70%" });
+    // Rotation came from the row (transform).
+    expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
+  });
+
+  test("null liveOverride renders persisted rotation as-is", async () => {
+    const persistedRotation = Math.PI / 3;
+    const row = textRow("t1", { rotation: persistedRotation });
+    await render([row], null, null);
+    expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
+  });
+
+  test("override whose geometry kind ≠ text leaves the text row alone", async () => {
+    // The override pipeline is shared across overlay kinds — OverlaySvg
+    // hands the same `liveOverride` down. If the user is dragging a
+    // RECT (geometry.kind === "rect") that happens to share an id
+    // with a text row (impossible in practice but the type system
+    // doesn't enforce it), the projection must NOT smear rect
+    // geometry onto the text row. The implementation gates on
+    // `applyGeometryLocally` returning null when the merged kind
+    // doesn't match the row's kind; this test pins that behavior.
+    const persistedRotation = Math.PI / 4;
+    const row = textRow("t1", {
+      rotation: persistedRotation,
+      point: { x: 0.3, y: 0.4 }
+    });
+    await render([row], null, {
+      layerId: "t1",
+      // Rect-kind geometry — would carry a `rect` field, not `point`
+      // / `rotation`. The merge should refuse it and pass the row
+      // through unchanged.
+      geometry: {
+        kind: "rect",
+        rect: { x: 0.8, y: 0.8, w: 0.1, h: 0.1 },
+        rotation: Math.PI / 2
+      }
+    });
+    // Persisted point + rotation both survive.
+    expect(wrapperLeftTop()).toEqual({ left: "30%", top: "40%" });
+    expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
   });
 });
 

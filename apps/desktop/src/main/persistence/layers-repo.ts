@@ -136,9 +136,34 @@ export type InsertLayerInput = {
 };
 
 /**
- * Insert a brand-new layer. Bumps `captures.edits_version` in the same
- * transaction so the cache buster + scheduleRepack convergence checkpoint
- * advance atomically with the layer write.
+ * Insert (or restore) a layer. Bumps `captures.edits_version` in the
+ * same transaction so the cache buster + scheduleRepack convergence
+ * checkpoint advance atomically with the layer write.
+ *
+ * Restore semantics: when a row with `node.id` already exists AND is
+ * soft-deleted (`rejected_at IS NOT NULL`), this function un-rejects
+ * the existing row and re-writes every mutable column from the
+ * incoming node — the SAME table state a fresh INSERT would produce,
+ * but without a primary-key violation. This is the load-bearing path
+ * for delete-undo: `useUndoRedo.applyInverse` for the `delete` op
+ * dispatches `layers:upsert` with the deleted node's original id, and
+ * `layers:delete` is itself soft-delete-only (stamps `rejected_at`),
+ * so a raw INSERT would always hit a UNIQUE constraint and silently
+ * fail (`Result.err` swallowed by applyInverse → user reports
+ * "Cmd+Z does nothing").
+ *
+ * Restore-with-update lets the caller pass a node whose mutable
+ * fields (parent_id, z_index, transform, data, etc.) differ from
+ * what was soft-deleted, and the restore lands in the new shape.
+ * For delete-undo the shapes are identical so the UPDATE is a no-op
+ * beyond clearing `rejected_at`, but the symmetry keeps the verb
+ * honest as an UPSERT.
+ *
+ * If a LIVE row already exists at `node.id` (rejected_at IS NULL),
+ * this is treated as a genuine conflict and the INSERT path runs —
+ * SQLite raises the UNIQUE constraint, the handler returns
+ * `insert_failed`. Callers that need to MUTATE a live layer should
+ * use a dedicated update verb (none today; Phase 7 task).
  */
 export function insertLayer(input: InsertLayerInput): BundleLayerNode {
   // zod-validate the node BEFORE persisting. The IPC handler also
@@ -147,6 +172,61 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
   const db = getDb();
   const tx = db.transaction(() => {
     const { kindSpecificData, transformJson } = splitNodeForStorage(node);
+    // Probe for an existing soft-deleted row at this id. We check
+    // `rejected_at` (not just existence) so a colliding LIVE id
+    // still hits the UNIQUE constraint on INSERT below — restoring
+    // a live row would silently overwrite user state, which is
+    // exactly the surprise the soft-delete pattern is designed to
+    // prevent.
+    const existing = db
+      .prepare<[string], { rejected_at: string | null }>(
+        `SELECT rejected_at FROM layers WHERE id = ?`
+      )
+      .get(node.id);
+    if (existing !== undefined && existing.rejected_at !== null) {
+      // Restore path. Clear rejected_at + refresh every mutable
+      // column from the incoming node. The unchanged columns
+      // (capture_id, created_at, schema_version) stay as-is —
+      // capture_id can't change without rewriting FKs, created_at
+      // is historical, schema_version is repo-managed.
+      db.prepare(
+        `UPDATE layers
+            SET parent_id = @parent_id,
+                kind = @kind,
+                z_index = @z_index,
+                name = @name,
+                visible = @visible,
+                locked = @locked,
+                opacity = @opacity,
+                blend_mode = @blend_mode,
+                transform_json = @transform_json,
+                data = @data,
+                source = @source,
+                ai_run_id = @ai_run_id,
+                applied_at = @applied_at,
+                rejected_at = NULL,
+                superseded_by = @superseded_by
+          WHERE id = @id`
+      ).run({
+        id: node.id,
+        parent_id: node.parent_id,
+        kind: node.kind,
+        z_index: node.z_index,
+        name: node.name,
+        visible: node.visible ? 1 : 0,
+        locked: node.locked ? 1 : 0,
+        opacity: node.opacity,
+        blend_mode: node.blend_mode,
+        transform_json: transformJson,
+        data: kindSpecificData,
+        source: node.source,
+        ai_run_id: node.ai_run_id,
+        applied_at: node.applied_at,
+        superseded_by: node.superseded_by
+      });
+      bumpEditsVersion(input.captureId);
+      return;
+    }
     db.prepare(
       `INSERT INTO layers
          (id, capture_id, parent_id, kind, z_index, name, visible,

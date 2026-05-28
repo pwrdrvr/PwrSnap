@@ -228,5 +228,89 @@ describe("blurLayerForTests", () => {
     expect(layer!.left).toBe(rectPx.left);
     expect(layer!.top).toBe(rectPx.top);
   });
+
+  describe("rotation", () => {
+    test("rotation === 0 produces byte-identical output to the unrotated path", async () => {
+      // Sanity: passing `rotation: 0` explicitly takes the same code
+      // path as omitting it. Dimensions must match the rect (no AABB
+      // expansion when there's nothing to rotate).
+      const layer = await blurLayerForTests(
+        { kind: "blur", rect, style: "redact", rotation: 0 },
+        src.srcPath,
+        imageWidthPx,
+        imageHeightPx
+      );
+      expect(layer).not.toBeNull();
+      expect(layer!.left).toBe(rectPx.left);
+      expect(layer!.top).toBe(rectPx.top);
+      const meta = await sharp(layer!.input as Buffer).metadata();
+      expect(meta.width).toBe(rectPx.width);
+      expect(meta.height).toBe(rectPx.height);
+    });
+
+    test("rotation === 45° expands to a larger AABB AND the mask cuts the corners to transparent", async () => {
+      // 64×64 rect rotated 45° → AABB = 64 × √2 ≈ 90×90.
+      // The four AABB corners are OUTSIDE the rotated rect (they were
+      // empty space), so the mask must blank them to alpha 0. The
+      // center is INSIDE the rotated rect, so it stays opaque.
+      const layer = await blurLayerForTests(
+        { kind: "blur", rect, style: "redact", rotation: Math.PI / 4 },
+        src.srcPath,
+        imageWidthPx,
+        imageHeightPx
+      );
+      expect(layer).not.toBeNull();
+      const { data, info } = await sharp(layer!.input as Buffer)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const expectedAabb = Math.ceil(rectPx.width * Math.SQRT2);
+      // Allow ±2 px slack — Math.floor/ceil on the AABB endpoints can
+      // shave / extend by a pixel depending on where the rect lands
+      // in the source.
+      expect(Math.abs(info.width - expectedAabb)).toBeLessThanOrEqual(2);
+      expect(Math.abs(info.height - expectedAabb)).toBeLessThanOrEqual(2);
+      // Center pixel — inside the rotated rect → opaque black redact.
+      const centerX = Math.floor(info.width / 2);
+      const centerY = Math.floor(info.height / 2);
+      const [r, g, b, a] = pixelAt(data, centerX, centerY, info.width);
+      expect(r).toBe(0);
+      expect(g).toBe(0);
+      expect(b).toBe(0);
+      expect(a).toBe(255);
+      // The four AABB corners — definitely outside the rotated rect.
+      // After dest-in mask, alpha should be 0 (fully transparent).
+      for (const [cx, cy] of [
+        [0, 0],
+        [info.width - 1, 0],
+        [0, info.height - 1],
+        [info.width - 1, info.height - 1]
+      ] as const) {
+        const [, , , alpha] = pixelAt(data, cx, cy, info.width);
+        expect(alpha).toBe(0);
+      }
+    });
+
+    test("rotation === 90° on a non-square rect swaps AABB dimensions", async () => {
+      // A wider-than-tall rect rotated 90° → AABB has swapped dims
+      // (height becomes the old width, width becomes the old height).
+      // Exercises the AABB math separately from the mask (a 90° rot
+      // of a rect fills its AABB, so the mask is a no-op shape-wise
+      // — but the dimensions still flip).
+      const wideRect = { x: 0.2, y: 0.4, w: 0.5, h: 0.2 } as const;
+      const wideRectPx = { width: 128, height: 51 } as const;
+      const layer = await blurLayerForTests(
+        { kind: "blur", rect: wideRect, style: "redact", rotation: Math.PI / 2 },
+        src.srcPath,
+        imageWidthPx,
+        imageHeightPx
+      );
+      expect(layer).not.toBeNull();
+      const meta = await sharp(layer!.input as Buffer).metadata();
+      // Width / height swapped; allow ±2 px for rounding.
+      expect(Math.abs((meta.width ?? 0) - wideRectPx.height)).toBeLessThanOrEqual(2);
+      expect(Math.abs((meta.height ?? 0) - wideRectPx.width)).toBeLessThanOrEqual(2);
+    });
+  });
 });
 

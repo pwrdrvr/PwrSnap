@@ -246,4 +246,154 @@ describe("hitTestOverlays", () => {
     expect(hitTestOverlays(rows, 0.5, 0.519, 500)).toBe("a1");
     expect(hitTestOverlays(rows, 0.5, 0.519, 2000)).toBe(null);
   });
+
+  describe("rotated rect hit-test", () => {
+    // A square 0.4×0.4 rect centered at (0.5, 0.5) rotated 90° CW. Use
+    // a square canvas (1000×1000) so the math stays clean: pixel-space
+    // rotation = normalized-space rotation when aspect is 1:1.
+    const square = makeRow("r1", {
+      kind: "rect",
+      rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+      color: "auto",
+      rotation: Math.PI / 2
+    });
+    // Use main's `textDims` shape — same dims field, expanded shape
+    // (canvas + source). Rotation-aware rect hit-test derives
+    // imageDims from textDims.canvasWidthPx/Height inside the helper.
+    const dims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    test("center still hits regardless of rotation", () => {
+      expect(hitTestOverlays([square], 0.5, 0.5, 1000, dims)).toBe("r1");
+    });
+
+    test("hits a point that's inside the ROTATED visible rect but outside the AABB-original would be... well, 90° on a square rotates onto itself", () => {
+      // A 90° rotation of a square at (0.3, 0.3)-(0.7, 0.7) → same
+      // bbox, so any inside-bbox point still hits. Use 45° on a non-
+      // square rotation to actually exercise the inverse-rotate path.
+      const rotated45 = makeRow("r45", {
+        kind: "rect",
+        rect: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 },
+        color: "auto",
+        rotation: Math.PI / 2 // 90° rotation of a 0.2×0.1 rect → 0.1×0.2 visible
+      });
+      // At 90°, the rect's visible footprint goes from a horizontal
+      // 0.2×0.1 to a vertical 0.1×0.2 around center (0.5, 0.5).
+      // Visible bounds: x ∈ [0.45, 0.55], y ∈ [0.4, 0.6].
+      // Test a point INSIDE the visible (rotated) rect that would
+      // MISS the original axis-aligned bbox.
+      // Original bbox: x ∈ [0.4, 0.6], y ∈ [0.45, 0.55].
+      // (0.5, 0.42) is inside the visible rotated rect (vertical bar
+      // around center) but OUTSIDE the original axis-aligned bounds.
+      expect(hitTestOverlays([rotated45], 0.5, 0.42, 1000, dims)).toBe("r45");
+      // Conversely: (0.42, 0.5) was INSIDE the original axis-aligned
+      // bbox but the 90° rotation moves it OUTSIDE the visible rect.
+      expect(hitTestOverlays([rotated45], 0.42, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("when imageDims omitted, falls back to legacy unrotated bbox test", () => {
+      const rotated = makeRow("r1", {
+        kind: "rect",
+        rect: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 },
+        color: "auto",
+        rotation: Math.PI / 2
+      });
+      // Without imageDims, hitTest falls back to the historical AABB
+      // check — point inside the ORIGINAL bbox hits, regardless of
+      // rotation. This is the back-compat path for any caller (tests
+      // mostly) that doesn't pass dims.
+      expect(hitTestOverlays([rotated], 0.42, 0.5, 1000)).toBe("r1");
+      expect(hitTestOverlays([rotated], 0.5, 0.42, 1000)).toBe(null);
+    });
+  });
+
+  describe("rotated text hit-test", () => {
+    // Mirrors the rotated rect block above — when a text overlay
+    // carries a non-zero rotation, the click point must be inverse-
+    // rotated into the text's local frame so the rendered visible
+    // glyph (not its un-rotated AABB) is what the user can click.
+    //
+    // Before the fix, only the rect/highlight/blur branch rotated the
+    // click; the text branch tested the un-rotated bbox. Practical
+    // symptom: a 90°-rotated piece of text became unclickable
+    // anywhere outside its original-orientation footprint, even
+    // though the visible glyph painted over those pixels.
+    //
+    // Square 1000×1000 canvas + source keeps the pixel-vs-normalized
+    // math 1:1, so the test points are easy to reason about by hand.
+
+    const dims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    // body "Cats!" (5 chars) at "medium" → sizePx ≈ 33.33, char-advance
+    // ≈ 0.65 → naturalWidthPx ≈ 108, naturalHeightPx ≈ 33.
+    // Box: x ∈ [0.5, 0.608], y ∈ [0.4833, 0.5167].
+    // Pivot (body-box center): (0.554, 0.5). 90° CW rotation turns
+    // the horizontal text bar into a vertical bar around the pivot.
+    const wideText = makeRow("t1", {
+      kind: "text",
+      point: { x: 0.5, y: 0.5 },
+      body: "Cats!",
+      size: "medium",
+      color: "auto",
+      rotation: Math.PI / 2
+    });
+
+    test("click inside the ROTATED visible glyph but outside the un-rotated AABB still hits", () => {
+      // (0.554, 0.46) sits above the original AABB (y < 0.4833) but
+      // INSIDE the rotated visible glyph (which now extends
+      // vertically around the pivot). Pre-fix this point missed
+      // entirely — rotated text was unclickable above/below its
+      // original line.
+      expect(hitTestOverlays([wideText], 0.554, 0.46, 1000, dims)).toBe("t1");
+    });
+
+    test("click inside the un-rotated AABB but outside the ROTATED visible glyph misses", () => {
+      // Converse direction: (0.6, 0.5) is well inside the original
+      // horizontal bbox (x along the long axis of the un-rotated
+      // text). After 90° rotation, the visible glyph is a narrow
+      // vertical bar around x=0.554 — (0.6, 0.5) is far to the right
+      // of where any glyph actually paints. Pre-fix this point
+      // wrongly hit, selecting the layer despite no visible target.
+      expect(hitTestOverlays([wideText], 0.6, 0.5, 1000, dims)).toBe(null);
+    });
+
+    test("when textDims omitted, rotated text falls back to the point-radius hit (no inverse-rotate)", () => {
+      // The legacy no-dims caller path has no canvas dims to pixel-
+      // scale the inverse-rotate against, so the function falls
+      // through to the original anchor-point-radius check. Rotation
+      // is irrelevant in this path; we assert it stays back-compat.
+      expect(hitTestOverlays([wideText], 0.5, 0.5, 1000)).toBe("t1");
+      // Outside the radius → still null. Rotation does NOT influence
+      // the fallback path (would be a regression if it did).
+      expect(hitTestOverlays([wideText], 0.9, 0.5, 1000)).toBe(null);
+    });
+
+    test("rotation=0 + dims threaded behaves identically to the un-rotated full-bbox test", () => {
+      // A rotation === 0 (or omitted) row must round-trip through
+      // the inverse-rotate path without coordinate drift. Same body
+      // as wideText, no rotation.
+      const unrotated = makeRow("t2", {
+        kind: "text",
+        point: { x: 0.5, y: 0.5 },
+        body: "Cats!",
+        size: "medium",
+        color: "auto"
+        // rotation intentionally omitted
+      });
+      // Inside the bbox.
+      expect(hitTestOverlays([unrotated], 0.55, 0.5, 1000, dims)).toBe("t2");
+      // Above the bbox — the rotated case asserts this DOES hit when
+      // rotated; here it must NOT hit because rotation is 0.
+      expect(hitTestOverlays([unrotated], 0.554, 0.46, 1000, dims)).toBe(null);
+    });
+  });
 });

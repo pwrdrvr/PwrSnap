@@ -62,6 +62,11 @@ export interface ResolvedTextDraftStyle {
    *  field — in either case the draft falls back to the bucket math
    *  computed from `size`. */
   storedSizePx: number | undefined;
+  /** Clockwise rotation in radians from the persisted row. Forwarded
+   *  to TextDraftInput → computeTextHtmlStyle so the in-progress
+   *  edit text rotates with the visible glyph beneath. Undefined for
+   *  first placements (no row yet) or for unrotated rows. */
+  rotation: number | undefined;
 }
 
 export interface ResolveTextDraftStyleArgs {
@@ -107,7 +112,8 @@ export function resolveTextDraftStyle(
       colorHex,
       size: data.size,
       weight: readTextWeight(data),
-      storedSizePx: data.sizePx
+      storedSizePx: data.sizePx,
+      rotation: data.rotation
     };
   }
 
@@ -121,7 +127,8 @@ export function resolveTextDraftStyle(
       colorHex: AUTO_COLOR_HEX,
       size: DEFAULT_SIZE,
       weight: DEFAULT_WEIGHT,
-      storedSizePx: undefined
+      storedSizePx: undefined,
+      rotation: undefined
     };
   }
 
@@ -131,6 +138,7 @@ export function resolveTextDraftStyle(
     colorHex,
     size: resolveTextSizeBucket(activeToolStyle.fontSize),
     weight: readTextWeight({ weight: activeToolStyle.weight }),
-    storedSizePx: undefined
+    storedSizePx: undefined,
+    rotation: undefined
   };
 }

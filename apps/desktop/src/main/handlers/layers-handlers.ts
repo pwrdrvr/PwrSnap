@@ -126,6 +126,21 @@ export function registerLayersHandlers(): void {
   });
 
   bus.register("layers:reorder", async (req) => {
+    // Same NaN/Infinity guard as `overlays:reorder` (v1) — see that
+    // handler for the full rationale. v2 is the DEFAULT bundle format
+    // (per CLAUDE.md "Bundle format v2 — default"), so this is the
+    // higher-traffic path of the two reorder verbs and the hole here
+    // is the more important one to close. Without the guard, a
+    // compromised renderer (or a buggy caller) lands NaN into
+    // `layers.z_index` and breaks `ORDER BY z_index` silently for
+    // the whole capture's layer tree.
+    if (!Number.isFinite(req.zIndex)) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: `layers:reorder rejected: zIndex must be finite, got ${String(req.zIndex)}`
+      });
+    }
     setLayerZIndex(req.id, req.zIndex);
     const row = getCaptureIdFromLayer(req.id);
     if (row !== null) {

@@ -156,7 +156,18 @@
   flex: none;
   cursor: crosshair;
   border-radius: 6px;
-  overflow: hidden;
+  /* overflow: visible so SelectionOutline + TransformHandles + draft
+     glyphs can extend past the canvas edge when the user drags a
+     shape off-screen — the bounding box should still bound the
+     shape's full extent, not get clipped at the canvas border. The
+     IMAGE doesn't extend past on its own (sized to the canvas), so
+     no image-bleed concern. .editor-canvas-wrap above still clips
+     at the visible viewport so nothing escapes too far.
+     Rounded corners stay via border-radius + the image's own
+     border-radius below (the image is the only child that needs
+     to RESPECT the rounded clip; everything else is annotation +
+     handles which the user expects to follow their gesture). */
+  overflow: visible;
   box-shadow: 0 0 0 1px var(--border-default), 0 12px 40px color-mix(in srgb, var(--shadow-base) 30%, transparent);
 }
 /* Pre-measurement fallback: before useZoomPan's layout effect fires,
@@ -185,12 +196,25 @@
   height: 100%;
   user-select: none;
   -webkit-user-drag: none;
+  /* The image self-clips to rounded corners. Pre-fix this clipping
+     came from .editor-canvas's overflow:hidden, which ALSO clipped
+     the SelectionOutline + TransformHandles when a shape was dragged
+     off-canvas. .editor-canvas is now overflow:visible; the image
+     handles its own clipping via border-radius (browsers clip <img>
+     content to the radius natively — no overflow:hidden needed). */
+  border-radius: 6px;
 }
 .editor-svg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  /* Let SelectionOutline + draft glyphs paint past the SVG viewport
+     when a shape extends off-canvas. SVG's default `overflow` is
+     hidden on the root element; we need visible so the user's
+     bounding-box outline tracks the off-canvas portion of a
+     rotated / translated shape. */
+  overflow: visible;
   pointer-events: none;
 }
 

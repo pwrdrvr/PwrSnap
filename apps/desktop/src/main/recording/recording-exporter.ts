@@ -107,10 +107,76 @@ export type ExportInput = {
   audio: VideoExportAudio;
 };
 
+// ── Encode concurrency hygiene ──────────────────────────────────────
+//
+// Without guards, six fast clicks on the 6-card grid spawn six
+// concurrent ffmpeg processes. That saturates CPUs / fans / swap on
+// slower machines, and `triggerDrag` would race `triggerCopy` to
+// encode the same file twice. Two guards address this:
+//
+// 1. In-flight de-duplication — a per-cache-key Promise map. If a
+//    second request for the same (captureId, format, preset, range,
+//    audio) tuple arrives while the first is still running, both
+//    await the same Promise. Same ffmpeg run, two callers. This is
+//    how `triggerDrag`'s parallel `video:export` dispatch on the
+//    renderer side avoids paying twice for the encode.
+//
+// 2. Global concurrency cap — a counting semaphore limits how many
+//    ffmpeg processes run simultaneously. MAX_CONCURRENT_ENCODES=2
+//    keeps CPU+memory pressure bounded; extra requests queue until
+//    a slot opens. This is the "user clicks 6 cards fast" guard.
+//
+// Both guards apply only to the ENCODE step. Cache lookups stay
+// synchronous and parallel — instant cache hits don't queue.
+
+const MAX_CONCURRENT_ENCODES = 2;
+let activeEncodeCount = 0;
+const encodeWaitQueue: Array<() => void> = [];
+
+function acquireEncodeSlot(): Promise<void> {
+  if (activeEncodeCount < MAX_CONCURRENT_ENCODES) {
+    activeEncodeCount++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    encodeWaitQueue.push(() => {
+      activeEncodeCount++;
+      resolve();
+    });
+  });
+}
+
+function releaseEncodeSlot(): void {
+  activeEncodeCount--;
+  const next = encodeWaitQueue.shift();
+  if (next !== undefined) next();
+}
+
+/** Cache-key string for in-flight de-dup. Same fields the
+ *  `video_export_cache` PRIMARY KEY uses — two callers asking for
+ *  the same key get the same Promise. */
+function encodeKey(input: ExportInput): string {
+  return [
+    input.record.id,
+    input.format,
+    input.preset,
+    input.range.start.toFixed(3),
+    input.range.end.toFixed(3),
+    input.audio.includeSystemAudio ? 1 : 0,
+    input.audio.includeMicrophone ? 1 : 0
+  ].join("|");
+}
+
+const inFlightEncodes = new Map<string, Promise<VideoExportResult>>();
+
 /**
  * Resolve a cache hit or encode fresh. Caller is responsible for
  * validating the audio toggles against `video.hasSystemAudio` /
  * `video.hasMicrophoneAudio` — the exporter trusts its inputs.
+ *
+ * Concurrent requests for the same cache key share one ffmpeg run
+ * (in-flight de-dup); cross-key requests are bounded by a global
+ * semaphore (concurrency cap). See the header above for rationale.
  */
 export async function exportVideoRange(input: ExportInput): Promise<VideoExportResult> {
   const { widthPx, heightPx } = computeOutputDimensions(
@@ -119,6 +185,9 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     input.record.height_px
   );
 
+  // Cache lookup is always fast (synchronous SQLite point query).
+  // No need to queue it behind the semaphore — instant cache hits
+  // should stay instant.
   const cached = lookupExport({
     captureId: input.record.id,
     range: input.range,
@@ -130,6 +199,35 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     return { ...cached, widthPx, heightPx };
   }
 
+  // In-flight de-dup: two callers for the same key share one ffmpeg.
+  // Critical for the `triggerDrag` parallel-dispatch pattern on the
+  // renderer side — the drag's `video:prepareDrag` and the visible-
+  // state `video:export` would otherwise encode the same file twice.
+  const key = encodeKey(input);
+  const existing = inFlightEncodes.get(key);
+  if (existing !== undefined) {
+    const result = await existing;
+    // The first caller returns `fromCache: false`; subsequent callers
+    // get a result that's effectively cached (the file is on disk now,
+    // they didn't pay for the encode). Mark as cache hit so log spans
+    // distinguish "actually encoded" from "rode the in-flight wave".
+    return { ...result, fromCache: true };
+  }
+
+  const promise = encodeAndRecord(input, widthPx, heightPx);
+  inFlightEncodes.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightEncodes.delete(key);
+  }
+}
+
+async function encodeAndRecord(
+  input: ExportInput,
+  widthPx: number,
+  heightPx: number
+): Promise<VideoExportResult> {
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
@@ -163,24 +261,31 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
       `recording-exporter: capture ${input.record.id} has no legacy_src_path`
     );
   }
-  if (input.format === "gif") {
-    await encodeGif(
-      ffmpeg,
-      input.record.legacy_src_path,
-      input.range,
-      GIF_PRESETS[input.preset],
-      outputPath
-    );
-  } else {
-    await encodeMp4(
-      ffmpeg,
-      input.record.legacy_src_path,
-      input.video,
-      input.range,
-      input.audio,
-      MP4_PRESETS[input.preset],
-      outputPath
-    );
+
+  await acquireEncodeSlot();
+  const startMs = Date.now();
+  try {
+    if (input.format === "gif") {
+      await encodeGif(
+        ffmpeg,
+        input.record.legacy_src_path,
+        input.range,
+        GIF_PRESETS[input.preset],
+        outputPath
+      );
+    } else {
+      await encodeMp4(
+        ffmpeg,
+        input.record.legacy_src_path,
+        input.video,
+        input.range,
+        input.audio,
+        MP4_PRESETS[input.preset],
+        outputPath
+      );
+    }
+  } finally {
+    releaseEncodeSlot();
   }
 
   const sizeInfo = await stat(outputPath);
@@ -193,6 +298,11 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     path: outputPath,
     byteSize: sizeInfo.size
   });
+  // Capture actual encode duration + byte size for offline estimator
+  // tuning. The renderer's pre-click size labels come from
+  // `estimateVideoByteSize` in recording-handlers.ts — those numbers
+  // were calibrated by hand and want a feedback loop once we have
+  // real data. Grep `video export encoded` in logs to compare.
   log.info("video export encoded", {
     captureId: input.record.id,
     format: input.format,
@@ -200,7 +310,8 @@ export async function exportVideoRange(input: ExportInput): Promise<VideoExportR
     widthPx,
     heightPx,
     byteSize: sizeInfo.size,
-    durationSec: input.range.end - input.range.start
+    durationSec: input.range.end - input.range.start,
+    encodeMs: Date.now() - startMs
   });
   return {
     path: outputPath,

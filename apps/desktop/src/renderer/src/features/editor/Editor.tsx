@@ -1131,6 +1131,16 @@ export function Editor({
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>): void {
     if (event.button !== 0) return;
+    // Defensive clear of any stale multi-drag state. The arming path
+    // below stores snapshots in `multiDragStartRef.current` and
+    // relies on `onPointerUp` / `onPointerCancel` to clear it; if
+    // either of those was skipped (OS cancellation, window blur
+    // mid-drag, hot-reload during dev) the next pointerdown would
+    // see a stale ref. Without this reset, the next pointerup would
+    // commit a translation against the OLD snapshots using the NEW
+    // cursor delta — totally unrelated layers would jump. Cheap
+    // unconditional reset is the right discipline.
+    multiDragStartRef.current = null;
     // Phase 3.2 selection: pointer tool clicks hit-test against
     // existing overlays. Hit → select that overlay. Miss → clear.
     // The hit-test runs against `overlaysRef.current` which the
@@ -1336,6 +1346,26 @@ export function Editor({
     if (draft.kind === "rect-drag") {
       setDraft({ ...draft, curXn: cur.xn, curYn: cur.yn });
       return;
+    }
+  }
+
+  function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
+    // OS-level pointer cancellation (window blur during a drag,
+    // Mission Control, three-finger swipe, etc.) — drop any armed
+    // multi-drag state so the next pointerdown doesn't see stale
+    // snapshots. The pointerup path also does this in its `try/finally`
+    // shape, but pointerup never fires if the OS cancels first, so
+    // this handler is the second leg of the cleanup pair. Releasing
+    // capture is a no-op if it was already released by the cancel
+    // itself; wrap in try/catch defensively.
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      multiDragStartRef.current = null;
+      try {
+        (event.target as HTMLElement).releasePointerCapture(multiDrag.pointerId);
+      } catch {
+        // Best-effort release; capture may already be gone.
+      }
     }
   }
 
@@ -2362,6 +2392,7 @@ export function Editor({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       commitText={commitText}
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
@@ -2412,6 +2443,7 @@ function EditorLoaded({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
   commitText,
   onZoomChange,
   blurStyle,
@@ -2479,6 +2511,12 @@ function EditorLoaded({
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => Promise<void>;
+  /** OS-level pointer cancellation (window blur during drag,
+   *  Mission Control, etc.). Outer Editor uses it to drop any armed
+   *  multi-drag snapshots so the next pointerdown doesn't see stale
+   *  state. EditorLoaded just forwards it to the canvas's
+   *  onPointerCancel attribute. */
+  onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   blurStyle: BlurStyle;
@@ -3772,6 +3810,7 @@ function EditorLoaded({
           onPointerDown={wantPan ? undefined : onPointerDown}
           onPointerMove={wantPan ? undefined : onPointerMove}
           onPointerUp={wantPan ? undefined : onPointerUp}
+          onPointerCancel={wantPan ? undefined : onPointerCancel}
           data-tool={tool}
         >
           {/* Phase 3.6 — the <img> is sized so the SOURCE raster's

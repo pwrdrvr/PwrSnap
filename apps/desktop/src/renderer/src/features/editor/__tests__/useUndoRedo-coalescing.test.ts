@@ -480,6 +480,151 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     expect(undoCount).toBe(1);
   });
 
+  test("multi-DRAG geometry burst inside a bracket with shared opKind/layerId → 1 undo step", async () => {
+    // Mirror of the multi-delete coalescing test for the geometry
+    // op kind. The new `commitMultiDragRef` pathway in Editor.tsx
+    // opens a `("multi-drag", "pointer-multi-drag")` bracket and
+    // calls `undo.recordGeometry(..., { opKind, layerId })` for
+    // each selected layer's translation. Locks two things at once:
+    //   (a) `recordGeometry` actually forwards the new optional
+    //       `RecordOptions` arg to push() (the signature change is
+    //       what unlocks this coalescing path);
+    //   (b) push()'s `insideInteraction` check matches the bracket's
+    //       keys for the geometry op kind — same mechanism as the
+    //       delete coalescing path, different op kind.
+    //
+    // Without this test, a future refactor that drops the opts on
+    // either side would silently break "drag a multi-selection →
+    // one undo entry restores all of them" but the unit tests would
+    // still pass.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("multi-drag", "pointer-multi-drag");
+    });
+    // Two recordGeometry calls in the bracket — distinct layer ids
+    // (different rows), same logical group key. Same shape the
+    // EditorLoaded's `commitMultiDragRef` closure emits per layer
+    // during a multi-drag commit.
+    act(() => {
+      api!.recordGeometry(
+        {
+          currentIdRef: { current: "arrow-1-post" },
+          previousGeometry: {
+            kind: "arrow",
+            from: { x: 0, y: 0 },
+            to: { x: 1, y: 1 }
+          },
+          nextGeometry: {
+            kind: "arrow",
+            from: { x: 0.1, y: 0.1 },
+            to: { x: 1.1, y: 1.1 }
+          }
+        },
+        { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+      );
+      advanceTime(5);
+      api!.recordGeometry(
+        {
+          currentIdRef: { current: "rect-1-post" },
+          previousGeometry: {
+            kind: "rect",
+            rect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }
+          },
+          nextGeometry: {
+            kind: "rect",
+            rect: { x: 0.3, y: 0.3, w: 0.3, h: 0.3 }
+          }
+        },
+        { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+      );
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Exactly ONE undo step covering both layer translations.
+    let undoCount = 0;
+    while (api!.canUndo && undoCount < 10) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+      undoCount += 1;
+    }
+    expect(undoCount).toBe(1);
+  });
+
+  test("multi-DRAG geometry burst WITHOUT shared layerId tag → N undo steps (pre-fix shape)", async () => {
+    // Lock the pre-fix behavior so a future refactor that drops the
+    // tag on the multi-drag side is caught — the symmetric guard to
+    // the multi-delete pre-fix test below.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("multi-drag", "pointer-multi-drag");
+    });
+    act(() => {
+      // Untagged recordGeometry calls (opts omitted) — push() falls
+      // through the untagged branch even though a bracket is open.
+      api!.recordGeometry({
+        currentIdRef: { current: "arrow-1-post" },
+        previousGeometry: {
+          kind: "arrow",
+          from: { x: 0, y: 0 },
+          to: { x: 1, y: 1 }
+        },
+        nextGeometry: {
+          kind: "arrow",
+          from: { x: 0.1, y: 0.1 },
+          to: { x: 1.1, y: 1.1 }
+        }
+      });
+      api!.recordGeometry({
+        currentIdRef: { current: "rect-1-post" },
+        previousGeometry: {
+          kind: "rect",
+          rect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }
+        },
+        nextGeometry: {
+          kind: "rect",
+          rect: { x: 0.3, y: 0.3, w: 0.3, h: 0.3 }
+        }
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    let undoCount = 0;
+    while (api!.canUndo && undoCount < 10) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+      undoCount += 1;
+    }
+    expect(undoCount).toBe(2);
+  });
+
   test("multi-delete WITHOUT shared layerId tag → N undo steps (pre-fix behavior, regression test)", async () => {
     // Confirms the pre-fix behavior so a future refactor that drops
     // the tag from the multi-delete handler doesn't silently regress

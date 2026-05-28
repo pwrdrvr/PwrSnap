@@ -181,6 +181,19 @@ test("library-right-rail: video capture footer renders the 6-card preset grid", 
     await expect(
       footer.getByText("Copy to clipboard", { exact: true })
     ).toHaveCount(0);
+
+    // Per-format subheaders distinguish the two otherwise-identical
+    // rows. Each row group wraps an eyebrow + the .psl__copy-row.
+    // Without these, the user sees two rows of "LOW MED HIGH" with
+    // no way to tell which is GIF and which is MP4.
+    const gifGroup = win.locator(
+      '[data-testid="psl-copy-row-video-gif-group"]'
+    );
+    const mp4Group = win.locator(
+      '[data-testid="psl-copy-row-video-mp4-group"]'
+    );
+    await expect(gifGroup.getByText("GIF", { exact: true })).toBeVisible();
+    await expect(mp4Group.getByText("MP4", { exact: true })).toBeVisible();
   } finally {
     await app.close();
   }

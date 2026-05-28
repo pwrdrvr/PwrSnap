@@ -57,6 +57,11 @@ const KBD: Readonly<Record<`${"gif" | "mp4"}-${VideoPreset}`, string>> = {
 
 const EMPTY_FALLBACK = { dim: "—", bytes: "—" };
 
+const FORMAT_LABELS: Readonly<Record<"gif" | "mp4", string>> = {
+  gif: "GIF",
+  mp4: "MP4"
+};
+
 export function VideoExportPresetGrid({
   metrics,
   states,
@@ -70,31 +75,45 @@ export function VideoExportPresetGrid({
       {(["gif", "mp4"] as const).map((format) => (
         <div
           key={format}
-          className="psl__copy-row"
-          data-testid={`psl-copy-row-video-${format}`}
+          className="psl__copy-row-group"
+          data-testid={`psl-copy-row-video-${format}-group`}
         >
-          {PRESETS.map((preset) => {
-            const key = videoPresetKey(format, preset);
-            const cellMetric = metrics[key];
-            const cellFallback = fallback?.[key] ?? EMPTY_FALLBACK;
-            const cellState = states[key] ?? { kind: "idle" as const };
-            const { dim, bytes } = readMetric(cellMetric, cellFallback);
-            return (
-              <VideoExportCard
-                key={key}
-                format={format}
-                preset={preset}
-                label={PRESET_LABELS[preset]}
-                kbd={KBD[key]}
-                dim={dim}
-                bytes={bytes}
-                state={cellState}
-                onCopy={() => onCopy(format, preset)}
-                onCopyPath={() => onCopyPath(format, preset)}
-                onDrag={() => onDrag(format, preset)}
-              />
-            );
-          })}
+          {/* Format header — distinguishes the GIF row from the MP4
+              row at a glance. Without this the two rows are
+              visually identical (cards labeled just "Low / Med /
+              High") and the kbd hints (⌘1-3 vs ⌘4-6) are too
+              small to disambiguate. */}
+          <div className="psl__copy-format-eyebrow">
+            <span>{FORMAT_LABELS[format]}</span>
+            <span className="psl__copy-format-eyebrow-line" />
+          </div>
+          <div
+            className="psl__copy-row"
+            data-testid={`psl-copy-row-video-${format}`}
+          >
+            {PRESETS.map((preset) => {
+              const key = videoPresetKey(format, preset);
+              const cellMetric = metrics[key];
+              const cellFallback = fallback?.[key] ?? EMPTY_FALLBACK;
+              const cellState = states[key] ?? { kind: "idle" as const };
+              const { dim, bytes } = readMetric(cellMetric, cellFallback);
+              return (
+                <VideoExportCard
+                  key={key}
+                  format={format}
+                  preset={preset}
+                  label={PRESET_LABELS[preset]}
+                  kbd={KBD[key]}
+                  dim={dim}
+                  bytes={bytes}
+                  state={cellState}
+                  onCopy={() => onCopy(format, preset)}
+                  onCopyPath={() => onCopyPath(format, preset)}
+                  onDrag={() => onDrag(format, preset)}
+                />
+              );
+            })}
+          </div>
         </div>
       ))}
     </>

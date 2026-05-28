@@ -2842,6 +2842,31 @@
   gap: 6px;
 }
 
+/* Per-(format) group wrapper for the video 6-card grid. Stacks the
+   format eyebrow ("GIF" / "MP4") above the 3-card row so the user
+   can tell the two otherwise-identical rows apart at a glance. */
+.psl__copy-row-group + .psl__copy-row-group {
+  margin-top: 10px;
+}
+/* Format header inside each row group. Smaller and lower-contrast
+   than the main "Export" eyebrow above the whole footer — sub-
+   section affordance, not section header. */
+.psl__copy-format-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.psl__copy-format-eyebrow-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
 /* Secondary actions row (Share / Editor / trash) */
 .psl__action-row {
   display: flex;

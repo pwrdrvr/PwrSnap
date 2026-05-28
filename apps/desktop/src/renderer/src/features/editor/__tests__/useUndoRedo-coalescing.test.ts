@@ -423,4 +423,99 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     }
     expect(undoCount).toBe(2);
   });
+
+  test("multi-delete inside a bracket with shared opKind/layerId → 1 undo step", async () => {
+    // Regression for user report: "I Command-selected a Blur and then
+    // a Rect, hit Delete — both deleted. Cmd+Z only restored the Blur;
+    // a second Cmd+Z restored the Rect. These were supposed to be a
+    // grouped undo entry."
+    //
+    // The keyboard handler's multi-delete loop opens a bracket with
+    // ("delete", "kbd-multi-delete") and now calls recordDelete with
+    // the SAME tag for each row, so push()'s insideInteraction check
+    // fires and the N pushes coalesce into 1 entry. Without the tag
+    // (pre-fix), each push hit the untagged branch and produced its
+    // own entry — N undo presses needed to restore N deleted layers.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    // Open the bracket like Editor.tsx does for multi-delete.
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    // Two recordDelete calls in the bracket — different ROW ids
+    // (each delete targets a distinct layer), same logical group key.
+    act(() => {
+      api!.recordDelete(makeRow("blur-row"), {
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+      });
+      advanceTime(5);
+      api!.recordDelete(makeRow("rect-row"), {
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Exactly ONE undo step covering both deletes.
+    let undoCount = 0;
+    while (api!.canUndo && undoCount < 10) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+      undoCount += 1;
+    }
+    expect(undoCount).toBe(1);
+  });
+
+  test("multi-delete WITHOUT shared layerId tag → N undo steps (pre-fix behavior, regression test)", async () => {
+    // Confirms the pre-fix behavior so a future refactor that drops
+    // the tag from the multi-delete handler doesn't silently regress
+    // the user-facing UX. Same bracket, but recordDelete called
+    // without opts — push() falls through the untagged branch and
+    // each entry stays standalone.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(makeRow("blur-row"));
+      api!.recordDelete(makeRow("rect-row"));
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    let undoCount = 0;
+    while (api!.canUndo && undoCount < 10) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await api!.undo();
+      });
+      undoCount += 1;
+    }
+    expect(undoCount).toBe(2);
+  });
 });

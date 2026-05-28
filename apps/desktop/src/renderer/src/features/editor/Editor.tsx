@@ -62,7 +62,7 @@ import { computeEditorImageStyle } from "./editor-image-style";
 import { resolveToolColor } from "./resolveToolColor";
 import { TOOLS, type Tool } from "./editor-tools";
 import { useZoomPan, type ZoomMode } from "./useZoomPan";
-import { useUndoRedo, type InteractionToken } from "./useUndoRedo";
+import { useUndoRedo, type InteractionToken, type RecordOptions } from "./useUndoRedo";
 import {
   useCaptureModel,
   type EditOpResult,
@@ -1833,13 +1833,46 @@ export function Editor({
         clearSelection();
         // Open a coalescing bracket so every deletion in this batch
         // records into a SINGLE undo entry — pressing Undo once
-        // restores all of them as a group. Without the bracket the
-        // user'd have to mash Undo once per deleted layer.
+        // restores all of them as a group.
+        //
+        // Two load-bearing details for the coalescing to actually
+        // work, both of which were wrong pre-fix:
+        //
+        //   1. AWAIT each `deleteSelectedRef` call before closing the
+        //      bracket. `deleteSelectedRef` is async (it awaits
+        //      `dispatchEdit` before calling `recordDelete`); without
+        //      the await here, the synchronous for-loop kicked off
+        //      every delete as fire-and-forget and ran `end(token)`
+        //      microseconds later — every recordDelete then fired
+        //      OUTSIDE the bracket and got its own undo entry. The
+        //      user reported "Cmd+Z after multi-delete only restored
+        //      one layer at a time" — that's the symptom.
+        //
+        //   2. Tag each `recordDelete` with the SAME
+        //      `{ opKind: "delete", layerId: "kbd-multi-delete" }`
+        //      as `begin(...)`. push()'s `insideInteraction` check
+        //      requires both keys to match the open bracket's keys;
+        //      untagged pushes never coalesce even when a bracket is
+        //      open. The shared layerId "kbd-multi-delete" is a
+        //      LOGICAL group key, not any individual layer's id.
         const begin = beginInteractionRef.current;
         const end = endInteractionRef.current;
         const token = begin !== null ? begin("delete", "kbd-multi-delete") : null;
-        for (const row of rows) deleteSelectedRef.current?.(row);
-        if (token !== null && end !== null) end(token);
+        void (async (): Promise<void> => {
+          try {
+            for (const row of rows) {
+              const deleter = deleteSelectedRef.current;
+              if (deleter !== null) {
+                await deleter(row, {
+                  opKind: "delete",
+                  layerId: "kbd-multi-delete"
+                });
+              }
+            }
+          } finally {
+            if (token !== null && end !== null) end(token);
+          }
+        })();
         return;
       }
       // ⌘A / ⌃A — select every overlay on the current capture.
@@ -2008,7 +2041,9 @@ export function Editor({
   // re-upsert on undo, plus the matching v2 layer node when
   // applicable. The outer keyboard handler grabs the row from
   // overlaysRef before calling in.
-  const deleteSelectedRef = useRef<((row: OverlayRow) => void) | null>(null);
+  const deleteSelectedRef = useRef<
+    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+  >(null);
   // Hook-owned nudger (same pattern as deleteSelectedRef). Translates
   // every selected overlay by (dxn, dyn) in normalized [0,1]² space —
   // EditorLoaded populates this with a closure that knows the canvas
@@ -2348,7 +2383,9 @@ function EditorLoaded({
   /** Outer Editor's keyboard handler reads this for Delete/Backspace.
    *  EditorLoaded populates it with a format-aware deleter (v1 →
    *  overlays:delete, v2 → layers:delete). */
-  deleteSelectedRef: React.RefObject<((row: OverlayRow) => void) | null>;
+  deleteSelectedRef: React.RefObject<
+    ((row: OverlayRow, opts?: RecordOptions) => Promise<void>) | null
+  >;
   /** Outer keyboard handler calls into this on arrow-key presses with
    *  source-pixel deltas; EditorLoaded's closure converts to normalized
    *  coords and dispatches one updateGeometry per selected layer. */
@@ -2517,7 +2554,10 @@ function EditorLoaded({
   // local branching. The events:overlays:changed broadcast triggers
   // useCaptureModel to refetch and the deleted row drops out.
   useEffect(() => {
-    deleteSelectedRef.current = (row: OverlayRow): void => {
+    deleteSelectedRef.current = async (
+      row: OverlayRow,
+      opts?: RecordOptions
+    ): Promise<void> => {
       // For v2 captures, find the layer node so recordDelete can
       // re-insert the structurally-identical layer on undo (preserves
       // parent_id / z_index / transform[] beyond what's in row.data).
@@ -2526,23 +2566,25 @@ function EditorLoaded({
         modelFormat === 2
           ? (modelLayers.find((l) => l.id === row.id) ?? null)
           : null;
-      void (async (): Promise<void> => {
-        const result = await dispatchEdit({ kind: "delete", id: row.id });
-        if (!result.ok) {
-          // eslint-disable-next-line no-console
-          console.error("delete failed", result.error);
-          return;
-        }
-        // Record on the undo stack. Without this, Delete/Backspace
-        // was silently unundoable (the dispatcher doesn't auto-
-        // record; the only auto-bridge is for create via
-        // recordCreateRef). The outer keyboard handler wraps a
-        // multi-delete loop in beginInteraction/endInteraction so
-        // every recordDelete here collapses into ONE undo entry.
-        if (!undoApplyingRef.current) {
-          undo.recordDelete(row, { node });
-        }
-      })();
+      const result = await dispatchEdit({ kind: "delete", id: row.id });
+      if (!result.ok) {
+        // eslint-disable-next-line no-console
+        console.error("delete failed", result.error);
+        return;
+      }
+      // Record on the undo stack. Without this, Delete/Backspace
+      // was silently unundoable (the dispatcher doesn't auto-
+      // record; the only auto-bridge is for create via
+      // recordCreateRef). The outer keyboard handler wraps a
+      // multi-delete loop in beginInteraction/endInteraction so
+      // every recordDelete here collapses into ONE undo entry —
+      // forwarding `opts` (opKind + layerId) is what lets push()'s
+      // `insideInteraction` check actually fire (untagged pushes
+      // never coalesce). Single-delete callers pass no opts; that's
+      // fine — the resulting standalone undo entry is correct UX.
+      if (!undoApplyingRef.current) {
+        undo.recordDelete(row, { node, ...(opts ?? {}) });
+      }
     };
     return () => {
       deleteSelectedRef.current = null;

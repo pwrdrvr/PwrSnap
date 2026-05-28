@@ -61,6 +61,7 @@ import {
 import { renderViaCoordinator } from "../render/coordinator";
 import { insertLayerTreeForCapture, listLayerTree } from "../persistence/layers-repo";
 import { getCacheSourcePath } from "../persistence/paths";
+import { notifyClipboardChanged } from "../clipboard-events";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:clipboard");
@@ -110,6 +111,13 @@ export function registerClipboardHandlers(): void {
       // the image. Native file drag (capture-handlers' drag payload)
       // is the right path for callers that need a file URL.
       clipboard.write({ image });
+      // Issue #139 — the "File > New > Paste from Clipboard" menu item
+      // relied on `menu-will-show` to refresh, which lagged on macOS
+      // after an in-app copy. Fire the event so the menu refresh
+      // runs synchronously; renderers can also subscribe via
+      // `events:clipboard:changed` if they ever surface a paste
+      // affordance in the UI.
+      notifyClipboardChanged();
       log.info("copied to clipboard", {
         captureId: record.id,
         preset: req.preset,
@@ -285,6 +293,11 @@ export function registerClipboardHandlers(): void {
           message: cause instanceof Error ? cause.message : String(cause)
         });
       }
+
+      // Notify subscribers — the UTI buffer is always written; the
+      // PNG fallback may have succeeded or not. Either way the OS
+      // clipboard changed under us.
+      notifyClipboardChanged();
 
       log.info("copied layer fragment to clipboard", {
         captureId: req.captureId,

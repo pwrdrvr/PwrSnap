@@ -9,6 +9,7 @@ import {
   Notification,
   shell
 } from "electron";
+import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
@@ -83,6 +84,7 @@ import { reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
+import { clipboardEvents } from "./clipboard-events";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import {
@@ -922,6 +924,19 @@ export function bootstrapApp(): void {
     await migrateLegacyCaptureSources();
     await migrateLegacyRenderCache();
     installApplicationMenu();
+    // Issue #139 — wire the menu refresh + renderer broadcast to OUR
+    // clipboard writes. menu-will-show alone was insufficient on macOS;
+    // the in-app "Copy MED" flow now updates the menu state at write
+    // time. Listeners outlive the menu (re-set on developerMode change
+    // via installApplicationMenu), so this single subscribe survives
+    // every menu rebuild.
+    clipboardEvents.on("changed", () => {
+      refreshPasteFromClipboardMenu();
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(EVENT_CHANNELS.clipboardChanged, {});
+      }
+    });
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();
     registerSettingsHandlers();

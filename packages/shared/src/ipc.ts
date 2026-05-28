@@ -163,7 +163,30 @@ export const EVENT_CHANNELS = {
    * is the new project list so subscribers don't have to round-trip
    * `sizzle:list`. Type: `{ projects: SizzleProject[] }`.
    */
-  sizzleProjectsChanged: "events:sizzle:projects:changed"
+  sizzleProjectsChanged: "events:sizzle:projects:changed",
+  /**
+   * Main → every BrowserWindow: PwrSnap just changed the OS clipboard's
+   * image contents (clipboard:copy, clipboard:copyLayerFragment, or
+   * any future write). Fires AFTER the write completes so subscribers
+   * that re-read the clipboard (e.g. to refresh a "paste available"
+   * UI state) see the new contents.
+   *
+   * Also fires from the matching native menu refresh path so the
+   * "File > New > Paste from Clipboard" menu item enables
+   * synchronously after an in-app copy without waiting for the user
+   * to dismiss-and-reopen the menu.
+   *
+   * Does NOT fire for clipboard writes from OTHER apps — Electron
+   * doesn't surface a portable system-clipboard-changed signal, and
+   * polling NSPasteboard's changeCount has its own pitfalls.
+   * External writes still surface to the menu through the existing
+   * `menu-will-show` listener (which re-reads the clipboard on each
+   * open) and through the BrowserWindow focus handler.
+   *
+   * Payload: empty object `{}` — the channel itself is the signal;
+   * subscribers re-query whatever they need.
+   */
+  clipboardChanged: "events:clipboard:changed"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

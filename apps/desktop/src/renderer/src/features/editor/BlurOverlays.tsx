@@ -489,6 +489,14 @@ function RotatedEffectCanvas({
       className={
         `ed-blur-item ed-blur-item--rotated-${style}` + (isDraft ? " is-draft" : "")
       }
+      // Debug-attributes for #147 review. Lets a user inspect the
+      // canvas in DevTools and confirm (a) this code path is what's
+      // rendering (not `BlurOverlayItem` falling back to the old CSS
+      // backdrop-filter + transform: rotate), and (b) the AABB +
+      // sampling region match the rotated rect's screen position.
+      data-pwrsnap-rotated-blur={style}
+      data-pwrsnap-rotation-rad={rotation.toFixed(6)}
+      data-pwrsnap-aabb={`${aabb.aabbX.toFixed(2)},${aabb.aabbY.toFixed(2)},${aabb.aabbW.toFixed(2)},${aabb.aabbH.toFixed(2)}`}
       style={{
         position: "absolute",
         left: `${(aabb.aabbX / canvasWidthPx) * 100}%`,

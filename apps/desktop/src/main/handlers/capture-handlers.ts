@@ -40,7 +40,11 @@ import {
 } from "../capture/region-selector";
 import { captureRegion, captureWindow } from "../capture/screencapture";
 import { releaseSnapshot } from "../capture/screen-snapshot";
-import { activateApp, findWindowAt, type WindowInfo } from "../capture/window-list";
+import { activateApp, type WindowInfo } from "../capture/window-list";
+import {
+  resolveSelectionSourceApp,
+  resolveSourceAppByRect
+} from "../capture/source-app";
 import {
   clipboardImageBufferFormats,
   writeFirstDecodableClipboardBufferToPng,
@@ -114,7 +118,7 @@ export function registerCaptureHandlers(): void {
     // Headless capture: best-effort source-app lookup against the
     // most recent window-list snapshot. Agents calling this directly
     // may not have a snapshot yet; that's fine — fields stay null.
-    const sourceApp = resolveSourceApp(req.rect, getLastWindowListSnapshot());
+    const sourceApp = resolveSourceAppByRect(req.rect, getLastWindowListSnapshot());
     return persistAndBroadcast(captureResult.tempPath, sourceApp);
   });
 
@@ -208,23 +212,24 @@ export function registerCaptureHandlers(): void {
       //     capture — by definition, the snapshot is frozen-in-
       //     time.
       const snapshot = getLastWindowListSnapshot();
-      let captureResult;
-      let sourceApp;
-      if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
-        captureResult = await captureWindow(selection.snappedWindowId);
-        sourceApp = findById(snapshot, selection.snappedWindowId);
-      } else {
-        captureResult = await cropScreenSnapshot(
-          screenSnapshotPath,
-          selection.rect,
-          selection.displayId
-        );
-        sourceApp =
-          selection.snappedWindowId !== undefined
-            ? findById(snapshot, selection.snappedWindowId) ??
-              resolveSourceApp(selection.rect, snapshot)
-            : resolveSourceApp(selection.rect, snapshot);
-      }
+      const captureResult =
+        selection.fullWindow === true && selection.snappedWindowId !== undefined
+          ? await captureWindow(selection.snappedWindowId)
+          : await cropScreenSnapshot(
+              screenSnapshotPath,
+              selection.rect,
+              selection.displayId
+            );
+      // Source-app resolution is the same on both capture branches —
+      // the choice of pixel-fetch path (full-window vs. cropped
+      // snapshot) doesn't change WHO owned the window. Single shared
+      // helper keeps the snap-id-first / rect-fallback / null tiering
+      // identical to the video-recording entry point.
+      const sourceApp = resolveSelectionSourceApp(
+        selection.rect,
+        selection.snappedWindowId,
+        snapshot
+      );
       if (!captureResult.ok) {
         return err({
           kind: "capture",
@@ -646,27 +651,6 @@ async function cropScreenSnapshot(
       message: cause instanceof Error ? cause.message : String(cause)
     };
   }
-}
-
-/**
- * Find which window owned the captured rect. We hit-test the rect's
- * center rather than its origin — the origin is often on a window
- * border or even outside the window when the user dragged-from-edge.
- * The snapshot is in window-local coords (relative to the selector
- * window for the active display); that matches how `req.rect` is
- * sourced from the renderer.
- */
-function resolveSourceApp(rect: Rect, windows: readonly WindowInfo[]): WindowInfo | null {
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  return findWindowAt(windows, cx, cy);
-}
-
-function findById(
-  windows: readonly WindowInfo[],
-  windowId: number
-): WindowInfo | null {
-  return windows.find((w) => w.windowId === windowId) ?? null;
 }
 
 function targetWidthForPreset(preset: RenderPreset, sourceWidthPx: number): number {

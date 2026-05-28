@@ -12,6 +12,7 @@
 
 import { BrowserWindow, screen } from "electron";
 import type { RecordingState } from "@pwrsnap/shared";
+import { appWindowsOverlappingRect } from "../capture/rect-overlap";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
 import { subscribeToRecordingState } from "./recording-state";
@@ -126,14 +127,44 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // click-through; recording phase flips it back off so the
       // Stop button is interactive.
       win.setIgnoreMouseEvents(true);
-      // Make the HUD window BE the recorded rect — the SVG leader
-      // fills 100% via viewBox, so the user sees the countdown
-      // exactly inside the area being captured.
+      // HUD becomes the recorded rect — the SVG leader paints
+      // inside it, so the user sees the countdown exactly on the
+      // surface that's about to be captured. The orange wedge
+      // sweep is kept very light (≈0.12 alpha at full fill) so
+      // a PwrSnap-window subject (Library / edit / Sizzle /
+      // Settings) stays readable through the overlay; non-PwrSnap
+      // subjects still get a clearly-visible "this area is the
+      // recording target" cue.
       fillRect(win, state.rect, state.displayId);
       if (!win.isVisible()) {
         win.showInactive();
       } else {
         win.moveTop();
+      }
+      // Re-assert the user's PwrSnap window on TOP of the
+      // normal-level z-order on every pre-roll tick. The
+      // showInactive() above adds the HUD to the window list at
+      // floating level (above Library at normal level) — that's
+      // fine, the HUD IS supposed to overlay the recording rect.
+      // What's NOT fine: between ticks, Cocoa can let another
+      // app's normal-level window (e.g. Claude, Terminal) float
+      // back above the Library at normal level. Empirically the
+      // user sees this as "the Library got pushed under during
+      // the lead-in." moveTop here is per-window-level — it
+      // doesn't fight the HUD's higher floating level, it just
+      // keeps the Library top of normal-level windows for the
+      // duration of the countdown.
+      //
+      // Pass `win` (the HUD) as `excludeWindow`: it just
+      // `fillRect`-ed itself to the recording rect, so its bounds
+      // match by design — we don't want to moveTop ourselves.
+      const ourOverlapping = appWindowsOverlappingRect(
+        state.rect,
+        state.displayId,
+        win
+      );
+      for (const otherWin of ourOverlapping) {
+        otherWin.moveTop();
       }
       break;
     }

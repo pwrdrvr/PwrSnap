@@ -1,14 +1,29 @@
 import { join } from "node:path";
-import { app, clipboard, dialog, globalShortcut, Menu, Notification, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  globalShortcut,
+  Menu,
+  Notification,
+  shell
+} from "electron";
 import type { RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
+  getLastWindowListSnapshot,
   hideSelector,
   pickRegion,
   preWarmRegionSelector
 } from "./capture/region-selector";
 import { releaseSnapshot } from "./capture/screen-snapshot";
-import { activateApp, listWindows } from "./capture/window-list";
+import { activateApp, selfPidSet } from "./capture/window-list";
+import { appWindowsOverlappingRect } from "./capture/rect-overlap";
+import {
+  resolveSelectionSourceApp,
+  shouldConsiderRaisingOurWindows
+} from "./capture/source-app";
 import { getAppIconPath } from "./app-icons/app-icon-cache";
 import { setFloatOverState } from "./float-over";
 import { bus } from "./command-bus";
@@ -517,6 +532,31 @@ async function runInteractiveCapture(
 }
 
 /**
+ * Choose which of the overlapping PwrSnap windows to give keyboard
+ * focus when we raise them for a recording. Prefer the Library (the
+ * primary user-facing window in this app); fall back to the first
+ * entry in the overlap set. `BrowserWindow.getAllWindows()` ordering
+ * isn't documented as z-order, so a stable tie-breaker beats letting
+ * implementation order decide.
+ *
+ * Caller invariant: `overlapping` is the result of
+ * `appWindowsOverlappingRect` BEFORE the recording HUD has been
+ * created. The HUD is only constructed when the state machine enters
+ * preflight, which happens *after* this call (inside the awaited
+ * `bus.dispatch("recording:start", ...)`), so the HUD can't appear
+ * here and we don't need to filter it out. If a future caller invokes
+ * this from a code path where the HUD is live, pass `excludeWindow`
+ * to `appWindowsOverlappingRect` first.
+ */
+function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindow {
+  const library = findMainLibraryWindow();
+  if (library !== null && overlapping.includes(library)) {
+    return library;
+  }
+  return overlapping[0]!;
+}
+
+/**
  * Fast Video Capture entry (issue #64). Opens the selector to pick a
  * region/window, then routes the commit to `recording:start` instead
  * of `capture:interactive`. The Snap-vs-Video chooser ships later;
@@ -549,6 +589,14 @@ async function runInteractiveRecord(): Promise<void> {
     hideSelector();
     if (selection.previousAppPid !== null && selection.previousAppPid !== undefined) {
       await activateApp(selection.previousAppPid);
+      // Match the image-capture cancel branch — activateApp can
+      // demote PwrSnap's activation policy to Accessory as a side-
+      // effect of returning focus to the previous app, which leaves
+      // the Library orphaned (alive but unreachable from the Dock or
+      // ⌘-Tab). Reclaim Regular policy without yanking focus from
+      // the previous app. See `capture-handlers.ts` for the matching
+      // call on the image path.
+      reclaimDockIconIfLibraryAlive();
     }
     return;
   }
@@ -563,8 +611,77 @@ async function runInteractiveRecord(): Promise<void> {
   // is also outside the selector's lifecycle.
   hideSelector();
   void releaseSnapshot(screenSnapshotId);
-  if (previousAppPid !== null) {
+
+  // Focus / z-order policy. Three cases:
+  //
+  //   • Snap to one of OUR windows, OR free-region drag whose rect
+  //     overlaps one of ours → raise our window(s). The user clearly
+  //     wants PwrSnap visible in the recording.
+  //   • Snap to ANOTHER app's window → leave our windows alone and run
+  //     activateApp(previousAppPid). Raising the Library here would
+  //     obscure the very window the user picked (e.g. Library sitting
+  //     partially behind Claude on screen — overlap detection would
+  //     match, but the recording subject is Claude, not us).
+  //   • Snap to one of ours but the rect doesn't actually intersect
+  //     any visible BrowserWindow (e.g. that window just closed) →
+  //     fall through to the previous-app activation; nothing to raise.
+  const cachedSnapshot = getLastWindowListSnapshot();
+  const shouldRaise = shouldConsiderRaisingOurWindows(
+    selection.snappedWindowId,
+    cachedSnapshot,
+    selfPidSet()
+  );
+  const overlapping = shouldRaise
+    ? appWindowsOverlappingRect(selection.rect, selection.displayId)
+    : [];
+  // Debug-only — useful when triaging "Library hid / dove under"
+  // reports. Turn on with `electron-log` debug; default level keeps
+  // this out of the dev terminal on every video recording.
+  log.debug("video-record post-commit focus policy", {
+    snappedWindowId: selection.snappedWindowId ?? null,
+    previousAppPid,
+    shouldRaise,
+    overlappingCount: overlapping.length,
+    overlappingTitles: overlapping.map((w) => w.getTitle()),
+    dockVisibleBefore: app.dock?.isVisible() ?? null,
+    libraryAlive: findMainLibraryWindow() !== null
+  });
+  if (overlapping.length > 0) {
+    // Two-step "really bring PwrSnap forward" because Electron's
+    // app.focus() + window.focus() are unreliable when the app's
+    // activation policy has drifted to Accessory (NSUIElement) — a
+    // previous activateApp() side-effect.
+    //
+    //   1. `reclaimDockIconIfLibraryAlive()` → calls
+    //      `app.dock.show()` which forcibly re-asserts Regular
+    //      activation policy. Without this the next focus() is a
+    //      no-op while Accessory.
+    //   2. `activateApp(process.pid)` → goes through the same native
+    //      NSRunningApplication.activate helper we use to bring
+    //      OTHER apps forward, but pointed at our own pid. This
+    //      bypasses Electron entirely and uses the macOS API
+    //      directly. More reliable than `app.focus({ steal: true })`
+    //      which has had spotty behavior with our floating panels
+    //      (focus-sink + HUD) in the window list.
+    reclaimDockIconIfLibraryAlive();
+    await activateApp(process.pid);
+    for (const win of overlapping) {
+      if (win.isMinimized()) win.restore();
+      if (!win.isVisible()) win.show();
+      win.moveTop();
+    }
+    pickFocusTargetForRecording(overlapping).focus();
+    log.debug("video-record raised our windows", {
+      ownPid: process.pid,
+      dockVisibleAfter: app.dock?.isVisible() ?? null
+    });
+  } else if (previousAppPid !== null) {
     await activateApp(previousAppPid);
+    // Same reclaim as the image-capture path — activateApp deactivates
+    // PwrSnap; AppKit can demote our activation policy to Accessory as
+    // a side-effect, stripping the Dock icon and orphaning the Library.
+    reclaimDockIconIfLibraryAlive();
+    log.debug("video-record activated previous app", { previousAppPid });
   }
   const settings = await new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
@@ -575,24 +692,34 @@ async function runInteractiveRecord(): Promise<void> {
     systemAudio: settings.recording.includeSystemAudio,
     microphone: settings.recording.includeMicrophone
   };
-  // For window-snapped subjects, look up the app name/bundleId via
-  // the window-list helper so the Library shows "Microsoft Edge"
-  // rather than "Unknown App". The lookup is ~30-50ms — runs in the
-  // pre-countdown window where the user has already committed, so
-  // it adds no perceived latency. If the helper is unavailable or
-  // the window has moved/closed since selection, we fall back to
-  // null fields and the row reads "Unknown App" (same as today).
+  // Source-app attribution mirrors the image-capture path
+  // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
+  // helper: snap-target id first, rect-center hit test as fallback,
+  // null if neither resolves. This runs whether the user held ⇧ at
+  // commit time or just clicked — both shapes attribute the same app
+  // for the same selection. We also reuse the cached window-list
+  // snapshot rather than re-running `listWindows()`, so the lookup
+  // matches the list the user actually picked against (no drift if
+  // a window moved/closed in the ~50ms between hideSelector + here).
+  const sourceApp = resolveSelectionSourceApp(
+    selection.rect,
+    selection.snappedWindowId,
+    getLastWindowListSnapshot()
+  );
+  // A snapshot windowId in the selection means the user pointed at a
+  // specific window (with or without ⇧). Persist that as a `window`
+  // subject so the Library row shows the source app even when the
+  // user didn't opt into the full-window capture path. Region kind
+  // is reserved for free-hand drags where no window was snapped.
   let subject: RecordingSubject;
-  if (selection.fullWindow === true && selection.snappedWindowId !== undefined) {
-    const windows = await listWindows();
-    const match = windows.find((w) => w.windowId === selection.snappedWindowId);
+  if (selection.snappedWindowId !== undefined) {
     subject = {
       kind: "window",
       windowId: selection.snappedWindowId,
       rect: selection.rect,
       displayId: selection.displayId,
-      appName: match?.appName ?? null,
-      appBundleId: match?.bundleId ?? null
+      appName: sourceApp?.appName ?? null,
+      appBundleId: sourceApp?.bundleId ?? null
     };
   } else {
     subject = {

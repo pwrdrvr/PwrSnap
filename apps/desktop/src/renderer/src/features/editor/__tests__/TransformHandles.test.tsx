@@ -618,6 +618,71 @@ describe("TransformHandles", () => {
     expect(onRequestEdit).not.toHaveBeenCalled();
   });
 
+  test("drag just above NO_DRAG_THRESHOLD_N commits geometry and does NOT request edit", async () => {
+    // Boundary case for the drag-vs-click decision in onPointerUp.
+    // NO_DRAG_THRESHOLD_N = 0.002 (~2 normalized units on the 1000×1000
+    // harness canvas → 2 client px). A 3-px move is JUST past the
+    // threshold; the contract is: geometry commits, edit does not fire
+    // — even though the browser still emits `click` (the click event
+    // has no movement threshold). Locks the boundary so future
+    // refactors that touch the threshold can't silently swap behavior
+    // in the narrow band between "definitely a click" and "definitely
+    // a drag."
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 503, 500);
+    firePointer(body, "pointerup", 503, 500);
+    fireClick(body, 503, 500);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    expect(onRequestEdit).not.toHaveBeenCalled();
+  });
+
+  test("drag-then-click on selected text body: onGeometryChange ONCE + onRequestEdit NEVER (clone bug)", async () => {
+    // Real browsers DO fire `click` after a mousedown→mousemove→mouseup
+    // sequence whenever mousedown and mouseup target the same element
+    // — there's no movement threshold for `click` (only for `dblclick`).
+    // The body-hit rect follows liveData during a drag, so the same
+    // <div> node sees both mousedown and mouseup; the browser fires a
+    // synthetic `click` on it after pointerup.
+    //
+    // Without suppression, the post-drag click fires onRequestEdit
+    // against the PRE-DRAG `selectedOverlay` snapshot. The Editor's
+    // handler then opens a TextDraftInput at the old position with
+    // editingId pointing at the row id that the geometry write has
+    // just replaced. TextHtmlOverlays can no longer find that id to
+    // suppress, so the moved overlay paints at the new position AND
+    // the draft input paints at the old position — a visible clone.
+    // resolveTextDraftStyle falls back to the current tool style for
+    // the unfound id, so the clone also picks up a different look:
+    // exactly the "clones it and leaves a copy behind with a new
+    // style" symptom the user reported.
+    //
+    // Contract: pointerup is the single decision point for drag-vs-
+    // click. A drag (delta ≥ NO_DRAG_THRESHOLD_N) commits geometry and
+    // does NOT request edit — even if the browser later emits `click`.
+    const onGeometryChange = vi.fn();
+    const onRequestEdit = vi.fn();
+    await render({
+      selectedOverlay: textRow(),
+      onGeometryChange,
+      onRequestEdit
+    });
+    const body = document.querySelector('[data-testid="transform-handle-body"]')!;
+    firePointer(body, "pointerdown", 500, 500);
+    firePointer(body, "pointermove", 700, 600);
+    firePointer(body, "pointerup", 700, 600);
+    fireClick(body, 700, 600);
+    expect(onGeometryChange).toHaveBeenCalledTimes(1);
+    expect(onRequestEdit).not.toHaveBeenCalled();
+  });
+
   test("returns null for crop overlay (no handles)", async () => {
     const cropOverlay: OverlayRow = {
       ...rectRow(),

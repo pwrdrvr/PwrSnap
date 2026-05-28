@@ -39,6 +39,7 @@ import {
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
+import { applyGeometryLocally } from "./geometry-projection";
 import { computeTextGlyphSize } from "@pwrsnap/shared";
 import { TEXT_BBOX_CHAR_ADVANCE_OUTLINE } from "./text-bbox-constants";
 
@@ -1449,14 +1450,37 @@ export function TransformHandles({
       // the overlay (which would push a noisy entry onto the undo stack
       // every time the user just clicks-to-focus a layer). The threshold
       // is generous enough to absorb sub-pixel jitter from a real click
-      // while still recognising the smallest deliberate drag. The
-      // body-hit rect's onClick relies on this suppression to fire its
-      // "click selected text → enter edit mode" branch cleanly without
-      // the geometry write racing the edit-mode draft.
+      // while still recognising the smallest deliberate drag.
+      //
+      // Pointerup is ALSO the single decision point for "click selected
+      // text → enter edit mode." Real browsers fire `click` after any
+      // mousedown→mouseup that targets the same element, with NO
+      // movement threshold — only `dblclick` has one. The body-hit rect
+      // tracks liveData during a drag, so the same <div> node sees both
+      // mousedown and mouseup; the browser fires `click` on it after a
+      // substantive drag. If we routed the edit branch through a React
+      // onClick handler, every drag would also fire onRequestEdit
+      // against the pre-drag selectedOverlay snapshot — opening a draft
+      // at the OLD position with editingId pointing at the row id that
+      // the geometry write has just replaced. TextHtmlOverlays can't
+      // suppress that id any more, so the moved row paints at the new
+      // position AND the draft input paints at the old position: a
+      // clone. resolveTextDraftStyle falls back to the current tool
+      // style for the missing id, so the clone also picks up a
+      // different look ("clones it and leaves a copy behind with a new
+      // style"). Deciding drag-vs-click here, exactly once per
+      // interaction, makes the React onClick redundant.
       const NO_DRAG_THRESHOLD_N = 0.002;
       const movedN = Math.hypot(pt.xn - startPt.xn, pt.yn - startPt.yn);
       if (movedN < NO_DRAG_THRESHOLD_N) {
         setLiveData(null);
+        if (
+          handle === "body" &&
+          selectedOverlay.data.kind === "text" &&
+          onRequestEdit !== undefined
+        ) {
+          onRequestEdit(selectedOverlay);
+        }
         onDragEnd?.();
         return;
       }
@@ -1469,7 +1493,7 @@ export function TransformHandles({
       // selectedOverlay.id above clears it when the new layer arrives.
       onDragEnd?.();
     },
-    [clientToNormalized, onDragEnd, onGeometryChange]
+    [clientToNormalized, onDragEnd, onGeometryChange, onRequestEdit, selectedOverlay]
   );
 
   if (handles === null) return null;
@@ -1506,42 +1530,22 @@ export function TransformHandles({
           onPointerUp={onPointerUp}
           // Click-without-drag on a SELECTED text overlay re-opens the
           // draft input with the existing body pre-filled — caret lands
-          // exactly where they expect, no double-click puzzle. Browser
-          // `click` only fires when mousedown + mouseup land on the same
-          // element without crossing the drag threshold, so a real
-          // drag-to-move never trips this. Pairs with the no-drag
-          // suppression in onPointerUp above (otherwise the click would
-          // race a no-op geometry write).
-          //
-          // First-click-to-select is handled in Editor.onPointerDown
-          // before TransformHandles even mounts, so this branch only
-          // ever fires on the SECOND click on an already-selected
-          // overlay — exactly the "click selected to edit" gesture.
-          //
-          // Non-text kinds ignore clicks (no equivalent of "edit the
-          // body" for an arrow / rect / highlight / blur).
-          onClick={
-            selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
-              ? (e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  onRequestEdit(selectedOverlay);
-                }
-              : undefined
-          }
-          // Double-click on a TEXT overlay also routes to edit — kept
-          // for users who learned the gesture from the previous build
-          // and for the case where their click sequence on the body
-          // happens to register as a dblclick rather than two clicks.
-          onDoubleClick={
-            selectedOverlay.data.kind === "text" && onRequestEdit !== undefined
-              ? (e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  onRequestEdit(selectedOverlay);
-                }
-              : undefined
-          }
+          // exactly where they expect, no double-click puzzle. The
+          // drag-vs-click decision lives entirely in onPointerUp above
+          // (NOT a separate React onClick handler) so a real drag —
+          // even one the browser still emits `click` for, since it
+          // fires on every mousedown→mouseup pair targeting the same
+          // element with no movement threshold — never trips the edit
+          // branch. First-click-to-select happens in Editor.onPointerDown
+          // before TransformHandles even mounts; this body's pointerup
+          // only ever fires on the SECOND click on an already-selected
+          // overlay — and that pointerup IS the edit trigger when no
+          // drag happened. A native dblclick on the body never reaches
+          // this element in practice: by the time the second click's
+          // pointerup runs, onRequestEdit has cleared selectedLayerId
+          // and TransformHandles has unmounted, so the dblclick has no
+          // listener target. The previous onDoubleClick handler was
+          // load-bearing dead code; removed.
           style={{
             position: "absolute",
             left: `${bodyBox.x * 100}%`,
@@ -1635,33 +1639,6 @@ function bodyBoxForOverlay(
     return { x, y, w, h };
   }
   return null;
-}
-
-/** Local mirror of `applyGeometryToOverlay` — used to update the
- *  in-component liveData during pointermove without round-tripping
- *  through useCaptureModel. Kept in this file to avoid a circular
- *  import (useCaptureModel already imports things from here implicitly
- *  via the dispatcher; OverlaySvg should remain a leaf). */
-function applyGeometryLocally(
-  data: OverlayRow["data"],
-  geometry: GeometryUpdate
-): OverlayRow["data"] | null {
-  switch (geometry.kind) {
-    case "arrow":
-      if (data.kind !== "arrow") return null;
-      return { ...data, from: geometry.from, to: geometry.to };
-    case "rect":
-      if (data.kind !== "rect" && data.kind !== "highlight" && data.kind !== "blur") {
-        return null;
-      }
-      return { ...data, rect: geometry.rect };
-    case "text":
-      if (data.kind !== "text") return null;
-      return { ...data, point: geometry.point };
-    case "step":
-      if (data.kind !== "step") return null;
-      return { ...data, point: geometry.point };
-  }
 }
 
 // Suppress unused-symbol churn for the geometry types we re-export.

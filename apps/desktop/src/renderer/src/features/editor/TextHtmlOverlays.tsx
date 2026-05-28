@@ -18,6 +18,7 @@ import type { OverlayRow } from "@pwrsnap/shared";
 import { readTextWeight } from "@pwrsnap/shared";
 import { resolveToolColor } from "./resolveToolColor";
 import { TextHtml } from "./TextHtml";
+import { applyGeometryLocally, type GeometryUpdate } from "./geometry-projection";
 
 const AUTO_COLOR_HEX = "var(--accent, #ff8a1f)";
 
@@ -39,14 +40,29 @@ export interface TextHtmlOverlaysProps {
    *  display + edit consume the same value. Drives fontPx via
    *  computeTextHtmlStyle. */
   canvasCssHeight: number;
+  /** Live-drag geometry override. When set, the text row whose id
+   *  matches `layerId` is rendered with the overridden geometry
+   *  instead of its persisted `data.point`, so the painted glyph
+   *  follows the cursor during a TransformHandles drag (same
+   *  contract OverlaySvg / BlurOverlays implement for arrow / rect /
+   *  highlight / blur). Without this, only the bounding box + handles
+   *  move during the drag — the text snaps to the new position on
+   *  pointerup. */
+  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
 }
 
 export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
-  const texts = props.overlays.flatMap((row) =>
-    row.data.kind === "text" && row.id !== props.editingLayerId
-      ? [{ row, data: row.data }]
-      : []
-  );
+  const liveOverride = props.liveOverride ?? null;
+  const texts = props.overlays.flatMap((row) => {
+    if (row.data.kind !== "text" || row.id === props.editingLayerId) return [];
+    if (liveOverride !== null && row.id === liveOverride.layerId) {
+      const merged = applyGeometryLocally(row.data, liveOverride.geometry);
+      if (merged !== null && merged.kind === "text") {
+        return [{ row, data: merged }];
+      }
+    }
+    return [{ row, data: row.data }];
+  });
 
   return (
     <>

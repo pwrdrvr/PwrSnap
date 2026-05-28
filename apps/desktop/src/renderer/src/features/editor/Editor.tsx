@@ -2632,6 +2632,7 @@ function EditorLoaded({
             sourceWidthPx={sourceWidthPx}
             sourceHeightPx={sourceHeightPx}
             canvasCssHeight={canvasCssHeight}
+            liveOverride={draftGeometry}
           />
           {/* Phase 3.5 — transform handles rendered on top of OverlaySvg
               so the selected overlay can be resized/moved via drag. The

@@ -6,10 +6,9 @@
 // The original E2E suite was the most repeatable victim of the Linux
 // xvfb launch-budget flake class: a 30s test timeout in
 // `launchPwrSnap()` plus a 30s worker teardown, both of which produced
-// the "1 flaky, 1 error not part of any test" CI exit-1 pattern on PR
-// #125 (runs 26549457564 + 26550169080). Each test here finishes in
-// ~10ms; the bus call itself is the entire surface, no DOM, no window
-// state observation.
+// the "1 flaky, 1 error not part of any test" CI exit-1 pattern. Each
+// test here finishes in ~10ms; the bus call itself is the entire
+// surface, no DOM, no window state observation.
 //
 // What's covered:
 //   • recording:state idle on a fresh launch (default RecordingState)
@@ -24,6 +23,13 @@
 
 import { describe, expect, test, vi } from "vitest";
 
+// Full RecordingService surface — only `cancel` and `restart` are
+// exercised by the 5 tests in this file. `start`, `stop`, `isActive`
+// are intentionally unimplemented `vi.fn()` stubs: present so the mock
+// satisfies the interface shape, but a test that accidentally invoked
+// them would surface as a clean assertion failure rather than a
+// TypeError. Add a real implementation only when a new test exercises
+// the verb.
 const mocks = vi.hoisted(() => ({
   cancel: vi.fn(async () => undefined),
   restart: vi.fn(async () => {
@@ -85,6 +91,11 @@ const { registerRecordingHandlers } = await import("../recording-handlers");
 registerRecordingHandlers();
 
 describe("recording:* command-bus surface", () => {
+  // Note: `recording-state.ts` holds module-level state. None of the
+  // tests in this file call setRecordingState, so the default `{ phase:
+  // "idle" }` is stable across this describe. If you add a test that
+  // mutates the state, add a `beforeEach` that resets it explicitly —
+  // within-file test order is NOT a contract.
   test("recording:state returns idle on a fresh launch", async () => {
     const result = await bus.dispatch("recording:state", {}, { principal: "ipc" });
 

@@ -25,10 +25,10 @@ const isMac = process.platform === "darwin";
 // apps/desktop/src/main/handlers/__tests__/recording-handlers-bus.test.ts.
 // Each was a launchPwrSnap + single bus.dispatch + Result assertion; the
 // entire test budget was spent in the cold-start and they made up the
-// dominant share of the Linux/xvfb worker-teardown flakes on PR #125
-// (CI runs 26549457564 + 26550169080). The video float-over tests below
-// keep their E2E shape — they inspect real BrowserWindow lifecycle and
-// rendered DOM, which the bus mock can't reproduce.
+// dominant share of the Linux/xvfb worker-teardown flakes that
+// motivated the migration. The video float-over tests below keep their
+// E2E shape — they inspect real BrowserWindow lifecycle and rendered
+// DOM, which the bus mock can't reproduce.
 
 test.describe("video float-over", () => {
   test.skip(!isMac, "float-over relies on macOS BrowserWindow alwaysOnTop semantics");

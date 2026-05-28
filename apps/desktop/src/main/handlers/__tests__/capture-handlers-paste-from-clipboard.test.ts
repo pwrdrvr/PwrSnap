@@ -52,6 +52,14 @@ vi.mock("electron", () => ({
 // resolve. Mock the heavy ones (native binaries, screen-capture
 // pipeline) so they don't try to spawn helpers or load
 // better-sqlite3 in the test runner.
+//
+// MAINTENANCE: if you add a new import to `capture-handlers.ts` that
+// runs side-effects at module load (registers a handler, opens a file,
+// spawns a child), add a `vi.mock` for it here. vi.mock only matches
+// what's actually imported, so a missing mock fails silently — the
+// import would resolve to the real module and either spawn something
+// the test runner can't handle (sharp, ffmpeg, the Swift recorder) or
+// leak state across test files via a singleton.
 vi.mock("../../capture/region-selector", () => ({
   pickRegion: async () => ({ ok: false, reason: "cancelled" }),
   getLastWindowListSnapshot: () => [],

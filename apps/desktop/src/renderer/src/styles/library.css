@@ -560,7 +560,25 @@
 .psl__search-wrap { position: relative; }
 .psl__search-wrap svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
 
-/* Left: Source Apps */
+/* Left: Source Apps.
+ *
+ * Layout note — the rule below sets `overflow-y: auto` so the panel
+ * gets a scrollbar when content exceeds the viewport. That ONLY works
+ * because the direct children below carry `flex-shrink: 0` — without
+ * that, a column flex container lets items shrink below their declared
+ * height (default `flex-shrink: 1`) and the container never overflows.
+ * Items just compress into illegible nubs when the window gets short
+ * and `overflow: auto` becomes inert. See `.psl__nav` /
+ * `.psl__left-section` rules for the per-child `flex-shrink: 0`
+ * declarations.
+ *
+ * The whole sidebar scrolls as one unit — Library/Today/Trash, Types,
+ * the New Sizzle Reel CTA, and the variable-length Source App list
+ * all share the scroll region. Source App naturally lives at the
+ * bottom, so scrolling down reaches it without needing a nested
+ * scroll viewport. If a future section ever grows past the viewport
+ * (e.g. project enumeration ever lands here), this approach
+ * absorbs it for free. */
 .psl__left {
   grid-column: 1; grid-row: 2;
   background: var(--bg-sidebar);
@@ -665,7 +683,18 @@
   color: var(--accent-bright);
   border-color: var(--accent);
 }
-.psl__left-section { font: 600 9px/1 var(--font-sans); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); padding: 10px 10px 6px; }
+.psl__left-section {
+  font: 600 9px/1 var(--font-sans);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 10px 10px 6px;
+  /* Section headers also opt out of flex shrinking — see `.psl__left`
+     and `.psl__nav` rules. Headers compressing below their natural
+     ~25px would scrunch the section labels into the rule above them
+     before the parent overflows; pinning them holds the layout. */
+  flex-shrink: 0;
+}
 .psl__left-section:first-child { padding-top: 0; }
 
 /* === Types multi-pick rows in the sidebar === */
@@ -774,6 +803,13 @@
      the glyphs vertical headroom inside the label. */
   font: 500 12px/1.4 var(--font-sans);
   cursor: pointer; width: 100%; text-align: left;
+  /* Hold the row's 30px height even when the parent flex column is
+     shorter than the sum of children. Without this, the default
+     `flex-shrink: 1` lets each row collapse to fit, the sidebar's
+     `overflow-y: auto` never triggers, and the user sees the rows
+     squish into illegible 14-18px tall buttons instead of a
+     scrollbar. See `.psl__left` for the full layout contract. */
+  flex-shrink: 0;
 }
 .psl__nav:hover { background: var(--bg-panel-hover); }
 .psl__nav.is-active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-bright); }

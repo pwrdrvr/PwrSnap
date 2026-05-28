@@ -51,12 +51,19 @@ type PendingResolver = {
 const pendingResolvers: PendingResolver[] = [];
 const videoDragSink: Array<{ captureId: string; format: string; preset: string }> = [];
 
+// Cast to `unknown` then to the full Window shape — the test stub
+// intentionally implements only the four hook-required surfaces
+// (`dispatch`, `on`, `startCaptureDrag`, `startVideoDrag`), not the
+// full preload API (`platform`, `versions`, `submitRegion`, etc.).
+// `tsc --noEmit` rejects partial assignments to `Window["pwrsnapApi"]`
+// at strict mode; this is a unit-test stub, not production code, so
+// the cast is the right scope-control here.
 (globalThis as unknown as { window: Window }).window =
   (globalThis as unknown as { window?: Window }).window ?? ({} as Window);
-(globalThis as unknown as { window: Window & { pwrsnapApi?: unknown } }).window.pwrsnapApi = {
-  dispatch: (name: string, req: unknown) =>
-    new Promise((resolve) => {
-      pendingResolvers.push({ name, req, resolve });
+(globalThis as unknown as { window: { pwrsnapApi: unknown } }).window.pwrsnapApi = {
+  dispatch: (_name: string, _req: unknown): Promise<unknown> =>
+    new Promise<unknown>((resolve) => {
+      pendingResolvers.push({ name: _name, req: _req, resolve });
     }),
   on: () => () => undefined,
   startCaptureDrag: () => undefined,

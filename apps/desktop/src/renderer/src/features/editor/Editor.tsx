@@ -79,6 +79,11 @@ import { TextDraftInput } from "./TextDraftInput";
 import { TextHtmlOverlays } from "./TextHtmlOverlays";
 import { resolveTextDraftStyle } from "./text-draft-style";
 import { TEXT_BBOX_CHAR_ADVANCE_HIT } from "./text-bbox-constants";
+import { LayerContextMenu } from "./LayerContextMenu";
+import {
+  buildLayerContextMenuItems,
+  type LayerContextMenuItemId
+} from "./buildLayerContextMenuItems";
 import { ZoomMenu } from "./ZoomMenu";
 import { CropTool } from "./CropTool";
 import { EditorChrome } from "./EditorChrome";
@@ -1047,6 +1052,26 @@ export function Editor({
   const [draftGeometry, setDraftGeometry] = useState<
     ReadonlyMap<string, GeometryUpdate> | null
   >(null);
+  // Right-click context menu state. Lives at the outer Editor scope
+  // (same rationale as `draftGeometry`): the `onContextMenu` handler
+  // that opens it is defined HERE so it can call into outer-scope
+  // helpers like `hitTestOverlays` + the selection mutators
+  // (`replaceSelection` / `toggleSelection`), and EditorLoaded
+  // receives `contextMenuState` + `setContextMenuState` as props so
+  // it can render the `<LayerContextMenu>` over the canvas and
+  // route item clicks back into its own scope's handlers
+  // (`copySelected` / `pasteFromClipboard` / `deleteSelectedRef`
+  // etc.).
+  //
+  // `selectedIdsAtOpen` is captured so the close-on-selection-change
+  // useEffect can distinguish "the open itself changed selection"
+  // (don't close) from "a later selection-change closed the menu"
+  // (do close). Without this, the menu would self-close on the same
+  // render it opened.
+  const [contextMenuState, setContextMenuState] = useState<{
+    anchorPx: { x: number; y: number };
+    selectedIdsAtOpen: readonly string[];
+  } | null>(null);
   // Canvas + source dims read by `hitTestOverlays` so text overlays
   // get a FULL bounding-rect hit target (matches the on-screen
   // rendered glyph extent), not a tiny radius around the anchor.
@@ -1119,6 +1144,39 @@ export function Editor({
     if (draft?.kind === "text") {
       textInputRef.current?.focus();
     }
+  }, [draft]);
+
+  // Close the context menu when ANYTHING that should invalidate it
+  // changes: selection changes after open (e.g. broadcast refetch
+  // landed a delete from another window), tool changes (different
+  // tool = different valid menu), or the draft input opens (the
+  // text-edit gesture and the context menu shouldn't both be live).
+  // The capture-switch case is handled by React unmount.
+  //
+  // selectedIdsAtOpen captured at open distinguishes "the open
+  // itself changed selection" (don't close the freshly-opened menu)
+  // from "a later change happened" (close).
+  useEffect(() => {
+    if (contextMenuState === null) return;
+    const opened = contextMenuState.selectedIdsAtOpen;
+    const sameSelection =
+      opened.length === selectedLayerIds.length &&
+      opened.every((id, i) => id === selectedLayerIds[i]);
+    if (!sameSelection) {
+      setContextMenuState(null);
+    }
+  }, [selectedLayerIds, contextMenuState]);
+  useEffect(() => {
+    if (contextMenuState !== null) {
+      setContextMenuState(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool]);
+  useEffect(() => {
+    if (draft !== null && contextMenuState !== null) {
+      setContextMenuState(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
   function clientToNormalized(
@@ -1403,6 +1461,72 @@ export function Editor({
       setDraft({ ...draft, curXn: cur.xn, curYn: cur.yn });
       return;
     }
+  }
+
+  function onContextMenu(event: React.MouseEvent<HTMLDivElement>): void {
+    // Right-click on the canvas: select-under-cursor (replace OR
+    // extend if Cmd-held) and open the layer context menu at the
+    // click anchor. preventDefault to suppress the native OS menu —
+    // Electron would otherwise show its default "Reload / Inspect
+    // Element" menu over the editor.
+    //
+    // The handler runs in the OUTER Editor function so it can call
+    // outer-scope helpers (`hitTestOverlays`, `replaceSelection`,
+    // `toggleSelection`); EditorLoaded picks up `contextMenuState`
+    // via props and renders the menu inside the canvas.
+    event.preventDefault();
+    const start = clientToNormalized(event.clientX, event.clientY);
+    if (start === null) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const shortSide =
+      rect === undefined ? 1000 : Math.min(rect.width, rect.height);
+    const overlays = overlaysRef.current;
+    const hit = hitTestOverlays(
+      overlays,
+      start.xn,
+      start.yn,
+      shortSide,
+      textHitDimsRef.current ?? undefined
+    );
+    // Selection-update rule (per issue #134 + Photoshop / Figma
+    // convention):
+    //   - hit + not already selected + no Cmd → REPLACE selection
+    //   - hit + Cmd-held → toggle (extend / remove)
+    //   - hit + already in selection + no Cmd → keep selection
+    //     (right-clicking an already-selected member of a group
+    //     shouldn't collapse the group; the menu acts on the whole
+    //     group)
+    //   - miss → keep selection unchanged (the menu still opens
+    //     with Paste enabled etc.; closing nothing reads as "the
+    //     menu opened over empty canvas, here are the things I
+    //     can do without a selection")
+    const additive = event.metaKey || event.ctrlKey;
+    let nextSelection: readonly string[] = selectedLayerIds;
+    if (hit !== null) {
+      if (additive) {
+        nextSelection = selectedLayerIds.includes(hit)
+          ? selectedLayerIds.filter((id) => id !== hit)
+          : [...selectedLayerIds, hit];
+        setSelectedLayerIds(nextSelection);
+      } else if (!selectedLayerIds.includes(hit)) {
+        nextSelection = [hit];
+        setSelectedLayerIds(nextSelection);
+      }
+    }
+    // Anchor the menu at the click position in CANVAS-WRAP-LOCAL
+    // CSS pixels. The menu's offsetParent is the canvas wrap (the
+    // closest positioned ancestor), so subtracting the wrap's
+    // boundingClientRect gives us the right local coords.
+    const wrap = canvasWrapRef.current;
+    const wrapRect = wrap?.getBoundingClientRect();
+    const anchorPx = {
+      x: wrapRect === undefined ? event.clientX : event.clientX - wrapRect.left,
+      y: wrapRect === undefined ? event.clientY : event.clientY - wrapRect.top
+    };
+    setContextMenuState({
+      anchorPx,
+      selectedIdsAtOpen: nextSelection
+    });
   }
 
   function onPointerCancel(event: React.PointerEvent<HTMLDivElement>): void {
@@ -2046,6 +2170,107 @@ export function Editor({
     void pasteOverlaysWithOffset(items);
   }
 
+  /** Delete every selected layer as ONE coalesced undo entry.
+   *  Extracted from the Delete/Backspace keyboard handler so the
+   *  context menu's "Delete" item can dispatch the SAME path
+   *  without duplicating the bracket + items[] coalescing
+   *  discipline. Two load-bearing details: (1) AWAIT each
+   *  deleteSelectedRef before closing the bracket — the deleter
+   *  is async and the bracket close MUST happen after every
+   *  recordDelete lands; (2) tag each delete with the SAME
+   *  `{ opKind, layerId, mergeMode: "append" }` so push()'s
+   *  insideInteraction check fires AND the items[] accumulator
+   *  retains every deleted row (without "append" the merge would
+   *  replace and only the last delete would be restored on undo —
+   *  the user reported this bug class twice during PR #125). */
+  function deleteSelected(): void {
+    if (selectedLayerIds.length === 0) return;
+    const overlaysSnapshot = overlaysRef.current;
+    const rows: OverlayRow[] = [];
+    for (const id of selectedLayerIds) {
+      const row = overlaysSnapshot.find((o) => o.id === id);
+      if (row !== undefined) rows.push(row);
+    }
+    clearSelection();
+    const begin = beginInteractionRef.current;
+    const end = endInteractionRef.current;
+    const token = begin !== null ? begin("delete", "kbd-multi-delete") : null;
+    void (async (): Promise<void> => {
+      try {
+        for (const row of rows) {
+          const deleter = deleteSelectedRef.current;
+          if (deleter !== null) {
+            await deleter(row, {
+              opKind: "delete",
+              layerId: "kbd-multi-delete",
+              mergeMode: "append"
+            });
+          }
+        }
+      } finally {
+        if (token !== null && end !== null) end(token);
+      }
+    })();
+  }
+
+  /** Route a context-menu item click to the appropriate dispatcher.
+   *  Mirrors the keyboard surface — every menu item shares an
+   *  underlying handler with its keyboard binding. Edit Text is
+   *  the one item without a keyboard binding (the existing
+   *  click-on-selected-text-body gesture covers that); for the
+   *  menu we route through `onRequestEditOverlay` directly with
+   *  the single-selected overlay. */
+  function dispatchContextMenuItem(id: LayerContextMenuItemId): void {
+    if (id === "edit-text") {
+      const row = overlaysRef.current.find(
+        (o) => o.id === (selectedLayerIds[0] ?? "")
+      );
+      if (row !== undefined) onRequestEditOverlay(row);
+      return;
+    }
+    if (id === "cut") {
+      copySelected();
+      deleteSelected();
+      return;
+    }
+    if (id === "copy") {
+      copySelected();
+      return;
+    }
+    if (id === "paste") {
+      pasteFromClipboard();
+      return;
+    }
+    if (id === "duplicate") {
+      duplicateSelected();
+      return;
+    }
+    if (id === "delete") {
+      deleteSelected();
+      return;
+    }
+    if (id === "bring-to-front") {
+      reorderSelectedRef.current?.("toFront");
+      return;
+    }
+    if (id === "bring-forward") {
+      reorderSelectedRef.current?.("forward");
+      return;
+    }
+    if (id === "send-backward") {
+      reorderSelectedRef.current?.("backward");
+      return;
+    }
+    if (id === "send-to-back") {
+      reorderSelectedRef.current?.("toBack");
+      return;
+    }
+    // Exhaustiveness — every LayerContextMenuItemId must have a
+    // branch above. New menu items will surface as compile errors.
+    const _exhaustive: never = id;
+    void _exhaustive;
+  }
+
   // Keyboard shortcuts: tool selection + Esc cancels drag.
   //
   // "Double-tap to configure" shortcut: pressing the active tool's
@@ -2084,66 +2309,7 @@ export function Editor({
         selectedLayerIds.length > 0
       ) {
         event.preventDefault();
-        // Snapshot the rows before clearSelection wipes the ids and
-        // before the deletes start landing (each delete refetches
-        // the overlay list). Looking up by id from overlaysRef gives
-        // us the full row data each deleter needs for its undo entry.
-        const overlaysSnapshot = overlaysRef.current;
-        const rows: OverlayRow[] = [];
-        for (const id of selectedLayerIds) {
-          const row = overlaysSnapshot.find((o) => o.id === id);
-          if (row !== undefined) rows.push(row);
-        }
-        clearSelection();
-        // Open a coalescing bracket so every deletion in this batch
-        // records into a SINGLE undo entry — pressing Undo once
-        // restores all of them as a group.
-        //
-        // Two load-bearing details for the coalescing to actually
-        // work, both of which were wrong pre-fix:
-        //
-        //   1. AWAIT each `deleteSelectedRef` call before closing the
-        //      bracket. `deleteSelectedRef` is async (it awaits
-        //      `dispatchEdit` before calling `recordDelete`); without
-        //      the await here, the synchronous for-loop kicked off
-        //      every delete as fire-and-forget and ran `end(token)`
-        //      microseconds later — every recordDelete then fired
-        //      OUTSIDE the bracket and got its own undo entry. The
-        //      user reported "Cmd+Z after multi-delete only restored
-        //      one layer at a time" — that's the symptom.
-        //
-        //   2. Tag each `recordDelete` with the SAME
-        //      `{ opKind: "delete", layerId: "kbd-multi-delete" }`
-        //      as `begin(...)`. push()'s `insideInteraction` check
-        //      requires both keys to match the open bracket's keys;
-        //      untagged pushes never coalesce even when a bracket is
-        //      open. The shared layerId "kbd-multi-delete" is a
-        //      LOGICAL group key, not any individual layer's id.
-        const begin = beginInteractionRef.current;
-        const end = endInteractionRef.current;
-        const token = begin !== null ? begin("delete", "kbd-multi-delete") : null;
-        void (async (): Promise<void> => {
-          try {
-            for (const row of rows) {
-              const deleter = deleteSelectedRef.current;
-              if (deleter !== null) {
-                await deleter(row, {
-                  opKind: "delete",
-                  layerId: "kbd-multi-delete",
-                  // Multi-delete bursts each push a DIFFERENT row.
-                  // "append" tells push() to ACCUMULATE every row
-                  // into the entry's items[] array — otherwise the
-                  // coalesce path REPLACES the last row and earlier
-                  // deletes are silently lost on undo (the user-
-                  // reported "1 of 2 came back, the other is gone").
-                  mergeMode: "append"
-                });
-              }
-            }
-          } finally {
-            if (token !== null && end !== null) end(token);
-          }
-        })();
+        deleteSelected();
         return;
       }
       // ⌘A / ⌃A — select every overlay on the current capture.
@@ -2500,6 +2666,10 @@ export function Editor({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onContextMenu={onContextMenu}
+      contextMenuState={contextMenuState}
+      setContextMenuState={setContextMenuState}
+      dispatchContextMenuItem={dispatchContextMenuItem}
       draftGeometry={draftGeometry}
       setDraftGeometry={setDraftGeometry}
       commitText={commitText}
@@ -2553,6 +2723,10 @@ function EditorLoaded({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onContextMenu,
+  contextMenuState,
+  setContextMenuState,
+  dispatchContextMenuItem,
   draftGeometry,
   setDraftGeometry,
   commitText,
@@ -2628,6 +2802,32 @@ function EditorLoaded({
    *  state. EditorLoaded just forwards it to the canvas's
    *  onPointerCancel attribute. */
   onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Right-click handler — opens the layer context menu over the
+   *  canvas at the click anchor. Defined in the outer Editor so it
+   *  can call into outer-scope helpers (hitTestOverlays + selection
+   *  mutators); EditorLoaded just wires it onto `.editor-canvas`. */
+  onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
+  /** Layer context menu state owned by the outer Editor. Null when
+   *  closed; `{ anchorPx, selectedIdsAtOpen }` when open. EditorLoaded
+   *  renders `<LayerContextMenu>` based on this state and uses
+   *  `setContextMenuState(null)` to close it (item-pick / dismissal). */
+  contextMenuState: {
+    anchorPx: { x: number; y: number };
+    selectedIdsAtOpen: readonly string[];
+  } | null;
+  setContextMenuState: React.Dispatch<
+    React.SetStateAction<{
+      anchorPx: { x: number; y: number };
+      selectedIdsAtOpen: readonly string[];
+    } | null>
+  >;
+  /** Routes a context-menu item click to the appropriate dispatcher
+   *  (copySelected / pasteFromClipboard / duplicateSelected /
+   *  deleteSelected / reorderSelectedRef / onRequestEditOverlay).
+   *  Defined in the outer Editor where those helpers live; passed
+   *  down so the `<LayerContextMenu>` rendered inside EditorLoaded
+   *  can route picks back. */
+  dispatchContextMenuItem: (id: LayerContextMenuItemId) => void;
   /** Live-drag geometry override owned by the outer Editor (the
    *  multi-drag pointermove handler there is the primary writer; the
    *  single-select drag's onHandleGeometryDrag also writes through
@@ -3970,6 +4170,7 @@ function EditorLoaded({
           onPointerMove={wantPan ? undefined : onPointerMove}
           onPointerUp={wantPan ? undefined : onPointerUp}
           onPointerCancel={wantPan ? undefined : onPointerCancel}
+          onContextMenu={wantPan ? undefined : onContextMenu}
           data-tool={tool}
         >
           {/* Phase 3.6 — the <img> is sized so the SOURCE raster's
@@ -4232,6 +4433,34 @@ function EditorLoaded({
           >
             {pasteNotice.text}
           </div>
+        )}
+        {/* Right-click context menu over the canvas. Rendered as a
+            sibling of `.editor-canvas` inside `.editor-canvas-wrap`
+            so its absolute positioning (left/top set from anchorPx)
+            is relative to the wrap — the outer Editor's
+            `onContextMenu` computes anchorPx as
+            `event.clientX/Y - wrapRect.left/top` so the math
+            lines up.
+            Lives in the same conditional structure as the paste
+            notice — present only while `contextMenuState !== null`,
+            torn down on close. */}
+        {contextMenuState !== null && (
+          <LayerContextMenu
+            items={buildLayerContextMenuItems({
+              selectedLayerIds,
+              overlays
+            })}
+            anchorPx={contextMenuState.anchorPx}
+            onClose={() => setContextMenuState(null)}
+            onItemClick={(id) => {
+              // Route the picked item to the same callback the
+              // keyboard handler would dispatch. Closes the menu
+              // synchronously regardless of action — picking an
+              // item is a one-shot interaction.
+              setContextMenuState(null);
+              dispatchContextMenuItem(id);
+            }}
+          />
         )}
       </div>
 

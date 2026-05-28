@@ -224,6 +224,23 @@ export function buildCompositionArgs(
       // (a common documentary-style situation), pad the tail by
       // cloning the last frame via `tpad`. The video freezes; the
       // voiceover keeps going underneath until the scene ends.
+      //
+      // KNOWN LIMITATION: this path covers the "voiceover overruns
+      // trim" mismatch but only on the VIDEO side. The audio side is
+      // a separate file in the concat list and is sized by the
+      // sizzle-handlers `resolveAudioSource` pass to always equal the
+      // scene's final `durationSec` — either by trimming the source
+      // longer than needed (`-ss start -t durationSec`) or by
+      // synthesizing silence to pad a too-short voiceover. The
+      // mismatch we don't fix here is the OPPOSITE direction:
+      // `audioSource: "native"` with a trim shorter than the voiceover
+      // a future user might switch on. We sidestep it by making
+      // `audioSource` and `durationSec` jointly derived in the
+      // handler, so by the time we reach the composer the two are
+      // guaranteed equal. If someone bypasses that and feeds the
+      // composer a scene where `durationSec > native-audio length`,
+      // `-shortest` truncates the whole reel at that point — caller's
+      // job to keep them in sync, not the composer's to defend.
       const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
       const tpadFilter =
         padSec > 0.05

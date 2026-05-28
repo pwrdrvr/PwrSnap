@@ -802,6 +802,15 @@
 .psl__nav-count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); flex-shrink: 0; }
 .psl__nav.is-active .psl__nav-count { color: var(--accent-bright); }
 
+/* CTA variant — used by the "New Sizzle Reel" affordance. Tinted in
+   the accent palette so it reads as an *action* rather than a filter,
+   visually distinguishing it from the other `.psl__nav` rows that
+   all toggle/select filters. Slightly bolder hover so the user can
+   tell it's clickable even without reading the label. */
+.psl__nav--cta { color: var(--accent-bright); }
+.psl__nav--cta:hover { background: var(--accent-soft); border-color: var(--accent-border); }
+.psl__nav--cta .psl__nav-icon { color: var(--accent-bright); }
+
 /* Middle: Reel + grid */
 /* Mode-driven layout switching. The `data-mode` attribute on `.psl`
    takes one of: grid (default landing) | focus | reel.

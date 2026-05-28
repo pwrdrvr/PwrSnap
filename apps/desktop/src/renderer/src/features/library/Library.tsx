@@ -728,6 +728,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   //   • we're NOT in trash view (projects don't go to trash today), AND
   //   • we're NOT in a source-app filter (projects aren't FROM any
   //     app — surfacing them inside e.g. "Safari" would be incoherent).
+  //
+  // Note the deliberate asymmetry with the Images/Videos Types
+  // filter below: those DO apply inside a source-app filter (a user
+  // filtering to "Safari" can still narrow further to just images
+  // from Safari). Projects can't compose that way because they have
+  // no source-app dimension to begin with.
   const gridProjects = useMemo(
     () =>
       visibleTypes.projects && !isTrashView && activeSourceAppId === null
@@ -1833,6 +1839,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <button
             key={key}
             type="button"
+            // aria-pressed mirrors visibleTypes[key] so screen readers
+            // announce the row as a toggle (rather than a static link)
+            // and report its current on/off state. The `.is-on`/`is-off`
+            // class gives sighted users the same affordance via the
+            // check column on the left edge.
+            aria-pressed={visibleTypes[key]}
+            aria-label={`${label} type filter (${
+              visibleTypes[key] ? "showing" : "hidden"
+            })`}
             className={
               "psl__nav psl__type-row" + (visibleTypes[key] ? " is-on" : " is-off")
             }
@@ -1859,6 +1874,54 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             <span className="psl__nav-label">{label}</span>
           </button>
         ))}
+
+        {/* "+ New Sizzle Reel" CTA — single sidebar affordance for
+            creating a reel. The user explicitly rejected enumerating
+            every project here ("we're not rebuilding the grid in the
+            left bar") — projects appear inline in the day-grouped
+            grid via FixtureBackedRecords. This button is the only
+            project-related action that lives in the sidebar; it
+            creates a project then opens it in the dedicated Sizzle
+            Reels window (mirroring SizzleApp's onCreate flow). The
+            sidebar subscribes to projects:changed broadcasts via
+            useSizzleProjects, so the new project shows up as a cell
+            in the grid as soon as the create returns — no manual
+            re-fetch needed. */}
+        <button
+          type="button"
+          className="psl__nav psl__nav--cta"
+          onClick={() => {
+            void (async () => {
+              const r = await dispatch("sizzle:create", {
+                name: "Untitled Sizzle"
+              });
+              if (r.ok) {
+                // sizzle:open focuses the existing standalone Sizzle
+                // window (or opens it if not yet shown) and selects
+                // the project. The bus broadcast updates this
+                // sidebar's project list as a side effect.
+                void dispatch("sizzle:open", { projectId: r.value.id });
+              }
+            })();
+          }}
+          title="Create a new Sizzle Reel"
+          aria-label="Create a new Sizzle Reel"
+        >
+          <span className="psl__nav-icon">
+            <svg
+              viewBox="0 0 24 24"
+              width="11"
+              height="11"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </span>
+          <span className="psl__nav-label">New Sizzle Reel</span>
+        </button>
 
         <div className="psl__left-section">Source App</div>
         {visibleApps.map(({ app, name, bundleId }) => (

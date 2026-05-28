@@ -27,15 +27,27 @@ export type Capture = {
   /** Item kind. "image" / "video" mirror `CaptureRecord.kind`.
    *  "project" is a synthetic Capture for a Sizzle Reels project —
    *  emitted by `FixtureBackedRecords` so projects flow through the
-   *  same day-grouping + virtualizer cell pipeline as captures.
-   *  Optional for back-compat with demo fixtures that predate this
-   *  field; consumers default to "image". */
-  kind?: "image" | "video" | "project";
+   *  same day-grouping + virtualizer cell pipeline as captures. */
+  kind: "image" | "video" | "project";
   /** Sizzle project id when `kind === "project"`. Click handlers
    *  branch on this to dispatch `sizzle:open` instead of opening
    *  the focus editor. */
   projectId?: string;
 };
+
+/**
+ * Synthetic `Capture.app` value for Sizzle Reels project cells. The
+ * `app` field's type is `AppId` (== `string`, open set), so this is
+ * just a literal — chosen with leading/trailing underscores so it
+ * can't collide with any captured bundle id or curated app key.
+ *
+ * The Source App sidebar enumerates apps from `app_stats`, which
+ * project fixtures never contribute to, so projects never appear
+ * under a Source App filter. `AppIcon` is never called with this
+ * value because the cell renderer dispatches on `capture.kind ===
+ * "project"` BEFORE reaching the source-app chip.
+ */
+export const PROJECT_APP_KEY = "_sizzle_";
 
 const BASE: Array<{ app: AppId; n: string; tags: string[] }> = [
   { app: "telegram", n: "Pavel re: launch deck", tags: ["chat", "launch"] },
@@ -112,7 +124,8 @@ export const CAPTURES: Capture[] = BASE.map((c, i) => {
     time: day.times[slot] ?? "9:00",
     size: 220 + Math.round(Math.sin(i * 1.7) * 100 + 280),
     w: WIDTHS[i % 4]!,
-    h: HEIGHTS[i % 4]!
+    h: HEIGHTS[i % 4]!,
+    kind: "image"
   };
 });
 

@@ -30,16 +30,24 @@ export function useSizzleProjects(): {
     let active = true;
     void dispatch("sizzle:list", {}).then((r) => {
       if (!active) return;
-      // Defensive against tests that don't stub `sizzle:list` —
-      // a missing `value` should leave us at `[]`, not crash. Same
-      // shape-check on the broadcast handler below.
+      // Shape-check the response payload before commit. In production
+      // the bus contract guarantees `{ projects: SizzleProject[] }`,
+      // but several existing renderer tests (DetailRail, AppDocument,
+      // useSettings) stub `pwrsnapApi.dispatch` per-command and don't
+      // know about `sizzle:list`. Without this guard those tests
+      // crash on `r.value.projects` of `undefined`. The right long-
+      // term answer is to update those test stubs; the guard keeps
+      // the suite green until then. Same check below on the
+      // broadcast payload.
       if (
         r.ok &&
         typeof r.value === "object" &&
         r.value !== null &&
         Array.isArray((r.value as { projects?: unknown }).projects)
       ) {
-        setProjects((r.value as { projects: SizzleProject[] }).projects);
+        setProjects(
+          filterLiveProjects((r.value as { projects: SizzleProject[] }).projects)
+        );
       }
       setLoading(false);
     });
@@ -51,7 +59,9 @@ export function useSizzleProjects(): {
           payload !== null &&
           Array.isArray((payload as { projects?: unknown }).projects)
         ) {
-          setProjects((payload as { projects: SizzleProject[] }).projects);
+          setProjects(
+            filterLiveProjects((payload as { projects: SizzleProject[] }).projects)
+          );
         }
       }
     );
@@ -62,4 +72,24 @@ export function useSizzleProjects(): {
   }, []);
 
   return { projects, loading };
+}
+
+/**
+ * Drop soft-deleted projects from the list before exposing it to UI
+ * consumers. Today `SizzleProject` has no soft-delete column — every
+ * row is live — but defending here means every Library / DetailRail
+ * / sizzle-window consumer gets the same "currently visible" set
+ * without each having to filter independently when the column
+ * eventually lands. Cheap forward-compatibility.
+ */
+function filterLiveProjects(
+  projects: SizzleProject[]
+): SizzleProject[] {
+  // Use a structural check so this stays a no-op until the column
+  // is actually added — and starts working automatically the moment
+  // it is, with no consumer churn.
+  return projects.filter((p) => {
+    const maybeDeletedAt = (p as { deletedAt?: string | null }).deletedAt;
+    return maybeDeletedAt === undefined || maybeDeletedAt === null;
+  });
 }

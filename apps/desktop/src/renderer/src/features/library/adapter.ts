@@ -6,7 +6,7 @@
 
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
 import type { AppId } from "../shared/AppIcons";
-import type { Capture } from "./captures";
+import { PROJECT_APP_KEY, type Capture } from "./captures";
 
 /**
  * Bucket a capture's date into a section header. The returned `day`
@@ -119,7 +119,7 @@ export function projectToFixture(
   const { day, date } = dayBucket(modified, now);
   return {
     id: sequence,
-    app: "_sizzle_" as AppId,
+    app: PROJECT_APP_KEY,
     appName: "Sizzle Reel",
     bundleId: null,
     n: project.name,

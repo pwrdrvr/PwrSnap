@@ -260,3 +260,29 @@ export type PerfMarkPayload =
       kind: "perf:scrollProbe:error";
       reason: "no_scroll_container" | "already_running";
     };
+
+// ---------------------------------------------------------------------
+// Typed event payloads.
+//
+// Strictly opt-in — channels listed here get a typed payload on both
+// the send side (main) and the subscribe side (renderer). Channels
+// NOT listed continue to use the legacy `unknown` payload + per-call
+// structural shape-check pattern.
+//
+// Add a row when a new channel gains a stable contract that callers
+// rely on. Don't add rows speculatively — only when the type would
+// catch a real divergence (e.g. multiple producers, multiple
+// subscribers, schema growth over time).
+// ---------------------------------------------------------------------
+
+import type { SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+
+export type EventPayloads = {
+  [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
+  [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
+};
+
+/** Channel constants that carry a typed payload entry in
+ *  `EventPayloads`. Useful as the parameter type for a typed
+ *  broadcaster helper. */
+export type TypedEventChannel = keyof EventPayloads;

@@ -299,6 +299,68 @@ export function getCaptureById(id: string): CaptureRecord | null {
 }
 
 /**
+ * Batched id-lookup. Returns rows in the SAME ORDER as the input
+ * `ids` array — missing ids are silently dropped. Soft-deleted rows
+ * (`deleted_at IS NOT NULL`) are returned by this function; callers
+ * that want only live rows should filter the result themselves
+ * (matches `getCaptureById` semantics — that returns the row even if
+ * soft-deleted, the deletion is just a status flag).
+ *
+ * Pairs `WHERE id IN (?, ?, …)` for the captures table with a single
+ * batched `listVideoMetadata` for any video rows in the result —
+ * total 2 round-trips regardless of input size (vs. 2N for an N-id
+ * `getCaptureById` loop).
+ *
+ * Used by `library:listByIds` to render an arbitrary capture set
+ * (e.g. a sizzle project's scene list) without paying N point lookups.
+ *
+ * Throws `RangeError` if `ids.length > 999` — SQLite's default
+ * `SQLITE_LIMIT_VARIABLE_NUMBER` is 999 and we'd silently start
+ * losing trailing ids past that without the explicit check.
+ */
+export function getCapturesByIds(ids: readonly string[]): CaptureRecord[] {
+  if (ids.length === 0) return [];
+  // The validator layer caps at 500; defend in depth here against a
+  // caller that bypasses the validator. SQLite's compile-time
+  // SQLITE_LIMIT_VARIABLE_NUMBER is 999 (default); blowing past it
+  // throws a confusing "too many SQL variables" error.
+  if (ids.length > 999) {
+    throw new RangeError(
+      `getCapturesByIds: ${ids.length} ids exceeds SQLite parameter limit (999)`
+    );
+  }
+  const db = getDb();
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = db
+    .prepare(`SELECT * FROM captures WHERE id IN (${placeholders})`)
+    .all(...ids) as CaptureRow[];
+  // Map by id so we can return in input order. Rows from `IN` come
+  // back in an arbitrary (typically rowid) order, NOT the input order.
+  const byId = new Map<string, CaptureRow>();
+  for (const row of rows) byId.set(row.id, row);
+
+  // Single batched video-metadata fetch for any video rows in the
+  // result set. Avoids N+1 the way the per-id loop would.
+  const videoIds: string[] = [];
+  for (const row of rows) {
+    if (row.kind === "video") videoIds.push(row.id);
+  }
+  const videoById = listVideoMetadata(videoIds);
+
+  const out: CaptureRecord[] = [];
+  for (const id of ids) {
+    const row = byId.get(id);
+    if (row === undefined) continue; // missing id — silently dropped
+    const record = rowToRecord(row);
+    if (record.kind === "video") {
+      record.video = videoById.get(id) ?? null;
+    }
+    out.push(record);
+  }
+  return out;
+}
+
+/**
  * Keyset-paginated list. Cursor encodes the last (captured_at, id)
  * of the previous page; the new query requests rows strictly less
  * than that tuple (lexicographic — captured_at DESC, id DESC). When

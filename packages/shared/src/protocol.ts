@@ -482,6 +482,43 @@ export const SIZZLE_TRANSITIONS = ["cut", "crossfade"] as const satisfies readon
  *  (no per-scene timing); locked to keep the surface area small. */
 export const SIZZLE_CROSSFADE_SEC = 0.4;
 
+/**
+ * Resolve a scene's audio source policy to a concrete choice at
+ * render time. Single source of truth — `auto` collapses based on
+ * the capture kind + script presence; explicit values pass through
+ * with one fallback (`native` on an image scene is impossible →
+ * `muted`).
+ *
+ * Pure, deterministic, no I/O — lives in `@pwrsnap/shared` so both
+ * the main-process render path and the renderer's editor UI gate
+ * preview/script controls off the SAME computation. Previously
+ * duplicated in both processes; that's a guaranteed-divergence
+ * footgun.
+ *
+ * Semantics:
+ *   image, auto                  → "voiceover"  (only meaningful)
+ *   image, voiceover             → "voiceover"
+ *   image, native                → "muted"      (no source audio)
+ *   image, muted                 → "muted"
+ *   video, auto, no script       → "native"     (let the clip talk)
+ *   video, auto, with script     → "voiceover"  (TTS over muted clip)
+ *   video, native                → "native"
+ *   video, voiceover             → "voiceover"
+ *   video, muted                 → "muted"
+ */
+export function resolveSizzleAudioSource(
+  audioSource: SizzleAudioSource,
+  captureKind: "image" | "video",
+  scriptLine: string
+): "native" | "voiceover" | "muted" {
+  if (audioSource !== "auto") {
+    if (captureKind === "image" && audioSource === "native") return "muted";
+    return audioSource;
+  }
+  if (captureKind === "image") return "voiceover";
+  return scriptLine.trim().length === 0 ? "native" : "voiceover";
+}
+
 export type SizzleScene = {
   id: string;
   captureId: string;

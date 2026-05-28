@@ -7,8 +7,7 @@ import {
   err,
   EVENT_CHANNELS,
   AddUserTagRequestSchema,
-  RemoveUserTagRequestSchema,
-  type CaptureRecord
+  RemoveUserTagRequestSchema
 } from "@pwrsnap/shared";
 import { validateLibraryListByIds } from "./sizzle-validators";
 import { z } from "zod";
@@ -16,6 +15,7 @@ import { bus } from "../command-bus";
 import {
   getAppStats,
   getCaptureById,
+  getCapturesByIds,
   getTotalLive,
   hardDeleteCapture,
   listCaptures,
@@ -135,22 +135,19 @@ export function registerLibraryHandlers(): void {
     // Validates the ids array (length cap + non-empty strings).
     const v = validateLibraryListByIds(req);
     if (!v.ok) return err(v.error);
-    // Per-id lookup preserves input order — getCaptureById is keyed
-    // by the row's primary key index, so this is N point lookups vs
-    // one batched WHERE id IN (...) with a sort. For projects with
-    // ≤200 scenes (the validator cap) the round-trip cost is
-    // negligible and we avoid the IN-list ordering headache.
-    const rows: CaptureRecord[] = [];
-    for (const id of v.ids) {
-      const r = getCaptureById(id);
-      // Drop soft-deleted + missing rows. The sizzle project view
-      // shows what currently exists; if a scene's capture got deleted
-      // the row vanishes from the filtered grid (the underlying
-      // SizzleScene stays in the project file, so undeleting the
-      // capture brings it back).
-      if (r !== null && r.deleted_at === null) rows.push(r);
-    }
-    return ok({ rows });
+    // Batched lookup: one `WHERE id IN (?, ?, …)` against the captures
+    // table + one batched `listVideoMetadata` for any video rows in
+    // the result. Two round-trips total regardless of input size; the
+    // helper returns rows in INPUT order with missing ids silently
+    // dropped — see `getCapturesByIds` doc for the full contract.
+    const rows = getCapturesByIds(v.ids);
+    // Drop soft-deleted rows. The sizzle project view shows what
+    // currently exists; if a scene's capture got soft-deleted, the
+    // row vanishes from the filtered grid (the underlying SizzleScene
+    // stays in the project file, so undeleting the capture brings it
+    // back).
+    const live = rows.filter((r) => r.deleted_at === null);
+    return ok({ rows: live });
   });
 
   bus.register("library:delete", async (req) => {

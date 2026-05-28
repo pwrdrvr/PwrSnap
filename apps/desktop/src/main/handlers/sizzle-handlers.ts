@@ -6,10 +6,11 @@ import {
   EVENT_CHANNELS,
   err,
   ok,
+  resolveSizzleAudioSource,
   type CaptureRecord,
+  type EventPayloads,
   type PwrSnapError,
   type Result,
-  type SizzleAudioSource,
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene
@@ -66,13 +67,21 @@ function broadcastRenderProgress(event: SizzleRenderProgressEvent): void {
 /**
  * Broadcast the latest project list to every BrowserWindow. The
  * Library sidebar's "Sizzle Reels" section + the DetailRail Project
- * tab subscribe here so they refresh without polling. Fire-and-
- * forget — the caller doesn't await the broadcast itself, just
- * needs the snapshot read to happen.
+ * tab subscribe here so they refresh without polling.
+ *
+ * SYNCHRONOUS — `webContents.send` is fire-and-forget. The previous
+ * `async` wrapper was misleading: it forced every mutation handler
+ * to write `await broadcastProjectsChanged(...)` even though no I/O
+ * was happening. Callers now pass the already-known project list
+ * (returned from `store.create / update / delete / updateScenes`)
+ * rather than re-reading from disk on every mutation.
  */
-async function broadcastProjectsChanged(projects: SizzleProject[]): Promise<void> {
+function broadcastProjectsChanged(projects: SizzleProject[]): void {
+  const payload: EventPayloads[typeof EVENT_CHANNELS.sizzleProjectsChanged] = {
+    projects
+  };
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, { projects });
+    win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, payload);
   }
 }
 
@@ -132,28 +141,139 @@ async function resolveImagePath(
 }
 
 /**
- * Per-scene audio policy resolver. `scene.audioSource === "auto"`
- * collapses to the natural default for the capture kind:
- *
- *   image capture → always "voiceover" (no native audio possible).
- *   video capture, no script → "native" (drop in the clip, hear it).
- *   video capture, with script → "voiceover" (TTS over muted video).
- *
- * Explicit `audioSource` values pass through, except `native` on an
- * image scene falls back to `muted` (image scenes have no source
- * audio to extract).
+ * Per-scene audio policy resolver. Forwards to the canonical impl in
+ * `@pwrsnap/shared` so the renderer's editor UI (which gates the
+ * preview button + script placeholder) and the main-process render
+ * path consult the SAME function. Previously duplicated in both
+ * processes — a guaranteed-divergence footgun.
  */
-export function resolveAudioSource(
-  audioSource: SizzleAudioSource,
-  captureKind: "image" | "video",
-  scriptLine: string
-): "native" | "voiceover" | "muted" {
-  if (audioSource !== "auto") {
-    if (captureKind === "image" && audioSource === "native") return "muted";
-    return audioSource;
+export const resolveAudioSource = resolveSizzleAudioSource;
+
+/**
+ * Prepare a single scene's `SceneInput` — runs the per-scene audio
+ * work (TTS synth, native-audio extract, or silence synth) plus the
+ * image-path resolve for image scenes. Independent per-scene; safe
+ * to run many in parallel via `Promise.all`.
+ *
+ * Extracted from the render handler so the prep loop can fan out
+ * across scenes. Sequential prep used to be ~hundreds of ms × scene
+ * count; parallel prep is bounded by the longest single scene plus
+ * a small dispatch tax.
+ */
+async function prepareSceneInput(args: {
+  scene: SizzleScene;
+  capture: CaptureRecord;
+  effectiveAudio: "native" | "voiceover" | "muted";
+  project: SizzleProject;
+  apiKey: string | null;
+  sceneIdx: number;
+  imageWidth: number;
+}): Promise<SceneInput> {
+  const { scene, capture, effectiveAudio, project, apiKey, sceneIdx, imageWidth } = args;
+  let audioPath: string;
+  let durationSec: number;
+
+  if (capture.kind === "video") {
+    const trim = scene.mediaTrim ?? {
+      startSec: capture.video?.defaultRange.start ?? 0,
+      endSec:
+        capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
+    };
+    const trimDur = trim.endSec - trim.startSec;
+
+    // Scene duration policy for video scenes:
+    //   • durationOverrideSec wins if explicitly set.
+    //   • Voiceover longer than the trim: extend to fit the voiceover.
+    //     Composer holds the last frame via tpad for the remainder
+    //     (documentary-style — narration is load-bearing, B-roll holds).
+    //   • Native + muted: scene duration matches trim.
+    if (effectiveAudio === "voiceover") {
+      const tts = await synthesize({
+        provider: project.ttsProvider,
+        apiKey: apiKey!,
+        text: scene.scriptLine.trim(),
+        voice: project.voice,
+        model: project.ttsModel
+      });
+      const voiceoverDur = await probeDurationSec(tts.audioPath);
+      audioPath = tts.audioPath;
+      durationSec =
+        scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+          ? scene.durationOverrideSec
+          : Math.max(trimDur, voiceoverDur + 0.35);
+      if (durationSec > trimDur + 0.05) {
+        log.info("sizzle:render holding last frame for voiceover", {
+          sceneIdx,
+          trimDur: trimDur.toFixed(2),
+          voiceoverDur: voiceoverDur.toFixed(2),
+          sceneDur: durationSec.toFixed(2),
+          freezeFrameSec: (durationSec - trimDur).toFixed(2)
+        });
+      }
+    } else if (effectiveAudio === "native") {
+      audioPath = await extractVideoAudio({
+        videoPath: capture.legacy_src_path!,
+        startSec: trim.startSec,
+        durationSec: trimDur
+      });
+      durationSec =
+        scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+          ? scene.durationOverrideSec
+          : trimDur;
+    } else {
+      // muted
+      durationSec =
+        scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+          ? scene.durationOverrideSec
+          : trimDur;
+      audioPath = await synthesizeSilence(durationSec);
+    }
+
+    return {
+      kind: "video",
+      videoPath: capture.legacy_src_path!,
+      startSec: trim.startSec,
+      trimDurationSec: trimDur,
+      durationSec,
+      audioPath,
+      transition: scene.transition
+    };
   }
-  if (captureKind === "image") return "voiceover";
-  return scriptLine.trim().length === 0 ? "native" : "voiceover";
+
+  // image scene
+  const imagePath = await resolveImagePath(scene.captureId, imageWidth);
+  if (imagePath === null) {
+    throw new SceneError(`Scene ${sceneIdx}: could not render capture image`);
+  }
+  if (effectiveAudio === "voiceover") {
+    const tts = await synthesize({
+      provider: project.ttsProvider,
+      apiKey: apiKey!,
+      text: scene.scriptLine.trim(),
+      voice: project.voice,
+      model: project.ttsModel
+    });
+    const measured = await probeDurationSec(tts.audioPath);
+    durationSec =
+      scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+        ? scene.durationOverrideSec
+        : measured + 0.35;
+    audioPath = tts.audioPath;
+  } else {
+    // image + muted (or image + native that fell back to muted)
+    durationSec =
+      scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+        ? scene.durationOverrideSec
+        : 3.0;
+    audioPath = await synthesizeSilence(durationSec);
+  }
+  return {
+    kind: "image",
+    imagePath,
+    audioPath,
+    durationSec,
+    transition: scene.transition
+  };
 }
 
 export function registerSizzleHandlers(): void {
@@ -178,12 +298,19 @@ export function registerSizzleHandlers(): void {
     return ok({ projects });
   });
 
+  // Helper: snapshot+broadcast. The store's in-memory cache makes
+  // `list()` cheap after a mutation (returns a clone of the just-
+  // written blob, no disk I/O). The broadcast itself is synchronous.
+  async function pushProjectsChanged(): Promise<void> {
+    const all = await store.list();
+    broadcastProjectsChanged(all);
+  }
+
   bus.register("sizzle:create", async (req) => {
     const v = validateSizzleCreate(req);
     if (!v.ok) return err(v.error);
     const project = await store.create(v.name);
-    const all = await store.list();
-    await broadcastProjectsChanged(all);
+    await pushProjectsChanged();
     return ok(project);
   });
 
@@ -192,8 +319,7 @@ export function registerSizzleHandlers(): void {
     if (!v.ok) return err(v.error);
     try {
       const project = await store.update(v.value.id, v.value.patch);
-      const all = await store.list();
-      await broadcastProjectsChanged(all);
+      await pushProjectsChanged();
       return ok(project);
     } catch (cause) {
       return err(toError(cause, "sizzle_update_failed"));
@@ -204,8 +330,7 @@ export function registerSizzleHandlers(): void {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
     await store.delete(v.id);
-    const all = await store.list();
-    await broadcastProjectsChanged(all);
+    await pushProjectsChanged();
     return ok(undefined);
   });
 
@@ -239,8 +364,7 @@ export function registerSizzleHandlers(): void {
     }
     try {
       const updated = await store.update(project.id, { scenes: nextScenes });
-      const all = await store.list();
-      await broadcastProjectsChanged(all);
+      await pushProjectsChanged();
       return ok(updated);
     } catch (cause) {
       return err(toError(cause, "sizzle_toggle_failed"));
@@ -404,10 +528,20 @@ export function registerSizzleHandlers(): void {
     // for the whole project before kicking off any TTS or extraction
     // work. Avoids spending OpenAI tokens / disk extraction on a
     // project that's about to fail with "scene 5 has no script".
+    //
+    // Parallel fetch — `loadCapture` is a bus dispatch and the per-id
+    // round-trips are independent. For a 50-scene reel this turns a
+    // 50× sequential await into one fan-out, cutting the pre-load
+    // phase from ~hundreds of ms to single digits. The synchronous
+    // validation walk that follows still emits errors in scene order
+    // (first failing scene wins, matching the prior loop's behavior).
+    const loadedCaptures = await Promise.all(
+      project.scenes.map((scene) => loadCapture(scene.captureId))
+    );
     const captures: Array<{ scene: SizzleScene; capture: CaptureRecord; effectiveAudio: "native" | "voiceover" | "muted" }> = [];
     for (let i = 0; i < project.scenes.length; i++) {
       const scene = project.scenes[i]!;
-      const capture = await loadCapture(scene.captureId);
+      const capture = loadedCaptures[i]!;
       if (capture === null) {
         const message = `Scene ${i + 1}: capture ${scene.captureId} not found (it may have been deleted)`;
         broadcastRenderProgress({
@@ -483,128 +617,43 @@ export function registerSizzleHandlers(): void {
       }))
     });
 
-    const sceneInputs: SceneInput[] = [];
+    // Per-scene preparation runs in parallel — each scene's work
+    // (TTS synth or audio extraction or silence synth, plus the
+    // image-path resolve for image scenes) is independent: different
+    // cache files, different network requests, no shared mutable
+    // state. For a 50-scene reel this turns ~50 serial awaits into
+    // one fan-out. TTS calls hit OpenAI's content-addressed cache so
+    // duplicate-text scenes coalesce on the renderer side, and the
+    // network rate-limit is well above what one render can produce.
+    //
+    // Progress broadcasts fire as each scene resolves, in completion
+    // order — not scene order. That's fine for the progress bar
+    // (which reads ratio, not scene-index). The final sceneInputs
+    // array is rebuilt in scene order before the composer runs.
+    const sceneInputs: SceneInput[] = new Array(captures.length);
+    let prepared = 0;
     try {
-      for (let i = 0; i < captures.length; i++) {
-        const { scene, capture, effectiveAudio } = captures[i]!;
-
-        // Resolve audio + duration first since durations depend on
-        // either the TTS audio (image scenes) or the video trim
-        // (video scenes).
-        let audioPath: string;
-        let durationSec: number;
-
-        if (capture.kind === "video") {
-          const trim = scene.mediaTrim ?? {
-            startSec: capture.video?.defaultRange.start ?? 0,
-            endSec:
-              capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
-          };
-          const trimDur = trim.endSec - trim.startSec;
-
-          // Resolve audio + duration per audio source. Scene duration
-          // policy for video scenes:
-          //   • durationOverrideSec wins if explicitly set.
-          //   • Voiceover longer than the trim: extend to fit the
-          //     voiceover. Composer holds the last frame via tpad
-          //     for the remainder (documentary-style — narration is
-          //     load-bearing, the B-roll holds).
-          //   • Native + muted: scene duration matches trim.
-          if (effectiveAudio === "voiceover") {
-            const tts = await synthesize({
-              provider: project.ttsProvider,
-              apiKey: apiKey!,
-              text: scene.scriptLine.trim(),
-              voice: project.voice,
-              model: project.ttsModel
-            });
-            const voiceoverDur = await probeDurationSec(tts.audioPath);
-            audioPath = tts.audioPath;
-            durationSec =
-              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-                ? scene.durationOverrideSec
-                : Math.max(trimDur, voiceoverDur + 0.35);
-            if (durationSec > trimDur + 0.05) {
-              log.info("sizzle:render holding last frame for voiceover", {
-                sceneIdx: i + 1,
-                trimDur: trimDur.toFixed(2),
-                voiceoverDur: voiceoverDur.toFixed(2),
-                sceneDur: durationSec.toFixed(2),
-                freezeFrameSec: (durationSec - trimDur).toFixed(2)
-              });
-            }
-          } else if (effectiveAudio === "native") {
-            audioPath = await extractVideoAudio({
-              videoPath: capture.legacy_src_path!,
-              startSec: trim.startSec,
-              durationSec: trimDur
-            });
-            durationSec =
-              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-                ? scene.durationOverrideSec
-                : trimDur;
-          } else {
-            // muted
-            durationSec =
-              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-                ? scene.durationOverrideSec
-                : trimDur;
-            audioPath = await synthesizeSilence(durationSec);
-          }
-
-          sceneInputs.push({
-            kind: "video",
-            videoPath: capture.legacy_src_path!,
-            startSec: trim.startSec,
-            trimDurationSec: trimDur,
-            durationSec,
-            audioPath,
-            transition: scene.transition
+      await Promise.all(
+        captures.map(async ({ scene, capture, effectiveAudio }, i) => {
+          const sceneInput = await prepareSceneInput({
+            scene,
+            capture,
+            effectiveAudio,
+            project,
+            apiKey,
+            sceneIdx: i + 1,
+            imageWidth: dims.w
           });
-        } else {
-          // image
-          const imagePath = await resolveImagePath(scene.captureId, dims.w);
-          if (imagePath === null) {
-            throw new SceneError(`Scene ${i + 1}: could not render capture image`);
-          }
-          if (effectiveAudio === "voiceover") {
-            const tts = await synthesize({
-              provider: project.ttsProvider,
-              apiKey: apiKey!,
-              text: scene.scriptLine.trim(),
-              voice: project.voice,
-              model: project.ttsModel
-            });
-            const measured = await probeDurationSec(tts.audioPath);
-            durationSec =
-              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-                ? scene.durationOverrideSec
-                : measured + 0.35;
-            audioPath = tts.audioPath;
-          } else {
-            // image + muted (or image + native that fell back to muted)
-            durationSec =
-              scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
-                ? scene.durationOverrideSec
-                : 3.0;
-            audioPath = await synthesizeSilence(durationSec);
-          }
-          sceneInputs.push({
-            kind: "image",
-            imagePath,
-            audioPath,
-            durationSec,
-            transition: scene.transition
+          sceneInputs[i] = sceneInput;
+          prepared += 1;
+          broadcastRenderProgress({
+            projectId: project.id,
+            phase: "tts",
+            message: `Prepared scene ${prepared}/${captures.length}`,
+            ratio: (prepared / captures.length) * 0.5
           });
-        }
-
-        broadcastRenderProgress({
-          projectId: project.id,
-          phase: "tts",
-          message: `Prepared scene ${i + 1}/${captures.length}`,
-          ratio: ((i + 1) / captures.length) * 0.5
-        });
-      }
+        })
+      );
     } catch (cause) {
       const e = toError(cause, "scene_prep_failed");
       broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
@@ -645,8 +694,7 @@ export function registerSizzleHandlers(): void {
       outputPath,
       lastRenderedAt: new Date().toISOString()
     });
-    const all = await store.list();
-    await broadcastProjectsChanged(all);
+    await pushProjectsChanged();
     log.info("sizzle:render done", { id: next.id, totalSec, outputPath });
     broadcastRenderProgress({ projectId: project.id, phase: "done", message: "Render complete", ratio: 1 });
     void store.list().then((projects) => pruneTtsCache(projects)).catch((cause) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  resolveSizzleAudioSource,
   type CaptureRecord,
   type SizzleProject,
   type SizzleRenderProgressEvent,
@@ -678,18 +679,18 @@ function Editor(props: EditorProps): ReactElement {
               capture?.edits_version !== undefined
                 ? cacheUrl(scene.captureId, 320, "webp", capture.edits_version)
                 : cacheUrl(scene.captureId, 320, "webp");
-            // Compute the effective audio source for UI gating: same
-            // logic as the main-process resolveAudioSource(), kept
-            // client-side so the preview button + script placeholder
-            // can update without waiting for a dispatch round-trip.
-            const effectiveAudio: "voiceover" | "native" | "muted" =
-              scene.audioSource !== "auto"
-                ? capture?.kind === "image" && scene.audioSource === "native"
-                  ? "muted"
-                  : scene.audioSource
-                : capture?.kind === "video" && scene.scriptLine.trim().length === 0
-                  ? "native"
-                  : "voiceover";
+            // Compute the effective audio source for UI gating via
+            // the SAME `resolveSizzleAudioSource` the main-process
+            // render handler uses. Default to image-kind for the
+            // (transient) case where the capture record isn't loaded
+            // yet — that's the most permissive direction (image
+            // scenes fall through to "voiceover" without needing a
+            // video stream, so the preview button stays clickable).
+            const effectiveAudio = resolveSizzleAudioSource(
+              scene.audioSource,
+              capture?.kind ?? "image",
+              scene.scriptLine
+            );
             const previewDisabled =
               previewLoadingSceneId === scene.id ||
               effectiveAudio === "muted" ||

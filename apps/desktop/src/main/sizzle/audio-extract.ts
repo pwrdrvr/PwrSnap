@@ -78,6 +78,49 @@ function runFfmpeg(args: string[]): Promise<void> {
  *
  * Returns the on-disk audio path.
  */
+/**
+ * Compute the content-addressed cache key for a native-audio
+ * extraction. Exported pure helper so the cache-key contract is
+ * unit-testable without invoking ffmpeg.
+ *
+ * Inputs that are part of the key:
+ *
+ *   - `videoPath`        — different files → different keys.
+ *   - `mtimeMs`          — if the file at `videoPath` is rewritten
+ *     in-place (rare but possible — third-party tool, future
+ *     in-place trim operation), a path-only key would silently
+ *     return the stale extraction. mtime closes that gap.
+ *   - `size`             — defense in depth alongside mtime: some
+ *     filesystems coalesce mtime updates on rapid writes, but the
+ *     file's byte length is essentially always different.
+ *   - `startSec` / `durationSec` — quantized to milliseconds so a
+ *     UI-driven floating-point change in the 7th decimal doesn't
+ *     invalidate the cache.
+ *
+ * Returns the first 24 hex chars of the sha256, matching the
+ * pre-mtime cache key length.
+ */
+export function computeNativeAudioCacheKey(args: {
+  videoPath: string;
+  mtimeMs: number;
+  size: number;
+  startSec: number;
+  durationSec: number;
+}): string {
+  return createHash("sha256")
+    .update(args.videoPath)
+    .update("\0")
+    .update(args.mtimeMs.toString())
+    .update("\0")
+    .update(args.size.toString())
+    .update("\0")
+    .update(args.startSec.toFixed(3))
+    .update("\0")
+    .update(args.durationSec.toFixed(3))
+    .digest("hex")
+    .slice(0, 24);
+}
+
 export async function extractVideoAudio(args: {
   videoPath: string;
   startSec: number;
@@ -85,14 +128,28 @@ export async function extractVideoAudio(args: {
 }): Promise<string> {
   const dir = nativeCacheDir();
   await mkdir(dir, { recursive: true });
-  const hash = createHash("sha256")
-    .update(args.videoPath)
-    .update("\0")
-    .update(args.startSec.toFixed(3))
-    .update("\0")
-    .update(args.durationSec.toFixed(3))
-    .digest("hex")
-    .slice(0, 24);
+  // Resolve mtime + size BEFORE hashing. If the source file went
+  // missing, fail loudly here rather than letting ffmpeg fail with
+  // a less-actionable "no such file" error a few lines down. The
+  // catch falls back to (0, 0) — those values still produce a valid
+  // cache key; the subsequent ffmpeg call will throw cleanly with
+  // the source-file context preserved.
+  let mtimeMs = 0;
+  let size = 0;
+  try {
+    const s = await stat(args.videoPath);
+    mtimeMs = s.mtimeMs;
+    size = s.size;
+  } catch {
+    /* fall through — ffmpeg will surface the real error below */
+  }
+  const hash = computeNativeAudioCacheKey({
+    videoPath: args.videoPath,
+    mtimeMs,
+    size,
+    startSec: args.startSec,
+    durationSec: args.durationSec
+  });
   const outPath = join(dir, `${hash}.mp3`);
   if (await fileExists(outPath)) {
     log.info("native-audio cache HIT", {

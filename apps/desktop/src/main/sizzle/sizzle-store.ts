@@ -23,6 +23,18 @@ export class SizzleStore {
   private readonly filePath: string;
   private readonly log: Logger;
   private writeQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * In-memory cache of the parsed-and-sanitized projects blob.
+   * Populated on first `readBlob()` and refreshed by `writeBlob()`.
+   * Subsequent reads (including the post-mutation broadcast snapshot
+   * fetch) skip disk I/O and return a deep clone of the cache.
+   *
+   * Cache invariant: every `writeBlob` updates the cache BEFORE
+   * returning, in the same serialized region. So a `list()` call
+   * sequenced after a mutation always sees the just-written state —
+   * matching the pre-cache behavior where reads went through disk.
+   */
+  private cachedBlob: StoredBlob | null = null;
 
   constructor(config: SizzleStoreConfig = {}) {
     this.filePath =
@@ -108,21 +120,35 @@ export class SizzleStore {
   }
 
   private async readBlob(): Promise<StoredBlob> {
+    // Cache short-circuit. Populated by the first disk read and by
+    // every subsequent writeBlob — see `cachedBlob` field comment for
+    // the consistency invariant.
+    if (this.cachedBlob !== null) return clone(this.cachedBlob);
     let raw: string;
     try {
       raw = await readFile(this.filePath, "utf8");
     } catch (cause) {
-      if (isNodeError(cause) && cause.code === "ENOENT") return clone(DEFAULT_BLOB);
+      if (isNodeError(cause) && cause.code === "ENOENT") {
+        this.cachedBlob = clone(DEFAULT_BLOB);
+        return clone(this.cachedBlob);
+      }
       this.log.warn("sizzle-store: read failed, returning empty", {
         path: this.filePath,
         message: cause instanceof Error ? cause.message : String(cause)
       });
-      return clone(DEFAULT_BLOB);
+      this.cachedBlob = clone(DEFAULT_BLOB);
+      return clone(this.cachedBlob);
     }
-    if (raw.length === 0) return clone(DEFAULT_BLOB);
+    if (raw.length === 0) {
+      this.cachedBlob = clone(DEFAULT_BLOB);
+      return clone(this.cachedBlob);
+    }
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (!isStoredBlob(parsed)) return clone(DEFAULT_BLOB);
+      if (!isStoredBlob(parsed)) {
+        this.cachedBlob = clone(DEFAULT_BLOB);
+        return clone(this.cachedBlob);
+      }
       // Normalize scenes on the read path so every consumer sees the
       // new SizzleScene fields (mediaTrim, audioSource, transition)
       // with sensible defaults, regardless of when the project was
@@ -134,7 +160,8 @@ export class SizzleStore {
           project.scenes = sanitizeScenes(project.scenes);
         }
       }
-      return parsed;
+      this.cachedBlob = parsed;
+      return clone(this.cachedBlob);
     } catch (cause) {
       this.log.warn("sizzle-store: parse failed, quarantining", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -145,7 +172,8 @@ export class SizzleStore {
       } catch {
         /* ignore */
       }
-      return clone(DEFAULT_BLOB);
+      this.cachedBlob = clone(DEFAULT_BLOB);
+      return clone(this.cachedBlob);
     }
   }
 
@@ -155,6 +183,11 @@ export class SizzleStore {
     try {
       await writeFile(tmp, JSON.stringify(blob, null, 2), "utf8");
       await rename(tmp, this.filePath);
+      // Refresh the in-memory cache AFTER the rename succeeds so a
+      // failed write doesn't leave the cache reading-ahead of disk.
+      // Stored as a clone — the caller's `blob` reference is shared
+      // mutable state; the cache must not alias it.
+      this.cachedBlob = clone(blob);
     } catch (cause) {
       try {
         await unlink(tmp);

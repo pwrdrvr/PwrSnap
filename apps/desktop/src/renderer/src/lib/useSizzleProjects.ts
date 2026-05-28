@@ -2,6 +2,14 @@ import { useEffect, useState } from "react";
 import { EVENT_CHANNELS, type SizzleProject } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "./pwrsnap";
 
+// Note: the broadcast PRODUCER (sizzle-handlers.ts) uses
+// `EventPayloads` in `@pwrsnap/shared/src/ipc.ts` to type-check the
+// payload at send time. The consumer side (this hook) STILL has to
+// shape-check at runtime because `subscribe()` hands callbacks
+// `unknown` by design — the preload bridge can't enforce types
+// across the IPC boundary. So the type contract is documented
+// centrally but defended structurally here.
+
 /**
  * Subscribe to the canonical sizzle project list. Fetches once on
  * mount via `sizzle:list`, then listens to

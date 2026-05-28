@@ -184,3 +184,172 @@ describe("SizzleStore", () => {
     expect(entries.filter((e) => e === "sizzle-projects.json")).toHaveLength(1);
   });
 });
+
+// Back-compat read path: projects written BEFORE the Phase 3a
+// schema additions (`mediaTrim`, `audioSource`, `transition`) must
+// load cleanly with sensible defaults. Without this back-fill, the
+// composer + editor crash with `scene.mediaTrim.endSec` on undefined.
+describe("SizzleStore — back-compat read of pre-Phase-3a projects", () => {
+  it("loads a pre-Phase-3a project and back-fills the new scene fields", async () => {
+    // Write a minimal pre-Phase-3a blob directly to disk — only the
+    // fields that existed in PR #124 (id, captureId, scriptLine,
+    // durationOverrideSec). No mediaTrim, no audioSource, no
+    // transition. This is what a user's pwrsnap install would
+    // contain after upgrading from the Phase-1 MVP.
+    const oldBlob = {
+      schemaVersion: 1,
+      projects: [
+        {
+          id: "sz_oldproj",
+          name: "Pre-3a project",
+          createdAt: "2026-05-26T00:00:00.000Z",
+          modifiedAt: "2026-05-26T00:00:00.000Z",
+          voice: "onyx",
+          ttsModel: "tts-1-hd",
+          ttsProvider: "openai",
+          resolution: "1080p",
+          outputPath: null,
+          lastRenderedAt: null,
+          scenes: [
+            {
+              id: "sc_old1",
+              captureId: "cap-1",
+              scriptLine: "First line",
+              durationOverrideSec: null
+              // Note: NO mediaTrim, audioSource, transition fields.
+            },
+            {
+              id: "sc_old2",
+              captureId: "cap-2",
+              scriptLine: "",
+              durationOverrideSec: 4.5
+            }
+          ]
+        }
+      ]
+    };
+    await writeFile(filePath, JSON.stringify(oldBlob), "utf8");
+
+    const store = makeStore();
+    const projects = await store.list();
+    expect(projects).toHaveLength(1);
+    const project = projects[0]!;
+    expect(project.scenes).toHaveLength(2);
+
+    // Both scenes get the same defaults: mediaTrim null (composer
+    // ignores it for images; video scenes seed at render time from
+    // capture.video.defaultRange), audioSource "auto" (the policy
+    // resolver picks per kind+script), transition "crossfade" (the
+    // visual default the editor renders new scenes with).
+    for (const scene of project.scenes) {
+      expect(scene.mediaTrim).toBeNull();
+      expect(scene.audioSource).toBe("auto");
+      expect(scene.transition).toBe("crossfade");
+    }
+    // Originally-set fields survive untouched.
+    expect(project.scenes[0]!.id).toBe("sc_old1");
+    expect(project.scenes[0]!.scriptLine).toBe("First line");
+    expect(project.scenes[1]!.durationOverrideSec).toBe(4.5);
+  });
+
+  it("loads a project mixing new + missing scene fields without crashing", async () => {
+    // Half the scenes have the new fields (user created them after
+    // the Phase 3a update), half don't (user's older scenes). The
+    // back-fill must be per-scene, not per-project.
+    const mixedBlob = {
+      schemaVersion: 1,
+      projects: [
+        {
+          id: "sz_mixed",
+          name: "Mixed",
+          createdAt: "2026-05-26T00:00:00.000Z",
+          modifiedAt: "2026-05-27T00:00:00.000Z",
+          voice: "alloy",
+          ttsModel: "tts-1",
+          ttsProvider: "openai",
+          resolution: "720p",
+          outputPath: null,
+          lastRenderedAt: null,
+          scenes: [
+            {
+              id: "sc_old",
+              captureId: "cap-old",
+              scriptLine: "Old scene",
+              durationOverrideSec: null
+            },
+            {
+              id: "sc_new",
+              captureId: "cap-new",
+              scriptLine: "New scene",
+              durationOverrideSec: null,
+              mediaTrim: { startSec: 1.0, endSec: 4.5 },
+              audioSource: "native",
+              transition: "cut"
+            }
+          ]
+        }
+      ]
+    };
+    await writeFile(filePath, JSON.stringify(mixedBlob), "utf8");
+    const store = makeStore();
+    const projects = await store.list();
+    const scenes = projects[0]!.scenes;
+
+    // Old scene: back-filled defaults.
+    expect(scenes[0]!.mediaTrim).toBeNull();
+    expect(scenes[0]!.audioSource).toBe("auto");
+    expect(scenes[0]!.transition).toBe("crossfade");
+
+    // New scene: explicit values survive.
+    expect(scenes[1]!.mediaTrim).toEqual({ startSec: 1.0, endSec: 4.5 });
+    expect(scenes[1]!.audioSource).toBe("native");
+    expect(scenes[1]!.transition).toBe("cut");
+  });
+
+  it("a fresh write after back-fill includes the new fields on disk", async () => {
+    // Acceptance check for the full read → fill → mutate → write
+    // cycle. The post-write disk file must contain the back-filled
+    // fields; otherwise a relaunch would have to back-fill again
+    // and "older project that's been updated" would never
+    // converge to the new shape.
+    const oldBlob = {
+      schemaVersion: 1,
+      projects: [
+        {
+          id: "sz_old2",
+          name: "Will update",
+          createdAt: "2026-05-26T00:00:00.000Z",
+          modifiedAt: "2026-05-26T00:00:00.000Z",
+          voice: "onyx",
+          ttsModel: "tts-1-hd",
+          ttsProvider: "openai",
+          resolution: "1080p",
+          outputPath: null,
+          lastRenderedAt: null,
+          scenes: [
+            { id: "sc_a", captureId: "cap-1", scriptLine: "a", durationOverrideSec: null }
+          ]
+        }
+      ]
+    };
+    await writeFile(filePath, JSON.stringify(oldBlob), "utf8");
+    const store = makeStore();
+    const updated = await store.update("sz_old2", { name: "Renamed" });
+    expect(updated.name).toBe("Renamed");
+
+    const onDisk = JSON.parse(await readFile(filePath, "utf8")) as {
+      projects: Array<{ scenes: unknown[] }>;
+    };
+    expect(onDisk.projects[0]!.scenes).toEqual([
+      {
+        id: "sc_a",
+        captureId: "cap-1",
+        scriptLine: "a",
+        durationOverrideSec: null,
+        mediaTrim: null,
+        audioSource: "auto",
+        transition: "crossfade"
+      }
+    ]);
+  });
+});

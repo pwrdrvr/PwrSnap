@@ -1018,13 +1018,46 @@ function SelectionOutline({
   if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
     box = data.rect;
   } else if (data.kind === "arrow") {
-    // No bounding box for arrows. An axis-aligned rect drawn around the
-    // arrow's extents is the WRONG shape (the arrow itself is a line,
-    // not a rect) — it just adds visual noise. The TransformHandles
-    // component renders 2 endpoint handles (`from` + `to`) which
-    // already communicate "this arrow is selected" without redrawing
-    // the user's annotation as a misleading box. Return null.
-    return null;
+    // Arrows don't get a bounding-box outline — an axis-aligned rect
+    // around a line glyph is the wrong shape, just visual noise.
+    // Instead, render two small accent-colored endpoint dots at
+    // `from` and `to`. This is a CRITICAL multi-select affordance:
+    // TransformHandles (which used to be the sole arrow-selection
+    // indicator) only renders for single-selection, so without this
+    // path a Cmd-multi-selected arrow had ZERO visual feedback — the
+    // user saw nothing to confirm the click landed. Pre-fix the
+    // SelectionOutline branch returned null and the comment claimed
+    // TransformHandles owned the affordance; that assumption breaks
+    // the moment a second layer joins the selection.
+    //
+    // The dots intentionally stack cleanly under TransformHandles'
+    // larger square endpoint handles in the single-select case —
+    // the dot is decorative, the handle is interactive. No
+    // pointer-events override needed; the outer SVG is already
+    // `pointer-events: none`.
+    const shortSide = Math.min(imageWidthPx, imageHeightPx);
+    // Dot radius tracks the same scale as the dashed-outline stroke
+    // so multi-select feedback reads consistently across overlay
+    // kinds (rect/highlight/blur/text get a dashed bbox, arrow gets
+    // dots, but both at the same visual weight). Min 3px so a very
+    // small canvas still shows something hit-testable visually.
+    const dotR = Math.max(3, shortSide * 0.008);
+    const haloW = Math.max(1, shortSide * 0.003);
+    const fromX = data.from.x * imageWidthPx;
+    const fromY = data.from.y * imageHeightPx;
+    const toX = data.to.x * imageWidthPx;
+    const toY = data.to.y * imageHeightPx;
+    const stroke = "var(--accent, #ff8a1f)";
+    return (
+      <g data-testid="selection-outline" data-kind="arrow-endpoints">
+        {/* White halo per dot for contrast on dark images. Painted
+            first so the colored fill sits on top. */}
+        <circle cx={fromX} cy={fromY} r={dotR} fill="white" stroke="white" strokeWidth={haloW * 2} />
+        <circle cx={toX} cy={toY} r={dotR} fill="white" stroke="white" strokeWidth={haloW * 2} />
+        <circle cx={fromX} cy={fromY} r={dotR - haloW} fill={stroke} />
+        <circle cx={toX} cy={toY} r={dotR - haloW} fill={stroke} />
+      </g>
+    );
   } else if (data.kind === "text") {
     box = textBoundsBox(data, imageWidthPx, imageHeightPx, sourceWidthPx, sourceHeightPx);
   } else if (data.kind === "crop") {

@@ -453,11 +453,12 @@ describe("OverlaySvg — multi-select outlines", () => {
   test("renders one outline per id in selectedLayerIds", async () => {
     // Two rects (text overlays' selection outline is now drawn by
     // TextHtmlOverlays, not OverlaySvg, since the HTML-text
-    // unification moved text rendering out of the SVG). Arrow
-    // overlays intentionally return null from SelectionOutline
-    // because an axis-aligned bbox around a line glyph is the wrong
-    // shape; the user's affordance for "this arrow is selected" comes
-    // from TransformHandles' endpoint handles, not a bbox.
+    // unification moved text rendering out of the SVG). Arrows get a
+    // different shape of outline (endpoint dots, not a dashed bbox)
+    // but both kinds still emit a `[data-testid='selection-outline']`
+    // root so this count assertion holds across kinds — see the
+    // "arrow selection emits endpoint dots" test below for the
+    // arrow-specific shape.
     const svg = await renderOverlaySvg(
       [rectRow(), rectRow2()],
       undefined,
@@ -475,6 +476,57 @@ describe("OverlaySvg — multi-select outlines", () => {
     // One match + one ghost id = exactly one outline. Parent
     // separately handles the stale-id cleanup on the next render.
     expect(svg.querySelectorAll("[data-testid='selection-outline']").length).toBe(1);
+  });
+
+  test("arrow selection emits endpoint dots (multi-select affordance)", async () => {
+    // Regression for user report: "you can multi-select with Command
+    // now but there is no indication of which items are selected as
+    // the grippers on the first item disappear and there is no
+    // indication that 2 of 100 arrows on the screen are selected".
+    //
+    // TransformHandles renders only for single-selection, so on
+    // multi-select an arrow had ZERO visible feedback — the dashed
+    // bbox path was a no-op for arrows because an AABB around a line
+    // is the wrong shape. The fix: SelectionOutline for arrows now
+    // emits two small accent-colored endpoint dots at `from` and
+    // `to`. Stacks cleanly under TransformHandles' larger square
+    // handles in the single-select case (dot is decorative; handle
+    // is interactive).
+    const svg = await renderOverlaySvg([arrowRow()], undefined, {
+      selectedLayerIds: ["arrow_test_1"]
+    });
+    const outline = svg.querySelector(
+      "[data-testid='selection-outline'][data-kind='arrow-endpoints']"
+    );
+    expect(outline).not.toBeNull();
+    // 4 circles per endpoint set = 2 endpoints × (halo + fill).
+    // This is the bare-minimum-distinguishable count; a future
+    // refactor that drops the halo would still leave 2 circles
+    // visible to the user but the test would flag the change.
+    expect(outline!.querySelectorAll("circle").length).toBe(4);
+  });
+
+  test("arrow endpoint dots anchor to from/to in pixel space", async () => {
+    // Locks the math so a future refactor that swaps coordinate
+    // systems doesn't silently mis-position the dots (which would
+    // look like "the indicator drifted off my arrow").
+    // Test default canvas is 800×600. arrowRow() returns from
+    // (0.2, 0.5) → (0.8, 0.5) — so in pixel space:
+    //   from = (160, 300), to = (640, 300)
+    const svg = await renderOverlaySvg([arrowRow()], undefined, {
+      selectedLayerIds: ["arrow_test_1"]
+    });
+    const outline = svg.querySelector(
+      "[data-testid='selection-outline'][data-kind='arrow-endpoints']"
+    );
+    const circles = outline!.querySelectorAll("circle");
+    // Last two circles are the colored fills (painted after halos).
+    const fillFrom = circles[2]!;
+    const fillTo = circles[3]!;
+    expect(Number(fillFrom.getAttribute("cx"))).toBe(160);
+    expect(Number(fillFrom.getAttribute("cy"))).toBe(300);
+    expect(Number(fillTo.getAttribute("cx"))).toBe(640);
+    expect(Number(fillTo.getAttribute("cy"))).toBe(300);
   });
 
   test("bounding box bounds the FULL rect even when the rect is dragged off-canvas", async () => {

@@ -278,8 +278,8 @@ export function buildCompositionArgs(
     // Apple's software encoder instead of failing the render.
     "-allow_sw",
     "1",
-    "-q:v",
-    "45",
+    "-b:v",
+    videoBitrate(req.width, req.height, req.fps),
     "-pix_fmt",
     "yuv420p",
     // ffmpeg's native AAC (LGPL), NOT nonfree libfdk_aac.
@@ -293,6 +293,15 @@ export function buildCompositionArgs(
     req.outputPath
   );
   return args;
+}
+
+function videoBitrate(width: number, height: number, fps: number): string {
+  const bitsPerPixelFrame = 0.12;
+  const bitrate = Math.max(
+    2_000_000,
+    Math.round(width * height * fps * bitsPerPixelFrame)
+  );
+  return `${bitrate}`;
 }
 
 /**

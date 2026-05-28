@@ -517,4 +517,160 @@ describe("BlurOverlays — rotated blur mirrors bake AABB + mask (issue #147)", 
       "rotation === 0 must NOT engage the rotated-canvas path"
     ).toBeNull();
   });
+
+  test("drawImage source rect matches the rotated rect's AABB in source-pixel coords", async () => {
+    // The load-bearing assertion that addresses the user's PR #148
+    // review: "you didn't resample what is under the rotated blur."
+    // We mock ctx.drawImage and assert the SOURCE RECT passed to it
+    // is the rotated rect's AABB in source-natural-pixel coords (i.e.
+    // what the bake samples in `compose-tree.ts`'s rotated-effect
+    // pipeline). If this test passes, the editor's sampling is at
+    // the same pixels the bake operates on, modulo CSS clip-path.
+    //
+    // For uncropped captures (most of them) natural == canvas, so
+    // the source rect equals the AABB in canvas-pixel coords.
+    const drawImageCalls: Array<{
+      srcX: number;
+      srcY: number;
+      srcW: number;
+      srcH: number;
+      dstX: number;
+      dstY: number;
+      dstW: number;
+      dstH: number;
+    }> = [];
+    const drawImageMock = vi.fn(
+      (
+        _img: unknown,
+        srcX: number,
+        srcY: number,
+        srcW: number,
+        srcH: number,
+        dstX: number,
+        dstY: number,
+        dstW: number,
+        dstH: number
+      ) => {
+        drawImageCalls.push({ srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH });
+      }
+    );
+    const ctx2dMock = {
+      drawImage: drawImageMock,
+      clearRect: vi.fn(),
+      filter: "",
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "high" as const
+    };
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ctx2dMock) as never;
+
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    // 400×300 canvas, 50%×50% rect → un-rotated 200×150 at (100, 75).
+    // Rotated π/4 around center (200, 150). AABB worked out by hand:
+    //   corners after rotation: (76.3, 26.3), (323.7, 167.7),
+    //     (217.7, 273.7), (76.3, 132.3)
+    //   AABB: x=76.3, y=26.3, w=247.4, h=247.4
+    const rect = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+    const rotation = Math.PI / 4;
+    const canvasWidthPx = 400;
+    const canvasHeightPx = 300;
+    render({
+      overlays: [rotatedBlurRow("blur_smp", "gaussian", rotation, rect)],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx,
+      canvasHeightPx
+    });
+    await act(async () => undefined);
+    expect(drawImageCalls).toHaveLength(1);
+    const call = drawImageCalls[0]!;
+    const aabb = expectedAabb({ rect, rotation, canvasWidthPx, canvasHeightPx });
+    // For makeFakeImage(): naturalWidth=400, naturalHeight=300, so
+    // scaleX = scaleY = 1 (matches canvas dims). Source rect should
+    // equal AABB in canvas pixels.
+    expect(
+      call.srcX,
+      `drawImage source X should be the AABB's left edge (${aabb.x.toFixed(2)} px) — ` +
+        `if this is off, the editor is sampling at the wrong canvas position ` +
+        `and the rotated blur shows content from somewhere else.`
+    ).toBeCloseTo(aabb.x, 4);
+    expect(call.srcY).toBeCloseTo(aabb.y, 4);
+    expect(call.srcW).toBeCloseTo(aabb.w, 4);
+    expect(call.srcH).toBeCloseTo(aabb.h, 4);
+    // Destination should map AABB → full canvas (start at 0, fill
+    // internalW × internalH). Same aspect ratio as source so the
+    // rotated rect interior shows correctly placed pixels.
+    expect(call.dstX).toBe(0);
+    expect(call.dstY).toBe(0);
+    // dstW/dstH = aabbW/aabbH rounded (gaussian uses 1:1 internal res).
+    // Tolerance of 1 absorbs the Math.round in the component.
+    expect(Math.abs(call.dstW - aabb.w)).toBeLessThanOrEqual(1);
+    expect(Math.abs(call.dstH - aabb.h)).toBeLessThanOrEqual(1);
+  });
+
+  test("drawImage source rect accounts for source-vs-canvas natural-dim scaling", async () => {
+    // When the loaded image's naturalWidth differs from canvasWidthPx
+    // (cropped v2 captures, or DPR'd source PNGs), the AABB in CANVAS-
+    // pixel coords needs scaling to SOURCE-NATURAL-pixel coords for
+    // drawImage's source rect. Otherwise we'd sample from the wrong
+    // region of the source bytes.
+    const drawImageCalls: Array<{
+      srcX: number;
+      srcY: number;
+      srcW: number;
+      srcH: number;
+    }> = [];
+    const drawImageMock = vi.fn(
+      (
+        _img: unknown,
+        srcX: number,
+        srcY: number,
+        srcW: number,
+        srcH: number
+      ) => {
+        drawImageCalls.push({ srcX, srcY, srcW, srcH });
+      }
+    );
+    const ctx2dMock = {
+      drawImage: drawImageMock,
+      clearRect: vi.fn(),
+      filter: "",
+      imageSmoothingEnabled: false,
+      imageSmoothingQuality: "high" as const
+    };
+    HTMLCanvasElement.prototype.getContext = vi.fn(() => ctx2dMock) as never;
+
+    // 2× source vs canvas (e.g., Retina capture where the PNG is at
+    // DPR=2 but the canvas's canonical dims are CSS pixels).
+    const ref = createRef<HTMLImageElement>();
+    const img = document.createElement("img");
+    Object.defineProperty(img, "complete", { value: true, configurable: true });
+    Object.defineProperty(img, "naturalWidth", { value: 800, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 600, configurable: true });
+    (ref as { current: HTMLImageElement }).current = img;
+
+    const rect = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+    const rotation = Math.PI / 4;
+    const canvasWidthPx = 400;
+    const canvasHeightPx = 300;
+    render({
+      overlays: [rotatedBlurRow("blur_scl", "gaussian", rotation, rect)],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx,
+      canvasHeightPx
+    });
+    await act(async () => undefined);
+    expect(drawImageCalls).toHaveLength(1);
+    const call = drawImageCalls[0]!;
+    const aabb = expectedAabb({ rect, rotation, canvasWidthPx, canvasHeightPx });
+    // Scale factor = naturalWidth / canvasWidthPx = 800 / 400 = 2.
+    const scale = 2;
+    expect(call.srcX).toBeCloseTo(aabb.x * scale, 4);
+    expect(call.srcY).toBeCloseTo(aabb.y * scale, 4);
+    expect(call.srcW).toBeCloseTo(aabb.w * scale, 4);
+    expect(call.srcH).toBeCloseTo(aabb.h * scale, 4);
+  });
 });

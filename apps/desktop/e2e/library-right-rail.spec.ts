@@ -231,16 +231,17 @@ test("library-right-rail: video preset metrics populate exact dims on cache hit"
     ]);
 
     // Source is seeded at 1440×960 by `seedVideoCapture` below.
-    // MP4 LOW = 720px wide, MP4 HIGH = source (1440). GIF LOW =
-    // 480, GIF MED + HIGH both cap at 720 (GIF byte sizes get
-    // unusable above 720p — HIGH means "smoother fps", not "more
-    // pixels"). Sanity-check that the per-preset width math
-    // (computeOutputDimensions + GIF_PRESETS / MP4_PRESETS) lines
-    // up with the canonical encoder spec.
+    // MP4 LOW = 720, MP4 HIGH = source (1440). GIF LOW = 480,
+    // GIF MED = 540 (intermediate qHD-tier; geometric midpoint
+    // between LOW and HIGH for byte size), GIF HIGH = 720 (capped
+    // — beyond 720p GIFs become unusable). Sanity-check that the
+    // per-preset width math (computeOutputDimensions +
+    // GIF_PRESETS / MP4_PRESETS) lines up with the canonical
+    // encoder spec.
     expect(byKey.get("mp4-low")!.widthPx).toBe(720);
     expect(byKey.get("mp4-high")!.widthPx).toBe(1440);
     expect(byKey.get("gif-low")!.widthPx).toBe(480);
-    expect(byKey.get("gif-med")!.widthPx).toBe(720);
+    expect(byKey.get("gif-med")!.widthPx).toBe(540);
     expect(byKey.get("gif-high")!.widthPx).toBe(720);
 
     // Cold cache — every entry should report fromCache=false.

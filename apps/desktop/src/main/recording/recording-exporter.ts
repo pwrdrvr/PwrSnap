@@ -49,22 +49,25 @@ const log = getMainLogger("pwrsnap:recording-exporter");
  *  HIGH also sets `crf: null` to signal "stream-copy" (no
  *  re-encode).
  *
- *  GIF HIGH does NOT use source resolution. GIFs are palette-frame
- *  encoded; byte size scales with `pixels × fps × duration` and gets
- *  unusable fast above ~720p (a 1080p 30fps GIF for 10 seconds is
- *  routinely 80+ MB — over Slack's 50 MB cap, way past iMessage's
- *  practical limit, and triggers most platforms' auto-convert-to-
- *  MP4 paths). The three GIF tiers vary fps within a hard 720p
- *  resolution cap: HIGH means "smoother", not "bigger". MP4 keeps
- *  the resolution axis because it has the codec headroom (CRF +
- *  H.264 motion compensation) to handle high-res screen content
- *  without exploding. */
+ *  GIF tiers are picked to land in roughly log-spaced byte sizes for
+ *  a typical PwrSnap recording — each tier ~2× the previous, with
+ *  MED as the geometric midpoint. The resolution axis carries most
+ *  of the weight (byte size scales linearly with pixel count); fps
+ *  is the secondary lever. We deliberately do NOT scale GIF HIGH up
+ *  to source resolution because GIF byte size scales with
+ *  `pixels × fps × duration` and gets unusable fast above ~720p
+ *  (a 1080p 30fps GIF for 10 seconds is routinely 80+ MB — over
+ *  Slack's 50 MB cap, way past iMessage's practical limit, and
+ *  triggers most platforms' auto-convert-to-MP4 paths). MP4 keeps
+ *  the resolution axis up to source because it has the codec
+ *  headroom (CRF + H.264 motion compensation) to handle high-res
+ *  screen content without exploding. */
 export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
 export type Mp4PresetSpec = { readonly width: number | null; readonly crf: number | null };
 
 export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
   low: { width: 480, fps: 15 },
-  med: { width: 720, fps: 24 },
+  med: { width: 540, fps: 24 },
   high: { width: 720, fps: 30 }
 };
 

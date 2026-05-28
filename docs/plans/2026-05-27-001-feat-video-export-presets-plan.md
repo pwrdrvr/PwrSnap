@@ -20,7 +20,7 @@ arranged in two rows:
 ```
 ┌──────────────────┬──────────────────┬──────────────────┐
 │      GIF LOW     │      GIF MED     │     GIF HIGH     │
-│  480p · 15 fps   │  720p · 24 fps   │  720p · 30 fps   │
+│  480p · 15 fps   │  540p · 24 fps   │  720p · 30 fps   │
 │      ⌘1          │       ⌘2         │       ⌘3         │
 ├──────────────────┼──────────────────┼──────────────────┤
 │      ⋮ FILE      │      ⋮ FILE      │      ⋮ FILE      │
@@ -79,8 +79,8 @@ Rationale:
 | Preset | GIF | MP4 |
 |---|---|---|
 | **LOW** | 480p · 15 fps · palette-optimized | 720p · CRF 28 · web-friendly |
-| **MED** | 720p · 24 fps | 1080p · CRF 23 |
-| **HIGH** | 720p · 30 fps · smoother motion | source resolution · stream-copy |
+| **MED** | 540p · 24 fps · ~geometric midpoint | 1080p · CRF 23 |
+| **HIGH** | 720p · 30 fps · smoothest practical | source resolution · stream-copy |
 
 Mirroring the image side, the preset constants live in a single
 source-of-truth file in `apps/desktop/src/main/recording/` and
@@ -88,25 +88,31 @@ the renderer reads them through a `video:presetMetrics` IPC verb
 to populate estimated dimensions + bytes (matching how
 `capture:presetMetrics` works for images).
 
-GIF rationale:
-- 480p / 15 fps · palette-optimized = social-media-friendly (Twitter,
-  Slack will accept under 10 MB for ~10s clips). 15 fps reads as
-  smooth motion for UI scroll / cursor / animation captures, which
-  is the dominant PwrSnap use case.
-- 720p / 24 fps = "good enough" sharing fidelity. The "film frame
-  rate" tier; smooth enough to look polished for showing app
-  animations.
-- **720p / 30 fps · smoother motion** — same resolution as MED, more
-  frames per second. We deliberately do NOT scale GIF HIGH up to
-  source resolution because GIF byte size scales with
-  `pixels × fps × duration` and gets unusable fast above 720p — a
-  1080p 30 fps GIF for 10 seconds is routinely 80+ MB, over Slack's
-  50 MB cap, past iMessage's compression sweet spot, and triggers
-  most platforms' auto-convert-to-MP4 paths. MP4 keeps the
-  resolution axis because H.264 + CRF handles high-res screen
-  content without exploding; GIF doesn't, so HIGH means "smoother",
-  not "bigger". Users who actually want source-resolution video
-  pick MP4 HIGH (stream-copy, no re-encode, no size hit).
+GIF rationale (sizes for a 12s 1855×946 source — adjust mentally
+for your typical clip; everything scales linearly):
+
+- **480p / 15 fps · ~4 MB** — chat-friendly. 15 fps reads as smooth
+  motion for UI scroll / cursor / animation captures, which is the
+  dominant PwrSnap use case. Slack, Twitter, iMessage accept this
+  without complaint.
+- **540p / 24 fps · ~9 MB** — geometric midpoint between LOW and
+  HIGH (~2.2× LOW, ~2.0× from HIGH). 540p is the qHD/SD intermediate
+  tier — a meaningful "between LOW and MAX" stop. Picked over the
+  intuitive "720p × lower fps" because fps alone can't move the
+  byte size enough within a fixed resolution; MED needs its own
+  intermediate resolution to feel like a midpoint rather than a
+  thumbprint-cheaper HIGH.
+- **720p / 30 fps · ~19 MB** — smoothest practical. We deliberately
+  do NOT scale GIF HIGH up to source resolution because GIF byte
+  size scales with `pixels × fps × duration` and gets unusable fast
+  above 720p — a 1080p 30 fps GIF for 10 seconds is routinely 80+
+  MB, over Slack's 50 MB cap, past iMessage's compression sweet
+  spot, and triggers most platforms' auto-convert-to-MP4 paths.
+  MP4 keeps the resolution axis up to source because H.264 + CRF
+  handles high-res screen content without exploding; GIF doesn't,
+  so HIGH means "smoothest and largest practical", not "source".
+  Users who actually want source-resolution video pick MP4 HIGH
+  (stream-copy, no re-encode, no size hit).
 
 MP4 rationale:
 - 720p / CRF 28 = ~3 Mbps for typical screen content. Drops into

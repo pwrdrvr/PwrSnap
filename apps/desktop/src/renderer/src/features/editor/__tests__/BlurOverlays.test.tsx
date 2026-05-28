@@ -185,4 +185,76 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     expect(drawImageMock).toHaveBeenCalled();
     expect(clearRectMock).toHaveBeenCalled();
   });
+
+  test("a live-drag draft with blurStyle 'pixelate' renders as a <canvas> (not a styled div)", () => {
+    // The committed-overlay path is covered above. The live-drag path
+    // is a SEPARATE branch in BlurOverlays.tsx:
+    //
+    //   {liveRect !== null && blurStyle === "pixelate" && <PixelateMosaicCanvas .../>}
+    //   {liveRect !== null && blurStyle !== "pixelate" && <BlurOverlayItem .../>}
+    //
+    // A future refactor that flipped the conditions, fell through, or
+    // merged the two would silently regress live-drag pixelate to a
+    // styled div. This test pins the canvas signature for that path.
+    //
+    // The draft shape is `DraftRect` with kind="rect-drag", tool="blur".
+    // rectFromDrag converts startXn/startYn/curXn/curYn into [0,1]
+    // normalized {x,y,w,h}. We pick coords inside [0,1] so the resulting
+    // rect passes the MIN_DRAG_LENGTH guard.
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [],
+      draft: {
+        kind: "rect-drag",
+        tool: "blur",
+        startXn: 0.2,
+        startYn: 0.3,
+        curXn: 0.7,
+        curYn: 0.8
+      },
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const canvas = el.querySelector("canvas");
+    expect(
+      canvas,
+      "live-drag draft with blurStyle 'pixelate' should render the canvas mosaic, " +
+        "not the styled div for gaussian/redact"
+    ).not.toBeNull();
+    // And NO static-pattern div for the pixelate kind during the drag.
+    const staticPatternDivs = el.querySelectorAll("div.ed-blur-item--pixelate");
+    expect(staticPatternDivs.length).toBe(0);
+  });
+
+  test("a live-drag draft with blurStyle 'gaussian' renders as a styled div (not a canvas)", () => {
+    // Mirror of the test above for the non-pixelate live-drag branch.
+    // Catches the same refactor risk in the OTHER direction.
+    const ref = createRef<HTMLImageElement>();
+    (ref as { current: HTMLImageElement }).current = makeFakeImage();
+    const el = render({
+      overlays: [],
+      draft: {
+        kind: "rect-drag",
+        tool: "blur",
+        startXn: 0.2,
+        startYn: 0.3,
+        curXn: 0.7,
+        curYn: 0.8
+      },
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const gaussianDraft = el.querySelector("div.ed-blur-item--gaussian.is-draft");
+    expect(
+      gaussianDraft,
+      "live-drag draft with blurStyle 'gaussian' should still be a styled div"
+    ).not.toBeNull();
+    const stray = el.querySelector("canvas");
+    expect(stray, "no canvas should mount for a gaussian live-drag").toBeNull();
+  });
 });

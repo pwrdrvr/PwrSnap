@@ -1029,6 +1029,24 @@ export function Editor({
       ) => Promise<void>)
     | null
   >(null);
+  // Live-drag preview: a map of layer id → in-progress geometry that
+  // every overlay renderer (OverlaySvg / BlurOverlays /
+  // TextHtmlOverlays) projects onto the matching row so the painted
+  // glyph follows the user's cursor in real time. Lives at the outer
+  // Editor scope (rather than inside EditorLoaded where the
+  // renderers themselves live) because the multi-drag gesture's
+  // pointermove / cancel / up handlers — defined HERE in the outer
+  // function — set it. EditorLoaded receives both halves via props
+  // and threads `draftGeometry` down to the three renderers as
+  // `liveOverride`.
+  //
+  // Map shape (vs the previous single-id `{ layerId, geometry }`)
+  // because multi-drag needs N concurrent overrides — one per
+  // selected layer. Single-select drags emit a 1-entry map through
+  // the same path so both gestures share one renderer contract.
+  const [draftGeometry, setDraftGeometry] = useState<
+    ReadonlyMap<string, GeometryUpdate> | null
+  >(null);
   // Canvas + source dims read by `hitTestOverlays` so text overlays
   // get a FULL bounding-rect hit target (matches the on-screen
   // rendered glyph extent), not a tiny radius around the anchor.
@@ -1335,6 +1353,44 @@ export function Editor({
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLDivElement>): void {
+    // Multi-select drag live preview. While the user is dragging a
+    // multi-selection (armed by `onPointerDown` when they clicked an
+    // already-selected layer), every pointermove translates each
+    // selected layer's pre-drag snapshot by the cursor delta and
+    // stashes the result in `draftGeometry` as a Map<id, geometry>.
+    // OverlaySvg / BlurOverlays / TextHtmlOverlays all consume that
+    // map and paint each entry's row at its overridden geometry.
+    // pointerup commits the same delta via dispatchEdit and clears
+    // the override.
+    //
+    // Runs BEFORE the draft branch — the multi-drag gesture is
+    // unrelated to drafts (which only fire when a drawing tool was
+    // selected and the user is mid-shape).
+    const multiDrag = multiDragStartRef.current;
+    if (multiDrag !== null) {
+      const cur = clientToNormalized(event.clientX, event.clientY);
+      if (cur === null) return;
+      const dxn = cur.xn - multiDrag.startXn;
+      const dyn = cur.yn - multiDrag.startYn;
+      // Don't paint a preview until the user has moved past the
+      // no-drag threshold. Below that, the gesture is still
+      // ambiguous (click-without-drag) and showing a 0-delta
+      // override would just rebuild the Map for nothing. Same
+      // threshold the commit path uses.
+      const MIN_MULTI_DRAG_N = 0.002;
+      if (Math.hypot(dxn, dyn) < MIN_MULTI_DRAG_N) return;
+      // Build the per-layer override map. translateOverlayGeometry
+      // returns null for layer kinds with no geometry (crop) — skip
+      // those entries (the unrelated bbox of the on-canvas crop tool
+      // shouldn't follow a drag of arrows).
+      const next = new Map<string, GeometryUpdate>();
+      for (const snapshot of multiDrag.snapshots) {
+        const geom = translateOverlayGeometry(snapshot.data, dxn, dyn);
+        if (geom !== null) next.set(snapshot.id, geom);
+      }
+      setDraftGeometry(next.size > 0 ? next : null);
+      return;
+    }
     if (draft === null) return;
     if (draft.kind === "text") return;
     const cur = clientToNormalized(event.clientX, event.clientY);
@@ -1366,6 +1422,13 @@ export function Editor({
       } catch {
         // Best-effort release; capture may already be gone.
       }
+      // Clear any in-flight live preview so layers snap back to their
+      // persisted positions (the cancel means "no commit", so the
+      // override should evaporate immediately). Cleared only when WE
+      // armed the override via multi-drag — leaving a single-select
+      // drag's override alone (TransformHandles owns that lifecycle
+      // and may still be mid-drag through its own capture).
+      setDraftGeometry(null);
     }
   }
 
@@ -1402,8 +1465,22 @@ export function Editor({
           if (commit !== null) {
             await commit(multiDrag.snapshots, dxn, dyn);
           }
+        } else {
+          // Under threshold — no commit, but the user may have moved
+          // PAST the threshold during the drag (setting the override
+          // via pointermove) and then back UNDER it before releasing.
+          // Clear the override now so the layers snap to their
+          // persisted positions — otherwise the override would
+          // linger at the last paint location until something else
+          // bumped the overlays list.
+          setDraftGeometry(null);
         }
       }
+      // For above-threshold commits we LEAVE draftGeometry in place;
+      // the cleanup effect drops it once the broadcast lands and the
+      // new ids replace the OLD ones in `overlays` (zero-flash
+      // pointerup → persisted state, same discipline as
+      // single-select drag's onHandleGeometryChange).
       return;
     }
     if (draft === null) return;
@@ -2393,6 +2470,8 @@ export function Editor({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      draftGeometry={draftGeometry}
+      setDraftGeometry={setDraftGeometry}
       commitText={commitText}
       onZoomChange={onZoomChange}
       blurStyle={blurStyle}
@@ -2444,6 +2523,8 @@ function EditorLoaded({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  draftGeometry,
+  setDraftGeometry,
   commitText,
   onZoomChange,
   blurStyle,
@@ -2517,6 +2598,18 @@ function EditorLoaded({
    *  state. EditorLoaded just forwards it to the canvas's
    *  onPointerCancel attribute. */
   onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /** Live-drag geometry override owned by the outer Editor (the
+   *  multi-drag pointermove handler there is the primary writer; the
+   *  single-select drag's onHandleGeometryDrag also writes through
+   *  this setter). EditorLoaded reads `draftGeometry` to thread into
+   *  OverlaySvg / BlurOverlays / TextHtmlOverlays as `liveOverride`,
+   *  and uses `setDraftGeometry(null)` to clear on commit / error /
+   *  drag-end. Map shape covers both single-select (1 entry) and
+   *  multi-drag (N entries) through one contract. */
+  draftGeometry: ReadonlyMap<string, GeometryUpdate> | null;
+  setDraftGeometry: React.Dispatch<
+    React.SetStateAction<ReadonlyMap<string, GeometryUpdate> | null>
+  >;
   commitText: () => Promise<void>;
   onZoomChange: ((api: ZoomApi) => void) | undefined;
   blurStyle: BlurStyle;
@@ -3129,9 +3222,11 @@ function EditorLoaded({
   // position while the handle is dragged — the user sees the bbox
   // outline + handle move but the painted glyph "vanishes" until
   // commit re-anchors it (the bug we're fixing).
-  const [draftGeometry, setDraftGeometry] = useState<
-    { layerId: string; geometry: GeometryUpdate } | null
-  >(null);
+  // `draftGeometry` + `setDraftGeometry` are lifted to the outer
+  // Editor — the multi-drag pointer handlers there need to write
+  // them, and the single-select drag handlers below read/write them
+  // through the same props. See the outer declaration for the full
+  // rationale and shape comment.
 
   const onHandleDragStart = useCallback((row: OverlayRow): void => {
     preDragRef.current = row;
@@ -3155,7 +3250,10 @@ function EditorLoaded({
       // the override at the wrong row.
       const preDrag = preDragRef.current;
       if (preDrag === null) return;
-      setDraftGeometry({ layerId: preDrag.id, geometry });
+      // Single-select drag emits a 1-entry map. Same renderer
+      // contract as multi-drag (which emits N entries), unified
+      // through `ReadonlyMap<string, GeometryUpdate>`.
+      setDraftGeometry(new Map([[preDrag.id, geometry]]));
     },
     []
   );
@@ -3244,8 +3342,23 @@ function EditorLoaded({
   // is cleaned up in render N+1.
   useEffect(() => {
     if (draftGeometry === null) return;
-    const stillThere = overlays.some((r) => r.id === draftGeometry.layerId);
-    if (!stillThere) setDraftGeometry(null);
+    // After the broadcast refetch lands, every dispatched row gets a
+    // NEW id (delete-plus-insert), so the override's keys point at
+    // rows that no longer exist. We clear the override if NONE of
+    // its keys are still in `overlays` (the post-broadcast list has
+    // fully advanced past the burst). For a partially-landed
+    // broadcast (some new ids arrived, others pending), the override
+    // stays — each entry will be removed individually by future
+    // renderer projections naturally as their keys go missing.
+    const aliveIds = new Set(overlays.map((r) => r.id));
+    let anyStillThere = false;
+    for (const id of draftGeometry.keys()) {
+      if (aliveIds.has(id)) {
+        anyStillThere = true;
+        break;
+      }
+    }
+    if (!anyStillThere) setDraftGeometry(null);
   }, [overlays, draftGeometry]);
 
   // Selected-overlay style edit handler — dispatched when the popover

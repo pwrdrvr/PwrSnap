@@ -230,14 +230,20 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
     const persistedRotation = 0;
     const liveRotation = Math.PI / 4; // 45° during drag
     const row = textRow("t1", { rotation: persistedRotation });
-    await render([row], null, {
-      layerId: "t1",
-      geometry: {
-        kind: "text",
-        point: { x: 0.5, y: 0.5 },
-        rotation: liveRotation
-      }
-    });
+    await render(
+      [row],
+      null,
+      new Map([
+        [
+          "t1",
+          {
+            kind: "text",
+            point: { x: 0.5, y: 0.5 },
+            rotation: liveRotation
+          }
+        ]
+      ])
+    );
     // computeTextHtmlStyle emits rotate(<rad>rad) at the end of the
     // wrapper transform when rotation !== undefined.
     expect(wrapperTransform()).toContain(`rotate(${liveRotation}rad)`);
@@ -248,13 +254,13 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
 
   test("override point drives the wrapper position, not persisted point", async () => {
     const row = textRow("t1", { point: { x: 0.1, y: 0.1 } });
-    await render([row], null, {
-      layerId: "t1",
-      geometry: {
-        kind: "text",
-        point: { x: 0.9, y: 0.9 }
-      }
-    });
+    await render(
+      [row],
+      null,
+      new Map([
+        ["t1", { kind: "text", point: { x: 0.9, y: 0.9 } }]
+      ])
+    );
     // Wrapper position is left/top: percent-of-canvas — driven by
     // point.x/y * 100. Persisted (0.1, 0.1) would yield 10% / 10%;
     // override (0.9, 0.9) wins.
@@ -268,10 +274,9 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
         textRow("t2", { body: "static", point: { x: 0.2, y: 0.7 } })
       ],
       null,
-      {
-        layerId: "t1",
-        geometry: { kind: "text", point: { x: 0.9, y: 0.1 } }
-      }
+      new Map([
+        ["t1", { kind: "text", point: { x: 0.9, y: 0.1 } }]
+      ])
     );
     const movingWrapper = findWrapper("moving");
     const staticWrapper = findWrapper("static");
@@ -283,18 +288,25 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
   });
 
   test("override targeting a different layer leaves this row alone", async () => {
-    // liveOverride.layerId !== row.id — the projection must be a
-    // no-op and the persisted rotation wins.
+    // The override Map's keys don't include this row's id — the
+    // projection's `.get(row.id)` returns undefined and the row
+    // passes through unchanged, preserving the persisted rotation.
     const persistedRotation = Math.PI / 2; // 90°
     const row = textRow("t1", { rotation: persistedRotation });
-    await render([row], null, {
-      layerId: "OTHER",
-      geometry: {
-        kind: "text",
-        point: { x: 0.5, y: 0.5 },
-        rotation: 0
-      }
-    });
+    await render(
+      [row],
+      null,
+      new Map([
+        [
+          "OTHER",
+          {
+            kind: "text",
+            point: { x: 0.5, y: 0.5 },
+            rotation: 0
+          }
+        ]
+      ])
+    );
     expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
   });
 
@@ -307,14 +319,20 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
       rotation: persistedRotation,
       point: { x: 0.2, y: 0.2 }
     });
-    await render([row], null, {
-      layerId: "t1",
-      geometry: {
-        kind: "text",
-        point: { x: 0.7, y: 0.7 }
-        // rotation intentionally absent
-      }
-    });
+    await render(
+      [row],
+      null,
+      new Map([
+        [
+          "t1",
+          {
+            kind: "text",
+            point: { x: 0.7, y: 0.7 }
+            // rotation intentionally absent
+          }
+        ]
+      ])
+    );
     // Point came from override (left/top, not transform).
     expect(wrapperLeftTop()).toEqual({ left: "70%", top: "70%" });
     // Rotation came from the row (transform).
@@ -342,20 +360,74 @@ describe("TextHtmlOverlays — liveOverride propagation", () => {
       rotation: persistedRotation,
       point: { x: 0.3, y: 0.4 }
     });
-    await render([row], null, {
-      layerId: "t1",
-      // Rect-kind geometry — would carry a `rect` field, not `point`
-      // / `rotation`. The merge should refuse it and pass the row
-      // through unchanged.
-      geometry: {
-        kind: "rect",
-        rect: { x: 0.8, y: 0.8, w: 0.1, h: 0.1 },
-        rotation: Math.PI / 2
-      }
-    });
+    await render(
+      [row],
+      null,
+      new Map([
+        [
+          "t1",
+          // Rect-kind geometry — would carry a `rect` field, not
+          // `point` / `rotation`. The merge should refuse it and
+          // pass the row through unchanged.
+          {
+            kind: "rect",
+            rect: { x: 0.8, y: 0.8, w: 0.1, h: 0.1 },
+            rotation: Math.PI / 2
+          }
+        ]
+      ])
+    );
     // Persisted point + rotation both survive.
     expect(wrapperLeftTop()).toEqual({ left: "30%", top: "40%" });
     expect(wrapperTransform()).toContain(`rotate(${persistedRotation}rad)`);
+  });
+
+  test("multi-entry override (multi-drag) overrides each matching row independently", async () => {
+    // Regression for user report: "multi-select on 4 arrows works...
+    // only problem with it was: no live drag... it just jumps them
+    // on release." The fix changed `liveOverride` from a single-id
+    // `{ layerId, geometry }` to `ReadonlyMap<id, GeometryUpdate>`
+    // so the multi-drag pointermove handler can stash one entry per
+    // selected layer and every renderer projects all of them
+    // concurrently. This test pins the multi-entry behavior at the
+    // TextHtmlOverlays surface for text-kind multi-drag.
+    await render(
+      [
+        textRow("t1", { body: "first", point: { x: 0.1, y: 0.1 } }),
+        textRow("t2", { body: "second", point: { x: 0.2, y: 0.2 } }),
+        textRow("t3", { body: "third", point: { x: 0.3, y: 0.3 } })
+      ],
+      null,
+      new Map([
+        // Translate t1 by (+0.5, +0.4) → (0.6, 0.5)
+        ["t1", { kind: "text", point: { x: 0.6, y: 0.5 } }],
+        // Translate t2 by (+0.5, +0.4) → (0.7, 0.6)
+        ["t2", { kind: "text", point: { x: 0.7, y: 0.6 } }]
+        // t3 intentionally OMITTED — its row should stay at the
+        // persisted point. Multi-drag entries are per-layer; a
+        // partial multi-select doesn't move unselected siblings.
+      ])
+    );
+    const w1 = findWrapper("first");
+    const w2 = findWrapper("second");
+    const w3 = findWrapper("third");
+    expect(w1.style.left).toBe("60%");
+    expect(w1.style.top).toBe("50%");
+    expect(w2.style.left).toBe("70%");
+    expect(w2.style.top).toBe("60%");
+    // Untouched row stays put.
+    expect(w3.style.left).toBe("30%");
+    expect(w3.style.top).toBe("30%");
+  });
+
+  test("empty override Map is the same as null (no projection)", async () => {
+    // Defensive: a size-0 Map can show up briefly during gesture
+    // wind-down. The projection should short-circuit identically to
+    // null so we don't allocate a fresh `effectiveOverlays` array
+    // for nothing.
+    const row = textRow("t1", { point: { x: 0.4, y: 0.5 } });
+    await render([row], null, new Map());
+    expect(wrapperLeftTop()).toEqual({ left: "40%", top: "50%" });
   });
 });
 

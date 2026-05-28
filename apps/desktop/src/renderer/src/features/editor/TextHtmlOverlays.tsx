@@ -40,23 +40,27 @@ export interface TextHtmlOverlaysProps {
    *  display + edit consume the same value. Drives fontPx via
    *  computeTextHtmlStyle. */
   canvasCssHeight: number;
-  /** Live-drag geometry override — same shape OverlaySvg / BlurOverlays
-   *  consume. When a rotation handle / body drag / resize is in flight,
-   *  the matching text row renders with the in-progress geometry
-   *  instead of its persisted `data.*` fields. Without this the
-   *  SelectionOutline (SVG, gets the override) rotated/translated
-   *  during a drag while the HTML glyph (no override) stayed put —
-   *  visible divergence the user reported as "text rotation is not
-   *  live anymore" and "the glyph snaps on pointerup". Cleared by the
-   *  parent on drag end. */
-  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
+  /** Live-drag geometry override — Map of layer id → in-progress
+   *  geometry. Same shape OverlaySvg / BlurOverlays consume. When
+   *  a rotation handle / body drag / resize is in flight (or the
+   *  multi-drag gesture is translating a group), the matching text
+   *  row(s) render with the in-progress geometry instead of their
+   *  persisted `data.*` fields. Single-select drag passes a 1-entry
+   *  map; multi-drag passes one entry per selected text layer.
+   *  Without this the SelectionOutline (SVG, gets the override)
+   *  rotated/translated during a drag while the HTML glyph (no
+   *  override) stayed put — visible divergence the user reported
+   *  as "text rotation is not live anymore" and "it just jumps
+   *  them on release". Cleared by the parent on drag end. */
+  liveOverride?: ReadonlyMap<string, GeometryUpdate> | null;
 }
 
 export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
-  // Project the live-drag override onto the matching row's data so the
-  // text glyph follows the user's gesture in real time. Goes through
-  // the shared `applyGeometryLocally` helper so the merge shape stays
-  // identical to OverlaySvg / BlurOverlays — same contract one place.
+  // Project the live-drag override onto each matching row's data so
+  // the text glyph follows the user's gesture in real time. Goes
+  // through the shared `applyGeometryLocally` helper so the merge
+  // shape stays identical to OverlaySvg / BlurOverlays — same
+  // contract one place.
   //
   // Memoized so that during a rotation drag every pointermove (= new
   // `liveOverride` reference) doesn't force the downstream `texts.map`
@@ -64,11 +68,14 @@ export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
   // two axes the projection actually depends on.
   const effectiveOverlays = useMemo(() => {
     const override = props.liveOverride;
-    if (override === undefined || override === null) return props.overlays;
+    if (override === undefined || override === null || override.size === 0) {
+      return props.overlays;
+    }
     return props.overlays.map((row) => {
-      if (row.id !== override.layerId) return row;
+      const geom = override.get(row.id);
+      if (geom === undefined) return row;
       if (row.data.kind !== "text") return row;
-      const merged = applyGeometryLocally(row.data, override.geometry);
+      const merged = applyGeometryLocally(row.data, geom);
       if (merged === null || merged.kind !== "text") return row;
       return { ...row, data: merged };
     });

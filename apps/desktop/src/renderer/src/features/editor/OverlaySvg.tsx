@@ -107,13 +107,20 @@ export function OverlaySvg({
    *  pass the prop keep working. */
   selectedLayerIds?: readonly string[];
   /** Live-drag geometry override. When set, the row whose id matches
-   *  `layerId` is rendered with the overridden geometry instead of
-   *  its persisted `data.*` fields — so e.g. an arrow's endpoint
-   *  visibly follows the cursor during a TransformHandles drag,
-   *  rather than staying at its old position until pointerup commits.
-   *  Cleared by the parent on drag end. The selection outline also
-   *  follows the override (drawn from the overridden box). */
-  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
+   *  `id` IS A KEY in the map is rendered with the overridden
+   *  geometry instead of its persisted `data.*` fields — so e.g.
+   *  an arrow's endpoint visibly follows the cursor during a
+   *  TransformHandles drag, rather than staying at its old position
+   *  until pointerup commits. Cleared by the parent on drag end.
+   *  The selection outline also follows the override (drawn from
+   *  the overridden box).
+   *
+   *  Map shape (vs the previous single-id object) so multi-drag —
+   *  the gesture that translates an entire multi-selection in one
+   *  go — can paint N concurrent previews through the same renderer
+   *  contract. Single-select drags pass a 1-entry map; the kind-
+   *  bucket projections below don't care about the cardinality. */
+  liveOverride?: ReadonlyMap<string, GeometryUpdate> | null;
 }): ReactElement {
   // Blur overlays render outside this SVG via <BlurOverlays> — HTML
   // divs with backdrop-filter, so the live preview ACTUALLY blurs
@@ -136,10 +143,11 @@ export function OverlaySvg({
   // this the underlying arrow / rect stays at its pre-drag position
   // and the user sees "the line vanishes" until pointerup.
   const effectiveOverlays = useMemo(() => {
-    if (liveOverride === null) return overlays;
+    if (liveOverride === null || liveOverride.size === 0) return overlays;
     return overlays.map((row) => {
-      if (row.id !== liveOverride.layerId) return row;
-      const merged = applyGeometryLocally(row.data, liveOverride.geometry);
+      const geom = liveOverride.get(row.id);
+      if (geom === undefined) return row;
+      const merged = applyGeometryLocally(row.data, geom);
       if (merged === null) return row;
       return { ...row, data: merged };
     });

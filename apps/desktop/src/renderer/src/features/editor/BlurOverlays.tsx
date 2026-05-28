@@ -31,34 +31,37 @@ export function BlurOverlays({
    *  committed. Committed overlays read their own style off
    *  `row.data.style`. */
   blurStyle: BlurStyle;
-  /** Live-drag geometry override (same shape as OverlaySvg's).
+  /** Live-drag geometry override — Map of layer id → in-progress
+   *  geometry. Same shape OverlaySvg / TextHtmlOverlays consume.
    *  When the matching row is a blur and the override's geometry
    *  is `kind: "rect"`, the blur item renders at the overridden
-   *  rect so a TransformHandles drag visually moves / resizes the
-   *  blur in real time. */
-  liveOverride?: { layerId: string; geometry: GeometryUpdate } | null;
+   *  rect so a TransformHandles drag (single-select) OR a multi-
+   *  drag (group translation) visually moves / resizes the blur in
+   *  real time. Single-select passes a 1-entry map; multi-drag
+   *  passes one entry per selected blur layer. */
+  liveOverride?: ReadonlyMap<string, GeometryUpdate> | null;
 }): ReactElement {
   const effectiveOverlays = useMemo(() => {
-    if (liveOverride === null) return overlays;
-    const geom = liveOverride.geometry;
-    if (geom.kind !== "rect") return overlays;
-    // Hoist the narrowed geometry into a local so the closure below
-    // preserves the discriminator — TS doesn't carry refinement across
-    // the `.map` callback. Carry through the rotation from the live
-    // override so the in-progress rotation-handle drag updates the
-    // CSS transform in real time.
-    const overrideRect = geom.rect;
-    const overrideRotation = geom.rotation;
-    const overrideLayerId = liveOverride.layerId;
+    if (liveOverride === null || liveOverride.size === 0) return overlays;
     return overlays.map((row) => {
-      if (row.id !== overrideLayerId) return row;
+      const geom = liveOverride.get(row.id);
+      if (geom === undefined) return row;
+      // Blur is rect-shaped, so a non-rect geometry update (text /
+      // arrow / step) for the same id can't apply here. Pass through
+      // unchanged in that case — the row is probably a non-blur kind
+      // that the override is meant for elsewhere (OverlaySvg /
+      // TextHtmlOverlays handle it).
+      if (geom.kind !== "rect") return row;
       if (row.data.kind !== "blur") return row;
+      // Carry through the rotation from the live override so the
+      // in-progress rotation-handle drag updates the CSS transform
+      // in real time.
       return {
         ...row,
         data: {
           ...row.data,
-          rect: overrideRect,
-          ...(overrideRotation !== undefined ? { rotation: overrideRotation } : {})
+          rect: geom.rect,
+          ...(geom.rotation !== undefined ? { rotation: geom.rotation } : {})
         }
       };
     });

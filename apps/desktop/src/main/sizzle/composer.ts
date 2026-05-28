@@ -273,6 +273,11 @@ export function buildCompositionArgs(
     // libx264 (GPL — issue #127 tracks switching the bundled binary).
     "-c:v",
     "h264_videotoolbox",
+    // GitHub-hosted macOS runners sometimes cannot allocate a hardware
+    // VideoToolbox compression session. Allow VideoToolbox to fall back to
+    // Apple's software encoder instead of failing the render.
+    "-allow_sw",
+    "1",
     "-q:v",
     "45",
     "-pix_fmt",

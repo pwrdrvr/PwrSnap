@@ -366,6 +366,9 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
     const codecIdx = args.indexOf("-c:v");
     expect(codecIdx).toBeGreaterThan(0);
     expect(args[codecIdx + 1]).toBe("h264_videotoolbox");
+    const allowSwIdx = args.indexOf("-allow_sw");
+    expect(allowSwIdx).toBeGreaterThan(codecIdx);
+    expect(args[allowSwIdx + 1]).toBe("1");
     expect(args).not.toContain("libx264");
     expect(args).not.toContain("libx265");
     // Audio codec is ffmpeg's native (LGPL), not libfdk-aac (nonfree).

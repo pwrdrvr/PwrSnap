@@ -1931,6 +1931,427 @@ describe("useCaptureModel", () => {
     expect(sentReq.bumpZIndexToMax).not.toBe(true);
   });
 
+  test("13j. v2 multi-drag preserves EACH layer's distinct z_index across the sequence", async () => {
+    // Multi-drag is the user-facing pointerup commit at the end of a
+    // group drag. It dispatches updateGeometry per selected layer in
+    // a coalesced bracket. The contract: each dispatch must carry its
+    // OWN layer's z_index — a sent-to-back rect in a multi-selection
+    // with a top-of-stack arrow must NOT get the arrow's z_index, and
+    // neither layer should be auto-bumped.
+    //
+    // We model the multi-drag as three sequential dispatchEdit calls
+    // (the renderer's commit loop runs them serially via for-of). The
+    // mock layers:list state advances after each dispatch so the
+    // dispatcher's `layersRef.current.find(...)` sees the latest list
+    // — matches the broadcast → refetch cycle that lands between
+    // dispatches in production.
+    const record = makeRecord("cap_2", 2);
+    function mkLayer(id: string, zIndex: number): BundleLayerNode {
+      return {
+        id,
+        parent_id: null,
+        name: "Arrow",
+        visible: true,
+        locked: false,
+        opacity: 1,
+        blend_mode: "normal",
+        transform: [1, 0, 0, 1, 0, 0],
+        z_index: zIndex,
+        source: "user",
+        ai_run_id: null,
+        applied_at: "2026-05-24T00:00:00Z",
+        rejected_at: null,
+        superseded_by: null,
+        created_at: "2026-05-24T00:00:00Z",
+        kind: "vector",
+        shape: {
+          kind: "arrow",
+          from: { x: 0.1, y: 0.1 },
+          to: { x: 0.4, y: 0.4 },
+          color: "auto"
+        }
+      };
+    }
+    const a = mkLayer("ly_md_a", 0); // Sent to Back
+    const b = mkLayer("ly_md_b", 2000); // Mid-stack
+    const c = mkLayer("ly_md_c", 5000); // Near top
+    let liveLayers = [a, b, c];
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: liveLayers });
+      if (name === "layers:delete") {
+        const r = req as { id: string };
+        liveLayers = liveLayers.filter((l) => l.id !== r.id);
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode };
+        liveLayers = [...liveLayers, r.layer];
+        return Promise.resolve({ ok: true, value: r.layer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Drag the WHOLE group by (+0.1, +0.1). The renderer's commit
+    // helper translates each snapshot's geometry by the delta and
+    // dispatches updateGeometry per layer.
+    for (const layer of [a, b, c]) {
+      if (layer.kind !== "vector" || layer.shape.kind !== "arrow") continue;
+      const r = await m.dispatchEdit({
+        kind: "updateGeometry",
+        layerId: layer.id,
+        geometry: {
+          kind: "arrow",
+          from: { x: layer.shape.from.x + 0.1, y: layer.shape.from.y + 0.1 },
+          to: { x: layer.shape.to.x + 0.1, y: layer.shape.to.y + 0.1 }
+        }
+      });
+      expect(r.ok).toBe(true);
+    }
+
+    // Three layers:upsert calls, each carrying its OWN original z_index.
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(upserts.length).toBe(3);
+    const sentZIndexes = upserts.map(
+      (call) =>
+        (call[1] as { layer: BundleLayerNode }).layer.z_index
+    );
+    expect(sentZIndexes).toEqual([0, 2000, 5000]);
+    // NONE of the dispatches request auto-bump — multi-drag is an
+    // update-in-place, not a fresh draw.
+    for (const call of upserts) {
+      const req = call[1] as { bumpZIndexToMax?: boolean };
+      expect(req.bumpZIndexToMax).not.toBe(true);
+    }
+  });
+
+  test("13k. v1 multi-drag preserves EACH overlay's distinct z_index across the sequence", async () => {
+    // v1 mirror of 13j. Same shape: per-row updateGeometry dispatches
+    // each forward their CURRENT row's z_index to overlays:upsert.
+    const record = makeRecord("cap_1", 1);
+    function mkRow(id: string, zIndex: number): OverlayRow {
+      return { ...makeOverlayRow(id, "cap_1"), z_index: zIndex };
+    }
+    const a = mkRow("ov_md_a", 0);
+    const b = mkRow("ov_md_b", 2000);
+    const c = mkRow("ov_md_c", 5000);
+    let liveRows = [a, b, c];
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: liveRows });
+      if (name === "overlays:delete") {
+        const r = req as { id: string };
+        liveRows = liveRows.filter((o) => o.id !== r.id);
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown; zIndex?: number };
+        const newRow: OverlayRow = {
+          ...makeOverlayRow(`${liveRows.length}`, "cap_1"),
+          data: r.overlay as OverlayRow["data"],
+          ...(r.zIndex !== undefined ? { z_index: r.zIndex } : {})
+        };
+        liveRows = [...liveRows, newRow];
+        return Promise.resolve({ ok: true, value: newRow });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+
+    for (const row of [a, b, c]) {
+      if (row.data.kind !== "arrow") continue;
+      const result = await m.dispatchEdit({
+        kind: "updateGeometry",
+        layerId: row.id,
+        geometry: {
+          kind: "arrow",
+          from: { x: row.data.from.x + 0.1, y: row.data.from.y + 0.1 },
+          to: { x: row.data.to.x + 0.1, y: row.data.to.y + 0.1 }
+        }
+      });
+      expect(result.ok).toBe(true);
+    }
+
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upserts.length).toBe(3);
+    const sentZIndexes = upserts.map(
+      (call) => (call[1] as { zIndex?: number }).zIndex
+    );
+    expect(sentZIndexes).toEqual([0, 2000, 5000]);
+  });
+
+  test("13l. v2 Send-to-Back → drag-drop end-to-end: z_index stays at 0 across the full sequence", async () => {
+    // The user's exact repro flow: "I right-clicked the rotated red
+    // rectangle and chose Send to Back. I dragged it. It jumped in
+    // front of the arrows on release."
+    //
+    // Sequence:
+    //   1. Initial state: rect at z_index = 5000 (created via fresh
+    //      draw, auto-bumped to top).
+    //   2. dispatchEdit({ kind: "reorder", layerId, zIndex: 0 })
+    //      → layers:reorder → rect's z_index becomes 0 in the live
+    //      list.
+    //   3. dispatchEdit({ kind: "updateGeometry", layerId, geometry })
+    //      → layers:delete + layers:upsert with merged.z_index = 0
+    //      and NO bumpZIndexToMax flag → the inserted row preserves 0.
+    //
+    // The mock state advances after each dispatch so the dispatcher
+    // sees the latest list (matches the broadcast → refetch cycle).
+    // This locks the FULL user-facing flow, not just the dispatcher's
+    // outgoing payload in isolation.
+    const record = makeRecord("cap_2", 2);
+    const initialRect: BundleLayerNode = {
+      id: "ly_stb_flow",
+      parent_id: null,
+      name: "Rect",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 5000, // Created via fresh draw, auto-bumped to top
+      source: "user",
+      ai_run_id: null,
+      applied_at: "2026-05-24T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      created_at: "2026-05-24T00:00:00Z",
+      kind: "vector",
+      shape: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
+        color: "auto"
+      }
+    };
+    let liveLayers: BundleLayerNode[] = [initialRect];
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "layers:list") return Promise.resolve({ ok: true, value: liveLayers });
+      if (name === "layers:reorder") {
+        // layers:reorder is an in-place z_index UPDATE — mirror that
+        // by mutating the layer's z_index in our live list.
+        const r = req as { id: string; zIndex: number };
+        liveLayers = liveLayers.map((l) =>
+          l.id === r.id ? { ...l, z_index: r.zIndex } : l
+        );
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "layers:delete") {
+        const r = req as { id: string };
+        liveLayers = liveLayers.filter((l) => l.id !== r.id);
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "layers:upsert") {
+        const r = req as { layer: BundleLayerNode; bumpZIndexToMax?: boolean };
+        // Mirror the post-fix layers-repo behavior: when
+        // bumpZIndexToMax !== true, store node.z_index verbatim.
+        const storedLayer: BundleLayerNode = { ...r.layer };
+        liveLayers = [...liveLayers, storedLayer];
+        return Promise.resolve({ ok: true, value: storedLayer });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_2",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 2) throw new Error("unexpected model");
+
+    // Step 1: Send to Back → reorder dispatches zIndex: 0.
+    const reorderResult = await m.dispatchEdit({
+      kind: "reorder",
+      layerId: "ly_stb_flow",
+      zIndex: 0
+    });
+    expect(reorderResult.ok).toBe(true);
+    // Sanity check the mock state: rect now at z_index 0 in live list.
+    const afterReorder = liveLayers.find((l) => l.id === "ly_stb_flow");
+    expect(afterReorder?.z_index).toBe(0);
+
+    // Simulate the post-reorder broadcast → refetch → state update.
+    // In production this is `events:overlays:changed` fired by BOTH
+    // overlays-handlers AND layers-handlers (see useCaptureModel's
+    // subscription comment); the test harness synthesizes it via the
+    // `broadcast` helper so the dispatcher's `layersRef` picks up
+    // the post-reorder z_index. Without this, the subsequent
+    // updateGeometry would see the STALE cached layer
+    // (z_index = 5000) and preserve that — still correct contract
+    // behavior (preserve current.z_index), but tests the wrong
+    // scenario. The user's bug specifically needs the broadcast to
+    // have landed: they wait between Send-to-Back and the drag.
+    await act(async () => {
+      broadcast("events:overlays:changed", { captureId: record.id });
+      await Promise.resolve();
+    });
+
+    // Step 2: Drag-drop → updateGeometry.
+    const dragResult = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ly_stb_flow",
+      geometry: {
+        kind: "rect",
+        rect: { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }
+      }
+    });
+    expect(dragResult.ok).toBe(true);
+    if (!dragResult.ok) throw new Error("unreachable");
+    expect(dragResult.value.kind).toBe("update");
+
+    // The freshly-inserted layer (different id, same logical row) must
+    // still be at z_index = 0. Pre-fix it would be auto-bumped to
+    // MAX + GAP = 1000 (since the old layer was already deleted by
+    // the time MAX was computed, but for safety the test asserts
+    // strictly: the new row IS at z_index 0).
+    if (dragResult.value.kind !== "update") throw new Error("unreachable");
+    if (dragResult.value.artifact.format !== 2) throw new Error("unreachable");
+    expect(dragResult.value.artifact.node.z_index).toBe(0);
+
+    // The dispatched layers:upsert call must NOT have requested
+    // auto-bump (that's the load-bearing contract bit the user's
+    // bug exposed).
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
+    expect(upserts.length).toBe(1);
+    const sentReq = upserts[0]?.[1] as {
+      layer: BundleLayerNode;
+      bumpZIndexToMax?: boolean;
+    };
+    expect(sentReq.layer.z_index).toBe(0);
+    expect(sentReq.bumpZIndexToMax).not.toBe(true);
+  });
+
+  test("13m. v1 Send-to-Back → drag-drop end-to-end: z_index stays at 0 across the full sequence", async () => {
+    // v1 mirror of 13l. Same flow: overlays:reorder → updateGeometry's
+    // overlays:delete + overlays:upsert. The dispatcher reads
+    // current.z_index from the LIVE row (post-reorder = 0) and
+    // forwards it on the upsert.
+    const record = makeRecord("cap_1", 1);
+    const initialRow: OverlayRow = {
+      ...makeOverlayRow("ov_stb_flow", "cap_1"),
+      data: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
+        color: "auto"
+      },
+      z_index: 5000
+    };
+    let liveRows: OverlayRow[] = [initialRow];
+    dispatchMock.mockImplementation((name: string, req: unknown) => {
+      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
+      if (name === "overlays:list") return Promise.resolve({ ok: true, value: liveRows });
+      if (name === "overlays:reorder") {
+        const r = req as { id: string; zIndex: number };
+        liveRows = liveRows.map((o) =>
+          o.id === r.id ? { ...o, z_index: r.zIndex } : o
+        );
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "overlays:delete") {
+        const r = req as { id: string };
+        liveRows = liveRows.filter((o) => o.id !== r.id);
+        return Promise.resolve({ ok: true, value: undefined });
+      }
+      if (name === "overlays:upsert") {
+        const r = req as { overlay: unknown; zIndex?: number };
+        // Mirror post-fix overlays-repo: when zIndex is present, store
+        // it verbatim; omitted → auto-bump (not exercised here).
+        const newRow: OverlayRow = {
+          ...makeOverlayRow(`ov_new_${liveRows.length}`, "cap_1"),
+          data: r.overlay as OverlayRow["data"],
+          ...(r.zIndex !== undefined ? { z_index: r.zIndex } : {})
+        };
+        liveRows = [...liveRows, newRow];
+        return Promise.resolve({ ok: true, value: newRow });
+      }
+      return Promise.resolve({ ok: true, value: null });
+    });
+
+    let model: CaptureModel | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap_1",
+        onSnapshot: (m) => {
+          model = m;
+        }
+      })
+    );
+    await flush();
+    const m = model!;
+    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
+
+    // Step 1: Send to Back.
+    const reorderResult = await m.dispatchEdit({
+      kind: "reorder",
+      layerId: "ov_stb_flow",
+      zIndex: 0
+    });
+    expect(reorderResult.ok).toBe(true);
+    const afterReorder = liveRows.find((r) => r.id === "ov_stb_flow");
+    expect(afterReorder?.z_index).toBe(0);
+
+    // Same broadcast simulation as 13l. See its comment for the
+    // rationale on why the broadcast must land before the drag for
+    // this test to exercise the user's actual flow.
+    await act(async () => {
+      broadcast("events:overlays:changed", { captureId: record.id });
+      await Promise.resolve();
+    });
+
+    // Step 2: Drag-drop.
+    const dragResult = await m.dispatchEdit({
+      kind: "updateGeometry",
+      layerId: "ov_stb_flow",
+      geometry: {
+        kind: "rect",
+        rect: { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }
+      }
+    });
+    expect(dragResult.ok).toBe(true);
+    if (!dragResult.ok) throw new Error("unreachable");
+    if (dragResult.value.kind !== "update") throw new Error("unreachable");
+    if (dragResult.value.artifact.format !== 1) throw new Error("unreachable");
+    // The new row (different id, same logical row) must still be at z=0.
+    expect(dragResult.value.artifact.row.z_index).toBe(0);
+
+    // The overlays:upsert call must carry zIndex: 0 explicitly.
+    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
+    expect(upserts.length).toBe(1);
+    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
+    expect(sentReq.zIndex).toBe(0);
+  });
+
   test("12. invalid bundle_format_version (99) returns error", async () => {
     const record = makeRecord("cap_weird", 99);
     dispatchMock.mockImplementation((name: string) => {

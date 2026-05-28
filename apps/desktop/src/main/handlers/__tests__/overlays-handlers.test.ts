@@ -142,3 +142,143 @@ describe("overlays:reorder zIndex validation", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("overlays:upsert zIndex validation", () => {
+  // PR #150 follow-up: the new `zIndex?: number` field on
+  // overlays:upsert (used by updateGeometry / updateOverlay / undo
+  // restore to preserve a row's stacking position across the delete-
+  // plus-insert) needs the same finite guard as overlays:reorder.
+  // Without it, a bad caller could land NaN/Infinity in SQLite's REAL
+  // column → broken ORDER BY z_index for the whole capture.
+
+  // Seed a v1 capture so the handler's refuseIfV2Capture guard passes
+  // (the validator runs BEFORE that check ordering-wise, so this is
+  // belt-and-suspenders — the validator MUST short-circuit on bad
+  // zIndex before the v2 guard runs).
+  function seedV1Capture(): void {
+    testDb
+      .prepare(
+        `INSERT INTO captures (
+          id, kind, captured_at,
+          source_app_bundle_id, source_app_name,
+          legacy_src_path, bundle_path, flat_png_path,
+          bundle_modified_at, bundle_format_version, bundle_edits_version,
+          width_px, height_px, device_pixel_ratio,
+          byte_size, sha256, edits_version, deleted_at
+        ) VALUES (
+          @id, 'image', '2026-05-24T12:00:00.000Z',
+          NULL, NULL,
+          '/tmp/x.png', NULL, NULL,
+          '2026-05-24T12:00:00.000Z', 1, 0,
+          1000, 1000, 2,
+          1000, @sha, 0, NULL
+        )`
+      )
+      .run({ id: "cap_v1_upsert", sha: "sha_v1_upsert" });
+  }
+
+  const validOverlay = {
+    kind: "arrow" as const,
+    from: { x: 0.1, y: 0.1 },
+    to: { x: 0.9, y: 0.9 },
+    color: "auto" as const
+  };
+
+  test("rejects NaN zIndex with schema_mismatch", async () => {
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      { captureId: "cap_v1_upsert", overlay: validOverlay, zIndex: Number.NaN },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected err");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("schema_mismatch");
+    expect(result.error.message).toContain("zIndex must be finite");
+  });
+
+  test("rejects Infinity zIndex with schema_mismatch", async () => {
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      {
+        captureId: "cap_v1_upsert",
+        overlay: validOverlay,
+        zIndex: Number.POSITIVE_INFINITY
+      },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected err");
+    expect(result.error.code).toBe("schema_mismatch");
+  });
+
+  test("rejects -Infinity zIndex with schema_mismatch", async () => {
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      {
+        captureId: "cap_v1_upsert",
+        overlay: validOverlay,
+        zIndex: Number.NEGATIVE_INFINITY
+      },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected err");
+    expect(result.error.code).toBe("schema_mismatch");
+  });
+
+  test("accepts finite zIndex (passes validator → reaches insertOverlay with preserve hint)", async () => {
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      { captureId: "cap_v1_upsert", overlay: validOverlay, zIndex: 2500 },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    // The inserted row has the caller-supplied zIndex preserved.
+    expect(result.value.z_index).toBe(2500);
+  });
+
+  test("accepts zero zIndex (the Send-to-Back regression — must NOT trigger auto-bump)", async () => {
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      { captureId: "cap_v1_upsert", overlay: validOverlay, zIndex: 0 },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.z_index).toBe(0);
+  });
+
+  test("omitted zIndex preserves the legacy fresh-draw auto-bump path", async () => {
+    // No zIndex field on the request → handler doesn't pass it to
+    // insertOverlay → repo's monotonic auto-bump fires → first row
+    // in an empty capture lands at z = 0 (MAX of empty set + GAP,
+    // which the repo emits as 0 — see overlays-repo first-row
+    // assignment).
+    seedV1Capture();
+    const result = await bus.dispatch(
+      "overlays:upsert",
+      { captureId: "cap_v1_upsert", overlay: validOverlay },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.z_index).toBe(0);
+
+    // Insert a SECOND row without zIndex → auto-bumped above row 1.
+    const result2 = await bus.dispatch(
+      "overlays:upsert",
+      { captureId: "cap_v1_upsert", overlay: validOverlay },
+      { principal: "ipc" }
+    );
+    expect(result2.ok).toBe(true);
+    if (!result2.ok) throw new Error("expected ok");
+    expect(result2.value.z_index).toBeGreaterThan(0);
+  });
+});

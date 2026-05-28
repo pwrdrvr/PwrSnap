@@ -379,32 +379,27 @@ function RotatedEffectCanvas({
     if (canvas === null || img === null) return;
 
     const draw = (): void => {
-      // Per-style canvas internal resolution + draw:
-      //   gaussian → AABB-display-px (1:1 with the canvas's CSS size).
-      //   pixelate → coarse-grid AABB-display-px / blockSize, like
-      //              the unrotated PixelateMosaicCanvas. Browser
-      //              upscales nearest-neighbor via image-rendering.
-      // Block-size formula matches the bake's pixelate at the AABB
-      // dims (sharp uses min(w, h) of the extracted AABB).
+      // Both styles use a canvas at FULL AABB resolution so the
+      // canvas's internal grid matches its CSS display grid 1:1.
+      // Earlier draft sized the pixelate canvas to the coarse-grid
+      // dims (15×15ish) and relied on `image-rendering: pixelated`
+      // for the upscale — but that interacted badly with
+      // `clip-path: polygon(...)` in Chromium (user report on PR
+      // #148: rotated pixelate showed un-rotated content rotated,
+      // while same-pipeline rotated gaussian worked fine).
+      //
+      // New approach mirrors `compose-tree.ts`'s pixelate path
+      // EXACTLY: downsample to a coarse grid in an off-screen
+      // canvas, then NEAREST-NEIGHBOR stamp back up to the full
+      // resolution canvas. The MAIN canvas is always at full AABB
+      // res so clip-path always sees a proper-sized pixel grid.
       const aabbW = Math.max(1, Math.round(aabb.aabbW));
       const aabbH = Math.max(1, Math.round(aabb.aabbH));
-      let internalW: number;
-      let internalH: number;
-      if (style === "pixelate") {
-        const shortSide = Math.min(aabbW, aabbH);
-        const blockSizePx = Math.max(4, Math.round(shortSide / 16));
-        internalW = Math.max(1, Math.floor(aabbW / blockSizePx));
-        internalH = Math.max(1, Math.floor(aabbH / blockSizePx));
-      } else {
-        // gaussian: full AABB resolution; CSS doesn't upscale.
-        internalW = aabbW;
-        internalH = aabbH;
-      }
-      canvas.width = internalW;
-      canvas.height = internalH;
+      canvas.width = aabbW;
+      canvas.height = aabbH;
       const ctx = canvas.getContext("2d");
       if (ctx === null) return;
-      ctx.clearRect(0, 0, internalW, internalH);
+      ctx.clearRect(0, 0, aabbW, aabbH);
 
       // Source coords → image NATURAL pixels. Editor's <img> is sized
       // so source-raster coords map 1:1 to canvas-pixel coords AT
@@ -429,21 +424,32 @@ function RotatedEffectCanvas({
           aabb.aabbH * scaleY,
           0,
           0,
-          internalW,
-          internalH
+          aabbW,
+          aabbH
         );
-        // Reset filter so any subsequent draws (none today) aren't
-        // accidentally blurred.
         ctx.filter = "none";
       } else {
-        // pixelate: downsample the AABB region into the coarse grid;
-        // CSS image-rendering: pixelated does the nearest-neighbor
-        // upscale at display time. Matches the bake's
-        //   downsample → resize(w, h, kernel: "nearest")
-        // path block-for-block.
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(
+        // pixelate: bake's algorithm exactly.
+        //   1. Off-screen canvas at coarse-grid dims (downW × downH).
+        //   2. drawImage source AABB → off-screen canvas with bicubic
+        //      smoothing (averages within each block).
+        //   3. drawImage off-screen → main canvas at AABB dims with
+        //      smoothing DISABLED (= nearest-neighbor stamp).
+        //
+        // Block-size formula matches `compose-tree.ts`'s pixelate
+        // (sharp uses min(w, h) of the extracted AABB).
+        const shortSide = Math.min(aabbW, aabbH);
+        const blockSizePx = Math.max(4, Math.round(shortSide / 16));
+        const downW = Math.max(1, Math.floor(aabbW / blockSizePx));
+        const downH = Math.max(1, Math.floor(aabbH / blockSizePx));
+        const tiny = document.createElement("canvas");
+        tiny.width = downW;
+        tiny.height = downH;
+        const tinyCtx = tiny.getContext("2d");
+        if (tinyCtx === null) return;
+        tinyCtx.imageSmoothingEnabled = true;
+        tinyCtx.imageSmoothingQuality = "high";
+        tinyCtx.drawImage(
           img,
           aabb.aabbX * scaleX,
           aabb.aabbY * scaleY,
@@ -451,9 +457,16 @@ function RotatedEffectCanvas({
           aabb.aabbH * scaleY,
           0,
           0,
-          internalW,
-          internalH
+          downW,
+          downH
         );
+        // Nearest-neighbor stamp the coarse grid back to full size on
+        // the main canvas. Disabling imageSmoothing on a canvas2d
+        // context tells the browser to use NEAREST for subsequent
+        // drawImage scaling — exactly what `kernel: "nearest"` does
+        // in the bake's sharp.resize() upscale.
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tiny, 0, 0, downW, downH, 0, 0, aabbW, aabbH);
       }
     };
 
@@ -503,10 +516,6 @@ function RotatedEffectCanvas({
         top: `${(aabb.aabbY / canvasHeightPx) * 100}%`,
         width: `${(aabb.aabbW / canvasWidthPx) * 100}%`,
         height: `${(aabb.aabbH / canvasHeightPx) * 100}%`,
-        // Pixelate's coarse-grid canvas needs nearest-neighbor upscale
-        // to match the bake; gaussian's internal-res === display-res
-        // so this is a no-op for gaussian.
-        imageRendering: style === "pixelate" ? "pixelated" : undefined,
         // The mask: only the rotated-rect interior survives. AABB
         // corners outside the rotated rect get clipped to transparent.
         clipPath: `polygon(${polygonPoints})`

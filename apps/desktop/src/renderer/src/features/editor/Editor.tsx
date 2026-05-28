@@ -949,6 +949,34 @@ export function Editor({
   // per-layer style edits still require single-select; everything
   // else honours the full selection.
   const [selectedLayerIds, setSelectedLayerIds] = useState<readonly string[]>([]);
+  // IDs that we just set via `setSelectionTrustingDispatch` (nudge,
+  // paste, duplicate, create) but that may not yet have landed in
+  // `overlaysForRender` because the events:overlays:changed broadcast
+  // → refetch round-trip hadn't finished by the next render. The
+  // stale-id cleanup below skips removal of any id in this set so the
+  // selection isn't wiped between the dispatch resolving and the
+  // broadcast arriving. Each id is dropped from the set as soon as it
+  // appears in `alive` (= broadcast caught up).
+  //
+  // Without this, nudge looked broken: arrow-key dispatched, row id
+  // changed to a NEW value, setSelectedLayerIds([newId]) ran, render
+  // ran with overlaysForRender STILL pointing at the old row → the
+  // cleanup saw [newId] absent from alive → queueMicrotask wiped the
+  // selection → the user saw the layer move 1px and the grippers
+  // vanish. Subsequent arrow keys fell through to the Library reel.
+  const inFlightSelectionIdsRef = useRef<Set<string>>(new Set());
+  /** Replace selection with ids that just came back from a successful
+   *  dispatch. The ids exist in the DB but may not be in
+   *  `overlaysForRender` yet — the in-flight set keeps the cleanup
+   *  honest until the broadcast lands. */
+  const setSelectionTrustingDispatch = (newIds: readonly string[]): void => {
+    if (newIds.length > 0) {
+      const next = new Set(inFlightSelectionIdsRef.current);
+      for (const id of newIds) next.add(id);
+      inFlightSelectionIdsRef.current = next;
+    }
+    setSelectedLayerIds(newIds);
+  };
   // Convenience helpers for callers that don't want to manage the
   // readonly-array dance. Stable identity isn't required since they
   // call setState directly.
@@ -1692,7 +1720,7 @@ export function Editor({
         const wrote = await persistOverlay(translated);
         if (wrote.ok && wrote.newId !== "") newIds.push(wrote.newId);
       }
-      if (newIds.length > 0) setSelectedLayerIds(newIds);
+      if (newIds.length > 0) setSelectionTrustingDispatch(newIds);
     } finally {
       if (token !== null && end !== null) end(token);
     }
@@ -1729,7 +1757,7 @@ export function Editor({
           // OS clipboard had a fragment (or PNG fallback inserted a
           // raster layer). Select what landed so the user can
           // immediately nudge / re-style / delete it.
-          setSelectedLayerIds(result.value.insertedLayerIds);
+          setSelectionTrustingDispatch(result.value.insertedLayerIds);
           return;
         }
         // OS clipboard had nothing actionable — fall back to the
@@ -2049,12 +2077,37 @@ export function Editor({
   // (e.g. another window deleted them via the events:overlays:changed
   // broadcast, or the capture switched). Skip the setState when no
   // ids fell out — avoids a render loop.
-  if (selectedLayerIds.length > 0) {
+  //
+  // In-flight discipline: ids passed through
+  // `setSelectionTrustingDispatch` (post-nudge / paste / duplicate /
+  // create) are kept in `inFlightSelectionIdsRef` until they land in
+  // `alive`. Filter respects them so the cleanup doesn't wipe a
+  // just-dispatched selection while the broadcast is still mid-flight.
+  // Without this, every nudge wiped the selection the user just had
+  // (and the Library reel then stole the next arrow-key press).
+  if (selectedLayerIds.length > 0 || inFlightSelectionIdsRef.current.size > 0) {
     const alive = new Set(overlaysForRender.map((r) => r.id));
-    const filtered = selectedLayerIds.filter((id) => alive.has(id));
-    if (filtered.length !== selectedLayerIds.length) {
-      // Schedule via microtask so we don't setState during render.
-      queueMicrotask(() => setSelectedLayerIds(filtered));
+    const inFlight = inFlightSelectionIdsRef.current;
+    // Any in-flight id that has landed in alive = broadcast caught
+    // up. Drop those from the set so a LATER unrelated deletion can
+    // still kick them out of the selection via the normal path.
+    if (inFlight.size > 0) {
+      let landedCount = 0;
+      for (const id of inFlight) if (alive.has(id)) landedCount += 1;
+      if (landedCount > 0) {
+        const stillInFlight = new Set<string>();
+        for (const id of inFlight) if (!alive.has(id)) stillInFlight.add(id);
+        inFlightSelectionIdsRef.current = stillInFlight;
+      }
+    }
+    if (selectedLayerIds.length > 0) {
+      const filtered = selectedLayerIds.filter(
+        (id) => alive.has(id) || inFlightSelectionIdsRef.current.has(id)
+      );
+      if (filtered.length !== selectedLayerIds.length) {
+        // Schedule via microtask so we don't setState during render.
+        queueMicrotask(() => setSelectedLayerIds(filtered));
+      }
     }
   }
 
@@ -2150,6 +2203,7 @@ export function Editor({
       onEnsureV2Retry={ensureV2.retry}
       selectedLayerIds={selectedLayerIds}
       setSelectedLayerIds={setSelectedLayerIds}
+      setSelectionTrustingDispatch={setSelectionTrustingDispatch}
       primarySelectedLayerId={primarySelectedLayerId}
       deleteSelectedRef={deleteSelectedRef}
       nudgeSelectedRef={nudgeSelectedRef}
@@ -2198,6 +2252,7 @@ function EditorLoaded({
   onEnsureV2Retry,
   selectedLayerIds,
   setSelectedLayerIds,
+  setSelectionTrustingDispatch,
   primarySelectedLayerId,
   deleteSelectedRef,
   nudgeSelectedRef,
@@ -2275,6 +2330,16 @@ function EditorLoaded({
    *  re-anchor the selection on the new id after a successful
    *  updateGeometry / updateOverlay dispatch. */
   setSelectedLayerIds: (ids: readonly string[]) => void;
+  /** Like `setSelectedLayerIds` but also registers each id with the
+   *  outer in-flight set so the stale-id cleanup in the outer Editor
+   *  doesn't wipe a just-set selection while the
+   *  events:overlays:changed broadcast → refetch round-trip is still
+   *  pending. Use this from any post-dispatch path (nudge, paste,
+   *  duplicate, create — anything whose `result` carries fresh row
+   *  ids). Plain `setSelectedLayerIds` is fine for selections built
+   *  from ids that are already in `overlaysForRender` (e.g. Cmd+A,
+   *  click-to-select). */
+  setSelectionTrustingDispatch: (ids: readonly string[]) => void;
   /** Convenience derived value — the single selected id when exactly
    *  one overlay is selected, null otherwise. Drives single-selection-
    *  only surfaces (transform handles, popover-switches-to-selected-
@@ -2653,7 +2718,14 @@ function EditorLoaded({
         // bracket on user-initiated changes) doesn't tear down the
         // in-flight nudge burst. Reset by the effect on next run.
         nudgeAdvancingSelectionRef.current = true;
-        setSelectedLayerIds(newIds);
+        // Use the in-flight-aware setter — newIds come from the
+        // dispatch result (so they exist in the DB) but may not have
+        // landed in `overlaysForRender` by the next render, and the
+        // outer stale-id cleanup would otherwise wipe them. Without
+        // this the user saw the layer move 1px then the grippers
+        // vanish, and the next arrow-key was stolen by the Library
+        // reel because nothing was selected.
+        setSelectionTrustingDispatch(newIds);
       })();
     };
     return () => {
@@ -2666,7 +2738,7 @@ function EditorLoaded({
     dispatchEdit,
     record.width_px,
     record.height_px,
-    setSelectedLayerIds,
+    setSelectionTrustingDispatch,
     undo,
     undoApplyingRef,
     beginInteractionRef,
@@ -2803,7 +2875,14 @@ function EditorLoaded({
         // drags happen via TransformHandles which only renders for
         // single-select, so replacing (not merging) is correct here —
         // multi-select doesn't expose this code path today.
-        setSelectedLayerIds([newId]);
+        //
+        // Use the in-flight-aware setter — the newId is fresh from
+        // the dispatch but the events:overlays:changed (or v2's
+        // events:layers:changed) broadcast that adds it to
+        // `overlaysForRender` is still in flight, so the outer
+        // stale-id cleanup would wipe the selection (= grippers
+        // vanish mid-drag) without the in-flight bookkeeping.
+        setSelectionTrustingDispatch([newId]);
         // DON'T clear the live override here. Clearing immediately
         // produces a one-frame flash: at this point the dispatch has
         // resolved but the events:layers:changed (or v2's
@@ -2829,7 +2908,7 @@ function EditorLoaded({
         }
       })();
     },
-    [dispatchEdit, setSelectedLayerIds, undo, undoApplyingRef]
+    [dispatchEdit, setSelectionTrustingDispatch, undo, undoApplyingRef]
   );
 
   // Cleanup effect — drop the live override once the underlying row
@@ -2917,7 +2996,11 @@ function EditorLoaded({
         // Style edits go through onSelectedStyleFieldChange which is
         // single-selection-only (gated by selectedOverlayForHandles).
         // Replace, not merge — the new id supersedes the old.
-        setSelectedLayerIds([newId]);
+        //
+        // In-flight-aware setter so the outer stale-id cleanup doesn't
+        // wipe the selection between dispatch resolving and the
+        // broadcast landing — same race as the nudge / drag paths.
+        setSelectionTrustingDispatch([newId]);
         if (!undoApplyingRef.current) {
           // Capture the pre-edit value of the SAME field so undo
           // restores it. For nested objects the caller is expected to
@@ -2935,7 +3018,7 @@ function EditorLoaded({
         }
       })();
     },
-    [dispatchEdit, selectedOverlayForHandles, setSelectedLayerIds, undo, undoApplyingRef]
+    [dispatchEdit, selectedOverlayForHandles, setSelectionTrustingDispatch, undo, undoApplyingRef]
   );
 
   // ⌘0 / ⌘1 / ⌘+ / ⌘- keyboard shortcuts for zoom.

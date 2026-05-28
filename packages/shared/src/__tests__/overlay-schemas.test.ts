@@ -15,6 +15,7 @@ import {
   BlurOverlay,
   CropOverlay,
   DEFAULT_BLUR_STYLE,
+  deriveBlurRadiusPx,
   HighlightOverlay,
   Overlay,
   OVERLAY_RENDER_ORDER,
@@ -382,5 +383,43 @@ describe("TextOverlay sizePx (absolute text height in source pixels)", () => {
     expect(() => TextOverlay.parse({ ...base, sizePx: -5 })).toThrow();
     expect(() => TextOverlay.parse({ ...base, sizePx: NaN })).toThrow();
     expect(() => TextOverlay.parse({ ...base, sizePx: Infinity })).toThrow();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// deriveBlurRadiusPx — single source of truth, used by three call sites
+// (editor commit, v1→v2 doctor, editor canvas preview). A drift between
+// them was the kind of silent-WYSIWYG bug PR #129/#137/#147 spent
+// multiple review rounds untangling.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("deriveBlurRadiusPx — sigma derivation contract", () => {
+  test("matches the 1.5%-of-shortSide rule for typical capture dims", () => {
+    // 1920×1080 → shortSide=1080 → round(16.2) = 16
+    expect(deriveBlurRadiusPx({ width: 1920, height: 1080 })).toBe(16);
+    // 2880×1620 (Retina 1440×1620 logical) → shortSide=1620 → round(24.3) = 24
+    expect(deriveBlurRadiusPx({ width: 2880, height: 1620 })).toBe(24);
+    // 742×658 (the test capture in the user reports on PR #148) →
+    // shortSide=658 → round(9.87) = 10
+    expect(deriveBlurRadiusPx({ width: 742, height: 658 })).toBe(10);
+  });
+
+  test("floors at 8px so tiny rects don't smooth out below recognizability", () => {
+    // shortSide=400 → 1.5% = 6 → floor lifts to 8
+    expect(deriveBlurRadiusPx({ width: 400, height: 800 })).toBe(8);
+    // shortSide=100 → 1.5% = 1.5 → floor lifts to 8
+    expect(deriveBlurRadiusPx({ width: 100, height: 100 })).toBe(8);
+  });
+
+  test("caps at 200px to match the v2 BlurEffect.radius_px schema bound", () => {
+    // shortSide=20000 → 1.5% = 300 → cap to 200
+    expect(deriveBlurRadiusPx({ width: 30000, height: 20000 })).toBe(200);
+  });
+
+  test("uses MIN(width, height) as the short side, not max", () => {
+    // Wide capture (height is short side)
+    expect(deriveBlurRadiusPx({ width: 3000, height: 600 })).toBe(9); // round(600*0.015)
+    // Tall capture (width is short side)
+    expect(deriveBlurRadiusPx({ width: 600, height: 3000 })).toBe(9);
   });
 });

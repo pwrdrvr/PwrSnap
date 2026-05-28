@@ -4042,6 +4042,10 @@ function EditorLoaded({
             editorImageRef={editorImageRef}
             canvasWidthPx={record.width_px}
             canvasHeightPx={record.height_px}
+            sourceWidthPx={sourceWidthPx}
+            sourceHeightPx={sourceHeightPx}
+            rasterTranslateXPx={rasterTranslateXPx}
+            rasterTranslateYPx={rasterTranslateYPx}
           />
           <OverlaySvg
             overlays={overlays}

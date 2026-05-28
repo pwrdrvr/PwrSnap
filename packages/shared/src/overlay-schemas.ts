@@ -362,6 +362,31 @@ export function readBlurStyle(
   return data.style ?? DEFAULT_BLUR_STYLE;
 }
 
+/** Canonical blur sigma derivation: **1.5% of the canvas short-side**
+ *  with an 8px floor and the v2 `BlurEffect.radius_px` schema cap of
+ *  200 applied at the top.
+ *
+ *  The single source of truth for three call sites that previously
+ *  re-implemented the same formula:
+ *
+ *   - `overlayToLayer.ts deriveBlurRadiusPx` (renderer — fresh blur
+ *      committed via the editor blur tool)
+ *   - `v1-to-v2-doctor.ts deriveBlurRadiusPx` (main — v1→v2 migration
+ *      of legacy blur overlays)
+ *   - `BlurOverlays.tsx deriveBlurSigmaPx` (renderer — editor canvas
+ *      preview for rotated gaussian blurs)
+ *
+ *  All three must use the same radius so the editor preview matches
+ *  the bake's blur strength, and a re-bake produces the same output
+ *  regardless of whether the row was created freshly in v2 or
+ *  doctored up from v1. Drift between copies was the kind of
+ *  silent-WYSIWYG bug PR #129 / #137 / #147 spent multiple review
+ *  rounds untangling. */
+export function deriveBlurRadiusPx(canvas: { width: number; height: number }): number {
+  const shortSide = Math.min(canvas.width, canvas.height);
+  return Math.max(1, Math.min(200, Math.max(8, Math.round(shortSide * 0.015))));
+}
+
 export const TextOverlay = z.object({
   kind: z.literal("text"),
   point: NormalizedPoint,

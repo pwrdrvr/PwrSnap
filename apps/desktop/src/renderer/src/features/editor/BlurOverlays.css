@@ -63,3 +63,18 @@
   outline: 1px dashed rgba(255, 255, 255, 0.5);
   outline-offset: -1px;
 }
+
+/* Rotated gaussian + pixelate — canvas-backed previews that mirror
+   the bake's rotation-AABB + rotation-mask pipeline. The canvas is
+   sized to the rotated rect's AABB; CSS `clip-path: polygon(...)`
+   masks down to the rotated rect interior. See
+   `RotatedEffectCanvas` in BlurOverlays.tsx for the algorithm. The
+   border on the bounding canvas would draw OUTSIDE the clip-path
+   mask and look like a dashed AABB, so we skip the border on rotated
+   canvases and rely on the SelectionOutline / TransformHandles for
+   the user-visible rect bounds (those overlays draw on top of
+   .ed-blur-layer and follow the rotated rect, not the AABB). */
+.ed-blur-item--rotated-gaussian,
+.ed-blur-item--rotated-pixelate {
+  /* No border — see comment above. */
+}

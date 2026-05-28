@@ -27,6 +27,7 @@
 
 import { nanoid } from "nanoid";
 import type { BundleLayerNode, Overlay } from "@pwrsnap/shared";
+import { deriveBlurRadiusPx } from "@pwrsnap/shared";
 
 /** Canvas dimensions (source-pixel space) used to denormalize Overlay
  *  rects (which carry `[0,1]^2` fractions) into the absolute canvas
@@ -55,17 +56,6 @@ export type OverlayToLayerResult =
         message: string;
       };
     };
-
-/** 1.5% of the canvas short-side, with an 8px floor. Mirrors
- *  `deriveBlurRadiusPx` in `apps/desktop/src/main/persistence/v1-to-v2-doctor.ts`
- *  so a freshly-drawn blur on a v2 capture has the same radius the
- *  doctor would have produced if the same overlay had been migrated
- *  from a v1 row. The clamp matches `BlurEffect.radius_px.lte(200)` in
- *  the v2 schema. */
-function deriveBlurRadiusPx(canvas: CanvasDims): number {
-  const shortSide = Math.min(canvas.width, canvas.height);
-  return Math.max(1, Math.min(200, Math.max(8, Math.round(shortSide * 0.015))));
-}
 
 function nowIso(): string {
   return new Date().toISOString();

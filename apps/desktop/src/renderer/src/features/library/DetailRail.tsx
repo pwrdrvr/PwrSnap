@@ -498,10 +498,16 @@ export function DetailRail({
                 type="button"
                 title={
                   isVideo
-                    ? "Drag video file or click to reveal in Finder"
+                    ? "Click to reveal in Finder"
                     : "Drag PNG file or click to reveal in Finder"
                 }
-                draggable
+                // Drag is image-only today — `startCaptureDrag` routes
+                // through sharp's render pipeline, which throws
+                // "Input file contains unsupported image format" on a
+                // `.mp4` source. Tracked in #136 (video drag/copy
+                // parity); until that lands, don't promise a drag we
+                // can't deliver. Click-to-reveal still works for both.
+                draggable={!isVideo}
                 onClick={() => {
                   void dispatch("capture:reveal", { captureId: record.id });
                 }}

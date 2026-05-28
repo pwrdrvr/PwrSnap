@@ -262,4 +262,23 @@ describe("issue #139 — clipboard:copy fires clipboardEvents 'changed'", () => 
     await bus.dispatch("clipboard:copy", { captureId, preset: "high" }, { principal: "ipc" });
     expect(changedSpy).toHaveBeenCalledTimes(2);
   });
+
+  test("clipboard:copyLayerFragment also fires 'changed' (private-UTI + PNG fallback are one signal)", async () => {
+    // copyLayerFragment writes BOTH a private-UTI buffer AND a fallback
+    // PNG image in the same dispatch. The notification semantics ARE
+    // "OS clipboard changed under us" — one signal per dispatch, not
+    // one per write call. A future bug splitting the two into separate
+    // notifications would surface here as `toHaveBeenCalledTimes(2)`.
+    const captureId = await seedSimpleV2Capture();
+    const result = await bus.dispatch(
+      "clipboard:copyLayerFragment",
+      { captureId },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    expect(
+      changedSpy,
+      "expected clipboardEvents 'changed' to fire exactly once per copyLayerFragment dispatch"
+    ).toHaveBeenCalledTimes(1);
+  });
 });

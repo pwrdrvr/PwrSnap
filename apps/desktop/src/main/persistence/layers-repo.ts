@@ -165,6 +165,12 @@ export type InsertLayerInput = {
  * `insert_failed`. Callers that need to MUTATE a live layer should
  * use a dedicated update verb (none today; Phase 7 task).
  */
+/** Gap between consecutive z_index values for monotonic-insert.
+ *  Matches the renderer's `z-order.ts` Z_GAP and overlays-repo's
+ *  Z_INDEX_INSERT_GAP — kept numerically consistent for mental
+ *  modeling across the v1 / v2 / renderer boundary. */
+const Z_INDEX_INSERT_GAP = 1000;
+
 export function insertLayer(input: InsertLayerInput): BundleLayerNode {
   // zod-validate the node BEFORE persisting. The IPC handler also
   // validates, but a future internal caller could skip that path.
@@ -227,6 +233,36 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
       bumpEditsVersion(input.captureId);
       return;
     }
+    // Compute the z_index for the INSERT path. When the caller
+    // passes the default `node.z_index = 0` (the renderer's
+    // `overlayToBundleLayerNode` default), auto-bump to
+    // `MAX(existing) + Z_INDEX_INSERT_GAP` so the new row lands
+    // STRICTLY ABOVE every existing layer in the capture's
+    // `ORDER BY z_index ASC` render sort. Pre-fix every new layer
+    // got 0 and ties with existing 0-valued rows had non-
+    // deterministic order via SQLite's tiebreaker, surfacing as
+    // the user-reported "new arrow dove under the existing arrow
+    // on commit."
+    //
+    // Caller-supplied non-zero z_index wins (the
+    // `layers:reorder` dispatcher + v1→v2 migration both pass
+    // explicit values they computed elsewhere). MAX considers
+    // ALL rows including soft-deleted so a re-insert after undo-
+    // of-delete still lands above any layers added in the meantime.
+    let resolvedZIndex: number;
+    if (node.z_index !== 0) {
+      resolvedZIndex = node.z_index;
+    } else {
+      const row = db
+        .prepare<[string], { max_z: number | null }>(
+          `SELECT MAX(z_index) AS max_z FROM layers WHERE capture_id = ?`
+        )
+        .get(input.captureId);
+      resolvedZIndex =
+        row?.max_z !== null && row?.max_z !== undefined
+          ? row.max_z + Z_INDEX_INSERT_GAP
+          : 0;
+    }
     db.prepare(
       `INSERT INTO layers
          (id, capture_id, parent_id, kind, z_index, name, visible,
@@ -243,7 +279,7 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
       capture_id: input.captureId,
       parent_id: node.parent_id,
       kind: node.kind,
-      z_index: node.z_index,
+      z_index: resolvedZIndex,
       name: node.name,
       visible: node.visible ? 1 : 0,
       locked: node.locked ? 1 : 0,

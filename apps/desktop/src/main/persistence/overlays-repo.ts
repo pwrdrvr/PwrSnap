@@ -89,11 +89,49 @@ export type UpsertOverlay = {
  * Renamed from `overlays_version` in migration 0004 to unify v1
  * (overlays) and v2 (layers) convergence semantics.
  */
+/** Gap between consecutive z_index values for monotonic-insert. Same
+ *  constant as the renderer's `z-order.ts` Z_GAP — keeping them
+ *  numerically equal isn't load-bearing (the renderer's reorder
+ *  helper computes from the current sort order, not from the gap),
+ *  but matching makes mental modeling easier across the boundary. */
+const Z_INDEX_INSERT_GAP = 1000;
+
 export function insertOverlay(input: UpsertOverlay): OverlayRow {
   const now = new Date().toISOString();
   const blob = JSON.stringify(input.data);
   const db = getDb();
   const tx = db.transaction(() => {
+    // Compute the z_index. Caller-supplied `input.zIndex` wins; when
+    // omitted, the new row gets MAX(existing z_index for this
+    // capture) + Z_INDEX_INSERT_GAP so it lands STRICTLY ABOVE
+    // every existing row in the render-order sort. Pre-fix every
+    // new row got z_index = 0 and the renderer's `ORDER BY
+    // z_index ASC, created_at ASC` had TIES on both columns when
+    // two quick clicks landed in the same millisecond — SQLite's
+    // tiebreaker is implementation-defined, so the user observed
+    // "second arrow dove under the first" deterministically on
+    // their machine even though the bug class is non-deterministic
+    // in spec.
+    //
+    // We MAX over ALL rows for the capture (not just live ones)
+    // so a re-insert AFTER a soft-delete still lands above the
+    // deleted row's z_index — important for undo-of-delete to
+    // restore the row at its original position (which would be
+    // below any newer rows added between the delete and the undo).
+    let resolvedZIndex: number;
+    if (input.zIndex !== undefined) {
+      resolvedZIndex = input.zIndex;
+    } else {
+      const row = db
+        .prepare<[string], { max_z: number | null }>(
+          `SELECT MAX(z_index) AS max_z FROM overlays WHERE capture_id = ?`
+        )
+        .get(input.captureId);
+      resolvedZIndex =
+        row?.max_z !== null && row?.max_z !== undefined
+          ? row.max_z + Z_INDEX_INSERT_GAP
+          : 0;
+    }
     // 7 ? placeholders: id, capture_id, data, source, applied_at,
     // z_index, created_at. The other columns (schema_version,
     // ai_run_id, rejected_at, superseded_by) are literal in the SQL.
@@ -112,7 +150,7 @@ export function insertOverlay(input: UpsertOverlay): OverlayRow {
       // accepts (sensitive-data blurs auto-apply at insert time
       // via a separate code path).
       now,
-      input.zIndex ?? 0,
+      resolvedZIndex,
       now
     );
     db.prepare<[string]>(

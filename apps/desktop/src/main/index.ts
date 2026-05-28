@@ -75,7 +75,10 @@ import {
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
 import { migrateLegacyCaptureSources } from "./persistence/capture-source-maintenance";
-import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
+import {
+  enforceRenderCacheVersion,
+  migrateLegacyRenderCache
+} from "./persistence/render-cache-maintenance";
 import { persistCaptureFromTemp, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
@@ -921,6 +924,11 @@ export function bootstrapApp(): void {
     await openDatabase();
     await migrateLegacyCaptureSources();
     await migrateLegacyRenderCache();
+    // Issue #138 — sweep stale render-cache files when the bake
+    // pipeline version advances. No-op on the common path (marker
+    // matches current version). Runs AFTER the legacy-location
+    // migration so the marker lives in the canonical cache root.
+    await enforceRenderCacheVersion();
     installApplicationMenu();
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();

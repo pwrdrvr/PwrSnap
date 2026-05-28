@@ -910,7 +910,7 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           input dim, silently making pixelate a no-op for every
  *           production bake. Split into two separate sharp
  *           pipelines so the down-sample materializes. */
-const BAKE_PIPELINE_VERSION = "5";
+export const BAKE_PIPELINE_VERSION = "5";
 
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

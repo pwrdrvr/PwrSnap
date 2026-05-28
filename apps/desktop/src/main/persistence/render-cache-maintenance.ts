@@ -1,15 +1,26 @@
 import { constants } from "node:fs";
-import { access, cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { access, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getMainLogger } from "../log";
 import { computeRenderHash } from "../render/overlay-hash";
+import { BAKE_PIPELINE_VERSION } from "../render/compose-tree";
 import { getDb } from "./db";
 import { listLiveOverlays } from "./overlays-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
 const RAPID_RENDER_WIDTHS = [140, 400] as const;
+
+/** Marker file stem under `getCacheRoot()`. Records the
+ *  BAKE_PIPELINE_VERSION that produced the cached bytes — when the
+ *  current version differs from this, every cached file is stale by
+ *  construction (renderHash incorporates the version) and `enforce-
+ *  RenderCacheVersion` wipes the directory.
+ *
+ *  Hidden-file convention (`.` prefix) keeps it away from the per-
+ *  capture-id subdirs that `trimRenderCache` enumerates. */
+const VERSION_MARKER_FILENAME = ".bake-pipeline-version";
 
 type CaptureIdRow = {
   id: string;
@@ -23,6 +34,66 @@ export type LegacyRenderCacheMigrationResult = {
 export async function clearRenderCache(): Promise<void> {
   await rm(getCacheRoot(), { recursive: true, force: true });
   await mkdir(getCacheRoot(), { recursive: true });
+}
+
+/**
+ * Issue #138 — when `BAKE_PIPELINE_VERSION` bumps (a fix to the bake
+ * pipeline that changes output bytes), every cached PNG/WebP is
+ * silently stale: `composeV2` produces new filenames keyed on the
+ * new renderHash (which incorporates the version) but the old files
+ * remain on disk, occupying space and never re-read.
+ *
+ * On boot, compare the current version to a marker file persisted
+ * under the cache root. If they differ, sweep the cache and rewrite
+ * the marker. Cost: one synchronous fs.rm at startup PER user PER
+ * version bump. Future bakes lazily regenerate at the new version
+ * on first access — same as the current behavior, just with the
+ * stale files gone instead of orphaned.
+ *
+ * No-op when the marker already matches (the common case). On the
+ * very first launch after this lands, the marker doesn't exist, so
+ * the cache is swept once — this is the same one-time cost a user
+ * pays after any version bump.
+ *
+ * Errors are non-fatal: a failed read or write logs a warning and
+ * the boot continues. Subsequent bakes still produce correct
+ * output (the renderHash is the source of truth); only the
+ * orphan-cleanup is delayed.
+ */
+export async function enforceRenderCacheVersion(): Promise<void> {
+  const root = getCacheRoot();
+  await mkdir(root, { recursive: true });
+  const markerPath = join(root, VERSION_MARKER_FILENAME);
+  let lastSeen: string | null = null;
+  try {
+    lastSeen = (await readFile(markerPath, "utf-8")).trim();
+  } catch {
+    // Missing marker — first launch after this lands, OR previously-
+    // crashed write. Treat as "needs sweep" so we land in a known
+    // good state.
+  }
+  if (lastSeen === BAKE_PIPELINE_VERSION) {
+    return;
+  }
+  try {
+    await clearRenderCache();
+    // clearRenderCache already re-creates the directory; write the
+    // marker AFTER the wipe so a crash between the rm and the write
+    // leaves the marker stale → next boot sweeps again (idempotent).
+    await writeFile(markerPath, BAKE_PIPELINE_VERSION, "utf-8");
+    log.info("bake pipeline version changed — render cache swept", {
+      lastSeen,
+      current: BAKE_PIPELINE_VERSION
+    });
+  } catch (err) {
+    // Don't crash the boot for a maintenance task — the bake itself
+    // is correct regardless of the orphan cleanup.
+    log.warn("enforceRenderCacheVersion failed", {
+      lastSeen,
+      current: BAKE_PIPELINE_VERSION,
+      message: err instanceof Error ? err.message : String(err)
+    });
+  }
 }
 
 /**

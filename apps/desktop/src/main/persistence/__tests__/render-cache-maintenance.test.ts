@@ -122,3 +122,89 @@ describe("render-cache maintenance", () => {
     expect(rootStats.isDirectory()).toBe(true);
   });
 });
+
+// Issue #138 — `enforceRenderCacheVersion` sweeps stale bakes when
+// the bake-pipeline version advances. The current version is read off
+// `BAKE_PIPELINE_VERSION` in compose-tree.ts at import time; we don't
+// mock it (mocking the export would force us to keep two source-of-
+// truth values in sync). Instead we test the OBSERVABLE contract:
+//
+//   • marker matches → no-op (existing bytes survive)
+//   • marker differs → cache wiped, marker rewritten to current
+//   • marker missing → treated as "differs" (one-time sweep on first
+//     boot after this lands)
+describe("enforceRenderCacheVersion (#138)", () => {
+  const MARKER = ".bake-pipeline-version";
+  test("marker matches current version → existing bake bytes survive", async () => {
+    // Pre-seed a cached bake AND a marker file matching the version
+    // we'll read at import-time.
+    const { BAKE_PIPELINE_VERSION } = await import("../../render/compose-tree");
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "kept");
+    await writeFile(join(mocks.currentRoot, MARKER), BAKE_PIPELINE_VERSION);
+
+    const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
+    await enforceRenderCacheVersion();
+
+    // Bytes survived → matched-version branch ran (no clear).
+    await expect(
+      readFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "utf8")
+    ).resolves.toBe("kept");
+    // Marker still says the current version.
+    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+      BAKE_PIPELINE_VERSION
+    );
+  });
+
+  test("marker differs → cache swept and marker rewritten", async () => {
+    const { BAKE_PIPELINE_VERSION } = await import("../../render/compose-tree");
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "stale");
+    // Marker from an OLD version — anything that won't equal current.
+    await writeFile(join(mocks.currentRoot, MARKER), "0");
+
+    const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
+    await enforceRenderCacheVersion();
+
+    // Stale bake gone.
+    await expect(
+      readFile(join(mocks.currentRoot, "capture-a", "hash.webp"))
+    ).rejects.toThrow();
+    // Marker advanced.
+    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+      BAKE_PIPELINE_VERSION
+    );
+    // Root dir still exists (clearRenderCache re-creates it).
+    const rootStats = await stat(mocks.currentRoot);
+    expect(rootStats.isDirectory()).toBe(true);
+  });
+
+  test("missing marker → treated as differs (one-time sweep on first boot after this lands)", async () => {
+    const { BAKE_PIPELINE_VERSION } = await import("../../render/compose-tree");
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "capture-a", "hash.webp"), "stale");
+    // No marker file.
+    const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
+    await enforceRenderCacheVersion();
+    await expect(
+      readFile(join(mocks.currentRoot, "capture-a", "hash.webp"))
+    ).rejects.toThrow();
+    await expect(readFile(join(mocks.currentRoot, MARKER), "utf8")).resolves.toBe(
+      BAKE_PIPELINE_VERSION
+    );
+  });
+
+  test("second invocation with marker-now-current is a no-op (idempotent)", async () => {
+    const { enforceRenderCacheVersion } = await import("../render-cache-maintenance");
+    // First call: sets up marker.
+    await enforceRenderCacheVersion();
+    // Now write a sentinel file the sweep would erase.
+    await mkdir(join(mocks.currentRoot, "capture-a"), { recursive: true });
+    await writeFile(join(mocks.currentRoot, "capture-a", "kept.webp"), "kept");
+    // Second call: marker matches → no-op.
+    await enforceRenderCacheVersion();
+    await expect(
+      readFile(join(mocks.currentRoot, "capture-a", "kept.webp"), "utf8")
+    ).resolves.toBe("kept");
+  });
+});

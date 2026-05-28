@@ -193,15 +193,22 @@ export function registerClipboardHandlers(): void {
   // Encode (cache-hit if already done) and copy the resulting GIF /
   // MP4 to the system clipboard as a file promise. On macOS this
   // writes the `public.file-url` UTI to NSPasteboard via
-  // `clipboard.writeBuffer`, so paste in Slack / Mail / Finder
-  // drops the binary instead of a path string. Also co-writes the
-  // POSIX path as text so terminal / editor pastes get something
-  // useful. The two writes don't conflict — apps prefer the
-  // higher-fidelity format they understand.
+  // `clipboard.writeBuffer` — paste in Slack / Mail / iMessage /
+  // Finder drops the binary, exactly like Finder's "Copy" + paste.
   //
-  // This is the first place in the codebase that writes
-  // `public.file-url`; matching the pattern in Finder's "Copy" so
-  // downstream pasteboard consumers get the shape they expect.
+  // First version tried to ALSO co-write `clipboard.writeText(path)`
+  // as a fallback for terminal/editor pastes. Doesn't work: each
+  // Electron clipboard.write* call wraps a ScopedClipboardWriter
+  // that calls [pasteboard clearContents] on construction. So
+  // writeText AFTER writeBuffer wipes the file-url, and iMessage
+  // gets the text. There's no Electron API to atomically write
+  // both a custom UTI and standard text — `clipboard.write({...})`
+  // accepts only text/html/image/rtf/bookmark, no arbitrary UTIs.
+  //
+  // We pick file-url; users who want the path as text use the FILE
+  // chip (which dispatches `clipboard:copyVideoPath`). Clean intent
+  // split: card click = "give me the file"; FILE chip = "give me
+  // the path".
   bus.register("clipboard:copyVideoFile", async (req) => {
     const resolved = await resolveVideoExport(req);
     if (!resolved.ok) {
@@ -213,7 +220,6 @@ export function registerClipboardHandlers(): void {
       // pasteboard payload round-trips cleanly through NSURL parsers.
       const fileUrl = `file://${filePath.split("/").map(encodeURIComponent).join("/")}`;
       clipboard.writeBuffer("public.file-url", Buffer.from(fileUrl, "utf8"));
-      clipboard.writeText(filePath);
       log.info("copied video file to clipboard", {
         captureId: req.captureId,
         format: req.format,

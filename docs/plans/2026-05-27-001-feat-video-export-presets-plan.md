@@ -162,19 +162,26 @@ honest price of the format.
 
 ### 4. Clipboard write — file promise (`public.file-url`) so paste lands the binary (decided)
 
-Card click writes BOTH:
-- `clipboard.writeBuffer("public.file-url", buf)` with a `file://`
-  URL pointing at the rendered file
-- `clipboard.writeText(path)` as a fallback for apps that only read
-  text
+Card click writes ONLY `clipboard.writeBuffer("public.file-url",
+buf)` with a `file://` URL pointing at the rendered file. Paste in
+Slack / Mail / iMessage / Finder drops the binary, exactly like
+Finder's "Copy" + paste.
 
-This is what Finder's "Copy" does. Pasting in Slack uploads the
-file. Pasting in Mail attaches it. Pasting in Finder drops a copy.
-Pasting in a terminal / editor gets the path string.
+**Originally planned to co-write `clipboard.writeText(path)` as a
+fallback for terminal/editor pastes. Doesn't work.** Each Electron
+`clipboard.write*` call wraps a `ScopedClipboardWriter` that calls
+`[pasteboard clearContents]` on construction, so `writeText` AFTER
+`writeBuffer` wipes the file-url, and iMessage gets the text. The
+opposite order has the same problem in reverse. There's no Electron
+API to atomically write both a custom UTI and standard text:
+`clipboard.write({...})` accepts only `text / html / image / rtf /
+bookmark`, no arbitrary UTIs.
 
-The FILE chip click writes ONLY the text path — same shape as
-image `clipboard:copy-path` today. Reuses the existing handler
-pattern verbatim, just with a video-aware encoder.
+Clean intent split instead: card click = "give me the file";
+FILE chip click = "give me the path" (via
+`clipboard:copyVideoPath`). The two affordances were already
+distinct in the UI; the original "co-write both" idea was trying
+to be too clever.
 
 The codebase has no precedent for writing `public.file-url`. We
 become the first consumer. The pattern lands in clipboard-handlers
@@ -359,7 +366,7 @@ sibling):
 - `clipboard:copyVideoFile(captureId, format, preset)`:
   1. Encode (cache-hit if already done).
   2. `clipboard.writeBuffer("public.file-url", Buffer.from("file://" + encodedPath))`.
-  3. `clipboard.writeText(encodedPath)` (fallback).
+  (Only one write — see §4 for why we can't atomically co-write text.)
 - `clipboard:copyVideoPath(captureId, format, preset)`:
   1. Encode.
   2. `clipboard.writeText(encodedPath)` only.

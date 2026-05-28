@@ -67,6 +67,7 @@ import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration"
 import { reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
+import { destroyTextBakePool } from "./render/text-html-bake";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
 import {
@@ -1188,6 +1189,13 @@ export function bootstrapApp(): void {
     disposeTray();
     disposeFocusSink();
     disposeIpcDispatcher();
+    // Destroy the hidden text-bake BrowserWindow pool. Without this,
+    // an undead hidden window can keep the app process alive past
+    // `will-quit`, which surfaces in Playwright E2E as "Worker
+    // teardown timeout of 30000ms exceeded" after the spawned
+    // Electron handle's `app.close()` returns but the OS process
+    // hasn't actually exited.
+    destroyTextBakePool();
     closeDatabase();
   });
 }

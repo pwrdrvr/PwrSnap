@@ -129,6 +129,9 @@ vi.mock("electron", () => {
     close(): void {
       this.destroyed = true;
     }
+    destroy(): void {
+      this.destroyed = true;
+    }
   }
   return { BrowserWindow: FakeBrowserWindow };
 });

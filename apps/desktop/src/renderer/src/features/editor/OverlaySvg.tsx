@@ -152,34 +152,13 @@ export function OverlaySvg({
       return { ...row, data: merged };
     });
   }, [liveOverride, overlays]);
-  const arrows = useMemo(
-    () =>
-      effectiveOverlays.flatMap((row) =>
-        row.data.kind === "arrow" ? [{ row, data: row.data }] : []
-      ),
-    [effectiveOverlays]
-  );
-  const rects = useMemo(
-    () =>
-      effectiveOverlays.flatMap((row) =>
-        row.data.kind === "rect" ? [{ row, data: row.data }] : []
-      ),
-    [effectiveOverlays]
-  );
-  const highlights = useMemo(
-    () =>
-      effectiveOverlays.flatMap((row) =>
-        row.data.kind === "highlight"
-          ? [
-              {
-                row,
-                data: row.data as Extract<typeof row.data, { kind: "highlight" }>
-              }
-            ]
-          : []
-      ),
-    [effectiveOverlays]
-  );
+  // Pre-fix this file kept three useMemo'd kind buckets (arrows,
+  // rects, highlights) and rendered them in fixed order. The unified
+  // single-map paint loop below reads `effectiveOverlays` directly
+  // and branches on `data.kind` per row — same memoization benefit
+  // (effectiveOverlays is already memoized; React only re-runs the
+  // map when it changes) without the cross-kind paint-order bug
+  // those three buckets imposed.
   // Text overlays moved out of the SVG path in the HTML-text
   // unification (see TextHtmlOverlays). The SVG side handles non-text
   // shapes + the selection outline; TextHtml renders persisted text
@@ -201,48 +180,75 @@ export function OverlaySvg({
   // guaranteed to render past the SVG's CSS box.
   return (
     <svg className="editor-svg" viewBox={viewBox} overflow="visible">
-      {/* Highlights painted first so they sit beneath rects/arrows. */}
-      {highlights.map(({ row, data }) => (
-        <HighlightGlyph
-          key={row.id}
-          rect={data.rect}
-          rotation={readOverlayRotation(data)}
-          color={data.color}
-          opacity={data.opacity}
-          blend={data.blend}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
-      {rects.map(({ row, data }) => (
-        <RectGlyph
-          key={row.id}
-          rect={data.rect}
-          rotation={readOverlayRotation(data)}
-          color={data.color}
-          thickness={data.thickness}
-          filled={readRectFilled(data)}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
-      {arrows.map(({ row, data }) => (
-        <ArrowGlyph
-          key={row.id}
-          fromXn={data.from.x}
-          fromYn={data.from.y}
-          toXn={data.to.x}
-          toYn={data.to.y}
-          color={data.color}
-          endStyle={readArrowEndStyle(data)}
-          stemStyle={readArrowStemStyle(data)}
-          doubleEnded={readArrowDoubleEnded(data)}
-          thickness={data.thickness}
-          styleVersion={data.styleVersion}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-        />
-      ))}
+      {/* Paint glyphs in ARRAY ORDER, branching on kind. The
+          incoming overlays list is z_index-sorted (the v2 projection
+          mirrors `ORDER BY z_index ASC, created_at ASC`; v1 likewise),
+          so iterating in order produces SVG document order = paint
+          order in pure z_index order. This is the single source of
+          truth for cross-kind stacking — the bake (compose.ts +
+          compose-tree.ts) already paints in flat z_index order, so
+          unifying here brings the live preview into agreement with
+          the exported PNG (and lets `Bring Forward / Bring to Front`
+          on a rect actually move it above arrows; pre-fix the rect
+          stayed buried under the arrow because each kind painted
+          in its own bucket regardless of z_index).
+          Text / blur are handled outside this SVG (TextHtmlOverlays
+          + BlurOverlays); crop is a canvas-level mutation with no
+          paint surface. */}
+      {effectiveOverlays.map((row) => {
+        const data = row.data;
+        if (data.kind === "highlight") {
+          return (
+            <HighlightGlyph
+              key={row.id}
+              rect={data.rect}
+              rotation={readOverlayRotation(data)}
+              color={data.color}
+              opacity={data.opacity}
+              blend={data.blend}
+              imageWidthPx={imageWidthPx}
+              imageHeightPx={imageHeightPx}
+            />
+          );
+        }
+        if (data.kind === "rect") {
+          return (
+            <RectGlyph
+              key={row.id}
+              rect={data.rect}
+              rotation={readOverlayRotation(data)}
+              color={data.color}
+              thickness={data.thickness}
+              filled={readRectFilled(data)}
+              imageWidthPx={imageWidthPx}
+              imageHeightPx={imageHeightPx}
+            />
+          );
+        }
+        if (data.kind === "arrow") {
+          return (
+            <ArrowGlyph
+              key={row.id}
+              fromXn={data.from.x}
+              fromYn={data.from.y}
+              toXn={data.to.x}
+              toYn={data.to.y}
+              color={data.color}
+              endStyle={readArrowEndStyle(data)}
+              stemStyle={readArrowStemStyle(data)}
+              doubleEnded={readArrowDoubleEnded(data)}
+              thickness={data.thickness}
+              styleVersion={data.styleVersion}
+              imageWidthPx={imageWidthPx}
+              imageHeightPx={imageHeightPx}
+            />
+          );
+        }
+        // text → TextHtmlOverlays; blur → BlurOverlays; crop →
+        // no-op (canvas dim mutation). step is a Phase 6 affordance
+        // that's not in the SVG path yet.
+        return null;
+      })}
       {/* Text overlays render outside the SVG via <TextHtmlOverlays>
           so display/edit/bake share Chromium's HTML text pipeline.
           Rotation is applied via CSS transform on the wrapper there

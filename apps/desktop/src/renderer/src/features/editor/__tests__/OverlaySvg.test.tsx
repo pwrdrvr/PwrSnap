@@ -787,3 +787,134 @@ describe("OverlaySvg ArrowGlyph — portrait images (the original symptom)", () 
     expect(largeWidth / autoWidth).toBeGreaterThan(1.5);
   });
 });
+
+describe("OverlaySvg — paint order respects z_index across kinds", () => {
+  // User repro: "Bring Forward / Bring to Front on a Rect does not
+  // bring it above the arrows... ever." Pre-fix, OverlaySvg painted
+  // glyphs in fixed KIND BUCKETS: all highlights first, then all
+  // rects, then all arrows. So no matter what z_index a rect carried,
+  // every arrow always painted on top. Z-order reordering APPEARED
+  // to work (the rect's z_index moved in the DB), but the visual
+  // outcome was a no-op for cross-kind orderings.
+  //
+  // The bake (compose.ts + compose-tree.ts) already paints in flat
+  // z_index order, so the live preview also DISAGREED with the
+  // exported PNG. The fix unifies the SVG to render in array order
+  // (overlays arrive z_index-sorted from the projection), bringing
+  // live preview and bake into agreement.
+  //
+  // These tests assert on document order — for two siblings inside
+  // the same SVG, later-in-document = painted later = visually on
+  // top. We assert via `compareDocumentPosition` so the test
+  // doesn't depend on the SVG's internal layout choices (filter
+  // wrappers, glyph SVG element type — line vs polygon — etc.).
+  function arrowRowAt(id: string, zIndex: number): OverlayRow {
+    return {
+      id,
+      capture_id: "cap_1",
+      data: {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 },
+        color: "auto"
+      },
+      schema_version: 1,
+      created_at: "2026-05-28T00:00:00Z",
+      applied_at: "2026-05-28T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      ai_run_id: null,
+      source: "user",
+      z_index: zIndex
+    };
+  }
+  function rectRowAt(id: string, zIndex: number): OverlayRow {
+    return {
+      id,
+      capture_id: "cap_1",
+      data: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+        color: "auto"
+      },
+      schema_version: 1,
+      created_at: "2026-05-28T00:00:00Z",
+      applied_at: "2026-05-28T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      ai_run_id: null,
+      source: "user",
+      z_index: zIndex
+    };
+  }
+
+  /** Document-order predicate: returns true when `a` comes EARLIER
+   *  in the DOM than `b` (= a was rendered first = painted below b
+   *  in SVG paint order). Uses `compareDocumentPosition` so the
+   *  result is independent of how the test reaches each element. */
+  function paintsBefore(a: Element, b: Element): boolean {
+    const cmp = a.compareDocumentPosition(b);
+    // Node.DOCUMENT_POSITION_FOLLOWING = 4
+    return (cmp & 4) !== 0;
+  }
+
+  test("rect with HIGHER z_index than arrow paints AFTER the arrow (= visually on top)", async () => {
+    // Caller passes overlays in ASCENDING z_index order (matches
+    // what the projection produces: ORDER BY z_index ASC). Pre-fix
+    // the kind-bucket logic would put the arrow LAST regardless;
+    // post-fix the array order wins.
+    const svg = await renderOverlaySvg([
+      arrowRowAt("arrow_zindex_xa", 1000),
+      // Rect has HIGHER z_index — should paint AFTER (= visually
+      // on top of) the arrow.
+      rectRowAt("recttt_zindex_b", 2000)
+    ]);
+    // ArrowGlyph uses <line> + <polygon> children; RectGlyph uses
+    // <rect>. We compare ANY rect element vs ANY line element in
+    // the SVG.
+    const rectEl = svg.querySelector("rect");
+    const arrowEl = svg.querySelector("line");
+    expect(rectEl).not.toBeNull();
+    expect(arrowEl).not.toBeNull();
+    expect(paintsBefore(arrowEl!, rectEl!)).toBe(true);
+  });
+
+  test("arrow with HIGHER z_index than rect paints AFTER the rect (= visually on top)", async () => {
+    // Symmetric case — the natural "draw rect, then arrow" flow.
+    // Arrow has the higher z_index (monotonic-insert) and SHOULD
+    // paint on top. This was the only case the pre-fix kind-
+    // bucketing accidentally got right (arrows-bucket-last
+    // happened to match).
+    const svg = await renderOverlaySvg([
+      rectRowAt("recttt_zindex_a", 1000),
+      arrowRowAt("arrow_zindex_xb", 2000)
+    ]);
+    const rectEl = svg.querySelector("rect");
+    const arrowEl = svg.querySelector("line");
+    expect(rectEl).not.toBeNull();
+    expect(arrowEl).not.toBeNull();
+    expect(paintsBefore(rectEl!, arrowEl!)).toBe(true);
+  });
+
+  test("three layers in z_index order render in document order regardless of kind", async () => {
+    // Locks the general rule: array order → document order →
+    // paint order. Independent of mixing rules between any two
+    // adjacent layers' kinds.
+    const svg = await renderOverlaySvg([
+      arrowRowAt("arrow_zindex_x1", 1000),
+      rectRowAt("recttt_zindex_2", 2000),
+      arrowRowAt("arrow_zindex_x3", 3000)
+    ]);
+    const lines = svg.querySelectorAll("line");
+    const rectEls = svg.querySelectorAll("rect");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(rectEls.length).toBeGreaterThan(0);
+    // Pick the FIRST line (= first arrow's stem) and the LAST line
+    // (= third arrow's stem) — the rect should fall BETWEEN them.
+    const firstLine = lines[0]!;
+    const lastLine = lines[lines.length - 1]!;
+    const rectEl = rectEls[0]!;
+    expect(paintsBefore(firstLine, rectEl)).toBe(true);
+    expect(paintsBefore(rectEl, lastLine)).toBe(true);
+  });
+});

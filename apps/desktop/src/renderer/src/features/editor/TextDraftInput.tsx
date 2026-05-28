@@ -53,6 +53,7 @@ import {
   type TextSizeBucket
 } from "@pwrsnap/shared";
 import type { DraftText } from "./editor-types";
+import { Z_INDEX_CHROME } from "./OverlaySvg";
 
 export function TextDraftInput({
   draft,
@@ -119,7 +120,13 @@ export function TextDraftInput({
   });
   const wrapperStyle: CSSProperties = {
     ...(style.wrapper as CSSProperties),
-    pointerEvents: "auto"
+    pointerEvents: "auto",
+    // Chrome z-index sentinel — sit ABOVE every persisted layer
+    // regardless of their layer.z_index. Without this, a high-z_index
+    // persisted text or blur could paint OVER the draft-input wrapper
+    // and intercept the click/keystrokes meant for the textarea. See
+    // OverlaySvg's chrome SVG for the parallel rationale.
+    zIndex: Z_INDEX_CHROME
   };
   // Visible glyph element — same style as TextHtml.tsx's display div.
   // Identical rendering, identical halo, identical metrics.

@@ -178,160 +178,190 @@ export function OverlaySvg({
   // both set, content drawn past the viewBox (a rect dragged
   // partway off the canvas, its selection outline, etc.) is
   // guaranteed to render past the SVG's CSS box.
+  //
+  // **Per-glyph mini-SVGs for cross-kind z-order.** Pre-fix this
+  // function returned ONE big SVG with all persisted glyphs as
+  // siblings. SVG document order determined paint order inside
+  // that SVG, but CSS z-index doesn't apply to SVG children — only
+  // to SVG elements themselves. That meant a rect inside the SVG
+  // couldn't stack against a sibling HTML element (a blur item, a
+  // text wrapper) via CSS z-index — they were all in one z-block.
+  // User repro: "Bring Forward / Bring to Front on a Rect does not
+  // bring it above the arrows... ever" (the cross-kind case
+  // between rect and blur had the same shape too).
+  //
+  // Each persisted glyph now renders in its OWN mini-SVG with CSS
+  // `zIndex: row.z_index`. The parent `.editor-svg` CSS class is
+  // `position: absolute` with no z-index of its own → no stacking
+  // context, so the z-index on each mini-SVG applies to the
+  // canvas-wrap stacking context. Combined with BlurOverlays and
+  // TextHtmlOverlays applying the same `zIndex: row.z_index` on
+  // their items, ALL persisted layers participate in ONE shared
+  // stacking context, ordered by their layer.z_index — which is
+  // the same order the bake (compose.ts + compose-tree.ts) paints
+  // in, so live preview and exported PNG agree.
+  //
+  // The chrome SVG (drafts + selection outlines) renders at a
+  // sentinel `Z_INDEX_CHROME` so it ALWAYS paints above every
+  // persisted layer, regardless of how many reorders have bumped
+  // the layer z_index values.
   return (
-    <svg className="editor-svg" viewBox={viewBox} overflow="visible">
-      {/* Paint glyphs in ARRAY ORDER, branching on kind. The
-          incoming overlays list is z_index-sorted (the v2 projection
-          mirrors `ORDER BY z_index ASC, created_at ASC`; v1 likewise),
-          so iterating in order produces SVG document order = paint
-          order in pure z_index order. This is the single source of
-          truth for cross-kind stacking — the bake (compose.ts +
-          compose-tree.ts) already paints in flat z_index order, so
-          unifying here brings the live preview into agreement with
-          the exported PNG (and lets `Bring Forward / Bring to Front`
-          on a rect actually move it above arrows; pre-fix the rect
-          stayed buried under the arrow because each kind painted
-          in its own bucket regardless of z_index).
-          Text / blur are handled outside this SVG (TextHtmlOverlays
-          + BlurOverlays); crop is a canvas-level mutation with no
-          paint surface. */}
+    <>
       {effectiveOverlays.map((row) => {
         const data = row.data;
-        if (data.kind === "highlight") {
-          return (
-            <HighlightGlyph
-              key={row.id}
-              rect={data.rect}
-              rotation={readOverlayRotation(data)}
-              color={data.color}
-              opacity={data.opacity}
-              blend={data.blend}
-              imageWidthPx={imageWidthPx}
-              imageHeightPx={imageHeightPx}
-            />
-          );
+        if (
+          data.kind !== "highlight" &&
+          data.kind !== "rect" &&
+          data.kind !== "arrow"
+        ) {
+          // text → TextHtmlOverlays; blur → BlurOverlays; crop →
+          // no-op (canvas dim mutation). step is a Phase 6 affordance
+          // not in the SVG path yet.
+          return null;
         }
-        if (data.kind === "rect") {
-          return (
-            <RectGlyph
-              key={row.id}
-              rect={data.rect}
-              rotation={readOverlayRotation(data)}
-              color={data.color}
-              thickness={data.thickness}
-              filled={readRectFilled(data)}
-              imageWidthPx={imageWidthPx}
-              imageHeightPx={imageHeightPx}
-            />
-          );
-        }
-        if (data.kind === "arrow") {
-          return (
-            <ArrowGlyph
-              key={row.id}
-              fromXn={data.from.x}
-              fromYn={data.from.y}
-              toXn={data.to.x}
-              toYn={data.to.y}
-              color={data.color}
-              endStyle={readArrowEndStyle(data)}
-              stemStyle={readArrowStemStyle(data)}
-              doubleEnded={readArrowDoubleEnded(data)}
-              thickness={data.thickness}
-              styleVersion={data.styleVersion}
-              imageWidthPx={imageWidthPx}
-              imageHeightPx={imageHeightPx}
-            />
-          );
-        }
-        // text → TextHtmlOverlays; blur → BlurOverlays; crop →
-        // no-op (canvas dim mutation). step is a Phase 6 affordance
-        // that's not in the SVG path yet.
-        return null;
-      })}
-      {/* Text overlays render outside the SVG via <TextHtmlOverlays>
-          so display/edit/bake share Chromium's HTML text pipeline.
-          Rotation is applied via CSS transform on the wrapper there
-          (see TextHtml.tsx + computeTextHtmlStyle); the SelectionOutline
-          below still rotates the text's bounding-box outline so the
-          dashed selection rect tracks rotated text. */}
-
-      {/* Multi-select outlines — rendered after all overlays but before
-          drafts so a draft-in-progress doesn't hide them. One outline
-          per selected id; ids missing from the current overlay list are
-          silently skipped (the parent's stale-id cleanup will catch up
-          on the next render). */}
-      {selectedLayerIds.map((id) => {
-        const sel = effectiveOverlays.find((r) => r.id === id);
-        if (sel === undefined) return null;
         return (
-          <SelectionOutline
-            key={id}
-            data={sel.data}
-            imageWidthPx={imageWidthPx}
-            imageHeightPx={imageHeightPx}
-            sourceWidthPx={sourceWidthPx}
-            sourceHeightPx={sourceHeightPx}
-          />
+          <svg
+            key={row.id}
+            className="editor-svg"
+            viewBox={viewBox}
+            overflow="visible"
+            style={{ zIndex: row.z_index }}
+            data-testid="persisted-glyph-svg"
+          >
+            {data.kind === "highlight" && (
+              <HighlightGlyph
+                rect={data.rect}
+                rotation={readOverlayRotation(data)}
+                color={data.color}
+                opacity={data.opacity}
+                blend={data.blend}
+                imageWidthPx={imageWidthPx}
+                imageHeightPx={imageHeightPx}
+              />
+            )}
+            {data.kind === "rect" && (
+              <RectGlyph
+                rect={data.rect}
+                rotation={readOverlayRotation(data)}
+                color={data.color}
+                thickness={data.thickness}
+                filled={readRectFilled(data)}
+                imageWidthPx={imageWidthPx}
+                imageHeightPx={imageHeightPx}
+              />
+            )}
+            {data.kind === "arrow" && (
+              <ArrowGlyph
+                fromXn={data.from.x}
+                fromYn={data.from.y}
+                toXn={data.to.x}
+                toYn={data.to.y}
+                color={data.color}
+                endStyle={readArrowEndStyle(data)}
+                stemStyle={readArrowStemStyle(data)}
+                doubleEnded={readArrowDoubleEnded(data)}
+                thickness={data.thickness}
+                styleVersion={data.styleVersion}
+                imageWidthPx={imageWidthPx}
+                imageHeightPx={imageHeightPx}
+              />
+            )}
+          </svg>
         );
       })}
-
-      {/* Drafts (live-drag preview) rendered last so they're on top.
-          Phase 3.3 — the draft now consumes `draftStyle.color` so the
-          live preview matches the user's popover pick during the drag,
-          not just on commit. Falls back to "auto" → --accent for any
-          tool that doesn't pass a draftStyle. */}
-      {draft?.kind === "arrow" && (
-        <ArrowGlyph
-          fromXn={draft.fromXn}
-          fromYn={draft.fromYn}
-          toXn={draft.toXn}
-          toYn={draft.toYn}
-          color={draftStyle?.color}
-          endStyle={draftStyle?.endStyle}
-          stemStyle={draftStyle?.stemStyle}
-          doubleEnded={draftStyle?.doubleEnded}
-          thickness={draftStyle?.thickness}
-          // Drafts always render at the CURRENT style version — they
-          // get stamped with it on commit, so the live preview during
-          // drag matches what's about to be persisted. Without this
-          // an in-flight arrow would render at v1 (the default when
-          // styleVersion is undefined) and then jump to the current
-          // version proportions on pointerup.
-          styleVersion={CURRENT_ARROW_STYLE_VERSION}
-          imageWidthPx={imageWidthPx}
-          imageHeightPx={imageHeightPx}
-          isDraft
-        />
-      )}
-      {draft?.kind === "rect-drag" && liveRect !== null && (
-        <>
-          {draft.tool === "highlight" && (
-            <HighlightGlyph
-              rect={liveRect}
-              color={draftStyle?.color}
-              blend={draftStyle?.highlightBlend}
+      {/* Chrome SVG — drafts + selection outlines. ALWAYS painted
+          above all persisted layers via Z_INDEX_CHROME sentinel.
+          Selection outlines per id; ids missing from the current
+          overlay list are silently skipped (the parent's stale-id
+          cleanup catches up on the next render). */}
+      <svg
+        className="editor-svg"
+        viewBox={viewBox}
+        overflow="visible"
+        style={{ zIndex: Z_INDEX_CHROME }}
+        data-testid="chrome-svg"
+      >
+        {selectedLayerIds.map((id) => {
+          const sel = effectiveOverlays.find((r) => r.id === id);
+          if (sel === undefined) return null;
+          return (
+            <SelectionOutline
+              key={id}
+              data={sel.data}
               imageWidthPx={imageWidthPx}
               imageHeightPx={imageHeightPx}
-              isDraft
+              sourceWidthPx={sourceWidthPx}
+              sourceHeightPx={sourceHeightPx}
             />
-          )}
-          {draft.tool === "rect" && (
-            <RectGlyph
-              rect={liveRect}
-              color={draftStyle?.color}
-              thickness={draftStyle?.thickness}
-              filled={draftStyle?.filled ?? false}
-              imageWidthPx={imageWidthPx}
-              imageHeightPx={imageHeightPx}
-              isDraft
-            />
-          )}
-        </>
-      )}
-    </svg>
+          );
+        })}
+        {/* Drafts (live-drag preview) rendered last so they're on
+            top of selection outlines. Phase 3.3 — the draft now
+            consumes `draftStyle.color` so the live preview matches
+            the user's popover pick during the drag, not just on
+            commit. Falls back to "auto" → --accent for any tool
+            that doesn't pass a draftStyle. */}
+        {draft?.kind === "arrow" && (
+          <ArrowGlyph
+            fromXn={draft.fromXn}
+            fromYn={draft.fromYn}
+            toXn={draft.toXn}
+            toYn={draft.toYn}
+            color={draftStyle?.color}
+            endStyle={draftStyle?.endStyle}
+            stemStyle={draftStyle?.stemStyle}
+            doubleEnded={draftStyle?.doubleEnded}
+            thickness={draftStyle?.thickness}
+            // Drafts always render at the CURRENT style version —
+            // they get stamped with it on commit, so the live
+            // preview during drag matches what's about to be
+            // persisted. Without this an in-flight arrow would
+            // render at v1 (the default when styleVersion is
+            // undefined) and then jump to the current version
+            // proportions on pointerup.
+            styleVersion={CURRENT_ARROW_STYLE_VERSION}
+            imageWidthPx={imageWidthPx}
+            imageHeightPx={imageHeightPx}
+            isDraft
+          />
+        )}
+        {draft?.kind === "rect-drag" && liveRect !== null && (
+          <>
+            {draft.tool === "highlight" && (
+              <HighlightGlyph
+                rect={liveRect}
+                color={draftStyle?.color}
+                blend={draftStyle?.highlightBlend}
+                imageWidthPx={imageWidthPx}
+                imageHeightPx={imageHeightPx}
+                isDraft
+              />
+            )}
+            {draft.tool === "rect" && (
+              <RectGlyph
+                rect={liveRect}
+                color={draftStyle?.color}
+                thickness={draftStyle?.thickness}
+                filled={draftStyle?.filled ?? false}
+                imageWidthPx={imageWidthPx}
+                imageHeightPx={imageHeightPx}
+                isDraft
+              />
+            )}
+          </>
+        )}
+      </svg>
+    </>
   );
 }
+
+/** CSS z-index used for editor chrome (drafts, selection outlines,
+ *  transform handles, text-draft-input). Sentinel above any
+ *  realistic layer.z_index value — even after many reorders pushing
+ *  layers up, the chrome will still paint on top. Exported because
+ *  the outer Editor uses the same constant for TransformHandles +
+ *  TextDraftInput so they sit at the same chrome level. */
+export const Z_INDEX_CHROME = 1_000_000_000;
 
 function ArrowGlyph({
   fromXn,
@@ -2053,7 +2083,15 @@ export function TransformHandles({
         // themselves (and the body-hit rect) catch pointer events.
         // That way a click outside any catcher falls through to the
         // canvas's pointer handlers (selection / drawing).
-        pointerEvents: "none"
+        pointerEvents: "none",
+        // Chrome z-index sentinel — sit ABOVE every persisted layer
+        // regardless of their layer.z_index. Without this, a text or
+        // blur layer with a high z_index (after many "Bring Forward"
+        // ops) could paint OVER its own transform handles, leaving
+        // the handles invisible / unclickable. See OverlaySvg's
+        // "per-glyph mini-SVGs" comment for the parallel rationale
+        // on the persisted side.
+        zIndex: Z_INDEX_CHROME
       }}
     >
       {/* Body-hit rect rendered FIRST (handles paint on top + take

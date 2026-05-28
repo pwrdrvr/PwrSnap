@@ -23,6 +23,14 @@ beforeAll(() => {
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+/** Returns the test container element — querySelectors against it
+ *  find content across ALL editor SVGs (one mini-SVG per persisted
+ *  glyph + one chrome SVG for drafts/selection outlines). Tests
+ *  that need to isolate the chrome SVG (selection outlines, drafts)
+ *  use `[data-testid='chrome-svg']`; tests that need a specific
+ *  persisted glyph's SVG use `[data-testid='persisted-glyph-svg']`.
+ *  See the "per-glyph mini-SVGs for cross-kind z-order" comment in
+ *  OverlaySvg.tsx for the rationale. */
 async function renderOverlaySvg(
   overlays: OverlayRow[],
   dims: { imageWidthPx: number; imageHeightPx: number } = {
@@ -32,7 +40,7 @@ async function renderOverlaySvg(
   extraProps: {
     selectedLayerIds?: readonly string[];
   } = {}
-): Promise<SVGSVGElement> {
+): Promise<HTMLDivElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -56,9 +64,11 @@ async function renderOverlaySvg(
   await act(async () => {
     await Promise.resolve();
   });
-  const svg = container.querySelector("svg.editor-svg");
-  if (svg === null) throw new Error("OverlaySvg did not render an svg element");
-  return svg as SVGSVGElement;
+  // Sanity check — at least the chrome SVG must always render (the
+  // per-glyph mini-SVGs are conditional on having persisted shapes).
+  const anySvg = container.querySelector("svg.editor-svg");
+  if (anySvg === null) throw new Error("OverlaySvg did not render any svg element");
+  return container;
 }
 
 function textRow(
@@ -278,7 +288,7 @@ describe("OverlaySvg ArrowGlyph — thickness", () => {
     // dimensions scale with stroke. Assert the head polygon's
     // perpendicular extent (a proxy for headWidthPx) ~doubles with
     // Large.
-    function headPerpExtent(svg: SVGSVGElement): number {
+    function headPerpExtent(svg: HTMLDivElement): number {
       // The arrow runs horizontally in arrowRow() — from (0.2, 0.5)
       // to (0.8, 0.5). The colored head polygon (no halo) is the one
       // with `fill !== "white"`. Its three vertices' y-range equals
@@ -660,14 +670,20 @@ describe("OverlaySvg ArrowGlyph — portrait images (the original symptom)", () 
 
   test("viewBox uses pixel-space dimensions, not normalized 0..1", async () => {
     // The load-bearing assertion: viewBox MUST be pixel-space so
-    // strokes render isotropically on non-square images.
-    const svg = await renderOverlaySvg([arrowRow()], PORTRAIT_DIMS);
-    const viewBox = svg.getAttribute("viewBox");
-    expect(viewBox).toBe(`0 0 ${PORTRAIT_DIMS.imageWidthPx} ${PORTRAIT_DIMS.imageHeightPx}`);
-    // preserveAspectRatio should NOT be "none" — that would re-introduce
-    // the bug. Default (xMidYMid meet) is correct here.
-    const par = svg.getAttribute("preserveAspectRatio");
-    expect(par).not.toBe("none");
+    // strokes render isotropically on non-square images. EVERY SVG
+    // (per-glyph mini-SVG + chrome SVG) must share this viewBox so
+    // glyphs and selection outlines coexist in the same coord space.
+    const container = await renderOverlaySvg([arrowRow()], PORTRAIT_DIMS);
+    const svgs = Array.from(container.querySelectorAll("svg.editor-svg"));
+    expect(svgs.length).toBeGreaterThan(0);
+    for (const svg of svgs) {
+      const viewBox = svg.getAttribute("viewBox");
+      expect(viewBox).toBe(`0 0 ${PORTRAIT_DIMS.imageWidthPx} ${PORTRAIT_DIMS.imageHeightPx}`);
+      // preserveAspectRatio should NOT be "none" — that would re-introduce
+      // the bug. Default (xMidYMid meet) is correct here.
+      const par = svg.getAttribute("preserveAspectRatio");
+      expect(par).not.toBe("none");
+    }
   });
 
   test("horizontal arrow on portrait: stem is horizontal in pixel space (not skewed)", async () => {
@@ -916,5 +932,105 @@ describe("OverlaySvg — paint order respects z_index across kinds", () => {
     const rectEl = rectEls[0]!;
     expect(paintsBefore(firstLine, rectEl)).toBe(true);
     expect(paintsBefore(rectEl, lastLine)).toBe(true);
+  });
+});
+
+describe("OverlaySvg — per-glyph mini-SVG wrappers with CSS z-index", () => {
+  // Pre-refactor, OverlaySvg rendered ONE big SVG with all glyphs as
+  // siblings inside. SVG document order = paint order within that
+  // SVG, but CSS z-index doesn't apply to SVG children — only to
+  // SVG elements themselves. That means a glyph inside the SVG
+  // couldn't stack against a sibling HTML element (a blur item, a
+  // text wrapper) via CSS z-index — they were all in one z-block.
+  //
+  // To support cross-kind z-order (arrow↔blur, rect↔text, etc.),
+  // each persisted SVG glyph now renders in its OWN mini-SVG with
+  // CSS z-index = row.z_index. The chrome SVG (drafts + selection
+  // outlines) is separate, at a sentinel z-index above all
+  // persisted layers.
+  //
+  // These tests verify the structural change. Cross-kind interaction
+  // tests live in the parent (Editor.tsx) layer — here we just check
+  // each glyph gets its own positioned SVG with the right z-index.
+
+  function arrowRowAt(id: string, zIndex: number): OverlayRow {
+    return {
+      id,
+      capture_id: "cap_1",
+      data: {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.5 },
+        to: { x: 0.9, y: 0.5 },
+        color: "auto"
+      },
+      schema_version: 1,
+      created_at: "2026-05-28T00:00:00Z",
+      applied_at: "2026-05-28T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      ai_run_id: null,
+      source: "user",
+      z_index: zIndex
+    };
+  }
+  function rectRowAt(id: string, zIndex: number): OverlayRow {
+    return {
+      id,
+      capture_id: "cap_1",
+      data: {
+        kind: "rect",
+        rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
+        color: "auto"
+      },
+      schema_version: 1,
+      created_at: "2026-05-28T00:00:00Z",
+      applied_at: "2026-05-28T00:00:00Z",
+      rejected_at: null,
+      superseded_by: null,
+      ai_run_id: null,
+      source: "user",
+      z_index: zIndex
+    };
+  }
+
+  test("each persisted glyph renders in its own SVG with CSS z-index = row.z_index", async () => {
+    await renderOverlaySvg([
+      arrowRowAt("arrow_perglyph_1", 1200),
+      rectRowAt("recttt_perglyph_2", 3400),
+      arrowRowAt("arrow_perglyph_3", 5600)
+    ]);
+    // After refactor, each persisted glyph lives in its OWN
+    // `<svg>` element. We expect 3 persisted-glyph SVGs plus 1
+    // chrome SVG = 4 SVGs total. The persisted ones are tagged
+    // with `data-testid="persisted-glyph-svg"` so we can find
+    // them without coupling to class names.
+    const persistedSvgs = Array.from(
+      container!.querySelectorAll<SVGSVGElement>(
+        "[data-testid='persisted-glyph-svg']"
+      )
+    );
+    expect(persistedSvgs.length).toBe(3);
+    // Each carries its layer's z_index in inline style.
+    const zs = persistedSvgs
+      .map((s) => Number(s.style.zIndex))
+      .filter((n) => !Number.isNaN(n))
+      .sort((a, b) => a - b);
+    expect(zs).toEqual([1200, 3400, 5600]);
+  });
+
+  test("chrome SVG (drafts + selection outlines) renders at a HIGH sentinel z-index above any layer z_index", async () => {
+    // Persisted layer at z_index = 9_000_000 (would-be-absurd but
+    // possible after many reorders); chrome must still paint above.
+    await renderOverlaySvg(
+      [arrowRowAt("arrow_chrome_xx1", 9_000_000)],
+      undefined,
+      { selectedLayerIds: ["arrow_chrome_xx1"] }
+    );
+    const chrome = container!.querySelector<SVGSVGElement>(
+      "[data-testid='chrome-svg']"
+    );
+    expect(chrome).not.toBeNull();
+    const chromeZ = Number(chrome!.style.zIndex);
+    expect(chromeZ).toBeGreaterThan(9_000_000);
   });
 });

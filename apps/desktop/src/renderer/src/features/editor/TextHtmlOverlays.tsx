@@ -115,6 +115,12 @@ export function TextHtmlOverlays(props: TextHtmlOverlaysProps): ReactElement {
             sourceHeightPx={props.sourceHeightPx}
             canvasCssHeight={props.canvasCssHeight}
             rotation={readOverlayRotation(data)}
+            // Per-layer CSS z-index for cross-kind stacking. See
+            // BlurOverlays for the parallel discipline — both paths
+            // pass row.z_index so blur ↔ text ↔ arrow / rect /
+            // highlight all participate in one canvas-wrap stacking
+            // context.
+            zIndex={row.z_index}
           />
         );
       })}

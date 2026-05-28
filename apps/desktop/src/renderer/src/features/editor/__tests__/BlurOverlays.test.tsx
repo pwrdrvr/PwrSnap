@@ -868,3 +868,67 @@ describe("BlurOverlays — rotated blur mirrors bake AABB + mask (issue #147)", 
     expect(call.srcH).toBeCloseTo(aabb.h * scale, 4);
   });
 });
+
+describe("BlurOverlays — z-index per layer (cross-kind ordering)", () => {
+  // Regression for: "Bring Forward / Bring to Front on a Rect does
+  // not bring it above the arrows, ever." (User reported on PR #150
+  // for arrow↔rect — fixed via SVG paint-order — and then noted
+  // that blur is in the same broken kind-bucket-stacking class. Same
+  // fix shape: each persisted blur item gets CSS z-index = layer's
+  // z_index so it stacks in the canvas-wrap stacking context against
+  // arrows/rects/text by their layer z_index.)
+  //
+  // The container `.ed-blur-layer` is `position: absolute` with NO
+  // z-index, so it does NOT create its own stacking context — its
+  // children's CSS z-index applies to the canvas-wrap context.
+  // These tests just verify the per-item z-index reaches the DOM.
+
+  test("each persisted blur item carries CSS z-index = its layer.z_index", () => {
+    const ref = createRef<HTMLImageElement>();
+    const a = blurRow("blur_zindex_a_", "gaussian");
+    const b = blurRow("blur_zindex_b_", "gaussian");
+    const c = blurRow("blur_zindex_c_", "redact");
+    a.z_index = 1000;
+    b.z_index = 2000;
+    c.z_index = 3000;
+    const el = render({
+      overlays: [a, b, c],
+      draft: null,
+      blurStyle: "gaussian",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const items = Array.from(
+      el.querySelectorAll<HTMLDivElement>(
+        ".ed-blur-item:not(.is-draft)"
+      )
+    );
+    // Three persisted items.
+    expect(items.length).toBe(3);
+    // Each item's inline style includes the layer's z_index. Order
+    // of items in DOM matches the array order (newest LAST), but
+    // the z-index VALUES are what makes cross-kind stacking work,
+    // not DOM order.
+    expect(items[0]!.style.zIndex).toBe("1000");
+    expect(items[1]!.style.zIndex).toBe("2000");
+    expect(items[2]!.style.zIndex).toBe("3000");
+  });
+
+  test("pixelate canvas items also carry CSS z-index = layer.z_index", () => {
+    const ref = createRef<HTMLImageElement>();
+    const a = blurRow("blur_pixzix_a_", "pixelate");
+    a.z_index = 4500;
+    const el = render({
+      overlays: [a],
+      draft: null,
+      blurStyle: "pixelate",
+      editorImageRef: ref,
+      canvasWidthPx: 400,
+      canvasHeightPx: 300
+    });
+    const canvas = el.querySelector<HTMLCanvasElement>("canvas");
+    expect(canvas).not.toBeNull();
+    expect(canvas!.style.zIndex).toBe("4500");
+  });
+});

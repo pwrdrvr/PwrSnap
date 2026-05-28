@@ -448,3 +448,45 @@ describe("TextHtmlOverlays — multi-line preservation", () => {
     expect(bodies).toContain(body);
   });
 });
+
+describe("TextHtmlOverlays — z-index per layer (cross-kind ordering)", () => {
+  // Same fix shape as BlurOverlays + the SVG-glyph paint-order fix:
+  // each persisted text row's wrapper carries CSS z-index =
+  // row.z_index so cross-kind stacking against blur / arrow / rect
+  // / highlight respects the canvas's per-layer z_index values.
+  // The wrapper div is `position: absolute` via inline style; the
+  // container around them is `position: absolute` with NO z-index
+  // (no stacking context), so the wrappers' z-index applies to
+  // the canvas-wrap context.
+
+  test("each persisted text wrapper carries CSS z-index = row.z_index", async () => {
+    const a: OverlayRow = {
+      ...textRow("text_zindex_a", { body: "first" }),
+      z_index: 1000
+    };
+    const b: OverlayRow = {
+      ...textRow("text_zindex_b", { body: "second" }),
+      z_index: 2500
+    };
+    const c: OverlayRow = {
+      ...textRow("text_zindex_c", { body: "third" }),
+      z_index: 4500
+    };
+    await render([a, b, c]);
+    // Wrappers are the position:absolute divs that hold each TextHtml.
+    const wrappers = Array.from(
+      container!.querySelectorAll<HTMLDivElement>("div")
+    ).filter((d) => d.style.position === "absolute");
+    // Three wrappers (one per text row).
+    expect(wrappers.length).toBe(3);
+    // Each wrapper's z-index matches the row's z_index, regardless
+    // of DOM position. (DOM position also matches array order for
+    // the same-z-index-defaults-to-tie-case, but z-index is the
+    // authoritative cross-kind discriminator.)
+    const zs = wrappers
+      .map((w) => Number(w.style.zIndex))
+      .filter((n) => !Number.isNaN(n))
+      .sort((x, y) => x - y);
+    expect(zs).toEqual([1000, 2500, 4500]);
+  });
+});

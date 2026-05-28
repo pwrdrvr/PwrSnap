@@ -48,6 +48,7 @@ import {
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate } from "./useCaptureModel";
+import { Z_INDEX_CHROME } from "./OverlaySvg";
 import "./BlurOverlays.css";
 
 export function BlurOverlays({
@@ -144,6 +145,15 @@ export function BlurOverlays({
       {blurs.map(({ row, data }) => {
         const style = readBlurStyle(data);
         const rotation = readOverlayRotation(data);
+        // Persisted blur items carry their layer.z_index in CSS so
+        // they stack against arrows / rects / text / highlight by
+        // their layer's z_index — same canvas-wrap stacking context
+        // across all kinds. Pre-fix the editor ignored cross-kind
+        // z_index (each render container's items were in their own
+        // bucket) and a Bring-Forward/Send-Backward on a layer of
+        // one kind couldn't move it past a layer of a different
+        // kind. The user's repro: "Bring Forward / Bring to Front
+        // on that Rect does not bring it above the arrows... ever."
         return renderBlur({
           key: row.id,
           rect: data.rect,
@@ -155,7 +165,8 @@ export function BlurOverlays({
           sourceWidthPx,
           sourceHeightPx,
           rasterTranslateXPx,
-          rasterTranslateYPx
+          rasterTranslateYPx,
+          zIndex: row.z_index
         });
       })}
       {liveRect !== null &&
@@ -173,7 +184,14 @@ export function BlurOverlays({
           sourceHeightPx,
           rasterTranslateXPx,
           rasterTranslateYPx,
-          isDraft: true
+          isDraft: true,
+          // Chrome z-index sentinel — paint ABOVE every persisted blur
+          // (or other persisted layer) regardless of their layer.z_index.
+          // Without this, the draft would inherit z-index auto (= 0) and
+          // a high-z_index persisted blur could occlude the live-drag
+          // preview. See OverlaySvg's chrome SVG for the parallel
+          // rationale.
+          zIndex: Z_INDEX_CHROME
         })}
     </div>
   );
@@ -196,8 +214,14 @@ function renderBlur(args: {
   rasterTranslateXPx: number;
   rasterTranslateYPx: number;
   isDraft?: boolean;
+  /** Optional CSS z-index for cross-kind ordering. Persisted blurs
+   *  pass `row.z_index`; the in-flight draft passes `Z_INDEX_CHROME`
+   *  so it paints above every persisted layer. Threaded uniformly
+   *  to all three render branches so the rotation × style decision
+   *  tree below doesn't have to know about chrome vs persisted. */
+  zIndex?: number;
 }): ReactElement {
-  const { key, rect, rotation, style, isDraft = false } = args;
+  const { key, rect, rotation, style, isDraft = false, zIndex } = args;
   // ROTATED gaussian + pixelate: the bake samples the rotated rect's
   // AABB, applies the effect, masks to the rotated rect interior. CSS
   // backdrop-filter and the un-rotated canvas mosaic can't replicate
@@ -218,6 +242,7 @@ function renderBlur(args: {
         rasterTranslateXPx={args.rasterTranslateXPx}
         rasterTranslateYPx={args.rasterTranslateYPx}
         isDraft={isDraft}
+        {...(zIndex !== undefined ? { zIndex } : {})}
       />
     );
   }
@@ -236,6 +261,7 @@ function renderBlur(args: {
         rasterTranslateXPx={args.rasterTranslateXPx}
         rasterTranslateYPx={args.rasterTranslateYPx}
         isDraft={isDraft}
+        {...(zIndex !== undefined ? { zIndex } : {})}
       />
     );
   }
@@ -250,6 +276,7 @@ function renderBlur(args: {
       rotation={rotation}
       style={style}
       isDraft={isDraft}
+      {...(zIndex !== undefined ? { zIndex } : {})}
     />
   );
 }
@@ -258,7 +285,8 @@ function BlurOverlayItem({
   rect,
   rotation,
   style,
-  isDraft = false
+  isDraft = false,
+  zIndex
 }: {
   rect: { x: number; y: number; w: number; h: number };
   /** Clockwise rotation in radians around the rect's geometric center.
@@ -277,6 +305,14 @@ function BlurOverlayItem({
   rotation: number;
   style: BlurStyle;
   isDraft?: boolean;
+  /** Optional CSS z-index for cross-kind ordering. Persisted blur
+   *  items pass `row.z_index` so they stack against arrows / rects /
+   *  text / highlight in the canvas's stacking context (the parent
+   *  `.ed-blur-layer` has no z-index of its own → no stacking
+   *  context, children's z-index applies to canvas-wrap). Draft
+   *  preview items omit it (default `undefined`) and pick up the
+   *  chrome z-index sentinel via the wrapping draft container. */
+  zIndex?: number;
 }): ReactElement {
   const rotateDeg = (rotation * 180) / Math.PI;
   return (
@@ -289,7 +325,8 @@ function BlurOverlayItem({
         top: `${rect.y * 100}%`,
         width: `${rect.w * 100}%`,
         height: `${rect.h * 100}%`,
-        ...(rotation !== 0 ? { transform: `rotate(${rotateDeg}deg)` } : {})
+        ...(rotation !== 0 ? { transform: `rotate(${rotateDeg}deg)` } : {}),
+        ...(zIndex !== undefined ? { zIndex } : {})
       }}
     />
   );
@@ -441,7 +478,8 @@ function RotatedEffectCanvas({
   sourceHeightPx,
   rasterTranslateXPx,
   rasterTranslateYPx,
-  isDraft = false
+  isDraft = false,
+  zIndex
 }: {
   rect: { x: number; y: number; w: number; h: number };
   rotation: number;
@@ -457,6 +495,10 @@ function RotatedEffectCanvas({
   rasterTranslateXPx: number;
   rasterTranslateYPx: number;
   isDraft?: boolean;
+  /** Optional CSS z-index — see BlurOverlayItem for the contract.
+   *  Persisted rotated blurs pass row.z_index for cross-kind stacking;
+   *  draft preview gets `Z_INDEX_CHROME`. Threaded through `renderBlur`. */
+  zIndex?: number;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const aabb = useMemo(
@@ -633,7 +675,8 @@ function RotatedEffectCanvas({
         height: `${(aabb.aabbH / canvasHeightPx) * 100}%`,
         // The mask: only the rotated-rect interior survives. AABB
         // corners outside the rotated rect get clipped to transparent.
-        clipPath: `polygon(${polygonPoints})`
+        clipPath: `polygon(${polygonPoints})`,
+        ...(zIndex !== undefined ? { zIndex } : {})
       }}
     />
   );
@@ -659,7 +702,8 @@ function PixelateMosaicCanvas({
   sourceHeightPx,
   rasterTranslateXPx,
   rasterTranslateYPx,
-  isDraft = false
+  isDraft = false,
+  zIndex
 }: {
   rect: { x: number; y: number; w: number; h: number };
   editorImageRef: RefObject<HTMLImageElement | null>;
@@ -670,6 +714,12 @@ function PixelateMosaicCanvas({
   rasterTranslateXPx: number;
   rasterTranslateYPx: number;
   isDraft?: boolean;
+  /** Optional CSS z-index — see BlurOverlayItem for the contract.
+   *  Persisted pixelate items pass row.z_index for cross-kind
+   *  stacking; draft preview gets `Z_INDEX_CHROME`. Threaded through
+   *  `renderBlur` so this branch doesn't have to know about chrome
+   *  vs persisted. */
+  zIndex?: number;
 }): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
@@ -757,7 +807,8 @@ function PixelateMosaicCanvas({
         top: `${rect.y * 100}%`,
         width: `${rect.w * 100}%`,
         height: `${rect.h * 100}%`,
-        imageRendering: "pixelated"
+        imageRendering: "pixelated",
+        ...(zIndex !== undefined ? { zIndex } : {})
       }}
     />
   );

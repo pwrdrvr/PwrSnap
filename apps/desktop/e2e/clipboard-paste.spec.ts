@@ -154,20 +154,14 @@ test.describe("clipboard paste into library", () => {
     }
   });
 
-  test("capture:pasteFromClipboard returns a structured error when clipboard has no image", async () => {
-    const app = await launchPwrSnap();
-    try {
-      await clearClipboard(app);
-
-      const pasted = await app.dispatch("capture:pasteFromClipboard", {});
-      expect(pasted.ok).toBe(false);
-      if (pasted.ok) return;
-      expect(pasted.error.kind).toBe("clipboard");
-      expect(pasted.error.code).toBe("no_image");
-    } finally {
-      await app.close();
-    }
-  });
+  // `capture:pasteFromClipboard returns a structured error when
+  // clipboard has no image` moved to
+  // apps/desktop/src/main/handlers/__tests__/capture-handlers-paste-from-clipboard.test.ts.
+  // The no-image branch reads the clipboard surface, finds nothing,
+  // returns an err Result — no NSPasteboard, persistence, or render
+  // dependency. The launchPwrSnap round-trip was 100% of the test
+  // budget. The two real-clipboard tests below still need the macOS
+  // pasteboard semantics.
 
   test("capture:pasteFromClipboard persists an image file URL from the clipboard", async () => {
     const app = await launchPwrSnap();

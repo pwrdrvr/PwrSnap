@@ -272,33 +272,11 @@ test("settings:refreshCodexDiscovery returns a snapshot", async () => {
   }
 });
 
-test("settings:replaceSecret rejects unknown secret names with validation error", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const result = await app.dispatch("settings:replaceSecret", {
-      name: "notARealSecret" as never,
-      value: "x"
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.kind).toBe("validation");
-    expect(result.error.code).toBe("invalid_secret_name");
-  } finally {
-    await app.close();
-  }
-});
-
-test("settings:write rejects null over a non-nullable field", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const result = await app.dispatch("settings:write", {
-      codex: { pinnedPath: null as never }
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error.kind).toBe("validation");
-    expect(result.error.code).toContain("invalid");
-  } finally {
-    await app.close();
-  }
-});
+// `settings:replaceSecret rejects unknown secret names` and
+// `settings:write rejects null over a non-nullable field` are bus-edge
+// validator assertions — pure envelope shape with no Electron behavior.
+// Both are already covered identically in
+// apps/desktop/src/main/handlers/__tests__/settings-handlers.test.ts
+// ("settings:* validation" describe block), so the E2E versions were
+// adding ~5s × 2 of launchPwrSnap time per CI run to test something
+// the unit suite already pins.

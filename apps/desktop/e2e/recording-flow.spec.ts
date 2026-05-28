@@ -1,5 +1,6 @@
-// Recording flow E2E — covers the command-bus surface + the post-
-// capture video float-over without spawning a real recorder.
+// Recording flow E2E — covers the post-capture video float-over
+// rendered against a seeded video row, without spawning a real
+// recorder.
 //
 // Why no real recording: the Swift binary needs Screen Recording
 // TCC + ScreenCaptureKit. The Playwright Electron harness has
@@ -7,9 +8,11 @@
 // prompt forever and time out. The recording-service itself is
 // covered by main-side unit tests
 // (apps/desktop/src/main/recording/__tests__/recording-service.test.ts).
-// This spec asserts the wiring: bus handlers behave correctly,
-// permissions readiness shape is sane, and the float-over renders
-// the video asset branch end-to-end against a seeded row.
+// The command-bus envelope (recording:state / cancel / restart,
+// permissions:readiness / request) is covered by
+// (apps/desktop/src/main/handlers/__tests__/recording-handlers-bus.test.ts).
+// This spec only retains tests that inspect real BrowserWindow
+// lifecycle + rendered DOM, which the bus mock can't reproduce.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -18,87 +21,14 @@ import { launchPwrSnap } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
 
-test.describe("recording flow — command bus", () => {
-  test("recording:state returns idle on a fresh launch", async () => {
-    const app = await launchPwrSnap();
-    try {
-      const res = await app.dispatch("recording:state", {});
-      expect(res.ok).toBe(true);
-      if (res.ok) expect(res.value).toEqual({ phase: "idle" });
-    } finally {
-      await app.close();
-    }
-  });
-
-  test("recording:cancel from idle is unconditional reset (always succeeds)", async () => {
-    const app = await launchPwrSnap();
-    try {
-      // The unconditional-reset contract: cancel always returns
-      // idle, even when nothing's recording. Lets the tray's Cancel
-      // menu item clear a wedged HUD in cases where internal state
-      // is out of sync.
-      const res = await app.dispatch("recording:cancel", {});
-      expect(res.ok).toBe(true);
-      const state = await app.dispatch("recording:state", {});
-      expect(state.ok && state.value.phase).toBe("idle");
-    } finally {
-      await app.close();
-    }
-  });
-
-  test("recording:restart from idle returns validation/not_recording", async () => {
-    const app = await launchPwrSnap();
-    try {
-      const res = await app.dispatch("recording:restart", {});
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error.kind).toBe("validation");
-        expect(res.error.code).toBe("not_recording");
-      }
-    } finally {
-      await app.close();
-    }
-  });
-
-  test("permissions:readiness returns the expected shape", async () => {
-    const app = await launchPwrSnap();
-    try {
-      const res = await app.dispatch("permissions:readiness", {});
-      expect(res.ok).toBe(true);
-      if (!res.ok) return;
-      const r = res.value;
-      expect(["granted", "denied", "not-determined", "restricted", "unavailable", "unknown"]).toContain(
-        r.screenRecording
-      );
-      expect(["granted", "denied", "not-determined", "restricted", "unavailable", "unknown"]).toContain(
-        r.microphone
-      );
-      expect(["granted", "denied", "not-determined", "restricted", "unavailable", "unknown"]).toContain(
-        r.systemAudio
-      );
-      // Stable 16-char hex fingerprint (sha1 prefix).
-      expect(r.fingerprint).toMatch(/^[0-9a-f]{16}$/);
-    } finally {
-      await app.close();
-    }
-  });
-
-  test("permissions:request rejects unknown permission names", async () => {
-    const app = await launchPwrSnap();
-    try {
-      const res = await app.dispatch("permissions:request", {
-        permission: "bogus" as never
-      });
-      expect(res.ok).toBe(false);
-      if (!res.ok) {
-        expect(res.error.kind).toBe("validation");
-        expect(res.error.code).toBe("unknown_permission");
-      }
-    } finally {
-      await app.close();
-    }
-  });
-});
+// "recording flow — command bus" — five IPC-envelope tests moved to
+// apps/desktop/src/main/handlers/__tests__/recording-handlers-bus.test.ts.
+// Each was a launchPwrSnap + single bus.dispatch + Result assertion; the
+// entire test budget was spent in the cold-start and they made up the
+// dominant share of the Linux/xvfb worker-teardown flakes on PR #125
+// (CI runs 26549457564 + 26550169080). The video float-over tests below
+// keep their E2E shape — they inspect real BrowserWindow lifecycle and
+// rendered DOM, which the bus mock can't reproduce.
 
 test.describe("video float-over", () => {
   test.skip(!isMac, "float-over relies on macOS BrowserWindow alwaysOnTop semantics");

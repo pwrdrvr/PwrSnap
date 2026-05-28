@@ -232,16 +232,52 @@ describe("useVideoExportPresets", () => {
     expect(videoDragSink).toHaveLength(0);
   });
 
-  test("triggerDrag fires startVideoDrag with the (captureId, format, preset) tuple", () => {
+  test("triggerDrag fires startVideoDrag AND a parallel video:export for visible state", async () => {
     const harness = mount("cap_1");
     act(() => {
       harness.snapshot().triggerDrag("mp4", "high");
     });
+    // Native drag IPC fires immediately (fire-and-forget).
     expect(videoDragSink).toEqual([
       { captureId: "cap_1", format: "mp4", preset: "high" }
     ]);
-    // Drag is fire-and-forget — no state transition.
-    expect(harness.snapshot().states["mp4-high"]).toBeUndefined();
+    // Card transitions to Encoding… so the user gets visible feedback
+    // during the (potentially long) ffmpeg run. Without this, the
+    // drag handle "dies" silently.
+    expect(harness.snapshot().states["mp4-high"]).toEqual({ kind: "running" });
+    expect(pendingResolvers[0]?.name).toBe("video:export");
+    expect(pendingResolvers[0]?.req).toEqual({
+      captureId: "cap_1",
+      format: "mp4",
+      preset: "high"
+    });
+
+    // Encode resolves → card flips to done.
+    await resolveNext({ ok: true, value: { path: "/cache/dragged.mp4" } });
+    expect(harness.snapshot().states["mp4-high"]).toEqual({
+      kind: "done",
+      path: "/cache/dragged.mp4"
+    });
+  });
+
+  test("captureId change mid-encode drops the stale resolution onto the floor", async () => {
+    // Regression for the cross-capture state leak: a slow encode for
+    // capture A that resolves after the user has navigated to capture
+    // B must NOT paint a `done` state onto B's cards.
+    const harness = mount("cap_a");
+    act(() => {
+      harness.snapshot().triggerCopy("gif", "low");
+    });
+    expect(harness.snapshot().states["gif-low"]).toEqual({ kind: "running" });
+
+    // Navigate to a different capture while the dispatch is in flight.
+    harness.setCaptureId("cap_b");
+    expect(harness.snapshot().states).toEqual({});
+
+    // Old dispatch resolves — should be ignored because the current
+    // captureId no longer matches what the dispatch was issued for.
+    await resolveNext({ ok: true, value: { path: "/cache/cap_a.gif" } });
+    expect(harness.snapshot().states).toEqual({});
   });
 
   test("concurrent triggers on different cells track independently", async () => {

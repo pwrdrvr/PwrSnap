@@ -26,6 +26,11 @@ import sharp from "sharp";
 import { createHash } from "node:crypto";
 
 import type { BundleLayerNode, Overlay, OverlayRow } from "@pwrsnap/shared";
+import {
+  readHighlightBlend,
+  readHighlightColor,
+  readHighlightOpacity
+} from "@pwrsnap/shared";
 
 import { listLayerTree } from "../persistence/layers-repo";
 import { readSourceFromBundle } from "../persistence/bundle-store";
@@ -93,9 +98,30 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   }
   await mkdir(cacheDir, { recursive: true });
 
+  // Render scale: when the requested output width is LARGER than the
+  // canvas width (LOW / MED tiers on small captures), we upscale the
+  // whole composite so every layer rasterizes at the output
+  // resolution — crisp glyphs, visible halos, no blurry source-pixel-
+  // then-lanczos-upscale chain. When the requested width is the same
+  // or smaller (HIGH on small captures, or any tier on large
+  // captures), scale stays at 1 and the final resize handles the
+  // downscale at the end (same behavior as before).
+  //
+  // This is the load-bearing change for editor=baked-PNG WYSIWYG:
+  // pre-fix, text glyphs at a 361×187 source rendered at 6.23 source
+  // pixels tall regardless of LOW/MED tier — too small to show a
+  // visible text-stroke halo, palette-quantized in the output. Post-
+  // fix, LOW (req.width=800) renders the entire composite at scale
+  // 800/361 ≈ 2.21× so glyphs are ~14 px tall in the PNG with full
+  // RGBA antialiasing on the halo.
+  const renderScale =
+    req.width > req.canvasWidthPx ? req.width / req.canvasWidthPx : 1;
+  const renderWidthPx = Math.max(1, Math.round(req.canvasWidthPx * renderScale));
+  const renderHeightPx = Math.max(1, Math.round(req.canvasHeightPx * renderScale));
+
   const canvasInfo = {
-    width: req.canvasWidthPx,
-    height: req.canvasHeightPx,
+    width: renderWidthPx,
+    height: renderHeightPx,
     channels: 4 as const
   };
 
@@ -103,8 +129,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
   // RGBA buffer when fed back through `.raw().toBuffer()`.
   let accumulator = await sharp({
     create: {
-      width: req.canvasWidthPx,
-      height: req.canvasHeightPx,
+      width: renderWidthPx,
+      height: renderHeightPx,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     }
@@ -142,7 +168,8 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       canvasInfo,
       req,
       sourceWidthPx,
-      sourceHeightPx
+      sourceHeightPx,
+      renderScale
     );
   }
 
@@ -163,15 +190,32 @@ export async function composeV2(req: ComposeTreeRequest): Promise<ComposeTreeRes
       node.effect.type === "blur" &&
       (node.effect.style ?? "gaussian") === "pixelate"
   );
-  const downscaling = req.width < req.canvasWidthPx;
+  // Downscaling = accumulator is BIGGER than the requested output.
+  // Post-scale-fix the accumulator dims = renderWidthPx × renderHeightPx,
+  // so downscaling happens when req.width < renderWidthPx — which is
+  // the case for large captures (renderScale=1, accumulator at canvas
+  // dims, target smaller). For upscale tiers (scale > 1) the
+  // accumulator already matches target → this resize is a no-op
+  // (sharp short-circuits same-size resizes).
+  //
+  // withoutEnlargement was dropped because the upscale now happens
+  // UPSTREAM (in the per-layer rasterization), not here. Leaving it
+  // would prevent any rounding-correction at the very end.
+  const downscaling = req.width < renderWidthPx;
   const sized = sharp(accumulator, { raw: canvasInfo }).resize({
     width: req.width,
-    withoutEnlargement: true,
     ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
   });
+  // PNG: force palette: false so the encoder writes full RGBA (32-bit
+  // truecolor + alpha) instead of an 8-bit colormap. Palette mode is
+  // sharp's default for "simple" images and silently quantizes the
+  // text-stroke halo's subpixel antialiasing — the halo turns
+  // banded/lost. Editor renders at full RGBA; export should too.
   const outputBuf =
     req.format === "png"
-      ? await sized.png({ compressionLevel: 6, effort: 4 }).toBuffer()
+      ? await sized
+          .png({ compressionLevel: 6, effort: 4, palette: false })
+          .toBuffer()
       : await sized.webp({ lossless: true, effort: 4 }).toBuffer();
 
   const tmpPath = `${cachePath}.tmp-${process.pid}`;
@@ -210,8 +254,15 @@ async function renderNode(
    *  Threaded only as far as `compositeVectorOntoAccumulator` cares
    *  (TEXT shapes use it). Raster + effect layers compute their own
    *  sizing from `canvasInfo` + node fields. */
-  sourceWidthPx?: number,
-  sourceHeightPx?: number
+  sourceWidthPx: number | undefined,
+  sourceHeightPx: number | undefined,
+  /** Ratio renderDims / canvasDims. Equals 1 for HIGH or any tier where
+   *  req.width ≤ canvasWidth (the accumulator is at canvas dims and no
+   *  per-layer upscale is needed). Greater than 1 for LOW/MED on small
+   *  captures (accumulator at render dims; raster + effect layers must
+   *  scale their CANVAS-coord positions/dims by this factor or they end
+   *  up in the wrong place). */
+  renderScale: number
 ): Promise<Buffer> {
   if (!node.visible) return accumulator;
 
@@ -222,19 +273,31 @@ async function renderNode(
       return accumulator;
 
     case "raster":
-      return compositeRasterOntoAccumulator(node, accumulator, canvasInfo, req);
+      return compositeRasterOntoAccumulator(
+        node,
+        accumulator,
+        canvasInfo,
+        req,
+        renderScale
+      );
 
     case "vector":
       return compositeVectorOntoAccumulator(
         node,
         accumulator,
         canvasInfo,
+        // UNSCALED canvas dims from the request — distinct from
+        // canvasInfo.width/height which are the post-scale RENDER
+        // dims. The HTML text bake needs the unscaled dims for
+        // sizePx math anchored to the source raster's short side.
+        req.canvasWidthPx,
+        req.canvasHeightPx,
         sourceWidthPx,
         sourceHeightPx
       );
 
     case "effect":
-      return applyEffectOntoAccumulator(node, accumulator, canvasInfo);
+      return applyEffectOntoAccumulator(node, accumulator, canvasInfo, renderScale);
   }
 }
 
@@ -254,24 +317,42 @@ async function compositeRasterOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "raster" }>,
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
-  req: ComposeTreeRequest
+  req: ComposeTreeRequest,
+  /** Render-vs-canvas dim ratio. For scale > 1 (LOW/MED on small
+   *  captures) the accumulator is at render dims but the raster's
+   *  transform[4]/[5] (tx, ty) and natural_*_px are in CANVAS coords.
+   *  Scale both so the raster lands at the correct position AND fills
+   *  the same proportional region of the (larger) accumulator. Without
+   *  this, the raster ends up in the upper-left at unscaled dims and
+   *  vector overlays — which DO scale to render dims via SVG width=
+   *  renderWidthPx — spread across the rest of the canvas. */
+  renderScale: number
 ): Promise<Buffer> {
   const sourceBytes = await readSourceFromBundle(req.bundlePath, node.source_ref.sha256);
-  const tx = Math.round(node.transform[4]);
-  const ty = Math.round(node.transform[5]);
+  // CANVAS-coord position. Scaled below into render coords for placement
+  // on the accumulator.
+  const tx = Math.round(node.transform[4] * renderScale);
+  const ty = Math.round(node.transform[5] * renderScale);
 
-  // Decode source → raw RGBA at natural dims.
+  // Decode source → raw RGBA at natural dims, scaled to render dims.
+  // The raster's `natural_*_px` is in CANVAS pixels (matches what the
+  // editor saved — for an unmodified capture, natural dims = source
+  // PNG dims = canvas dims). At renderScale > 1 we need to upscale the
+  // raster to render dims so it covers the same proportional region of
+  // the accumulator that it covers in the canvas.
   let layerInput: Buffer = sourceBytes;
   let layerInputInfo: sharp.OverlayOptions["raw"] | undefined = undefined;
 
-  // If transform contains non-identity scale (transform[0] or [3] != 1)
-  // resize accordingly. For v2.0 the editor doesn't expose scale, so
-  // most layers will be identity.
+  // Effective target dims = natural × transform-scale × renderScale.
+  // transform[0]/[3] are the affine scale (1 for identity); renderScale
+  // is the bake-pipeline scale (1 for HIGH or any scale-down tier).
   const scaleX = node.transform[0];
   const scaleY = node.transform[3];
-  if (scaleX !== 1 || scaleY !== 1) {
-    const targetW = Math.max(1, Math.round(node.natural_width_px * scaleX));
-    const targetH = Math.max(1, Math.round(node.natural_height_px * scaleY));
+  const effectiveScaleX = scaleX * renderScale;
+  const effectiveScaleY = scaleY * renderScale;
+  if (effectiveScaleX !== 1 || effectiveScaleY !== 1) {
+    const targetW = Math.max(1, Math.round(node.natural_width_px * effectiveScaleX));
+    const targetH = Math.max(1, Math.round(node.natural_height_px * effectiveScaleY));
     const rawScaled = await sharp(sourceBytes)
       .resize(targetW, targetH, { fit: "fill" })
       .ensureAlpha()
@@ -360,6 +441,13 @@ async function compositeVectorOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "vector" }>,
   accumulator: Buffer,
   canvasInfo: { width: number; height: number; channels: 4 },
+  /** UNSCALED canvas dims from the capture record. Distinct from
+   *  `canvasInfo.width/height` which are the RENDER dims (post
+   *  scale-aware upscale in composeV2). Passed through so the HTML
+   *  text bake's sizePx math stays anchored to the source raster's
+   *  short side regardless of the bake's render scale. */
+  canvasWidthPx: number,
+  canvasHeightPx: number,
   /** SOURCE raster's natural dims, captured upstream in `composeV2`
    *  from the root raster layer's `natural_*_px`. Threaded through so
    *  TEXT vector shapes can derive fontSize from sourceShortSide (per
@@ -397,17 +485,187 @@ async function compositeVectorOntoAccumulator(
     return accumulator; // EffectLayer is the v2 blur path
   }
 
+  // Special-case HIGHLIGHT: needs CSS-style blend (multiply / screen /
+  // overlay) computed against the accumulator content, NOT sharp's
+  // built-in blend modes. resvg premultiplies fill-opacity into the
+  // SVG's RGB during rasterization, and sharp's blend modes assume
+  // already-premultiplied input — so going through SVG → sharp.composite
+  // (blend:"multiply") produces results that diverge from CSS
+  // mix-blend-mode multiply by a lot:
+  //
+  //   user-visible symptom: a 50%-opaque blue highlight over a white
+  //   raster, which the editor renders as light blue (165, 207, 255),
+  //   bakes through the SVG path as gray-blue (146, 167, 192) —
+  //   dark+desaturated. WYSIWYG broken.
+  //
+  // Fix: extract the rect from the accumulator, apply the CSS blend
+  // formula per-pixel with the unpremultiplied tint color, then
+  // alpha-composite the blended result back at the user's opacity.
+  // This matches the editor's `mix-blend-mode: multiply` Chromium
+  // implementation exactly (modulo rounding).
+  const shape = node.shape as Overlay;
+  if (shape.kind === "highlight") {
+    return compositeHighlightOntoAccumulator(shape, accumulator, canvasInfo);
+  }
+
   const { buildCompositeLayersForV2 } = await import("./compose-tree-vector");
-  const layers = await buildCompositeLayersForV2(
-    fakeRow,
-    canvasInfo.width,
-    canvasInfo.height,
+  const layers = await buildCompositeLayersForV2(fakeRow, {
+    // canvasInfo.width/height are the RENDER dims (post-scale). SVG
+    // renderers + the HTML text bake produce output at these.
+    renderWidthPx: canvasInfo.width,
+    renderHeightPx: canvasInfo.height,
+    // UNSCALED canvas dims from the capture record. Threaded so the
+    // text bake's sizePx math can derive
+    //   fontPx = (renderHeight / canvasHeight) × sizePx
+    // — produces text at `renderScale × sizePx` pixels, matching the
+    // editor's display behavior.
+    canvasWidthPx,
+    canvasHeightPx,
     sourceWidthPx,
     sourceHeightPx
-  );
+  });
   if (layers.length === 0) return accumulator;
   return sharp(accumulator, { raw: canvasInfo })
     .composite(layers)
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+}
+
+/**
+ * Composite a VECTOR HIGHLIGHT shape onto the accumulator using
+ * CSS-style blend modes computed manually. Bypasses the SVG +
+ * sharp.composite(blend:"multiply") path because that double-applies
+ * alpha (resvg premultiplies fill-opacity into RGB, sharp's multiply
+ * assumes premultiplied input) and produces user-visibly different
+ * colors from the editor's `mix-blend-mode: multiply`.
+ *
+ * Math mirrors the CSS Compositing and Blending Level 1 spec:
+ *   B(Cb, Cs) — the blend function: multiply / screen / overlay
+ *   Co       = αs × B(Cb, Cs) + (1 − αs) × Cb
+ *
+ * where Cb = backdrop (accumulator) and Cs = source (highlight tint).
+ * Alpha is preserved from the backdrop — the highlight tints existing
+ * pixels but doesn't introduce new alpha.
+ */
+async function compositeHighlightOntoAccumulator(
+  shape: Extract<Overlay, { kind: "highlight" }>,
+  accumulator: Buffer,
+  canvasInfo: { width: number; height: number; channels: 4 }
+): Promise<Buffer> {
+  // Rect coords are normalized [0,1] of canvas-pixel space. canvasInfo
+  // is already at render dims (scale-aware accumulator) so multiplying
+  // here gives render-pixel coords directly. Same convention as
+  // highlightSvgForV2 — it multiplies by imageWidthPx (passed render
+  // dims), then sharp's resvg renders at render dims.
+  const xRaw = shape.rect.x * canvasInfo.width;
+  const yRaw = shape.rect.y * canvasInfo.height;
+  const wRaw = shape.rect.w * canvasInfo.width;
+  const hRaw = shape.rect.h * canvasInfo.height;
+  // Clamp to accumulator bounds. Out-of-canvas rects (post-#110
+  // schema widening) silently no-op here, matching the existing
+  // schema-permits-paint-clips contract pinned by another test in
+  // this file.
+  const x = Math.max(0, Math.min(canvasInfo.width, Math.round(xRaw)));
+  const y = Math.max(0, Math.min(canvasInfo.height, Math.round(yRaw)));
+  const w = Math.max(0, Math.min(canvasInfo.width - x, Math.round(wRaw)));
+  const h = Math.max(0, Math.min(canvasInfo.height - y, Math.round(hRaw)));
+  if (w === 0 || h === 0) return accumulator;
+
+  const colorHex = readHighlightColor(shape);
+  const opacity = readHighlightOpacity(shape);
+  const blendMode = readHighlightBlend(shape);
+  const tintR = parseInt(colorHex.slice(1, 3), 16);
+  const tintG = parseInt(colorHex.slice(3, 5), 16);
+  const tintB = parseInt(colorHex.slice(5, 7), 16);
+
+  // Extract the affected rect from the accumulator as raw RGBA.
+  const extracted = await sharp(accumulator, { raw: canvasInfo })
+    .extract({ left: x, top: y, width: w, height: h })
+    .ensureAlpha()
+    .raw()
+    .toBuffer();
+
+  // Apply CSS blend formula per pixel. Hot loop — keep it tight; no
+  // branching inside the per-pixel block (lift blend mode out).
+  const out = Buffer.alloc(w * h * 4);
+  const oneMinusAlpha = 1 - opacity;
+  // Compute the blended channel as a function (no allocation per pixel).
+  // CSS spec definitions:
+  //   multiply: Cb × Cs
+  //   screen:   1 − (1 − Cb) × (1 − Cs)
+  //   overlay:  hardlight(Cs, Cb), where hardlight(a,b) =
+  //               b < 128 ? multiply(a, 2b) : screen(a, 2b − 255)
+  // Working in 0..255 ints throughout (channel values), promoting to
+  // float only for the alpha-composite. Branch hoisted out of the loop.
+  if (blendMode === "multiply") {
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r = (cb_r * tintR) >> 8;
+      const b_g = (cb_g * tintG) >> 8;
+      const b_b = (cb_b * tintB) >> 8;
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  } else if (blendMode === "screen") {
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r = 255 - (((255 - cb_r) * (255 - tintR)) >> 8);
+      const b_g = 255 - (((255 - cb_g) * (255 - tintG)) >> 8);
+      const b_b = 255 - (((255 - cb_b) * (255 - tintB)) >> 8);
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  } else {
+    // overlay: hardlight with source/backdrop swapped, i.e.
+    //   B(Cb, Cs) = Cb < 128 ? multiply(Cs, 2Cb) : screen(Cs, 2Cb − 255)
+    for (let i = 0; i < w * h; i += 1) {
+      const idx = i * 4;
+      const cb_r = extracted[idx] ?? 0;
+      const cb_g = extracted[idx + 1] ?? 0;
+      const cb_b = extracted[idx + 2] ?? 0;
+      const cb_a = extracted[idx + 3] ?? 0;
+      const b_r =
+        cb_r < 128
+          ? (tintR * (2 * cb_r)) >> 8
+          : 255 - (((255 - tintR) * (255 - (2 * cb_r - 255))) >> 8);
+      const b_g =
+        cb_g < 128
+          ? (tintG * (2 * cb_g)) >> 8
+          : 255 - (((255 - tintG) * (255 - (2 * cb_g - 255))) >> 8);
+      const b_b =
+        cb_b < 128
+          ? (tintB * (2 * cb_b)) >> 8
+          : 255 - (((255 - tintB) * (255 - (2 * cb_b - 255))) >> 8);
+      out[idx] = Math.round(opacity * b_r + oneMinusAlpha * cb_r);
+      out[idx + 1] = Math.round(opacity * b_g + oneMinusAlpha * cb_g);
+      out[idx + 2] = Math.round(opacity * b_b + oneMinusAlpha * cb_b);
+      out[idx + 3] = cb_a;
+    }
+  }
+
+  // Composite the blended rect back onto the accumulator at (x, y).
+  return sharp(accumulator, { raw: canvasInfo })
+    .composite([
+      {
+        input: out,
+        raw: { width: w, height: h, channels: 4 },
+        top: y,
+        left: x
+      }
+    ])
     .ensureAlpha()
     .raw()
     .toBuffer();
@@ -426,16 +684,28 @@ async function compositeVectorOntoAccumulator(
 async function applyEffectOntoAccumulator(
   node: Extract<BundleLayerNode, { kind: "effect" }>,
   accumulator: Buffer,
-  canvasInfo: { width: number; height: number; channels: 4 }
+  canvasInfo: { width: number; height: number; channels: 4 },
+  /** Render-vs-canvas dim ratio. `clip_rect` is in CANVAS coords; when
+   *  the accumulator is at render dims (scale > 1) the rect must be
+   *  scaled or the effect lands at the wrong region (typically the
+   *  upper-left at unscaled coords). When `clip_rect` is null
+   *  (adjustment-layer scope) the fallback uses `canvasInfo` dims
+   *  directly — those are ALREADY render dims, so no scaling needed
+   *  for that branch. */
+  renderScale: number
 ): Promise<Buffer> {
   // Determine the clip rect. null = entire canvas (adjustment-layer
-  // scope). Clamp to canvas bounds.
-  const rect = node.clip_rect ?? {
-    x: 0,
-    y: 0,
-    w: canvasInfo.width,
-    h: canvasInfo.height
-  };
+  // scope, in render coords already). Otherwise scale CANVAS-coord
+  // rect into render coords, then clamp to accumulator bounds.
+  const rect =
+    node.clip_rect !== null
+      ? {
+          x: node.clip_rect.x * renderScale,
+          y: node.clip_rect.y * renderScale,
+          w: node.clip_rect.w * renderScale,
+          h: node.clip_rect.h * renderScale
+        }
+      : { x: 0, y: 0, w: canvasInfo.width, h: canvasInfo.height };
   const x = Math.max(0, Math.min(canvasInfo.width, Math.round(rect.x)));
   const y = Math.max(0, Math.min(canvasInfo.height, Math.round(rect.y)));
   const w = Math.max(0, Math.min(canvasInfo.width - x, Math.round(rect.w)));
@@ -475,12 +745,36 @@ async function applyEffectOntoAccumulator(
       // back up with nearest-neighbor so the blocks stay sharp. Block
       // size = 1/16 of the short side, floored at 4 px so tiny rects
       // don't smooth out.
+      //
+      // CRITICAL — TWO SEPARATE sharp pipelines, not chained.
+      // sharp/libvips fuses consecutive `.resize()` calls in the
+      // same pipeline when the final output dims equal the input
+      // dims, collapsing the pair to a no-op. Chained
+      // `.resize(downW, downH).resize(w, h)` against a (w, h) input
+      // therefore produces the INPUT bytes unchanged — the
+      // pixelate appears to do nothing. Materializing the
+      // downsample to a buffer between the two operations forces
+      // the actual coarse-grid sample to happen.
+      //
+      // Discovered via `tool-matrix-wysiwyg.test.ts` after the user
+      // reported "blur missing from clipboard copy" — pixelate was
+      // silently a no-op for production captures, and the
+      // checkerboard fixture used in the earlier matrix happened
+      // to produce identical bytes under no-op and true-pixelate
+      // (the downsample stride aligned with the checker block
+      // size, picking single pixels that match the checker
+      // pattern). Noise sources expose the bug immediately.
       const shortSide = Math.min(w, h);
       const blockSizePx = Math.max(4, Math.round(shortSide / 16));
       const downW = Math.max(1, Math.floor(w / blockSizePx));
       const downH = Math.max(1, Math.floor(h / blockSizePx));
-      operated = await sharp(extracted, { raw: extractedInfo })
+      const downsampled = await sharp(extracted, { raw: extractedInfo })
         .resize(downW, downH)
+        .raw()
+        .toBuffer();
+      operated = await sharp(downsampled, {
+        raw: { width: downW, height: downH, channels: 4 }
+      })
         .resize(w, h, { kernel: "nearest" })
         .ensureAlpha()
         .raw()
@@ -585,6 +879,39 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  * Effect-layer hashing naturally includes "what's below" because
  * we hash the full flattened sequence in order.
  */
+/** Sentinel version bumped whenever the bake pipeline produces
+ *  different OUTPUT bytes for the same input layer tree + dims +
+ *  format. Included in the renderHash so a pipeline change cleanly
+ *  invalidates the existing render-cache without requiring users to
+ *  nuke `~/Library/Application Support/PwrSnap/render-cache/`.
+ *
+ *  Bump history:
+ *    "1" — original (canvas-dims accumulator, withoutEnlargement,
+ *           default sharp.png() palette mode)
+ *    "2" — scale-aware accumulator (renders at target dims for
+ *           upscale tiers), force RGBA PNG output (palette: false),
+ *           HTML text bake via hidden BrowserWindow. The WYSIWYG
+ *           shipment. SHIPPED BROKEN — raster + effect compositors
+ *           didn't scale their canvas-coord positions/dims by
+ *           renderScale, leaving the image in the upper-left and
+ *           overlays scattered across the full render canvas.
+ *    "3" — fix v2's positioning bug: raster's tx/ty + natural_*_px
+ *           and effect's clip_rect now scale by renderScale so the
+ *           bake matches the editor across all preset tiers.
+ *    "4" — vector highlight CSS-correct multiply: bypasses sharp's
+ *           premultiplied-multiply blend mode (which double-applied
+ *           alpha through resvg's premultiplication, producing
+ *           desaturated/dark output for any non-full-opacity tint).
+ *           Now uses a hand-rolled CSS-spec multiply / screen /
+ *           overlay against the accumulator content.
+ *    "5" — pixelate-effect actually pixelates. The chained
+ *           `.resize(downW, downH).resize(w, h)` was fusing into a
+ *           no-op in sharp/libvips when the final dim equals the
+ *           input dim, silently making pixelate a no-op for every
+ *           production bake. Split into two separate sharp
+ *           pipelines so the down-sample materializes. */
+const BAKE_PIPELINE_VERSION = "5";
+
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];
   canvasWidthPx: number;
@@ -596,6 +923,7 @@ function computeTreeRenderHash(input: {
   const hash = createHash("sha256");
   hash.update(
     JSON.stringify({
+      v: BAKE_PIPELINE_VERSION,
       canvas: [input.canvasWidthPx, input.canvasHeightPx],
       width: input.width,
       format: input.format,

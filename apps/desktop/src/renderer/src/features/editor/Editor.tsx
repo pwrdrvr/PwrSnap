@@ -2106,7 +2106,14 @@ export function Editor({
               if (deleter !== null) {
                 await deleter(row, {
                   opKind: "delete",
-                  layerId: "kbd-multi-delete"
+                  layerId: "kbd-multi-delete",
+                  // Multi-delete bursts each push a DIFFERENT row.
+                  // "append" tells push() to ACCUMULATE every row
+                  // into the entry's items[] array — otherwise the
+                  // coalesce path REPLACES the last row and earlier
+                  // deletes are silently lost on undo (the user-
+                  // reported "1 of 2 came back, the other is gone").
+                  mergeMode: "append"
                 });
               }
             }
@@ -3131,7 +3138,16 @@ function EditorLoaded({
                 previousGeometry,
                 nextGeometry: geometry
               },
-              { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+              {
+                opKind: "multi-drag",
+                layerId: "pointer-multi-drag",
+                // Multi-drag bursts each push a DIFFERENT layer's
+                // geometry. "append" → push() accumulates every
+                // item into the entry's items[] so undo restores
+                // every layer's pre-drag geometry, not just the
+                // first dragged layer.
+                mergeMode: "append"
+              }
             );
           }
         }

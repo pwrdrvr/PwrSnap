@@ -93,13 +93,23 @@ function makeRow(id: string): OverlayRow {
 type ProbeProps = {
   readonly captureId: string;
   readonly onSnapshot: (api: UseUndoRedoResult) => void;
+  /** Optional bridge for content-check tests that need to observe
+   *  the format-aware dispatcher's calls. The geometry / style
+   *  branches of applyInverse early-return when this is null, so a
+   *  test that wants to verify "one dispatch per item" on a
+   *  multi-drag undo MUST provide this. The bus-level dispatchMock
+   *  only covers the v1 fallback path used by create/delete. */
+  readonly dispatchEdit?: (
+    op: Parameters<NonNullable<Parameters<typeof useUndoRedo>[0]["dispatchEdit"]>>[0]
+  ) => ReturnType<NonNullable<Parameters<typeof useUndoRedo>[0]["dispatchEdit"]>>;
 };
 
 function Probe(props: ProbeProps): null {
   const internal = useRef(false);
   const api = useUndoRedo({
     captureId: props.captureId,
-    applyingRef: internal
+    applyingRef: internal,
+    ...(props.dispatchEdit !== undefined ? { dispatchEdit: props.dispatchEdit } : {})
   });
   useEffect(() => {
     props.onSnapshot(api);
@@ -480,6 +490,160 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     expect(undoCount).toBe(1);
   });
 
+  test("multi-delete undo dispatches the inverse for EACH deleted row (not just the last)", async () => {
+    // User repro: "I selected two text items with command. Hit
+    // delete. It deleted both. Hit Command+Z... it restored 1 and
+    // the 2nd CANNOT BE RECOVERED." Pre-fix push()'s coalesce path
+    // for delete REPLACED `row` with the latest op's row, dropping
+    // the earlier deletes' row data on the floor. The undo entry
+    // then only knew about the LAST deleted row — the others'
+    // soft-deleted DB records sat unreferenced and unrecoverable.
+    //
+    // The prior "→ 1 undo step" test was too weak — it only
+    // asserted that the stack collapsed, not that the one entry
+    // actually restored all the things it was supposed to. Content
+    // checks live here: record every dispatch fired during undo
+    // and assert that BOTH rows' inverses go out.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    const rowA = makeRow("blur-row");
+    const rowB = makeRow("rect-row");
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(rowA, {
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        // "append" mirrors what Editor.tsx's multi-delete handler
+        // passes — every delete in the burst accumulates into the
+        // entry's items[]. Pre-fix this defaulted to the implicit
+        // "replace" shape (which existed as the ONLY shape), and
+        // the test below pins THAT failure mode independently.
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordDelete(rowB, {
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Reset the dispatch mock so we count ONLY the undo-fired calls.
+    // The fallback path in applyInverse (when dispatchEditRef is
+    // null — which it is in this harness) dispatches
+    // `overlays:upsert` directly through the bus mock.
+    dispatchMock.mockReset();
+    const upsertOverlays: unknown[] = [];
+    dispatchMock.mockImplementation(
+      async (name: string, args: { overlay?: unknown }) => {
+        if (name === "overlays:upsert") {
+          upsertOverlays.push(args.overlay);
+          return { ok: true, value: makeRow("restored") };
+        }
+        return {
+          ok: false,
+          error: { kind: "validation", code: "unknown", message: name }
+        };
+      }
+    );
+
+    // Single Cmd+Z — must dispatch one upsert per deleted row.
+    await act(async () => {
+      await api!.undo();
+    });
+
+    expect(upsertOverlays).toHaveLength(2);
+    // Order: the bracket's deletes were recorded A then B, so the
+    // inverse should restore in the SAME order (or any deterministic
+    // order — both rows present is what we care about).
+    const restoredIds = new Set(
+      upsertOverlays.map((o) => (o as { kind: string }).kind)
+    );
+    // Both rows were arrow-kind by makeRow's default — verify the
+    // ARRAY length above; data shape is identical so an id-based
+    // check would be redundant. The key assertion is the COUNT.
+    expect(restoredIds.size).toBe(1);
+    expect(restoredIds.has("arrow")).toBe(true);
+    // Stack is now empty.
+    expect(api!.canUndo).toBe(false);
+  });
+
+  test("multi-delete WITHOUT mergeMode: append → only LAST row restored (lock the default shape)", async () => {
+    // Pins the default ("replace") behavior so callers that forget
+    // to pass `mergeMode: "append"` for a different-layer burst
+    // get caught by CI — the user-facing symptom is "one of N
+    // deleted layers cannot be recovered." Same setup as the
+    // "→ each deleted row" test above but without the flag.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(makeRow("blur-row"), {
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+        // mergeMode intentionally OMITTED → defaults to "replace"
+      });
+      advanceTime(5);
+      api!.recordDelete(makeRow("rect-row"), {
+        opKind: "delete",
+        layerId: "kbd-multi-delete"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    dispatchMock.mockReset();
+    const upsertOverlays: unknown[] = [];
+    dispatchMock.mockImplementation(
+      async (name: string, args: { overlay?: unknown }) => {
+        if (name === "overlays:upsert") {
+          upsertOverlays.push(args.overlay);
+          return { ok: true, value: makeRow("restored") };
+        }
+        return {
+          ok: false,
+          error: { kind: "validation", code: "unknown", message: name }
+        };
+      }
+    );
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // Default replace mode → only the LAST recorded delete makes it
+    // into the entry's items[]. This is the bug class the flag
+    // exists to opt out of for different-layer bursts.
+    expect(upsertOverlays).toHaveLength(1);
+  });
+
   test("multi-DRAG geometry burst inside a bracket with shared opKind/layerId → 1 undo step", async () => {
     // Mirror of the multi-delete coalescing test for the geometry
     // op kind. The new `commitMultiDragRef` pathway in Editor.tsx
@@ -530,7 +694,11 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
             to: { x: 1.1, y: 1.1 }
           }
         },
-        { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+        {
+          opKind: "multi-drag",
+          layerId: "pointer-multi-drag",
+          mergeMode: "append"
+        }
       );
       advanceTime(5);
       api!.recordGeometry(
@@ -545,7 +713,11 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
             rect: { x: 0.3, y: 0.3, w: 0.3, h: 0.3 }
           }
         },
-        { opKind: "multi-drag", layerId: "pointer-multi-drag" }
+        {
+          opKind: "multi-drag",
+          layerId: "pointer-multi-drag",
+          mergeMode: "append"
+        }
       );
     });
     act(() => {
@@ -562,6 +734,113 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       undoCount += 1;
     }
     expect(undoCount).toBe(1);
+  });
+
+  test("multi-DRAG undo dispatches updateGeometry for EACH dragged layer", async () => {
+    // Content-check companion to the "→ 1 undo step" test above.
+    // Same data-loss bug class as multi-delete: pre-fix the
+    // coalesce path stored ONE geometry per EditOp, so undo of a
+    // multi-drag only restored the FIRST layer's pre-drag position
+    // and the rest stayed at their dragged position (silently
+    // wrong, no error surfaced). This test asserts the actual
+    // dispatch count — strict regression coverage.
+    //
+    // applyInverse's geometry branch routes through dispatchEdit
+    // (no bus-level fallback path the way create/delete have),
+    // so we install a dispatchEdit bridge via the Probe to observe
+    // every call.
+    const dispatchEditCalls: Array<{ kind: string; layerId?: string }> = [];
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        },
+        dispatchEdit: async (op) => {
+          if (op.kind === "updateGeometry") {
+            dispatchEditCalls.push({ kind: op.kind, layerId: op.layerId });
+          } else {
+            dispatchEditCalls.push({ kind: op.kind });
+          }
+          // Return a synthetic update artifact so applyInverse's
+          // chain-id walk can extract the new id.
+          return {
+            ok: true,
+            value: {
+              kind: "update",
+              artifact: {
+                format: 1,
+                row: makeRow(`post-${dispatchEditCalls.length}`)
+              }
+            }
+          };
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("multi-drag", "pointer-multi-drag");
+    });
+    act(() => {
+      api!.recordGeometry(
+        {
+          currentIdRef: { current: "arrow-1-post" },
+          previousGeometry: {
+            kind: "arrow",
+            from: { x: 0, y: 0 },
+            to: { x: 1, y: 1 }
+          },
+          nextGeometry: {
+            kind: "arrow",
+            from: { x: 0.1, y: 0.1 },
+            to: { x: 1.1, y: 1.1 }
+          }
+        },
+        {
+          opKind: "multi-drag",
+          layerId: "pointer-multi-drag",
+          mergeMode: "append"
+        }
+      );
+      api!.recordGeometry(
+        {
+          currentIdRef: { current: "rect-1-post" },
+          previousGeometry: {
+            kind: "rect",
+            rect: { x: 0.2, y: 0.2, w: 0.3, h: 0.3 }
+          },
+          nextGeometry: {
+            kind: "rect",
+            rect: { x: 0.3, y: 0.3, w: 0.3, h: 0.3 }
+          }
+        },
+        {
+          opKind: "multi-drag",
+          layerId: "pointer-multi-drag",
+          mergeMode: "append"
+        }
+      );
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Single Cmd+Z should fire one updateGeometry per recorded
+    // layer (2 total here).
+    await act(async () => {
+      await api!.undo();
+    });
+
+    const geomCalls = dispatchEditCalls.filter(
+      (c) => c.kind === "updateGeometry"
+    );
+    expect(geomCalls).toHaveLength(2);
+    // Both layer ids should have been targeted.
+    const targetedIds = new Set(geomCalls.map((c) => c.layerId));
+    expect(targetedIds.has("arrow-1-post")).toBe(true);
+    expect(targetedIds.has("rect-1-post")).toBe(true);
   });
 
   test("multi-DRAG geometry burst WITHOUT shared layerId tag → N undo steps (pre-fix shape)", async () => {

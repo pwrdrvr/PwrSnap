@@ -1644,7 +1644,15 @@ export function Editor({
    * `layers:upsert`) lands without the v2-guard refusal.
    */
   async function persistOverlay(
-    overlay: Overlay
+    overlay: Overlay,
+    /** Optional coalescing tags forwarded to `recordCreate` via the
+     *  auto-bridge. Multi-create bursts (paste, duplicate, future
+     *  multi-* flows) pass `{ opKind, layerId, mergeMode: "append" }`
+     *  so push() accumulates every newly-inserted row into a single
+     *  undo entry's items[] array. Single-shot callers (drawing-tool
+     *  pointerup, text commit) omit it and keep their existing
+     *  standalone-entry behavior. */
+    recordOpts?: RecordOptions
   ): Promise<{ ok: true; newId: string } | { ok: false }> {
     // Snapshot the model at call time. The model branch is the only
     // thing we read; subsequent state changes (e.g. a captures:changed
@@ -1705,7 +1713,10 @@ export function Editor({
               superseded_by: artifact.node.superseded_by,
               created_at: artifact.node.created_at
             };
-            recordCreateRef.current?.(syntheticRow, { node: artifact.node });
+            recordCreateRef.current?.(syntheticRow, {
+              node: artifact.node,
+              ...(recordOpts ?? {})
+            });
           }
         }
       }
@@ -1747,7 +1758,10 @@ export function Editor({
       if (artifact.format === 1) {
         newId = artifact.row.id;
         if (!undoApplyingRef.current) {
-          recordCreateRef.current?.(artifact.row, { node: null });
+          recordCreateRef.current?.(artifact.row, {
+            node: null,
+            ...(recordOpts ?? {})
+          });
         }
       }
     }
@@ -1949,8 +1963,13 @@ export function Editor({
     // Open a coalescing bracket so every persistOverlay's auto-
     // recordCreate lands in ONE undo entry — pressing Undo once
     // removes the whole batch of pasted layers as a group. Without
-    // the bracket the user'd have to mash Undo N times to clean up
-    // a paste of N layers.
+    // the bracket (and the matching `{ opKind, layerId, mergeMode }`
+    // tags below) the user'd have to mash Undo N times to clean up
+    // a paste of N layers. The bracket key + mergeMode pair MUST
+    // agree with the recordOpts threaded through persistOverlay
+    // below — push()'s `insideInteraction` check needs both halves
+    // of the key matched, and the items[] accumulator needs
+    // `mergeMode: "append"` so earlier pasted rows aren't dropped.
     const begin = beginInteractionRef.current;
     const end = endInteractionRef.current;
     const token = begin !== null ? begin("create", "kbd-paste") : null;
@@ -1958,7 +1977,11 @@ export function Editor({
       const newIds: string[] = [];
       for (const item of items) {
         const translated = translateOverlayData(item, dxn, dyn);
-        const wrote = await persistOverlay(translated);
+        const wrote = await persistOverlay(translated, {
+          opKind: "create",
+          layerId: "kbd-paste",
+          mergeMode: "append"
+        });
         if (wrote.ok && wrote.newId !== "") newIds.push(wrote.newId);
       }
       if (newIds.length > 0) setSelectionTrustingDispatch(newIds);

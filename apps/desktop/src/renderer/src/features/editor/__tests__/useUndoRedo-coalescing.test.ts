@@ -644,6 +644,85 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     expect(upsertOverlays).toHaveLength(1);
   });
 
+  test("multi-CREATE undo dispatches the inverse (delete) for EACH created row", async () => {
+    // Same items[] discipline as multi-delete and multi-drag, but
+    // for the create kind — used by `pasteOverlaysWithOffset` so
+    // multi-paste collapses into ONE undo entry and that single
+    // undo removes every pasted row. Without this, the comment on
+    // the paste handler ("ONE undo entry") lied: each persistOverlay
+    // recorded a standalone entry (the auto-bridge passed no opts)
+    // and the user had to mash Undo N times.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("create", "kbd-paste");
+    });
+    act(() => {
+      api!.recordCreate(makeRow("paste-1"), {
+        opKind: "create",
+        layerId: "kbd-paste",
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordCreate(makeRow("paste-2"), {
+        opKind: "create",
+        layerId: "kbd-paste",
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordCreate(makeRow("paste-3"), {
+        opKind: "create",
+        layerId: "kbd-paste",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Stack collapses to ONE entry covering all three pastes.
+    expect(api!.canUndo).toBe(true);
+
+    // Observe undo: should fire `overlays:delete` for EACH of the
+    // three pasted ids — undo of create = delete (and the v1
+    // fallback path inside applyInverse for create-undo dispatches
+    // through the bus mock).
+    dispatchMock.mockReset();
+    const deletedIds: string[] = [];
+    dispatchMock.mockImplementation(
+      async (name: string, args: { id?: string }) => {
+        if (name === "overlays:delete") {
+          if (typeof args.id === "string") deletedIds.push(args.id);
+          return { ok: true, value: undefined };
+        }
+        return {
+          ok: false,
+          error: { kind: "validation", code: "unknown", message: name }
+        };
+      }
+    );
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // All three pasted ids should have been delete-dispatched.
+    expect(deletedIds).toHaveLength(3);
+    expect(new Set(deletedIds)).toEqual(
+      new Set(["paste-1", "paste-2", "paste-3"])
+    );
+    expect(api!.canUndo).toBe(false);
+  });
+
   test("multi-DRAG geometry burst inside a bracket with shared opKind/layerId → 1 undo step", async () => {
     // Mirror of the multi-delete coalescing test for the geometry
     // op kind. The new `commitMultiDragRef` pathway in Editor.tsx

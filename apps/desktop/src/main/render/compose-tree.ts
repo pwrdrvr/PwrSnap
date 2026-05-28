@@ -745,12 +745,36 @@ async function applyEffectOntoAccumulator(
       // back up with nearest-neighbor so the blocks stay sharp. Block
       // size = 1/16 of the short side, floored at 4 px so tiny rects
       // don't smooth out.
+      //
+      // CRITICAL — TWO SEPARATE sharp pipelines, not chained.
+      // sharp/libvips fuses consecutive `.resize()` calls in the
+      // same pipeline when the final output dims equal the input
+      // dims, collapsing the pair to a no-op. Chained
+      // `.resize(downW, downH).resize(w, h)` against a (w, h) input
+      // therefore produces the INPUT bytes unchanged — the
+      // pixelate appears to do nothing. Materializing the
+      // downsample to a buffer between the two operations forces
+      // the actual coarse-grid sample to happen.
+      //
+      // Discovered via `tool-matrix-wysiwyg.test.ts` after the user
+      // reported "blur missing from clipboard copy" — pixelate was
+      // silently a no-op for production captures, and the
+      // checkerboard fixture used in the earlier matrix happened
+      // to produce identical bytes under no-op and true-pixelate
+      // (the downsample stride aligned with the checker block
+      // size, picking single pixels that match the checker
+      // pattern). Noise sources expose the bug immediately.
       const shortSide = Math.min(w, h);
       const blockSizePx = Math.max(4, Math.round(shortSide / 16));
       const downW = Math.max(1, Math.floor(w / blockSizePx));
       const downH = Math.max(1, Math.floor(h / blockSizePx));
-      operated = await sharp(extracted, { raw: extractedInfo })
+      const downsampled = await sharp(extracted, { raw: extractedInfo })
         .resize(downW, downH)
+        .raw()
+        .toBuffer();
+      operated = await sharp(downsampled, {
+        raw: { width: downW, height: downH, channels: 4 }
+      })
         .resize(w, h, { kernel: "nearest" })
         .ensureAlpha()
         .raw()
@@ -879,8 +903,14 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           alpha through resvg's premultiplication, producing
  *           desaturated/dark output for any non-full-opacity tint).
  *           Now uses a hand-rolled CSS-spec multiply / screen /
- *           overlay against the accumulator content. */
-const BAKE_PIPELINE_VERSION = "4";
+ *           overlay against the accumulator content.
+ *    "5" — pixelate-effect actually pixelates. The chained
+ *           `.resize(downW, downH).resize(w, h)` was fusing into a
+ *           no-op in sharp/libvips when the final dim equals the
+ *           input dim, silently making pixelate a no-op for every
+ *           production bake. Split into two separate sharp
+ *           pipelines so the down-sample materializes. */
+const BAKE_PIPELINE_VERSION = "5";
 
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

@@ -42,14 +42,22 @@ export function rectIntersectsBounds(
  *
  * `isVisible()` is the practical filter — by the time the recording
  * flow consults this helper, transient panels (tray popover, float-
- * over toast, the recording HUD itself) are either hidden, not yet
- * created, or off-screen (focus sink lives at -10000,-10000). What's
- * left in the visible set is the user-facing Library / Settings /
- * Sizzle / edit windows.
+ * over toast) are either hidden or off-screen (focus sink lives at
+ * -10000,-10000). What's left in the visible set is the user-facing
+ * Library / Settings / Sizzle / edit windows.
+ *
+ * `excludeWindow` opts a specific window out of the result. The
+ * recording-controller call site passes its own HUD here — when the
+ * HUD has already `fillRect`-ed itself to the recording rect, its
+ * own bounds match and it would otherwise show up in the result,
+ * which is meaningless for the "raise OUR user windows back to the
+ * top" loop. The index.ts call site doesn't pass anything; the HUD
+ * doesn't exist yet at that point.
  */
 export function appWindowsOverlappingRect(
   rect: Rect,
-  displayId: number
+  displayId: number,
+  excludeWindow?: BrowserWindow
 ): BrowserWindow[] {
   const display = screen.getAllDisplays().find((d) => d.id === displayId);
   if (display === undefined) return [];
@@ -62,6 +70,7 @@ export function appWindowsOverlappingRect(
   return BrowserWindow.getAllWindows().filter((win) => {
     if (win.isDestroyed()) return false;
     if (!win.isVisible()) return false;
+    if (excludeWindow !== undefined && win === excludeWindow) return false;
     return rectIntersectsBounds(globalRect, win.getBounds());
   });
 }

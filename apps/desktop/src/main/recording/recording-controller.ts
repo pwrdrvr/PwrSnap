@@ -154,12 +154,16 @@ export function applyRecordingStateToController(state: RecordingState): void {
       // doesn't fight the HUD's higher floating level, it just
       // keeps the Library top of normal-level windows for the
       // duration of the countdown.
+      //
+      // Pass `win` (the HUD) as `excludeWindow`: it just
+      // `fillRect`-ed itself to the recording rect, so its bounds
+      // match by design — we don't want to moveTop ourselves.
       const ourOverlapping = appWindowsOverlappingRect(
         state.rect,
-        state.displayId
+        state.displayId,
+        win
       );
       for (const otherWin of ourOverlapping) {
-        if (otherWin === win) continue;
         otherWin.moveTop();
       }
       break;

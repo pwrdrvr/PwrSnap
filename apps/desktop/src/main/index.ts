@@ -537,6 +537,15 @@ async function runInteractiveCapture(
  * entry in the overlap set. `BrowserWindow.getAllWindows()` ordering
  * isn't documented as z-order, so a stable tie-breaker beats letting
  * implementation order decide.
+ *
+ * Caller invariant: `overlapping` is the result of
+ * `appWindowsOverlappingRect` BEFORE the recording HUD has been
+ * created. The HUD is only constructed when the state machine enters
+ * preflight, which happens *after* this call (inside the awaited
+ * `bus.dispatch("recording:start", ...)`), so the HUD can't appear
+ * here and we don't need to filter it out. If a future caller invokes
+ * this from a code path where the HUD is live, pass `excludeWindow`
+ * to `appWindowsOverlappingRect` first.
  */
 function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindow {
   const library = findMainLibraryWindow();
@@ -624,7 +633,10 @@ async function runInteractiveRecord(): Promise<void> {
   const overlapping = shouldRaise
     ? appWindowsOverlappingRect(selection.rect, selection.displayId)
     : [];
-  log.info("video-record post-commit focus policy", {
+  // Debug-only — useful when triaging "Library hid / dove under"
+  // reports. Turn on with `electron-log` debug; default level keeps
+  // this out of the dev terminal on every video recording.
+  log.debug("video-record post-commit focus policy", {
     snappedWindowId: selection.snappedWindowId ?? null,
     previousAppPid,
     shouldRaise,
@@ -658,7 +670,7 @@ async function runInteractiveRecord(): Promise<void> {
       win.moveTop();
     }
     pickFocusTargetForRecording(overlapping).focus();
-    log.info("video-record raised our windows", {
+    log.debug("video-record raised our windows", {
       ownPid: process.pid,
       dockVisibleAfter: app.dock?.isVisible() ?? null
     });
@@ -668,7 +680,7 @@ async function runInteractiveRecord(): Promise<void> {
     // PwrSnap; AppKit can demote our activation policy to Accessory as
     // a side-effect, stripping the Dock icon and orphaning the Library.
     reclaimDockIconIfLibraryAlive();
-    log.info("video-record activated previous app", { previousAppPid });
+    log.debug("video-record activated previous app", { previousAppPid });
   }
   const settings = await new DesktopSettingsService({
     filePath: join(app.getPath("userData"), "pwrsnap-settings.json")

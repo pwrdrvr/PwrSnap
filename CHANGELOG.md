@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.0-beta.6 - 2026-05-28
+## v1.0.0-beta.7 - 2026-05-28
 
 - Added Sizzle Reels MVP and Phase 2/3a project-mode work, including narrated
   Ken Burns reels from captures, videos, and crossfade transitions.
@@ -18,6 +18,9 @@
   Clipboard menu refresh after in-app copy.
 - Fixed tray and layout regressions, including the missing TrayMenu effect
   import, scrollable Library sidebar overflow, and narrow-stage toolbar wrapping.
+- Fixed Sizzle Reel rendering on GitHub-hosted macOS runners by allowing
+  VideoToolbox to fall back to Apple's software encoder when a hardware
+  compression session is unavailable.
 - Moved IPC envelope coverage from Desktop E2E into faster Vitest coverage.
 
 ## v1.0.0-beta.5 - 2026-05-26

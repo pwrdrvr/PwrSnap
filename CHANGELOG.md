@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.0-beta.6 - 2026-05-28
+
+- Added Sizzle Reels MVP and Phase 2/3a project-mode work, including narrated
+  Ken Burns reels from captures, videos, and crossfade transitions.
+- Added Full Screen and All Screens capture modes.
+- Added per-format small, medium, and large video export presets with copy and
+  drag parity.
+- Added the vertical Library right rail with Info, OCR, and Chat tabs.
+- Added editor multi-selection, keyboard nudging, paste, z-order controls, and
+  rotation support.
+- Improved text annotation fidelity with WYSIWYG display/edit behavior,
+  output-resolution text rendering, direct layer selection, and live glyph
+  dragging.
+- Fixed video capture/library polish, including source-app logging, keeping the
+  capture window on top, video-specific GIF/MP4 export presets, and Paste from
+  Clipboard menu refresh after in-app copy.
+- Fixed tray and layout regressions, including the missing TrayMenu effect
+  import, scrollable Library sidebar overflow, and narrow-stage toolbar wrapping.
+- Moved IPC envelope coverage from Desktop E2E into faster Vitest coverage.
+
 ## v1.0.0-beta.5 - 2026-05-26
 
 - Fixed v2 crop handling so crop is treated as a viewport: text, arrows, blur,

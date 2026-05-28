@@ -1875,35 +1875,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </button>
         ))}
 
-        <div className="psl__left-section">Smart Filters</div>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M12 2 9 9l-7 1 5 5-1 7 6-3 6 3-1-7 5-5-7-1z" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Pinned</span>
-          <span className="psl__nav-count">6</span>
-        </button>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M3 12a9 9 0 1 0 18 0 9 9 0 0 0-18 0Z" />
-              <path d="m9 12 2 2 4-4" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Bug repros</span>
-          <span className="psl__nav-count">5</span>
-        </button>
-        <button className="psl__nav">
-          <span className="psl__nav-icon">
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M4 4h16v6H4zM4 14h16v6H4z" />
-            </svg>
-          </span>
-          <span className="psl__nav-label">Has annotations</span>
-          <span className="psl__nav-count">11</span>
-        </button>
       </aside>
 
       <main className="psl__main">

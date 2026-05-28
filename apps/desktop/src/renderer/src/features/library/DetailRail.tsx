@@ -40,6 +40,8 @@ import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton
 import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
+import { useVideoExport } from "../shared/useVideoExport";
+import { VideoExportButtons } from "../shared/VideoExportButtons";
 import { AppTag } from "../shared/AppIcons";
 import {
   RightActivityBar,
@@ -86,11 +88,28 @@ export function DetailRail({
   activeTab: activeTabProp,
   onActiveTabChange
 }: DetailRailProps): ReactElement | null {
+  // Skip the image render-metrics IPC for video captures — the
+  // sharp-based preset pipeline is image-only and the video branch
+  // below renders GIF / MP4 export cards instead of Low / Med / High
+  // clipboard cards. Mirrors TrayMenu.tsx + FloatOverHost.tsx.
   const renderMetrics = usePresetRenderMetrics(
-    record?.id ?? null,
-    record?.edits_version ?? null
+    record?.kind === "image" ? record.id : null,
+    record?.kind === "image" ? record.edits_version : null
   );
   const [enrichment, setEnrichment] = useState<CaptureEnrichment | null>(null);
+  // Shared GIF / MP4 export machinery — owns the state machine and
+  // the `video:export` dispatch. Input goes null when the selection
+  // isn't a video so the hook stays idle without firing IPC.
+  const videoInput =
+    record?.kind === "video" && record.video !== null && record.video !== undefined
+      ? {
+          captureId: record.id,
+          hasSystemAudio: record.video.hasSystemAudio,
+          hasMicrophoneAudio: record.video.hasMicrophoneAudio
+        }
+      : null;
+  const { exportState: videoExportState, triggerExport: triggerVideoExport } =
+    useVideoExport(videoInput);
   // Active tab + pin state. The pin pair and the tab pair are
   // controlled INDEPENDENTLY — a caller can control just the pin
   // (e.g. drive it from a title-bar toggle) while letting the rail
@@ -289,6 +308,15 @@ export function DetailRail({
   const sourceName = record.source_app_name ?? "Unknown app";
   const appId = mapBundleIdToAppId(record.source_app_bundle_id);
   const hasExactRenderMetrics = renderMetrics.high?.exact === true;
+  // `record.video` is `VideoCaptureMetadata | null | undefined` even
+  // for video-kind records (older recordings persisted before the
+  // metadata column was backfilled). Carry both checks into the
+  // boolean so the video-branch JSX can assume `videoMeta` is present.
+  const videoMeta =
+    record.kind === "video" && record.video !== null && record.video !== undefined
+      ? record.video
+      : null;
+  const isVideo = videoMeta !== null;
   const codexStatus = enrichment?.status ?? null;
   const draftAvailable =
     (enrichment?.suggestedTitle ?? "").trim().length > 0 ||
@@ -362,36 +390,58 @@ export function DetailRail({
       <div className="psl__right-footer" data-testid="psl-right-footer">
         <div>
           <div className="psl__copy-eyebrow">
-            <span>Copy to clipboard</span>
+            <span>{isVideo ? "Export" : "Copy to clipboard"}</span>
             <span className="psl__copy-eyebrow-line" />
-            <span className="psl__copy-eyebrow-meta">
-              {hasExactRenderMetrics ? "actual files" : "rendering files"}
-            </span>
+            {isVideo ? null : (
+              <span className="psl__copy-eyebrow-meta">
+                {hasExactRenderMetrics ? "actual files" : "rendering files"}
+              </span>
+            )}
           </div>
-          <div className="psl__copy-row">
-            {COPY_PRESETS.map((p) => {
-              const m =
-                renderMetrics[p] ??
-                presetMetrics(p, record.width_px, record.height_px, record.byte_size);
-              return (
-                <CopyButton
-                  key={p}
-                  preset={p}
-                  label={COPY_LABELS[p]}
-                  dim={m.dim}
-                  bytes={m.bytes}
-                  onCopy={(preset) => {
-                    void dispatch("clipboard:copy", { captureId: record.id, preset });
-                  }}
-                  onCopyPath={(preset) => {
-                    void dispatch("clipboard:copy-path", { captureId: record.id, preset });
-                  }}
-                  onDrag={(preset) => startCaptureDrag(record.id, preset)}
-                  copyPulse={copyPulses?.[p] ?? 0}
-                />
-              );
-            })}
-          </div>
+          {isVideo && videoMeta !== null ? (
+            // Two cards (GIF + MP4) in place of the image L/M/H grid.
+            // The grid wrapper stays local — surface-specific positioning
+            // belongs here — but the buttons themselves come from the
+            // shared component so the tray and float-over render the
+            // identical chrome.
+            <div
+              className="psl__copy-row"
+              style={{ gridTemplateColumns: "repeat(2, 1fr)" }}
+              data-testid="psl-copy-row-video"
+            >
+              <VideoExportButtons
+                exportState={videoExportState}
+                hasSystemAudio={videoMeta.hasSystemAudio}
+                hasMicrophoneAudio={videoMeta.hasMicrophoneAudio}
+                onExport={triggerVideoExport}
+              />
+            </div>
+          ) : (
+            <div className="psl__copy-row">
+              {COPY_PRESETS.map((p) => {
+                const m =
+                  renderMetrics[p] ??
+                  presetMetrics(p, record.width_px, record.height_px, record.byte_size);
+                return (
+                  <CopyButton
+                    key={p}
+                    preset={p}
+                    label={COPY_LABELS[p]}
+                    dim={m.dim}
+                    bytes={m.bytes}
+                    onCopy={(preset) => {
+                      void dispatch("clipboard:copy", { captureId: record.id, preset });
+                    }}
+                    onCopyPath={(preset) => {
+                      void dispatch("clipboard:copy-path", { captureId: record.id, preset });
+                    }}
+                    onDrag={(preset) => startCaptureDrag(record.id, preset)}
+                    copyPulse={copyPulses?.[p] ?? 0}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="psl__action-row">
@@ -446,8 +496,18 @@ export function DetailRail({
             <>
               <button
                 type="button"
-                title="Drag PNG file or click to reveal in Finder"
-                draggable
+                title={
+                  isVideo
+                    ? "Click to reveal in Finder"
+                    : "Drag PNG file or click to reveal in Finder"
+                }
+                // Drag is image-only today — `startCaptureDrag` routes
+                // through sharp's render pipeline, which throws
+                // "Input file contains unsupported image format" on a
+                // `.mp4` source. Tracked in #136 (video drag/copy
+                // parity); until that lands, don't promise a drag we
+                // can't deliver. Click-to-reveal still works for both.
+                draggable={!isVideo}
                 onClick={() => {
                   void dispatch("capture:reveal", { captureId: record.id });
                 }}

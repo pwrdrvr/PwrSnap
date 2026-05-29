@@ -921,8 +921,12 @@ export type ToolSizePreset = "auto" | "small" | "medium" | "large" | "x-large";
 // the on-disk overlay field share the same value space by design —
 // picking "open-triangle" in the popover writes "open-triangle" into
 // the overlay row.
-export type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
-import type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
+export type { ArrowEndStyle, ArrowStemStyle, ShapeKind } from "./overlay-schemas";
+import type {
+  ArrowEndStyle,
+  ArrowStemStyle,
+  ShapeKind
+} from "./overlay-schemas";
 export type TextFontWeight = "regular" | "bold";
 export type BlurEffectMode = "gaussian" | "pixelate" | "redact";
 
@@ -947,10 +951,19 @@ export type TextToolStyle = {
   weight: TextFontWeight;
 };
 
-export type RectToolStyle = {
+export type ShapeToolStyle = {
   color: ToolColor;
   thickness: ToolSizePreset | number;
   filled: boolean;
+  /** Which geometric primitive the Shape tool commits on its next
+   *  drag. Square + circle enforce a 1:1 lock during drag (see
+   *  Editor.tsx onPointerMove); rect / oval / parallelogram drag
+   *  freely. */
+  shape: ShapeKind;
+  /** Horizontal skew in degrees applied when `shape === "parallelogram"`.
+   *  Ignored for every other shape kind, but persisted so that picking
+   *  Parallelogram later restores the user's last-used skew. */
+  skewDeg: number;
 };
 
 export type BlurToolStyle = {
@@ -976,7 +989,7 @@ export type HighlightToolStyle = {
 export type EditorToolStyles = {
   arrow: ArrowToolStyle;
   text: TextToolStyle;
-  rect: RectToolStyle;
+  shape: ShapeToolStyle;
   blur: BlurToolStyle;
   highlight: HighlightToolStyle;
 };
@@ -1128,7 +1141,7 @@ export type SettingsPatch = {
     toolStyles?: {
       arrow?: Partial<ArrowToolStyle>;
       text?: Partial<TextToolStyle>;
-      rect?: Partial<RectToolStyle>;
+      shape?: Partial<ShapeToolStyle>;
       blur?: Partial<BlurToolStyle>;
       highlight?: Partial<HighlightToolStyle>;
     };

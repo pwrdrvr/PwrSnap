@@ -217,6 +217,14 @@
   gap: 6px;
   padding: 10px 12px 4px;
 }
+/* Video export grid slot. Wraps the shared `VideoExportPresetsPanel`
+   (which renders two `.psl__copy-row-group` children, each with its
+   own 3-col `.psl__copy-row`). Inset matches `.fo__copy` so the grid
+   sits at the same horizontal padding as the image copy row, but
+   NOT `display: grid` — the panel owns its own row layout. */
+.fo__export-grid {
+  padding: 10px 12px 4px;
+}
 .fo__copy-card {
   display: flex;
   flex-direction: column;

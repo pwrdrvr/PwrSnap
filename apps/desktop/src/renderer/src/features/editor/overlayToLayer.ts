@@ -23,7 +23,7 @@
 
 import { nanoid } from "nanoid";
 import type { BundleLayerNode, Overlay } from "@pwrsnap/shared";
-import { deriveBlurRadiusPx } from "@pwrsnap/shared";
+import { deriveBlurRadiusPx, readShapeKind } from "@pwrsnap/shared";
 
 /** Canvas dimensions (source-pixel space) used to denormalize Overlay
  *  rects (which carry `[0,1]^2` fractions) into the absolute canvas
@@ -151,14 +151,14 @@ export function overlayToBundleLayerNode(
     return { ok: true, layer };
   }
 
-  // arrow / rect / highlight / text / step — all carry the Overlay
+  // arrow / shape / highlight / text / step — all carry the Overlay
   // shape verbatim under `shape`.
   const layer: BundleLayerNode = {
     id,
     parent_id: parentId,
     kind: "vector",
     shape: overlay,
-    name: layerNameForVector(overlay.kind),
+    name: layerNameForVector(overlay),
     visible: true,
     locked: false,
     opacity: 1,
@@ -192,15 +192,26 @@ export function findRootGroupId(layers: readonly BundleLayerNode[]): string | nu
   return null;
 }
 
-/** Human-readable layer name for a vector overlay kind. */
+/** Human-readable layer name for a vector overlay. Takes the full
+ *  overlay (not just `kind`) so shape rows can pick a per-shape label
+ *  ("Rectangle" / "Square" / "Circle" / "Oval" / "Parallelogram") off
+ *  the `shape` discriminant. */
 function layerNameForVector(
-  kind: Exclude<Overlay["kind"], "blur">
+  overlay: Exclude<Overlay, { kind: "blur" }>
 ): string {
-  switch (kind) {
+  switch (overlay.kind) {
     case "arrow":
       return "Arrow";
-    case "rect":
-      return "Rectangle";
+    case "shape": {
+      const shapeLabels: Record<string, string> = {
+        rect: "Rectangle",
+        square: "Square",
+        circle: "Circle",
+        oval: "Oval",
+        parallelogram: "Parallelogram"
+      };
+      return shapeLabels[readShapeKind(overlay)] ?? "Shape";
+    }
     case "text":
       return "Text";
     case "highlight":
@@ -209,7 +220,7 @@ function layerNameForVector(
       return "Step";
     case "crop":
       // v2 crop is a VectorLayer with shape.kind === "crop" — same
-      // tree-shape as arrow/rect/text. The compose pipeline no-ops
+      // tree-shape as arrow/shape/text. The compose pipeline no-ops
       // on it (canvas-dim shrink is what actually clips the
       // composite); the layer's job is to RECORD the crop in the
       // tree so Reset / undo / future layer-panel reads can see it.

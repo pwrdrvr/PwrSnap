@@ -29,7 +29,6 @@ import {
 } from "@pwrsnap/shared";
 import { FloatOver } from "./FloatOver";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
-import { useVideoExport } from "../shared/useVideoExport";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 
 type HostState =
@@ -56,26 +55,6 @@ type AiRunUpdatedPayload = {
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
-  // Shared GIF / MP4 export machinery. The hook owns the state machine
-  // and the `video:export` dispatch; we feed it the loaded record's
-  // capture id + audio flags (or null when there's no live video) and
-  // wire its `reset()` into the lifecycle events main fires below.
-  const videoInput =
-    state.kind === "loaded" &&
-    state.record.kind === "video" &&
-    state.record.video !== null &&
-    state.record.video !== undefined
-      ? {
-          captureId: state.record.id,
-          hasSystemAudio: state.record.video.hasSystemAudio,
-          hasMicrophoneAudio: state.record.video.hasMicrophoneAudio
-        }
-      : null;
-  const {
-    exportState: videoExportState,
-    reset: resetVideoExport,
-    triggerExport: triggerVideoExport
-  } = useVideoExport(videoInput);
   // capture:presetMetrics returns empty for video captures (the
   // sharp render pipeline is image-only); only request the hook for
   // image-kind captures so we don't fire a no-op IPC on every video
@@ -130,12 +109,11 @@ export function FloatOverHost(): React.ReactElement {
       switch (event.kind) {
         case "show-idle":
           setState({ kind: "idle" });
-          resetVideoExport();
           return;
         case "show-loaded":
-          // Reset per-capture export state so a new toast doesn't
-          // show a stale "Saved" badge from the previous recording.
-          resetVideoExport();
+          // The 6-card export grid auto-resets per (format, preset)
+          // when its `captureId` prop changes — no separate reset
+          // dispatch needed.
           if (event.record !== undefined) {
             setState({
               kind: "loaded",
@@ -153,7 +131,6 @@ export function FloatOverHost(): React.ReactElement {
           // show-idle re-uses a clean React tree (no stale countdown
           // state from the previous LOADED toast).
           setState({ kind: "idle" });
-          resetVideoExport();
           return;
       }
     });
@@ -330,11 +307,8 @@ export function FloatOverHost(): React.ReactElement {
       ? ({
           kind: "video",
           src: previewSrc,
+          captureId: record.id,
           durationSec: record.video!.durationSec,
-          hasSystemAudio: record.video!.hasSystemAudio,
-          hasMicrophoneAudio: record.video!.hasMicrophoneAudio,
-          exportState: videoExportState,
-          onExport: triggerVideoExport,
           onDiscard: () => {
             // library:delete (soft-delete + trash move) is the only
             // path that updates app_stats correctly; library:purge

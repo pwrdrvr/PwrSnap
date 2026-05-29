@@ -160,9 +160,9 @@ test("editor-matching-text: affordance cancels when tool changes", async () => {
     );
     await affordance.waitFor({ state: "visible", timeout: 5_000 });
 
-    // Switch to rect — `setActiveTool` is cancel site #1 for
+    // Switch to shape — `setActiveTool` is cancel site #1 for
     // matching-text. Affordance should disappear immediately.
-    await selectTool(editorWindow, "rect");
+    await selectTool(editorWindow, "shape");
     await expect(affordance).toHaveCount(0);
   } finally {
     await app.close();

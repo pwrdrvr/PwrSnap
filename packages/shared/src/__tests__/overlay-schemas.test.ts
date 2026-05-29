@@ -15,6 +15,7 @@ import {
   BlurOverlay,
   CropOverlay,
   DEFAULT_BLUR_STYLE,
+  DEFAULT_PARALLELOGRAM_SKEW_DEG,
   deriveBlurRadiusPx,
   HighlightOverlay,
   Overlay,
@@ -22,7 +23,9 @@ import {
   OverlayThickness,
   readBlurStyle,
   readOverlayThickness,
-  RectOverlay,
+  readShapeKind,
+  readShapeSkewDeg,
+  ShapeOverlay,
   StepOverlay,
   TextOverlay
 } from "../overlay-schemas";
@@ -175,13 +178,95 @@ describe("OVERLAY_RENDER_ORDER", () => {
 });
 
 describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
-  test("RectOverlay round-trips", () => {
-    const parsed = RectOverlay.parse({
-      kind: "rect",
+  test("ShapeOverlay round-trips", () => {
+    const parsed = ShapeOverlay.parse({
+      kind: "shape",
+      shape: "rect",
       rect: { x: 0, y: 0, w: 0.5, h: 0.5 },
       color: "auto"
     });
     expect(parsed.color).toBe("auto");
+    expect(parsed.shape).toBe("rect");
+  });
+
+  test("ShapeOverlay accepts every shape kind", () => {
+    for (const shape of [
+      "rect",
+      "square",
+      "circle",
+      "oval",
+      "parallelogram"
+    ] as const) {
+      const parsed = ShapeOverlay.parse({
+        kind: "shape",
+        shape,
+        rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }
+      });
+      expect(parsed.shape).toBe(shape);
+    }
+  });
+
+  test("ShapeOverlay shape is optional — legacy rows default to rect", () => {
+    const parsed = ShapeOverlay.parse({
+      kind: "shape",
+      rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
+    });
+    expect(parsed.shape).toBeUndefined();
+    expect(readShapeKind(parsed)).toBe("rect");
+  });
+
+  test("ShapeOverlay parallelogram carries an explicit skewDeg", () => {
+    const parsed = ShapeOverlay.parse({
+      kind: "shape",
+      shape: "parallelogram",
+      rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.3 },
+      skewDeg: 22
+    });
+    expect(parsed.skewDeg).toBe(22);
+    expect(readShapeSkewDeg(parsed)).toBe(22);
+  });
+
+  test("readShapeSkewDeg defaults parallelogram without skewDeg to 15°", () => {
+    expect(
+      readShapeSkewDeg({ shape: "parallelogram" })
+    ).toBe(DEFAULT_PARALLELOGRAM_SKEW_DEG);
+  });
+
+  test("readShapeSkewDeg returns 0 for non-parallelogram shapes", () => {
+    expect(readShapeSkewDeg({ shape: "rect", skewDeg: 30 })).toBe(0);
+    expect(readShapeSkewDeg({ shape: "circle", skewDeg: 30 })).toBe(0);
+  });
+
+  test("Overlay migrates legacy kind:\"rect\" rows to kind:\"shape\"", () => {
+    // The on-disk shape from before the Rect → Shape rename. Routes
+    // through Overlay.parse (NOT ShapeOverlay.parse directly) because
+    // the preprocess shim lives on the top-level discriminated union.
+    const migrated = Overlay.parse({
+      kind: "rect",
+      rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+      color: "#ff0000",
+      thickness: "large",
+      filled: true,
+      rotation: 0.25
+    });
+    expect(migrated.kind).toBe("shape");
+    if (migrated.kind !== "shape") throw new Error("kind narrowing");
+    expect(readShapeKind(migrated)).toBe("rect");
+    expect(migrated.color).toBe("#ff0000");
+    expect(migrated.thickness).toBe("large");
+    expect(migrated.filled).toBe(true);
+    expect(migrated.rotation).toBe(0.25);
+    expect(migrated.rect).toEqual({ x: 0.1, y: 0.1, w: 0.5, h: 0.5 });
+  });
+
+  test("Overlay migration is idempotent — kind:\"shape\" passes through", () => {
+    const passthrough = Overlay.parse({
+      kind: "shape",
+      shape: "circle",
+      rect: { x: 0, y: 0, w: 0.3, h: 0.3 }
+    });
+    if (passthrough.kind !== "shape") throw new Error("kind narrowing");
+    expect(passthrough.shape).toBe("circle");
   });
 
   test("HighlightOverlay round-trips", () => {
@@ -333,9 +418,10 @@ describe("OverlayThickness + readOverlayThickness", () => {
     expect(parsed.thickness).toBe("x-large");
   });
 
-  test("RectOverlay schema accepts x-large in the thickness field", () => {
-    const parsed = RectOverlay.parse({
-      kind: "rect",
+  test("ShapeOverlay schema accepts x-large in the thickness field", () => {
+    const parsed = ShapeOverlay.parse({
+      kind: "shape",
+      shape: "rect",
       rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
       thickness: "x-large"
     });

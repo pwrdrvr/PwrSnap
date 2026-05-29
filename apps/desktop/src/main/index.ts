@@ -81,6 +81,7 @@ import { getCacheSourcePath } from "./persistence/paths";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
+import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
 import { clipboardEvents } from "./clipboard-events";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
@@ -1316,6 +1317,11 @@ export function bootstrapApp(): void {
     disposeTray();
     disposeFocusSink();
     disposeIpcDispatcher();
+    // Tear down the shared composite-thumbnail worker eagerly so an
+    // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
+    // rejected and the worker terminated on our terms, rather than the
+    // thread being reaped mid-event when the process exits.
+    shutdownCompositeThumbnailWorker();
     // Destroy the hidden text-bake BrowserWindow pool. Without this,
     // an undead hidden window can keep the app process alive past
     // `will-quit`, which surfaces in Playwright E2E as "Worker

@@ -308,7 +308,7 @@ function overlayToLayerView(
         style: { color: typeof data.color === "string" ? data.color : "auto" },
         meta
       };
-    case "rect":
+    case "shape":
       return {
         kind: "vector",
         id: row.id,
@@ -512,7 +512,7 @@ export function applyGeometryToOverlay(
       return { ...overlay, from: geometry.from, to: geometry.to };
     case "rect":
       if (
-        overlay.kind !== "rect" &&
+        overlay.kind !== "shape" &&
         overlay.kind !== "highlight" &&
         overlay.kind !== "blur"
       ) {
@@ -618,7 +618,7 @@ export function inverseTransformOverlayByCrop(
         from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
         to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
       };
-    case "rect":
+    case "shape":
     case "highlight":
     case "blur":
       return {

@@ -36,15 +36,15 @@ describe("translateOverlayData", () => {
 
   test("rect preserves filled + thickness while translating x / y", () => {
     const original: Overlay = {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
       color: "auto",
       filled: true,
       thickness: "small"
     };
     const result = translateOverlayData(original, 0.05, 0.05);
-    expect(result.kind).toBe("rect");
-    if (result.kind !== "rect") return;
+    expect(result.kind).toBe("shape");
+    if (result.kind !== "shape") return;
     expect(result.rect.x).toBeCloseTo(0.15, 9);
     expect(result.rect.y).toBeCloseTo(0.25, 9);
     expect(result.rect.w).toBeCloseTo(0.3, 9);
@@ -95,7 +95,7 @@ describe("translateOverlayData", () => {
 
   test("zero delta returns a structurally-equal payload (paste-in-place would land on top)", () => {
     const original: Overlay = {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
       color: "auto"
     };

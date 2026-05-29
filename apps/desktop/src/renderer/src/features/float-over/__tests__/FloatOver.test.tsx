@@ -72,7 +72,7 @@ const baseSettings: Settings = {
     toolStyles: {
       arrow: { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false },
       text: { color: "accent", fontSize: "auto", weight: "regular" },
-      rect: { color: "accent", thickness: "auto", filled: false },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },
@@ -181,14 +181,30 @@ afterEach(async () => {
 });
 
 describe("FloatOver asset mode", () => {
-  test("video asset renders <video> in fo__preview and GIF/MP4 buttons in fo__copy", async () => {
+  beforeEach(() => {
+    // The 6-card export grid (`VideoExportPresetsPanel`) fires
+    // `video:presetMetrics` on mount. Stub it so the renderer doesn't
+    // hit an undefined `window.pwrsnapApi`. The hook also dispatches
+    // `clipboard:copyVideoFile` / `copyVideoPath` / `video:export`
+    // on click but those don't fire in the no-interaction tests.
+    window.pwrsnapApi = {
+      dispatch: vi.fn(async (name: string) => {
+        if (name === "video:presetMetrics") return { ok: true, value: { metrics: [] } };
+        return { ok: true, value: { path: "/tmp/out.mp4" } };
+      }),
+      on: () => () => undefined,
+      requestFloatOverResize: vi.fn(),
+      startCaptureDrag: vi.fn(),
+      startVideoDrag: vi.fn()
+    } as unknown as NonNullable<Window["pwrsnapApi"]>;
+  });
+
+  test("video asset renders <video> in fo__preview and the 6-card export grid", async () => {
     const el = await renderToast({
       kind: "video",
       src: "pwrsnap-capture://r/abc",
-      durationSec: 12.5,
-      hasSystemAudio: true,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined
+      captureId: "abc",
+      durationSec: 12.5
     });
 
     const preview = el.querySelector(".fo__preview");
@@ -199,97 +215,19 @@ describe("FloatOver asset mode", () => {
     expect(el.querySelector(".fo__hdr-title")?.textContent).toBe("Recording saved");
     expect(el.querySelector(".fo__hdr-sub")?.textContent).toContain("12.5s");
 
-    const buttons = el.querySelectorAll("button.fo__copy-btn");
-    expect(buttons.length).toBe(2);
-    expect(buttons[0]?.querySelector(".fo__copy-label")?.textContent).toBe("GIF");
-    expect(buttons[1]?.querySelector(".fo__copy-label")?.textContent).toBe("MP4");
-  });
-
-  test("MP4 subtitle reflects audio track availability", async () => {
-    let el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/audio",
-      durationSec: 5,
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined
-    });
-    let buttons = el.querySelectorAll(".fo__copy button.fo__copy-btn");
-    expect(buttons[1]?.textContent).toContain("Full clip · silent");
-
-    await unmount();
-    el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/audio",
-      durationSec: 5,
-      hasSystemAudio: true,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined
-    });
-    buttons = el.querySelectorAll(".fo__copy button.fo__copy-btn");
-    expect(buttons[1]?.textContent).toContain("Full clip · with audio");
-  });
-
-  test("export-state Encoding / Saved / Failed subtitle reflects state per format", async () => {
-    let el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/s",
-      durationSec: 1,
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined,
-      exportState: { kind: "running", format: "gif" }
-    });
-    let buttons = el.querySelectorAll(".fo__copy button.fo__copy-btn");
-    expect(buttons[0]?.textContent).toContain("Encoding…");
-    expect(buttons[1]?.textContent).toContain("Full clip");
-
-    await unmount();
-    el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/s",
-      durationSec: 1,
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined,
-      exportState: { kind: "done", format: "mp4", path: "/tmp/x.mp4" }
-    });
-    buttons = el.querySelectorAll(".fo__copy button.fo__copy-btn");
-    expect(buttons[1]?.textContent).toContain("Saved");
-
-    await unmount();
-    el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/s",
-      durationSec: 1,
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      onExport: () => undefined,
-      exportState: { kind: "error", format: "gif", message: "boom" }
-    });
-    buttons = el.querySelectorAll(".fo__copy button.fo__copy-btn");
-    expect(buttons[0]?.textContent).toContain("Failed — retry");
-  });
-
-  test("clicking GIF / MP4 invokes onExport with the right format", async () => {
-    const onExport = vi.fn();
-    const el = await renderToast({
-      kind: "video",
-      src: "pwrsnap-capture://r/click",
-      durationSec: 3,
-      hasSystemAudio: false,
-      hasMicrophoneAudio: false,
-      onExport
-    });
-    const [gif, mp4] = Array.from(
-      el.querySelectorAll<HTMLButtonElement>(".fo__copy button.fo__copy-btn")
+    // Two format groups (GIF + MP4) with three cards each → 6 buttons.
+    const groups = el.querySelectorAll(".psl__copy-row-group");
+    expect(groups.length).toBe(2);
+    const buttons = el.querySelectorAll(".fo__export-grid button.fo__copy-btn");
+    expect(buttons.length).toBe(6);
+    // Cards label "Low / Med / High" within each group; the format
+    // header ("GIF" / "MP4") lives in the format eyebrow.
+    const eyebrows = el.querySelectorAll(".psl__copy-format-eyebrow span:first-child");
+    expect(Array.from(eyebrows).map((n) => n.textContent)).toEqual(["GIF", "MP4"]);
+    const labels = Array.from(buttons).map(
+      (b) => b.querySelector(".fo__copy-label")?.textContent
     );
-    await act(async () => {
-      gif?.click();
-      mp4?.click();
-    });
-    expect(onExport).toHaveBeenCalledWith("gif");
-    expect(onExport).toHaveBeenCalledWith("mp4");
+    expect(labels).toEqual(["Low", "Med", "High", "Low", "Med", "High"]);
   });
 
   test("image asset (default) keeps the existing <img> + Low/Med/High copy row", async () => {

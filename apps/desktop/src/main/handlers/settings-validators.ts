@@ -503,15 +503,30 @@ function validateTextStyle(raw: Record<string, unknown>): PwrSnapError | null {
   return null;
 }
 
-function validateRectStyle(raw: Record<string, unknown>): PwrSnapError | null {
+function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
   if (!isUndefined(raw.color) && !isToolColor(raw.color)) {
-    return validationError("invalid_editor_rect_color", "settings:write: editor.toolStyles.rect.color must be a color token or string");
+    return validationError("invalid_editor_shape_color", "settings:write: editor.toolStyles.shape.color must be a color token or string");
   }
   if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
-    return validationError("invalid_editor_rect_thickness", "settings:write: editor.toolStyles.rect.thickness must be auto/small/medium/large or a finite number");
+    return validationError("invalid_editor_shape_thickness", "settings:write: editor.toolStyles.shape.thickness must be auto/small/medium/large or a finite number");
   }
   if (!isUndefined(raw.filled) && !isBoolean(raw.filled)) {
-    return validationError("invalid_editor_rect_filled", "settings:write: editor.toolStyles.rect.filled must be a boolean");
+    return validationError("invalid_editor_shape_filled", "settings:write: editor.toolStyles.shape.filled must be a boolean");
+  }
+  if (!isUndefined(raw.shape)) {
+    const v = raw.shape;
+    if (
+      v !== "rect" &&
+      v !== "square" &&
+      v !== "circle" &&
+      v !== "oval" &&
+      v !== "parallelogram"
+    ) {
+      return validationError("invalid_editor_shape_kind", "settings:write: editor.toolStyles.shape.shape must be rect/square/circle/oval/parallelogram");
+    }
+  }
+  if (!isUndefined(raw.skewDeg) && !isFiniteNumber(raw.skewDeg)) {
+    return validationError("invalid_editor_shape_skewDeg", "settings:write: editor.toolStyles.shape.skewDeg must be a finite number");
   }
   return null;
 }
@@ -573,7 +588,7 @@ function validateEditorPatch(rawEditor: unknown): PwrSnapError | null {
     const perKind = [
       ["arrow", validateArrowStyle],
       ["text", validateTextStyle],
-      ["rect", validateRectStyle],
+      ["shape", validateShapeStyle],
       ["blur", validateBlurStyle],
       ["highlight", validateHighlightStyle]
     ] as const;

@@ -30,9 +30,7 @@ import type { VideoPreset } from "@pwrsnap/shared";
 import { dispatch, startVideoDrag } from "../../lib/pwrsnap";
 import { videoPresetKey, type VideoPresetKey } from "./useVideoPresetMetrics";
 
-/** Per-button state. Distinct from the legacy `VideoExportState`
- *  (which is keyed by format only and used by the tray + float-
- *  over's 2-card UI) because this hook keys by (format, preset). */
+/** Per-button state, keyed by (format, preset). */
 export type ExportButtonState =
   | { kind: "idle" }
   | { kind: "running" }
@@ -76,8 +74,8 @@ export function useVideoExportPresets(
 ): UseVideoExportPresetsResult {
   const [states, dispatchAction] = useReducer(reducer, {});
 
-  // Reset when capture changes. Same shape as `useVideoExport`'s
-  // auto-reset effect.
+  // Reset when capture changes — a new selection shouldn't inherit
+  // the prior capture's per-cell "Saved" / "Failed" badges.
   const captureId = input?.captureId ?? null;
   useEffect(() => {
     dispatchAction({ kind: "reset" });

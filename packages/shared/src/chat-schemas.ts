@@ -174,3 +174,39 @@ export type ChatApprovalRequest = {
   /** Optional longer detail (command text, file path, layer count). */
   detail?: string;
 };
+
+// ---- Region shapes (redaction, future shape annotations) ---------------
+//
+// A geometric region the agent can target. A DISCRIMINATED UNION on
+// `type` so new shapes (circle / oval / square / triangle) slot in
+// later as additional members WITHOUT a breaking change to the tool
+// protocol — adding a member is backward-compatible. Today the only
+// member is `rect`; that's intentional (the underlying EffectLayer
+// clip is rectangular). When a non-rect region ships, add its member
+// here AND teach the dispatch + the layer model how to clip it.
+//
+// All coordinates are NORMALIZED to [0,1] of the capture's canvas:
+// (x, y) is the top-left corner, (w, h) the size. Resolution-
+// independent — the tool dispatch multiplies by the capture's pixel
+// dimensions at use time.
+
+export const regionRectSchema = z.object({
+  type: z.literal("rect"),
+  /** Left edge, normalized [0,1]. */
+  x: z.number().min(0).max(1),
+  /** Top edge, normalized [0,1]. */
+  y: z.number().min(0).max(1),
+  /** Width, normalized [0,1]. */
+  w: z.number().min(0).max(1),
+  /** Height, normalized [0,1]. */
+  h: z.number().min(0).max(1)
+});
+
+/** Extensible region shape. One member (`rect`) today; circle / oval /
+ *  square / triangle are planned additions (member-only changes). */
+export const regionShapeSchema = z.discriminatedUnion("type", [
+  regionRectSchema
+  // soon: regionCircleSchema { type:"circle", cx, cy, r },
+  //       regionOvalSchema, regionTriangleSchema, …
+]);
+export type RegionShape = z.infer<typeof regionShapeSchema>;

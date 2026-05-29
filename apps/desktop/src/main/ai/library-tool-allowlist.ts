@@ -31,6 +31,7 @@ import {
   BundleLayerNode,
   CanvasRect,
   Overlay,
+  regionShapeSchema,
   type CaptureRecord,
   type CommandName,
   type Req
@@ -211,16 +212,11 @@ const addRedaction = defineTool({
   namespace: "pwrsnap_library",
   name: "add_redaction",
   description:
-    "Redact a rectangular region. `rect` is NORMALIZED [0,1] {x,y,w,h}. Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the rect slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
+    "Redact a region of a capture. `shape` is a discriminated shape; today the only `type` is \"rect\" with NORMALIZED [0,1] coords (x,y = top-left corner, w,h = size). Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the shape slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
-    rect: z.object({
-      x: z.number().min(0).max(1),
-      y: z.number().min(0).max(1),
-      w: z.number().min(0).max(1),
-      h: z.number().min(0).max(1)
-    }),
+    shape: regionShapeSchema,
     style: z.enum(["redact", "pixelate", "gaussian"]).optional(),
     radius_px: z.number().positive().max(200).optional()
   }),
@@ -230,11 +226,18 @@ const addRedaction = defineTool({
       return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
     }
     if (meta.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
+    // The underlying EffectLayer clip is rectangular. `rect` is the only
+    // region type today; circle/oval/triangle add cases here (and grow
+    // the layer-model clip) when they ship.
+    const { shape } = args;
+    if (shape.type !== "rect") {
+      return { ok: false, error: `redaction shape "${shape.type}" isn't supported yet — use type "rect"` };
+    }
     const clip = CanvasRect.safeParse({
-      x: args.rect.x * meta.value.width_px,
-      y: args.rect.y * meta.value.height_px,
-      w: args.rect.w * meta.value.width_px,
-      h: args.rect.h * meta.value.height_px
+      x: shape.x * meta.value.width_px,
+      y: shape.y * meta.value.height_px,
+      w: shape.w * meta.value.width_px,
+      h: shape.h * meta.value.height_px
     });
     if (!clip.success) {
       return { ok: false, error: `invalid redaction rect: ${clip.error.message}` };

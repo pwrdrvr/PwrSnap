@@ -183,17 +183,20 @@ place for the tool catalog to land on:
   sentinel + corrupt-quarantine), `ChatThreadController` (per-thread
   TurnState, settings-snapshot-per-turn, approval pump, rate limit).
 - ✅ `defineTool` generic + tool-catalog generator + a **populated**
-  14-tool allowlist:
+  15-tool allowlist:
   - read / introspect / navigate: `library_list`, `library_search`,
     `capture_metadata`, `list_layers`, `list_layer_capabilities`,
     `render_composite` (**vision** — renders the canvas to an
     `inputImage` the model sees), `open_in_library`, `open_editor`
-  - edit: `add_annotation`, `add_redaction` [blackout-by-default],
+  - edit: `add_annotation` (arrow / text / highlight), `draw_shape`
+    (geometric shapes — discriminated `shape.type`, `rect` today;
+    circle / oval / square / triangle are member-only additions),
+    `add_redaction` (plain rectangular region, blackout-by-default),
     `delete_layer`, `reorder_layer`, `add_tag`, `remove_tag`
 
   Each resolves to a real command-bus verb; `z.toJSONSchema` verified
-  to serialize every arg schema incl. the `Overlay` union + the
-  redaction `shape` union, so the catalog registers cleanly on
+  to serialize every arg schema incl. the annotation union + the
+  `draw_shape` union, so the catalog registers cleanly on
   `thread/start`. **The agent can now see, browse, edit, and redact
   captures.**
 - ✅ `render:composite` bus verb (`render-handlers.ts`): downscaled

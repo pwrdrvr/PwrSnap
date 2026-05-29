@@ -209,7 +209,9 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
-            autoAcceptSuggestions: false
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
           }
         })
     });
@@ -271,7 +273,9 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
-            autoAcceptSuggestions: false
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
           }
         })
     });

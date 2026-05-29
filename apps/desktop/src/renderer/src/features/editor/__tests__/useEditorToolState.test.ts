@@ -68,7 +68,8 @@ function makeSettings(overrides?: {
     ai: {
       enabled: false,
       consentAcceptedAt: null,
-      autoAcceptSuggestions: false
+      autoAcceptSuggestions: false,
+      chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
     },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",

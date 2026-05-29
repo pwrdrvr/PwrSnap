@@ -20,8 +20,10 @@ import {
   isColorToken,
   isEditorSidebarPanel,
   isLibrarySidebarTab,
+  isRedactionStyle,
   isSettingsPage,
-  LIBRARY_SIDEBAR_TABS
+  LIBRARY_SIDEBAR_TABS,
+  REDACTION_STYLES
 } from "@pwrsnap/shared";
 import type {
   DesktopSettingsSecretName,
@@ -190,6 +192,10 @@ export function validateSettingsWrite(
           "settings:write: ai.consentAcceptedAt must be a string or null"
         )
       };
+    }
+    if (!isUndefined(ai.chat)) {
+      const chatErr = validateChatPatch(ai.chat);
+      if (chatErr) return { ok: false, error: chatErr };
     }
   }
 
@@ -426,6 +432,164 @@ function validateLibraryPatch(raw: unknown): PwrSnapError | null {
           "/"
         )}`
       );
+    }
+  }
+  return null;
+}
+
+// ---- settings:write — ai.chat sub-validator ----------------------------
+//
+// Validates the `ai.chat` deep-partial patch shape. Enforces:
+//   • userGuidance ≤ 8 KB (8192 chars) — bigger inputs balloon every
+//     subsequent chat turn's L2 prompt + risk hitting Codex's input cap
+//   • sensitiveDataPatterns array ≤ 32 rows; each name ≤ 64; each
+//     pattern ≤ 512; names unique; pattern must `new RegExp(...)`
+//     successfully (RE2 migration tracked separately — see plan §F4 H1)
+//   • defaultRedactionStyle ∈ REDACTION_STYLES
+//   • firstLaunchBannerDismissed is a boolean
+//   • Secret-shape sniff on both `userGuidance` and each pattern's
+//     `pattern` string: blocks save if input contains a substring that
+//     looks like a real credential (sk-…, ghp_…, AKIA…, JWT, etc.)
+//     (plan §F4 H3)
+//
+// Returns null on success or a structured error on first failure.
+
+/** Tight, anchored shapes for the most common real-secret formats. The
+ *  goal is to block obvious paste-mistakes (the user typing "my key is
+ *  sk-AAAA...") at save time — NOT to catch every secret in the world.
+ *  Patterns intentionally match SHAPE without claiming validity (no
+ *  Luhn check, no JWT signature verify). Plan §F4 H3 lists the full
+ *  shape catalog; if a row here over-matches, prefer false-positive
+ *  (block save with a clear message) over silent leak. */
+const SECRET_SHAPE_PROBES: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: "OpenAI key", re: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/ },
+  { name: "Anthropic key", re: /\bsk-ant-[A-Za-z0-9_-]{40,}\b/ },
+  { name: "AWS access key", re: /\bAKIA[0-9A-Z]{16}\b/ },
+  { name: "GitHub PAT (classic)", re: /\bghp_[A-Za-z0-9]{36}\b/ },
+  { name: "GitHub PAT (fine-grained)", re: /\bgithub_pat_[A-Za-z0-9_]{82}\b/ },
+  { name: "Stripe live key", re: /\b(?:sk|rk|pk)_live_[A-Za-z0-9]{24,}\b/ },
+  { name: "Slack token", re: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/ },
+  { name: "Google API key", re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { name: "JWT", re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
+  { name: "Private key block", re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/ }
+];
+
+/** Run the sniff against a single string. Returns the first probe name
+ *  that matches, or null if clean. */
+function sniffSecretShape(input: string): string | null {
+  for (const probe of SECRET_SHAPE_PROBES) {
+    if (probe.re.test(input)) return probe.name;
+  }
+  return null;
+}
+
+function validateChatPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_chat",
+      "settings:write: ai.chat must be an object"
+    );
+  }
+  if (!isUndefined(raw.userGuidance)) {
+    if (!isString(raw.userGuidance)) {
+      return validationError(
+        "invalid_ai_chat_userGuidance",
+        "settings:write: ai.chat.userGuidance must be a string"
+      );
+    }
+    if (raw.userGuidance.length > 8192) {
+      return validationError(
+        "invalid_ai_chat_userGuidance",
+        `settings:write: ai.chat.userGuidance is ${raw.userGuidance.length} chars (max 8192)`
+      );
+    }
+    const hit = sniffSecretShape(raw.userGuidance);
+    if (hit !== null) {
+      return validationError(
+        "secret_shape_in_userGuidance",
+        `settings:write: ai.chat.userGuidance contains what looks like a real ${hit}. Don't paste real secrets here — see Settings → AI → Chat for guidance on the shape-only pattern format.`
+      );
+    }
+  }
+  if (!isUndefined(raw.defaultRedactionStyle)) {
+    if (!isRedactionStyle(raw.defaultRedactionStyle)) {
+      return validationError(
+        "invalid_ai_chat_defaultRedactionStyle",
+        `settings:write: ai.chat.defaultRedactionStyle must be one of ${REDACTION_STYLES.join("/")}`
+      );
+    }
+  }
+  if (!isUndefined(raw.firstLaunchBannerDismissed)) {
+    if (!isBoolean(raw.firstLaunchBannerDismissed)) {
+      return validationError(
+        "invalid_ai_chat_firstLaunchBannerDismissed",
+        "settings:write: ai.chat.firstLaunchBannerDismissed must be a boolean"
+      );
+    }
+  }
+  if (!isUndefined(raw.sensitiveDataPatterns)) {
+    if (!Array.isArray(raw.sensitiveDataPatterns)) {
+      return validationError(
+        "invalid_ai_chat_sensitiveDataPatterns",
+        "settings:write: ai.chat.sensitiveDataPatterns must be an array"
+      );
+    }
+    if (raw.sensitiveDataPatterns.length > 32) {
+      return validationError(
+        "invalid_ai_chat_sensitiveDataPatterns",
+        `settings:write: ai.chat.sensitiveDataPatterns has ${raw.sensitiveDataPatterns.length} rows (max 32)`
+      );
+    }
+    const seenNames = new Set<string>();
+    for (let i = 0; i < raw.sensitiveDataPatterns.length; i += 1) {
+      const row = raw.sensitiveDataPatterns[i];
+      if (!isObject(row)) {
+        return validationError(
+          "invalid_ai_chat_sensitiveDataPatterns_row",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}] must be an object`
+        );
+      }
+      const rawName = row.name;
+      const rawPattern = row.pattern;
+      if (!isString(rawName) || rawName.length === 0 || rawName.length > 64) {
+        return validationError(
+          "invalid_ai_chat_pattern_name",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}].name must be a non-empty string ≤ 64 chars`
+        );
+      }
+      if (!isString(rawPattern) || rawPattern.length === 0 || rawPattern.length > 512) {
+        return validationError(
+          "invalid_ai_chat_pattern_value",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}].pattern must be a non-empty string ≤ 512 chars`
+        );
+      }
+      if (seenNames.has(rawName)) {
+        return validationError(
+          "duplicate_ai_chat_pattern_name",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}].name "${rawName}" is duplicated`
+        );
+      }
+      seenNames.add(rawName);
+      // Compile-check via JS RegExp. RE2 (linear-time, no
+      // catastrophic backtracking) is the long-term backstop — see
+      // plan §F4 H1 + §F12. JS RegExp lacks ReDoS protection, so the
+      // accept-side here remains permissive; we narrow once `re2` is
+      // wired into the workspace native bindings.
+      try {
+        new RegExp(rawPattern);
+      } catch (err) {
+        return validationError(
+          "invalid_ai_chat_pattern_regex",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}].pattern doesn't compile as a regex: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      const hit = sniffSecretShape(rawPattern);
+      if (hit !== null) {
+        return validationError(
+          "secret_shape_in_pattern",
+          `settings:write: ai.chat.sensitiveDataPatterns[${i}].pattern looks like a real ${hit}. Patterns describe SHAPE, not real values — use placeholders like "sk-XXXXXXXX" or "\\d{3}-\\d{2}-\\d{4}".`
+        );
+      }
     }
   }
   return null;

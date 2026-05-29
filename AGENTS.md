@@ -150,29 +150,39 @@ Both shapes go through Codex App Server:
 
 PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
-## Bundle format v2 — the only write path; v1 is read-only on the way out
+## Bundle format v2 — the only bundle format (v1 fully removed)
 
 The v2 layer-tree bundle format (multi-source canvas, layer tree,
-contextual effects, private-UTI clipboard) is **the only format new
-captures land in**. The `PWRSNAP_BUNDLE_V2` env var and its
-`feature-flags.ts` getter have been retired — `persistCaptureFromTempV2`
-is the single entrypoint in [capture-handlers.ts](apps/desktop/src/main/handlers/capture-handlers.ts).
+contextual effects, private-UTI clipboard) is **the only format**.
+`persistCaptureFromTempV2` is the single write entrypoint in
+[capture-handlers.ts](apps/desktop/src/main/handlers/capture-handlers.ts);
+the [coordinator.ts](apps/desktop/src/main/render/coordinator.ts) read
+path is v2-only and **throws** for any non-v2 record.
 
-- **Write:** v2 only. `persistCaptureFromTemp` (v1) is gone.
-- **Read:** still dual-format — the [coordinator.ts](apps/desktop/src/main/render/coordinator.ts)
-  composite path branches on `bundle_format_version` so any v1
-  capture left on disk continues to render.
-- **Upgrade:** the v1→v2 doctor runs three ways. Lazy on first
-  edit-open of a v1 capture (`v1ToV2:upgrade` from the renderer's
-  `useEnsureV2` hook), eager at boot (`migrateAllV1OnBoot` —
-  walks every `bundle_format_version=1` row and converts), and
-  crash-recovery via `reconcileV1ToV2OnBoot`. All three call the
-  same atomic `migrateBundleV1ToV2` per capture.
-- **Next step:** once the eager sweep drains the library
-  (`SELECT COUNT(*) FROM captures WHERE bundle_format_version=1`
-  returns 0), the doctor, v1 read path (`compose.ts`,
-  `overlays-repo.ts`), dual-read branches, and v1 schema types
-  can be deleted in a follow-up PR.
+The entire v1 path — the v1→v2 doctor (lazy/eager/reconcile), the v1
+linear compositor (`compose()` in `compose.ts`), `overlays-repo.ts`,
+the `overlays:*` IPC verbs, the renderer's v1 model arm + doctor
+banners, `legacy-bundle-migration.ts`, the v1 bundle read handle, the
+v1 manifest/overlays zod schemas (`bundle-manifest-schema.ts`), and the
+`overlays` SQLite table (migration `0018_drop_overlays_table.sql`) —
+has been deleted. `compose.ts` survives only as a holder for the v2
+SVG rasterize helpers (`arrowSvgForV2` etc.) that `compose-tree.ts`
+imports; the v2 compositor is `composeV2` in `compose-tree.ts`.
+
+Notes for anyone touching this area:
+
+- **`bundle_format_version` still exists as a column** and reads of it
+  are fine, but it is always `2` for image captures. **Videos carry a
+  vestigial `bundle_format_version = 1`** (they have no layer-tree
+  bundle and render via the `pwrsnap-capture://` protocol, not the
+  compositor) — so a `WHERE bundle_format_version = 1` count is NOT a
+  "v1 captures remain" signal. Nothing reads the flag for videos.
+- A pre-v2 `.pwrsnap` opened from Finder now fails to parse — v1 is
+  unsupported, by design.
+- `Overlay` / `OverlayRow` (in `overlay-schemas.ts`) are **kept** — v2
+  `VectorLayer.shape` is an `Overlay`, and the editor's draw→layer
+  adapter (`overlayToLayer.ts`) still uses them. Don't confuse these
+  with the deleted v1 *bundle* schemas.
 
 See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)

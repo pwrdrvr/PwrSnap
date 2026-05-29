@@ -467,7 +467,15 @@
      in Focus/Reel (DetailRail returns null in Grid). */
   --left-col: 220px;
   --right-col: 0px;
-  grid-template-columns: var(--left-col) 1fr var(--right-col);
+  /* `minmax(0, 1fr)` for the center column — NOT bare `1fr`. A bare
+     `1fr` is `minmax(auto, 1fr)`, whose `auto` minimum is the grid's
+     MIN-CONTENT. When the cart rail opens (right column → 360px) on a
+     narrow window, that min-content floor can refuse to shrink, blow
+     the total grid past the container width, and push the left bar +
+     leftmost cells off-screen. `minmax(0, …)` lets the center column
+     shrink (the grid-wrap inside scrolls/reflows its own cells) so the
+     left + right columns always stay on-screen. */
+  grid-template-columns: var(--left-col) minmax(0, 1fr) var(--right-col);
   grid-template-rows: 52px 1fr 32px;
   background: var(--bg-app);
   border: 1px solid var(--border-default);

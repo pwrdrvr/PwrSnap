@@ -153,11 +153,15 @@ const librarySearch = defineTool({
   }
 });
 
+/** Char cap on OCR text returned to the agent — bounds token cost.
+ *  Most screenshots OCR to far less; `read_ocr_text` flags truncation. */
+const OCR_MAX_CHARS = 16_000;
+
 const captureMetadata = defineTool({
   namespace: "pwrsnap_library",
   name: "capture_metadata",
   description:
-    "Get full metadata for one capture: dimensions, kind, source app, bundle format. Call this before editing so you know the canvas size for coordinate math.",
+    "Get full metadata for one capture: dimensions, kind, source app, bundle format, PLUS PwrSnap's AI title + description + tags and whether OCR text is available. Call this before editing so you know the canvas size for coordinate math and what the capture is about. Use read_ocr_text to read the full OCR'd text.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => {
@@ -169,7 +173,68 @@ const captureMetadata = defineTool({
       };
     }
     if (result.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
-    return { ok: true, data: result.value };
+    // Merge in the enrichment (AI title/description/tags + OCR presence).
+    // Best-effort: a capture with no enrichment row just reports nulls.
+    const enr = await bus.dispatch(
+      "codex:enrichment",
+      { captureId: args.capture_id },
+      { principal: "mcp" }
+    );
+    const e = enr.ok ? enr.value : null;
+    const ocrLen = e?.ocrText?.length ?? 0;
+    return {
+      ok: true,
+      data: {
+        ...result.value,
+        title: e ? (e.acceptedTitle ?? e.suggestedTitle) : null,
+        description: e ? (e.acceptedDescription ?? e.suggestedDescription) : null,
+        tags: e?.acceptedTags ?? [],
+        has_ocr_text: ocrLen > 0,
+        ocr_text_chars: ocrLen
+      }
+    };
+  }
+});
+
+const readOcrText = defineTool({
+  namespace: "pwrsnap_library",
+  name: "read_ocr_text",
+  description:
+    "Read the text PwrSnap OCR'd out of an image capture. Use it to FIND text to redact (secrets, account / card / SSN numbers, emails) or to answer questions about what the capture says — read the text rather than guessing from the picture. Returns up to 16000 characters; `truncated` is true when the OCR was longer.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({ capture_id: z.string() }),
+  dispatch: async (args) => {
+    const enr = await bus.dispatch(
+      "codex:enrichment",
+      { captureId: args.capture_id },
+      { principal: "mcp" }
+    );
+    if (!enr.ok) {
+      return { ok: false, error: `${enr.error.kind}/${enr.error.code}: ${enr.error.message}` };
+    }
+    const ocr = enr.value?.ocrText ?? "";
+    if (ocr.length === 0) {
+      return {
+        ok: true,
+        data: {
+          capture_id: args.capture_id,
+          ocr_text: "",
+          length: 0,
+          truncated: false,
+          note: "No OCR text for this capture (it may be a non-text image, or enrichment hasn't run yet)."
+        }
+      };
+    }
+    const truncated = ocr.length > OCR_MAX_CHARS;
+    return {
+      ok: true,
+      data: {
+        capture_id: args.capture_id,
+        ocr_text: truncated ? ocr.slice(0, OCR_MAX_CHARS) : ocr,
+        length: ocr.length,
+        truncated
+      }
+    };
   }
 });
 
@@ -280,6 +345,8 @@ const listLayerCapabilities = defineTool({
       ],
       shape_note:
         "rect/square/circle/oval/parallelogram share a normalized bounding rect; keep w==h for a true square or circle. filled=true for solid, omit for outline.",
+      text_tools:
+        "capture_metadata returns the AI title/description/tags + whether OCR exists; read_ocr_text returns the OCR'd text — use it to locate secrets/text to redact rather than guessing from the picture.",
       effect_tools: {
         redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"
@@ -651,7 +718,7 @@ const removeTag = defineTool({
 });
 
 /**
- * The live catalog — 22 tools. Read / introspect / navigate first, then
+ * The live catalog — 23 tools. Read / introspect / navigate first, then
  * the per-primitive edit tools (one per draw shape + the two effects).
  * Future phases add cross-capture batch, paste-image, and capture/
  * recording verbs.
@@ -661,6 +728,7 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   libraryList,
   librarySearch,
   captureMetadata,
+  readOcrText,
   listLayers,
   listLayerCapabilities,
   renderComposite,

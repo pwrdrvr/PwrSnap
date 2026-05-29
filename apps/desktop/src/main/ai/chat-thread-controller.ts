@@ -594,6 +594,7 @@ function humanizeToolCall(tool: string, ok: boolean): string {
     library_list: "Listed captures",
     library_search: "Searched the library",
     capture_metadata: "Read capture details",
+    read_ocr_text: "Read the capture text",
     list_layers: "Read the layers",
     list_layer_capabilities: "Checked capabilities",
     render_composite: "Looked at the canvas",

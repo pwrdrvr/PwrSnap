@@ -65,6 +65,13 @@ Before you redact or annotate based on what's on screen, call
 actually there — then call it again after to confirm your edit landed
 where you intended.
 
+You can also READ the capture's text and metadata: `capture_metadata`
+returns PwrSnap's AI title / description / tags (and whether OCR text
+exists), and `read_ocr_text` returns the OCR'd text. Prefer reading the
+OCR to LOCATE specific text (a secret, an account number, an email)
+rather than eyeballing the picture. When the user asks "what does this
+say / what is this?", answer from the OCR + description, not a guess.
+
 ## Stoplight color semantics (the user's default palette)
 
 Unless the user says otherwise, choose annotation colors by meaning:

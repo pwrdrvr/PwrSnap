@@ -11,6 +11,7 @@ import {
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { ChatPanel } from "./ChatPanel";
 import "./sizzle.css";
 
 type RenderStatus = {
@@ -70,6 +71,10 @@ export function SizzleApp(): ReactElement {
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
+  // Phase-1 chat: the main pane flips between the scene Editor and the
+  // per-project agent ChatPanel via the titlebar toggle. Dual-pane is a
+  // post-PR-3 enhancement.
+  const [showChat, setShowChat] = useState(false);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -311,6 +316,31 @@ export function SizzleApp(): ReactElement {
             </>
           ) : null}
         </span>
+        {active !== null ? (
+          <>
+            <span className="szl__spacer" />
+            <div className="szl__mode-toggle" role="tablist" aria-label="Composer mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={!showChat}
+                className={"szl__mode-tab" + (!showChat ? " is-active" : "")}
+                onClick={() => setShowChat(false)}
+              >
+                Editor
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={showChat}
+                className={"szl__mode-tab" + (showChat ? " is-active" : "")}
+                onClick={() => setShowChat(true)}
+              >
+                Chat
+              </button>
+            </div>
+          </>
+        ) : null}
       </header>
       <aside className="szl__rail">
         <button className="szl__new" onClick={onCreate} type="button">
@@ -346,6 +376,8 @@ export function SizzleApp(): ReactElement {
       <main className="szl__main">
         {active === null ? (
           <EmptyState />
+        ) : showChat ? (
+          <ChatPanel key={active.id} projectId={active.id} />
         ) : (
           <Editor
             project={active}

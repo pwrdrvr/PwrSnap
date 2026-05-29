@@ -10,6 +10,7 @@
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
+import type { PwrSnapError } from "./result";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -1275,6 +1276,102 @@ export type CaptureEnrichmentSummary = {
   suggestedTagCount: number;
 };
 
+// ── Sizzle Composer Chat (PR-3) ──────────────────────────────────────
+// The per-project Codex agent that searches the library, drafts scene
+// lists, writes scripts, sets transitions, and kicks off renders. It
+// runs sandboxed (workspace-write) in a per-project scratch directory;
+// escalation requests surface as inline approval cards in the
+// transcript. See docs/plans/2026-05-28-001-feat-sizzle-cart-and-chat-plan.md
+// §PR-3.
+
+/** A single chat-turn input item the renderer sends to the agent. */
+export type ChatTurnInputItem =
+  | { type: "text"; text: string }
+  | { type: "image"; url: string };
+
+/** Persisted chat session — one row per Sizzle project. The renderer
+ *  never sees `scratchDir`; it's main-only bookkeeping. */
+export type ChatSession = {
+  projectId: string;
+  sessionId: string;
+  threadId: string;
+  scratchDir: string;
+  createdAt: string;
+};
+
+/** The decision the user makes on an inline approval card. Mapped on
+ *  the main side to the Codex protocol's per-request decision enum. */
+export type ChatApprovalDecision =
+  | "approve"
+  | "approveForSession"
+  | "decline"
+  | "cancel";
+
+/** Normalized escalation request surfaced to the renderer as an inline
+ *  approval card. `kind` drives which fields are populated; the card
+ *  renders the buttons named in `availableDecisions`. */
+export type ChatApprovalRequest = {
+  /** Stable id for this approval, echoed back via `codex:submitApproval`. */
+  requestId: string;
+  kind: "command" | "fileChange" | "permissions" | "generic";
+  /** Agent-supplied reason, e.g. "needs network access". */
+  reason: string | null;
+  /** Shell command (command escalations only). */
+  command: string | null;
+  /** Working directory the agent is operating in. */
+  cwd: string | null;
+  availableDecisions: ChatApprovalDecision[];
+};
+
+/** A tool the agent invoked, mirrored into the transcript. Emitted
+ *  after main services the call, so `ok` + `summary` are known. */
+export type ChatToolCall = {
+  callId: string;
+  tool: string;
+  /** Stringified arguments for display (the renderer pretty-prints). */
+  argumentsJson: string;
+  ok: boolean;
+  /** Short human summary of the result, e.g. "Found 8 captures". */
+  summary: string;
+};
+
+/** `events:codex:stream-delta` payload — one streamed text fragment of
+ *  an in-progress agent message. The renderer groups deltas by
+ *  `itemId` into transcript bubbles. */
+export type CodexStreamDeltaEvent = {
+  sessionId: string;
+  turnId: string;
+  itemId: string;
+  delta: string;
+};
+
+/** `events:codex:tool-call` payload — a tool the agent ran this turn. */
+export type CodexToolCallEvent = {
+  sessionId: string;
+  turnId: string;
+  toolCall: ChatToolCall;
+};
+
+/** `events:codex:approval-request` payload — the agent wants to escalate
+ *  outside the sandbox; the renderer shows an inline approval card. */
+export type CodexApprovalRequestEvent = {
+  sessionId: string;
+  turnId: string;
+  requestId: string;
+  request: ChatApprovalRequest;
+};
+
+/** `events:codex:turn-complete` payload — the turn finished, was
+ *  cancelled, or failed. `finalMessage` carries the last assistant
+ *  message so the renderer can reconcile its streamed accumulation. */
+export type CodexTurnCompleteEvent = {
+  sessionId: string;
+  turnId: string;
+  status: "ok" | "cancelled" | "failed";
+  finalMessage?: string;
+  error?: PwrSnapError;
+};
+
 /**
  * Map of every command-bus command. Each entry declares the request
  * shape and the response shape. The handler signature in main/command-bus.ts
@@ -2089,6 +2186,42 @@ export type Commands = {
     req: { projectId: string };
     res: SizzleProject;
   };
+
+  // ── Sizzle Composer Chat (PR-3) ─────────────────────────────────────
+  // Multi-turn Codex agent scoped to a single Sizzle project. Streaming
+  // text, tool calls, approval requests, and turn completion are
+  // delivered out-of-band via the `events:codex:*` channels; these verbs
+  // are the request/control side. See `ChatSession` + the chat plan.
+  /** Get-or-create the chat session for a project. Mints the scratch
+   *  dir + starts a persistent Codex thread with the sizzle tool
+   *  manifest on first call; returns the existing session thereafter. */
+  "codex:newSession": {
+    req: { projectId: string };
+    res: { sessionId: string; threadId: string };
+  };
+  /** Start a turn. Returns the turnId immediately; the agent's output
+   *  streams via `events:codex:stream-delta` / `tool-call` /
+   *  `approval-request`, terminating in `events:codex:turn-complete`. */
+  "codex:sendTurn": {
+    req: { sessionId: string; input: ChatTurnInputItem[] };
+    res: { turnId: string };
+  };
+  /** Resolve a pending inline approval card. Unblocks the Codex
+   *  server-initiated request main is holding for this escalation. */
+  "codex:submitApproval": {
+    req: {
+      sessionId: string;
+      turnId: string;
+      requestId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
+  /** Cancel an in-progress turn (aborts the signal → turn/interrupt). */
+  "codex:cancelTurn": { req: { sessionId: string; turnId: string }; res: void };
+  /** Close the session's Codex thread. Called on project delete (the
+   *  scratch dir is removed alongside) or the panel's "New chat". */
+  "codex:closeSession": { req: { sessionId: string }; res: void };
 };
 
 export type CommandName = keyof Commands;

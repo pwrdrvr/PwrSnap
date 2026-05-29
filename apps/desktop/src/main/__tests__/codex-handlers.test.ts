@@ -94,7 +94,12 @@ function unregisterCodexHandlers(): void {
     "codex:tag",
     "codex:filename",
     "codex:sensitiveScan",
-    "codex:ask"
+    "codex:ask",
+    "codex:newSession",
+    "codex:sendTurn",
+    "codex:submitApproval",
+    "codex:cancelTurn",
+    "codex:closeSession"
   ] as const) {
     bus.unregister(name);
   }

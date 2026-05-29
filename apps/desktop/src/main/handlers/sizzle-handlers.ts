@@ -18,6 +18,7 @@ import {
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
+import { getSizzleChatManager } from "../sizzle/chat-manager";
 import { pruneTtsCache, synthesize, TtsError } from "../sizzle/tts";
 import {
   compose,
@@ -330,6 +331,18 @@ export function registerSizzleHandlers(): void {
     const v = validateSizzleIdRequest(req);
     if (!v.ok) return err(v.error);
     await store.delete(v.id);
+    // Cascade: close the project's chat session + remove its scratch
+    // directory so deleting a reel leaves no orphaned chat state
+    // (locked decision #6). Best-effort — a cleanup failure must not
+    // block the delete the user asked for.
+    await getSizzleChatManager()
+      .cleanupProjectChat(v.id)
+      .catch((cause: unknown) => {
+        log.warn("sizzle:delete chat cleanup failed", {
+          projectId: v.id,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
     await pushProjectsChanged();
     return ok(undefined);
   });

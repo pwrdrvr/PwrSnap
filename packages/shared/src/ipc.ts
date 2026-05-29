@@ -182,6 +182,31 @@ export const EVENT_CHANNELS = {
    */
   cartChanged: "events:cart:changed",
   /**
+   * Main → the Sizzle composer window: one streamed text fragment of an
+   * in-progress agent message for a chat turn. The ChatPanel groups
+   * deltas by `itemId` into transcript bubbles. Type:
+   * `CodexStreamDeltaEvent`.
+   */
+  codexStreamDelta: "events:codex:stream-delta",
+  /**
+   * Main → the Sizzle composer window: a tool the chat agent invoked
+   * this turn (mirrored into the transcript after main services it).
+   * Type: `CodexToolCallEvent`.
+   */
+  codexToolCall: "events:codex:tool-call",
+  /**
+   * Main → the Sizzle composer window: the agent wants to escalate
+   * outside its sandbox; the ChatPanel renders an inline approval card.
+   * The user's choice returns via `codex:submitApproval`. Type:
+   * `CodexApprovalRequestEvent`.
+   */
+  codexApprovalRequest: "events:codex:approval-request",
+  /**
+   * Main → the Sizzle composer window: a chat turn finished, was
+   * cancelled, or failed. Type: `CodexTurnCompleteEvent`.
+   */
+  codexTurnComplete: "events:codex:turn-complete",
+  /**
    * Main → every BrowserWindow: PwrSnap just changed the OS clipboard's
    * image contents (clipboard:copy, clipboard:copyLayerFragment, or
    * any future write). Fires AFTER the write completes so subscribers
@@ -315,12 +340,24 @@ export type PerfMarkPayload =
 // subscribers, schema growth over time).
 // ---------------------------------------------------------------------
 
-import type { DraftCart, SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+import type {
+  CodexApprovalRequestEvent,
+  CodexStreamDeltaEvent,
+  CodexToolCallEvent,
+  CodexTurnCompleteEvent,
+  DraftCart,
+  SizzleProject,
+  SizzleRenderProgressEvent
+} from "./protocol";
 
 export type EventPayloads = {
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
+  [EVENT_CHANNELS.codexStreamDelta]: CodexStreamDeltaEvent;
+  [EVENT_CHANNELS.codexToolCall]: CodexToolCallEvent;
+  [EVENT_CHANNELS.codexApprovalRequest]: CodexApprovalRequestEvent;
+  [EVENT_CHANNELS.codexTurnComplete]: CodexTurnCompleteEvent;
 };
 
 /** Channel constants that carry a typed payload entry in

@@ -11,14 +11,16 @@
 // mirroring how the editor's `overlayToLayer` builds a node. This is a
 // thin shim over the layer model, NOT a workflow wrapper that hides it.
 //
-// Coordinate spaces (load-bearing — wrong space ⇒ annotations land in
-// the wrong place):
-//   • VectorLayer.shape (arrow / rect / text / highlight) uses the
-//     Overlay union's NORMALIZED [0,1] coords. Stored verbatim,
-//     identical to a user-drawn overlay.
-//   • EffectLayer.clip_rect (redaction) is CANVAS PIXELS. `add_redaction`
-//     takes a normalized rect and multiplies by the capture's canvas
-//     dimensions, mirroring overlayToLayer's blur branch.
+// Coordinate spaces (load-bearing — wrong space ⇒ marks land in the
+// wrong place):
+//   • VectorLayer.shape (draw_arrow / draw_text / draw_highlight /
+//     draw_rect) uses the Overlay union's NORMALIZED [0,1] coords,
+//     stored verbatim — identical to a user-drawn overlay. The draw
+//     tools pass the agent's normalized coords straight through.
+//   • EffectLayer.clip_rect (redact / blur) is CANVAS PIXELS. Those
+//     tools take a normalized rect and multiply by the capture's
+//     canvas dimensions (upsertEffectRect), mirroring overlayToLayer's
+//     blur branch.
 //
 // `render_composite` (vision grounding) is NOT yet available — the bus
 // verb doesn't exist (fast-follow). Until then the agent grounds edits
@@ -28,28 +30,14 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import {
-  ArrowOverlay,
   BundleLayerNode,
   CanvasRect,
-  drawShapeSchema,
-  HighlightOverlay,
-  TextOverlay,
   type CaptureRecord,
   type CommandName,
   type Req
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
-
-/** What `add_annotation` accepts — connectors + labels + emphasis.
- *  Geometric shapes (rect, and soon circle/oval/square/triangle) go
- *  through the dedicated `draw_shape` tool instead, so there's one
- *  obvious way to draw each thing. */
-const annotationShapeSchema = z.discriminatedUnion("kind", [
-  ArrowOverlay,
-  TextOverlay,
-  HighlightOverlay
-]);
 
 /** Run one bus verb and map the Result to a ToolDispatchResult. */
 async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
@@ -246,7 +234,7 @@ const openEditor = defineTool({
   namespace: "pwrsnap_library",
   name: "open_editor",
   description:
-    "Open a capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use add_annotation / add_redaction directly without opening anything.",
+    "Open a capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use draw_arrow / draw_text / draw_rect / redact / blur etc. directly without opening anything.",
   annotations: {},
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => runVerb("editor:open", { captureId: args.capture_id })
@@ -256,23 +244,18 @@ const listLayerCapabilities = defineTool({
   namespace: "pwrsnap_library",
   name: "list_layer_capabilities",
   description:
-    "Describe what you can place on a capture: the annotation kinds (for add_annotation), the redaction styles + region shapes (for add_redaction), and the coordinate convention. Call this if you're unsure what's available.",
+    "Describe what you can place on a capture: the draw tools (draw_arrow / draw_text / draw_highlight / draw_rect), the effect tools (redact / blur), and the coordinate convention. Call this if you're unsure what's available.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({}),
   dispatch: async () => ({
     ok: true,
     data: {
       coordinate_system: "normalized [0,1] of the canvas; (0,0)=top-left, (1,1)=bottom-right",
-      add_annotation_kinds: ["arrow", "text", "highlight"],
-      draw_shape_types: ["rect"],
-      planned_draw_shape_types: ["circle", "oval", "square", "triangle"],
-      redaction: {
-        region: "rectangular ({x,y,w,h})",
-        styles: {
-          redact: "opaque blackout — IRREVERSIBLE, use for secrets",
-          pixelate: "reversible — non-secret content only",
-          gaussian: "reversible — non-secret content only"
-        }
+      draw_tools: ["draw_arrow", "draw_text", "draw_highlight", "draw_rect"],
+      planned_draw_tools: ["draw_circle", "draw_oval", "draw_square", "draw_triangle"],
+      effect_tools: {
+        redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
+        blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"
       },
       stoplight_colors: {
         red: "problem / failure",
@@ -286,121 +269,226 @@ const listLayerCapabilities = defineTool({
 });
 
 // ---- edit tools --------------------------------------------------------
+//
+// One tool per primitive (draw_arrow / draw_text / draw_highlight /
+// draw_rect / redact / blur) rather than a single polymorphic
+// add_annotation taking a discriminated union. Rationale: models are
+// reliable at PICKING a named tool but weaker at correctly pairing a
+// discriminator with its matching fields — so the agent picks
+// `draw_highlight` and sees only highlight's flat settings. Still
+// primitives (the agent composes novel results from them), NOT
+// workflow wrappers. New shapes (circle/oval/square/triangle) land as
+// new draw_* tools.
 
-const addAnnotation = defineTool({
-  namespace: "pwrsnap_library",
-  name: "add_annotation",
-  description:
-    "Add a connector/label annotation: an arrow, a text label, or a highlight. (For geometric shapes — rectangles, and soon circles/ovals/triangles — use draw_shape.) The `shape` uses NORMALIZED coordinates in [0,1] (0,0 = top-left, 1,1 = bottom-right). Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer including its id.",
-  annotations: { destructiveHint: false },
-  argsSchema: z.object({ capture_id: z.string(), shape: annotationShapeSchema }),
-  dispatch: async (args) => {
-    const node = {
-      ...commonLayerProps(`AI ${args.shape.kind}`),
-      kind: "vector" as const,
-      shape: args.shape
-    };
-    const parsed = BundleLayerNode.safeParse(node);
-    if (!parsed.success) {
-      return { ok: false, error: `built an invalid layer: ${parsed.error.message}` };
-    }
-    return runVerb("layers:upsert", {
-      captureId: args.capture_id,
-      layer: parsed.data,
-      bumpZIndexToMax: true
-    });
-  }
+/** Shared fragments — flat, normalized [0,1] coords. Points allow
+ *  values slightly outside [0,1] so an arrow can come in from off-
+ *  canvas (matches the Overlay schema's finite-scalar tolerance + the
+ *  system prompt's artistic-license guidance). */
+const hexColor = z.string().regex(/^#[0-9a-f]{6}$/i);
+const normPoint = z.object({ x: z.number().finite(), y: z.number().finite() });
+const normRect = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  w: z.number().finite().positive(),
+  h: z.number().finite().positive()
 });
 
-const drawShape = defineTool({
-  namespace: "pwrsnap_library",
-  name: "draw_shape",
-  description:
-    "Draw a geometric shape on a capture. `shape` is discriminated on `type`; today the only type is \"rect\" (x,y = top-left, w,h = size, all NORMALIZED [0,1]; optional `color` #rrggbb + `filled`). Circles, ovals, squares, and triangles are coming — same `shape.type` field. Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer.",
-  annotations: { destructiveHint: false },
-  argsSchema: z.object({ capture_id: z.string(), shape: drawShapeSchema }),
-  dispatch: async (args) => {
-    const { shape } = args;
-    // `rect` is the only shape today. circle/oval/square/triangle add
-    // cases here (and a matching Overlay kind + renderer support) later.
-    if (shape.type !== "rect") {
-      return { ok: false, error: `shape "${shape.type}" isn't supported yet — use type "rect"` };
-    }
-    const node = {
-      ...commonLayerProps("AI rect"),
-      kind: "vector" as const,
-      shape: {
-        kind: "rect" as const,
-        rect: { x: shape.x, y: shape.y, w: shape.w, h: shape.h },
-        color: shape.color ?? ("auto" as const),
-        ...(shape.filled !== undefined ? { filled: shape.filled } : {})
-      }
-    };
-    const parsed = BundleLayerNode.safeParse(node);
-    if (!parsed.success) {
-      return { ok: false, error: `built an invalid shape layer: ${parsed.error.message}` };
-    }
-    return runVerb("layers:upsert", {
-      captureId: args.capture_id,
-      layer: parsed.data,
-      bumpZIndexToMax: true
-    });
+/** Build + upsert a VectorLayer wrapping a plain Overlay shape. The
+ *  shape object is validated by BundleLayerNode.safeParse. */
+async function upsertVector(
+  captureId: string,
+  shape: Record<string, unknown>,
+  name: string
+): Promise<ToolDispatchResult> {
+  const node = { ...commonLayerProps(name), kind: "vector" as const, shape };
+  const parsed = BundleLayerNode.safeParse(node);
+  if (!parsed.success) {
+    return { ok: false, error: `built an invalid ${name}: ${parsed.error.message}` };
   }
-});
+  return runVerb("layers:upsert", { captureId, layer: parsed.data, bumpZIndexToMax: true });
+}
 
-const addRedaction = defineTool({
+/** Build + upsert an EffectLayer (blur/redact) clipped to a NORMALIZED
+ *  rect. Fetches the capture's canvas dims to convert normalized →
+ *  pixel clip_rect. */
+async function upsertEffectRect(
+  captureId: string,
+  rect: { x: number; y: number; w: number; h: number },
+  effect: { type: "blur"; radius_px: number; style: "redact" | "pixelate" | "gaussian" },
+  name: string
+): Promise<ToolDispatchResult> {
+  const meta = await bus.dispatch("library:byId", { id: captureId }, { principal: "mcp" });
+  if (!meta.ok) {
+    return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
+  }
+  if (meta.value === null) return { ok: false, error: `capture not found: ${captureId}` };
+  const clip = CanvasRect.safeParse({
+    x: rect.x * meta.value.width_px,
+    y: rect.y * meta.value.height_px,
+    w: rect.w * meta.value.width_px,
+    h: rect.h * meta.value.height_px
+  });
+  if (!clip.success) return { ok: false, error: `invalid rect: ${clip.error.message}` };
+  const node = {
+    ...commonLayerProps(name),
+    kind: "effect" as const,
+    effect,
+    clip_rect: clip.data
+  };
+  const parsed = BundleLayerNode.safeParse(node);
+  if (!parsed.success) {
+    return { ok: false, error: `built an invalid ${name}: ${parsed.error.message}` };
+  }
+  return runVerb("layers:upsert", { captureId, layer: parsed.data, bumpZIndexToMax: true });
+}
+
+const drawArrow = defineTool({
   namespace: "pwrsnap_library",
-  name: "add_redaction",
+  name: "draw_arrow",
   description:
-    "Redact a rectangular region of a capture. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left corner, w,h = size). Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the rect slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
+    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). Optional `label` rides at the tail. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
-    rect: z.object({
-      x: z.number().min(0).max(1),
-      y: z.number().min(0).max(1),
-      w: z.number().min(0).max(1),
-      h: z.number().min(0).max(1)
-    }),
-    style: z.enum(["redact", "pixelate", "gaussian"]).optional(),
+    from: normPoint,
+    to: normPoint,
+    color: hexColor.optional(),
+    label: z.string().max(80).optional(),
+    double_ended: z.boolean().optional()
+  }),
+  dispatch: async (args) =>
+    upsertVector(
+      args.capture_id,
+      {
+        kind: "arrow",
+        from: args.from,
+        to: args.to,
+        color: args.color ?? "auto",
+        ...(args.label !== undefined ? { label: args.label } : {}),
+        ...(args.double_ended !== undefined ? { doubleEnded: args.double_ended } : {})
+      },
+      "AI arrow"
+    )
+});
+
+const drawText = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_text",
+  description:
+    "Place a text label. `at` is a NORMALIZED anchor point [0,1] — keep labels fully on-canvas so they're readable. `color` is #rrggbb (omit = auto). `size` small|medium|large, `weight` regular|bold.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    at: normPoint,
+    body: z.string().min(1).max(2000),
+    color: hexColor.optional(),
+    size: z.enum(["small", "medium", "large"]).optional(),
+    weight: z.enum(["regular", "bold"]).optional()
+  }),
+  dispatch: async (args) =>
+    upsertVector(
+      args.capture_id,
+      {
+        kind: "text",
+        point: args.at,
+        body: args.body,
+        color: args.color ?? "auto",
+        size: args.size ?? "medium",
+        ...(args.weight !== undefined ? { weight: args.weight } : {})
+      },
+      "AI text"
+    )
+});
+
+const drawHighlight = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_highlight",
+  description:
+    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default).",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: normRect,
+    color: hexColor.optional(),
+    opacity: z.number().min(0).max(1).optional()
+  }),
+  dispatch: async (args) =>
+    upsertVector(
+      args.capture_id,
+      {
+        kind: "highlight",
+        rect: args.rect,
+        ...(args.color !== undefined ? { color: args.color } : {}),
+        ...(args.opacity !== undefined ? { opacity: args.opacity } : {})
+      },
+      "AI highlight"
+    )
+});
+
+const drawRect = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_rect",
+  description:
+    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `filled` true = solid fill, false/omit = outline only. (Circles, ovals, squares, and triangles will arrive as their own draw_* tools.)",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: normRect,
+    color: hexColor.optional(),
+    filled: z.boolean().optional()
+  }),
+  dispatch: async (args) =>
+    upsertVector(
+      args.capture_id,
+      {
+        kind: "rect",
+        rect: args.rect,
+        color: args.color ?? "auto",
+        ...(args.filled !== undefined ? { filled: args.filled } : {})
+      },
+      "AI rect"
+    )
+});
+
+const redact = defineTool({
+  namespace: "pwrsnap_library",
+  name: "redact",
+  description:
+    "Black out a rectangular region — OPAQUE and IRREVERSIBLE. The correct tool for secrets (API keys, passwords, account/card/SSN numbers). `rect` is NORMALIZED [0,1] {x,y,w,h}; pad it slightly beyond the text so anti-aliased edges don't leak. For non-secret softening (a face, a logo) use `blur` instead.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({ capture_id: z.string(), rect: normRect }),
+  dispatch: async (args) =>
+    upsertEffectRect(
+      args.capture_id,
+      args.rect,
+      { type: "blur", radius_px: 1, style: "redact" },
+      "AI redaction"
+    )
+});
+
+const blur = defineTool({
+  namespace: "pwrsnap_library",
+  name: "blur",
+  description:
+    "Soften a rectangular region — REVERSIBLE (deconvolution can recover it). Use ONLY for non-secret content like a face or a logo; for secrets use `redact` (opaque blackout). `rect` is NORMALIZED [0,1] {x,y,w,h}. `pixelate` true = chunky mosaic, false/omit = gaussian smear. `radius_px` controls strength (default 16).",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: normRect,
+    pixelate: z.boolean().optional(),
     radius_px: z.number().positive().max(200).optional()
   }),
-  dispatch: async (args) => {
-    const meta = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
-    if (!meta.ok) {
-      return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
-    }
-    if (meta.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
-    const clip = CanvasRect.safeParse({
-      x: args.rect.x * meta.value.width_px,
-      y: args.rect.y * meta.value.height_px,
-      w: args.rect.w * meta.value.width_px,
-      h: args.rect.h * meta.value.height_px
-    });
-    if (!clip.success) {
-      return { ok: false, error: `invalid redaction rect: ${clip.error.message}` };
-    }
-    const style = args.style ?? "redact";
-    const node = {
-      ...commonLayerProps("AI redaction"),
-      kind: "effect" as const,
-      effect: {
-        type: "blur" as const,
-        radius_px: args.radius_px ?? (style === "redact" ? 1 : 16),
-        style
+  dispatch: async (args) =>
+    upsertEffectRect(
+      args.capture_id,
+      args.rect,
+      {
+        type: "blur",
+        radius_px: args.radius_px ?? 16,
+        style: args.pixelate === true ? "pixelate" : "gaussian"
       },
-      clip_rect: clip.data
-    };
-    const parsed = BundleLayerNode.safeParse(node);
-    if (!parsed.success) {
-      return { ok: false, error: `built an invalid redaction layer: ${parsed.error.message}` };
-    }
-    return runVerb("layers:upsert", {
-      captureId: args.capture_id,
-      layer: parsed.data,
-      bumpZIndexToMax: true
-    });
-  }
+      "AI blur"
+    )
 });
 
 const deleteLayer = defineTool({
@@ -457,10 +545,13 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   renderComposite,
   openInLibrary,
   openEditor,
-  // edit
-  addAnnotation,
-  drawShape,
-  addRedaction,
+  // edit — one tool per primitive
+  drawArrow,
+  drawText,
+  drawHighlight,
+  drawRect,
+  redact,
+  blur,
   deleteLayer,
   reorderLayer,
   addTag,

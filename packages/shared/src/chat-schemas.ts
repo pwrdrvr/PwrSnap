@@ -175,47 +175,11 @@ export type ChatApprovalRequest = {
   detail?: string;
 };
 
-// ---- Drawing shapes (the geometric-shape drawing tool) -----------------
-//
-// The agent's geometric drawing primitive (the `draw_shape` tool). A
-// DISCRIMINATED UNION on `type` so new shapes (circle / oval / square /
-// triangle) slot in later as additional members WITHOUT a breaking
-// change to the tool protocol — adding a member is backward-compatible.
-// Today the only member is `rect`; that's intentional (the renderer +
-// the v2 layer model only draw rectangles so far). When a new shape
-// ships, add its member here AND teach the dispatch + the renderer how
-// to draw it.
-//
-// This is distinct from `add_annotation` (arrows / text / highlight —
-// connectors and labels) and from redaction regions (a plain rect).
-//
-// All coordinates are NORMALIZED to [0,1] of the capture's canvas:
-// (x, y) is the top-left corner, (w, h) the size. Resolution-
-// independent — placement is the same at any capture resolution.
-
-export const drawShapeRectSchema = z.object({
-  type: z.literal("rect"),
-  /** Left edge, normalized [0,1]. */
-  x: z.number().min(0).max(1),
-  /** Top edge, normalized [0,1]. */
-  y: z.number().min(0).max(1),
-  /** Width, normalized [0,1]. */
-  w: z.number().min(0).max(1),
-  /** Height, normalized [0,1]. */
-  h: z.number().min(0).max(1),
-  /** Stroke/fill color as #rrggbb. Omit to let PwrSnap auto-pick from
-   *  the image. Stoplight convention: red=problem, green=fix,
-   *  yellow=warning, blue=context. */
-  color: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
-  /** Solid fill when true; outline-only when false/omitted. */
-  filled: z.boolean().optional()
-});
-
-/** Extensible drawing shape. One member (`rect`) today; circle / oval /
- *  square / triangle are planned additions (member-only changes). */
-export const drawShapeSchema = z.discriminatedUnion("type", [
-  drawShapeRectSchema
-  // soon: drawShapeCircleSchema { type:"circle", cx, cy, r },
-  //       drawShapeOvalSchema, drawShapeSquareSchema, drawShapeTriangleSchema, …
-]);
-export type DrawShape = z.infer<typeof drawShapeSchema>;
+// Drawing shapes are modeled as one tool PER primitive (draw_arrow,
+// draw_text, draw_highlight, draw_rect — and draw_circle / draw_oval /
+// draw_square / draw_triangle as they ship) rather than a single
+// polymorphic tool taking a discriminated `shape` union. Models pick a
+// named tool more reliably than they populate a discriminated-union
+// arg, and each tool exposes only its own flat settings. The tool arg
+// schemas live with the tools (apps/desktop/.../ai/library-tool-
+// allowlist.ts), so there's no shared shape union here.

@@ -51,9 +51,12 @@ describe("library tool allowlist", () => {
         "render_composite",
         "open_in_library",
         "open_editor",
-        "add_annotation",
-        "draw_shape",
-        "add_redaction",
+        "draw_arrow",
+        "draw_text",
+        "draw_highlight",
+        "draw_rect",
+        "redact",
+        "blur",
         "delete_layer",
         "reorder_layer",
         "add_tag",
@@ -71,7 +74,7 @@ describe("library tool allowlist", () => {
       expect(spec.description.length).toBeGreaterThan(0);
       // inputSchema must be a non-null JSON-Schema object — this is the
       // line that throws if z.toJSONSchema can't serialize a tool's
-      // argsSchema (e.g. add_annotation's Overlay discriminated union).
+      // argsSchema (e.g. the draw_* tools' flat shape schemas).
       expect(spec.inputSchema).toBeTruthy();
       expect(typeof spec.inputSchema).toBe("object");
     }

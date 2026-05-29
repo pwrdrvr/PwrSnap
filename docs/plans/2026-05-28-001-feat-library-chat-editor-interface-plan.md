@@ -183,13 +183,24 @@ place for the tool catalog to land on:
   sentinel + corrupt-quarantine), `ChatThreadController` (per-thread
   TurnState, settings-snapshot-per-turn, approval pump, rate limit).
 - ✅ `defineTool` generic + tool-catalog generator + a **populated**
-  10-tool allowlist — read (`library_list`, `library_search`,
-  `capture_metadata`, `list_layers`) + edit (`add_annotation`,
-  `add_redaction` [blackout-by-default], `delete_layer`,
-  `reorder_layer`, `add_tag`, `remove_tag`). Each resolves to a real
-  command-bus verb; `z.toJSONSchema` verified to serialize every arg
-  schema incl. the `Overlay` union, so the catalog registers cleanly
-  on `thread/start`. **The agent can now actually edit captures.**
+  14-tool allowlist:
+  - read / introspect / navigate: `library_list`, `library_search`,
+    `capture_metadata`, `list_layers`, `list_layer_capabilities`,
+    `render_composite` (**vision** — renders the canvas to an
+    `inputImage` the model sees), `open_in_library`, `open_editor`
+  - edit: `add_annotation`, `add_redaction` [blackout-by-default],
+    `delete_layer`, `reorder_layer`, `add_tag`, `remove_tag`
+
+  Each resolves to a real command-bus verb; `z.toJSONSchema` verified
+  to serialize every arg schema incl. the `Overlay` union + the
+  redaction `shape` union, so the catalog registers cleanly on
+  `thread/start`. **The agent can now see, browse, edit, and redact
+  captures.**
+- ✅ `render:composite` bus verb (`render-handlers.ts`): downscaled
+  PNG via the bake coordinator (cache hit on unchanged composite; no
+  BAKE_PIPELINE_VERSION bump), longest-edge clamp [≤1440, default
+  720], image captures only. Returned to the agent as an `inputImage`
+  content item (new `ToolDispatchResult` content-items variant).
 - ✅ Shared renderer primitives at `features/shared/chat/`
   (MessageList rAF-streaming, Composer, ChatApprovalModal,
   ConfirmBatchCard, AiRunBadge) + `LibraryChatPanel` wired into the
@@ -200,13 +211,15 @@ place for the tool catalog to land on:
   quantity-from-adjective, prompt-injection defense.
 - ✅ 2072/2072 unit tests pass; typecheck + license + color lint green.
 
-**NEXT (fast-follow):** `render_composite` (vision grounding — the
-bus verb doesn't exist yet, so the agent grounds edits on
-`list_layers` + `capture_metadata` OCR/dims and asks when ambiguous);
-whole-run group undo (shared `ai_run_id`); per-turn L3 active-capture
-context injection; the accept/reject-badge gate (Phase 1 applies
-edits directly, immediately visible + individually ⌘Z-able); and the
-deferred cross-capture batch / paste-image phases.
+**NEXT (fast-follow):** whole-run group undo (shared `ai_run_id` so
+one ⌘Z reverses a multi-layer turn); per-turn L3 active-capture
+context injection (so the agent knows what the user is viewing
+without a tool call); `current_capture` (needs the controller to
+expose the thread anchor to the dispatch); the accept/reject-badge
+gate (Phase 1 applies edits directly — immediately visible +
+individually ⌘Z-able); a non-rectangular redaction clip for the
+planned circle/oval/triangle region shapes; and the deferred
+cross-capture batch / paste-image phases.
 
 ## Overview
 

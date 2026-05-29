@@ -1066,7 +1066,13 @@ export function bootstrapApp(): void {
             legacyAlias !== undefined && rest.legacy_src_path === undefined
               ? { ...rest, legacy_src_path: legacyAlias }
               : rest;
-          return insertOrFindCapture(normalized);
+          // v2 is the only bundle format. Default row-only seeds to v2 so
+          // the editor's useCaptureModel resolves the v2 layer-tree model
+          // — a `bundle_format_version = 1` row now resolves to an error
+          // model (the v1 read path is gone). An explicit version in the
+          // input still wins. (Harmless for `kind: "video"`: nothing reads
+          // the flag for videos — they render via pwrsnap-capture://.)
+          return insertOrFindCapture({ bundle_format_version: 2, ...normalized });
         },
         // Batch variant — runs all inserts inside one SQLite
         // transaction so the chain pays one fsync instead of N.
@@ -1076,9 +1082,13 @@ export function bootstrapApp(): void {
         seedCaptures: (inputs: Array<Parameters<typeof insertOrFindCapture>[0] & { src_path?: string }>) => {
           const normalized = inputs.map((input) => {
             const { src_path: legacyAlias, ...rest } = input;
-            return legacyAlias !== undefined && rest.legacy_src_path === undefined
-              ? { ...rest, legacy_src_path: legacyAlias }
-              : rest;
+            const withAlias =
+              legacyAlias !== undefined && rest.legacy_src_path === undefined
+                ? { ...rest, legacy_src_path: legacyAlias }
+                : rest;
+            // Default to v2 (the only bundle format); explicit wins. See
+            // `seedCapture` above for the rationale.
+            return { bundle_format_version: 2, ...withAlias };
           });
           return insertOrFindCapturesBatch(normalized);
         },

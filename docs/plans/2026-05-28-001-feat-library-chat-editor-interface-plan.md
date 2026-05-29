@@ -182,8 +182,14 @@ place for the tool catalog to land on:
   `ChatThreadStore` (sidecar + journal + `.metadata_never_index`
   sentinel + corrupt-quarantine), `ChatThreadController` (per-thread
   TurnState, settings-snapshot-per-turn, approval pump, rate limit).
-- ✅ `defineTool` generic + tool-catalog generator + **empty**
-  allowlist (Phase 1 fills it).
+- ✅ `defineTool` generic + tool-catalog generator + a **populated**
+  10-tool allowlist — read (`library_list`, `library_search`,
+  `capture_metadata`, `list_layers`) + edit (`add_annotation`,
+  `add_redaction` [blackout-by-default], `delete_layer`,
+  `reorder_layer`, `add_tag`, `remove_tag`). Each resolves to a real
+  command-bus verb; `z.toJSONSchema` verified to serialize every arg
+  schema incl. the `Overlay` union, so the catalog registers cleanly
+  on `thread/start`. **The agent can now actually edit captures.**
 - ✅ Shared renderer primitives at `features/shared/chat/`
   (MessageList rAF-streaming, Composer, ChatApprovalModal,
   ConfirmBatchCard, AiRunBadge) + `LibraryChatPanel` wired into the
@@ -192,15 +198,15 @@ place for the tool catalog to land on:
   workspace-write`); L1 system prompt with stoplight semantics,
   redaction/blackout guidance, off-canvas artistic license,
   quantity-from-adjective, prompt-injection defense.
-- ✅ 1927/1927 unit tests pass; typecheck + license + color lint green.
+- ✅ 2072/2072 unit tests pass; typecheck + license + color lint green.
 
-**NEXT (Phase 1 — the agent gains actions):** populate
-`LIBRARY_TOOL_ALLOWLIST` with the read-only tools (`library_list`,
-`current_capture`, `render_composite`, `layers_list`, …) then the
-mutating catalog (§"Updated Acceptance Criteria"). Until then the
-agent can converse but the catalog is empty, so it has no tools to
-call. Plus: FTS5 search backing for `library_search`, per-turn L3
-context injection, and the deferred Phases 6–8.
+**NEXT (fast-follow):** `render_composite` (vision grounding — the
+bus verb doesn't exist yet, so the agent grounds edits on
+`list_layers` + `capture_metadata` OCR/dims and asks when ambiguous);
+whole-run group undo (shared `ai_run_id`); per-turn L3 active-capture
+context injection; the accept/reject-badge gate (Phase 1 applies
+edits directly, immediately visible + individually ⌘Z-able); and the
+deferred cross-capture batch / paste-image phases.
 
 ## Overview
 

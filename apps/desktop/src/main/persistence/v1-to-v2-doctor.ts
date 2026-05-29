@@ -748,7 +748,9 @@ type ReconcileRow = {
  *   • Orphan .pwrsnap.tmp files → unlink
  *
  * Sweep runs fire-and-forget from main/index.ts after migrations
- * have applied. Logs progress via `emitProgress`.
+ * have applied. It is SILENT — repairs are logged, never toasted (see
+ * the body for why); the eager `migrateAllV1OnBoot` owns the library
+ * migration toast.
  */
 export async function reconcileV1ToV2OnBoot(): Promise<void> {
   const db = getDb();
@@ -770,17 +772,23 @@ export async function reconcileV1ToV2OnBoot(): Promise<void> {
   // these are crashes between step 6 and step 7 of migrateBundle...
   const tmpFiles = await findOrphanTempFiles(rows);
 
-  const total = rows.length + tmpFiles.length;
-
-  emitProgress({
-    status: "running",
-    captureId: null,
-    total,
-    done: 0,
-    failed: 0
-  });
-
-  let done = 0;
+  // Reconcile is a fast, read-mostly crash-recovery pass: on a
+  // healthy (already-converged) library it reads every bundle
+  // manifest and changes nothing. It deliberately does NOT drive the
+  // library migration toast.
+  //
+  // Two reasons:
+  //   1. It runs on every boot. Emitting an aggregate progress event
+  //      here would paint "Captures modernized · N / N" on every
+  //      launch even when nothing was healed — which is exactly the
+  //      "we're all caught up, why show the toast?" bug.
+  //   2. `done`/`total` here count rows INSPECTED, not captures
+  //      modernized. Even on a boot that does heal a stray row, "N / N
+  //      modernized" would overstate the work by orders of magnitude.
+  //
+  // The user-visible progress surface is the eager sweep
+  // (`migrateAllV1OnBoot`), which runs right after this and counts
+  // genuine conversions. Repairs here are logged, not toasted.
   let failed = 0;
 
   // Pass 1: reconcile DB ↔ bundle version drift + orphan overlay
@@ -793,16 +801,6 @@ export async function reconcileV1ToV2OnBoot(): Promise<void> {
       log.warn("v1-to-v2-reconcile: row reconcile failed", {
         captureId: row.id,
         message: cause instanceof Error ? cause.message : String(cause)
-      });
-    }
-    done += 1;
-    if (done % RECONCILE_PROGRESS_EVERY_N === 0) {
-      emitProgress({
-        status: "running",
-        captureId: null,
-        total,
-        done,
-        failed
       });
     }
   }
@@ -819,25 +817,7 @@ export async function reconcileV1ToV2OnBoot(): Promise<void> {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
-    done += 1;
-    if (done % RECONCILE_PROGRESS_EVERY_N === 0) {
-      emitProgress({
-        status: "running",
-        captureId: null,
-        total,
-        done,
-        failed
-      });
-    }
   }
-
-  emitProgress({
-    status: "complete",
-    captureId: null,
-    total,
-    done,
-    failed
-  });
 
   log.info("v1-to-v2-reconcile: done", {
     inspected: rows.length,
@@ -955,3 +935,158 @@ async function findOrphanTempFiles(rows: readonly ReconcileRow[]): Promise<strin
 // inside migrateBundleV1ToV2 to avoid a top-level cycle (same
 // pattern bundle-store itself uses for layers-repo when seeding
 // the initial v2 layer tree).
+
+// ────────────────────────────────────────────────────────────────────
+// migrateAllV1OnBoot — eager bulk sweep
+// ────────────────────────────────────────────────────────────────────
+
+type EagerSweepRow = { id: string };
+
+/**
+ * Boot-time eager sweep that upgrades every remaining v1 capture to
+ * v2 by chaining `migrateBundleV1ToV2` row-by-row. Runs after
+ * `reconcileV1ToV2OnBoot` so any mid-crash states have already been
+ * healed, then walks `WHERE bundle_format_version = 1 AND
+ * bundle_path IS NOT NULL`.
+ *
+ * Sequential by design — the per-capture doctor already coordinates
+ * with `scheduleRepack` via a per-capture mutex and the layers-repo
+ * write path serializes through SQLite. Running multiple migrations
+ * concurrently would race on the shared bundle-store + DB
+ * connection without speeding the user's wait meaningfully (each
+ * upgrade is bound by sharp re-decode, not by parallelism).
+ *
+ * Parked captures (v1_to_v2_attempts ≥ MAX_ATTEMPTS) are skipped —
+ * the eager sweep is opportunistic; the user-visible Retry button
+ * on the editor banner remains the recovery path for those.
+ *
+ * Failures inside the per-capture doctor count toward the retry
+ * budget naturally. Failures at the eager-sweep level (e.g. a
+ * thrown promise that escapes `migrateBundleV1ToV2`) are logged
+ * and counted but never block the rest of the sweep.
+ *
+ * This sweep is the bridge between the v1 default-write era and a
+ * future PR that removes the v1 read path entirely — once the
+ * library is fully v2 (`SELECT COUNT(*) FROM captures WHERE
+ * bundle_format_version = 1` returns 0), the doctor + dual-read
+ * path can be deleted.
+ */
+export async function migrateAllV1OnBoot(): Promise<void> {
+  const db = getDb();
+  // The `bundle_path IS NOT NULL` filter excludes pre-bundle legacy
+  // captures (`legacy_src_path` only) — the per-capture doctor would
+  // return `no_bundle` for those, so there's no point selecting them.
+  // `runLegacyBundleMigration` wraps those into v1 bundles earlier in
+  // the boot pipeline; this sweep picks them up on the same boot once
+  // they have a `bundle_path`.
+  const rows = db
+    .prepare<[number], EagerSweepRow>(
+      `SELECT id FROM captures
+        WHERE bundle_format_version = 1
+          AND bundle_path IS NOT NULL
+          AND deleted_at IS NULL
+          AND v1_to_v2_attempts < ?
+        ORDER BY captured_at ASC`
+    )
+    .all(MAX_ATTEMPTS);
+
+  const total = rows.length;
+
+  if (total === 0) {
+    log.info("v1-to-v2-eager-sweep: nothing to do");
+    return;
+  }
+
+  log.info("v1-to-v2-eager-sweep: start", { total });
+
+  let migrated = 0;
+  let alreadyV2 = 0;
+  let parked = 0;
+  let failed = 0;
+  let done = 0;
+
+  // Defer the first aggregate progress emit until the sweep does
+  // user-meaningful work. A row whose DB flag says v1 can still turn
+  // out to be `already_v2` on disk — a stale projection the reconcile
+  // pass didn't reach. A sweep made up ENTIRELY of those short-
+  // circuits converts nothing the user would recognize, so it must
+  // stay silent rather than paint a misleading "Captures modernized ·
+  // N / N" toast on an already-converged library (the "we're all
+  // caught up" case). `emittedRunning` flips the first time a genuine
+  // conversion (or a failure worth surfacing) lands; only then does
+  // the toast appear, and only then do we close it out with a
+  // `complete` event. The payload reuses the V1ToV2DoctorProgress
+  // shape the reconcile sweep once used; `captureId: null` marks it
+  // as an aggregate (non per-row) event.
+  let emittedRunning = false;
+  const showToastOnce = (): void => {
+    if (emittedRunning) return;
+    emittedRunning = true;
+    emitProgress({ status: "running", captureId: null, total, done, failed });
+  };
+
+  for (const row of rows) {
+    try {
+      const result = await migrateBundleV1ToV2(row.id);
+      if (!result.ok) {
+        failed += 1;
+        log.warn("v1-to-v2-eager-sweep: capture upgrade failed", {
+          captureId: row.id,
+          code: result.error.code,
+          message: result.error.message
+        });
+      } else if (result.value.migrated) {
+        migrated += 1;
+      } else if (result.value.reason === "already_v2") {
+        alreadyV2 += 1;
+      } else if (result.value.reason === "parked") {
+        parked += 1;
+      }
+      // `no_bundle` is unreachable — the SQL filter above excludes
+      // `bundle_path IS NULL` rows, and that's the only path the
+      // per-capture doctor returns it from.
+    } catch (cause) {
+      failed += 1;
+      log.warn("v1-to-v2-eager-sweep: unexpected throw from doctor", {
+        captureId: row.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+    done += 1;
+
+    // Surface the toast the moment the first genuine conversion,
+    // failure, or park happens — never for a pure already_v2 run.
+    if (migrated > 0 || failed > 0 || parked > 0) {
+      showToastOnce();
+    }
+    if (emittedRunning && done % RECONCILE_PROGRESS_EVERY_N === 0) {
+      emitProgress({
+        status: "running",
+        captureId: null,
+        total,
+        done,
+        failed
+      });
+    }
+  }
+
+  // Only close out the toast if we ever opened it; a fully-converged
+  // (all already_v2) sweep stays silent end-to-end.
+  if (emittedRunning) {
+    emitProgress({
+      status: "complete",
+      captureId: null,
+      total,
+      done,
+      failed
+    });
+  }
+
+  log.info("v1-to-v2-eager-sweep: done", {
+    total,
+    migrated,
+    alreadyV2,
+    parked,
+    failed
+  });
+}

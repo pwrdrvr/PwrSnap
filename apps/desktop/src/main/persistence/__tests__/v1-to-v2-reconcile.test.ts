@@ -16,8 +16,13 @@
 //      — DB reconciled to v2.
 //   4. Orphan overlays rows for v2 capture (crashed between step 8
 //      and step 9 DELETE) — rows deleted.
-//   5. No-op when no rows match — sweep emits complete with
-//      total=0 and changes nothing.
+//   5. No-op when no rows match — changes nothing and stays silent.
+//
+// The sweep is a read-mostly crash-recovery pass: it NEVER drives the
+// library migration toast (the eager `migrateAllV1OnBoot` owns that
+// surface), so its repairs are silent — no aggregate progress event
+// is emitted. Tests assert `getLastDoctorProgressSnapshot()` stays
+// null across a reconcile run.
 
 import Database from "better-sqlite3";
 import {
@@ -332,8 +337,10 @@ describe("reconcileV1ToV2OnBoot", () => {
     expect(row.v).toBe(1);
   });
 
-  test("DB says v1 but bundle on disk is v2 → DB reconciled to v2", async () => {
-    const { reconcileV1ToV2OnBoot } = await import("../v1-to-v2-doctor");
+  test("DB says v1 but bundle on disk is v2 → DB reconciled to v2 (silently)", async () => {
+    const { reconcileV1ToV2OnBoot, getLastDoctorProgressSnapshot } = await import(
+      "../v1-to-v2-doctor"
+    );
 
     const bundlePath = join(tempRoot, "cap3.pwrsnap");
     await writeV2BundleFixture(bundlePath, {
@@ -347,12 +354,17 @@ describe("reconcileV1ToV2OnBoot", () => {
       bundlePath
     });
 
+    const before = getLastDoctorProgressSnapshot();
     await reconcileV1ToV2OnBoot();
 
     const row = mocks.db!
       .prepare(`SELECT bundle_format_version AS v FROM captures WHERE id = ?`)
       .get("cap3xxxxxxxxxxxx") as { v: number };
     expect(row.v).toBe(2);
+    // Even a boot that DOES heal a stale flag stays silent — no toast.
+    // emitProgress assigns a fresh object each call, so an unchanged
+    // reference proves no aggregate event was emitted during the sweep.
+    expect(getLastDoctorProgressSnapshot()).toBe(before);
   });
 
   test("orphan overlay rows for v2 capture → DELETEd", async () => {
@@ -396,21 +408,17 @@ describe("reconcileV1ToV2OnBoot", () => {
     expect(after.n).toBe(0);
   });
 
-  test("no rows match → sweep emits complete with total=0, changes nothing", async () => {
+  test("no rows match → changes nothing and stays silent (no toast)", async () => {
     const { reconcileV1ToV2OnBoot, getLastDoctorProgressSnapshot } = await import(
       "../v1-to-v2-doctor"
     );
 
     await reconcileV1ToV2OnBoot();
 
-    const snap = getLastDoctorProgressSnapshot();
-    expect(snap).not.toBeNull();
-    expect(snap?.status).toBe("complete");
-    if (snap?.status === "complete") {
-      expect(snap.total).toBe(0);
-      expect(snap.done).toBe(0);
-      expect(snap.failed).toBe(0);
-      expect(snap.captureId).toBeNull();
-    }
+    // Reconcile never paints the library toast — the eager sweep owns
+    // that surface. With nothing to heal, no aggregate progress event
+    // is emitted, so the cached snapshot stays at its module default
+    // (null; no other test in this file emits one).
+    expect(getLastDoctorProgressSnapshot()).toBeNull();
   });
 });

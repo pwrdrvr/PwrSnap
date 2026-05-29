@@ -112,12 +112,7 @@ vi.mock("../../persistence/source-store", () => ({
 }));
 
 vi.mock("../../persistence/bundle-store", () => ({
-  persistCaptureFromTemp: async () => ({ record: null, isDedup: false }),
   persistCaptureFromTempV2: async () => ({ record: null, isDedup: false })
-}));
-
-vi.mock("../../feature-flags", () => ({
-  isV2WriteEnabled: () => true
 }));
 
 vi.mock("../../render/coordinator", () => ({

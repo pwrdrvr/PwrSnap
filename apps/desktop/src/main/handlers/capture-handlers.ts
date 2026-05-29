@@ -57,8 +57,7 @@ import { findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "../window"
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
 import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
-import { persistCaptureFromTemp, persistCaptureFromTempV2 } from "../persistence/bundle-store";
-import { isV2WriteEnabled } from "../feature-flags";
+import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
 import { renderViaCoordinator } from "../render/coordinator";
 import { prepareRenderedPngAlias } from "../render/file-alias";
@@ -920,29 +919,22 @@ async function persistAndBroadcast(
   sourceApp: CaptureSource,
   options: { devicePixelRatio?: number | undefined } = {}
 ): Promise<Result<CaptureRecord, PwrSnapError>> {
-  // New captures land as v2 layer-tree bundles by default; the
-  // PWRSNAP_BUNDLE_V2 env var (see feature-flags.ts) is a debug
-  // escape hatch — set it to "0" to force the legacy v1 write path.
-  // The read path in coordinator.ts handles both formats
-  // transparently, so existing v1 captures continue to render and
-  // get promoted to v2 by the lazy doctor on first edit-open.
+  // New captures land as v2 layer-tree bundles. The read path in
+  // coordinator.ts still handles v1 transparently, and the v1→v2
+  // doctor (lazy on first edit-open + eager at boot) upgrades any
+  // pre-v2 captures left in the library.
   //
-  // devicePixelRatio threads through both write paths so PR #48's
-  // clipboard-paste flow (which passes 1, since pasted bytes aren't
-  // from a physical display) doesn't get hardcoded to 2.
-  const persistArgs = {
+  // devicePixelRatio threads through so PR #48's clipboard-paste
+  // flow (which passes 1, since pasted bytes aren't from a physical
+  // display) doesn't get hardcoded to 2.
+  const { record, isDedup } = await persistCaptureFromTempV2({
     tempPath,
     sourceApp:
       sourceApp === null
         ? null
         : { bundleId: sourceApp.bundleId, appName: sourceApp.appName },
     devicePixelRatio: options.devicePixelRatio
-  };
-
-  const { record, isDedup } = isV2WriteEnabled()
-    ? await persistCaptureFromTempV2(persistArgs)
-    : await persistCaptureFromTemp(persistArgs);
-
+  });
 
   log.info("capture persisted", {
     captureId: record.id,
@@ -953,10 +945,9 @@ async function persistAndBroadcast(
   });
   broadcastCapturesChanged([record.id]);
   if (!isDedup) {
-    // PR #30's Codex enrichment fires once per new capture. The
-    // bundle-flow's `persistCaptureFromTemp` returns isDedup=true
-    // when sha256 matches an existing row; `!isDedup` is the
-    // bundle-flow equivalent of the old isNew flag.
+    // PR #30's Codex enrichment fires once per new capture.
+    // isDedup=true means sha256 matched an existing row; the
+    // `!isDedup` guard is the bundle-flow equivalent of isNew.
     maybeEnqueueCaptureEnrichment(record.id);
   }
   return ok(record);

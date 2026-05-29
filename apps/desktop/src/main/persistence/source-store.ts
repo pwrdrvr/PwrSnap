@@ -153,7 +153,7 @@ export async function statSource(srcPath: string): Promise<{ byteSize: number }>
  *      remember where the file came from so Restore can put it back.
  *   2. **Bundle-backed (`bundle_path` non-null)** — return the
  *      per-capture cache path under `<userData>/cache/<id>/source.png`.
- *      `persistCaptureFromTemp` writes this eagerly at capture time
+ *      `persistCaptureFromTempV2` writes this eagerly at capture time
  *      so synchronous callers (compose, clipboard render) get a real
  *      filesystem path without round-tripping through yauzl. Safe to
  *      delete; the bundle is the source of truth.

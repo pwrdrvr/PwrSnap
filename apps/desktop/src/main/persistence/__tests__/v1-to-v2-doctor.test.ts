@@ -664,3 +664,244 @@ describe("migrateBundleV1ToV2 — idempotency + parked state", () => {
     expect(snap === null || typeof snap === "object").toBe(true);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────
+// migrateAllV1OnBoot — eager sweep
+// ────────────────────────────────────────────────────────────────────
+
+describe("migrateAllV1OnBoot — eager bulk sweep", () => {
+  // The sweep delegates each row to `migrateBundleV1ToV2`. Stubbing
+  // `readBundleManifest` to return a v2 manifest forces that per-
+  // capture function down its `already_v2` short-circuit — no
+  // bundle writes, no DB mutations, but the manifest *read* still
+  // happens. So the manifest-read call count is a direct proxy for
+  // "which rows did the sweep visit?" — exactly what we need to
+  // assert the SQL filter is correct.
+  //
+  // The short-circuit doesn't validate `manifest.capture_id` against
+  // the DB row id, so a single constant manifest is sufficient for
+  // every visited row.
+  const ALREADY_V2_MANIFEST = {
+    bundle_format_version: 2,
+    capture_id: "stub_v2_xxxxxxxx",
+    canvas_dimensions: { width_px: 2000, height_px: 1000 },
+    paired_png_filename: "stub.png",
+    created_at: "2026-05-23T12:00:00.000Z",
+    bundle_modified_at: "2026-05-23T12:00:00.000Z"
+  } as const;
+
+  async function stubManifestAlwaysV2(): Promise<void> {
+    const bundleStore = await import("../bundle-store");
+    vi.mocked(bundleStore.readBundleManifest).mockResolvedValue(ALREADY_V2_MANIFEST);
+  }
+
+  test("empty library: no-op", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    await migrateAllV1OnBoot();
+
+    expect(bundleStore.readBundleManifest).not.toHaveBeenCalled();
+  });
+
+  test("all rows already v2 on disk → stays silent (no toast)", async () => {
+    const { migrateAllV1OnBoot, getLastDoctorProgressSnapshot } = await import(
+      "../v1-to-v2-doctor"
+    );
+    await stubManifestAlwaysV2();
+
+    // Two rows whose DB flag says v1 but whose on-disk manifest is v2
+    // (a stale projection reconcile didn't reach). Both short-circuit
+    // as `already_v2` — the sweep converts nothing the user would
+    // recognize, so it must not paint the library toast.
+    insertCaptureRow(mocks.db!, { id: "cap_av2a_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_av2b_xxxxxxx".slice(0, 16) });
+
+    const before = getLastDoctorProgressSnapshot();
+    await migrateAllV1OnBoot();
+
+    // emitProgress assigns a fresh object each call; an unchanged
+    // reference proves zero aggregate events fired across the sweep.
+    expect(getLastDoctorProgressSnapshot()).toBe(before);
+  });
+
+  test("only visits v1 rows — skips v2, deleted, and bundle-less", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    insertCaptureRow(mocks.db!, { id: "cap_v1a_xxxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_v1b_xxxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, {
+      id: "cap_v2x_xxxxxxxx".slice(0, 16),
+      bundleFormatVersion: 2
+    });
+    // Bundle-less row (`bundle_path IS NULL`) — pre-bundle legacy
+    // capture. `insertCaptureRow`'s `bundlePath ?? default` collapses
+    // an explicit null to the default, so we insert raw to get a
+    // real NULL.
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           '/tmp/legacy.png', NULL, NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-nob', 0, NULL, 0
+         )`
+      )
+      .run("cap_nob_xxxxxxxx".slice(0, 16));
+    // Soft-deleted row (deleted_at IS NOT NULL).
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           NULL, '/tmp/captures/cap_del.pwrsnap', NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-del', 0, '2026-05-23T12:00:00.000Z', 0
+         )`
+      )
+      .run("cap_del_xxxxxxxx".slice(0, 16));
+
+    await migrateAllV1OnBoot();
+
+    // Two v1 rows visited; v2 + bundle-less + deleted skipped.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(2);
+  });
+
+  test("parked rows skipped — v1_to_v2_attempts >= MAX_ATTEMPTS", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    insertCaptureRow(mocks.db!, {
+      id: "cap_park_a_xxxxx".slice(0, 16),
+      v1ToV2Attempts: 5
+    });
+    insertCaptureRow(mocks.db!, {
+      id: "cap_live_b_xxxxx".slice(0, 16),
+      v1ToV2Attempts: 4
+    });
+
+    await migrateAllV1OnBoot();
+
+    // Only the live row (attempts < 5) is visited; parked filtered out.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
+  });
+
+  test("picks up rows in the post-legacy-bundle-migration shape", async () => {
+    // Contract lock between `runLegacyBundleMigration` and the eager
+    // sweep — the rollout chain is:
+    //   1. legacy migration wraps pre-bundle rows (`bundle_path IS
+    //      NULL AND legacy_src_path IS NOT NULL`) into v1 bundles.
+    //   2. After the legacy migration UPDATE, the row shape is:
+    //        bundle_path        = <new path>      (just set)
+    //        bundle_format_version = 1            (column default,
+    //                                              never touched)
+    //        v1_to_v2_attempts  = 0               (insert default)
+    //        deleted_at         = NULL
+    //   3. The eager sweep MUST pick these up so the pre-bundle
+    //      captures land as v2 in the same boot. This test mirrors
+    //      the post-step-2 shape exactly via the same UPDATE the
+    //      legacy migration runs (paths to `legacy-bundle-migration.ts`
+    //      → "UPDATE captures SET bundle_path = …").
+    //
+    // If this test ever breaks, the legacy migration's UPDATE has
+    // drifted from the eager sweep's SELECT — the symptom in
+    // production is "pre-bundle captures stay as v1 forever".
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    // Step 1: insert a pre-bundle row (legacy_src_path, no
+    // bundle_path). Pure raw insert — neither the helper nor the
+    // legacy migration is the system under test here.
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           '/tmp/legacy/cap_leg.png', NULL, NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-leg', 0, NULL, 0
+         )`
+      )
+      .run("cap_leg_xxxxxxxx".slice(0, 16));
+
+    // Step 2: mirror the legacy migration's UPDATE — sets
+    // bundle_path but does NOT touch bundle_format_version (it's
+    // already 1 from the column default, set by migration 0008).
+    mocks.db!
+      .prepare(
+        `UPDATE captures
+           SET bundle_path = ?,
+               flat_png_path = NULL,
+               bundle_modified_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        "/tmp/captures/cap_leg.pwrsnap",
+        "2026-05-23T12:01:00.000Z",
+        "cap_leg_xxxxxxxx".slice(0, 16)
+      );
+
+    // Step 3: eager sweep should visit the row.
+    await migrateAllV1OnBoot();
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
+  });
+
+  test("per-capture failure does not block remaining rows, and paints the toast", async () => {
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot, getLastDoctorProgressSnapshot } = await import(
+      "../v1-to-v2-doctor"
+    );
+
+    insertCaptureRow(mocks.db!, { id: "cap_fail_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_ok_b_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_ok_c_xxxxxxx".slice(0, 16) });
+
+    // First row throws on manifest read; subsequent rows resolve to v2.
+    let call = 0;
+    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async () => {
+      call += 1;
+      if (call === 1) {
+        throw new Error("simulated read failure");
+      }
+      return ALREADY_V2_MANIFEST;
+    });
+
+    await migrateAllV1OnBoot();
+
+    // All three rows attempted despite the first throwing.
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(3);
+
+    // A genuine failure is user-meaningful work, so — unlike a pure
+    // already_v2 run — the sweep DOES paint the toast and closes it
+    // out with a `complete` event carrying the failure count.
+    const snap = getLastDoctorProgressSnapshot();
+    expect(snap?.status).toBe("complete");
+    if (snap?.status === "complete") {
+      expect(snap.captureId).toBeNull();
+      expect(snap.total).toBe(3);
+      expect(snap.done).toBe(3);
+      expect(snap.failed).toBe(1);
+    }
+  });
+});

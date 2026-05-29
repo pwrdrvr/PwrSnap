@@ -150,22 +150,29 @@ Both shapes go through Codex App Server:
 
 PwrSnap is an App Server *client* only — never an App Server *implementation*.
 
-## Bundle format v2 — default; v1 is the rollback path
+## Bundle format v2 — the only write path; v1 is read-only on the way out
 
 The v2 layer-tree bundle format (multi-source canvas, layer tree,
-contextual effects, private-UTI clipboard) is **the default for new
-captures**. Per the v2 editor plan §Phase 6, the flip moved before
-the v2-only feature work (smart blur, multi-image) so those features
-ship against a real v2 install base instead of dogfood-only.
+contextual effects, private-UTI clipboard) is **the only format new
+captures land in**. The `PWRSNAP_BUNDLE_V2` env var and its
+`feature-flags.ts` getter have been retired — `persistCaptureFromTempV2`
+is the single entrypoint in [capture-handlers.ts](apps/desktop/src/main/handlers/capture-handlers.ts).
 
-- Source of truth: [apps/desktop/src/main/feature-flags.ts](apps/desktop/src/main/feature-flags.ts)
-- Default: **on** — new captures write v2 bundles; the lazy
-  v1→v2 doctor promotes existing v1 captures on first edit-open
-- Escape hatch: `PWRSNAP_BUNDLE_V2=0` forces the legacy v1 write
-  path. Debug-only — used for bisecting v2-codepath regressions
-  against an existing v1-only install.
-- Read path: always dual-format — both v1 and v2 captures render
-  correctly regardless of flag state
+- **Write:** v2 only. `persistCaptureFromTemp` (v1) is gone.
+- **Read:** still dual-format — the [coordinator.ts](apps/desktop/src/main/render/coordinator.ts)
+  composite path branches on `bundle_format_version` so any v1
+  capture left on disk continues to render.
+- **Upgrade:** the v1→v2 doctor runs three ways. Lazy on first
+  edit-open of a v1 capture (`v1ToV2:upgrade` from the renderer's
+  `useEnsureV2` hook), eager at boot (`migrateAllV1OnBoot` —
+  walks every `bundle_format_version=1` row and converts), and
+  crash-recovery via `reconcileV1ToV2OnBoot`. All three call the
+  same atomic `migrateBundleV1ToV2` per capture.
+- **Next step:** once the eager sweep drains the library
+  (`SELECT COUNT(*) FROM captures WHERE bundle_format_version=1`
+  returns 0), the doctor, v1 read path (`compose.ts`,
+  `overlays-repo.ts`), dual-read branches, and v1 schema types
+  can be deleted in a follow-up PR.
 
 See
 [docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md](docs/plans/2026-05-07-002-feat-bundle-format-v2-layer-tree-plan.md)

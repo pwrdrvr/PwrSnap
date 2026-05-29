@@ -49,7 +49,7 @@ import {
   type RightActivityTab
 } from "../shared/RightActivityBar";
 import "../shared/RightActivityBar.css";
-import { ChatPanel } from "../editor/panels/ChatPanel";
+import { LibraryChatPanel } from "./chat/LibraryChatPanel";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart } from "./CartContext";
@@ -497,7 +497,7 @@ export function DetailRail({
     }
     return (
       <div className="psl__right-body psl__right-body--chat">
-        <ChatPanel captureId={record.id} />
+        <LibraryChatPanel anchorCaptureId={record.id} />
       </div>
     );
   };

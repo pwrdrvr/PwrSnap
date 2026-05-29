@@ -136,7 +136,7 @@ export function BlurOverlays({
     row.data.kind === "blur" ? [{ row, data: row.data }] : []
   );
   const liveRect =
-    draft !== null && draft.kind === "rect-drag" && draft.tool === "blur"
+    draft !== null && draft.kind === "shape-drag" && draft.tool === "blur"
       ? rectFromDrag(draft)
       : null;
 

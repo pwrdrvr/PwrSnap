@@ -219,7 +219,7 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     // merged the two would silently regress live-drag pixelate to a
     // styled div. This test pins the canvas signature for that path.
     //
-    // The draft shape is `DraftRect` with kind="rect-drag", tool="blur".
+    // The draft shape is `DraftShape` with kind="shape-drag", tool="blur".
     // rectFromDrag converts startXn/startYn/curXn/curYn into [0,1]
     // normalized {x,y,w,h}. We pick coords inside [0,1] so the resulting
     // rect passes the MIN_DRAG_LENGTH guard.
@@ -228,7 +228,7 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     const el = render({
       overlays: [],
       draft: {
-        kind: "rect-drag",
+        kind: "shape-drag",
         tool: "blur",
         startXn: 0.2,
         startYn: 0.3,
@@ -259,7 +259,7 @@ describe("BlurOverlays — pixelate uses a canvas mosaic (issue #137)", () => {
     const el = render({
       overlays: [],
       draft: {
-        kind: "rect-drag",
+        kind: "shape-drag",
         tool: "blur",
         startXn: 0.2,
         startYn: 0.3,

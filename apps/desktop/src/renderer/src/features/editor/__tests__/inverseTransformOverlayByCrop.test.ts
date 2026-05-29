@@ -67,12 +67,12 @@ describe("inverseTransformOverlayByCrop — overlays in kept region preserve abs
 
   test("rect: x/y translate AND w/h scale", () => {
     const rect: Overlay = {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
       color: "auto"
     };
     const result = inverseTransformOverlayByCrop(rect, HALF_CROP);
-    if (result?.kind !== "rect") throw new Error("kind preserved");
+    if (result?.kind !== "shape") throw new Error("kind preserved");
     expect(result.rect.x).toBeCloseTo(0.2, 6);
     expect(result.rect.y).toBeCloseTo(0.2, 6);
     expect(result.rect.w).toBeCloseTo(0.4, 6);
@@ -154,7 +154,7 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region PERS
     // loss on undo). Post-fix: w preserved verbatim — renderer
     // clips at canvas edge at paint time.
     const rect: Overlay = {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.3, y: 0.3, w: 0.6, h: 0.2 },
       color: "auto"
     };
@@ -166,7 +166,7 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region PERS
       w: 0.5,
       h: 1
     });
-    if (result?.kind !== "rect") throw new Error("kind preserved");
+    if (result?.kind !== "shape") throw new Error("kind preserved");
     expect(result.rect.x).toBeCloseTo(0.6, 6);
     expect(result.rect.y).toBeCloseTo(0.3, 6);
     expect(result.rect.w).toBeCloseTo(1.2, 6); // NOT clamped to 0.4
@@ -176,7 +176,7 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region PERS
 
   test("rect entirely outside the new canvas → preserved with x > 1", () => {
     const rect: Overlay = {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.8, y: 0.1, w: 0.1, h: 0.1 },
       color: "auto"
     };
@@ -190,7 +190,7 @@ describe("inverseTransformOverlayByCrop — overlays in cropped-away region PERS
       h: 1
     });
     expect(result).not.toBeNull();
-    if (result?.kind !== "rect") throw new Error("kind preserved");
+    if (result?.kind !== "shape") throw new Error("kind preserved");
     expect(result.rect.x).toBeCloseTo(1.6, 5);
     expect(result.rect.y).toBeCloseTo(0.1, 6);
     expect(result.rect.w).toBeCloseTo(0.2, 6); // 0.1/0.5
@@ -312,8 +312,8 @@ describe("inverseTransformOverlayByCrop — edge cases", () => {
       { kind: "text", point: { x: 0.95, y: 0.5 }, body: "x", size: "small", color: "auto" },
       { kind: "arrow", from: { x: 0.1, y: 0.1 }, to: { x: 0.9, y: 0.9 }, color: "auto" },
       { kind: "arrow", from: { x: 0.7, y: 0.5 }, to: { x: 0.9, y: 0.5 }, color: "auto" },
-      { kind: "rect", rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, color: "auto" },
-      { kind: "rect", rect: { x: 0.8, y: 0.1, w: 0.1, h: 0.1 }, color: "auto" },
+      { kind: "shape", rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }, color: "auto" },
+      { kind: "shape", rect: { x: 0.8, y: 0.1, w: 0.1, h: 0.1 }, color: "auto" },
       { kind: "highlight", rect: { x: 0, y: 0, w: 1, h: 1 } },
       { kind: "step", point: { x: 0.5, y: 0.9 }, index: 1 }
     ];

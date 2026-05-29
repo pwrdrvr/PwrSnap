@@ -4,14 +4,15 @@
 
 import { describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
-import { rectSvgForV2 } from "../compose";
+import { shapeSvgForV2 } from "../compose";
 
 const W = 800;
 const H = 600;
 
-function baseRect(): Extract<OverlayRow["data"], { kind: "rect" }> {
+function baseRect(): Extract<OverlayRow["data"], { kind: "shape" }> {
   return {
-    kind: "rect",
+    kind: "shape",
+    shape: "rect",
     rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
     color: "auto"
   };
@@ -19,7 +20,7 @@ function baseRect(): Extract<OverlayRow["data"], { kind: "rect" }> {
 
 describe("rectSvg (bake) — filled", () => {
   test("legacy rect (no filled field) renders as outline-only (halo + colored stroke)", () => {
-    const svg = rectSvgForV2(baseRect(), W, H);
+    const svg = shapeSvgForV2(baseRect(), W, H);
     // Two rects: white halo + colored stroke. Both fill="none".
     const rects = svg.match(/<rect[^/]+\/>/g) ?? [];
     expect(rects.length).toBe(2);
@@ -29,13 +30,13 @@ describe("rectSvg (bake) — filled", () => {
   });
 
   test("filled:false matches legacy (no behavioral change for unfilled rows)", () => {
-    const baseline = rectSvgForV2(baseRect(), W, H);
-    const explicit = rectSvgForV2({ ...baseRect(), filled: false }, W, H);
+    const baseline = shapeSvgForV2(baseRect(), W, H);
+    const explicit = shapeSvgForV2({ ...baseRect(), filled: false }, W, H);
     expect(explicit).toBe(baseline);
   });
 
   test("filled:true renders ONE rect with the resolved color as fill, no stroke", () => {
-    const svg = rectSvgForV2({ ...baseRect(), filled: true }, W, H);
+    const svg = shapeSvgForV2({ ...baseRect(), filled: true }, W, H);
     const rects = svg.match(/<rect[^/]+\/>/g) ?? [];
     expect(rects.length).toBe(1);
     expect(rects[0]).toContain('fill="#ff8a1f"');
@@ -45,7 +46,7 @@ describe("rectSvg (bake) — filled", () => {
   });
 
   test("filled:true with explicit hex uses that color as the fill", () => {
-    const svg = rectSvgForV2(
+    const svg = shapeSvgForV2(
       { ...baseRect(), color: "#00ff00", filled: true },
       W,
       H
@@ -57,14 +58,14 @@ describe("rectSvg (bake) — filled", () => {
 
 describe("rectSvg (bake) — thickness", () => {
   test("auto / undefined matches the legacy stroke width", () => {
-    const baseline = rectSvgForV2(baseRect(), W, H);
-    const explicit = rectSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
+    const baseline = shapeSvgForV2(baseRect(), W, H);
+    const explicit = shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
     expect(explicit).toBe(baseline);
   });
 
   test("thickness 'large' renders ~2× the auto stroke width", () => {
-    const autoSvg = rectSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
-    const largeSvg = rectSvgForV2({ ...baseRect(), thickness: "large" }, W, H);
+    const autoSvg = shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
+    const largeSvg = shapeSvgForV2({ ...baseRect(), thickness: "large" }, W, H);
     const autoStroke = Number(
       autoSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
     );
@@ -76,8 +77,8 @@ describe("rectSvg (bake) — thickness", () => {
   });
 
   test("thickness 'small' renders ~0.5× the auto stroke width", () => {
-    const autoSvg = rectSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
-    const smallSvg = rectSvgForV2({ ...baseRect(), thickness: "small" }, W, H);
+    const autoSvg = shapeSvgForV2({ ...baseRect(), thickness: "auto" }, W, H);
+    const smallSvg = shapeSvgForV2({ ...baseRect(), thickness: "small" }, W, H);
     const autoStroke = Number(
       autoSvg.match(/stroke="#ff8a1f" stroke-width="([\d.]+)"/)?.[1] ?? ""
     );

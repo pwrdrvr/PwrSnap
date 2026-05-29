@@ -28,7 +28,7 @@ import type {
   ArrowToolStyle,
   BlurToolStyle,
   HighlightToolStyle,
-  RectToolStyle,
+  ShapeToolStyle,
   Settings,
   TextToolStyle
 } from "@pwrsnap/shared";
@@ -116,7 +116,7 @@ function makeSettings(overrides?: {
           doubleEnded: false
         },
         text: { color: "accent", fontSize: "auto", weight: "regular" },
-        rect: { color: "accent", thickness: "auto", filled: false },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -154,10 +154,10 @@ const DEFAULT_TEXT_STYLE: TextToolStyle = {
   fontSize: "auto",
   weight: "regular"
 };
-const DEFAULT_RECT_STYLE: RectToolStyle = {
+const DEFAULT_RECT_STYLE: ShapeToolStyle = {
   color: "accent",
   thickness: "auto",
-  filled: false
+  filled: false, shape: "rect", skewDeg: 15
 };
 const DEFAULT_BLUR_STYLE: BlurToolStyle = {
   mode: "gaussian",
@@ -385,13 +385,13 @@ describe("ToolStylePopover", () => {
   });
 
   test("3. color row present for arrow/text/rect/highlight", () => {
-    for (const tool of ["arrow", "text", "rect", "highlight"] as const) {
+    for (const tool of ["arrow", "text", "shape", "highlight"] as const) {
       const style: ToolStylePopoverStyle =
         tool === "arrow"
           ? DEFAULT_ARROW_STYLE
           : tool === "text"
             ? DEFAULT_TEXT_STYLE
-            : tool === "rect"
+            : tool === "shape"
               ? DEFAULT_RECT_STYLE
               : DEFAULT_HIGHLIGHT_STYLE;
       render(createElement(Harness, { tool, style }));

@@ -20,13 +20,13 @@ function arrowData(): Extract<OverlayRow["data"], { kind: "arrow" }> {
 }
 
 function rectData(
-  kind: "rect" | "highlight" | "blur"
-): Extract<OverlayRow["data"], { kind: "rect" | "highlight" | "blur" }> {
+  kind: "shape" | "highlight" | "blur"
+): Extract<OverlayRow["data"], { kind: "shape" | "highlight" | "blur" }> {
   return {
     kind,
     rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
     color: "auto"
-  } as Extract<OverlayRow["data"], { kind: "rect" | "highlight" | "blur" }>;
+  } as Extract<OverlayRow["data"], { kind: "shape" | "highlight" | "blur" }>;
 }
 
 function textData(): Extract<OverlayRow["data"], { kind: "text" }> {
@@ -84,7 +84,7 @@ describe("translateOverlayGeometry", () => {
   });
 
   test("rect translates x / y but preserves width + height (no resize)", () => {
-    expectGeometry(translateOverlayGeometry(rectData("rect"), 0.05, -0.05), {
+    expectGeometry(translateOverlayGeometry(rectData("shape"), 0.05, -0.05), {
       kind: "rect",
       rect: { x: 0.15, y: 0.15, w: 0.3, h: 0.4 }
     });
@@ -112,7 +112,7 @@ describe("translateOverlayGeometry", () => {
   });
 
   test("zero delta returns a geometry equivalent to the original", () => {
-    expectGeometry(translateOverlayGeometry(rectData("rect"), 0, 0), {
+    expectGeometry(translateOverlayGeometry(rectData("shape"), 0, 0), {
       kind: "rect",
       rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }
     });

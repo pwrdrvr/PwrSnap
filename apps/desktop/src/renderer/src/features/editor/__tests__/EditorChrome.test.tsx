@@ -59,7 +59,7 @@ const baseSettings: Settings = {
         doubleEnded: false
       },
       text: { color: "accent", fontSize: "auto", weight: "regular" },
-      rect: { color: "accent", thickness: "auto", filled: false },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },

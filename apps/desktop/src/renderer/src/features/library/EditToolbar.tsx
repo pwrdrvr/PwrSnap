@@ -1052,8 +1052,8 @@ function describePlacement(
   switch (o.kind) {
     case "arrow":
       return { tool: "arrow", anchorPoint: { x: o.from.x, y: o.from.y } };
-    case "rect":
-      return { tool: "rect" };
+    case "shape":
+      return { tool: "shape" };
     case "highlight":
       return { tool: "highlight" };
     case "blur":

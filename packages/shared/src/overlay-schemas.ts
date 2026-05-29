@@ -236,25 +236,81 @@ export function readArrowDoubleEnded(
   return data.doubleEnded ?? false;
 }
 
-export const RectOverlay = z.object({
-  kind: z.literal("rect"),
+/** Geometric shape variant carried on a ShapeOverlay row. Drives the
+ *  primitive the renderer + bake emit:
+ *    rect          → free-aspect <rect>
+ *    square        → 1:1-locked <rect> (constraint enforced at draw time;
+ *                    a row that was committed as a square but later
+ *                    transformed off-ratio still renders as the literal
+ *                    rect.w × rect.h box)
+ *    circle        → 1:1-locked <ellipse>
+ *    oval          → free-aspect <ellipse>
+ *    parallelogram → <polygon> with horizontal skew = `skewDeg` */
+export const ShapeKind = z.enum([
+  "rect",
+  "square",
+  "circle",
+  "oval",
+  "parallelogram"
+]);
+export type ShapeKind = z.infer<typeof ShapeKind>;
+export const DEFAULT_SHAPE_KIND: ShapeKind = "rect";
+
+/** Default horizontal skew for parallelogram shape (in degrees). Matches
+ *  Keynote/Figma's default. Positive = top edge shifted right. */
+export const DEFAULT_PARALLELOGRAM_SKEW_DEG = 15;
+
+export const ShapeOverlay = z.object({
+  kind: z.literal("shape"),
+  /** Which geometric primitive this overlay represents. Optional for
+   *  back-compat with rows migrated from the pre-shape RectOverlay schema
+   *  (read via `readShapeKind`, which defaults to "rect"). */
+  shape: ShapeKind.optional(),
   rect: NormalizedRect,
   color: z.union([z.literal("auto"), z.string().regex(/^#[0-9a-f]{6}$/i)]).default("auto"),
   /** Optional stroke-thickness override (see ArrowOverlay.thickness). */
   thickness: OverlayThickness.optional(),
-  /** When true, the rect renders as a solid fill in the resolved color
+  /** When true, the shape renders as a solid fill in the resolved color
    *  rather than the default stroke-only outline. Optional for back-
    *  compat: legacy rows render as outline-only. */
   filled: z.boolean().optional(),
-  /** Clockwise rotation in radians around the rect's geometric center.
-   *  Optional for back-compat: legacy rows render as if `rotation = 0`.
-   *  Range: any finite number (callers normalize to (-π, π] when it
-   *  matters; renderers just pass through). */
-  rotation: z.number().finite().optional()
+  /** Clockwise rotation in radians around the shape's bbox center.
+   *  Optional for back-compat: legacy rows render as if `rotation = 0`. */
+  rotation: z.number().finite().optional(),
+  /** Horizontal skew in degrees, applied only when `shape === "parallelogram"`.
+   *  Positive values shift the top edge to the right. Ignored for every
+   *  other shape kind. Read via `readShapeSkewDeg`, which defaults to
+   *  DEFAULT_PARALLELOGRAM_SKEW_DEG (15°) for legacy parallelogram rows
+   *  without the field. */
+  skewDeg: z.number().finite().optional()
 });
 
-export function readRectFilled(data: { filled?: boolean | undefined }): boolean {
+/** Resolve the persisted shape kind, applying the default for rows
+ *  migrated from RectOverlay (which had no `shape` field — all such rows
+ *  represent a rectangle by definition). */
+export function readShapeKind(data: {
+  shape?: ShapeKind | undefined;
+}): ShapeKind {
+  return data.shape ?? DEFAULT_SHAPE_KIND;
+}
+
+export function readShapeFilled(data: { filled?: boolean | undefined }): boolean {
   return data.filled ?? false;
+}
+
+/** Resolve the skew angle for a parallelogram. Returns 0 for any other
+ *  shape kind (renderers should branch on shape first, but reading 0 here
+ *  is a safe no-op skew). Legacy parallelogram rows without the field
+ *  resolve to the 15° default. */
+export function readShapeSkewDeg(data: {
+  shape?: ShapeKind | undefined;
+  skewDeg?: number | undefined;
+}): number {
+  if (readShapeKind(data) !== "parallelogram") return 0;
+  if (data.skewDeg === undefined || !Number.isFinite(data.skewDeg)) {
+    return DEFAULT_PARALLELOGRAM_SKEW_DEG;
+  }
+  return data.skewDeg;
 }
 
 /** Read the rotation (radians, clockwise) off any overlay kind that
@@ -457,15 +513,38 @@ export const CropOverlay = z.object({
   rect: NormalizedRect
 });
 
-export const Overlay = z.discriminatedUnion("kind", [
+/** Internal: discriminated union over the canonical (post-migration)
+ *  overlay shapes. Consumers use the `Overlay` export below, which
+ *  wraps this in a preprocess shim that transparently rewrites legacy
+ *  `kind: "rect"` rows into `kind: "shape", shape: "rect"` at parse
+ *  time — keeps every on-disk row from before the Rect→Shape rename
+ *  reading without a DB migration. */
+const OverlayCanonical = z.discriminatedUnion("kind", [
   ArrowOverlay,
-  RectOverlay,
+  ShapeOverlay,
   HighlightOverlay,
   BlurOverlay,
   TextOverlay,
   StepOverlay,
   CropOverlay
 ]);
+
+/** Legacy → canonical input migrator. Any row with `kind: "rect"` is
+ *  rewritten to `kind: "shape", shape: "rect"` before the discriminated
+ *  union runs — the rest of the row carries forward verbatim (rect,
+ *  color, thickness, filled, rotation all line up). Non-rect rows pass
+ *  through unchanged. The shim is idempotent: a row already at
+ *  `kind: "shape"` is returned as-is. */
+function migrateLegacyOverlay(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const obj = value as Record<string, unknown>;
+  if (obj.kind === "rect") {
+    return { ...obj, kind: "shape", shape: obj.shape ?? "rect" };
+  }
+  return value;
+}
+
+export const Overlay = z.preprocess(migrateLegacyOverlay, OverlayCanonical);
 
 export type Overlay = z.infer<typeof Overlay>;
 export type OverlayKind = Overlay["kind"];
@@ -479,7 +558,7 @@ export const OVERLAY_RENDER_ORDER: OverlayKind[] = [
   "crop",
   "blur",
   "highlight",
-  "rect",
+  "shape",
   "arrow",
   "step",
   "text"

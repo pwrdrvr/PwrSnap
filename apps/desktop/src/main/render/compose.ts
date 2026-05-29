@@ -38,7 +38,9 @@ import {
   readHighlightOpacity,
   readOverlayRotation,
   readOverlayThickness,
-  readRectFilled,
+  readShapeFilled,
+  readShapeKind,
+  readShapeSkewDeg,
   readTextWeight
 } from "@pwrsnap/shared";
 import { getCacheRoot } from "../persistence/paths";
@@ -275,8 +277,8 @@ async function buildCompositeLayers(
   switch (data.kind) {
     case "arrow":
       return [await rasterize(arrowSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "rect":
-      return [await rasterize(rectSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
+    case "shape":
+      return [await rasterize(shapeSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
     case "highlight": {
       // Highlight blend modes (multiply / screen / overlay) only take
       // effect at the sharp composite step — the rasterized SVG alone
@@ -564,10 +566,10 @@ function pxOf(
   return { x: pt.x * imageWidthPx, y: pt.y * imageHeightPx };
 }
 
-/* ----------------------------- Rect ----------------------------- */
+/* ----------------------------- Shape ---------------------------- */
 
-function rectSvg(
-  data: Extract<OverlayRow["data"], { kind: "rect" }>,
+function shapeSvg(
+  data: Extract<OverlayRow["data"], { kind: "shape" }>,
   imageWidthPx: number,
   imageHeightPx: number
 ): string {
@@ -588,9 +590,10 @@ function rectSvg(
   );
   const outlinePx = Math.max(1.5, strokeWidthPx * 0.25);
   const fillColor = data.color === "auto" ? AUTO_ACCENT_HEX : data.color;
-  const filled = readRectFilled(data);
-  // Rotation transform — same convention as RectGlyph (live editor):
-  // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the rect's
+  const filled = readShapeFilled(data);
+  const shape = readShapeKind(data);
+  // Rotation transform — same convention as ShapeGlyph (live editor):
+  // SVG `rotate(deg cx cy)` in pixel-space with cx/cy at the bbox
   // geometric center. `transform` is omitted entirely when rotation
   // is 0, so existing unrotated rows bake byte-identical to before.
   const rotateDeg = (readOverlayRotation(data) * 180) / Math.PI;
@@ -599,23 +602,70 @@ function rectSvg(
   const groupTransform =
     rotateDeg !== 0 ? ` transform="rotate(${rotateDeg} ${cx} ${cy})"` : "";
 
+  // Per-shape primitive emitters. Stroke + halo branches share the
+  // same primitive choice so editor preview = baked output for every
+  // shape kind.
+  function strokedPrimitive(stroke: string, strokeWidth: number): string {
+    switch (shape) {
+      case "circle":
+      case "oval":
+        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+      case "parallelogram": {
+        const skewRad = (readShapeSkewDeg(data) * Math.PI) / 180;
+        const shearPx = (hPx / 2) * Math.tan(skewRad);
+        const xL = xPx;
+        const xR = xPx + wPx;
+        const yT = yPx;
+        const yB = yPx + hPx;
+        const points =
+          `${xL + shearPx},${yT} ${xR + shearPx},${yT} ${xR - shearPx},${yB} ${xL - shearPx},${yB}`;
+        return `<polygon points="${points}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+      }
+      case "rect":
+      case "square":
+      default:
+        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+    }
+  }
+
+  function filledPrimitive(): string {
+    switch (shape) {
+      case "circle":
+      case "oval":
+        return `<ellipse cx="${cx}" cy="${cy}" rx="${wPx / 2}" ry="${hPx / 2}" fill="${fillColor}" />`;
+      case "parallelogram": {
+        const skewRad = (readShapeSkewDeg(data) * Math.PI) / 180;
+        const shearPx = (hPx / 2) * Math.tan(skewRad);
+        const xL = xPx;
+        const xR = xPx + wPx;
+        const yT = yPx;
+        const yB = yPx + hPx;
+        const points =
+          `${xL + shearPx},${yT} ${xR + shearPx},${yT} ${xR - shearPx},${yB} ${xL - shearPx},${yB}`;
+        return `<polygon points="${points}" fill="${fillColor}" />`;
+      }
+      case "rect":
+      case "square":
+      default:
+        return `<rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />`;
+    }
+  }
+
   if (filled) {
-    // Solid fill — single rect, no stroke / halo. A halo around a
-    // solid fill would just visually expand the same color outward
+    // Solid fill — single primitive, no stroke / halo. A halo around
+    // a solid fill would just visually expand the same color outward
     // by a stroke-width without adding contrast.
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g${groupTransform}>
-    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}" fill="${fillColor}" />
+    ${filledPrimitive()}
   </g>
 </svg>`;
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidthPx}" height="${imageHeightPx}" viewBox="0 0 ${imageWidthPx} ${imageHeightPx}">
   <g stroke-linejoin="round"${groupTransform}>
-    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
-          fill="none" stroke="white" stroke-width="${strokeWidthPx + outlinePx * 2}" />
-    <rect x="${xPx}" y="${yPx}" width="${wPx}" height="${hPx}"
-          fill="none" stroke="${fillColor}" stroke-width="${strokeWidthPx}" />
+    ${strokedPrimitive("white", strokeWidthPx + outlinePx * 2)}
+    ${strokedPrimitive(fillColor, strokeWidthPx)}
   </g>
 </svg>`;
 }
@@ -790,7 +840,7 @@ function escapeXml(s: string): string {
 /** Compute the AABB of a rotated rect in pixel space. Used by the
  *  blur bake to know how much source to extract + how big the mask
  *  needs to be. The rect's geometric center is the rotation pivot
- *  (matches the renderer's `RectGlyph` + `compose.ts` `rectSvg`
+ *  (matches the renderer's `ShapeGlyph` + `compose.ts` `shapeSvg`
  *  conventions). Returns the four bounds + a few derived offsets
  *  the caller uses to position the mask. */
 function rotatedRectAabbPx(
@@ -1036,7 +1086,7 @@ function clamp(value: number, min: number, max: number): number {
 // and the v1 internals private to this module.
 export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
-export const rectSvgForV2 = rectSvg;
+export const shapeSvgForV2 = shapeSvg;
 export const highlightSvgForV2 = highlightSvg;
 /** Maps a highlight overlay row to the sharp composite `blend` option
  *  string. Used by the v2 vector compositor to keep the bake's blend

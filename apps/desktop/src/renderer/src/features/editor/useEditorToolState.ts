@@ -39,7 +39,7 @@ import type {
   BlurToolStyle,
   EditorToolStyles,
   HighlightToolStyle,
-  RectToolStyle,
+  ShapeToolStyle,
   Settings,
   SettingsPatch,
   TextToolStyle,
@@ -54,7 +54,7 @@ import type { Tool } from "./editor-tools";
 /** Tools that carry a persisted style block in
  *  `settings.editor.toolStyles`. Pointer + crop are control-flow tools
  *  with no style memory. */
-export type StyledTool = "arrow" | "text" | "rect" | "blur" | "highlight";
+export type StyledTool = "arrow" | "text" | "shape" | "blur" | "highlight";
 
 /** Per-tool style lookup. Each tool's persisted block in
  *  `EditorToolStyles` is its own discriminated branch here so a single
@@ -64,8 +64,8 @@ export type StyleFor<T extends StyledTool> = T extends "arrow"
   ? ArrowToolStyle
   : T extends "text"
     ? TextToolStyle
-    : T extends "rect"
-      ? RectToolStyle
+    : T extends "shape"
+      ? ShapeToolStyle
       : T extends "blur"
         ? BlurToolStyle
         : T extends "highlight"
@@ -79,7 +79,7 @@ export type ActiveStyle =
   | { tool: "crop" }
   | { tool: "arrow"; style: ArrowToolStyle }
   | { tool: "text"; style: TextToolStyle }
-  | { tool: "rect"; style: RectToolStyle }
+  | { tool: "shape"; style: ShapeToolStyle }
   | { tool: "blur"; style: BlurToolStyle }
   | { tool: "highlight"; style: HighlightToolStyle };
 
@@ -154,7 +154,7 @@ const STYLE_WRITE_DEBOUNCE_MS = 500;
 type LocalStyleOverrides = {
   arrow?: Partial<ArrowToolStyle>;
   text?: Partial<TextToolStyle>;
-  rect?: Partial<RectToolStyle>;
+  shape?: Partial<ShapeToolStyle>;
   blur?: Partial<BlurToolStyle>;
   highlight?: Partial<HighlightToolStyle>;
 };
@@ -171,7 +171,7 @@ function readEffectiveStyles(
   return {
     arrow: { ...fromSettings.arrow, ...(local.arrow ?? {}) },
     text: { ...fromSettings.text, ...(local.text ?? {}) },
-    rect: { ...fromSettings.rect, ...(local.rect ?? {}) },
+    shape: { ...fromSettings.shape, ...(local.shape ?? {}) },
     blur: { ...fromSettings.blur, ...(local.blur ?? {}) },
     highlight: { ...fromSettings.highlight, ...(local.highlight ?? {}) }
   };
@@ -181,7 +181,7 @@ function isStyledTool(tool: Tool): tool is StyledTool {
   return (
     tool === "arrow" ||
     tool === "text" ||
-    tool === "rect" ||
+    tool === "shape" ||
     tool === "blur" ||
     tool === "highlight"
   );
@@ -205,8 +205,8 @@ function selectActiveStyle(
       return { tool: "arrow", style: styles.arrow };
     case "text":
       return { tool: "text", style: styles.text };
-    case "rect":
-      return { tool: "rect", style: styles.rect };
+    case "shape":
+      return { tool: "shape", style: styles.shape };
     case "blur":
       return { tool: "blur", style: styles.blur };
     case "highlight":
@@ -223,7 +223,7 @@ function patchFromLocal(local: LocalStyleOverrides): SettingsPatch {
   > = {};
   if (local.arrow !== undefined) toolStyles.arrow = local.arrow;
   if (local.text !== undefined) toolStyles.text = local.text;
-  if (local.rect !== undefined) toolStyles.rect = local.rect;
+  if (local.shape !== undefined) toolStyles.shape = local.shape;
   if (local.blur !== undefined) toolStyles.blur = local.blur;
   if (local.highlight !== undefined) toolStyles.highlight = local.highlight;
   return { editor: { toolStyles } };
@@ -321,7 +321,7 @@ export function useEditorToolState(
     const hasPending =
       pending.arrow !== undefined ||
       pending.text !== undefined ||
-      pending.rect !== undefined ||
+      pending.shape !== undefined ||
       pending.blur !== undefined ||
       pending.highlight !== undefined;
     if (!hasPending) return;
@@ -406,7 +406,7 @@ export function useEditorToolState(
           const color = value as ToolColor;
           target.arrow = { ...(target.arrow ?? {}), color };
           target.text = { ...(target.text ?? {}), color };
-          target.rect = { ...(target.rect ?? {}), color };
+          target.shape = { ...(target.shape ?? {}), color };
           target.highlight = { ...(target.highlight ?? {}), color };
           // Blur has no color field — skip.
           return;

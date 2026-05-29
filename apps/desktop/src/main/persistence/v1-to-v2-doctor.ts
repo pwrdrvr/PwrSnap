@@ -663,7 +663,7 @@ export function synthesizeV2DocumentFromV1Overlays(
       parent_id: parentId,
       kind: "vector",
       shape: data,
-      name: layerNameForVector(data.kind),
+      name: layerNameForVector(data),
       visible: true,
       locked: false,
       opacity: 1,
@@ -691,12 +691,20 @@ export function synthesizeV2DocumentFromV1Overlays(
   return document;
 }
 
-function layerNameForVector(kind: Overlay["kind"]): string {
-  switch (kind) {
+function layerNameForVector(overlay: Overlay): string {
+  switch (overlay.kind) {
     case "arrow":
       return "Arrow";
-    case "rect":
-      return "Rectangle";
+    case "shape": {
+      const shapeLabels: Record<string, string> = {
+        rect: "Rectangle",
+        square: "Square",
+        circle: "Circle",
+        oval: "Oval",
+        parallelogram: "Parallelogram"
+      };
+      return shapeLabels[overlay.shape ?? "rect"] ?? "Shape";
+    }
     case "text":
       return "Text";
     case "highlight":

@@ -133,29 +133,48 @@ export class ChatThreadController {
 
   // ---- thread lifecycle ----
 
-  async createThread(name?: string): Promise<LibraryChatThreadView> {
+  async createThread(opts: {
+    name?: string;
+    anchorCaptureId?: string | null;
+  } = {}): Promise<LibraryChatThreadView> {
+    const anchorCaptureId = opts.anchorCaptureId ?? null;
     const settings = await this.deps.readSettings();
-    const baseInstructions = this.deps.buildSystemPrompt({
-      settings,
-      anchorCaptureId: null
-    });
+    const baseInstructions = this.deps.buildSystemPrompt({ settings, anchorCaptureId });
     const started = await this.deps.client.startThread({
       ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
       ...(this.deps.sandbox !== undefined ? { sandbox: this.deps.sandbox } : {}),
       baseInstructions,
       ...(this.deps.catalog !== undefined ? { dynamicTools: this.deps.catalog } : {})
     });
-    const displayName = name && name.trim().length > 0 ? name.trim() : this.defaultName();
-    const sidecar = await this.deps.store.create({ threadId: started.threadId, name: displayName });
+    const displayName =
+      opts.name && opts.name.trim().length > 0 ? opts.name.trim() : this.defaultName();
+    let sidecar = await this.deps.store.create({ threadId: started.threadId, name: displayName });
+    // Glue the thread to the capture it was started from (plan: chats
+    // are scoped to an asset — the thread list shows only this
+    // capture's threads, so "what is this thread about" is never
+    // ambiguous). Null anchor = a library-wide thread (no capture
+    // focused at creation).
+    if (anchorCaptureId !== null) {
+      sidecar = await this.deps.store.update(started.threadId, { anchorCaptureId });
+    }
     const view = this.toView(sidecar);
     this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, { thread: view });
     return view;
   }
 
-  async listThreads(includeArchived = false): Promise<LibraryChatThreadView[]> {
+  async listThreads(opts: {
+    includeArchived?: boolean;
+    anchorCaptureId?: string | null;
+  } = {}): Promise<LibraryChatThreadView[]> {
+    const includeArchived = opts.includeArchived ?? false;
     const sidecars = await this.deps.store.list();
     return sidecars
       .filter((s) => includeArchived || !s.archived)
+      // When an anchor is supplied, show ONLY that capture's threads
+      // (chats are glued to assets). When omitted, list everything.
+      .filter((s) =>
+        opts.anchorCaptureId === undefined ? true : s.anchorCaptureId === opts.anchorCaptureId
+      )
       .map((s) => this.toView(s));
   }
 
@@ -299,19 +318,27 @@ export class ChatThreadController {
   }
 
   private async onToolCall(params: DynamicToolCallParams): Promise<DynamicToolCallResponse> {
-    if (this.deps.dispatchToolCall) {
-      return this.deps.dispatchToolCall(params);
-    }
-    // Phase 0: no tools registered. Tell the agent so it self-corrects.
-    return {
-      contentItems: [
-        {
-          type: "inputText",
-          text: "PwrSnap has no tools enabled for this chat yet."
-        }
-      ],
-      success: false
-    };
+    const response = this.deps.dispatchToolCall
+      ? await this.deps.dispatchToolCall(params)
+      : ({
+          contentItems: [
+            { type: "inputText", text: "PwrSnap has no tools enabled for this chat yet." }
+          ],
+          success: false
+        } satisfies DynamicToolCallResponse);
+    // Surface the tool invocation to the chat UI as it happens (the
+    // "Drew an arrow" / "Searched the library" activity chips + the
+    // working indicator). Without this the turn looks frozen while the
+    // agent runs tools before producing text.
+    this.deps.broadcast(EVENT_CHANNELS.libraryChatToolCall, {
+      threadId: params.threadId,
+      turnId: params.turnId,
+      callId: params.callId,
+      tool: params.tool,
+      ok: response.success,
+      summary: humanizeToolCall(params.tool, response.success)
+    });
+    return response;
   }
 
   private async onApprovalRequest(method: string, params: unknown): Promise<unknown> {
@@ -458,4 +485,33 @@ export class ChatThreadController {
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {
   return `${threadId}::${turnId}::${approvalId}`;
+}
+
+/** Friendly present-tense label for a tool invocation, shown as an
+ *  activity chip in the chat while the turn runs. Falls back to the raw
+ *  tool name for tools not in the map (new tools still show up, just
+ *  less prettily). The `ok` flag lets a failed call read "couldn't …". */
+function humanizeToolCall(tool: string, ok: boolean): string {
+  const labels: Record<string, string> = {
+    library_list: "Listed captures",
+    library_search: "Searched the library",
+    capture_metadata: "Read capture details",
+    list_layers: "Read the layers",
+    list_layer_capabilities: "Checked capabilities",
+    render_composite: "Looked at the canvas",
+    open_in_library: "Opened in Library",
+    open_editor: "Opened the editor",
+    draw_arrow: "Drew an arrow",
+    draw_text: "Added a text label",
+    draw_highlight: "Added a highlight",
+    draw_rect: "Drew a rectangle",
+    redact: "Blacked out a region",
+    blur: "Blurred a region",
+    delete_layer: "Deleted a layer",
+    reorder_layer: "Reordered a layer",
+    add_tag: "Added a tag",
+    remove_tag: "Removed a tag"
+  };
+  const label = labels[tool] ?? tool;
+  return ok ? label : `Couldn't: ${label.toLowerCase()}`;
 }

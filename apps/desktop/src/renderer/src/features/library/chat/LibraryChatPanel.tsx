@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   LibraryChatStreamDeltaEvent,
   LibraryChatMessageCommittedEvent,
+  LibraryChatToolCallEvent,
   LibraryChatThreadView
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
@@ -38,16 +39,32 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  // The in-flight turn + the activity chips it has produced so far
+  // (point 3: show "Thinking…" + which tools ran while the agent works).
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [toolChips, setToolChips] = useState<Array<{ callId: string; summary: string; ok: boolean }>>(
+    []
+  );
 
   const activeThreadRef = useRef<string | null>(null);
   activeThreadRef.current = activeThreadId;
+  const activeTurnRef = useRef<string | null>(null);
+  activeTurnRef.current = activeTurnId;
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
 
-  // Initial thread list.
+  // Thread list — SCOPED to the focused capture (chats are glued to
+  // assets). Re-runs when the user navigates to a different capture:
+  // resets the selection + working state, then lists that capture's
+  // threads. `anchorCaptureId === null` lists library-wide threads.
   useEffect(() => {
     let cancelled = false;
+    setActiveThreadId(null);
+    setMessages([]);
+    setActiveTurnId(null);
+    setToolChips([]);
+    setLoading(true);
     void (async () => {
-      const result = await dispatch("codex:libraryChat:list", {});
+      const result = await dispatch("codex:libraryChat:list", { anchorCaptureId });
       if (cancelled) return;
       if (!result.ok) {
         setCodexError(result.error.message);
@@ -60,7 +77,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [anchorCaptureId]);
 
   // Load history when the active thread changes.
   useEffect(() => {
@@ -126,6 +143,21 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
+      subscribe(EVENT_CHANNELS.libraryChatToolCall, (payload) => {
+        const e = payload as LibraryChatToolCallEvent;
+        if (e.threadId !== activeThreadRef.current) return;
+        // A tool fired → the agent is working. Adopt the turn id if we
+        // didn't capture it from the send result, and append the chip.
+        if (activeTurnRef.current === null) setActiveTurnId(e.turnId);
+        setToolChips((prev) =>
+          prev.some((c) => c.callId === e.callId)
+            ? prev
+            : [...prev, { callId: e.callId, summary: e.summary, ok: e.ok }]
+        );
+      })
+    );
+
+    unsubs.push(
       subscribe(EVENT_CHANNELS.libraryChatMessageCommitted, (payload) => {
         const e = payload as LibraryChatMessageCommittedEvent;
         if (e.threadId !== activeThreadRef.current) return;
@@ -140,6 +172,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           next[idx] = e.message;
           return next;
         });
+        // The assistant turn finished → clear the working indicator +
+        // activity chips (they're transient, per-turn).
+        if (e.message.role === "assistant" && e.message.status !== "streaming") {
+          setActiveTurnId(null);
+          setToolChips([]);
+        }
       })
     );
 
@@ -156,6 +194,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         const e = payload as { threadId: string };
         if (e.threadId !== activeThreadRef.current) return;
         setStreamingMessageId(null);
+        setActiveTurnId(null);
+        setToolChips([]);
       })
     );
 
@@ -181,7 +221,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   );
 
   const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:libraryChat:create", {});
+    const result = await dispatch("codex:libraryChat:create", { anchorCaptureId });
     if (!result.ok) {
       setCodexError(result.error.message);
       return;
@@ -189,13 +229,14 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setThreads((prev) => [result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)]);
     setActiveThreadId(result.value.threadId);
     setMessages([]);
-  }, []);
+    setToolChips([]);
+  }, [anchorCaptureId]);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:libraryChat:create", {});
+        const created = await dispatch("codex:libraryChat:create", { anchorCaptureId });
         if (!created.ok) {
           setCodexError(created.error.message);
           return;
@@ -204,6 +245,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setThreads((prev) => [created.value, ...prev]);
         setActiveThreadId(threadId);
       }
+      // Reset activity for the new turn; the working indicator shows
+      // until the assistant message commits.
+      setToolChips([]);
       const result = await dispatch("codex:libraryChat:send", {
         threadId,
         text,
@@ -211,7 +255,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       });
       if (!result.ok) {
         setCodexError(result.error.message);
+        return;
       }
+      setActiveTurnId(result.value.turnId);
     },
     [anchorCaptureId]
   );
@@ -230,7 +276,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           onClick={() => {
             setCodexError(null);
             setLoading(true);
-            void dispatch("codex:libraryChat:list", {}).then((r) => {
+            void dispatch("codex:libraryChat:list", { anchorCaptureId }).then((r) => {
               if (r.ok) setThreads(r.value.threads);
               else setCodexError(r.error.message);
               setLoading(false);
@@ -256,22 +302,29 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   return (
     <div className="ps-libchat" data-testid="library-chat-panel">
       <div className="ps-libchat-threads">
-        <button type="button" className="ps-libchat-newchat" onClick={() => void onNewChat()}>
-          + New chat
+        <button
+          type="button"
+          className="ps-libchat-newchat"
+          onClick={() => void onNewChat()}
+          title="Start a new chat for this capture"
+        >
+          + New
         </button>
-        {threads.map((t) => (
-          <button
-            type="button"
-            key={t.threadId}
-            className={
-              "ps-libchat-thread" + (t.threadId === activeThreadId ? " is-active" : "")
-            }
-            onClick={() => setActiveThreadId(t.threadId)}
-          >
-            <span className="ps-libchat-thread-name">{t.name}</span>
-            {t.status.kind === "streaming" ? <span className="ps-libchat-dot" /> : null}
-          </button>
-        ))}
+        <div className="ps-libchat-thread-strip">
+          {threads.map((t) => (
+            <button
+              type="button"
+              key={t.threadId}
+              className={
+                "ps-libchat-thread" + (t.threadId === activeThreadId ? " is-active" : "")
+              }
+              onClick={() => setActiveThreadId(t.threadId)}
+            >
+              <span className="ps-libchat-thread-name">{t.name}</span>
+              {t.status.kind === "streaming" ? <span className="ps-libchat-dot" /> : null}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="ps-libchat-main">
@@ -279,9 +332,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           <div className="ps-libchat-greeting">
             <div className="ps-libchat-empty-title">PwrSnap chat</div>
             <p className="ps-libchat-empty-body">
-              I can browse your library, edit the capture you’re viewing, redact
-              sensitive data, and answer “how do I…”. Type below to start — I’ll
-              spin up a new chat.
+              I can edit the capture you’re viewing, redact sensitive data, browse
+              your library, and answer “how do I…”. Type below to start.
             </p>
           </div>
         ) : (
@@ -291,6 +343,25 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             subscribeToStream={subscribeToStream}
           />
         )}
+        {activeTurnId !== null ? (
+          <div className="ps-libchat-working" aria-live="polite">
+            {toolChips.map((c) => (
+              <div
+                key={c.callId}
+                className={"ps-libchat-chip" + (c.ok ? "" : " is-error")}
+              >
+                <span className="ps-libchat-chip-dot" />
+                {c.summary}
+              </div>
+            ))}
+            {streamingMessageId === null ? (
+              <div className="ps-libchat-thinking">
+                <span className="ps-libchat-thinking-dot" />
+                Thinking…
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
       </div>
 

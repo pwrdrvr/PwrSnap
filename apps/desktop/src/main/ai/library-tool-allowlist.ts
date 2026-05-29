@@ -234,10 +234,25 @@ const openEditor = defineTool({
   namespace: "pwrsnap_library",
   name: "open_editor",
   description:
-    "Open a capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use draw_arrow / draw_text / draw_rect / redact / blur etc. directly without opening anything.",
+    "Open an IMAGE capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use draw_arrow / draw_text / draw_rect / redact / blur etc. directly without opening anything. Video captures aren't editable here — don't open them.",
   annotations: {},
   argsSchema: z.object({ capture_id: z.string() }),
-  dispatch: async (args) => runVerb("editor:open", { captureId: args.capture_id })
+  dispatch: async (args) => {
+    // The still-image editor can't render a video (it shows a broken
+    // image). Refuse video captures so the agent doesn't open one.
+    const meta = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
+    if (!meta.ok) {
+      return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
+    }
+    if (meta.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
+    if (meta.value.kind !== "image") {
+      return {
+        ok: false,
+        error: `open_editor only supports image captures (this is a ${meta.value.kind}). View it in the Library instead.`
+      };
+    }
+    return runVerb("editor:open", { captureId: args.capture_id });
+  }
 });
 
 const listLayerCapabilities = defineTool({

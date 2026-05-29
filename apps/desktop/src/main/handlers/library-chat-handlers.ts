@@ -101,7 +101,10 @@ export function registerLibraryChatHandlers(params?: {
   bus.register("codex:libraryChat:list", async (req) => {
     try {
       const c = await getController();
-      const threads = await c.listThreads(req.includeArchived ?? false);
+      const threads = await c.listThreads({
+        includeArchived: req.includeArchived ?? false,
+        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+      });
       return ok({ threads });
     } catch (cause) {
       return codexUnreachable(cause);
@@ -111,7 +114,10 @@ export function registerLibraryChatHandlers(params?: {
   bus.register("codex:libraryChat:create", async (req) => {
     try {
       const c = await getController();
-      const view = await c.createThread(req.name);
+      const view = await c.createThread({
+        ...(req.name !== undefined ? { name: req.name } : {}),
+        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+      });
       return ok(view);
     } catch (cause) {
       return codexUnreachable(cause);

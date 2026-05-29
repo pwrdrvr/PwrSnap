@@ -2143,15 +2143,19 @@ export type Commands = {
   /** List all (non-archived by default) chat threads for the thread-list
    *  rail. `includeArchived` surfaces archived threads for a "show
    *  archived" toggle. */
+  /** List chat threads. `anchorCaptureId` scopes the list to one
+   *  capture's threads (chats are glued to assets — the rail shows only
+   *  the focused capture's threads). Omit to list every thread. */
   "codex:libraryChat:list": {
-    req: { includeArchived?: boolean };
+    req: { includeArchived?: boolean; anchorCaptureId?: string | null };
     res: { threads: LibraryChatThreadView[] };
   };
   /** Create a new thread. `name` optional — main mints a default
-   *  ("Chat <date>-NNN") when omitted. Returns the view for optimistic
-   *  rendering. */
+   *  ("Chat <date>") when omitted. `anchorCaptureId` glues the thread
+   *  to the capture it was started from. Returns the view for
+   *  optimistic rendering. */
   "codex:libraryChat:create": {
-    req: { name?: string };
+    req: { name?: string; anchorCaptureId?: string | null };
     res: LibraryChatThreadView;
   };
   /** Send a user message + (optionally) attached image paths. Returns

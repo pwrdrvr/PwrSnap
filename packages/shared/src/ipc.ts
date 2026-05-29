@@ -220,6 +220,14 @@ export const EVENT_CHANNELS = {
    */
   libraryChatStreamDelta: "events:libraryChat:stream:delta",
   /**
+   * Main → renderer: the agent invoked a tool mid-turn. Drives the
+   * live activity chips ("Drew an arrow", "Searched the library") +
+   * the working indicator so the turn doesn't look frozen while the
+   * agent runs tools before producing text. Payload:
+   * `LibraryChatToolCallEvent`.
+   */
+  libraryChatToolCall: "events:libraryChat:tool:call",
+  /**
    * Main → renderer: a chat message was committed to the thread (user
    * message persisted before turn/start, or an assistant message
    * finalized at turn end). The renderer appends / replaces by
@@ -373,6 +381,18 @@ export type LibraryChatStreamDeltaEvent = {
   delta: string;
 };
 
+/** `events:libraryChat:tool:call` payload. One tool invocation in an
+ *  in-flight turn — `summary` is a friendly present-tense label for the
+ *  activity chip; `ok` is false when the dispatch failed. */
+export type LibraryChatToolCallEvent = {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  tool: string;
+  ok: boolean;
+  summary: string;
+};
+
 /** `events:libraryChat:message:committed` payload. A full message
  *  landed (user message persisted, or assistant message finalized). */
 export type LibraryChatMessageCommittedEvent = {
@@ -393,6 +413,7 @@ export type EventPayloads = {
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
   [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
   [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
+  [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;
   [EVENT_CHANNELS.libraryChatMessageCommitted]: LibraryChatMessageCommittedEvent;
   [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
   [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;

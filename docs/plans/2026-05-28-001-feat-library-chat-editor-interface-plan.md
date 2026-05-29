@@ -183,22 +183,25 @@ place for the tool catalog to land on:
   sentinel + corrupt-quarantine), `ChatThreadController` (per-thread
   TurnState, settings-snapshot-per-turn, approval pump, rate limit).
 - ✅ `defineTool` generic + tool-catalog generator + a **populated**
-  15-tool allowlist:
+  18-tool allowlist. **One specific tool per primitive** (not a
+  polymorphic tool with discriminated-union args) — models pick a
+  named tool reliably and only reason about that tool's flat settings:
   - read / introspect / navigate: `library_list`, `library_search`,
     `capture_metadata`, `list_layers`, `list_layer_capabilities`,
     `render_composite` (**vision** — renders the canvas to an
     `inputImage` the model sees), `open_in_library`, `open_editor`
-  - edit: `add_annotation` (arrow / text / highlight), `draw_shape`
-    (geometric shapes — discriminated `shape.type`, `rect` today;
-    circle / oval / square / triangle are member-only additions),
-    `add_redaction` (plain rectangular region, blackout-by-default),
-    `delete_layer`, `reorder_layer`, `add_tag`, `remove_tag`
+  - draw: `draw_arrow`, `draw_text`, `draw_highlight`, `draw_rect`
+    (circle / oval / square / triangle arrive as their own `draw_*`
+    tools)
+  - effects: `redact` (opaque blackout, irreversible — for secrets),
+    `blur` (reversible soften, `pixelate` flag — non-secret only)
+  - layers / tags: `delete_layer`, `reorder_layer`, `add_tag`,
+    `remove_tag`
 
   Each resolves to a real command-bus verb; `z.toJSONSchema` verified
-  to serialize every arg schema incl. the annotation union + the
-  `draw_shape` union, so the catalog registers cleanly on
-  `thread/start`. **The agent can now see, browse, edit, and redact
-  captures.**
+  to serialize every (flat) arg schema, so the catalog registers
+  cleanly on `thread/start`. **The agent can now see, browse, edit,
+  and redact captures.**
 - ✅ `render:composite` bus verb (`render-handlers.ts`): downscaled
   PNG via the bake coordinator (cache hit on unchanged composite; no
   BAKE_PIPELINE_VERSION bump), longest-edge clamp [≤1440, default

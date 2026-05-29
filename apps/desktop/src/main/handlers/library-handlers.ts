@@ -9,7 +9,10 @@ import {
   AddUserTagRequestSchema,
   RemoveUserTagRequestSchema
 } from "@pwrsnap/shared";
-import { validateLibraryListByIds } from "./sizzle-validators";
+import {
+  validateLibraryListByIds,
+  validateLibrarySearch
+} from "./sizzle-validators";
 import { z } from "zod";
 import { bus } from "../command-bus";
 import {
@@ -21,9 +24,14 @@ import {
   listCaptures,
   listSoftDeletedIds,
   restoreCapture,
+  searchCaptures,
   softDeleteCapture
 } from "../persistence/captures-repo";
-import { addUserTag, removeTag } from "../persistence/enrichment-repo";
+import {
+  addUserTag,
+  listEnrichmentsByCaptureIds,
+  removeTag
+} from "../persistence/enrichment-repo";
 import {
   moveBundlePairToTrash,
   purgeBundlePairFromTrash,
@@ -148,6 +156,38 @@ export function registerLibraryHandlers(): void {
     // back).
     const live = rows.filter((r) => r.deleted_at === null);
     return ok({ rows: live });
+  });
+
+  bus.register("library:listByIdsWithMetadata", async (req) => {
+    // Same shape as library:listByIds, plus per-row CaptureEnrichment
+    // — feeds the Project Asset Cart's right-rail display and the
+    // Sizzle Composer chat agent's `library_get_metadata` tool.
+    const v = validateLibraryListByIds(req);
+    if (!v.ok) return err(v.error);
+    const captureRows = getCapturesByIds(v.ids);
+    const liveRows = captureRows.filter((r) => r.deleted_at === null);
+    // Bulk fetch enrichment for the LIVE rows only — there's no point
+    // hydrating enrichment for rows we're about to drop. Returns a
+    // Map keyed by captureId; missing keys = no enrichment row =
+    // surface as null per the protocol contract.
+    const enrichmentByCaptureId = listEnrichmentsByCaptureIds(
+      liveRows.map((r) => r.id)
+    );
+    const rows = liveRows.map((record) => ({
+      record,
+      enrichment: enrichmentByCaptureId.get(record.id) ?? null
+    }));
+    return ok({ rows });
+  });
+
+  bus.register("library:search", async (req) => {
+    const v = validateLibrarySearch(req);
+    if (!v.ok) return err(v.error);
+    // `searchCaptures` handles the FTS5 join + filter composition +
+    // metadata hydration. See its doc for the full query-plan
+    // distinction (FTS5 path vs filter-only path).
+    const rows = searchCaptures(v.value);
+    return ok({ rows });
   });
 
   bus.register("library:delete", async (req) => {

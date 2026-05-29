@@ -155,6 +155,156 @@ export function getEnrichmentSummaries(captureIds: string[]): CaptureEnrichmentS
   });
 }
 
+/**
+ * Bulk fetch of full `CaptureEnrichment` rows by capture id. Returns
+ * a `Map<captureId, enrichment-or-null>` keyed by EVERY input id —
+ * missing ids map to `null` so callers can `.get(id) ?? null` without
+ * a second lookup against the source array.
+ *
+ * Why this exists: the Sizzle Composer chat agent's
+ * `library_get_metadata` tool and the Project Asset Cart's right-rail
+ * display BOTH need enrichment-with-tags for an arbitrary capture
+ * set. Doing it per-id via `getCaptureEnrichment` is 3N queries
+ * (enrichment + tag suggestions + accepted tags). This is 3
+ * regardless of N: one `WHERE capture_id IN (...)` per source table,
+ * then a JS-side merge.
+ *
+ * Throws `RangeError` if `captureIds.length > 999` — SQLite's default
+ * `SQLITE_LIMIT_VARIABLE_NUMBER` is 999 and we'd silently lose
+ * trailing ids past that. The validator layer caps at 500 so this is
+ * defense-in-depth.
+ */
+export function listEnrichmentsByCaptureIds(
+  captureIds: readonly string[]
+): Map<string, CaptureEnrichment | null> {
+  const out = new Map<string, CaptureEnrichment | null>();
+  if (captureIds.length === 0) return out;
+  if (captureIds.length > 999) {
+    throw new RangeError(
+      `listEnrichmentsByCaptureIds: ${captureIds.length} ids exceeds SQLite parameter limit (999)`
+    );
+  }
+
+  // Seed every requested id with null so callers see the full key set.
+  // Captures that don't have an enrichment row AND have no user tags
+  // stay at null; captures with either get filled in below.
+  for (const id of captureIds) out.set(id, null);
+
+  const db = getDb();
+  const placeholders = captureIds.map(() => "?").join(", ");
+
+  // 1) Enrichment rows — left-joined to ai_runs for the status column.
+  const enrichRows = db
+    .prepare(
+      `SELECT capture_enrichments.capture_id,
+              capture_enrichments.latest_ai_run_id,
+              ai_runs.status,
+              capture_enrichments.ocr_text,
+              capture_enrichments.suggested_title,
+              capture_enrichments.accepted_title,
+              capture_enrichments.title_accepted_at,
+              capture_enrichments.suggested_description,
+              capture_enrichments.accepted_description,
+              capture_enrichments.description_accepted_at,
+              capture_enrichments.suggested_filename_stem,
+              capture_enrichments.accepted_filename_stem,
+              capture_enrichments.filename_accepted_at
+         FROM capture_enrichments
+         LEFT JOIN ai_runs ON ai_runs.id = capture_enrichments.latest_ai_run_id
+        WHERE capture_enrichments.capture_id IN (${placeholders})`
+    )
+    .all(...captureIds) as EnrichmentRow[];
+
+  // 2) Tag suggestions — bulk for any latest_ai_run_ids the enrichment
+  //    rows carry. We need to know the captureId mapping so we group
+  //    by `enrichment_tag_suggestions.capture_id` directly (not just
+  //    by ai_run_id — multiple captures can share an ai_run_id under
+  //    weird edge cases, and we want each capture's own suggestions).
+  type TagSugRow = TagSuggestionRow & { capture_id: string };
+  const tagSugRows = db
+    .prepare(
+      `SELECT id, capture_id, label, confidence, accepted_at, rejected_at
+         FROM enrichment_tag_suggestions
+        WHERE capture_id IN (${placeholders})
+        ORDER BY accepted_at IS NOT NULL DESC, confidence DESC, created_at ASC`
+    )
+    .all(...captureIds) as TagSugRow[];
+
+  // 3) Accepted tags — bulk. Same shape, ordered by created_at then label.
+  type AcceptedRow = { capture_id: string; label: string };
+  const acceptedRows = db
+    .prepare(
+      `SELECT capture_tags.capture_id, tags.label
+         FROM capture_tags
+         JOIN tags ON tags.id = capture_tags.tag_id
+        WHERE capture_tags.capture_id IN (${placeholders})
+        ORDER BY capture_tags.created_at ASC, tags.label ASC`
+    )
+    .all(...captureIds) as AcceptedRow[];
+
+  // Index helpers — group tag rows by capture_id once so the merge
+  // below is O(rows) instead of O(rows × captures).
+  const tagSugByCapture = new Map<string, TagSugRow[]>();
+  for (const row of tagSugRows) {
+    let bucket = tagSugByCapture.get(row.capture_id);
+    if (bucket === undefined) {
+      bucket = [];
+      tagSugByCapture.set(row.capture_id, bucket);
+    }
+    bucket.push(row);
+  }
+  const acceptedByCapture = new Map<string, string[]>();
+  for (const row of acceptedRows) {
+    let bucket = acceptedByCapture.get(row.capture_id);
+    if (bucket === undefined) {
+      bucket = [];
+      acceptedByCapture.set(row.capture_id, bucket);
+    }
+    bucket.push(row.label);
+  }
+
+  // 4) Merge — build CaptureEnrichment per enrichment row.
+  for (const row of enrichRows) {
+    out.set(
+      row.capture_id,
+      CaptureEnrichmentSchema.parse({
+        captureId: row.capture_id,
+        latestRunId: row.latest_ai_run_id,
+        status: row.status,
+        ocrText: row.ocr_text,
+        suggestedTitle: row.suggested_title,
+        acceptedTitle: row.accepted_title,
+        titleAcceptedAt: row.title_accepted_at,
+        suggestedDescription: row.suggested_description,
+        acceptedDescription: row.accepted_description,
+        descriptionAcceptedAt: row.description_accepted_at,
+        suggestedFilenameStem: row.suggested_filename_stem,
+        acceptedFilenameStem: row.accepted_filename_stem,
+        filenameAcceptedAt: row.filename_accepted_at,
+        suggestedTags: tagSugByCapture.get(row.capture_id) ?? [],
+        acceptedTags: acceptedByCapture.get(row.capture_id) ?? []
+      })
+    );
+  }
+
+  // 5) Captures that have user tags but NO enrichment row (parallels
+  //    the same edge case `getCaptureEnrichment` handles). Without
+  //    this, captures the user manually tagged would surface as null
+  //    here even though they have surfaceable metadata.
+  for (const [captureId, labels] of acceptedByCapture) {
+    if (out.get(captureId) !== null) continue; // already filled by step 4
+    out.set(
+      captureId,
+      CaptureEnrichmentSchema.parse({
+        ...emptyEnrichment(captureId),
+        acceptedTags: labels
+      })
+    );
+  }
+
+  return out;
+}
+
 export function setLatestEnrichmentRun(captureId: string, aiRunId: string): CaptureEnrichment {
   const db = getDb();
   db.prepare(

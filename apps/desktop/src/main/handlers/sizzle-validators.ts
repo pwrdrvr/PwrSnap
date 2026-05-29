@@ -37,6 +37,7 @@ import {
   type SizzleVoice,
   type PwrSnapError
 } from "@pwrsnap/shared";
+import { SEARCH_MAX_LIMIT } from "../persistence/captures-repo";
 
 /** Hard caps. Generous for legitimate use, tight enough to keep
  *  the JSON store small and TTS calls bounded. OpenAI's TTS API
@@ -470,6 +471,197 @@ export function validateLibraryListByIds(
     out.push(id);
   }
   return { ok: true, ids: out };
+}
+
+/**
+ * Validate `library:search` request. Every field is optional;
+ * supplied fields combine conjunctively.
+ *
+ * Why this lives in sizzle-validators.ts: same reason
+ * `validateLibraryListByIds` does — these library bus surfaces were
+ * added FOR the sizzle reels feature (chat agent + cart need them).
+ * A future house-keeping refactor can split out a dedicated
+ * `library-validators.ts` once there's enough material to warrant it.
+ */
+export function validateLibrarySearch(
+  req: unknown
+):
+  | {
+      ok: true;
+      value: {
+        query?: string;
+        appBundleIds?: Array<string | null>;
+        kinds?: Array<"image" | "video">;
+        dateRange?: { start: string; end: string };
+        hasOcr?: boolean;
+        limit?: number;
+      };
+    }
+  | { ok: false; error: PwrSnapError } {
+  if (req === null || req === undefined) {
+    return { ok: true, value: {} };
+  }
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "payload must be an object") };
+  }
+  const out: {
+    query?: string;
+    appBundleIds?: Array<string | null>;
+    kinds?: Array<"image" | "video">;
+    dateRange?: { start: string; end: string };
+    hasOcr?: boolean;
+    limit?: number;
+  } = {};
+
+  if (req.query !== undefined && req.query !== null) {
+    if (typeof req.query !== "string") {
+      return {
+        ok: false,
+        error: validationError("query_invalid", "query must be a string when provided")
+      };
+    }
+    // Cap raw query length so a malicious / runaway agent can't pass
+    // megabytes of text into FTS5. 2 KB is way above any reasonable
+    // search input; the sanitizer in `buildFts5Query` trims further.
+    if (req.query.length > 2048) {
+      return {
+        ok: false,
+        error: validationError(
+          "query_too_long",
+          "query must be ≤ 2048 characters"
+        )
+      };
+    }
+    out.query = req.query;
+  }
+
+  if (req.appBundleIds !== undefined && req.appBundleIds !== null) {
+    if (!Array.isArray(req.appBundleIds)) {
+      return {
+        ok: false,
+        error: validationError(
+          "appBundleIds_invalid",
+          "appBundleIds must be an array of strings (or nulls) when provided"
+        )
+      };
+    }
+    const ids: Array<string | null> = [];
+    for (let i = 0; i < req.appBundleIds.length; i++) {
+      const v = req.appBundleIds[i];
+      if (v === null) {
+        ids.push(null);
+      } else if (typeof v === "string" && v.length > 0) {
+        ids.push(v);
+      } else {
+        return {
+          ok: false,
+          error: validationError(
+            "appBundleId_invalid",
+            `appBundleIds[${i}] must be a non-empty string or null`
+          )
+        };
+      }
+    }
+    out.appBundleIds = ids;
+  }
+
+  if (req.kinds !== undefined && req.kinds !== null) {
+    if (!Array.isArray(req.kinds)) {
+      return {
+        ok: false,
+        error: validationError(
+          "kinds_invalid",
+          "kinds must be an array of 'image' | 'video' when provided"
+        )
+      };
+    }
+    const kinds: Array<"image" | "video"> = [];
+    for (let i = 0; i < req.kinds.length; i++) {
+      const v = req.kinds[i];
+      if (v !== "image" && v !== "video") {
+        return {
+          ok: false,
+          error: validationError(
+            "kind_invalid",
+            `kinds[${i}] must be 'image' or 'video'`
+          )
+        };
+      }
+      kinds.push(v);
+    }
+    out.kinds = kinds;
+  }
+
+  if (req.dateRange !== undefined && req.dateRange !== null) {
+    if (!isRecord(req.dateRange)) {
+      return {
+        ok: false,
+        error: validationError(
+          "dateRange_invalid",
+          "dateRange must be { start, end } when provided"
+        )
+      };
+    }
+    const { start, end } = req.dateRange;
+    if (
+      typeof start !== "string" ||
+      typeof end !== "string" ||
+      start.length === 0 ||
+      end.length === 0
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "dateRange_invalid",
+          "dateRange.start and dateRange.end must be non-empty ISO strings"
+        )
+      };
+    }
+    if (start > end) {
+      return {
+        ok: false,
+        error: validationError(
+          "dateRange_inverted",
+          "dateRange.start must be ≤ dateRange.end"
+        )
+      };
+    }
+    out.dateRange = { start, end };
+  }
+
+  if (req.hasOcr !== undefined && req.hasOcr !== null) {
+    if (typeof req.hasOcr !== "boolean") {
+      return {
+        ok: false,
+        error: validationError("hasOcr_invalid", "hasOcr must be a boolean when provided")
+      };
+    }
+    out.hasOcr = req.hasOcr;
+  }
+
+  if (req.limit !== undefined && req.limit !== null) {
+    if (typeof req.limit !== "number" || !Number.isFinite(req.limit) || req.limit < 1) {
+      return {
+        ok: false,
+        error: validationError("limit_invalid", "limit must be a positive number when provided")
+      };
+    }
+    // Reference the canonical SEARCH_MAX_LIMIT from captures-repo
+    // rather than hardcoding 500 — keeps the validator and the
+    // repo in lockstep if the cap ever moves.
+    if (req.limit > SEARCH_MAX_LIMIT) {
+      return {
+        ok: false,
+        error: validationError(
+          "limit_too_large",
+          `limit must be ≤ ${SEARCH_MAX_LIMIT}`
+        )
+      };
+    }
+    out.limit = Math.floor(req.limit);
+  }
+
+  return { ok: true, value: out };
 }
 
 export function validateSizzleOpenRequest(

@@ -19,8 +19,15 @@
 // db.ts boots with a dev-only invariant self-check that throws on
 // drift, so a broken mutation path fails on next boot.
 
-import type { CaptureRecord, LibraryAppStat, LibraryCursor } from "@pwrsnap/shared";
+import type {
+  CaptureRecord,
+  CaptureSearchRequest,
+  CaptureSearchResultRow,
+  LibraryAppStat,
+  LibraryCursor
+} from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { listEnrichmentsByCaptureIds } from "./enrichment-repo";
 import { getVideoMetadata, listVideoMetadata } from "./video-repo";
 
 type CaptureRow = {
@@ -455,6 +462,230 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
       ? { capturedAt: last.captured_at, id: last.id }
       : null;
   return { rows, nextCursor };
+}
+
+/**
+ * Full-text + filter search across live captures. Feeds
+ * `library:search` which feeds the Sizzle Composer agent's
+ * `library_search` tool.
+ *
+ * Two query plans share one filter spec:
+ *
+ *   - `query` set → JOIN `capture_search_fts` (FTS5 virtual table
+ *     populated by migration 0017), MATCH the sanitized query,
+ *     extract `snippet(...)` for the matched fragment. Results ordered
+ *     by FTS5 rank (relevance).
+ *   - `query` absent → no JOIN. Filter-only scan ordered by
+ *     `captured_at DESC, id DESC` matching `listCaptures` semantics.
+ *
+ * Soft-deleted rows are always excluded. Result hydrates video
+ * metadata + per-row enrichment in two batched queries (same shape
+ * as `listCaptures` for video, plus `listEnrichmentsByCaptureIds` for
+ * enrichment).
+ *
+ * `limit` defaults to `SEARCH_DEFAULT_LIMIT` (100) and caps at
+ * `SEARCH_MAX_LIMIT` (500). The agent should narrow its query rather
+ * than paginate — there's no cursor.
+ */
+const SEARCH_DEFAULT_LIMIT = 100;
+/** Hard cap on `searchCaptures` row count. Exported so the validator
+ *  layer (`validateLibrarySearch`) can reference it instead of
+ *  hard-coding `500` and silently drifting if the cap moves. */
+export const SEARCH_MAX_LIMIT = 500;
+
+export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResultRow[] {
+  const db = getDb();
+  const limit = Math.min(SEARCH_MAX_LIMIT, filter.limit ?? SEARCH_DEFAULT_LIMIT);
+
+  // Filter clauses applied to the captures table directly. Same shape
+  // as listCaptures (deleted_at + appBundleIds) plus the new kinds /
+  // dateRange / hasOcr.
+  const where: string[] = ["captures.deleted_at IS NULL"];
+  const params: Record<string, unknown> = { limit };
+
+  if (filter.appBundleIds !== undefined) {
+    // Explicit empty array means "from this set of zero apps" —
+    // semantically match-nothing, not match-all. Push `0 = 1` so
+    // the query short-circuits to zero rows. Without this, an
+    // empty-array caller would silently see the entire library.
+    if (filter.appBundleIds.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const exactClauses: string[] = [];
+      let includesNullBundle = false;
+      for (const [index, bundleId] of filter.appBundleIds.entries()) {
+        if (bundleId === null) {
+          includesNullBundle = true;
+          continue;
+        }
+        const key = `appBundleId${index}`;
+        exactClauses.push(`captures.source_app_bundle_id = @${key}`);
+        params[key] = bundleId;
+      }
+      const bundleWhere = [
+        ...exactClauses,
+        ...(includesNullBundle ? ["captures.source_app_bundle_id IS NULL"] : [])
+      ];
+      // bundleWhere is guaranteed non-empty here (we entered the
+      // else branch because length > 0), so the join always
+      // produces at least one OR clause.
+      where.push(`(${bundleWhere.join(" OR ")})`);
+    }
+  }
+  if (filter.kinds !== undefined) {
+    // Same match-nothing semantics as appBundleIds — explicit
+    // empty array means the caller wants zero rows back.
+    if (filter.kinds.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const placeholders = filter.kinds
+        .map((_, i) => `@kind${i}`)
+        .join(", ");
+      for (const [i, kind] of filter.kinds.entries()) {
+        params[`kind${i}`] = kind;
+      }
+      where.push(`captures.kind IN (${placeholders})`);
+    }
+  }
+  if (filter.dateRange !== undefined) {
+    where.push("captures.captured_at BETWEEN @date_start AND @date_end");
+    params.date_start = filter.dateRange.start;
+    params.date_end = filter.dateRange.end;
+  }
+  if (filter.hasOcr === true) {
+    // The LEFT JOIN below is conditional — only the hasOcr filter
+    // forces it because it's the only one that needs to read a
+    // column from capture_enrichments. Inlined as EXISTS so the
+    // ordering / snippet/rank logic stays simple.
+    where.push(
+      "EXISTS (SELECT 1 FROM capture_enrichments WHERE capture_enrichments.capture_id = captures.id AND capture_enrichments.ocr_text IS NOT NULL AND capture_enrichments.ocr_text != '')"
+    );
+  }
+
+  // Build the SQL — two distinct shapes depending on whether `query`
+  // is set. We keep them as parallel branches rather than parameterizing
+  // because the query plans are genuinely different: FTS5-JOIN orders
+  // by rank, filter-only orders by captured_at.
+  let captureRows: CaptureRow[];
+  const snippetByCaptureId = new Map<string, string>();
+
+  // Two paths share the query branch trigger: an explicit query
+  // string ALWAYS goes through FTS5 (even if sanitization drops it
+  // to empty — in which case buildFts5Query returns null and we
+  // short-circuit to []). An undefined query goes through the
+  // filter-only branch.
+  if (filter.query !== undefined) {
+    const fts5Query = buildFts5Query(filter.query);
+    if (fts5Query === null) {
+      // Query had no usable tokens after sanitization — return empty.
+      // This includes the empty-string and pure-punctuation cases
+      // that previously were caught by a separate trim() check; we
+      // collapse to one decision point so the test can pin both
+      // "empty input" and "only-junk input" via the same branch.
+      return [];
+    }
+    params.fts5_query = fts5Query;
+    const sql = `
+      SELECT captures.*,
+             snippet(capture_search_fts, -1, '[hit]', '[/hit]', '…', 12) AS match_snippet
+        FROM capture_search_fts
+        JOIN captures ON captures.id = capture_search_fts.capture_id
+       WHERE capture_search_fts MATCH @fts5_query
+         AND ${where.join(" AND ")}
+       ORDER BY rank
+       LIMIT @limit
+    `;
+    const rawRows = db.prepare(sql).all(params) as Array<
+      CaptureRow & { match_snippet: string | null }
+    >;
+    captureRows = rawRows.map(({ match_snippet: _ignored, ...rest }) => rest);
+    for (const row of rawRows) {
+      if (row.match_snippet !== null) {
+        snippetByCaptureId.set(row.id, row.match_snippet);
+      }
+    }
+  } else {
+    const sql = `
+      SELECT captures.*
+        FROM captures
+       WHERE ${where.join(" AND ")}
+       ORDER BY captures.captured_at DESC, captures.id DESC
+       LIMIT @limit
+    `;
+    captureRows = db.prepare(sql).all(params) as CaptureRow[];
+  }
+
+  // Hydrate — video metadata + enrichment in two bulk queries.
+  const records = captureRows.map(rowToRecord);
+  const videoIds = records.filter((r) => r.kind === "video").map((r) => r.id);
+  if (videoIds.length > 0) {
+    const meta = listVideoMetadata(videoIds);
+    for (const r of records) {
+      if (r.kind === "video") r.video = meta.get(r.id) ?? null;
+    }
+  }
+  const enrichmentByCaptureId = listEnrichmentsByCaptureIds(records.map((r) => r.id));
+
+  return records.map((record) => ({
+    record,
+    enrichment: enrichmentByCaptureId.get(record.id) ?? null,
+    matchSnippet: snippetByCaptureId.get(record.id) ?? null
+  }));
+}
+
+/**
+ * Sanitize a user-supplied search query into an FTS5 MATCH expression.
+ * Goal: prevent SQL injection / FTS5 parse errors from untrusted input
+ * while preserving useful search semantics (substring + prefix match).
+ *
+ * Strategy:
+ *
+ *   1. SPLIT on the union of whitespace AND every character the
+ *      `unicode61` tokenizer uses as a separator (punctuation,
+ *      hyphens, slashes, etc.). This is the critical bit — the
+ *      tokenizer indexes content "spotify-playlist" as separate
+ *      tokens `spotify` + `playlist`, so a user query of
+ *      "spotify-playlist" must ALSO split into the same two tokens
+ *      to match. The previous version (split on whitespace, then
+ *      strip `-` from inside tokens) produced "spotifyplaylist"
+ *      which matched nothing.
+ *   2. For each token, strip any remaining FTS5 metacharacters
+ *      (double quotes, `*`, etc.) that would break MATCH parsing.
+ *      This catches edge cases like a query already containing
+ *      a literal quote.
+ *   3. Skip tokens that end up empty after stripping (e.g. user
+ *      typed pure punctuation that's NOT a separator, like emoji).
+ *   4. Wrap each surviving token in double quotes (phrase-mode for
+ *      safety) AND append a `*` for prefix matching ("telegram"
+ *      matches "telegrams", "telegraph", etc.).
+ *   5. Join with FTS5's implicit AND (whitespace).
+ *
+ * Returns `null` if no usable tokens survive — caller should treat
+ * that as "empty result set" rather than dispatching a query.
+ */
+function buildFts5Query(raw: string): string | null {
+  // Token separator: anything that's NOT a Unicode letter or digit.
+  // This mirrors SQLite's `unicode61` tokenizer default behavior —
+  // which treats sequences of letters + digits as tokens and every
+  // other character (whitespace, punctuation, hyphens, emoji, …) as
+  // a separator. Using the negative-Unicode-class split keeps query
+  // tokenization in lockstep with content tokenization so a query
+  // "spotify-playlist" produces ["spotify", "playlist"] — the same
+  // shape the indexed content "Spotify-Playlist" was tokenized into.
+  // The previous version (whitespace-split + strip `-` inside tokens)
+  // produced "spotifyplaylist" which matched nothing.
+  const tokens = raw
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) return null;
+  // Wrap each token as a quoted phrase + prefix wildcard:
+  //   • `"…"` is FTS5 phrase mode — content inside is matched as a
+  //     literal token, so any AND/OR/NOT or operator characters that
+  //     somehow survived the split (shouldn't, but defense in depth)
+  //     don't trigger the query parser.
+  //   • `*` suffix is prefix matching — "telegram" matches
+  //     "telegrams", "telegraph", etc.
+  return tokens.map((token) => `"${token}"*`).join(" ");
 }
 
 /**

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   validateLibraryListByIds,
+  validateLibrarySearch,
   validateSizzleCreate,
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
@@ -503,5 +504,228 @@ describe("validateLibraryListByIds", () => {
     const ids = Array.from({ length: SIZZLE_LIMITS.listByIdsMax }, (_, i) => `r-${i}`);
     const r = validateLibraryListByIds({ ids });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe("validateLibrarySearch", () => {
+  it("accepts an empty payload (no filters → all-captures search)", () => {
+    const r = validateLibrarySearch({});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({});
+  });
+
+  it("accepts null/undefined payload as empty", () => {
+    const r1 = validateLibrarySearch(null);
+    expect(r1.ok).toBe(true);
+    if (r1.ok) expect(r1.value).toEqual({});
+
+    const r2 = validateLibrarySearch(undefined);
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.value).toEqual({});
+  });
+
+  it("rejects a non-object payload", () => {
+    const r = validateLibrarySearch("not an object");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("not_object");
+  });
+
+  describe("query field", () => {
+    it("accepts a string query", () => {
+      const r = validateLibrarySearch({ query: "telegram pairing" });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.query).toBe("telegram pairing");
+    });
+
+    it("rejects non-string query", () => {
+      const r = validateLibrarySearch({ query: 42 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("query_invalid");
+    });
+
+    it("rejects query > 2048 chars (defense against runaway agent)", () => {
+      const r = validateLibrarySearch({ query: "x".repeat(2049) });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("query_too_long");
+    });
+
+    it("accepts query exactly at the 2048 cap (boundary)", () => {
+      const r = validateLibrarySearch({ query: "x".repeat(2048) });
+      expect(r.ok).toBe(true);
+    });
+  });
+
+  describe("appBundleIds field", () => {
+    it("accepts an array of non-empty strings and nulls", () => {
+      const r = validateLibrarySearch({
+        appBundleIds: ["com.tinyspeck.slackmacgap", null, "com.notion.Notion"]
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.appBundleIds).toEqual([
+          "com.tinyspeck.slackmacgap",
+          null,
+          "com.notion.Notion"
+        ]);
+      }
+    });
+
+    it("rejects non-array appBundleIds", () => {
+      const r = validateLibrarySearch({ appBundleIds: "com.slack" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("appBundleIds_invalid");
+    });
+
+    it("rejects empty-string entries", () => {
+      const r = validateLibrarySearch({ appBundleIds: ["", "com.slack"] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("appBundleId_invalid");
+    });
+
+    it("rejects non-string non-null entries", () => {
+      const r = validateLibrarySearch({ appBundleIds: [42, "com.slack"] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("appBundleId_invalid");
+    });
+  });
+
+  describe("kinds field", () => {
+    it("accepts an array of 'image' / 'video'", () => {
+      const r = validateLibrarySearch({ kinds: ["image", "video"] });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.kinds).toEqual(["image", "video"]);
+    });
+
+    it("accepts just ['image']", () => {
+      const r = validateLibrarySearch({ kinds: ["image"] });
+      expect(r.ok).toBe(true);
+    });
+
+    it("rejects unknown kind values", () => {
+      const r = validateLibrarySearch({ kinds: ["image", "gif"] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("kind_invalid");
+    });
+  });
+
+  describe("dateRange field", () => {
+    it("accepts a well-formed dateRange", () => {
+      const r = validateLibrarySearch({
+        dateRange: { start: "2026-05-01", end: "2026-05-31" }
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.dateRange).toEqual({
+          start: "2026-05-01",
+          end: "2026-05-31"
+        });
+      }
+    });
+
+    it("rejects non-object dateRange", () => {
+      const r = validateLibrarySearch({ dateRange: "today" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("dateRange_invalid");
+    });
+
+    it("rejects missing start or end", () => {
+      const r = validateLibrarySearch({ dateRange: { start: "2026-05-01" } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("dateRange_invalid");
+    });
+
+    it("rejects inverted range (start > end)", () => {
+      const r = validateLibrarySearch({
+        dateRange: { start: "2026-05-31", end: "2026-05-01" }
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("dateRange_inverted");
+    });
+  });
+
+  describe("hasOcr field", () => {
+    it("accepts true / false", () => {
+      const t = validateLibrarySearch({ hasOcr: true });
+      expect(t.ok).toBe(true);
+      const f = validateLibrarySearch({ hasOcr: false });
+      expect(f.ok).toBe(true);
+    });
+
+    it("rejects non-boolean hasOcr", () => {
+      const r = validateLibrarySearch({ hasOcr: "yes" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("hasOcr_invalid");
+    });
+  });
+
+  describe("limit field", () => {
+    it("accepts a positive integer", () => {
+      const r = validateLibrarySearch({ limit: 50 });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.limit).toBe(50);
+    });
+
+    it("floors fractional limits", () => {
+      const r = validateLibrarySearch({ limit: 50.7 });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.limit).toBe(50);
+    });
+
+    it("rejects 0 / negative", () => {
+      const zero = validateLibrarySearch({ limit: 0 });
+      expect(zero.ok).toBe(false);
+      const neg = validateLibrarySearch({ limit: -1 });
+      expect(neg.ok).toBe(false);
+    });
+
+    it("rejects > 500 (matches the SEARCH_MAX_LIMIT in captures-repo)", () => {
+      const r = validateLibrarySearch({ limit: 501 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("limit_too_large");
+    });
+
+    it("rejects Infinity / NaN", () => {
+      const inf = validateLibrarySearch({ limit: Infinity });
+      expect(inf.ok).toBe(false);
+      const nan = validateLibrarySearch({ limit: NaN });
+      expect(nan.ok).toBe(false);
+    });
+  });
+
+  describe("compositional", () => {
+    it("accepts all fields together", () => {
+      const r = validateLibrarySearch({
+        query: "pairing",
+        appBundleIds: ["com.tinyspeck.slackmacgap"],
+        kinds: ["image"],
+        dateRange: { start: "2026-05-01", end: "2026-05-31" },
+        hasOcr: true,
+        limit: 25
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value).toEqual({
+          query: "pairing",
+          appBundleIds: ["com.tinyspeck.slackmacgap"],
+          kinds: ["image"],
+          dateRange: { start: "2026-05-01", end: "2026-05-31" },
+          hasOcr: true,
+          limit: 25
+        });
+      }
+    });
+
+    it("null on any optional field is treated as absent", () => {
+      const r = validateLibrarySearch({
+        query: null,
+        appBundleIds: null,
+        kinds: null,
+        dateRange: null,
+        hasOcr: null,
+        limit: null
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value).toEqual({});
+    });
   });
 });

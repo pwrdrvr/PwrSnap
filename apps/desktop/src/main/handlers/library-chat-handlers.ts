@@ -21,14 +21,15 @@ import type {
   Settings,
   TypedEventChannel
 } from "@pwrsnap/shared";
-import { err, ok } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { CodexThreadClient } from "../ai/codex-thread-client";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
   ChatThreadController,
-  type ChatBroadcast
+  type ChatBroadcast,
+  type ChatChannelSet
 } from "../ai/chat-thread-controller";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
 import { buildLibraryToolCatalog } from "../ai/library-tool-catalog";
@@ -57,6 +58,64 @@ const log = getMainLogger("pwrsnap:library-chat-handlers");
 const LIBRARY_CHAT_THREAD_CONFIG: Record<string, unknown> = {
   web_search: "disabled"
 };
+
+/** The Library surface's broadcast channels (the controller is surface-
+ *  parameterized — see `ChatChannelSet`). */
+const LIBRARY_CHAT_CHANNELS: ChatChannelSet = {
+  threadUpdated: EVENT_CHANNELS.libraryChatThreadUpdated,
+  streamDelta: EVENT_CHANNELS.libraryChatStreamDelta,
+  toolCall: EVENT_CHANNELS.libraryChatToolCall,
+  messageCommitted: EVENT_CHANNELS.libraryChatMessageCommitted,
+  turnInterrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
+  approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested
+};
+
+/** Friendly activity-chip labels for the Library tool catalog. */
+const LIBRARY_TOOL_LABELS: Record<string, string> = {
+  library_list: "Listed captures",
+  library_search: "Searched the library",
+  capture_metadata: "Read capture details",
+  read_ocr_text: "Read the capture text",
+  list_layers: "Read the layers",
+  list_layer_capabilities: "Checked capabilities",
+  render_composite: "Looked at the canvas",
+  open_in_library: "Opened in Library",
+  open_editor: "Opened the editor",
+  draw_arrow: "Drew an arrow",
+  draw_text: "Added a text label",
+  draw_highlight: "Added a highlight",
+  draw_rect: "Drew a rectangle",
+  draw_square: "Drew a square",
+  draw_circle: "Drew a circle",
+  draw_oval: "Drew an oval",
+  draw_parallelogram: "Drew a parallelogram",
+  redact: "Blacked out a region",
+  blur: "Blurred a region",
+  delete_layer: "Deleted a layer",
+  reorder_layer: "Reordered a layer",
+  add_tag: "Added a tag",
+  remove_tag: "Removed a tag"
+};
+
+/** The per-turn active-capture context (L3), sent as its own leading
+ *  turn item — NOT the committed user message. The `<runtime_context>`
+ *  wrapper + the "not user-authored" note tell the agent this is app-
+ *  generated framing, not the user's words. Resolves "this image / here /
+ *  it" to the capture the user is viewing so edit tools get the right
+ *  `capture_id`. Injected into the shared controller via `buildTurnContext`. */
+function buildCurrentCaptureContext(captureId: string): string {
+  return (
+    `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">\n` +
+    `<current_capture id="${captureId}">\n` +
+    `The user is viewing this capture right now. "this", "this image", ` +
+    `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
+    `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
+    `tools unless the user explicitly names a different capture — do NOT ` +
+    `pick a capture from library_list when this block is present.\n` +
+    `</current_capture>\n` +
+    `</runtime_context>`
+  );
+}
 const LIBRARY_CHAT_THREAD_ENVIRONMENTS: unknown[] = [];
 
 export type LibraryChatSettingsReader = () => Promise<Settings>;
@@ -111,6 +170,9 @@ export function registerLibraryChatHandlers(params?: {
       readSettings: settingsReader,
       broadcast,
       buildSystemPrompt: buildLibrarySystemPrompt,
+      channels: LIBRARY_CHAT_CHANNELS,
+      buildTurnContext: buildCurrentCaptureContext,
+      toolLabels: LIBRARY_TOOL_LABELS,
       catalog: buildLibraryToolCatalog(),
       dispatchToolCall: dispatchLibraryToolCall,
       // Default Access.

@@ -152,6 +152,18 @@ function build(
     readSettings: async () => defaultSettings(),
     broadcast,
     buildSystemPrompt: () => "system",
+    channels: {
+      threadUpdated: EVENT_CHANNELS.libraryChatThreadUpdated,
+      streamDelta: EVENT_CHANNELS.libraryChatStreamDelta,
+      toolCall: EVENT_CHANNELS.libraryChatToolCall,
+      messageCommitted: EVENT_CHANNELS.libraryChatMessageCommitted,
+      turnInterrupted: EVENT_CHANNELS.libraryChatTurnInterrupted,
+      approvalRequested: EVENT_CHANNELS.libraryChatApprovalRequested
+    },
+    toolLabels: { draw_arrow: "Drew an arrow" },
+    buildTurnContext: (anchor: string) =>
+      `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">` +
+      `<current_capture id="${anchor}"></current_capture></runtime_context>`,
     ...(opts.dispatchToolCall ? { dispatchToolCall: opts.dispatchToolCall } : {}),
     ...(opts.threadConfig ? { threadConfig: opts.threadConfig } : {}),
     ...(opts.threadEnvironments ? { threadEnvironments: opts.threadEnvironments } : {}),

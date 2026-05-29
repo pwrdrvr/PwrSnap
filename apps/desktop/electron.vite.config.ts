@@ -68,18 +68,22 @@ export default defineConfig(({ command }) => {
       build: {
         minify: "esbuild",
         sourcemap: false,
-        // Multiple entries: main process + worker_threads scripts. The
-        // paste-image-worker entry is loaded at runtime via
-        // `new Worker(join(__dirname, "paste-image-worker.js"))` from
-        // workers/paste-image-worker-client.ts. Keeping it as a separate
-        // bundle (rather than evaling a string) preserves source-map
-        // resolution + lets vite tree-shake the worker's deps.
+        // Multiple entries: main process + worker_threads scripts. Each
+        // worker entry is loaded at runtime via
+        // `new Worker(join(__dirname, "<name>.js"))` from its
+        // workers/*-client.ts. Keeping them as separate bundles (rather
+        // than evaling a string) preserves source-map resolution + lets
+        // vite tree-shake each worker's deps.
         rollupOptions: {
           input: {
             index: resolve(__dirname, "src/main/index.ts"),
             "paste-image-worker": resolve(
               __dirname,
               "src/main/workers/paste-image-worker.ts"
+            ),
+            "composite-thumbnail-worker": resolve(
+              __dirname,
+              "src/main/workers/composite-thumbnail-worker.ts"
             )
           },
           output: {

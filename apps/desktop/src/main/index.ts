@@ -85,6 +85,7 @@ import { migrateAllV1OnBoot, reconcileV1ToV2OnBoot } from "./persistence/v1-to-v
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
+import { shutdownCompositeThumbnailWorker } from "./workers/composite-thumbnail-worker-client";
 import { clipboardEvents } from "./clipboard-events";
 import { CHROMIUM_DISK_CACHE_LIMIT_BYTES } from "./storage/accounting";
 import { installProtocolHandlers, registerSchemesAsPrivileged, type ProtocolResolver } from "./protocols";
@@ -769,6 +770,44 @@ const protocolResolver: ProtocolResolver = {
 
 const log = getMainLogger("pwrsnap:bootstrap");
 
+/**
+ * How long to wait after the main window has painted before kicking off
+ * the eager v1→v2 bulk sweep. The sweep does per-capture disk + SQLite
+ * work (and, pre-worker, libvips decode) across the whole library;
+ * starting it during the startup-critical window — while the renderer
+ * and GPU process are coming up on the shared main thread — was crashing
+ * the app with a native abort in CrBrowserMain. Letting the UI settle
+ * first keeps that heavy background work off the critical path.
+ */
+const EAGER_SWEEP_BOOT_DELAY_MS = 2000;
+
+/**
+ * Run the eager v1→v2 bulk sweep, but not until the main library window
+ * has shown and the app has had a beat to go idle. Resolves/rejects with
+ * the sweep so the caller's existing error handling still applies.
+ *
+ * The cheap reconcile pass (`reconcileV1ToV2OnBoot`) still runs eagerly
+ * at boot — it only heals partial states and does no per-capture image
+ * work. This deferral is specifically for the heavy bulk sweep.
+ */
+function scheduleEagerV1ToV2Sweep(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const start = (): void => {
+      setTimeout(() => {
+        migrateAllV1OnBoot().then(resolve, reject);
+      }, EAGER_SWEEP_BOOT_DELAY_MS);
+    };
+    const win = findMainLibraryWindow();
+    // No window (e.g. a headless/edge boot) or it's already visible →
+    // just arm the idle timer. Otherwise wait for the first paint.
+    if (win === null || win.isVisible()) {
+      start();
+      return;
+    }
+    win.once("show", start);
+  });
+}
+
 async function runBootGc(): Promise<void> {
   // Tmp file orphans first — cheap, no DB.
   await sweepStaleTempFiles();
@@ -1247,15 +1286,19 @@ export function bootstrapApp(): void {
     // captures). Runs AFTER `runLegacyBundleMigration` above on purpose
     // — we don't want to sweep half-wrapped legacy bundles.
     //
-    // The eager sweep `migrateAllV1OnBoot` runs immediately after
-    // reconcile to upgrade every remaining v1 capture to v2 in one
-    // pass. This is the bridge between the v1 default-write era and
-    // a future PR that removes the v1 read path; once the library is
-    // fully v2 the doctor itself can be deleted. Renderer-driven lazy
-    // upgrades via `v1ToV2:upgrade` remain as a safety net for any
-    // capture that fails the eager pass.
+    // The eager sweep `migrateAllV1OnBoot` upgrades every remaining v1
+    // capture to v2 in one pass. It's DEFERRED until the main window has
+    // painted + the app has gone idle (see `scheduleEagerV1ToV2Sweep`)
+    // and its thumbnail decode now runs on a worker thread — together
+    // those keep the sweep's heavy disk/CPU work off the startup-
+    // critical main thread, which previously crashed the app. This is
+    // the bridge between the v1 default-write era and a future PR that
+    // removes the v1 read path; once the library is fully v2 the doctor
+    // itself can be deleted. Renderer-driven lazy upgrades via
+    // `v1ToV2:upgrade` remain as a safety net for any capture that fails
+    // the eager pass.
     void reconcileV1ToV2OnBoot()
-      .then(() => migrateAllV1OnBoot())
+      .then(() => scheduleEagerV1ToV2Sweep())
       .catch((err: unknown) => {
         log.warn("v1 → v2 doctor boot pipeline failed", {
           message: err instanceof Error ? err.message : String(err)
@@ -1341,6 +1384,11 @@ export function bootstrapApp(): void {
     disposeTray();
     disposeFocusSink();
     disposeIpcDispatcher();
+    // Tear down the shared composite-thumbnail worker eagerly so an
+    // in-flight encode (e.g. a deferred v1→v2 sweep still running) is
+    // rejected and the worker terminated on our terms, rather than the
+    // thread being reaped mid-event when the process exits.
+    shutdownCompositeThumbnailWorker();
     // Destroy the hidden text-bake BrowserWindow pool. Without this,
     // an undead hidden window can keep the app process alive past
     // `will-quit`, which surfaces in Playwright E2E as "Worker

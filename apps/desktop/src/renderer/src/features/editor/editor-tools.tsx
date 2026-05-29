@@ -12,7 +12,7 @@
 
 import type { ReactElement } from "react";
 
-export type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text" | "crop";
+export type Tool = "pointer" | "arrow" | "shape" | "highlight" | "blur" | "text" | "crop";
 
 /** Canonical toolbar order. Exported as an array of `Tool` so the
  *  toolbar row + the `useEditorToolState` cycle helpers consume the
@@ -22,7 +22,7 @@ export type Tool = "pointer" | "arrow" | "rect" | "highlight" | "blur" | "text" 
 export const TOOL_ORDER = [
   "pointer",
   "arrow",
-  "rect",
+  "shape",
   "highlight",
   "blur",
   "text",
@@ -66,12 +66,17 @@ export const TOOLS: ReadonlyArray<{
     )
   },
   {
-    id: "rect",
-    label: "Rect",
+    id: "shape",
+    label: "Shape",
     key: "R",
     icon: (
+      // Outline rect + inscribed circle hints at the multi-shape
+      // picker behind this tool (Rect / Square / Circle / Oval /
+      // Parallelogram). Same overall footprint as the legacy rect
+      // glyph so the toolbar row visually stays balanced.
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="4" width="16" height="16" />
+        <rect x="3" y="6" width="18" height="12" />
+        <circle cx="12" cy="12" r="4" />
       </svg>
     )
   },

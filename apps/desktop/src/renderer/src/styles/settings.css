@@ -1105,3 +1105,52 @@
   /* No special styling — the placeholder uses the standard
    * `pss__main-hdr` rules. Reserved for future per-page tweaks. */
 }
+
+/* ---- Library Chat settings card (Settings → AI → Library Chat) ---- */
+.pss__chat-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+}
+.pss__chat-banner-body {
+  flex: 1;
+  color: var(--text-secondary);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.pss__chat-banner-body code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+.pss__chat-guidance { width: 100%; }
+.pss__textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font: 400 12px/1.5 var(--font-mono);
+  outline: none;
+}
+.pss__textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-shadow); }
+.pss__chat-counter {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font: 400 11px/1 var(--font-mono);
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.pss__chat-counter .is-over { color: var(--accent); }
+.pss__chat-err { color: var(--accent); font: 400 11px/1.4 var(--font-sans); }
+.pss__chat-patterns { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.pss__chat-pattern-row { display: flex; gap: 8px; align-items: center; }
+.pss__chat-pattern-row .pss__input:first-child { max-width: 160px; }
+.pss__input.is-error { border-color: var(--accent); }

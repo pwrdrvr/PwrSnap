@@ -43,6 +43,11 @@ import type { CaptureRecord, OverlayRow } from "@pwrsnap/shared";
 
 import { writeFile } from "node:fs/promises";
 
+import { buildCompositeThumbnailInProcess } from "../image/composite-thumbnail";
+import {
+  isCompositeThumbnailWorkerAvailable,
+  runCompositeThumbnailWorker
+} from "../workers/composite-thumbnail-worker-client";
 import { compose } from "../render/compose";
 import {
   findCaptureBySha256,
@@ -246,79 +251,46 @@ export type PackBundleArgs = {
   thumbnailJpg?: Buffer | null;
 };
 
-/**
- * Maximum long-edge dimension for the bundle's `composite_thumbnail.jpg`.
- * Sized to look sharp at macOS Finder's largest icon view (512×512
- * Retina = 1024-physical) and Quick Look's preview pane. Going larger
- * trades bundle size for marginal sharpness; smaller would show
- * blocking when Finder upscales for Cover Flow / column previews.
- */
-export const COMPOSITE_THUMBNAIL_MAX_DIM_PX = 1024;
-// JPEG quality 90 (was 80 pre always-write). Why bumped: with the
-// size-skip optimization removed, even very small sources now go
-// through JPEG encoding at their natural dimensions (no resize
-// smoothing first). q80 introduces visible ringing around sharp
-// edges — text, icons, UI chrome — which are EXACTLY what
-// screenshots contain. q90 keeps file size in the same ballpark
-// (≈10% increase for natural photos, less for already-clean PNG
-// content) while eliminating most visible artifacts. The thumbnail
-// is sized for Finder icons + Quick Look first-pass renders;
-// readers downstream of those still bake the full-res composite
-// from sources/* via sharp when they need pixel fidelity.
-const COMPOSITE_THUMBNAIL_JPEG_QUALITY = 90;
+// The sharp pipeline + size/quality constants live in the
+// dependency-thin `../image/composite-thumbnail` module so the
+// worker_thread can import them without dragging in `electron`/`db`.
+// Re-exported here because existing callers (and tests) import
+// `COMPOSITE_THUMBNAIL_MAX_DIM_PX` from bundle-store.
+export { COMPOSITE_THUMBNAIL_MAX_DIM_PX } from "../image/composite-thumbnail";
 
 /**
  * Generate a JPEG thumbnail of the composite for the in-bundle
  * `composite_thumbnail.jpg` entry. Always returns a Buffer — never
  * null.
  *
- * Pre-fix this returned `null` for any source already at-or-below
- * `COMPOSITE_THUMBNAIL_MAX_DIM_PX` (1024) and took a `dims`
- * parameter for the size-check decision. The skip was a perf /
- * size optimization: re-encoding a tiny PNG to JPEG could nominally
- * BLOAT the bundle. In practice JPEG-q90 compresses tiny
- * screenshots well too (often smaller than the source PNG), so the
- * worst case is a few extra KB per bundle — way cheaper than what
- * we were paying with the skip:
+ * Runs the sharp decode/resize/encode on a shared, reused worker thread
+ * when the compiled worker bundle is available (packaged + dev builds),
+ * keeping libvips off the Chromium main thread — this is what the boot-
+ * time v1→v2 sweep relies on to avoid a native abort while windows are
+ * coming up. The worker is spawned once and reused across the batch (one
+ * libvips init, not one per capture). Under vitest (no worker bundle
+ * built) it falls back to the in-process pipeline, so unit tests need no
+ * worker setup. A worker-level failure (e.g. a malformed source that
+ * aborts libvips) rejects rather than falling back — that fails the one
+ * capture and respawns a clean worker for the rest, instead of re-
+ * running the poison image on the main thread.
  *
- *   • The Finder Thumbnail Extension's fallback chain ends in
- *     `composite_thumbnail.jpg → composite.png → source.png →
- *     throw`. For v2 bundles the v1 `source.png` is absent (sources
- *     live at `sources/<sha256>.png`, invisible to the Swift
- *     extension), and PR #90 stopped writing `composite.png`. So
- *     ANY v2 capture skipping the thumbnail throws → no Finder
- *     icon at all for that capture.
- *   • The Quick Look Preview Extension hits the same dead end.
- *   • The Electron Library reconstructs from sources/* fine, so
- *     this gap was Finder/Spacebar-only — which made it easy to
- *     miss in dev but very visible in real use.
- *
- * `withoutEnlargement: true` is the safety belt — sharp would
- * otherwise upscale on `width:` for a request larger than the source.
- * For sources already smaller than the cap, the output is sized at
- * the source's natural dimensions (no upscale), just JPEG-encoded.
- *
- * sharp infers source dimensions from the buffer's PNG header, so
- * no caller-side dim hint is needed.
+ * Why a thumbnail at all: the Finder Thumbnail Extension's fallback
+ * chain ends in `composite_thumbnail.jpg → composite.png → source.png →
+ * throw`. For v2 bundles the v1 `source.png` is absent (sources live at
+ * `sources/<sha256>.png`, invisible to the Swift extension) and PR #90
+ * stopped writing `composite.png`, so any v2 capture without a
+ * thumbnail shows no Finder/Quick Look icon. (The Electron Library
+ * reconstructs from sources/* fine, so the gap was Finder/Spacebar-
+ * only — easy to miss in dev, very visible in real use.)
  */
 export async function buildCompositeThumbnail(
   compositePng: Buffer
 ): Promise<Buffer> {
-  // Resize the long edge to COMPOSITE_THUMBNAIL_MAX_DIM_PX; the short
-  // edge is computed by sharp from the source aspect ratio. `fit:
-  // "inside"` preserves aspect ratio without cropping.
-  // `withoutEnlargement: true` is critical here: for sources already
-  // ≤ the target, sharp leaves the dimensions alone and only re-
-  // encodes to JPEG. No upscaling, no quality loss from interpolation.
-  return await sharp(compositePng)
-    .resize({
-      width: COMPOSITE_THUMBNAIL_MAX_DIM_PX,
-      height: COMPOSITE_THUMBNAIL_MAX_DIM_PX,
-      fit: "inside",
-      withoutEnlargement: true
-    })
-    .jpeg({ quality: COMPOSITE_THUMBNAIL_JPEG_QUALITY, mozjpeg: true })
-    .toBuffer();
+  if (isCompositeThumbnailWorkerAvailable()) {
+    return await runCompositeThumbnailWorker(compositePng);
+  }
+  return await buildCompositeThumbnailInProcess(compositePng);
 }
 
 /**

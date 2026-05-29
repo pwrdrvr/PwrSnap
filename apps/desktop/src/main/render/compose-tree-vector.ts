@@ -36,7 +36,7 @@ import {
   highlightBlendModeForV2,
   highlightSvgForV2,
   rasterizeSvgForV2,
-  rectSvgForV2,
+  shapeSvgForV2,
   textSvgForV2
 } from "./compose";
 import { rasterizeTextHtmlForV2 } from "./text-html-bake";
@@ -84,10 +84,10 @@ export async function buildCompositeLayersForV2(
           renderHeightPx
         )
       ];
-    case "rect":
+    case "shape":
       return [
         await rasterizeSvgForV2(
-          rectSvgForV2(data, renderWidthPx, renderHeightPx),
+          shapeSvgForV2(data, renderWidthPx, renderHeightPx),
           renderWidthPx,
           renderHeightPx
         )

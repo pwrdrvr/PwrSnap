@@ -6,8 +6,7 @@ import { CodexStatusPill } from "../shared/CodexStatusPill";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
-import { VideoExportButtons } from "../shared/VideoExportButtons";
-import type { VideoExportState } from "../shared/useVideoExport";
+import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { FoIcon } from "./FoIcons";
 
 const RES_PRESETS = [
@@ -135,21 +134,15 @@ export type FloatOverAsset =
        *  `pwrsnap-capture://r/<id>` — the Range-aware custom
        *  protocol handler streams the requested byte range. */
       src: string;
+      /** Video capture id. Threads into the 6-card export grid
+       *  (`VideoExportPresetsPanel`) which owns its own hooks for
+       *  per-(format, preset) copy / drag / state — matching the
+       *  library DetailRail's chrome exactly. */
+      captureId: string;
       /** Encoded duration (sec). Surfaced in the preview-size chip
        *  AND drives the short-clip warning banner (clips under 1.5s
        *  are usually an accidental Stop press right after Start). */
       durationSec: number;
-      /** Whether the source recording contains either audio track —
-       *  drives the MP4 button's subtitle copy. */
-      hasSystemAudio: boolean;
-      hasMicrophoneAudio: boolean;
-      /** Fired when the user clicks GIF / MP4. Parent dispatches
-       *  `video:export` and surfaces progress / result. */
-      onExport: (format: "gif" | "mp4") => void;
-      /** Result of the most recent (or in-flight) export. The toast
-       *  reflects this on the button labels so the user can tell what
-       *  finished, what's running, what failed. */
-      exportState?: VideoExportState;
       /** Discard the just-saved recording. Wired by the host to
        *  `library:delete` + `library:purge` + `float-over:dismiss`
        *  so the Library row, source file, and any cached exports
@@ -628,18 +621,25 @@ export function FloatOver({
       )}
 
       {asset?.kind === "video" ? (
-        // Video export row — sits in the same slot as the image
-        // Low / Med / High copy buttons. Shared GIF + MP4 buttons
-        // (see VideoExportButtons) so the toast, tray, and library
-        // rail all render the identical chrome. The grid wrapper is
-        // toast-local because positioning lives here.
-        <div className="fo__copy" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-          <VideoExportButtons
-            exportState={asset.exportState ?? { kind: "idle" }}
-            hasSystemAudio={asset.hasSystemAudio}
-            hasMicrophoneAudio={asset.hasMicrophoneAudio}
-            onExport={asset.onExport}
-          />
+        // Video export grid — sits in the same slot as the image
+        // Low / Med / High copy buttons. Full 6-card chrome (GIF
+        // L/M/H + MP4 L/M/H) matching the library DetailRail and
+        // the tray popover; each card supports click-to-copy +
+        // FILE-chip copy-path + FILE-chip drag-out via
+        // `clipboard:copyVideoFile` / `copyVideoPath` /
+        // `startVideoDrag`. The panel owns its own hooks (the
+        // toast just hands it a captureId).
+        //
+        // Wrapper is a plain block (NOT `.fo__copy` which imposes
+        // a 3-col grid) — the panel renders two
+        // `.psl__copy-row-group` children that each impose their
+        // own 3-col grid via `.psl__copy-row`. CSS ships from
+        // library.css which app.css loads for every stage. The
+        // 12px padding mirrors `.fo__copy`'s `padding: 10px 12px
+        // 4px` so the grid sits at the same horizontal inset as
+        // the image copy row.
+        <div className="fo__export-grid">
+          <VideoExportPresetsPanel captureId={asset.captureId} />
         </div>
       ) : (
         <div className="fo__copy">

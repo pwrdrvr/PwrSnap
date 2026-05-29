@@ -36,6 +36,12 @@ export type PwrSnapErrorKind =
   | "clipboard"
   | "upload"
   | "codex"
+  // Library Chat surface (codex:libraryChat:*). Distinct from "codex"
+  // (the capture-enrichment one-shot) so the renderer can branch chat
+  // failures — codex_unreachable, rate_limited, turn_in_progress — from
+  // enrichment failures. See plan §F2 #6.
+  | "ai"
+  | "library"
   | "settings"
   | "permission"
   | "validation"

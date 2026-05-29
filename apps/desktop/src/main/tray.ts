@@ -58,15 +58,17 @@ export function setExtraTrayMenuItems(items: MenuItemConstructorOptions[]): () =
 const TRAY_RESIZE_CHANNEL = "tray:resize";
 
 /** Hard floor + ceiling so a renderer bug can't shrink to nothing or grow off-screen.
- *  Ceiling raised from 720 → 880 to fit the redesigned tray: header +
- *  Quick Capture button + 6-mode grid + 120px last-snap preview +
- *  Low/Med/High copy button row sums to ~480px on its own; with a
- *  tall capture (16:10 preview at full width) and the longest font
- *  fallback metrics it can land north of 720. The popover is anchored
+ *  Ceiling raised from 720 → 880 (original redesign) → 1040 (when the
+ *  last-snap video export row swapped the 2-button GIF/MP4 strip for
+ *  the full 6-card grid (GIF L/M/H + MP4 L/M/H) — same chrome the
+ *  library DetailRail renders, so the user can copy / drag any preset
+ *  straight from the tray). The 6-card grid adds ~120px over the
+ *  prior 2-button row. Image tray stays well under the old 880
+ *  ceiling; the bump is purely for video. The popover is anchored
  *  top-down from the menubar tray icon, so growing taller doesn't
  *  push off-screen — Electron clamps to workArea automatically. */
 const TRAY_HEIGHT_MIN = 200;
-const TRAY_HEIGHT_MAX = 880;
+const TRAY_HEIGHT_MAX = 1040;
 /** Window width is fixed by the design — must match `.ps-tray { width }`
     in library.css. Bumped from 380 → 440 because the 2-column mode
     grid (Region/Window, Full/All, Scrolling/Timed) was clipping the

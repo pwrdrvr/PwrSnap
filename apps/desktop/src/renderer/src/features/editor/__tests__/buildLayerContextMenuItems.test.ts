@@ -54,7 +54,7 @@ const textRow = (id: string): OverlayRow =>
 
 const rectRow = (id: string): OverlayRow =>
   row(id, {
-    kind: "rect",
+    kind: "shape",
     rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 },
     color: "auto"
   });

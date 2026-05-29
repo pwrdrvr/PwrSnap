@@ -638,7 +638,7 @@ describe("tool matrix: rect", () => {
   ] as const) {
     test(`${variant.name} rect renders in bake`, async () => {
       const overlay: Overlay = {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
         color: variant.color,
         filled: variant.filled

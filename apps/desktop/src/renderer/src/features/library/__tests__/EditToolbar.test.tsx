@@ -107,7 +107,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
   return {
     schemaVersion: 1,
     codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
+    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",
       region: "",
@@ -133,7 +133,7 @@ function makeSettings(matchingTextEnabled = true): Settings {
           doubleEnded: false
         },
         text: { color: "accent", fontSize: "auto", weight: "regular" },
-        rect: { color: "accent", thickness: "auto", filled: false },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -386,7 +386,7 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     for (const id of [
       "pointer",
       "arrow",
-      "rect",
+      "shape",
       "highlight",
       "blur",
       "text",
@@ -485,8 +485,8 @@ describe("EditToolbar (Library Focus, v2 refresh)", () => {
     await fireClick(findToolButton("arrow"));
     expect(observedActiveTool.value).toBe("arrow");
     // Click rect → lifted hook flips again.
-    await fireClick(findToolButton("rect"));
-    expect(observedActiveTool.value).toBe("rect");
+    await fireClick(findToolButton("shape"));
+    expect(observedActiveTool.value).toBe("shape");
   });
 
   test("6. v2 Reset on a previously off-origin-cropped capture restores raster transform to identity", async () => {

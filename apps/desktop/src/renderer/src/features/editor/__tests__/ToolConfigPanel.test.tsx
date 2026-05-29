@@ -25,7 +25,7 @@ import type {
   ArrowToolStyle,
   BlurToolStyle,
   HighlightToolStyle,
-  RectToolStyle,
+  ShapeToolStyle,
   Settings,
   TextToolStyle
 } from "@pwrsnap/shared";
@@ -82,7 +82,7 @@ function makeSettings(): Settings {
   return {
     schemaVersion: 1,
     codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
+    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",
       region: "",
@@ -108,7 +108,7 @@ function makeSettings(): Settings {
           doubleEnded: false
         },
         text: { color: "accent", fontSize: "auto", weight: "regular" },
-        rect: { color: "accent", thickness: "auto", filled: false },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -142,7 +142,7 @@ const ARROW: ArrowToolStyle = {
   doubleEnded: false
 };
 const TEXT: TextToolStyle = { color: "accent", fontSize: "auto", weight: "regular" };
-const RECT: RectToolStyle = { color: "accent", thickness: "auto", filled: false };
+const RECT: ShapeToolStyle = { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 };
 const BLUR: BlurToolStyle = { mode: "gaussian", radius: { mode: "auto" } };
 const HIGHLIGHT: HighlightToolStyle = {
   color: "yellow",
@@ -254,18 +254,19 @@ describe("ToolConfigPanel", () => {
     expect(q('[data-testid="text-weight"]')).not.toBeNull();
   });
 
-  test("5. activeTool='rect' renders rect controls (color + thickness + filled)", () => {
+  test("5. activeTool='shape' renders shape controls (color + kind picker + thickness + filled)", () => {
     render(
       createElement(ToolConfigPanel, {
         captureId: "cap_1",
-        activeTool: "rect",
-        activeStyle: { tool: "rect", style: RECT } as ActiveStyle,
+        activeTool: "shape",
+        activeStyle: { tool: "shape", style: RECT } as ActiveStyle,
         onStyleFieldChange: vi.fn()
       })
     );
     expect(q('[data-testid="color-row"]')).not.toBeNull();
-    expect(q('[data-testid="rect-thickness"]')).not.toBeNull();
-    expect(q('[data-testid="rect-filled"]')).not.toBeNull();
+    expect(q('[data-testid="shape-kind"]')).not.toBeNull();
+    expect(q('[data-testid="shape-thickness"]')).not.toBeNull();
+    expect(q('[data-testid="shape-filled"]')).not.toBeNull();
   });
 
   test("6. activeTool='blur' renders blur controls — no color row", () => {

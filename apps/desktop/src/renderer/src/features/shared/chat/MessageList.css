@@ -1,0 +1,369 @@
+/* MessageList — streaming chat message list primitive.
+   Token-based styling only; see styles/tokens.css for the source of
+   the custom properties. Geist (var(--font-sans)) for prose, Geist Mono
+   (var(--font-mono)) for tool-card JSON. */
+
+.ml {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ml__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  /* Smooth programmatic jump-to-latest while respecting reduced motion. */
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ml__scroll {
+    scroll-behavior: auto;
+  }
+}
+
+/* ---------- message bubble ---------- */
+
+.ml__msg {
+  /* `contain: layout` isolates each bubble: a streaming bubble growing
+     at the bottom can't force layout recalculation of completed bubbles
+     above it. Load-bearing for streaming perf — see MessageList.tsx. */
+  contain: layout;
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+}
+
+.ml__msg--user {
+  align-items: flex-end;
+}
+.ml__msg--assistant,
+.ml__msg--system {
+  align-items: flex-start;
+}
+
+.ml__bubble {
+  max-width: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+}
+
+.ml__msg--user .ml__bubble {
+  background: var(--bg-row-active);
+  border-color: var(--accent-border);
+}
+
+.ml__msg--system .ml__bubble {
+  background: var(--bg-panel-elevated);
+  border-style: dashed;
+}
+
+/* ---------- prose text ---------- */
+
+.ml__text {
+  margin: 0;
+  color: var(--text-primary);
+  font: 400 var(--fs-body)/var(--lh-normal) var(--font-sans);
+  /* Preserve author newlines + wrap long unbroken tokens (URLs, hashes). */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ml__text--streaming {
+  color: var(--text-primary);
+}
+
+/* Blinking caret at the tail of streamed text. */
+.ml__caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: ml-caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes ml-caret-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ml__caret {
+    animation: none;
+  }
+}
+
+/* ---------- tool card ---------- */
+
+.ml__tool {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel-elevated);
+  overflow: hidden;
+}
+
+.ml__tool--error {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.ml__tool--success {
+  border-color: var(--success-border);
+}
+
+.ml__tool-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  font: 500 var(--fs-meta)/var(--lh-snug) var(--font-sans);
+}
+.ml__tool-head:hover {
+  background: var(--bg-panel-hover);
+}
+
+.ml__tool-tri {
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.ml__tool-tri.is-open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ml__tool-tri {
+    transition: none;
+  }
+}
+
+.ml__tool-name {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--accent-bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ml__tool-state {
+  display: inline-flex;
+  align-items: center;
+  min-width: 16px;
+  justify-content: center;
+}
+.ml__tool-ok {
+  color: var(--success-text);
+}
+.ml__tool-err {
+  color: var(--danger-text);
+}
+
+/* in-progress spinner */
+.ml__spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-pill);
+  animation: ml-spin 0.7s linear infinite;
+}
+@keyframes ml-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ml__spinner {
+    animation: none;
+  }
+}
+
+.ml__tool-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ml__tool-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ml__tool-label {
+  color: var(--text-muted);
+  font: 600 var(--fs-eyebrow)/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ml__code {
+  margin: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-snug);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+
+/* ---------- status footer ---------- */
+
+.ml__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: 500 var(--fs-meta)/var(--lh-snug) var(--font-sans);
+}
+
+.ml__status--failed .ml__status-text {
+  color: var(--danger-text);
+}
+.ml__status--interrupted .ml__status-text {
+  color: var(--warn-text);
+}
+
+.ml__retry,
+.ml__reject-run {
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  cursor: pointer;
+  color: var(--text-secondary);
+  font: 500 var(--fs-meta)/1 var(--font-sans);
+}
+.ml__retry:hover {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+.ml__reject-run:hover {
+  border-color: var(--accent-border);
+  color: var(--accent-bright);
+}
+
+/* ---------- jump-to-latest pill ---------- */
+
+.ml__jump {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-4);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-border);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  font: 500 var(--fs-meta)/1 var(--font-sans);
+  z-index: 2;
+}
+.ml__jump:hover {
+  background: var(--bg-panel-hover);
+}
+.ml__jump-arrow {
+  color: var(--accent);
+}
+
+/* ---------- inline tool-activity chips ---------- */
+/* Friendly per-turn activity ("Looked at the canvas") rendered in the
+   transcript flow — above the turn's assistant bubble, and as a trailing
+   "pending" group while the turn is in flight. Lives in the message log
+   (not a fixed bar) so it scrolls with history and persists for the
+   session. Tokens only. */
+.ml__activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+.ml__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 500 var(--fs-meta)/1.3 var(--font-sans);
+}
+.ml__chip.is-error {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.ml__chip-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* The in-flight (pending) group has no bubble chrome — it's just the
+   chips + Thinking sitting where the next message will land. */
+.ml__msg--pending .ml__bubble {
+  background: transparent;
+  border: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+.ml__thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-tertiary, var(--text-secondary));
+  font: 500 var(--fs-meta)/1.3 var(--font-sans);
+}
+.ml__thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ml-thinking-pulse 1s ease-in-out infinite;
+}
+@keyframes ml-thinking-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ml__thinking-dot { animation: none; }
+}

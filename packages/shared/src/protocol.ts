@@ -10,7 +10,6 @@
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
 import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
-import type { PwrSnapError } from "./result";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -784,6 +783,14 @@ export type Settings = {
      *  default; the float-over surfaces an inline checkbox so users
      *  can flip the policy without leaving the capture flow. */
     autoAcceptSuggestions: boolean;
+    /** Per-user Library-chat preferences (User Guidance text,
+     *  sensitive-data patterns, default redaction style, first-launch
+     *  banner state). Sits inside `ai` so the existing AI-consent +
+     *  kill-switch fields stay close to the chat knobs the user
+     *  interacts with on the same Settings page. Added per
+     *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
+     *  Phase 0 + deepening §F7 #3. */
+    chat: ChatSettings;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -923,8 +930,12 @@ export type ToolSizePreset = "auto" | "small" | "medium" | "large" | "x-large";
 // the on-disk overlay field share the same value space by design —
 // picking "open-triangle" in the popover writes "open-triangle" into
 // the overlay row.
-export type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
-import type { ArrowEndStyle, ArrowStemStyle } from "./overlay-schemas";
+export type { ArrowEndStyle, ArrowStemStyle, ShapeKind } from "./overlay-schemas";
+import type {
+  ArrowEndStyle,
+  ArrowStemStyle,
+  ShapeKind
+} from "./overlay-schemas";
 export type TextFontWeight = "regular" | "bold";
 export type BlurEffectMode = "gaussian" | "pixelate" | "redact";
 
@@ -949,10 +960,19 @@ export type TextToolStyle = {
   weight: TextFontWeight;
 };
 
-export type RectToolStyle = {
+export type ShapeToolStyle = {
   color: ToolColor;
   thickness: ToolSizePreset | number;
   filled: boolean;
+  /** Which geometric primitive the Shape tool commits on its next
+   *  drag. Square + circle enforce a 1:1 lock during drag (see
+   *  Editor.tsx onPointerMove); rect / oval / parallelogram drag
+   *  freely. */
+  shape: ShapeKind;
+  /** Horizontal skew in degrees applied when `shape === "parallelogram"`.
+   *  Ignored for every other shape kind, but persisted so that picking
+   *  Parallelogram later restores the user's last-used skew. */
+  skewDeg: number;
 };
 
 export type BlurToolStyle = {
@@ -978,7 +998,7 @@ export type HighlightToolStyle = {
 export type EditorToolStyles = {
   arrow: ArrowToolStyle;
   text: TextToolStyle;
-  rect: RectToolStyle;
+  shape: ShapeToolStyle;
   blur: BlurToolStyle;
   highlight: HighlightToolStyle;
 };
@@ -1067,26 +1087,96 @@ export type LibrarySettings = {
   detailRail: LibrarySidebarSettings;
 };
 
-// ---- Chat message content (Phase 7 prep, exported only) ----------------
+// ---- Chat substrate types (Library Chat — Phase 0) ---------------------
 //
-// Defined here so Phase 7's `chat-schemas.ts` zod definitions and the
-// renderer's chat panel can share the same discriminated-union shape.
-// Phase 1 does NOT reference these — kept so the protocol surface stays
-// a single source of truth as later phases land.
+// The RUNTIME SOURCE OF TRUTH for these is `chat-schemas.ts` (zod), and
+// the `@pwrsnap/shared` barrel re-exports that module wholesale. We only
+// IMPORT the few types referenced by the Commands map below — re-
+// exporting them from here too would collide with the barrel's
+// `export * from "./chat-schemas"`. Mirrors how `ArrowEndStyle` is owned
+// by overlay-schemas.ts. See plan §F2 #9.
+import type {
+  ChatApprovalDecision,
+  ChatMessage,
+  LibraryChatThreadView
+} from "./chat-schemas";
 
-export type ChatMessageContent =
-  | { kind: "text"; text: string }
-  | { kind: "tool_call"; toolName: string; argsJson: string; callId: string }
-  | {
-      kind: "tool_result";
-      callId: string;
-      resultJson: string;
-      /** True for tool failures the AI saw and (typically) self-corrected
-       *  from. Stored so the chat panel can render a subtle "AI's last
-       *  call was rejected — retrying" indicator without inferring it
-       *  from a parse of resultJson. */
-      isError?: boolean;
-    };
+// ---- Chat redaction defaults + user-provided patterns ------------------
+//
+// Two preferences the chat agent reads on every turn:
+//
+//   • `defaultRedactionStyle` — when the agent applies an opaque
+//     redaction (over a credit-card field, an API key, etc.), should
+//     it use a blackout rectangle (irreversible) or a blur (reversible
+//     via deconvolution — see Phase 0 deepening §F12 + aCropalypse
+//     CVE-2023-21036). Default `"blackout"` because the most-common
+//     user ask is "hide my secrets" and blackout is the safe answer.
+//
+//   • `sensitiveDataPatterns` — named regexes the user has taught the
+//     agent. Each is `{name, pattern}`. Names like "SSN", "InternalTicketId".
+//     The pattern is a regex string ("\\d{3}-\\d{2}-\\d{4}"). NEVER a
+//     real secret — only the SHAPE. The Settings UI warns about this
+//     and runs a secret-shape sniff on save (Phase 0 deepening §F4 H3).
+
+/** Redaction strategy. `"blackout"` paints an opaque rectangle — not
+ *  reversible. `"blur"` paints a gaussian blur — reversible by
+ *  deconvolution (see aCropalypse), so DO NOT use for secrets the
+ *  user wants permanently hidden. */
+export type RedactionStyle = "blackout" | "blur";
+
+export const REDACTION_STYLES = ["blackout", "blur"] as const satisfies readonly RedactionStyle[];
+
+export function isRedactionStyle(value: unknown): value is RedactionStyle {
+  return typeof value === "string" && (REDACTION_STYLES as readonly string[]).includes(value);
+}
+
+/** One row in `Settings.ai.chat.sensitiveDataPatterns`. The `name` is
+ *  the user-facing handle AND the unique identifier the chat agent
+ *  references (e.g., `redact_text_pattern { pattern_name: "SSN" }`).
+ *  The `pattern` is the regex string — compiled at use site, not at
+ *  store time (cheap + safe; recompile on every match). */
+export type SensitiveDataPattern = {
+  name: string;
+  pattern: string;
+};
+
+/** Per-user chat preferences. Sits under `Settings.ai.chat` to leave
+ *  room for future chat-only knobs (confirm-batch threshold, tone,
+ *  per-turn op cap) without flattening more fields onto `ai.*`. Phase
+ *  0 deepening §F7 #3. */
+export type ChatSettings = {
+  /** Free-form per-user system-prompt addition. Empty string = no
+   *  guidance set. Cap 8KB enforced at the bus validator. Injected
+   *  verbatim into the chat system prompt's L2 layer on every turn.
+   *  Never leaves the device until the user sends a chat turn (then
+   *  it travels to Codex as part of the system prompt). */
+  userGuidance: string;
+  /** Named regex patterns. Cap 32 enforced at the validator; each
+   *  `name` ≤ 64 chars, each `pattern` ≤ 512 chars. Uniqueness on
+   *  `name` enforced. Pattern must compile as a JS RegExp at save
+   *  time (RE2 migration tracked separately — see plan §F4 H1). */
+  sensitiveDataPatterns: SensitiveDataPattern[];
+  /** Default redaction style when the agent has to pick. Per-pattern
+   *  override is intentionally NOT a knob (Phase 0 deepening §F8 cut
+   *  the per-row `redactionStyle` field as YAGNI; one global default
+   *  + agent picks per call is sufficient). */
+  defaultRedactionStyle: RedactionStyle;
+  /** True once the user has dismissed the Settings → AI → Chat
+   *  first-launch disclosure banner (which warns about iCloud +
+   *  Time Machine + plaintext exposure at ~/Documents/PwrSnap/Chats/).
+   *  Persisted so the banner doesn't re-appear after a relaunch. */
+  firstLaunchBannerDismissed: boolean;
+};
+
+/** Default `ai.chat` state. Mirrored by `defaultSettings()` in the
+ *  desktop service; re-exported here so the inline pre-React bootstrap
+ *  and the renderer hook share one source of truth. */
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  userGuidance: "",
+  sensitiveDataPatterns: [],
+  defaultRedactionStyle: "blackout",
+  firstLaunchBannerDismissed: false
+};
 
 /** Theme preference. `"system"` resolves to dark/light via the
  *  renderer's `matchMedia("(prefers-color-scheme: light)")`. */
@@ -1115,7 +1205,19 @@ export type UpdateChannel = "latest" | "prerelease";
  *  field without echoing the rest. */
 export type SettingsPatch = {
   codex?: Partial<Settings["codex"]>;
-  ai?: Partial<Settings["ai"]>;
+  /** `ai` is deeper than the other top-level branches because Library
+   *  chat preferences live under `ai.chat`. Each leaf within `chat` is
+   *  independently optional so a single textarea blur can ship just
+   *  `{ ai: { chat: { userGuidance: "..." } } }` without re-echoing
+   *  patterns, redaction style, or the banner-dismiss flag. Empty
+   *  string is the explicit "cleared" sentinel per the substrate
+   *  hygiene rule `undefined ≠ null ≠ ""`. */
+  ai?: {
+    enabled?: Settings["ai"]["enabled"];
+    consentAcceptedAt?: Settings["ai"]["consentAcceptedAt"];
+    autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
+    chat?: Partial<ChatSettings>;
+  };
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
   general?: Partial<Settings["general"]>;
@@ -1130,7 +1232,7 @@ export type SettingsPatch = {
     toolStyles?: {
       arrow?: Partial<ArrowToolStyle>;
       text?: Partial<TextToolStyle>;
-      rect?: Partial<RectToolStyle>;
+      shape?: Partial<ShapeToolStyle>;
       blur?: Partial<BlurToolStyle>;
       highlight?: Partial<HighlightToolStyle>;
     };
@@ -1274,102 +1376,6 @@ export type CaptureEnrichmentSummary = {
   acceptedDescription: string | null;
   acceptedTags: string[];
   suggestedTagCount: number;
-};
-
-// ── Sizzle Composer Chat (PR-3) ──────────────────────────────────────
-// The per-project Codex agent that searches the library, drafts scene
-// lists, writes scripts, sets transitions, and kicks off renders. It
-// runs sandboxed (workspace-write) in a per-project scratch directory;
-// escalation requests surface as inline approval cards in the
-// transcript. See docs/plans/2026-05-28-001-feat-sizzle-cart-and-chat-plan.md
-// §PR-3.
-
-/** A single chat-turn input item the renderer sends to the agent. */
-export type ChatTurnInputItem =
-  | { type: "text"; text: string }
-  | { type: "image"; url: string };
-
-/** Persisted chat session — one row per Sizzle project. The renderer
- *  never sees `scratchDir`; it's main-only bookkeeping. */
-export type ChatSession = {
-  projectId: string;
-  sessionId: string;
-  threadId: string;
-  scratchDir: string;
-  createdAt: string;
-};
-
-/** The decision the user makes on an inline approval card. Mapped on
- *  the main side to the Codex protocol's per-request decision enum. */
-export type ChatApprovalDecision =
-  | "approve"
-  | "approveForSession"
-  | "decline"
-  | "cancel";
-
-/** Normalized escalation request surfaced to the renderer as an inline
- *  approval card. `kind` drives which fields are populated; the card
- *  renders the buttons named in `availableDecisions`. */
-export type ChatApprovalRequest = {
-  /** Stable id for this approval, echoed back via `codex:submitApproval`. */
-  requestId: string;
-  kind: "command" | "fileChange" | "permissions" | "generic";
-  /** Agent-supplied reason, e.g. "needs network access". */
-  reason: string | null;
-  /** Shell command (command escalations only). */
-  command: string | null;
-  /** Working directory the agent is operating in. */
-  cwd: string | null;
-  availableDecisions: ChatApprovalDecision[];
-};
-
-/** A tool the agent invoked, mirrored into the transcript. Emitted
- *  after main services the call, so `ok` + `summary` are known. */
-export type ChatToolCall = {
-  callId: string;
-  tool: string;
-  /** Stringified arguments for display (the renderer pretty-prints). */
-  argumentsJson: string;
-  ok: boolean;
-  /** Short human summary of the result, e.g. "Found 8 captures". */
-  summary: string;
-};
-
-/** `events:codex:stream-delta` payload — one streamed text fragment of
- *  an in-progress agent message. The renderer groups deltas by
- *  `itemId` into transcript bubbles. */
-export type CodexStreamDeltaEvent = {
-  sessionId: string;
-  turnId: string;
-  itemId: string;
-  delta: string;
-};
-
-/** `events:codex:tool-call` payload — a tool the agent ran this turn. */
-export type CodexToolCallEvent = {
-  sessionId: string;
-  turnId: string;
-  toolCall: ChatToolCall;
-};
-
-/** `events:codex:approval-request` payload — the agent wants to escalate
- *  outside the sandbox; the renderer shows an inline approval card. */
-export type CodexApprovalRequestEvent = {
-  sessionId: string;
-  turnId: string;
-  requestId: string;
-  request: ChatApprovalRequest;
-};
-
-/** `events:codex:turn-complete` payload — the turn finished, was
- *  cancelled, or failed. `finalMessage` carries the last assistant
- *  message so the renderer can reconcile its streamed accumulation. */
-export type CodexTurnCompleteEvent = {
-  sessionId: string;
-  turnId: string;
-  status: "ok" | "cancelled" | "failed";
-  finalMessage?: string;
-  error?: PwrSnapError;
 };
 
 /**
@@ -1740,6 +1746,20 @@ export type Commands = {
    *  descendant in one transaction — leaving orphaned-but-live
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
+
+  /** Render the current composite (source + applied layers) to a
+   *  downscaled PNG and return it base64-encoded. Powers the Library
+   *  chat agent's `render_composite` vision tool — the agent grounds
+   *  redaction/annotation placement on the actual pixels. Goes through
+   *  the bake render coordinator (content-addressed cache; does NOT
+   *  bump BAKE_PIPELINE_VERSION). `maxEdgePx` clamps the longest edge
+   *  (default 720, hard max 1440) to bound the bytes sent to the model
+   *  + the LLM image-token cost. PNG (not WebP) for vision-model
+   *  compatibility. Works for image captures only. */
+  "render:composite": {
+    req: { captureId: string; maxEdgePx?: number };
+    res: { base64: string; mimeType: "image/png"; widthPx: number; heightPx: number };
+  };
 
   // ---- canvas (v2 captures only) ----
   /** Update the canvas dimensions of a v2 capture. Writes the new
@@ -2112,6 +2132,79 @@ export type Commands = {
   "codex:cancel": { req: { runId: string }; res: void };
   "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
 
+  // ---- Library Chat (Phase 0) — long-lived, tool-equipped chat threads ----
+  //
+  // The user-facing agent that lives in the Library sidebar. Threads are
+  // persistent (Codex rollout + our pwrsnap-thread.json sidecar) and
+  // survive relaunch. See docs/plans/2026-05-28-001-feat-library-chat-
+  // editor-interface-plan.md. Streaming + approval flows ride the
+  // `events:libraryChat:*` channels (see ipc.ts), not these verbs.
+
+  /** List all (non-archived by default) chat threads for the thread-list
+   *  rail. `includeArchived` surfaces archived threads for a "show
+   *  archived" toggle. */
+  /** List chat threads. `anchorCaptureId` scopes the list to one
+   *  capture's threads (chats are glued to assets — the rail shows only
+   *  the focused capture's threads). Omit to list every thread. */
+  "codex:libraryChat:list": {
+    req: { includeArchived?: boolean; anchorCaptureId?: string | null };
+    res: { threads: LibraryChatThreadView[] };
+  };
+  /** Create a new thread. `name` optional — main mints a default
+   *  ("Chat <date>") when omitted. `anchorCaptureId` glues the thread
+   *  to the capture it was started from. Returns the view for
+   *  optimistic rendering. */
+  "codex:libraryChat:create": {
+    req: { name?: string; anchorCaptureId?: string | null };
+    res: LibraryChatThreadView;
+  };
+  /** Send a user message + (optionally) attached image paths. Returns
+   *  the turnId; streaming deltas + the committed assistant message
+   *  arrive via `events:libraryChat:*`. `anchorCaptureId` lets the
+   *  renderer pin the thread to whatever the user is currently viewing
+   *  so the per-turn context is accurate. */
+  "codex:libraryChat:send": {
+    req: {
+      threadId: string;
+      text: string;
+      imageAttachmentPaths?: string[];
+      anchorCaptureId?: string | null;
+    };
+    res: { turnId: string };
+  };
+  /** Full message history for a thread (read on open / re-subscribe). */
+  "codex:libraryChat:history": {
+    req: { threadId: string };
+    res: { messages: ChatMessage[] };
+  };
+  /** Rename a thread. */
+  "codex:libraryChat:rename": {
+    req: { threadId: string; name: string };
+    res: LibraryChatThreadView;
+  };
+  /** Archive / unarchive a thread (soft delete — never destroys the
+   *  Codex rollout). */
+  "codex:libraryChat:archive": {
+    req: { threadId: string; archived: boolean };
+    res: LibraryChatThreadView;
+  };
+  /** Interrupt an in-flight turn (turn/interrupt). No-op if idle. */
+  "codex:libraryChat:interrupt": {
+    req: { threadId: string };
+    res: void;
+  };
+  /** Resolve a pending approval. Carries (threadId, turnId, approvalId)
+   *  so a late resolution can't land in the wrong turn (plan §F10 T3). */
+  "codex:libraryChat:approval": {
+    req: {
+      threadId: string;
+      turnId: string;
+      approvalId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
+
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
   "sizzle:create": { req: { name: string }; res: SizzleProject };
@@ -2186,42 +2279,6 @@ export type Commands = {
     req: { projectId: string };
     res: SizzleProject;
   };
-
-  // ── Sizzle Composer Chat (PR-3) ─────────────────────────────────────
-  // Multi-turn Codex agent scoped to a single Sizzle project. Streaming
-  // text, tool calls, approval requests, and turn completion are
-  // delivered out-of-band via the `events:codex:*` channels; these verbs
-  // are the request/control side. See `ChatSession` + the chat plan.
-  /** Get-or-create the chat session for a project. Mints the scratch
-   *  dir + starts a persistent Codex thread with the sizzle tool
-   *  manifest on first call; returns the existing session thereafter. */
-  "codex:newSession": {
-    req: { projectId: string };
-    res: { sessionId: string; threadId: string };
-  };
-  /** Start a turn. Returns the turnId immediately; the agent's output
-   *  streams via `events:codex:stream-delta` / `tool-call` /
-   *  `approval-request`, terminating in `events:codex:turn-complete`. */
-  "codex:sendTurn": {
-    req: { sessionId: string; input: ChatTurnInputItem[] };
-    res: { turnId: string };
-  };
-  /** Resolve a pending inline approval card. Unblocks the Codex
-   *  server-initiated request main is holding for this escalation. */
-  "codex:submitApproval": {
-    req: {
-      sessionId: string;
-      turnId: string;
-      requestId: string;
-      decision: ChatApprovalDecision;
-    };
-    res: void;
-  };
-  /** Cancel an in-progress turn (aborts the signal → turn/interrupt). */
-  "codex:cancelTurn": { req: { sessionId: string; turnId: string }; res: void };
-  /** Close the session's Codex thread. Called on project delete (the
-   *  scratch dir is removed alongside) or the panel's "New chat". */
-  "codex:closeSession": { req: { sessionId: string }; res: void };
 };
 
 export type CommandName = keyof Commands;

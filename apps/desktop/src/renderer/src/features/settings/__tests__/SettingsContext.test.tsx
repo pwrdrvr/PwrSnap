@@ -22,7 +22,7 @@ type EventHandler = (payload: unknown) => void;
 const baseSettings: Settings = {
   schemaVersion: 1,
   codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
+  ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
   hotkeys: {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
@@ -42,7 +42,7 @@ const baseSettings: Settings = {
     toolStyles: {
       arrow: { color: "accent", thickness: "auto", endStyle: "filled-triangle", stemStyle: "solid", doubleEnded: false },
       text: { color: "accent", fontSize: "auto", weight: "regular" },
-      rect: { color: "accent", thickness: "auto", filled: false },
+      shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
       blur: { mode: "gaussian", radius: { mode: "auto" } },
       highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
     },

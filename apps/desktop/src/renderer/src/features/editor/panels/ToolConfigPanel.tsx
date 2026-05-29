@@ -55,7 +55,7 @@ export interface ToolConfigPanelProps {
 const TOOL_TITLES: Record<StyledTool, string> = {
   arrow: "Arrow style",
   text: "Text style",
-  rect: "Rect style",
+  shape: "Shape style",
   blur: "Blur style",
   highlight: "Highlight style"
 };

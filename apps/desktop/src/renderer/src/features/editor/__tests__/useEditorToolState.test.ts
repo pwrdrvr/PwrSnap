@@ -68,7 +68,8 @@ function makeSettings(overrides?: {
     ai: {
       enabled: false,
       consentAcceptedAt: null,
-      autoAcceptSuggestions: false
+      autoAcceptSuggestions: false,
+      chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
     },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",
@@ -99,7 +100,7 @@ function makeSettings(overrides?: {
           fontSize: overrides?.textFontSize ?? "auto",
           weight: "regular"
         },
-        rect: { color: "accent", thickness: "auto", filled: false },
+        shape: { color: "accent", thickness: "auto", filled: false, shape: "rect", skewDeg: 15 },
         blur: { mode: "gaussian", radius: { mode: "auto" } },
         highlight: { color: "yellow", opacity: 0.3, blend: "multiply" }
       },
@@ -278,9 +279,9 @@ describe("useEditorToolState", () => {
 
     // Same for rect.
     act(() => {
-      api!.setActiveTool("rect");
+      api!.setActiveTool("shape");
     });
-    if (api!.activeStyle.tool === "rect") {
+    if (api!.activeStyle.tool === "shape") {
       expect(api!.activeStyle.style.color).toBe("red");
     }
 

@@ -182,31 +182,6 @@ export const EVENT_CHANNELS = {
    */
   cartChanged: "events:cart:changed",
   /**
-   * Main → the Sizzle composer window: one streamed text fragment of an
-   * in-progress agent message for a chat turn. The ChatPanel groups
-   * deltas by `itemId` into transcript bubbles. Type:
-   * `CodexStreamDeltaEvent`.
-   */
-  codexStreamDelta: "events:codex:stream-delta",
-  /**
-   * Main → the Sizzle composer window: a tool the chat agent invoked
-   * this turn (mirrored into the transcript after main services it).
-   * Type: `CodexToolCallEvent`.
-   */
-  codexToolCall: "events:codex:tool-call",
-  /**
-   * Main → the Sizzle composer window: the agent wants to escalate
-   * outside its sandbox; the ChatPanel renders an inline approval card.
-   * The user's choice returns via `codex:submitApproval`. Type:
-   * `CodexApprovalRequestEvent`.
-   */
-  codexApprovalRequest: "events:codex:approval-request",
-  /**
-   * Main → the Sizzle composer window: a chat turn finished, was
-   * cancelled, or failed. Type: `CodexTurnCompleteEvent`.
-   */
-  codexTurnComplete: "events:codex:turn-complete",
-  /**
    * Main → every BrowserWindow: PwrSnap just changed the OS clipboard's
    * image contents (clipboard:copy, clipboard:copyLayerFragment, or
    * any future write). Fires AFTER the write completes so subscribers
@@ -228,7 +203,56 @@ export const EVENT_CHANNELS = {
    * Payload: empty object `{}` — the channel itself is the signal;
    * subscribers re-query whatever they need.
    */
-  clipboardChanged: "events:clipboard:changed"
+  clipboardChanged: "events:clipboard:changed",
+  /**
+   * Main → every BrowserWindow: a Library chat thread's metadata
+   * changed (created, renamed, archived, anchor moved, status flipped
+   * to streaming/awaiting-approval/idle, or last-message preview
+   * updated). The thread-list rail subscribes so it refreshes without
+   * polling. Payload: `{ thread: LibraryChatThreadView }`.
+   */
+  libraryChatThreadUpdated: "events:libraryChat:thread:updated",
+  /**
+   * Main → renderer: a streaming assistant-message delta for an
+   * in-flight turn. High-frequency — the renderer MUST coalesce these
+   * via requestAnimationFrame rather than setState-per-delta (plan
+   * §F10 T2). Payload: `LibraryChatStreamDeltaEvent`.
+   */
+  libraryChatStreamDelta: "events:libraryChat:stream:delta",
+  /**
+   * Main → renderer: the agent invoked a tool mid-turn. Drives the
+   * live activity chips ("Drew an arrow", "Searched the library") +
+   * the working indicator so the turn doesn't look frozen while the
+   * agent runs tools before producing text. Payload:
+   * `LibraryChatToolCallEvent`.
+   */
+  libraryChatToolCall: "events:libraryChat:tool:call",
+  /**
+   * Main → renderer: a chat message was committed to the thread (user
+   * message persisted before turn/start, or an assistant message
+   * finalized at turn end). The renderer appends / replaces by
+   * `message.id`. Payload: `LibraryChatMessageCommittedEvent`.
+   */
+  libraryChatMessageCommitted: "events:libraryChat:message:committed",
+  /**
+   * Main → renderer: a turn was interrupted (Codex disconnected, user
+   * interrupted, or app is quitting). The renderer marks the in-flight
+   * assistant message `interrupted` and surfaces a Retry affordance
+   * (plan §F11 G15). Payload: `LibraryChatTurnInterruptedEvent`.
+   */
+  libraryChatTurnInterrupted: "events:libraryChat:turn:interrupted",
+  /**
+   * Main → renderer: Codex requested an approval mid-turn. The renderer
+   * shows a modal/card; the user's decision routes back via
+   * `codex:libraryChat:approval`. Payload: `ChatApprovalRequest`.
+   */
+  libraryChatApprovalRequested: "events:libraryChat:approval:requested",
+  /**
+   * Main → renderer: the user just added a sensitive-data pattern in
+   * Settings. The open chat panel shows a one-shot toast nudging
+   * "try 'redact all <name>'" (plan §F11 G3). Payload: `{ name: string }`.
+   */
+  libraryChatPatternLearned: "events:libraryChat:pattern:learned"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -340,24 +364,60 @@ export type PerfMarkPayload =
 // subscribers, schema growth over time).
 // ---------------------------------------------------------------------
 
+import type { DraftCart, SizzleProject, SizzleRenderProgressEvent } from "./protocol";
 import type {
-  CodexApprovalRequestEvent,
-  CodexStreamDeltaEvent,
-  CodexToolCallEvent,
-  CodexTurnCompleteEvent,
-  DraftCart,
-  SizzleProject,
-  SizzleRenderProgressEvent
-} from "./protocol";
+  ChatApprovalRequest,
+  ChatMessage,
+  LibraryChatThreadView
+} from "./chat-schemas";
+
+/** `events:libraryChat:stream:delta` payload. One streamed token-chunk
+ *  for an in-flight assistant message. The renderer coalesces these by
+ *  `messageId` via rAF (plan §F10 T2). */
+export type LibraryChatStreamDeltaEvent = {
+  threadId: string;
+  turnId: string;
+  messageId: string;
+  delta: string;
+};
+
+/** `events:libraryChat:tool:call` payload. One tool invocation in an
+ *  in-flight turn — `summary` is a friendly present-tense label for the
+ *  activity chip; `ok` is false when the dispatch failed. */
+export type LibraryChatToolCallEvent = {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  tool: string;
+  ok: boolean;
+  summary: string;
+};
+
+/** `events:libraryChat:message:committed` payload. A full message
+ *  landed (user message persisted, or assistant message finalized). */
+export type LibraryChatMessageCommittedEvent = {
+  threadId: string;
+  message: ChatMessage;
+};
+
+/** `events:libraryChat:turn:interrupted` payload. */
+export type LibraryChatTurnInterruptedEvent = {
+  threadId: string;
+  turnId: string;
+  reason: "codex_disconnected" | "user_interrupted" | "app_quitting";
+};
 
 export type EventPayloads = {
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
-  [EVENT_CHANNELS.codexStreamDelta]: CodexStreamDeltaEvent;
-  [EVENT_CHANNELS.codexToolCall]: CodexToolCallEvent;
-  [EVENT_CHANNELS.codexApprovalRequest]: CodexApprovalRequestEvent;
-  [EVENT_CHANNELS.codexTurnComplete]: CodexTurnCompleteEvent;
+  [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
+  [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
+  [EVENT_CHANNELS.libraryChatToolCall]: LibraryChatToolCallEvent;
+  [EVENT_CHANNELS.libraryChatMessageCommitted]: LibraryChatMessageCommittedEvent;
+  [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
+  [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;
+  [EVENT_CHANNELS.libraryChatPatternLearned]: { name: string };
 };
 
 /** Channel constants that carry a typed payload entry in

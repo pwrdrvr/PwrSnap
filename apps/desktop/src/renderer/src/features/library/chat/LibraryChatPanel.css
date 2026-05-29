@@ -1,0 +1,87 @@
+/* LibraryChatPanel — thread list + message view + composer. Tokens only. */
+.ps-libchat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.ps-libchat--empty {
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 18px;
+  color: var(--text-secondary);
+  font: 400 13px/1.5 var(--font-sans);
+}
+.ps-libchat-empty-title {
+  font: 600 14px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+.ps-libchat-empty-body { color: var(--text-secondary); font: 400 12px/1.5 var(--font-sans); }
+.ps-libchat-cta,
+.ps-libchat-newchat {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 500 12px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ps-libchat-cta:hover,
+.ps-libchat-newchat:hover { border-color: var(--accent-border); }
+.ps-libchat-threads {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-default);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+/* Only the chip strip scrolls — the New button never gets squeezed. */
+.ps-libchat-thread-strip {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+.ps-libchat-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 500 11px/1 var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ps-libchat-thread.is-active { border-color: var(--accent); color: var(--text-primary); }
+.ps-libchat-thread-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.ps-libchat-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.ps-libchat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ps-libchat-greeting { flex: 1 1 auto; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+
+/* Tool-activity chips + "Thinking…" now render INSIDE the transcript
+   (MessageList: .ml__activity / .ml__chip / .ml__thinking), so they flow
+   with the conversation and persist for the session — not a fixed bar
+   above the composer. */

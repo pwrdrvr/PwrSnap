@@ -24,6 +24,9 @@
 import type { BundleLayerNode } from "@pwrsnap/shared";
 import { BundleLayerNode as BundleLayerNodeSchema } from "@pwrsnap/shared";
 import { getDb } from "./db";
+import { getMainLogger } from "../log";
+
+const log = getMainLogger("pwrsnap:layers-repo");
 
 const MAX_TREE_DEPTH = 32;
 
@@ -50,16 +53,41 @@ type DbLayerRow = {
 };
 
 /**
- * Hydrate a DB row into a BundleLayerNode. The zod schema is the
- * authoritative shape — re-validate on every read so a future
- * migration that re-shapes `data` doesn't escape the boundary
- * un-typed. Same discipline as overlays-repo's rowToRecord.
+ * Hydrate a DB row into a BundleLayerNode, or return `null` when the row
+ * doesn't match the schema THIS build understands.
+ *
+ * Forward-compatibility (cross-branch reality): we ship layer/shape
+ * types incrementally across parallel branches. A capture edited on a
+ * newer build can carry a layer kind — or, more commonly, a vector
+ * `shape.kind` (circle / oval / square / triangle … ) — that an older /
+ * sibling build's discriminated unions don't include. Re-validating on
+ * read is the right discipline, but a STRICT `.parse()` would throw on
+ * the first such row and take the WHOLE capture's render down with it
+ * (blank thumbnail, 500 from the cache protocol handler). Instead we
+ * `safeParse` per row, return null on failure, and let the caller skip
+ * it — the rest of the capture renders, and we log a dense breadcrumb so
+ * the gap is diagnosable rather than silent. Write paths (`insertLayer`)
+ * stay STRICT: we never persist a layer this build can't construct.
  */
-function rowToNode(row: DbLayerRow): BundleLayerNode {
-  const data = JSON.parse(row.data) as Record<string, unknown>;
-  const transform = JSON.parse(row.transform_json) as [
-    number, number, number, number, number, number
-  ];
+function tryRowToNode(row: DbLayerRow, captureId: string): BundleLayerNode | null {
+  let data: Record<string, unknown>;
+  let transform: [number, number, number, number, number, number];
+  try {
+    data = JSON.parse(row.data) as Record<string, unknown>;
+    transform = JSON.parse(row.transform_json) as [
+      number, number, number, number, number, number
+    ];
+  } catch (cause) {
+    log.warn("layers-repo: skipping a layer with unparseable JSON columns", {
+      captureId,
+      layerId: row.id,
+      layerKind: row.kind,
+      schemaVersion: row.schema_version,
+      source: row.source,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return null;
+  }
   // Common props get re-built from the row columns; kind-specific
   // props come from the JSON blob. zod parses the whole thing.
   const common = {
@@ -79,7 +107,37 @@ function rowToNode(row: DbLayerRow): BundleLayerNode {
     superseded_by: row.superseded_by,
     created_at: row.created_at
   };
-  return BundleLayerNodeSchema.parse({ ...common, kind: row.kind, ...data });
+  const result = BundleLayerNodeSchema.safeParse({ ...common, kind: row.kind, ...data });
+  if (result.success) return result.data;
+
+  // Best-effort extraction of the discriminator(s) this build didn't
+  // recognize, so the log names the actual unknown type instead of just
+  // "validation failed".
+  const shape =
+    typeof data.shape === "object" && data.shape !== null
+      ? (data.shape as Record<string, unknown>)
+      : null;
+  const effect =
+    typeof data.effect === "object" && data.effect !== null
+      ? (data.effect as Record<string, unknown>)
+      : null;
+  log.warn(
+    "layers-repo: skipping a layer this build can't parse — likely a newer " +
+      "layer/shape type from another branch; rendering the rest of the capture " +
+      "without it. Add support (or rebuild on the branch that introduced it) to " +
+      "surface this layer.",
+    {
+      captureId,
+      layerId: row.id,
+      layerKind: row.kind,
+      unknownShapeKind: shape && typeof shape.kind === "string" ? shape.kind : undefined,
+      unknownEffectType: effect && typeof effect.type === "string" ? effect.type : undefined,
+      schemaVersion: row.schema_version,
+      source: row.source,
+      zodIssues: result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+    }
+  );
+  return null;
 }
 
 /**
@@ -107,7 +165,13 @@ export function listLayerTree(captureId: string): BundleLayerNode[] {
         ORDER BY parent_id ASC NULLS FIRST, z_index ASC, created_at ASC`
     )
     .all(captureId);
-  const nodes = rows.map(rowToNode);
+  // Skip (don't throw on) rows this build can't parse — see tryRowToNode.
+  // A single unknown layer must not blank the whole capture's render.
+  const nodes: BundleLayerNode[] = [];
+  for (const row of rows) {
+    const node = tryRowToNode(row, captureId);
+    if (node !== null) nodes.push(node);
+  }
   assertTreeDepthBounded(nodes);
   return nodes;
 }
@@ -619,5 +683,14 @@ function loadLayer(id: string): BundleLayerNode {
   if (row === undefined) {
     throw new Error(`layers-repo: layer ${id} not found after insert (impossible)`);
   }
-  return rowToNode(row);
+  // STRICT: this reloads a layer we just wrote + schema-validated, so a
+  // parse failure here is a real bug (not a forward-compat unknown
+  // type) — throw rather than silently drop it.
+  const node = tryRowToNode(row, row.capture_id);
+  if (node === null) {
+    throw new Error(
+      `layers-repo: just-written layer ${id} (kind=${row.kind}) failed to re-parse`
+    );
+  }
+  return node;
 }

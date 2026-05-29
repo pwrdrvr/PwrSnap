@@ -68,7 +68,7 @@ function rectRow(): OverlayRow {
     id: "rect_1",
     capture_id: "cap_1",
     data: {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.1, y: 0.1, w: 0.4, h: 0.3 },
       color: "auto"
     },

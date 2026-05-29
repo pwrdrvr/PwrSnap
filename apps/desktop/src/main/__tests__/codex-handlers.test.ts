@@ -94,12 +94,7 @@ function unregisterCodexHandlers(): void {
     "codex:tag",
     "codex:filename",
     "codex:sensitiveScan",
-    "codex:ask",
-    "codex:newSession",
-    "codex:sendTurn",
-    "codex:submitApproval",
-    "codex:cancelTurn",
-    "codex:closeSession"
+    "codex:ask"
   ] as const) {
     bus.unregister(name);
   }
@@ -214,7 +209,9 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
-            autoAcceptSuggestions: false
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
           }
         })
     });
@@ -276,7 +273,9 @@ describe("Codex handlers", () => {
           ai: {
             enabled: true,
             consentAcceptedAt: "2026-05-12T12:00:00.000Z",
-            autoAcceptSuggestions: false
+            autoAcceptSuggestions: false,
+
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
           }
         })
     });

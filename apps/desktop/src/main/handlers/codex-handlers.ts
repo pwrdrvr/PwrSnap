@@ -19,7 +19,6 @@ import type {
   Settings
 } from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
-import { getSizzleChatManager, type SizzleChatManager } from "../sizzle/chat-manager";
 import {
   prepareEnrichmentImage,
   prepareEnrichmentVideoFrames,
@@ -126,11 +125,9 @@ export function maybeEnqueueCaptureEnrichment(captureId: string): void {
 export function registerCodexHandlers(params?: {
   clientFactory?: CodexClientFactory;
   settingsReader?: SettingsReader;
-  chatManager?: SizzleChatManager;
 }): void {
   const clientFactory = params?.clientFactory ?? ((command) => new CodexAppServerClient({ command }));
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
-  const chatManager = params?.chatManager ?? getSizzleChatManager();
 
   bus.register("codex:enrich", async (req, ctx) => {
     let settings: Settings;
@@ -328,61 +325,6 @@ export function registerCodexHandlers(params?: {
 
   bus.register("codex:ask", async () => {
     return validationError("not_implemented", "codex:ask lands after capture enrichment");
-  });
-
-  // ── Sizzle Composer Chat (PR-3) ─────────────────────────────────────
-  // Multi-turn per-project agent. Streaming + tool calls + approvals are
-  // delivered via the events:codex:* channels; these verbs are the
-  // request/control side. All bookkeeping lives in the chat manager.
-
-  bus.register("codex:newSession", async (req) => {
-    if (typeof req.projectId !== "string" || req.projectId.length === 0) {
-      return validationError("invalid_request", "projectId is required");
-    }
-    return chatManager.newSession(req.projectId);
-  });
-
-  bus.register("codex:sendTurn", async (req) => {
-    if (typeof req.sessionId !== "string" || req.sessionId.length === 0) {
-      return validationError("invalid_request", "sessionId is required");
-    }
-    if (!Array.isArray(req.input) || req.input.length === 0) {
-      return validationError("invalid_request", "input must be a non-empty array");
-    }
-    return chatManager.sendTurn(req.sessionId, req.input);
-  });
-
-  bus.register("codex:submitApproval", async (req) => {
-    if (typeof req.sessionId !== "string" || req.sessionId.length === 0) {
-      return validationError("invalid_request", "sessionId is required");
-    }
-    if (typeof req.turnId !== "string" || typeof req.requestId !== "string") {
-      return validationError("invalid_request", "turnId and requestId are required");
-    }
-    const valid: ReadonlySet<string> = new Set([
-      "approve",
-      "approveForSession",
-      "decline",
-      "cancel"
-    ]);
-    if (!valid.has(req.decision)) {
-      return validationError("invalid_request", `unknown decision: ${req.decision}`);
-    }
-    return chatManager.submitApproval(req.sessionId, req.turnId, req.requestId, req.decision);
-  });
-
-  bus.register("codex:cancelTurn", async (req) => {
-    if (typeof req.sessionId !== "string" || typeof req.turnId !== "string") {
-      return validationError("invalid_request", "sessionId and turnId are required");
-    }
-    return chatManager.cancelTurn(req.sessionId, req.turnId);
-  });
-
-  bus.register("codex:closeSession", async (req) => {
-    if (typeof req.sessionId !== "string" || req.sessionId.length === 0) {
-      return validationError("invalid_request", "sessionId is required");
-    }
-    return chatManager.closeSession(req.sessionId);
   });
 }
 

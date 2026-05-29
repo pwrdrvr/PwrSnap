@@ -94,6 +94,22 @@ const MAX_ATTEMPTS = 5;
 const RECONCILE_PROGRESS_EVERY_N = 10;
 
 /**
+ * Cooperative yield between captures in the eager boot sweep. The
+ * thumbnail decode already runs on a worker thread, but each capture
+ * still does main-thread work — bundle zip/deflate in `packBundleV2`
+ * and the SQLite write transaction. Without a yield, a large library
+ * runs those back-to-back and starves the event loop (and the renderer
+ * IPC / GPU traffic that shares the main thread at startup). A short
+ * sleep after each capture hands the loop back so the UI stays
+ * responsive; it adds ≈(N × this)ms of wall time to a background sweep
+ * the user never waits on directly.
+ */
+const EAGER_SWEEP_INTER_CAPTURE_DELAY_MS = 30;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Cached snapshot for `v1ToV2:status` — late-mounting renderers
  * call the verb once on mount to pick up the current state, then
  * subscribe to `events:v1-to-v2-doctor:progress` for updates.
@@ -663,7 +679,7 @@ export function synthesizeV2DocumentFromV1Overlays(
       parent_id: parentId,
       kind: "vector",
       shape: data,
-      name: layerNameForVector(data.kind),
+      name: layerNameForVector(data),
       visible: true,
       locked: false,
       opacity: 1,
@@ -691,12 +707,20 @@ export function synthesizeV2DocumentFromV1Overlays(
   return document;
 }
 
-function layerNameForVector(kind: Overlay["kind"]): string {
-  switch (kind) {
+function layerNameForVector(overlay: Overlay): string {
+  switch (overlay.kind) {
     case "arrow":
       return "Arrow";
-    case "rect":
-      return "Rectangle";
+    case "shape": {
+      const shapeLabels: Record<string, string> = {
+        rect: "Rectangle",
+        square: "Square",
+        circle: "Circle",
+        oval: "Oval",
+        parallelogram: "Parallelogram"
+      };
+      return shapeLabels[overlay.shape ?? "rect"] ?? "Shape";
+    }
     case "text":
       return "Text";
     case "highlight":
@@ -1067,6 +1091,13 @@ export async function migrateAllV1OnBoot(): Promise<void> {
         done,
         failed
       });
+    }
+
+    // Yield to the event loop between captures so the main-thread zip +
+    // SQLite work per capture never monopolizes startup. Skip after the
+    // final row — no point sleeping before we return.
+    if (done < total) {
+      await sleep(EAGER_SWEEP_INTER_CAPTURE_DELAY_MS);
     }
   }
 

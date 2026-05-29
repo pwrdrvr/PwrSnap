@@ -1,91 +1,320 @@
-// The Library Chat tool allowlist — the single audit surface for which
-// command-bus verbs the AI surface may invoke (agent-native parity:
-// "bus is the floor").
+// The Library Chat tool catalog — the single audit surface for which
+// command-bus verbs the agent may invoke (agent-native parity: "bus is
+// the floor"). Every entry is a `defineTool` whose `dispatch` resolves
+// to a command-bus dispatch and flattens the Result to the agent.
 //
-// ┌─ How this grows ──────────────────────────────────────────────────┐
-// │ Phase 1 fills this array. The pattern is strict and intentional:   │
-// │                                                                    │
-// │   • READ-ONLY tools land first (list / read / current-capture).    │
-// │     They carry `annotations: { readOnlyHint: true }`.              │
-// │   • MUTATING tools (rename / tag / delete / overlay edits) land    │
-// │     after the read path is proven, each with `destructiveHint`     │
-// │     where appropriate so the approval UI can gate them.            │
-// │                                                                    │
-// │ EVERY entry is a `defineTool(...)` whose `dispatch` body makes      │
-// │ exactly ONE `bus.dispatch(<verb>, args, { principal: "mcp" })`     │
-// │ call and flattens the `Result` to `{ ok, data } | { ok, error }`.  │
-// │ One tool ⇒ one bus verb ⇒ one audit point. Do not let a tool fan   │
-// │ out to multiple verbs or do work outside the bus — that breaks the │
-// │ audit story and the parity guarantee.                              │
-// │                                                                    │
-// │ This array IS the catalog. `buildLibraryToolCatalog()` maps it to  │
-// │ `DynamicToolSpec[]` for `thread/start`; `dispatchLibraryToolCall`  │
-// │ routes incoming `DynamicToolCall`s back through these same         │
-// │ entries. Adding a tool here is the whole change — registration     │
-// │ and dispatch are derived.                                          │
-// └────────────────────────────────────────────────────────────────────┘
+// Design note (plan §F8 / agent-native §F6): the layer model
+// (`BundleLayerNode`) carries machine-managed fields — id, created_at,
+// transform, z_index, source — that an LLM shouldn't hand-author. So
+// the editing tools take the MEANINGFUL bits (the overlay shape, or a
+// redaction rect) and the dispatch fills the boilerplate, exactly
+// mirroring how the editor's `overlayToLayer` builds a node. This is a
+// thin shim over the layer model, NOT a workflow wrapper that hides it.
+//
+// Coordinate spaces (load-bearing — wrong space ⇒ annotations land in
+// the wrong place):
+//   • VectorLayer.shape (arrow / rect / text / highlight) uses the
+//     Overlay union's NORMALIZED [0,1] coords. Stored verbatim,
+//     identical to a user-drawn overlay.
+//   • EffectLayer.clip_rect (redaction) is CANVAS PIXELS. `add_redaction`
+//     takes a normalized rect and multiplies by the capture's canvas
+//     dimensions, mirroring overlayToLayer's blur branch.
+//
+// `render_composite` (vision grounding) is NOT yet available — the bus
+// verb doesn't exist (fast-follow). Until then the agent grounds edits
+// on list_layers + capture_metadata (OCR + dims) and asks when a target
+// is ambiguous.
 
-import type { ToolSpec } from "./define-tool";
+import { nanoid } from "nanoid";
+import { z } from "zod";
+import {
+  BundleLayerNode,
+  CanvasRect,
+  Overlay,
+  type CaptureRecord,
+  type CommandName,
+  type Req
+} from "@pwrsnap/shared";
+import { bus } from "../command-bus";
+import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
 
-// The two commented-out entries below are a TEMPLATE for Phase 1. They are
-// commented out so the empty array compiles cleanly today; uncomment + adapt
-// (and drop them into `LIBRARY_TOOL_ALLOWLIST`) when wiring real tools.
-//
-// import { z } from "zod";
-// import { bus } from "../command-bus";
-// import { defineTool } from "./define-tool";
-//
-// /** READ-ONLY example: list captures in the library. */
-// const libraryListTool = defineTool({
-//   namespace: "pwrsnap_library",
-//   name: "library_list",
-//   description:
-//     "List captures in the user's library, newest first. Returns capture " +
-//     "rows with id, title, app, and timestamps. Use to find a capture by " +
-//     "context before acting on it.",
-//   argsSchema: z.object({
-//     limit: z.number().int().positive().max(200).optional(),
-//     appBundleId: z.string().optional()
-//   }),
-//   annotations: { readOnlyHint: true, idempotentHint: true },
-//   dispatch: async (args) => {
-//     const result = await bus.dispatch(
-//       "library:list",
-//       { limit: args.limit, appBundleId: args.appBundleId },
-//       { principal: "mcp" }
-//     );
-//     return result.ok
-//       ? { ok: true, data: result.value }
-//       : { ok: false, error: result.error.message };
-//   }
-// });
-//
-// /** READ-ONLY example: fetch the capture currently open in the editor. */
-// const currentCaptureTool = defineTool({
-//   namespace: "pwrsnap_library",
-//   name: "current_capture",
-//   description:
-//     "Get the capture currently open in the Library editor, if any. " +
-//     "Returns the full capture record or null when nothing is open.",
-//   argsSchema: z.object({}),
-//   annotations: { readOnlyHint: true, idempotentHint: true },
-//   dispatch: async (_args, _ctx) => {
-//     const result = await bus.dispatch(
-//       "library:byId",
-//       { id: /* resolved current capture id */ "" },
-//       { principal: "mcp" }
-//     );
-//     return result.ok
-//       ? { ok: true, data: result.value }
-//       : { ok: false, error: result.error.message };
-//   }
-// });
+/** Run one bus verb and map the Result to a ToolDispatchResult. */
+async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
+  const result = await bus.dispatch(name, req, { principal: "mcp" });
+  if (result.ok) return { ok: true, data: result.value };
+  return {
+    ok: false,
+    error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+  };
+}
+
+/** Fill the machine-managed CommonLayerProps for an AI-placed layer.
+ *  Mirrors `overlayToLayer` but stamps `source: "codex"`. `applied_at =
+ *  now` so the edit is immediately visible (Phase 1 applies directly;
+ *  the accept/reject-badge gate is a Phase 2 refinement). */
+function commonLayerProps(name: string): {
+  id: string;
+  parent_id: null;
+  name: string;
+  visible: true;
+  locked: false;
+  opacity: 1;
+  blend_mode: "normal";
+  transform: [number, number, number, number, number, number];
+  z_index: 0;
+  source: "codex";
+  ai_run_id: null;
+  applied_at: string;
+  rejected_at: null;
+  superseded_by: null;
+  created_at: string;
+} {
+  const now = new Date().toISOString();
+  return {
+    id: nanoid(16),
+    parent_id: null,
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: 0,
+    source: "codex",
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+}
+
+/** Compact capture projection — keeps tool results small + token-cheap. */
+function summarizeCapture(rec: CaptureRecord): Record<string, unknown> {
+  return {
+    id: rec.id,
+    kind: rec.kind,
+    captured_at: rec.captured_at,
+    width_px: rec.width_px,
+    height_px: rec.height_px,
+    source_app: rec.source_app_name,
+    bundle_format_version: rec.bundle_format_version
+  };
+}
+
+// ---- read tools --------------------------------------------------------
+
+const libraryList = defineTool({
+  namespace: "pwrsnap_library",
+  name: "library_list",
+  description:
+    "List recent captures, newest first. Returns compact summaries (id, kind, dimensions, source app, capture time). Use library_search to find by content.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({ limit: z.number().int().min(1).max(200).optional() }),
+  dispatch: async (args) => {
+    const result = await bus.dispatch(
+      "library:list",
+      { ...(args.limit !== undefined ? { limit: args.limit } : {}) },
+      { principal: "mcp" }
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    return { ok: true, data: { captures: result.value.rows.map(summarizeCapture) } };
+  }
+});
+
+const librarySearch = defineTool({
+  namespace: "pwrsnap_library",
+  name: "library_search",
+  description:
+    "Full-text search captures by title, description, OCR text, and source-app name. Returns the matching rows.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({
+    query: z.string().min(1),
+    limit: z.number().int().min(1).max(50).optional()
+  }),
+  dispatch: async (args) => {
+    const result = await bus.dispatch("library:search", { query: args.query }, { principal: "mcp" });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    const limit = args.limit ?? 50;
+    return { ok: true, data: { matches: result.value.rows.slice(0, limit) } };
+  }
+});
+
+const captureMetadata = defineTool({
+  namespace: "pwrsnap_library",
+  name: "capture_metadata",
+  description:
+    "Get full metadata for one capture: dimensions, kind, source app, bundle format. Call this before editing so you know the canvas size for coordinate math.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({ capture_id: z.string() }),
+  dispatch: async (args) => {
+    const result = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    if (result.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
+    return { ok: true, data: result.value };
+  }
+});
+
+const listLayers = defineTool({
+  namespace: "pwrsnap_library",
+  name: "list_layers",
+  description:
+    "List the annotation/effect layers on a capture (the edit tree). Refuses v1-format captures — open them in the editor first to upgrade.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({ capture_id: z.string() }),
+  dispatch: async (args) => runVerb("layers:list", { captureId: args.capture_id })
+});
+
+// ---- edit tools --------------------------------------------------------
+
+const addAnnotation = defineTool({
+  namespace: "pwrsnap_library",
+  name: "add_annotation",
+  description:
+    "Add an annotation to a capture: an arrow, rectangle, text label, or highlight. The `shape` uses NORMALIZED coordinates in [0,1] (0,0 = top-left, 1,1 = bottom-right). Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer including its id.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({ capture_id: z.string(), shape: Overlay }),
+  dispatch: async (args) => {
+    const node = {
+      ...commonLayerProps(`AI ${args.shape.kind}`),
+      kind: "vector" as const,
+      shape: args.shape
+    };
+    const parsed = BundleLayerNode.safeParse(node);
+    if (!parsed.success) {
+      return { ok: false, error: `built an invalid layer: ${parsed.error.message}` };
+    }
+    return runVerb("layers:upsert", {
+      captureId: args.capture_id,
+      layer: parsed.data,
+      bumpZIndexToMax: true
+    });
+  }
+});
+
+const addRedaction = defineTool({
+  namespace: "pwrsnap_library",
+  name: "add_redaction",
+  description:
+    "Redact a rectangular region. `rect` is NORMALIZED [0,1] {x,y,w,h}. Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the rect slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: z.object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0).max(1),
+      h: z.number().min(0).max(1)
+    }),
+    style: z.enum(["redact", "pixelate", "gaussian"]).optional(),
+    radius_px: z.number().positive().max(200).optional()
+  }),
+  dispatch: async (args) => {
+    const meta = await bus.dispatch("library:byId", { id: args.capture_id }, { principal: "mcp" });
+    if (!meta.ok) {
+      return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
+    }
+    if (meta.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
+    const clip = CanvasRect.safeParse({
+      x: args.rect.x * meta.value.width_px,
+      y: args.rect.y * meta.value.height_px,
+      w: args.rect.w * meta.value.width_px,
+      h: args.rect.h * meta.value.height_px
+    });
+    if (!clip.success) {
+      return { ok: false, error: `invalid redaction rect: ${clip.error.message}` };
+    }
+    const style = args.style ?? "redact";
+    const node = {
+      ...commonLayerProps("AI redaction"),
+      kind: "effect" as const,
+      effect: {
+        type: "blur" as const,
+        radius_px: args.radius_px ?? (style === "redact" ? 1 : 16),
+        style
+      },
+      clip_rect: clip.data
+    };
+    const parsed = BundleLayerNode.safeParse(node);
+    if (!parsed.success) {
+      return { ok: false, error: `built an invalid redaction layer: ${parsed.error.message}` };
+    }
+    return runVerb("layers:upsert", {
+      captureId: args.capture_id,
+      layer: parsed.data,
+      bumpZIndexToMax: true
+    });
+  }
+});
+
+const deleteLayer = defineTool({
+  namespace: "pwrsnap_library",
+  name: "delete_layer",
+  description:
+    "Remove a layer from a capture by its id (from list_layers, or the layer returned by add_*). Reversible by the user with ⌘Z.",
+  annotations: { destructiveHint: true },
+  argsSchema: z.object({ layer_id: z.string() }),
+  dispatch: async (args) => runVerb("layers:delete", { id: args.layer_id })
+});
+
+const reorderLayer = defineTool({
+  namespace: "pwrsnap_library",
+  name: "reorder_layer",
+  description:
+    "Change a layer's z-order. Higher z_index renders on top. Use list_layers to see current ordering.",
+  annotations: { idempotentHint: true },
+  argsSchema: z.object({ layer_id: z.string(), z_index: z.number().int() }),
+  dispatch: async (args) => runVerb("layers:reorder", { id: args.layer_id, zIndex: args.z_index })
+});
+
+const addTag = defineTool({
+  namespace: "pwrsnap_library",
+  name: "add_tag",
+  description: "Add a content tag to a capture (e.g. 'invoice', 'bug-repro').",
+  annotations: { idempotentHint: true },
+  argsSchema: z.object({ capture_id: z.string(), label: z.string().min(1).max(64) }),
+  dispatch: async (args) => runVerb("library:addTag", { captureId: args.capture_id, label: args.label })
+});
+
+const removeTag = defineTool({
+  namespace: "pwrsnap_library",
+  name: "remove_tag",
+  description: "Remove a content tag from a capture by label. Idempotent.",
+  annotations: { idempotentHint: true },
+  argsSchema: z.object({ capture_id: z.string(), label: z.string().min(1).max(64) }),
+  dispatch: async (args) =>
+    runVerb("library:removeTag", { captureId: args.capture_id, label: args.label })
+});
 
 /**
- * The live tool catalog. EMPTY until Phase 1 — see the module header + the
- * commented template above for the entry shape. Entries are stored as
- * `ToolSpec<unknown>` because the array is heterogeneous; `defineTool`
- * preserves each entry's own `TArgs` inference at its definition site, so
- * dispatch bodies stay fully typed despite the erased element type here.
+ * The live catalog. Read tools first, then edits. Phase 1 ships these
+ * 10; future phases add `render_composite` (vision), cross-capture
+ * batch, and capture/recording verbs.
  */
-export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [];
+export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
+  libraryList,
+  librarySearch,
+  captureMetadata,
+  listLayers,
+  addAnnotation,
+  addRedaction,
+  deleteLayer,
+  reorderLayer,
+  addTag,
+  removeTag
+] as ToolSpec<unknown>[];

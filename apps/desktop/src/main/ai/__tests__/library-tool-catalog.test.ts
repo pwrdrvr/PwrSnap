@@ -39,9 +39,43 @@ function makeFixtureTool(
 }
 
 describe("library tool allowlist", () => {
-  it("ships empty in Phase 0 so the catalog starts empty", () => {
-    expect(LIBRARY_TOOL_ALLOWLIST).toEqual([]);
-    expect(buildLibraryToolCatalog()).toEqual([]);
+  it("ships the Phase 1 read + edit + redaction tools", () => {
+    const names = LIBRARY_TOOL_ALLOWLIST.map((t) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "library_list",
+        "library_search",
+        "capture_metadata",
+        "list_layers",
+        "add_annotation",
+        "add_redaction",
+        "delete_layer",
+        "reorder_layer",
+        "add_tag",
+        "remove_tag"
+      ])
+    );
+  });
+
+  it("every entry builds a valid DynamicToolSpec (exercises z.toJSONSchema on the real arg schemas incl. the Overlay union)", () => {
+    const catalog = buildLibraryToolCatalog();
+    expect(catalog).toHaveLength(LIBRARY_TOOL_ALLOWLIST.length);
+    for (const spec of catalog) {
+      expect(spec.namespace).toBe("pwrsnap_library");
+      expect(typeof spec.name).toBe("string");
+      expect(spec.description.length).toBeGreaterThan(0);
+      // inputSchema must be a non-null JSON-Schema object — this is the
+      // line that throws if z.toJSONSchema can't serialize a tool's
+      // argsSchema (e.g. add_annotation's Overlay discriminated union).
+      expect(spec.inputSchema).toBeTruthy();
+      expect(typeof spec.inputSchema).toBe("object");
+    }
+  });
+
+  it("namespaces every tool under pwrsnap_library", () => {
+    for (const tool of LIBRARY_TOOL_ALLOWLIST) {
+      expect(tool.namespace).toBe("pwrsnap_library");
+    }
   });
 });
 

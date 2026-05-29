@@ -81,6 +81,8 @@ function installFakeApi(initial: CaptureEnrichment): {
     if (name === "library:removeTag") return { ok: true, value: accepted };
     if (name === "clipboard:copyText") return { ok: true, value: undefined };
     if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+    if (name === "codex:libraryChat:list") return { ok: true, value: { threads: [] } };
+    if (name === "codex:libraryChat:history") return { ok: true, value: { messages: [] } };
     return { ok: true, value: undefined };
   });
   (globalThis as unknown as { window: Window }).window.pwrsnapApi = {
@@ -1022,7 +1024,7 @@ describe("DetailRail", () => {
     expect(onPinChange).toHaveBeenLastCalledWith(false);
   });
 
-  test("Chat tab opens the ChatPanel surface", async () => {
+  test("Chat tab opens the Library chat panel surface", async () => {
     const { el } = await renderDetailRail(enrichment());
     const chatTab = el.querySelector<HTMLButtonElement>(
       '[data-testid="psl-right-tab-chat"]'
@@ -1032,7 +1034,7 @@ describe("DetailRail", () => {
       chatTab?.click();
       await Promise.resolve();
     });
-    expect(el.querySelector('[data-testid="chat-panel"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="library-chat-panel"]')).not.toBeNull();
   });
 
   test("ARIA: active tab carries aria-selected + aria-controls pointing at the tabpanel id", async () => {

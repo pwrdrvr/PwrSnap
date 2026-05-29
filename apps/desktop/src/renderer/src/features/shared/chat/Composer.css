@@ -1,0 +1,173 @@
+/* Composer — the message-input row at the bottom of the Library chat
+   panel. Token-based (tokens.css). Class prefix `ps-composer`.
+
+   Layout: an outer dropzone column holding an optional attachment-chip
+   row above the input row. The input row is a flex pair — auto-growing
+   textarea on the left, send button pinned right. The textarea's
+   height is driven by JS (auto-grow capped at ~40vh); CSS only sets the
+   visual treatment + the min height so an empty composer reads as a
+   single line. */
+
+.ps-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Attachment chip row — wraps above the input. */
+.ps-composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ps-composer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 200px;
+  padding: 2px 2px 2px 4px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: 500 var(--fs-meta) / var(--lh-snug) var(--font-sans);
+}
+
+.ps-composer__chip-thumb {
+  width: 20px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  flex: none;
+}
+
+.ps-composer__chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-composer__chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+  flex: none;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.ps-composer__chip-remove:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
+.ps-composer__chip-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Input row — auto-growing textarea + send button. */
+.ps-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.ps-composer__row:focus-within {
+  border-color: var(--accent-border);
+}
+
+.ps-composer__input {
+  flex: 1;
+  min-width: 0;
+  /* Auto-grow ceiling is enforced in JS (40vh); height is set inline.
+     min-height keeps an empty composer at a single comfortable line. */
+  min-height: calc(var(--fs-body-lg) * var(--lh-normal));
+  max-height: 40vh;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: 400 var(--fs-body-lg) / var(--lh-normal) var(--font-sans);
+  padding: 0;
+  overflow-y: hidden;
+}
+.ps-composer__input::placeholder {
+  color: var(--text-muted);
+}
+.ps-composer__input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Send button — paper-plane on the right. */
+.ps-composer__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  margin: 0;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--button-text-on-accent);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.ps-composer__send:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.ps-composer__send:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ps-composer__send:disabled {
+  background: var(--bg-panel-elevated);
+  border-color: var(--border-default);
+  color: var(--text-subtle);
+  cursor: not-allowed;
+}
+.ps-composer__send svg {
+  display: block;
+}
+
+/* Sending spinner. */
+.ps-composer__spinner {
+  animation: ps-composer-spin 0.7s linear infinite;
+}
+@keyframes ps-composer-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ps-composer__spinner {
+    animation: none;
+  }
+}

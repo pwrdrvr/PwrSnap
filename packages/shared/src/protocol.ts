@@ -782,6 +782,14 @@ export type Settings = {
      *  default; the float-over surfaces an inline checkbox so users
      *  can flip the policy without leaving the capture flow. */
     autoAcceptSuggestions: boolean;
+    /** Per-user Library-chat preferences (User Guidance text,
+     *  sensitive-data patterns, default redaction style, first-launch
+     *  banner state). Sits inside `ai` so the existing AI-consent +
+     *  kill-switch fields stay close to the chat knobs the user
+     *  interacts with on the same Settings page. Added per
+     *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
+     *  Phase 0 + deepening §F7 #3. */
+    chat: ChatSettings;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -1078,26 +1086,96 @@ export type LibrarySettings = {
   detailRail: LibrarySidebarSettings;
 };
 
-// ---- Chat message content (Phase 7 prep, exported only) ----------------
+// ---- Chat substrate types (Library Chat — Phase 0) ---------------------
 //
-// Defined here so Phase 7's `chat-schemas.ts` zod definitions and the
-// renderer's chat panel can share the same discriminated-union shape.
-// Phase 1 does NOT reference these — kept so the protocol surface stays
-// a single source of truth as later phases land.
+// The RUNTIME SOURCE OF TRUTH for these is `chat-schemas.ts` (zod), and
+// the `@pwrsnap/shared` barrel re-exports that module wholesale. We only
+// IMPORT the few types referenced by the Commands map below — re-
+// exporting them from here too would collide with the barrel's
+// `export * from "./chat-schemas"`. Mirrors how `ArrowEndStyle` is owned
+// by overlay-schemas.ts. See plan §F2 #9.
+import type {
+  ChatApprovalDecision,
+  ChatMessage,
+  LibraryChatThreadView
+} from "./chat-schemas";
 
-export type ChatMessageContent =
-  | { kind: "text"; text: string }
-  | { kind: "tool_call"; toolName: string; argsJson: string; callId: string }
-  | {
-      kind: "tool_result";
-      callId: string;
-      resultJson: string;
-      /** True for tool failures the AI saw and (typically) self-corrected
-       *  from. Stored so the chat panel can render a subtle "AI's last
-       *  call was rejected — retrying" indicator without inferring it
-       *  from a parse of resultJson. */
-      isError?: boolean;
-    };
+// ---- Chat redaction defaults + user-provided patterns ------------------
+//
+// Two preferences the chat agent reads on every turn:
+//
+//   • `defaultRedactionStyle` — when the agent applies an opaque
+//     redaction (over a credit-card field, an API key, etc.), should
+//     it use a blackout rectangle (irreversible) or a blur (reversible
+//     via deconvolution — see Phase 0 deepening §F12 + aCropalypse
+//     CVE-2023-21036). Default `"blackout"` because the most-common
+//     user ask is "hide my secrets" and blackout is the safe answer.
+//
+//   • `sensitiveDataPatterns` — named regexes the user has taught the
+//     agent. Each is `{name, pattern}`. Names like "SSN", "InternalTicketId".
+//     The pattern is a regex string ("\\d{3}-\\d{2}-\\d{4}"). NEVER a
+//     real secret — only the SHAPE. The Settings UI warns about this
+//     and runs a secret-shape sniff on save (Phase 0 deepening §F4 H3).
+
+/** Redaction strategy. `"blackout"` paints an opaque rectangle — not
+ *  reversible. `"blur"` paints a gaussian blur — reversible by
+ *  deconvolution (see aCropalypse), so DO NOT use for secrets the
+ *  user wants permanently hidden. */
+export type RedactionStyle = "blackout" | "blur";
+
+export const REDACTION_STYLES = ["blackout", "blur"] as const satisfies readonly RedactionStyle[];
+
+export function isRedactionStyle(value: unknown): value is RedactionStyle {
+  return typeof value === "string" && (REDACTION_STYLES as readonly string[]).includes(value);
+}
+
+/** One row in `Settings.ai.chat.sensitiveDataPatterns`. The `name` is
+ *  the user-facing handle AND the unique identifier the chat agent
+ *  references (e.g., `redact_text_pattern { pattern_name: "SSN" }`).
+ *  The `pattern` is the regex string — compiled at use site, not at
+ *  store time (cheap + safe; recompile on every match). */
+export type SensitiveDataPattern = {
+  name: string;
+  pattern: string;
+};
+
+/** Per-user chat preferences. Sits under `Settings.ai.chat` to leave
+ *  room for future chat-only knobs (confirm-batch threshold, tone,
+ *  per-turn op cap) without flattening more fields onto `ai.*`. Phase
+ *  0 deepening §F7 #3. */
+export type ChatSettings = {
+  /** Free-form per-user system-prompt addition. Empty string = no
+   *  guidance set. Cap 8KB enforced at the bus validator. Injected
+   *  verbatim into the chat system prompt's L2 layer on every turn.
+   *  Never leaves the device until the user sends a chat turn (then
+   *  it travels to Codex as part of the system prompt). */
+  userGuidance: string;
+  /** Named regex patterns. Cap 32 enforced at the validator; each
+   *  `name` ≤ 64 chars, each `pattern` ≤ 512 chars. Uniqueness on
+   *  `name` enforced. Pattern must compile as a JS RegExp at save
+   *  time (RE2 migration tracked separately — see plan §F4 H1). */
+  sensitiveDataPatterns: SensitiveDataPattern[];
+  /** Default redaction style when the agent has to pick. Per-pattern
+   *  override is intentionally NOT a knob (Phase 0 deepening §F8 cut
+   *  the per-row `redactionStyle` field as YAGNI; one global default
+   *  + agent picks per call is sufficient). */
+  defaultRedactionStyle: RedactionStyle;
+  /** True once the user has dismissed the Settings → AI → Chat
+   *  first-launch disclosure banner (which warns about iCloud +
+   *  Time Machine + plaintext exposure at ~/Documents/PwrSnap/Chats/).
+   *  Persisted so the banner doesn't re-appear after a relaunch. */
+  firstLaunchBannerDismissed: boolean;
+};
+
+/** Default `ai.chat` state. Mirrored by `defaultSettings()` in the
+ *  desktop service; re-exported here so the inline pre-React bootstrap
+ *  and the renderer hook share one source of truth. */
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
+  userGuidance: "",
+  sensitiveDataPatterns: [],
+  defaultRedactionStyle: "blackout",
+  firstLaunchBannerDismissed: false
+};
 
 /** Theme preference. `"system"` resolves to dark/light via the
  *  renderer's `matchMedia("(prefers-color-scheme: light)")`. */
@@ -1126,7 +1204,19 @@ export type UpdateChannel = "latest" | "prerelease";
  *  field without echoing the rest. */
 export type SettingsPatch = {
   codex?: Partial<Settings["codex"]>;
-  ai?: Partial<Settings["ai"]>;
+  /** `ai` is deeper than the other top-level branches because Library
+   *  chat preferences live under `ai.chat`. Each leaf within `chat` is
+   *  independently optional so a single textarea blur can ship just
+   *  `{ ai: { chat: { userGuidance: "..." } } }` without re-echoing
+   *  patterns, redaction style, or the banner-dismiss flag. Empty
+   *  string is the explicit "cleared" sentinel per the substrate
+   *  hygiene rule `undefined ≠ null ≠ ""`. */
+  ai?: {
+    enabled?: Settings["ai"]["enabled"];
+    consentAcceptedAt?: Settings["ai"]["consentAcceptedAt"];
+    autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
+    chat?: Partial<ChatSettings>;
+  };
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
   general?: Partial<Settings["general"]>;
@@ -1501,6 +1591,20 @@ export type Commands = {
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
 
+  /** Render the current composite (source + applied layers) to a
+   *  downscaled PNG and return it base64-encoded. Powers the Library
+   *  chat agent's `render_composite` vision tool — the agent grounds
+   *  redaction/annotation placement on the actual pixels. Goes through
+   *  the bake render coordinator (content-addressed cache; does NOT
+   *  bump BAKE_PIPELINE_VERSION). `maxEdgePx` clamps the longest edge
+   *  (default 720, hard max 1440) to bound the bytes sent to the model
+   *  + the LLM image-token cost. PNG (not WebP) for vision-model
+   *  compatibility. Works for image captures only. */
+  "render:composite": {
+    req: { captureId: string; maxEdgePx?: number };
+    res: { base64: string; mimeType: "image/png"; widthPx: number; heightPx: number };
+  };
+
   // ---- canvas (v2 captures only) ----
   /** Update the canvas dimensions of a v2 capture. Writes the new
    *  `width_px`/`height_px` to the `captures` row, bumps `edits_version`
@@ -1871,6 +1975,79 @@ export type Commands = {
   "codex:sensitiveScan": { req: { captureId: string }; res: { runId: string } };
   "codex:cancel": { req: { runId: string }; res: void };
   "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
+
+  // ---- Library Chat (Phase 0) — long-lived, tool-equipped chat threads ----
+  //
+  // The user-facing agent that lives in the Library sidebar. Threads are
+  // persistent (Codex rollout + our pwrsnap-thread.json sidecar) and
+  // survive relaunch. See docs/plans/2026-05-28-001-feat-library-chat-
+  // editor-interface-plan.md. Streaming + approval flows ride the
+  // `events:libraryChat:*` channels (see ipc.ts), not these verbs.
+
+  /** List all (non-archived by default) chat threads for the thread-list
+   *  rail. `includeArchived` surfaces archived threads for a "show
+   *  archived" toggle. */
+  /** List chat threads. `anchorCaptureId` scopes the list to one
+   *  capture's threads (chats are glued to assets — the rail shows only
+   *  the focused capture's threads). Omit to list every thread. */
+  "codex:libraryChat:list": {
+    req: { includeArchived?: boolean; anchorCaptureId?: string | null };
+    res: { threads: LibraryChatThreadView[] };
+  };
+  /** Create a new thread. `name` optional — main mints a default
+   *  ("Chat <date>") when omitted. `anchorCaptureId` glues the thread
+   *  to the capture it was started from. Returns the view for
+   *  optimistic rendering. */
+  "codex:libraryChat:create": {
+    req: { name?: string; anchorCaptureId?: string | null };
+    res: LibraryChatThreadView;
+  };
+  /** Send a user message + (optionally) attached image paths. Returns
+   *  the turnId; streaming deltas + the committed assistant message
+   *  arrive via `events:libraryChat:*`. `anchorCaptureId` lets the
+   *  renderer pin the thread to whatever the user is currently viewing
+   *  so the per-turn context is accurate. */
+  "codex:libraryChat:send": {
+    req: {
+      threadId: string;
+      text: string;
+      imageAttachmentPaths?: string[];
+      anchorCaptureId?: string | null;
+    };
+    res: { turnId: string };
+  };
+  /** Full message history for a thread (read on open / re-subscribe). */
+  "codex:libraryChat:history": {
+    req: { threadId: string };
+    res: { messages: ChatMessage[] };
+  };
+  /** Rename a thread. */
+  "codex:libraryChat:rename": {
+    req: { threadId: string; name: string };
+    res: LibraryChatThreadView;
+  };
+  /** Archive / unarchive a thread (soft delete — never destroys the
+   *  Codex rollout). */
+  "codex:libraryChat:archive": {
+    req: { threadId: string; archived: boolean };
+    res: LibraryChatThreadView;
+  };
+  /** Interrupt an in-flight turn (turn/interrupt). No-op if idle. */
+  "codex:libraryChat:interrupt": {
+    req: { threadId: string };
+    res: void;
+  };
+  /** Resolve a pending approval. Carries (threadId, turnId, approvalId)
+   *  so a late resolution can't land in the wrong turn (plan §F10 T3). */
+  "codex:libraryChat:approval": {
+    req: {
+      threadId: string;
+      turnId: string;
+      approvalId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
 
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };

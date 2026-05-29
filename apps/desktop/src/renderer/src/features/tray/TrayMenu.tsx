@@ -6,8 +6,7 @@ import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import { usePresetRenderMetrics } from "../shared/usePresetRenderMetrics";
 import { Kbd } from "../shared/Primitives";
 import { useHotkeys } from "../shared/useHotkeys";
-import { useVideoExport } from "../shared/useVideoExport";
-import { VideoExportButtons } from "../shared/VideoExportButtons";
+import { VideoExportPresetsPanel } from "../shared/VideoExportPresetsPanel";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useLibrary } from "../../lib/useLibrary";
@@ -228,24 +227,6 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
     lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.id : null,
     lastSnap !== undefined && !lastSnapIsVideo ? lastSnap.edits_version : null
   );
-  // Shared GIF / MP4 export machinery — owns the state machine and
-  // the `video:export` dispatch. Input goes null when the last snap
-  // isn't a video (or when there's no last snap at all) so the hook
-  // stays idle without firing IPC.
-  const videoInput =
-    lastSnap !== undefined &&
-    lastSnap.kind === "video" &&
-    lastSnap.video !== null &&
-    lastSnap.video !== undefined
-      ? {
-          captureId: lastSnap.id,
-          hasSystemAudio: lastSnap.video.hasSystemAudio,
-          hasMicrophoneAudio: lastSnap.video.hasMicrophoneAudio
-        }
-      : null;
-  const { exportState: videoExportState, triggerExport: triggerVideoExport } =
-    useVideoExport(videoInput);
-
   // All-Screens mode: "split" (one capture per display) is the default
   // since most multi-monitor screenshots want separate files. The
   // toggle sits inline on the All Screens tile (replaces the hotkey
@@ -585,18 +566,22 @@ export function TrayMenu({ activeMode = "auto" }: { activeMode?: ModeKind }) {
               </button>
             </div>
             {lastSnapIsVideo && lastSnap.video !== null && lastSnap.video !== undefined ? (
-              /* Video export row — sits where Low / Med / High lives
-                 for images. Shared GIF + MP4 button pair (see
-                 VideoExportButtons) so the tray, float-over, and
-                 library DetailRail render identical chrome. The grid
-                 wrapper is tray-local because positioning lives here. */
-              <div className="ps-tray__last-copy" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
-                <VideoExportButtons
-                  exportState={videoExportState}
-                  hasSystemAudio={lastSnap.video.hasSystemAudio}
-                  hasMicrophoneAudio={lastSnap.video.hasMicrophoneAudio}
-                  onExport={triggerVideoExport}
-                />
+              /* Video export grid — same 6-card chrome (GIF L/M/H +
+                 MP4 L/M/H) the library DetailRail renders. Each card
+                 supports click-to-copy + FILE-chip copy-path + FILE-
+                 chip drag-out via `clipboard:copyVideoFile` /
+                 `copyVideoPath` / `startVideoDrag`. The panel owns
+                 its own hooks; we just hand it a captureId.
+
+                 Wrapper is a plain block (NOT `.ps-tray__last-copy`
+                 which imposes a 3-col grid) — the grid component
+                 renders two `.psl__copy-row-group` children that
+                 each impose their own 3-col grid via
+                 `.psl__copy-row`. The CSS module ships from
+                 library.css and is loaded by app.css for every
+                 stage. */
+              <div className="ps-tray__last-export">
+                <VideoExportPresetsPanel captureId={lastSnap.id} />
               </div>
             ) : (
               <div className="ps-tray__last-copy">

@@ -11,6 +11,7 @@ import {
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { SizzleChatPanel } from "./SizzleChatPanel";
 import "./sizzle.css";
 
 type RenderStatus = {
@@ -70,6 +71,9 @@ export function SizzleApp(): ReactElement {
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
+  // Chat lives in a right sidebar alongside the editor (not a full-pane
+  // swap) so the scene list stays visible + updates live as the agent edits.
+  const [showChat, setShowChat] = useState(false);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -336,6 +340,20 @@ export function SizzleApp(): ReactElement {
             </>
           ) : null}
         </span>
+        {active !== null ? (
+          <>
+            <span className="szl__spacer" />
+            <button
+              type="button"
+              className={"szl__chat-toggle" + (showChat ? " is-active" : "")}
+              aria-pressed={showChat}
+              onClick={() => setShowChat((v) => !v)}
+              title={showChat ? "Hide agent chat" : "Show agent chat"}
+            >
+              {showChat ? "Hide chat" : "Chat with agent"}
+            </button>
+          </>
+        ) : null}
       </header>
       <aside className="szl__rail">
         <button className="szl__new" onClick={onCreate} type="button">
@@ -372,25 +390,32 @@ export function SizzleApp(): ReactElement {
         {active === null ? (
           <EmptyState />
         ) : (
-          <Editor
-            project={active}
-            captures={captures}
-            autoFocusTitle={focusTitleForId === active.id}
-            onTitleFocused={() => setFocusTitleForId(null)}
-            onRename={(name) => onUpdate(active.id, { name })}
-            onVoice={(voice) => onUpdate(active.id, { voice })}
-            onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
-            onResolution={(resolution) =>
-              onUpdate(active.id, { resolution })
-            }
-            onScenes={(scenes) => onUpdate(active.id, { scenes })}
-            onFlushPending={() => flushPatch(active.id)}
-            onPickCapture={() => setPicker(true)}
-            onRender={onRender}
-            onReveal={onReveal}
-            onDelete={() => onDelete(active.id)}
-            status={status}
-          />
+          <div className="szl__workspace">
+            <Editor
+              project={active}
+              captures={captures}
+              autoFocusTitle={focusTitleForId === active.id}
+              onTitleFocused={() => setFocusTitleForId(null)}
+              onRename={(name) => onUpdate(active.id, { name })}
+              onVoice={(voice) => onUpdate(active.id, { voice })}
+              onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
+              onResolution={(resolution) =>
+                onUpdate(active.id, { resolution })
+              }
+              onScenes={(scenes) => onUpdate(active.id, { scenes })}
+              onFlushPending={() => flushPatch(active.id)}
+              onPickCapture={() => setPicker(true)}
+              onRender={onRender}
+              onReveal={onReveal}
+              onDelete={() => onDelete(active.id)}
+              status={status}
+            />
+            {showChat ? (
+              <aside className="szl__chat">
+                <SizzleChatPanel key={active.id} projectId={active.id} />
+              </aside>
+            ) : null}
+          </div>
         )}
       </main>
 

@@ -39,7 +39,7 @@ describe("hitTestOverlays", () => {
   test("hits a rect when the point is inside its bounds", () => {
     const rows = [
       makeRow("r1", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
         color: "auto"
       })
@@ -50,7 +50,7 @@ describe("hitTestOverlays", () => {
   test("misses a rect when the point is outside", () => {
     const rows = [
       makeRow("r1", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
         color: "auto"
       })
@@ -61,12 +61,12 @@ describe("hitTestOverlays", () => {
   test("picks the topmost overlay when two rects overlap", () => {
     const rows = [
       makeRow("under", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.1, y: 0.1, w: 0.6, h: 0.6 },
         color: "auto"
       }),
       makeRow("over", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
         color: "auto"
       })
@@ -252,7 +252,7 @@ describe("hitTestOverlays", () => {
     // a square canvas (1000×1000) so the math stays clean: pixel-space
     // rotation = normalized-space rotation when aspect is 1:1.
     const square = makeRow("r1", {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
       color: "auto",
       rotation: Math.PI / 2
@@ -276,7 +276,7 @@ describe("hitTestOverlays", () => {
       // bbox, so any inside-bbox point still hits. Use 45° on a non-
       // square rotation to actually exercise the inverse-rotate path.
       const rotated45 = makeRow("r45", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 },
         color: "auto",
         rotation: Math.PI / 2 // 90° rotation of a 0.2×0.1 rect → 0.1×0.2 visible
@@ -297,7 +297,7 @@ describe("hitTestOverlays", () => {
 
     test("when imageDims omitted, falls back to legacy unrotated bbox test", () => {
       const rotated = makeRow("r1", {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.4, y: 0.45, w: 0.2, h: 0.1 },
         color: "auto",
         rotation: Math.PI / 2

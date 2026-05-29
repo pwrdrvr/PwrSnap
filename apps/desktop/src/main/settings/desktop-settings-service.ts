@@ -28,7 +28,8 @@ import type {
   LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
-  RectToolStyle,
+  ShapeKind,
+  ShapeToolStyle,
   Settings,
   SettingsPatch,
   TextFontWeight,
@@ -38,6 +39,8 @@ import type {
 } from "@pwrsnap/shared";
 import {
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_PARALLELOGRAM_SKEW_DEG,
+  DEFAULT_SHAPE_KIND,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -169,10 +172,12 @@ function defaultEditorSettings(): EditorSettings {
         fontSize: "auto",
         weight: "regular"
       },
-      rect: {
+      shape: {
         color: "accent",
         thickness: "auto",
-        filled: false
+        filled: false,
+        shape: DEFAULT_SHAPE_KIND,
+        skewDeg: DEFAULT_PARALLELOGRAM_SKEW_DEG
       },
       blur: {
         mode: "gaussian",
@@ -325,12 +330,31 @@ function parseTextToolStyle(raw: unknown, defaults: TextToolStyle): TextToolStyl
   };
 }
 
-function parseRectToolStyle(raw: unknown, defaults: RectToolStyle): RectToolStyle {
+function pickShapeKind(value: unknown, fallback: ShapeKind): ShapeKind {
+  if (
+    value === "rect" ||
+    value === "square" ||
+    value === "circle" ||
+    value === "oval" ||
+    value === "parallelogram"
+  ) {
+    return value;
+  }
+  return fallback;
+}
+
+function pickFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function parseShapeToolStyle(raw: unknown, defaults: ShapeToolStyle): ShapeToolStyle {
   if (!isRecord(raw)) return defaults;
   return {
     color: pickToolColor(raw.color, defaults.color),
     thickness: pickToolSizePreset(raw.thickness, defaults.thickness),
-    filled: pickBoolean(raw.filled, defaults.filled)
+    filled: pickBoolean(raw.filled, defaults.filled),
+    shape: pickShapeKind(raw.shape, defaults.shape),
+    skewDeg: pickFiniteNumber(raw.skewDeg, defaults.skewDeg)
   };
 }
 
@@ -357,10 +381,17 @@ function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): Hi
 
 function parseEditorToolStyles(raw: unknown, defaults: EditorToolStyles): EditorToolStyles {
   if (!isRecord(raw)) return defaults;
+  // Legacy fallback: pre-Shape rename, the tool block was keyed
+  // `toolStyles.rect` (carrying ShapeToolStyle minus the shape / skewDeg
+  // fields). Read `shape` first and fall back to `rect` so an older
+  // settings.json keeps the user's color/thickness/filled picks across
+  // the rename. Either source flows through parseShapeToolStyle, which
+  // fills in the new `shape`/`skewDeg` fields from defaults when absent.
+  const shapeRaw = raw.shape ?? raw.rect;
   return {
     arrow: parseArrowToolStyle(raw.arrow, defaults.arrow),
     text: parseTextToolStyle(raw.text, defaults.text),
-    rect: parseRectToolStyle(raw.rect, defaults.rect),
+    shape: parseShapeToolStyle(shapeRaw, defaults.shape),
     blur: parseBlurToolStyle(raw.blur, defaults.blur),
     highlight: parseHighlightToolStyle(raw.highlight, defaults.highlight)
   };
@@ -883,7 +914,7 @@ function mergeToolStyles(
   return {
     arrow: mergeSection(current.arrow, patch.arrow),
     text: mergeSection(current.text, patch.text),
-    rect: mergeSection(current.rect, patch.rect),
+    shape: mergeSection(current.shape, patch.shape),
     blur: mergeSection(current.blur, patch.blur),
     highlight: mergeSection(current.highlight, patch.highlight)
   };

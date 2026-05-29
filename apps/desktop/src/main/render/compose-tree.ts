@@ -998,8 +998,18 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           no-op in sharp/libvips when the final dim equals the
  *           input dim, silently making pixelate a no-op for every
  *           production bake. Split into two separate sharp
- *           pipelines so the down-sample materializes. */
-const BAKE_PIPELINE_VERSION = "5";
+ *           pipelines so the down-sample materializes.
+ *    "6" — RectOverlay → ShapeOverlay rename + new shape kinds
+ *           (square / circle / oval / parallelogram). The legacy
+ *           `kind: "rect"` rows still bake via the read-side
+ *           preprocess in @pwrsnap/shared/Overlay → ShapeOverlay
+ *           with shape:"rect" (visually identical), but the
+ *           composite layer's hash inputs changed because the
+ *           overlay row's `shape` field is part of the cache key.
+ *           Pre-version-bump cache entries are orphaned (tolerated
+ *           per `docs/solutions/2026-05-28-bake-render-cache-
+ *           orphans.md`). */
+const BAKE_PIPELINE_VERSION = "6";
 
 function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];

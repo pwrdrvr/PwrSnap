@@ -31,7 +31,7 @@ export function applyGeometryLocally(
       if (data.kind !== "arrow") return null;
       return { ...data, from: geometry.from, to: geometry.to };
     case "rect":
-      if (data.kind !== "rect" && data.kind !== "highlight" && data.kind !== "blur") {
+      if (data.kind !== "shape" && data.kind !== "highlight" && data.kind !== "blur") {
         return null;
       }
       // Rotation is an OPTIONAL field on the geometry update — present

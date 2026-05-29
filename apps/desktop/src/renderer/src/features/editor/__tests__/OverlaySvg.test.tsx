@@ -316,13 +316,13 @@ describe("OverlaySvg ArrowGlyph — thickness", () => {
 });
 
 function rectRow(
-  data: Partial<Extract<OverlayRow["data"], { kind: "rect" }>> = {}
+  data: Partial<Extract<OverlayRow["data"], { kind: "shape" }>> = {}
 ): OverlayRow {
   return {
     id: "rect_test_1",
     capture_id: "cap_1",
     data: {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
       color: "auto",
       ...data
@@ -345,7 +345,7 @@ function rectRow2(): OverlayRow {
     id: "rect_test_2",
     capture_id: "cap_1",
     data: {
-      kind: "rect",
+      kind: "shape",
       rect: { x: 0.6, y: 0.1, w: 0.3, h: 0.3 },
       color: "auto"
     },
@@ -360,7 +360,7 @@ function rectRow2(): OverlayRow {
   };
 }
 
-describe("OverlaySvg RectGlyph — filled", () => {
+describe("OverlaySvg ShapeGlyph — filled", () => {
   test("legacy rect (no filled field) renders outline-only (halo + colored rect)", async () => {
     const svg = await renderOverlaySvg([rectRow()]);
     const rects = svg.querySelectorAll("rect");
@@ -379,7 +379,7 @@ describe("OverlaySvg RectGlyph — filled", () => {
   });
 });
 
-describe("OverlaySvg RectGlyph — thickness", () => {
+describe("OverlaySvg ShapeGlyph — thickness", () => {
   test("thickness 'large' renders ~2× the auto stroke width", async () => {
     const autoSvg = await renderOverlaySvg([rectRow({ thickness: "auto" })]);
     const largeSvg = await renderOverlaySvg([rectRow({ thickness: "large" })]);
@@ -557,7 +557,7 @@ describe("OverlaySvg — multi-select outlines", () => {
     const offCanvasRect: OverlayRow = {
       ...rectRow(),
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.8, y: 0.4, w: 0.5, h: 0.2 },
         color: "auto"
       }
@@ -603,7 +603,7 @@ describe("OverlaySvg — multi-select outlines", () => {
     const onCanvas: OverlayRow = {
       ...rectRow(),
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.4, w: 0.5, h: 0.2 },
         color: "auto"
       }
@@ -611,7 +611,7 @@ describe("OverlaySvg — multi-select outlines", () => {
     const partlyOff: OverlayRow = {
       ...rectRow(),
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.7, y: 0.4, w: 0.5, h: 0.2 },
         color: "auto"
       }
@@ -849,7 +849,7 @@ describe("OverlaySvg — paint order respects z_index across kinds", () => {
       id,
       capture_id: "cap_1",
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
         color: "auto"
       },
@@ -885,7 +885,7 @@ describe("OverlaySvg — paint order respects z_index across kinds", () => {
       // on top of) the arrow.
       rectRowAt("recttt_zindex_b", 2000)
     ]);
-    // ArrowGlyph uses <line> + <polygon> children; RectGlyph uses
+    // ArrowGlyph uses <line> + <polygon> children; ShapeGlyph uses
     // <rect>. We compare ANY rect element vs ANY line element in
     // the SVG.
     const rectEl = svg.querySelector("rect");
@@ -978,7 +978,7 @@ describe("OverlaySvg — per-glyph mini-SVG wrappers with CSS z-index", () => {
       id,
       capture_id: "cap_1",
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.2, w: 0.4, h: 0.4 },
         color: "auto"
       },

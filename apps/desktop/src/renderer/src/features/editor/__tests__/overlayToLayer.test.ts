@@ -43,7 +43,7 @@ describe("overlayToBundleLayerNode", () => {
   test("rect / text / highlight / step all become vector layers", () => {
     const cases: Array<{ overlay: Overlay; expectedName: string }> = [
       {
-        overlay: { kind: "rect", rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, color: "auto" },
+        overlay: { kind: "shape", rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, color: "auto" },
         expectedName: "Rectangle"
       },
       {

@@ -25,18 +25,22 @@ import type {
   ArrowEndStyle,
   ArrowStemStyle,
   OverlayRow,
-  OverlayThickness
+  OverlayThickness,
+  ShapeKind
 } from "@pwrsnap/shared";
 import {
   CURRENT_ARROW_STYLE_VERSION,
   computeArrowGeometry,
   computeStemDashArray,
+  DEFAULT_PARALLELOGRAM_SKEW_DEG,
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
   readOverlayRotation,
   readOverlayThickness,
-  readRectFilled
+  readShapeFilled,
+  readShapeKind,
+  readShapeSkewDeg
 } from "@pwrsnap/shared";
 import { rectFromDrag, type Draft } from "./editor-types";
 import type { GeometryUpdate, NormalizedPoint, NormalizedRect } from "./useCaptureModel";
@@ -64,9 +68,16 @@ export interface DraftStyle {
   /** Optional thickness preset / fraction. Same mapping as the
    *  persisted overlay field — see `readOverlayThickness`. */
   thickness?: OverlayThickness;
-  /** Rect-tool only — render the live-drag rect as a filled fill
+  /** Shape-tool only — render the live-drag shape as a solid fill
    *  rather than a stroke-only outline. */
   filled?: boolean;
+  /** Shape-tool only — which geometric primitive to render for the
+   *  live-drag preview (rect / square / circle / oval / parallelogram).
+   *  Defaults to "rect" when undefined. */
+  shape?: ShapeKind;
+  /** Shape-tool only — horizontal skew (degrees) for parallelogram.
+   *  Ignored for every other shape kind. */
+  skewDeg?: number;
   /** Highlight-tool only — CSS mix-blend-mode for the live-drag
    *  preview. Mirrors the persisted overlay's `blend` field. */
   highlightBlend?: "multiply" | "screen" | "overlay";
@@ -166,9 +177,16 @@ export function OverlaySvg({
   // + edit go through Chromium's HTML text pipeline. The "suppress
   // the editing overlay" rule lives in TextHtmlOverlays.tsx now.
 
-  // Live-rect for rect/highlight/blur drags, computed once so all
-  // three branches can share.
-  const liveRect = draft !== null && draft.kind === "rect-drag" ? rectFromDrag(draft) : null;
+  // Live-rect for shape/highlight/blur drags, computed once so all
+  // three branches can share. Threads the canvas aspect into
+  // rectFromDrag so the 1:1 lock for square/circle produces a true
+  // pixel-square box (not a canvas-aspect-shaped one).
+  const canvasAspect =
+    imageHeightPx > 0 ? imageWidthPx / imageHeightPx : 1;
+  const liveRect =
+    draft !== null && draft.kind === "rect-drag"
+      ? rectFromDrag(draft, canvasAspect)
+      : null;
 
   // `overflow="visible"` on the svg element AND `overflow: visible`
   // in the CSS — belt-and-suspenders. SVG 1.1 spec says the
@@ -211,7 +229,7 @@ export function OverlaySvg({
         const data = row.data;
         if (
           data.kind !== "highlight" &&
-          data.kind !== "rect" &&
+          data.kind !== "shape" &&
           data.kind !== "arrow"
         ) {
           // text → TextHtmlOverlays; blur → BlurOverlays; crop →
@@ -239,13 +257,15 @@ export function OverlaySvg({
                 imageHeightPx={imageHeightPx}
               />
             )}
-            {data.kind === "rect" && (
-              <RectGlyph
+            {data.kind === "shape" && (
+              <ShapeGlyph
                 rect={data.rect}
+                shape={readShapeKind(data)}
+                skewDeg={readShapeSkewDeg(data)}
                 rotation={readOverlayRotation(data)}
                 color={data.color}
                 thickness={data.thickness}
-                filled={readRectFilled(data)}
+                filled={readShapeFilled(data)}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
               />
@@ -337,9 +357,13 @@ export function OverlaySvg({
                 isDraft
               />
             )}
-            {draft.tool === "rect" && (
-              <RectGlyph
+            {draft.tool === "shape" && (
+              <ShapeGlyph
                 rect={liveRect}
+                shape={draft.shape ?? draftStyle?.shape ?? "rect"}
+                skewDeg={
+                  draftStyle?.skewDeg ?? DEFAULT_PARALLELOGRAM_SKEW_DEG
+                }
                 color={draftStyle?.color}
                 thickness={draftStyle?.thickness}
                 filled={draftStyle?.filled ?? false}
@@ -772,8 +796,10 @@ function ArrowHead({
   }
 }
 
-function RectGlyph({
+function ShapeGlyph({
   rect,
+  shape = "rect",
+  skewDeg = DEFAULT_PARALLELOGRAM_SKEW_DEG,
   rotation = 0,
   imageWidthPx,
   imageHeightPx,
@@ -783,7 +809,22 @@ function RectGlyph({
   isDraft = false
 }: {
   rect: { x: number; y: number; w: number; h: number };
-  /** Clockwise rotation in radians around the rect's geometric center.
+  /** Which geometric primitive to render. Drives the choice of SVG
+   *  element underneath:
+   *    rect / square → <rect>     (square is a 1:1-locked rect — the
+   *                                lock is enforced at draw time;
+   *                                committed rect.w / rect.h are taken
+   *                                verbatim here)
+   *    circle / oval → <ellipse>  (circle is a 1:1-locked ellipse;
+   *                                same lock-at-draw discipline)
+   *    parallelogram → <polygon>  (rect bbox + horizontal skew)
+   *  Defaults to "rect" — matches the back-compat default for legacy
+   *  rows without an explicit `shape` field. */
+  shape?: ShapeKind;
+  /** Horizontal skew in degrees. Only honored when shape === "parallelogram".
+   *  Positive values shift the top edge to the right. */
+  skewDeg?: number;
+  /** Clockwise rotation in radians around the shape's bbox center.
    *  Default 0 (legacy / unrotated rows). Applied as an SVG transform
    *  on the wrapping `<g>` so both halo + colored stroke rotate as one
    *  rigid body. */
@@ -794,22 +835,17 @@ function RectGlyph({
   color?: "auto" | string | undefined;
   /** Optional stroke-thickness override. See ArrowGlyph.thickness. */
   thickness?: OverlayThickness | undefined;
-  /** When true, the rect renders as a solid fill in `accent` rather
+  /** When true, the shape renders as a solid fill in `accent` rather
    *  than a stroke-only outline. The halo (white under-stroke) is
-   *  skipped because a filled rect already reads at full contrast. */
+   *  skipped because a solid fill already reads at full contrast. */
   filled?: boolean | undefined;
   isDraft?: boolean;
 }): ReactElement {
-  // Stroke width scaled by image short-side, like the arrow's. Pixel-
-  // space — readOverlayThickness with shortSide enabled returns
-  // pixels directly, and applies the floor-fraction formula on
-  // Large/X-Large so high-DPI captures don't get a hairline rect.
-  //
-  // Auto stroke is clamped between 0.3% and 1.2% of the short side,
-  // matching the arrow's [STROKE_MIN_PX, STROKE_MAX_PX] band in
-  // pixel units (3 px / 8 px on a 1000-px image; 6 px / 24 px on a
-  // 2000-px image). Direct pixel-space clamp — avoids the previous
-  // fraction-and-multiply round trip that obscured the actual range.
+  // Stroke width scaled by image short-side. Same band as ArrowGlyph
+  // — see ArrowGlyph for the calibration rationale. Pixel-space —
+  // readOverlayThickness with shortSide enabled returns pixels directly
+  // and applies the floor-fraction formula on Large/X-Large so high-
+  // DPI captures don't get a hairline shape.
   const shortSide = Math.min(imageWidthPx, imageHeightPx);
   const autoStrokeWidthPx = Math.min(
     shortSide * 0.012,
@@ -817,7 +853,7 @@ function RectGlyph({
   );
   const strokeWidthPx = readOverlayThickness(thickness, autoStrokeWidthPx, shortSide);
   const outline = Math.max(strokeWidthPx * 0.25, 1.5);
-  // Pixel-space rect dimensions.
+  // Pixel-space bbox.
   const rx = rect.x * imageWidthPx;
   const ry = rect.y * imageHeightPx;
   const rw = rect.w * imageWidthPx;
@@ -829,53 +865,134 @@ function RectGlyph({
       ? "var(--accent-strong, #ffa33d)"
       : "var(--accent, #ff8a1f)";
   // Rotation: apply ONE transform on the wrapping <g> so halo + colored
-  // strokes rotate together. Center of rotation is the rect's geometric
-  // center in PIXEL-SPACE viewBox units. SVG `rotate(deg cx cy)` takes
-  // degrees; our schema stores radians.
+  // strokes rotate together. Center of rotation is the bbox center in
+  // PIXEL-SPACE viewBox units. SVG `rotate(deg cx cy)` takes degrees;
+  // our schema stores radians.
   const rotateDeg = (rotation * 180) / Math.PI;
   const cx = rx + rw / 2;
   const cy = ry + rh / 2;
   const groupTransform =
     rotation !== 0 ? `rotate(${rotateDeg} ${cx} ${cy})` : undefined;
+  const wrapperProps = groupTransform !== undefined
+    ? { transform: groupTransform }
+    : {};
+
+  // Per-shape primitive renderers. Halo (white under-stroke) +
+  // colored stroke are produced as a 2-element array so we can share
+  // the wrapping <g> + filled-branch fork.
+  function strokedPrimitive(stroke: string, strokeWidth: number): ReactElement {
+    switch (shape) {
+      case "circle":
+      case "oval":
+        // <ellipse> inscribed in the bbox — cx/cy at center, rx/ry =
+        // half-extents. Same bbox semantics as <rect> for selection /
+        // hit-testing parity.
+        return (
+          <ellipse
+            cx={cx}
+            cy={cy}
+            rx={rw / 2}
+            ry={rh / 2}
+            fill="none"
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            strokeLinejoin="round"
+          />
+        );
+      case "parallelogram": {
+        // Horizontal shear of the bbox: top edge shifts +shearPx in X,
+        // bottom edge shifts -shearPx in X. `shearPx = (h/2) * tan(skew)`.
+        // The bbox SIZE on disk is the unsheared rect; we draw the
+        // sheared quad inside it. Positive skewDeg → top edge slides
+        // right; this matches Keynote / Figma's "skew right" convention.
+        const skewRad = (skewDeg * Math.PI) / 180;
+        const shearPx = (rh / 2) * Math.tan(skewRad);
+        const xL = rx;
+        const xR = rx + rw;
+        const yT = ry;
+        const yB = ry + rh;
+        const points = [
+          `${xL + shearPx},${yT}`,
+          `${xR + shearPx},${yT}`,
+          `${xR - shearPx},${yB}`,
+          `${xL - shearPx},${yB}`
+        ].join(" ");
+        return (
+          <polygon
+            points={points}
+            fill="none"
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            strokeLinejoin="round"
+          />
+        );
+      }
+      case "rect":
+      case "square":
+      default:
+        return (
+          <rect
+            x={rx}
+            y={ry}
+            width={rw}
+            height={rh}
+            fill="none"
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            strokeLinejoin="round"
+          />
+        );
+    }
+  }
+
+  function filledPrimitive(): ReactElement {
+    switch (shape) {
+      case "circle":
+      case "oval":
+        return (
+          <ellipse
+            cx={cx}
+            cy={cy}
+            rx={rw / 2}
+            ry={rh / 2}
+            fill={accent}
+            stroke="none"
+          />
+        );
+      case "parallelogram": {
+        const skewRad = (skewDeg * Math.PI) / 180;
+        const shearPx = (rh / 2) * Math.tan(skewRad);
+        const xL = rx;
+        const xR = rx + rw;
+        const yT = ry;
+        const yB = ry + rh;
+        const points = [
+          `${xL + shearPx},${yT}`,
+          `${xR + shearPx},${yT}`,
+          `${xR - shearPx},${yB}`,
+          `${xL - shearPx},${yB}`
+        ].join(" ");
+        return <polygon points={points} fill={accent} stroke="none" />;
+      }
+      case "rect":
+      case "square":
+      default:
+        return (
+          <rect x={rx} y={ry} width={rw} height={rh} fill={accent} stroke="none" />
+        );
+    }
+  }
+
   if (filled) {
-    // Solid fill — single rect, no halo. The fill IS the glyph; a
-    // halo around a solid fill would just shrink-wrap the same color
+    // Solid fill — single primitive, no halo. The fill IS the glyph;
+    // a halo around a solid fill would just shrink-wrap the same color
     // and add nothing.
-    return (
-      <g {...(groupTransform !== undefined ? { transform: groupTransform } : {})}>
-        <rect
-          x={rx}
-          y={ry}
-          width={rw}
-          height={rh}
-          fill={accent}
-          stroke="none"
-        />
-      </g>
-    );
+    return <g {...wrapperProps}>{filledPrimitive()}</g>;
   }
   return (
-    <g {...(groupTransform !== undefined ? { transform: groupTransform } : {})}>
-      <rect
-        x={rx}
-        y={ry}
-        width={rw}
-        height={rh}
-        fill="none"
-        stroke="white"
-        strokeWidth={strokeWidthPx + outline * 2}
-        strokeLinejoin="round"
-      />
-      <rect
-        x={rx}
-        y={ry}
-        width={rw}
-        height={rh}
-        fill="none"
-        stroke={accent}
-        strokeWidth={strokeWidthPx}
-        strokeLinejoin="round"
-      />
+    <g {...wrapperProps}>
+      {strokedPrimitive("white", strokeWidthPx + outline * 2)}
+      {strokedPrimitive(accent, strokeWidthPx)}
     </g>
   );
 }
@@ -935,7 +1052,7 @@ function HighlightGlyph({
   // rect blends only with the canvas below — NOT with other overlays
   // (which sit in the same SVG and don't have blend modes applied).
   const resolvedBlend = blend ?? "multiply";
-  // Rotation transform — same convention as RectGlyph: SVG `rotate(deg
+  // Rotation transform — same convention as ShapeGlyph: SVG `rotate(deg
   // cx cy)` in pixel-space, with `cx, cy` at the rect's center.
   const rx = rect.x * imageWidthPx;
   const ry = rect.y * imageHeightPx;
@@ -1059,7 +1176,7 @@ function SelectionOutline({
 }): ReactElement | null {
   // Derive a normalized bounding box for each overlay kind.
   let box: { x: number; y: number; w: number; h: number } | null = null;
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     box = data.rect;
   } else if (data.kind === "arrow") {
     // Arrows don't get a bounding-box outline — an axis-aligned rect
@@ -1151,7 +1268,7 @@ function SelectionOutline({
   // Unrotated rows skip the transform attribute entirely so the
   // SelectionOutline DOM stays byte-identical for the common case.
   const rotation =
-    data.kind === "rect" ||
+    data.kind === "shape" ||
     data.kind === "highlight" ||
     data.kind === "blur" ||
     data.kind === "text"
@@ -1358,7 +1475,7 @@ function handlesForOverlay(
   imageWidthPx: number,
   imageHeightPx: number
 ): HandleDescriptor[] | null {
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     const { x, y, w, h } = data.rect;
     const rotation = readOverlayRotation(data);
     const pivotXn = x + w / 2;
@@ -1523,7 +1640,7 @@ function geometryFromDrag(
     let pivotXn: number;
     let pivotYn: number;
     let preRotation = 0;
-    if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
       pivotXn = data.rect.x + data.rect.w / 2;
       pivotYn = data.rect.y + data.rect.h / 2;
       preRotation = data.rotation ?? 0;
@@ -1576,7 +1693,7 @@ function geometryFromDrag(
         to: { x: data.to.x + dx, y: data.to.y + dy }
       };
     }
-    if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+    if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
       // Preserve rotation across the translation so a body-drag
       // doesn't accidentally reset it. The merger writes both fields.
       const rotation = readOverlayRotation(data);
@@ -1613,7 +1730,7 @@ function geometryFromDrag(
   const cx = Math.max(0, Math.min(1, newXn));
   const cy = Math.max(0, Math.min(1, newYn));
 
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     const { x, y, w, h } = data.rect;
     const rotation = readOverlayRotation(data);
     if (rotation === 0) {
@@ -2148,7 +2265,7 @@ export function TransformHandles({
             // matches the SVG glyph's pivot.
             const d = selectedOverlay.data;
             const rotation =
-              d.kind === "rect" ||
+              d.kind === "shape" ||
               d.kind === "highlight" ||
               d.kind === "blur" ||
               d.kind === "text"
@@ -2234,7 +2351,7 @@ function bodyBoxForOverlay(
   sourceWidthPx: number,
   sourceHeightPx: number
 ): { x: number; y: number; w: number; h: number } | null {
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     return data.rect;
   }
   if (data.kind === "arrow") {

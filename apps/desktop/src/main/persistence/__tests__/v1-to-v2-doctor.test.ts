@@ -277,7 +277,7 @@ describe("synthesizeV2DocumentFromV1Overlays — coordinate round-trip", () => {
     const rectRow = makeOverlayRow({
       id: "ovr-rect-1xxx".padEnd(16, "x"),
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
         color: "#00ff00"
       }
@@ -290,8 +290,8 @@ describe("synthesizeV2DocumentFromV1Overlays — coordinate round-trip", () => {
     const vec = doc.layers.find((l) => l.kind === "vector");
     expect(vec).toBeDefined();
     if (vec === undefined || vec.kind !== "vector") throw new Error("missing vector");
-    expect(vec.shape.kind).toBe("rect");
-    if (vec.shape.kind !== "rect") throw new Error("not a rect");
+    expect(vec.shape.kind).toBe("shape");
+    if (vec.shape.kind !== "shape") throw new Error("not a shape");
     expect(vec.shape.rect).toEqual({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 });
   });
 
@@ -420,7 +420,7 @@ describe("synthesizeV2DocumentFromV1Overlays — coordinate round-trip", () => {
         id: "ovr-b-xxxxxxxxxx".slice(0, 16).padEnd(16, "x"),
         zIndex: 20,
         data: {
-          kind: "rect",
+          kind: "shape",
           rect: { x: 0, y: 0, w: 1, h: 1 },
           color: "auto"
         }
@@ -479,7 +479,7 @@ describe("synthesizeV2DocumentFromV1Overlays — coordinate round-trip", () => {
       makeOverlayRow({
         id: "ovr-usr-1xxxxxx".slice(0, 16).padEnd(16, "x"),
         data: {
-          kind: "rect",
+          kind: "shape",
           rect: { x: 0, y: 0, w: 1, h: 1 },
           color: "auto"
         }

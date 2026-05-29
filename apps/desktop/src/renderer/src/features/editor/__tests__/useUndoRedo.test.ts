@@ -683,8 +683,8 @@ describe("useUndoRedo", () => {
     act(() => {
       api!.recordStyle({
         currentIdRef,
-        previousPatch: { kind: "rect", color: "auto" },
-        nextPatch: { kind: "rect", color: "#ff0000" }
+        previousPatch: { kind: "shape", color: "auto" },
+        nextPatch: { kind: "shape", color: "#ff0000" }
       });
     });
 

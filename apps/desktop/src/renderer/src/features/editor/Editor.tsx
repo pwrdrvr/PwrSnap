@@ -44,8 +44,8 @@ import type {
   Overlay,
   OverlayRow,
   PwrSnapError,
-  RectToolStyle,
   Result,
+  ShapeToolStyle,
   TextToolStyle,
   ToolSizePreset
 } from "@pwrsnap/shared";
@@ -54,6 +54,8 @@ import {
   DEFAULT_BLUR_STYLE,
   computeTextGlyphSize,
   matchBucket,
+  readShapeKind,
+  readShapeSkewDeg,
   readTextWeight
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
@@ -158,7 +160,7 @@ export type ZoomApi = {
 const STYLED_TOOLS: ReadonlySet<Tool> = new Set<Tool>([
   "arrow",
   "text",
-  "rect",
+  "shape",
   "blur",
   "highlight"
 ]);
@@ -192,11 +194,13 @@ function resolveDraftStyleForActiveTool(
         doubleEnded: activeStyle.style.doubleEnded,
         thickness: activeStyle.style.thickness
       };
-    case "rect":
+    case "shape":
       return {
         color: resolveToolColor(activeStyle.style.color),
         thickness: activeStyle.style.thickness,
-        filled: activeStyle.style.filled
+        filled: activeStyle.style.filled,
+        shape: activeStyle.style.shape,
+        skewDeg: activeStyle.style.skewDeg
       };
     case "highlight":
       return {
@@ -218,7 +222,7 @@ function overlayDataToGeometry(data: Overlay): GeometryUpdate | null {
   if (data.kind === "arrow") {
     return { kind: "arrow", from: data.from, to: data.to };
   }
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     return { kind: "rect", rect: data.rect };
   }
   if (data.kind === "text") {
@@ -247,7 +251,7 @@ export function translateOverlayData(
       to: { x: data.to.x + dxn, y: data.to.y + dyn }
     };
   }
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     return {
       ...data,
       rect: {
@@ -293,7 +297,7 @@ export function translateOverlayGeometry(
       to: { x: data.to.x + dxn, y: data.to.y + dyn }
     };
   }
-  if (data.kind === "rect" || data.kind === "highlight" || data.kind === "blur") {
+  if (data.kind === "shape" || data.kind === "highlight" || data.kind === "blur") {
     return {
       kind: "rect",
       rect: {
@@ -330,8 +334,20 @@ function selectedOverlayToStyledTool(
   switch (data.kind) {
     case "arrow":
       return { tool: "arrow", label: "arrow" };
-    case "rect":
-      return { tool: "rect", label: "rectangle" };
+    case "shape": {
+      // Label the popover header with the specific shape kind so the
+      // user knows whether they're editing a rectangle vs an oval vs a
+      // parallelogram. Fall back to "shape" if the row predates the
+      // shape field (treated as rect via readShapeKind).
+      const labels: Record<string, string> = {
+        rect: "rectangle",
+        square: "square",
+        circle: "circle",
+        oval: "oval",
+        parallelogram: "parallelogram"
+      };
+      return { tool: "shape", label: labels[readShapeKind(data)] ?? "shape" };
+    }
     case "highlight":
       return { tool: "highlight", label: "highlight" };
     case "blur":
@@ -357,14 +373,14 @@ function selectedOverlayToToolStyle(
   defaults: {
     arrow: ArrowToolStyle;
     text: TextToolStyle;
-    rect: RectToolStyle;
+    shape: ShapeToolStyle;
     blur: BlurToolStyle;
     highlight: HighlightToolStyle;
   }
 ):
   | { tool: "arrow"; style: ArrowToolStyle }
   | { tool: "text"; style: TextToolStyle }
-  | { tool: "rect"; style: RectToolStyle }
+  | { tool: "shape"; style: ShapeToolStyle }
   | { tool: "blur"; style: BlurToolStyle }
   | { tool: "highlight"; style: HighlightToolStyle }
   | null {
@@ -381,14 +397,19 @@ function selectedOverlayToToolStyle(
       }
     };
   }
-  if (data.kind === "rect") {
+  if (data.kind === "shape") {
     return {
-      tool: "rect",
+      tool: "shape",
       style: {
-        ...defaults.rect,
-        color: data.color ?? defaults.rect.color,
-        thickness: data.thickness ?? defaults.rect.thickness,
-        filled: data.filled ?? defaults.rect.filled
+        ...defaults.shape,
+        color: data.color ?? defaults.shape.color,
+        thickness: data.thickness ?? defaults.shape.thickness,
+        filled: data.filled ?? defaults.shape.filled,
+        shape: readShapeKind(data),
+        skewDeg:
+          readShapeKind(data) === "parallelogram"
+            ? readShapeSkewDeg(data)
+            : defaults.shape.skewDeg
       }
     };
   }
@@ -647,11 +668,12 @@ export function hitTestOverlays(
     const row = overlays[i];
     if (row === undefined) continue;
     const o = row.data;
-    if (o.kind === "rect" || o.kind === "highlight" || o.kind === "blur") {
-      // Inverse-rotate the click point into the rect's local frame
-      // before the bbox test. Rotation === 0 (and the legacy no-
-      // imageDims caller) short-circuits the rotation and falls
-      // through to the historical axis-aligned check.
+    if (o.kind === "shape" || o.kind === "highlight" || o.kind === "blur") {
+      // Inverse-rotate the click point into the shape's local frame
+      // before the per-shape hit test. Rotation === 0 (and the legacy
+      // no-imageDims caller) short-circuits the rotation and falls
+      // through to the historical axis-aligned bbox check for rect-
+      // shaped kinds.
       const rotation = o.rotation ?? 0;
       const pivotXn = o.rect.x + o.rect.w / 2;
       const pivotYn = o.rect.y + o.rect.h / 2;
@@ -662,6 +684,46 @@ export function hitTestOverlays(
         pivotYn,
         rotation
       );
+      // For highlight + blur (always box-shaped) and rect/square shape
+      // overlays, use the axis-aligned bbox test. For circle / oval,
+      // use the inscribed-ellipse test. For parallelogram, inverse-
+      // shear the point back into the un-skewed bbox and bbox-test.
+      const shapeKind = o.kind === "shape" ? readShapeKind(o) : "rect";
+      const cxn = pivotXn;
+      const cyn = pivotYn;
+      const halfWn = o.rect.w / 2;
+      const halfHn = o.rect.h / 2;
+      const localX = tx - cxn;
+      const localY = ty - cyn;
+      if (shapeKind === "circle" || shapeKind === "oval") {
+        if (halfWn <= 0 || halfHn <= 0) {
+          continue;
+        }
+        const ndx = localX / halfWn;
+        const ndy = localY / halfHn;
+        if (ndx * ndx + ndy * ndy <= 1) return row.id;
+        continue;
+      }
+      if (shapeKind === "parallelogram" && o.kind === "shape") {
+        // Reverse the horizontal shear that the renderer applies
+        // (per row's skewDeg, falling back to the default for legacy
+        // rows). After unshearing, the shape collapses back to the
+        // rect bbox; bbox-test that.
+        const skewDeg = readShapeSkewDeg(o);
+        const skewRad = (skewDeg * Math.PI) / 180;
+        const tanS = Math.tan(skewRad);
+        const unshearedX = localX - localY * tanS;
+        if (
+          unshearedX >= -halfWn &&
+          unshearedX <= halfWn &&
+          localY >= -halfHn &&
+          localY <= halfHn
+        ) {
+          return row.id;
+        }
+        continue;
+      }
+      // rect / square (and highlight / blur) — axis-aligned bbox.
       if (
         tx >= o.rect.x &&
         tx <= o.rect.x + o.rect.w &&
@@ -1391,14 +1453,24 @@ export function Editor({
       });
       return;
     }
-    if (tool === "rect" || tool === "highlight" || tool === "blur") {
+    if (tool === "shape" || tool === "highlight" || tool === "blur") {
+      // For the Shape tool, capture which shape kind the popover is
+      // currently set to so the draft renders the right primitive in
+      // the live preview AND rectFromDrag applies the 1:1 lock for
+      // square/circle. Highlight + blur don't carry a shape kind.
+      const shapeKind =
+        tool === "shape" &&
+        effectiveToolState.activeStyle.tool === "shape"
+          ? effectiveToolState.activeStyle.style.shape
+          : undefined;
       setDraft({
         kind: "rect-drag",
         tool,
         startXn: start.xn,
         startYn: start.yn,
         curXn: start.xn,
-        curYn: start.yn
+        curYn: start.yn,
+        ...(shapeKind !== undefined ? { shape: shapeKind } : {})
       });
       return;
     }
@@ -1689,35 +1761,53 @@ export function Editor({
     }
 
     if (draft.kind === "rect-drag") {
-      const rect = rectFromDrag(draft);
+      // Compute canvas aspect from the live canvas element's bounding
+      // rect so rectFromDrag's 1:1 lock (square / circle) produces a
+      // pixel-square box rather than a canvas-aspect-shaped one. The
+      // canvas DOM size mirrors the source image's aspect (the editor
+      // uses CSS aspect-ratio), so this matches the bake's notion of
+      // a "square" without needing the image-dims state in scope.
+      // Falls back to 1 when the canvas hasn't measured yet.
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      const canvasAspect =
+        canvasRect !== undefined && canvasRect.height > 0
+          ? canvasRect.width / canvasRect.height
+          : 1;
+      const rect = rectFromDrag(draft, canvasAspect);
       if (rect === null) {
         setDraft(null);
         closeInteraction();
         return;
       }
       const placedKind = draft.tool;
-      // Phase 3.1 fix #2: thread the active style into rect / highlight
-      // / blur overlays. Pre-fix, rect + highlight dropped everything
+      // Phase 3.1 fix #2: thread the active style into shape / highlight
+      // / blur overlays. Pre-fix, shape + highlight dropped everything
       // to defaults regardless of popover choices.
       let overlay: Overlay;
-      if (placedKind === "rect") {
-        const rectStyleSrc =
-          effectiveToolState.activeStyle.tool === "rect"
+      if (placedKind === "shape") {
+        const shapeStyleSrc =
+          effectiveToolState.activeStyle.tool === "shape"
             ? effectiveToolState.activeStyle.style
             : null;
-        const rectOverlay: Extract<Overlay, { kind: "rect" }> = {
-          kind: "rect",
+        const shapeOverlay: Extract<Overlay, { kind: "shape" }> = {
+          kind: "shape",
           rect,
           color:
-            rectStyleSrc !== null
-              ? resolveToolColor(rectStyleSrc.color)
+            shapeStyleSrc !== null
+              ? resolveToolColor(shapeStyleSrc.color)
               : "auto"
         };
-        if (rectStyleSrc !== null) {
-          rectOverlay.thickness = rectStyleSrc.thickness;
-          rectOverlay.filled = rectStyleSrc.filled;
+        if (shapeStyleSrc !== null) {
+          shapeOverlay.thickness = shapeStyleSrc.thickness;
+          shapeOverlay.filled = shapeStyleSrc.filled;
+          shapeOverlay.shape = shapeStyleSrc.shape;
+          // Persist skewDeg only for parallelogram so we don't carry
+          // dead state on every other shape's row.
+          if (shapeStyleSrc.shape === "parallelogram") {
+            shapeOverlay.skewDeg = shapeStyleSrc.skewDeg;
+          }
         }
-        overlay = rectOverlay;
+        overlay = shapeOverlay;
       } else if (placedKind === "highlight") {
         const hlStyleSrc =
           effectiveToolState.activeStyle.tool === "highlight"
@@ -4585,9 +4675,15 @@ function EditorLoaded({
               text: toolState.activeStyle.tool === "text"
                 ? toolState.activeStyle.style
                 : { color: "accent", fontSize: "auto", weight: "regular" },
-              rect: toolState.activeStyle.tool === "rect"
+              shape: toolState.activeStyle.tool === "shape"
                 ? toolState.activeStyle.style
-                : { color: "accent", thickness: "auto", filled: false },
+                : {
+                    color: "accent",
+                    thickness: "auto",
+                    filled: false,
+                    shape: "rect",
+                    skewDeg: 15
+                  },
               blur: toolState.activeStyle.tool === "blur"
                 ? toolState.activeStyle.style
                 : { mode: "gaussian", radius: { mode: "auto" } },

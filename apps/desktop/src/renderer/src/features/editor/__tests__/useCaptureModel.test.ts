@@ -1810,7 +1810,7 @@ describe("useCaptureModel", () => {
       created_at: "2026-05-24T00:00:00Z",
       kind: "vector",
       shape: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
         color: "auto"
       }
@@ -2143,7 +2143,7 @@ describe("useCaptureModel", () => {
       created_at: "2026-05-24T00:00:00Z",
       kind: "vector",
       shape: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
         color: "auto"
       }
@@ -2261,7 +2261,7 @@ describe("useCaptureModel", () => {
     const initialRow: OverlayRow = {
       ...makeOverlayRow("ov_stb_flow", "cap_1"),
       data: {
-        kind: "rect",
+        kind: "shape",
         rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
         color: "auto"
       },

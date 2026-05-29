@@ -48,7 +48,8 @@ import type {
   ColorToken,
   HighlightBlendMode,
   HighlightToolStyle,
-  RectToolStyle,
+  ShapeKind,
+  ShapeToolStyle,
   TextFontWeight,
   TextToolStyle,
   ToolColor,
@@ -63,12 +64,12 @@ import { useSettings } from "../settings/useSettings";
 /** The five tool kinds that have a persistent style block. Pointer +
  *  crop are excluded — the parent toolbar simply doesn't mount the
  *  popover for those. */
-export type StyledToolKind = "arrow" | "text" | "rect" | "blur" | "highlight";
+export type StyledToolKind = "arrow" | "text" | "shape" | "blur" | "highlight";
 
 export type ToolStylePopoverStyle =
   | ArrowToolStyle
   | TextToolStyle
-  | RectToolStyle
+  | ShapeToolStyle
   | BlurToolStyle
   | HighlightToolStyle;
 
@@ -228,6 +229,64 @@ const BLEND_MODES: ReadonlyArray<{ id: HighlightBlendMode; label: string }> = [
   { id: "overlay", label: "Overlay" }
 ];
 
+/** Shape-kind picker entries — drives the icon-radio row in ShapeBody.
+ *  Order is "least surprising default first": Rectangle (the legacy
+ *  behavior) leads, then Square (constrained rect), then the rounded
+ *  pair (Circle / Oval), then Parallelogram (which gates the skew
+ *  slider). Each entry pairs the schema's `ShapeKind` value with a
+ *  short label + a 22×22 viewBox glyph. */
+const SHAPE_KINDS: ReadonlyArray<{
+  id: ShapeKind;
+  label: string;
+  Icon: () => ReactElement;
+}> = [
+  {
+    id: "rect",
+    label: "Rectangle",
+    Icon: () => (
+      <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="3" y="5" width="16" height="12" />
+      </svg>
+    )
+  },
+  {
+    id: "square",
+    label: "Square",
+    Icon: () => (
+      <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2">
+        <rect x="4" y="4" width="14" height="14" />
+      </svg>
+    )
+  },
+  {
+    id: "circle",
+    label: "Circle",
+    Icon: () => (
+      <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="11" cy="11" r="7" />
+      </svg>
+    )
+  },
+  {
+    id: "oval",
+    label: "Oval",
+    Icon: () => (
+      <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2">
+        <ellipse cx="11" cy="11" rx="8" ry="5" />
+      </svg>
+    )
+  },
+  {
+    id: "parallelogram",
+    label: "Parallelogram",
+    Icon: () => (
+      <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="2">
+        <polygon points="6,5 19,5 16,17 3,17" />
+      </svg>
+    )
+  }
+];
+
 // ---- Helpers --------------------------------------------------------
 
 /**
@@ -306,7 +365,7 @@ function computeAnchorPosition(
 
 function styleHasColor(
   style: ToolStylePopoverStyle
-): style is ArrowToolStyle | TextToolStyle | RectToolStyle | HighlightToolStyle {
+): style is ArrowToolStyle | TextToolStyle | ShapeToolStyle | HighlightToolStyle {
   return (style as { color?: unknown }).color !== undefined;
 }
 
@@ -647,10 +706,10 @@ export function ToolStyleBody({
           customSizeLabel={customTextSizeLabel}
         />
       );
-    case "rect":
+    case "shape":
       return (
-        <RectBody
-          style={style as RectToolStyle}
+        <ShapeBody
+          style={style as ShapeToolStyle}
           onStyleFieldChange={onStyleFieldChange}
         />
       );
@@ -835,26 +894,58 @@ function TextBody({
   );
 }
 
-interface RectBodyProps {
-  style: RectToolStyle;
+interface ShapeBodyProps {
+  style: ShapeToolStyle;
   onStyleFieldChange: ToolStylePopoverProps["onStyleFieldChange"];
 }
 
-function RectBody({ style, onStyleFieldChange }: RectBodyProps): ReactElement {
+function ShapeBody({ style, onStyleFieldChange }: ShapeBodyProps): ReactElement {
+  // Skew slider is parallelogram-only — for every other shape the
+  // skewDeg value is persisted but invisible. Default-fill a 15° so
+  // the slider's start position matches DEFAULT_PARALLELOGRAM_SKEW_DEG
+  // for fresh tool sessions and freshly-picked parallelograms.
+  const skewDeg = Number.isFinite(style.skewDeg) ? style.skewDeg : 15;
   return (
     <>
       <ColorRow
         value={style.color}
         onChange={(c) => onStyleFieldChange("color", c)}
       />
+      <FieldGroup label="Shape" testid="shape-kind">
+        <div
+          className="pse-icon-row"
+          role="radiogroup"
+          aria-label="Shape kind"
+        >
+          {SHAPE_KINDS.map((opt) => {
+            const Icon = opt.Icon;
+            const active = style.shape === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                aria-label={opt.label}
+                title={opt.label}
+                className={"pse-icon-btn" + (active ? " is-on" : "")}
+                onClick={() => onStyleFieldChange("shape", opt.id)}
+                data-testid={`shape-kind-${opt.id}`}
+              >
+                <Icon />
+              </button>
+            );
+          })}
+        </div>
+      </FieldGroup>
       <Segmented
         label="Thickness"
-        testid="rect-thickness"
+        testid="shape-thickness"
         options={THICKNESS_PRESETS}
         value={style.thickness}
         onChange={(v) => onStyleFieldChange("thickness", v)}
       />
-      <FieldGroup label="" testid="rect-filled">
+      <FieldGroup label="" testid="shape-filled">
         <label className="pse-checkbox">
           <input
             type="checkbox"
@@ -864,6 +955,23 @@ function RectBody({ style, onStyleFieldChange }: RectBodyProps): ReactElement {
           <span>Filled</span>
         </label>
       </FieldGroup>
+      {style.shape === "parallelogram" ? (
+        <FieldGroup label={`Skew: ${Math.round(skewDeg)}°`} testid="shape-skew">
+          <input
+            type="range"
+            min={-45}
+            max={45}
+            step={1}
+            value={skewDeg}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (Number.isFinite(next)) onStyleFieldChange("skewDeg", next);
+            }}
+            aria-label="Parallelogram skew angle in degrees"
+            data-testid="shape-skew-input"
+          />
+        </FieldGroup>
+      ) : null}
     </>
   );
 }
@@ -1281,7 +1389,7 @@ function RedactIcon(): ReactElement {
 
 // Re-export so a test or a panel can use the same type without
 // reaching back into the popover module.
-export type { ArrowToolStyle, TextToolStyle, RectToolStyle, BlurToolStyle, HighlightToolStyle };
+export type { ArrowToolStyle, TextToolStyle, ShapeToolStyle, BlurToolStyle, HighlightToolStyle };
 // Suppress unused-symbol churn for the type-narrow helper retained
 // for future "polymorphic body" tunings.
 void styleHasColor;

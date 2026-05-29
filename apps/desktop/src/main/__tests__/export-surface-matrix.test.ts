@@ -215,7 +215,7 @@ async function makeSourcePng(): Promise<Buffer> {
 
 function annotatedOverlay(): Overlay {
   return {
-    kind: "rect",
+    kind: "shape",
     rect: OVERLAY_RECT,
     color: OVERLAY_COLOR_HEX,
     filled: true
@@ -1092,7 +1092,7 @@ async function seedV2CaptureWithOutOfCanvasRect(id: string): Promise<void> {
       parent_id: rootGroupId,
       z_index: 1,
       shape: {
-        kind: "rect",
+        kind: "shape",
         // Entirely past the right edge: x = 1.05 means the rect's
         // left edge starts at source pixel 1.05 × 400 = 420 — 20 px
         // past the canvas's right edge (at 400). w = 0.2 = 80 px.

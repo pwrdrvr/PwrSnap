@@ -1000,15 +1000,24 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           production bake. Split into two separate sharp
  *           pipelines so the down-sample materializes.
  *    "6" — RectOverlay → ShapeOverlay rename + new shape kinds
- *           (square / circle / oval / parallelogram). The legacy
- *           `kind: "rect"` rows still bake via the read-side
- *           preprocess in @pwrsnap/shared/Overlay → ShapeOverlay
- *           with shape:"rect" (visually identical), but the
- *           composite layer's hash inputs changed because the
- *           overlay row's `shape` field is part of the cache key.
- *           Pre-version-bump cache entries are orphaned (tolerated
- *           per `docs/solutions/2026-05-28-bake-render-cache-
- *           orphans.md`). */
+ *           (square / circle / oval / parallelogram). Legacy
+ *           `kind: "rect"` rows produce VISUALLY-IDENTICAL pixels
+ *           after the migration — they reparse to
+ *           `kind: "shape", shape: "rect"` via the read-side
+ *           preprocess in `@pwrsnap/shared/Overlay`, and shapeSvg
+ *           with `shape: "rect"` emits byte-identical SVG to the
+ *           old rectSvg outline branch + a no-op `stroke="none"`
+ *           on the filled branch (SVG's default — visually a
+ *           no-op). The version bump is for the OTHER side of the
+ *           change: new rows can carry `shape ∈ {square, circle,
+ *           oval, parallelogram}` and a `skewDeg`, and both fields
+ *           enter the render-hash inputs so distinct shapes don't
+ *           collide on the same cache key. Pre-version-bump cache
+ *           entries for legacy rects are orphaned (their pixels
+ *           are unchanged, but they no longer match a new render
+ *           hash; the next bake re-paints them). Tolerated per
+ *           `docs/solutions/2026-05-28-bake-render-cache-
+ *           orphans.md`. */
 const BAKE_PIPELINE_VERSION = "6";
 
 function computeTreeRenderHash(input: {

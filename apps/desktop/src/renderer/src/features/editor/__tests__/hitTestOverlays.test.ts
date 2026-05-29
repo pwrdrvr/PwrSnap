@@ -396,4 +396,222 @@ describe("hitTestOverlays", () => {
       expect(hitTestOverlays([unrotated], 0.554, 0.46, 1000, dims)).toBe(null);
     });
   });
+
+  describe("circle / oval ellipse hit-test", () => {
+    // 1000×1000 square canvas keeps the math 1:1 between normalized
+    // and pixel coords for circle. Oval uses the same bbox; the
+    // ellipse-inside test treats rx/ry independently so canvas aspect
+    // doesn't matter (the bbox is what the user sees).
+    const dims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    test("circle hits a point at its geometric center", () => {
+      const circle = makeRow("c1", {
+        kind: "shape",
+        shape: "circle",
+        rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+        color: "auto"
+      });
+      expect(hitTestOverlays([circle], 0.5, 0.5, 1000, dims)).toBe("c1");
+    });
+
+    test("circle misses a bbox corner (inside square, outside inscribed circle)", () => {
+      // Bbox (0.3, 0.3)-(0.7, 0.7), inscribed circle radius 0.2
+      // centered at (0.5, 0.5). A point at (0.32, 0.32) is INSIDE the
+      // bbox but its distance from center is sqrt(0.18² + 0.18²) ≈ 0.255,
+      // which is OUTSIDE the radius. The legacy rect bbox would HIT;
+      // the new ellipse test must MISS — this is the case that proves
+      // the per-shape branch.
+      const circle = makeRow("c1", {
+        kind: "shape",
+        shape: "circle",
+        rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+        color: "auto"
+      });
+      expect(hitTestOverlays([circle], 0.32, 0.32, 1000, dims)).toBe(null);
+    });
+
+    test("oval hits a point on the long axis but not in the corresponding bbox corner", () => {
+      // Wide oval inscribed in a 0.6×0.2 bbox at (0.2, 0.4)-(0.8, 0.6).
+      // Point (0.78, 0.5) is on the long axis just inside the right
+      // edge → inside the ellipse. Point (0.78, 0.42) is in the bbox
+      // top-right corner but well outside the inscribed ellipse.
+      const oval = makeRow("o1", {
+        kind: "shape",
+        shape: "oval",
+        rect: { x: 0.2, y: 0.4, w: 0.6, h: 0.2 },
+        color: "auto"
+      });
+      expect(hitTestOverlays([oval], 0.78, 0.5, 1000, dims)).toBe("o1");
+      expect(hitTestOverlays([oval], 0.78, 0.42, 1000, dims)).toBe(null);
+    });
+
+    test("rect bbox in the same position WOULD hit — proves the per-shape branch is active", () => {
+      // Same bbox as the oval above but `shape: "rect"`. The bbox
+      // top-right corner now hits — confirms the ellipse test only
+      // applies for circle/oval, not for rect/square.
+      const rect = makeRow("r1", {
+        kind: "shape",
+        shape: "rect",
+        rect: { x: 0.2, y: 0.4, w: 0.6, h: 0.2 },
+        color: "auto"
+      });
+      expect(hitTestOverlays([rect], 0.78, 0.42, 1000, dims)).toBe("r1");
+    });
+
+    test("circle without dims still applies the ellipse test (no rotation pivot needed)", () => {
+      // The ellipse test is in NORMALIZED coords (rx/halfWn, ry/halfHn)
+      // so it doesn't need pixel dims to be correct. Confirms legacy
+      // callers that omit dims still get correct circle hit testing.
+      const circle = makeRow("c1", {
+        kind: "shape",
+        shape: "circle",
+        rect: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+        color: "auto"
+      });
+      expect(hitTestOverlays([circle], 0.5, 0.5, 1000)).toBe("c1");
+      expect(hitTestOverlays([circle], 0.32, 0.32, 1000)).toBe(null);
+    });
+  });
+
+  describe("parallelogram inverse-shear hit-test", () => {
+    // 1000×1000 square canvas — aspect = 1 so the (H/W) divisor
+    // collapses out. We add a 1600×900 widescreen case below to lock
+    // in the aspect correction.
+    const squareDims = {
+      canvasWidthPx: 1000,
+      canvasHeightPx: 1000,
+      sourceWidthPx: 1000,
+      sourceHeightPx: 1000
+    };
+
+    // Bbox: (0.1, 0.1)-(0.3, 0.3), skew = 15°.
+    //   shearPx_norm = (h/2)·tan(15°) / aspect = 0.1 · 0.2679 / 1 ≈ 0.0268
+    //   Drawn polygon vertices (normalized):
+    //     top-left  ≈ (0.1268, 0.1)
+    //     top-right ≈ (0.3268, 0.1)
+    //     bot-right ≈ (0.2732, 0.3)
+    //     bot-left  ≈ (0.0732, 0.3)
+    const paraSquare = makeRow("p1", {
+      kind: "shape",
+      shape: "parallelogram",
+      rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+      color: "auto",
+      skewDeg: 15
+    });
+
+    test("hits a point inside the sheared polygon", () => {
+      // (0.2, 0.2) is the bbox center → always inside the polygon.
+      expect(hitTestOverlays([paraSquare], 0.2, 0.2, 1000, squareDims)).toBe("p1");
+    });
+
+    test("misses the bbox top-left corner that the shear pushes outside the polygon", () => {
+      // (0.11, 0.11) is well inside the AXIS-ALIGNED bbox but OUTSIDE
+      // the drawn polygon (polygon's left edge at y=0.11 sits at
+      // x ≈ 0.124). Pre-fix (wrong sign) this returned "p1" — false
+      // hit. This is THE assertion that locks the sign correction in.
+      expect(hitTestOverlays([paraSquare], 0.11, 0.11, 1000, squareDims)).toBe(null);
+    });
+
+    test("hits a point past the bbox right edge but inside the top of the sheared polygon", () => {
+      // (0.32, 0.105) is past the bbox right edge (x > 0.3) but the
+      // polygon's top edge extends right to x ≈ 0.327. The shear
+      // correction must shift the test point back INTO the bbox along
+      // the un-skewed local frame.
+      expect(hitTestOverlays([paraSquare], 0.32, 0.105, 1000, squareDims)).toBe("p1");
+    });
+
+    test("aspect correction: same overlay on a widescreen canvas covers different points", () => {
+      // 1600×900 widescreen. aspect = 16/9 ≈ 1.778. The pixel-space
+      // shearPx depends on rh_pixels (= 0.2·900 = 180px), so
+      // shearPx_pixels = 90 · tan(15°) ≈ 24.1px. Converting back to
+      // normalized x: shearPx_norm = 24.1 / 1600 ≈ 0.0151. That's
+      // SMALLER than the square canvas's 0.0268 — wider canvas →
+      // smaller normalized shear because the same pixel shift is a
+      // smaller fraction of the wider canvas.
+      //
+      // So the widescreen polygon's top-left vertex sits at x ≈ 0.115
+      // (vs the square canvas's x ≈ 0.127). The aspect correction
+      // produces materially different hit areas — these assertions
+      // verify the formula divides by aspect (NOT multiplies).
+      const widescreenDims = {
+        canvasWidthPx: 1600,
+        canvasHeightPx: 900,
+        sourceWidthPx: 1600,
+        sourceHeightPx: 900
+      };
+      // (0.115, 0.105) is INSIDE the widescreen polygon's slope (left
+      // edge at y=0.105 sits at x ≈ 0.114) but OUTSIDE the square
+      // canvas's slope (left edge at y=0.105 sits at x ≈ 0.125).
+      // Same click, opposite hit results — that's the aspect
+      // correction at work.
+      expect(hitTestOverlays([paraSquare], 0.115, 0.105, 1600, widescreenDims)).toBe("p1");
+      expect(hitTestOverlays([paraSquare], 0.115, 0.105, 1000, squareDims)).toBe(null);
+      // (0.111, 0.105) is OUTSIDE both — the widescreen polygon's
+      // slope at y=0.105 still wins at x ≈ 0.114. Sanity-pin that
+      // the aspect correction doesn't push the hit area arbitrarily.
+      expect(hitTestOverlays([paraSquare], 0.111, 0.105, 1600, widescreenDims)).toBe(null);
+    });
+
+    test("negative skew shears the opposite direction", () => {
+      // -15° flips the top edge LEFT and bottom RIGHT — verifies the
+      // sign of the inverse correction tracks the row's skew sign.
+      const paraNeg = makeRow("p2", {
+        kind: "shape",
+        shape: "parallelogram",
+        rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        color: "auto",
+        skewDeg: -15
+      });
+      // Top-left of -15° polygon ≈ (0.0732, 0.1). (0.085, 0.105) is
+      // INSIDE the polygon's top edge. With the +15° row above,
+      // (0.085, 0.105) was outside (top-left wedge cut off).
+      expect(hitTestOverlays([paraNeg], 0.085, 0.105, 1000, squareDims)).toBe("p2");
+      // Symmetrically, the top-right wedge is now the missing area.
+      expect(hitTestOverlays([paraNeg], 0.31, 0.105, 1000, squareDims)).toBe(null);
+    });
+
+    test("legacy parallelogram row without skewDeg uses the 15° default", () => {
+      // Confirms the readShapeSkewDeg back-compat path. Same bbox as
+      // paraSquare; same hit/miss expectations.
+      const paraLegacy = makeRow("p3", {
+        kind: "shape",
+        shape: "parallelogram",
+        rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        color: "auto"
+        // skewDeg intentionally omitted
+      });
+      expect(hitTestOverlays([paraLegacy], 0.11, 0.11, 1000, squareDims)).toBe(null);
+      expect(hitTestOverlays([paraLegacy], 0.2, 0.2, 1000, squareDims)).toBe("p3");
+    });
+
+    test("rotated parallelogram: shear is applied in the un-rotated local frame", () => {
+      // A 90°-rotated 15° parallelogram. The inverse-rotate happens
+      // FIRST (in pixel space), then the shear inversion runs in the
+      // un-rotated normalized frame. This test pins the composition
+      // order: a click that's at the rotated-but-not-sheared polygon's
+      // top-left (which after un-rotating sits at the bbox top-left
+      // wedge cut off by the shear) must MISS.
+      const paraRotated = makeRow("p4", {
+        kind: "shape",
+        shape: "parallelogram",
+        rect: { x: 0.4, y: 0.4, w: 0.2, h: 0.2 },
+        color: "auto",
+        skewDeg: 15,
+        rotation: Math.PI / 2 // 90° CW
+      });
+      // Center always hits.
+      expect(hitTestOverlays([paraRotated], 0.5, 0.5, 1000, squareDims)).toBe("p4");
+      // Click in the bbox corner that maps (after inverse-rotate) to
+      // the un-rotated top-left wedge cut off by the skew. After a
+      // 90° CW rotation, the un-rotated top-left lands at the bbox
+      // bottom-left in world space.
+      // Bbox is (0.4, 0.4)-(0.6, 0.6); bottom-left corner ≈ (0.41, 0.59).
+      expect(hitTestOverlays([paraRotated], 0.41, 0.59, 1000, squareDims)).toBe(null);
+    });
+  });
 });

@@ -184,7 +184,7 @@ export function OverlaySvg({
   const canvasAspect =
     imageHeightPx > 0 ? imageWidthPx / imageHeightPx : 1;
   const liveRect =
-    draft !== null && draft.kind === "rect-drag"
+    draft !== null && draft.kind === "shape-drag"
       ? rectFromDrag(draft, canvasAspect)
       : null;
 
@@ -345,7 +345,7 @@ export function OverlaySvg({
             isDraft
           />
         )}
-        {draft?.kind === "rect-drag" && liveRect !== null && (
+        {draft?.kind === "shape-drag" && liveRect !== null && (
           <>
             {draft.tool === "highlight" && (
               <HighlightGlyph

@@ -12,11 +12,11 @@ export type DraftArrow = {
   toYn: number;
 };
 
-export type DraftRect = {
-  /** Same shape for shape / highlight / blur — they all drag a box.
+export type DraftShape = {
+  /** Same draft shape for shape / highlight / blur — they all drag a box.
    *  The `tool` discriminator below tells the renderer which look
    *  to apply during drag. */
-  kind: "rect-drag";
+  kind: "shape-drag";
   tool: "shape" | "highlight" | "blur";
   startXn: number;
   startYn: number;
@@ -24,9 +24,13 @@ export type DraftRect = {
   curYn: number;
   /** When `tool === "shape"`, the shape kind the user picked in the
    *  popover (drives the live-preview glyph and dictates 1:1 lock
-   *  semantics in onPointerMove). Undefined for highlight / blur. */
+   *  semantics in rectFromDrag). Undefined for highlight / blur. */
   shape?: ShapeKind;
 };
+
+/** @deprecated Use {@link DraftShape}. Kept as a type alias for one
+ *  release so external imports (none in-tree) don't break on rename. */
+export type DraftRect = DraftShape;
 
 export type DraftText = {
   kind: "text";
@@ -44,7 +48,7 @@ export type DraftText = {
   editingId?: string;
 };
 
-export type Draft = DraftArrow | DraftRect | DraftText;
+export type Draft = DraftArrow | DraftShape | DraftText;
 
 /** Minimum normalized drag length below which we treat a pointer
  *  gesture as a click (no-op for drawing tools, just clears the
@@ -52,7 +56,7 @@ export type Draft = DraftArrow | DraftRect | DraftText;
 export const MIN_DRAG_LENGTH = 0.005;
 
 /**
- * Convert the rect-drag draft into a normalized {x, y, w, h}. Returns
+ * Convert the shape-drag draft into a normalized {x, y, w, h}. Returns
  * null when the drag is below the minimum-length threshold (treats a
  * stray click as a no-op rather than producing an invisible rect).
  *
@@ -66,7 +70,7 @@ export const MIN_DRAG_LENGTH = 0.005;
  * squareness).
  */
 export function rectFromDrag(
-  d: DraftRect,
+  d: DraftShape,
   canvasAspect?: number
 ): { x: number; y: number; w: number; h: number } | null {
   const dragX = Math.min(d.startXn, d.curXn);
@@ -106,11 +110,18 @@ export function rectFromDrag(
     else y = d.startYn;
   }
 
-  // Clamp to [0,1] in case the cursor went out of bounds.
+  // Clamp x / y to [0,1] but leave w / h bounded by the unclamped x / y
+  // so out-of-canvas drags persist as DATA. Per the schema:
+  // NormalizedScalar = .finite() (any real number) — overlays at coords
+  // outside [0,1] are intentionally legal so undoing a crop restores
+  // them. The renderer + bake clip at canvas bounds at paint time. The
+  // historical clamp using `1 - x` (the unclamped x) preserved that
+  // invariant; switching to `1 - Math.max(0, x)` accidentally tightened
+  // it. Restored to the original behavior.
   return {
     x: Math.max(0, Math.min(1, x)),
     y: Math.max(0, Math.min(1, y)),
-    w: Math.max(0, Math.min(1 - Math.max(0, x), w)),
-    h: Math.max(0, Math.min(1 - Math.max(0, y), h))
+    w: Math.max(0, Math.min(1 - x, w)),
+    h: Math.max(0, Math.min(1 - y, h))
   };
 }

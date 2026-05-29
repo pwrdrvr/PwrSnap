@@ -105,7 +105,7 @@ import {
   rectFromDrag,
   type Draft,
   type DraftArrow,
-  type DraftRect,
+  type DraftShape,
   type DraftText
 } from "./editor-types";
 import { usePasteImage, type PasteImagePosition } from "./usePasteImage";
@@ -709,10 +709,39 @@ export function hitTestOverlays(
         // (per row's skewDeg, falling back to the default for legacy
         // rows). After unshearing, the shape collapses back to the
         // rect bbox; bbox-test that.
+        //
+        // SIGN + ASPECT derivation (see [docs/solutions] if extracted):
+        //
+        //   In PIXEL space the polygon's top edge sits at
+        //   x = bboxLeft + shearPx, the bottom at x = bboxLeft - shearPx,
+        //   where shearPx = (rh_px / 2) · tan(skew). Linear in Yp:
+        //     shift(Yp) = -tan(skew) · Yp     (Yp = pixel offset from
+        //                                      bbox center, negative
+        //                                      above center)
+        //   Forward map (interior → drawn): drawnX = origX + shift(Yp)
+        //                                          = origX - tan(skew)·Yp
+        //   Inverse map: origX = drawnX + tan(skew) · Yp
+        //
+        //   In NORMALIZED space the shift's units change because the
+        //   pixel shift is in canvas-WIDTH pixels while Yp is in
+        //   canvas-HEIGHT pixels. Converting through canvas aspect:
+        //     shift_norm(Y_norm) = -tan(skew) · Y_norm · (H/W)
+        //                       = -tan(skew) · Y_norm / aspect
+        //   So:
+        //     unshearedX_norm = drawnX_norm + tan(skew) · Y_norm / aspect
+        //
+        //   When `imageDims` is undefined (legacy test call sites that
+        //   skip dims), fall back to aspect = 1 — slightly mis-shaped
+        //   hit area but still covers the polygon for square-ish
+        //   canvases.
         const skewDeg = readShapeSkewDeg(o);
         const skewRad = (skewDeg * Math.PI) / 180;
         const tanS = Math.tan(skewRad);
-        const unshearedX = localX - localY * tanS;
+        const aspect =
+          imageDims !== undefined && imageDims.heightPx > 0
+            ? imageDims.widthPx / imageDims.heightPx
+            : 1;
+        const unshearedX = localX + (localY * tanS) / aspect;
         if (
           unshearedX >= -halfWn &&
           unshearedX <= halfWn &&
@@ -1464,7 +1493,7 @@ export function Editor({
           ? effectiveToolState.activeStyle.style.shape
           : undefined;
       setDraft({
-        kind: "rect-drag",
+        kind: "shape-drag",
         tool,
         startXn: start.xn,
         startYn: start.yn,
@@ -1529,7 +1558,7 @@ export function Editor({
       setDraft({ ...draft, toXn: cur.xn, toYn: cur.yn });
       return;
     }
-    if (draft.kind === "rect-drag") {
+    if (draft.kind === "shape-drag") {
       setDraft({ ...draft, curXn: cur.xn, curYn: cur.yn });
       return;
     }
@@ -1760,7 +1789,7 @@ export function Editor({
       return;
     }
 
-    if (draft.kind === "rect-drag") {
+    if (draft.kind === "shape-drag") {
       // Compute canvas aspect from the live canvas element's bounding
       // rect so rectFromDrag's 1:1 lock (square / circle) produces a
       // pixel-square box rather than a canvas-aspect-shaped one. The

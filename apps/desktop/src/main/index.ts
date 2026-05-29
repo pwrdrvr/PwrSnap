@@ -45,7 +45,6 @@ import { registerEditorHandlers } from "./handlers/editor-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
 import { registerLayersHandlers } from "./handlers/layers-handlers";
-import { registerV1ToV2DoctorHandlers } from "./handlers/v1-to-v2-doctor-handlers";
 import { gcHardDeleteCaptures, registerLibraryHandlers } from "./handlers/library-handlers";
 import { registerRecordingHandlers } from "./handlers/recording-handlers";
 import { installRecordingController } from "./recording/recording-controller";
@@ -80,7 +79,6 @@ import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance
 import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
-import { migrateAllV1OnBoot, reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -949,7 +947,6 @@ export function bootstrapApp(): void {
     registerRecordingHandlers();
     registerStorageHandlers();
     registerLayersHandlers();
-    registerV1ToV2DoctorHandlers();
     registerEditorHandlers();
     registerSizzleHandlers();
     // Wire the floating recording HUD so it appears whenever the
@@ -1239,26 +1236,6 @@ export function bootstrapApp(): void {
         message: err instanceof Error ? err.message : String(err)
       });
     });
-    // v1 → v2 doctor reconcile sweep — heals any partial states from
-    // a previous boot's mid-doctor crash (orphan temp files, DB-says-
-    // v2-but-bundle-says-v1 mismatches, orphan overlays rows for v2
-    // captures). Runs AFTER `runLegacyBundleMigration` above on purpose
-    // — we don't want to sweep half-wrapped legacy bundles.
-    //
-    // The eager sweep `migrateAllV1OnBoot` runs immediately after
-    // reconcile to upgrade every remaining v1 capture to v2 in one
-    // pass. This is the bridge between the v1 default-write era and
-    // a future PR that removes the v1 read path; once the library is
-    // fully v2 the doctor itself can be deleted. Renderer-driven lazy
-    // upgrades via `v1ToV2:upgrade` remain as a safety net for any
-    // capture that fails the eager pass.
-    void reconcileV1ToV2OnBoot()
-      .then(() => migrateAllV1OnBoot())
-      .catch((err: unknown) => {
-        log.warn("v1 → v2 doctor boot pipeline failed", {
-          message: err instanceof Error ? err.message : String(err)
-        });
-      });
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

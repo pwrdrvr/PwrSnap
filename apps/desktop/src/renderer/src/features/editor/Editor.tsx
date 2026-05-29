@@ -71,8 +71,6 @@ import {
   type LayerEditOp,
   type OverlayEditOp
 } from "./useCaptureModel";
-import { useEnsureV2, type EnsureV2State } from "./useEnsureV2";
-import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
 import { OverlaySvg, TransformHandles, type DraftStyle } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
@@ -854,19 +852,6 @@ export function Editor({
   // OverlaySvg / BlurOverlays render path (read-only — write paths
   // still go through overlays:upsert for v1; v2 writes are Phase 4-5).
   const model = useCaptureModel(captureId);
-
-  // ----- v1 → v2 lazy doctor orchestration (Phase 3) --------------
-  //
-  // When the capture loads as v1, this hook fires `v1ToV2:upgrade` in
-  // the background. While the doctor runs, we render the banner and
-  // disable the toolbar. On success the doctor broadcasts
-  // `events:captures:changed`, useCaptureModel re-fetches, and the
-  // hook sees format >= 2 → flips to "irrelevant". On parking after
-  // MAX_ATTEMPTS=5, the hook flips to "view_only" — the banner
-  // surfaces a Retry button bound to ensureV2.retry().
-  const currentBundleFormatVersion: number | null =
-    model.kind === "loaded" ? model.record.bundle_format_version : null;
-  const ensureV2 = useEnsureV2({ captureId, currentBundleFormatVersion });
 
   // ----- Tool + style state ---------------------------------------
   //
@@ -2686,8 +2671,6 @@ export function Editor({
       isControlled={isControlled}
       toolState={effectiveToolState}
       openActivePopoverRef={openActivePopoverRef}
-      ensureV2State={ensureV2.state}
-      onEnsureV2Retry={ensureV2.retry}
       selectedLayerIds={selectedLayerIds}
       setSelectedLayerIds={setSelectedLayerIds}
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
@@ -2743,8 +2726,6 @@ function EditorLoaded({
   isControlled,
   toolState,
   openActivePopoverRef,
-  ensureV2State,
-  onEnsureV2Retry,
   selectedLayerIds,
   setSelectedLayerIds,
   setSelectionTrustingDispatch,
@@ -2854,12 +2835,6 @@ function EditorLoaded({
   isControlled: boolean;
   toolState: ReturnType<typeof useEditorToolState>;
   openActivePopoverRef: React.RefObject<(() => void) | null>;
-  /** v1 → v2 doctor state from `useEnsureV2`. While the doctor is
-   *  upgrading (or has parked), the toolbar is disabled and the
-   *  V1ToV2DoctorBanner renders over the canvas. */
-  ensureV2State: EnsureV2State;
-  /** Bound to the Retry button on the view-only banner. */
-  onEnsureV2Retry: () => void;
   /** Multi-select model — ids of every currently-selected overlay.
    *  Empty array means nothing selected. Drives the selection outline
    *  glyphs in OverlaySvg (one per id) and the keyboard-Delete /
@@ -4421,13 +4396,6 @@ function EditorLoaded({
             </div>
           )}
         </div>
-        {/* v1 → v2 lazy doctor banner. Anchored to the canvas-wrap so
-            it overlays the editor canvas; returns null in
-            irrelevant/ready states. */}
-        <V1ToV2DoctorBanner
-          state={ensureV2State}
-          onRetry={onEnsureV2Retry}
-        />
         {/* Phase 5 paste/drop notice. Surfaces user-friendly errors
             (v1-only, oversize, decode failure, symlink reject) for a
             short window. Auto-clears after 3.5s via the timer effect
@@ -4512,14 +4480,7 @@ function EditorLoaded({
             }
           }}
           popoverAnchorRef={popoverAnchorRef}
-          // Disable while the v1 → v2 doctor is running or has parked
-          // (Phase 3) — annotations on a v1 capture mid-migration
-          // would conflict with the doctor's atomic write ordering,
-          // and a parked capture is read-only by design until Retry.
-          disabled={
-            ensureV2State.status === "upgrading" ||
-            ensureV2State.status === "view_only"
-          }
+          disabled={false}
         />
       )}
 

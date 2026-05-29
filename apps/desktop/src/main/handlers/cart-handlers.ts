@@ -1,0 +1,209 @@
+// Command-bus handlers for the `cart:*` namespace — the Project Asset
+// Cart. The cart is a single global draft (see `CartStore`); the
+// commit verbs turn it into a Sizzle Reel project.
+//
+// Every mutating verb broadcasts `events:cart:changed` so the Library
+// cell checkboxes + DetailRail Cart tab stay in sync without polling.
+// The two commit verbs ALSO broadcast `events:sizzle:projects:changed`
+// because they create / mutate a project the sidebar renders.
+
+import { BrowserWindow } from "electron";
+import { randomUUID } from "node:crypto";
+import {
+  EVENT_CHANNELS,
+  err,
+  ok,
+  type DraftCart,
+  type EventPayloads,
+  type SizzleProject,
+  type SizzleScene
+} from "@pwrsnap/shared";
+import { bus } from "../command-bus";
+import { getCartStore } from "../cart/cart-store";
+import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
+import { getMainLogger } from "../log";
+import {
+  validateCartCaptureId,
+  validateCartCommitToExisting,
+  validateCartCommitToNew,
+  validateCartRename,
+  validateCartReorder
+} from "./cart-validators";
+
+const log = getMainLogger("pwrsnap:cart-handlers");
+
+function broadcastCartChanged(cart: DraftCart): void {
+  const payload: EventPayloads[typeof EVENT_CHANNELS.cartChanged] = { cart };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(EVENT_CHANNELS.cartChanged, payload);
+  }
+}
+
+function broadcastProjectsChanged(projects: SizzleProject[]): void {
+  const payload: EventPayloads[typeof EVENT_CHANNELS.sizzleProjectsChanged] = {
+    projects
+  };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(EVENT_CHANNELS.sizzleProjectsChanged, payload);
+  }
+}
+
+/**
+ * Build a fresh scene for a capture id. Mirrors `sizzle:toggleScene`'s
+ * scene defaults — empty scriptLine (the chat agent or the user fills
+ * it later), no media trim (seeded from the capture's video metadata
+ * at render time if it's a video), auto audio source, crossfade
+ * transition (the visual default).
+ */
+function newSceneForCapture(captureId: string): SizzleScene {
+  return {
+    id: `sc_${randomUUID().slice(0, 10)}`,
+    captureId,
+    scriptLine: "",
+    durationOverrideSec: null,
+    mediaTrim: null,
+    audioSource: "auto",
+    transition: "crossfade"
+  };
+}
+
+export function registerCartHandlers(): void {
+  const cart = getCartStore();
+  const sizzle = getSizzleStore();
+
+  bus.register("cart:get", async () => {
+    return ok(await cart.get());
+  });
+
+  bus.register("cart:toggle", async (req) => {
+    const v = validateCartCaptureId(req);
+    if (!v.ok) return err(v.error);
+    const next = await cart.toggle(v.captureId);
+    broadcastCartChanged(next);
+    return ok(next);
+  });
+
+  bus.register("cart:remove", async (req) => {
+    const v = validateCartCaptureId(req);
+    if (!v.ok) return err(v.error);
+    const next = await cart.remove(v.captureId);
+    broadcastCartChanged(next);
+    return ok(next);
+  });
+
+  bus.register("cart:reorder", async (req) => {
+    const v = validateCartReorder(req);
+    if (!v.ok) return err(v.error);
+    const next = await cart.reorder(v.from, v.to);
+    broadcastCartChanged(next);
+    return ok(next);
+  });
+
+  bus.register("cart:rename", async (req) => {
+    const v = validateCartRename(req);
+    if (!v.ok) return err(v.error);
+    const next = await cart.rename(v.name);
+    broadcastCartChanged(next);
+    return ok(next);
+  });
+
+  bus.register("cart:clear", async () => {
+    const next = await cart.clear();
+    broadcastCartChanged(next);
+    return ok(next);
+  });
+
+  bus.register("cart:commitToNewProject", async (req) => {
+    const v = validateCartCommitToNew(req);
+    if (!v.ok) return err(v.error);
+    const current = await cart.get();
+    if (current.captureIds.length === 0) {
+      return err({
+        kind: "validation",
+        code: "cart_empty",
+        message: "The cart is empty — add captures before creating a reel"
+      });
+    }
+    const projectName = (v.name ?? current.name).trim() || "Untitled Sizzle";
+    try {
+      // Create the project, then set its scenes from the cart order in
+      // a single update. `store.update` runs sanitizeScenes so the
+      // shape is normalized.
+      const created = await sizzle.create(projectName);
+      const scenes = current.captureIds.map(newSceneForCapture);
+      const updated = await sizzle.update(created.id, { scenes });
+      // Cart did its job — clear it. (Clear AFTER the project write
+      // succeeds so a failed create doesn't lose the user's cart.)
+      const clearedCart = await cart.clear();
+      broadcastCartChanged(clearedCart);
+      broadcastProjectsChanged(await sizzle.list());
+      return ok(updated);
+    } catch (cause) {
+      log.warn("cart:commitToNewProject failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "cart_commit_failed",
+        message: "Could not create the Sizzle Reel from the cart"
+      });
+    }
+  });
+
+  bus.register("cart:commitToExisting", async (req) => {
+    const v = validateCartCommitToExisting(req);
+    if (!v.ok) return err(v.error);
+    const current = await cart.get();
+    if (current.captureIds.length === 0) {
+      return err({
+        kind: "validation",
+        code: "cart_empty",
+        message: "The cart is empty — add captures before adding to a reel"
+      });
+    }
+    try {
+      const project = await sizzle.get(v.projectId);
+      if (project === null) {
+        return err({
+          kind: "validation",
+          code: "not_found",
+          message: "Project not found"
+        });
+      }
+      // De-dup: only append captures not already scenes of the project.
+      // (Duplicate captures ARE legal in a reel — a user can show the
+      // same shot twice — but the "Add to existing" affordance is a
+      // bulk-merge, where the user expects "add the ones that aren't
+      // already here" rather than silently doubling existing scenes.)
+      const existing = new Set(project.scenes.map((s) => s.captureId));
+      const toAppend = current.captureIds.filter((id) => !existing.has(id));
+      const scenes = [
+        ...project.scenes,
+        ...toAppend.map(newSceneForCapture)
+      ];
+      const updated = await sizzle.update(project.id, { scenes });
+      const clearedCart = await cart.clear();
+      broadcastCartChanged(clearedCart);
+      broadcastProjectsChanged(await sizzle.list());
+      return ok(updated);
+    } catch (cause) {
+      if (cause instanceof SizzleProjectNotFoundError) {
+        return err({
+          kind: "validation",
+          code: "not_found",
+          message: "Project not found"
+        });
+      }
+      log.warn("cart:commitToExisting failed", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "render",
+        code: "cart_commit_failed",
+        message: "Could not add the cart to the Sizzle Reel"
+      });
+    }
+  });
+}

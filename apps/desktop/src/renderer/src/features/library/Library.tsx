@@ -34,6 +34,8 @@ import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { useDraftCart } from "../../lib/useDraftCart";
+import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -428,6 +430,16 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const { projects: sizzleProjects } = useSizzleProjects();
+  // The Project Asset Cart. Drives the cell checkboxes (which captures
+  // are checked) AND the grid-mode standalone cart rail (which appears
+  // when the cart is non-empty — the "right bar opens when you check"
+  // flow). In focus/reel modes the cart is a DetailRail tab instead.
+  const { cart: draftCart } = useDraftCart();
+  const cartIdSet = useMemo(
+    () => new Set(draftCart.captureIds),
+    [draftCart.captureIds]
+  );
+  const cartIsOpenInGrid = view.kind === "grid" && draftCart.captureIds.length > 0;
   // Library "Types" multi-pick filter. All three on by default so the
   // library looks the same as before for users who don't touch it.
   // Right-click / shift-click on a row sets that row as "Only" (the
@@ -1368,6 +1380,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    * Focus → Grid return. Reel-mode filmstrip frames have their own
    * NAVIGATE-only click handler (no Focus open from filmstrip).
    */
+  // Toggle a capture's membership in the draft cart. Wired to the
+  // per-cell hover checkbox. Fire-and-forget — the cart store
+  // broadcasts the new state and useDraftCart re-renders the
+  // checkboxes + rail.
+  const onToggleCart = useCallback((captureId: string): void => {
+    void dispatch("cart:toggle", { captureId });
+  }, []);
+
   function onSelectCell(c: Capture): void {
     setSelected(c.id);
     // Project cell → open the sizzle window for that project.
@@ -1602,6 +1622,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             ? "pinned"
             : "collapsed"
       }
+      // `data-cart="open"` widens the right column in GRID mode so the
+      // standalone cart rail has room. In focus/reel the cart lives in
+      // the DetailRail tab strip and the column is already 360px, so
+      // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
+      data-cart={cartIsOpenInGrid ? "open" : undefined}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -1989,6 +2014,8 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             trashCapture={trashCapture}
             restoreCaptureAction={restoreCaptureAction}
             purgeCaptureAction={purgeCaptureAction}
+            cartIdSet={cartIdSet}
+            onToggleCart={onToggleCart}
           />
         </div>
         {error !== null && (
@@ -2158,6 +2185,24 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         onActiveTabChange={setRightActiveTab}
       />
 
+      {/* Grid-mode standalone cart rail. DetailRail returns null in
+          grid mode (its tabs are all per-capture), so the cart — which
+          is workspace-global — gets its own rail here that appears the
+          moment the user checks their first capture. In focus/reel the
+          cart is a DetailRail tab instead, so this is gated to grid. */}
+      {cartIsOpenInGrid ? (
+        <aside
+          className="psl__right psl__right--vertical psl__right--cart"
+          aria-label="Project asset cart"
+        >
+          <div className="psl__right-content">
+            <div className="psl__right-body">
+              <CartPanel />
+            </div>
+          </div>
+        </aside>
+      ) : null}
+
       <footer className="psl__status">
         <div className="psl__status-l">
           <div className="psl__storage" ref={storagePanelRef}>
@@ -2308,6 +2353,8 @@ type VirtualizedGridProps = {
   trashCapture: CellAction;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  cartIdSet: ReadonlySet<string>;
+  onToggleCart: (captureId: string) => void;
 };
 
 /** Compute how many cells fit per row at the current container width.
@@ -2360,7 +2407,9 @@ function VirtualizedGrid({
   isTrashView,
   trashCapture,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  cartIdSet,
+  onToggleCart
 }: VirtualizedGridProps) {
   const cellsPerRow = useCellsPerRow(scrollElement);
 
@@ -2545,6 +2594,8 @@ function VirtualizedGrid({
                 trashCapture={trashCapture}
                 restoreCaptureAction={restoreCaptureAction}
                 purgeCaptureAction={purgeCaptureAction}
+                cartIdSet={cartIdSet}
+                onToggleCart={onToggleCart}
               />
             )}
           </div>
@@ -2581,7 +2632,9 @@ function CellRow({
   isTrashView,
   trashCapture,
   restoreCaptureAction,
-  purgeCaptureAction
+  purgeCaptureAction,
+  cartIdSet,
+  onToggleCart
 }: {
   cells: DayGroup["items"];
   gridTemplate: string;
@@ -2595,6 +2648,8 @@ function CellRow({
   trashCapture: CellAction;
   restoreCaptureAction: CellAction;
   purgeCaptureAction: CellAction;
+  cartIdSet: ReadonlySet<string>;
+  onToggleCart: (captureId: string) => void;
 }) {
   // Inline grid styling — `.psl__grid` from the CSS uses auto-fill;
   // we override with explicit columns matching the computed
@@ -2621,13 +2676,20 @@ function CellRow({
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
         const isProject = c.kind === "project";
+        // Cart checkbox shows for real (non-project) captures outside
+        // trash. `inCart` drives both the checked state AND keeps the
+        // checkbox visible when checked (otherwise it's hover-only —
+        // see .psl__cell-cart CSS).
+        const cartEligible = record !== null && !isProject && !isTrashView;
+        const inCart = record !== null && cartIdSet.has(record.id);
         return (
           <div
             key={c.id}
             className={
               "psl__cell" +
               (c.id === selected ? " is-selected" : "") +
-              (isProject ? " psl__cell--project" : "")
+              (isProject ? " psl__cell--project" : "") +
+              (inCart ? " is-in-cart" : "")
             }
             data-cell-id={record?.id ?? ""}
             onClick={() => onSelectCell(c)}
@@ -2635,6 +2697,35 @@ function CellRow({
           >
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} project={project} width={400} />
+              {cartEligible && record !== null ? (
+                <button
+                  type="button"
+                  className={
+                    "psl__cell-cart" + (inCart ? " is-checked" : "")
+                  }
+                  role="checkbox"
+                  aria-checked={inCart}
+                  aria-label={
+                    inCart ? "Remove from project draft" : "Add to project draft"
+                  }
+                  title={
+                    inCart ? "Remove from project draft" : "Add to project draft"
+                  }
+                  onClick={(e) => {
+                    // Stop propagation so checking doesn't also fire
+                    // the cell's onSelectCell (which would open the
+                    // capture in Focus mode).
+                    e.stopPropagation();
+                    onToggleCart(record.id);
+                  }}
+                >
+                  {inCart ? (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m5 12 5 5 9-11" />
+                    </svg>
+                  ) : null}
+                </button>
+              ) : null}
               <span className="psl__cell-time">{c.time}</span>
               <span className="psl__cell-app-overlay">
                 {isProject ? (

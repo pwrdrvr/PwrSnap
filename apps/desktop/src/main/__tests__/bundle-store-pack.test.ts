@@ -10,13 +10,14 @@
 //      bundle format reserves all valid names.
 //
 // The v1 `packBundle` round-trip + `readBundleOverlays` specs that
-// used to live here were removed with the v1 write path. The v2
-// pack/read round-trip is exercised through the real capture flow in
-// `export-surface-matrix.test.ts`; the security gate below still
-// validates `readBundleManifest` against attacker-crafted v1 bundles
-// (the read path stays dual-format until the next cleanup PR).
+// used to live here were removed with the v1 write path; the v1 read
+// path is gone too. The v2 pack/read round-trip is exercised through
+// the real capture flow in `export-surface-matrix.test.ts`; the
+// security gate below validates `readBundleManifest` against
+// attacker-crafted v2 bundles (the only format the reader accepts).
 
 import archiver from "archiver";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,8 +25,8 @@ import sharp from "sharp";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
-  type BundleManifestV1,
-  type BundleOverlaysV1
+  type BundleDocumentV2,
+  type BundleManifestV2
 } from "@pwrsnap/shared";
 import {
   buildCompositeThumbnail,
@@ -45,29 +46,29 @@ afterEach(async () => {
   }
 });
 
-const validManifest: BundleManifestV1 = {
-  bundle_format_version: 1,
+// Content hash of `fakeSourcePng`, computed below — the v2 source entry
+// is keyed by sha256, and the reader's allowlist matches `sources/<sha>.png`.
+const fakeSourcePng = Buffer.from("FAKE_SOURCE_PNG_BYTES_" + "x".repeat(200));
+const fakeSourceSha = createHash("sha256").update(fakeSourcePng).digest("hex");
+const fakeSourceEntry = `sources/${fakeSourceSha}.png`;
+
+const validManifest: BundleManifestV2 = {
+  bundle_format_version: 2,
   capture_id: "test-cap-001",
-  source_sha256: "0".repeat(64),
-  source_dimensions: { width_px: 800, height_px: 600 },
+  canvas_dimensions: { width_px: 800, height_px: 600 },
   paired_png_filename: "test-cap-001.png",
   created_at: "2026-05-07T14:30:22.000Z",
   bundle_modified_at: "2026-05-07T14:30:22.000Z"
 };
 
-const validOverlays: BundleOverlaysV1 = {
-  overlays_format_version: 1,
-  overlays_version: 0,
-  overlays: [],
+const validDocument: BundleDocumentV2 = {
+  document_format_version: 1,
+  edits_version: 0,
+  layers: [],
   tags: [],
   description: null,
   ai_runs: []
 };
-
-// Synthetic byte buffers — bundle-store doesn't validate PNG magic
-// (sharp does that downstream).
-const fakeSourcePng = Buffer.from("FAKE_SOURCE_PNG_BYTES_" + "x".repeat(200));
-const fakeCompositePng = Buffer.from("FAKE_COMPOSITE_PNG_BYTES_" + "y".repeat(150));
 
 describe("readBundleManifest — Zip-Slip and allowlist enforcement", () => {
   // Helper to assemble a malicious bundle with attacker-chosen central
@@ -98,9 +99,8 @@ describe("readBundleManifest — Zip-Slip and allowlist enforcement", () => {
   test("rejects a bundle whose central directory contains a `../etc/passwd` entry (Zip-Slip)", async () => {
     const bundlePath = await packBundleWithRawEntries([
       { name: "manifest.json", data: Buffer.from(JSON.stringify(validManifest)) },
-      { name: "overlays.json", data: Buffer.from(JSON.stringify(validOverlays)) },
-      { name: "source.png", data: fakeSourcePng },
-      { name: "composite.png", data: fakeCompositePng },
+      { name: "document.json", data: Buffer.from(JSON.stringify(validDocument)) },
+      { name: fakeSourceEntry, data: fakeSourcePng },
       { name: "../etc/passwd", data: Buffer.from("attacker-controlled") }
     ]);
 
@@ -110,9 +110,8 @@ describe("readBundleManifest — Zip-Slip and allowlist enforcement", () => {
   test("rejects a bundle with an extra benign-looking entry (LICENSE)", async () => {
     const bundlePath = await packBundleWithRawEntries([
       { name: "manifest.json", data: Buffer.from(JSON.stringify(validManifest)) },
-      { name: "overlays.json", data: Buffer.from(JSON.stringify(validOverlays)) },
-      { name: "source.png", data: fakeSourcePng },
-      { name: "composite.png", data: fakeCompositePng },
+      { name: "document.json", data: Buffer.from(JSON.stringify(validDocument)) },
+      { name: fakeSourceEntry, data: fakeSourcePng },
       { name: "LICENSE", data: Buffer.from("MIT or whatever") }
     ]);
 
@@ -123,19 +122,17 @@ describe("readBundleManifest — Zip-Slip and allowlist enforcement", () => {
     const bundlePath = await packBundleWithRawEntries([
       { name: "manifest.json", data: Buffer.from(JSON.stringify(validManifest)) },
       { name: "manifest.json", data: Buffer.from(JSON.stringify({ evil: true })) },
-      { name: "overlays.json", data: Buffer.from(JSON.stringify(validOverlays)) },
-      { name: "source.png", data: fakeSourcePng},
-      { name: "composite.png", data: fakeCompositePng}
+      { name: "document.json", data: Buffer.from(JSON.stringify(validDocument)) },
+      { name: fakeSourceEntry, data: fakeSourcePng }
     ]);
 
     await expect(readBundleManifest(bundlePath)).rejects.toThrow();
   });
 
-  test("rejects a bundle missing required source.png", async () => {
+  test("rejects a bundle missing required document.json", async () => {
     const bundlePath = await packBundleWithRawEntries([
       { name: "manifest.json", data: Buffer.from(JSON.stringify(validManifest)) },
-      { name: "overlays.json", data: Buffer.from(JSON.stringify(validOverlays)) },
-      { name: "composite.png", data: fakeCompositePng}
+      { name: fakeSourceEntry, data: fakeSourcePng }
     ]);
 
     await expect(readBundleManifest(bundlePath)).rejects.toThrow();
@@ -144,9 +141,8 @@ describe("readBundleManifest — Zip-Slip and allowlist enforcement", () => {
   test("rejects a bundle whose entry name has a null byte (filename injection)", async () => {
     const bundlePath = await packBundleWithRawEntries([
       { name: "manifest.json\0../injected", data: Buffer.from(JSON.stringify(validManifest)) },
-      { name: "overlays.json", data: Buffer.from(JSON.stringify(validOverlays)) },
-      { name: "source.png", data: fakeSourcePng},
-      { name: "composite.png", data: fakeCompositePng}
+      { name: "document.json", data: Buffer.from(JSON.stringify(validDocument)) },
+      { name: fakeSourceEntry, data: fakeSourcePng }
     ]);
 
     await expect(readBundleManifest(bundlePath)).rejects.toThrow();

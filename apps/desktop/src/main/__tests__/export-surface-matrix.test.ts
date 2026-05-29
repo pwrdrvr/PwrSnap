@@ -192,7 +192,6 @@ afterEach(() => {
   // Wipe captures + layers between tests so each test's seed runs
   // against a clean slate. The DB file persists; just the rows go.
   const db = getDb();
-  db.exec(`DELETE FROM overlays`);
   db.exec(`DELETE FROM layers`);
   db.exec(`DELETE FROM captures`);
 });

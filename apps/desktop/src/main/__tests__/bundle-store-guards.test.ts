@@ -25,8 +25,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   assertSafeBundleFile,
-  atomicWriteBundle,
-  validateBundleZipEntryNames
+  atomicWriteBundle
 } from "../persistence/bundle-store";
 
 let workDir: string;
@@ -39,129 +38,6 @@ afterEach(async () => {
   if (workDir !== undefined) {
     await rm(workDir, { recursive: true, force: true });
   }
-});
-
-describe("validateBundleZipEntryNames — Zip-Slip / allowlist gate", () => {
-  test("accepts the canonical four-entry layout", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png"
-    ]);
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts the four entries in any order", () => {
-    const result = validateBundleZipEntryNames([
-      "composite.png",
-      "manifest.json",
-      "source.png",
-      "overlays.json"
-    ]);
-    expect(result.ok).toBe(true);
-  });
-
-  test("rejects a directory-traversal entry (the Zip-Slip CVE class)", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png",
-      "../../etc/passwd"
-    ]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.badEntries).toContain("../../etc/passwd");
-    }
-  });
-
-  test("rejects a Windows-style traversal entry", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png",
-      "..\\..\\Windows\\System32\\hosts"
-    ]);
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects an absolute-path entry", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png",
-      "/etc/passwd"
-    ]);
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects a null-byte injection in a filename", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png\0../injected"
-    ]);
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects a subpath that ends in an allowlisted name", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "subdir/composite.png"
-    ]);
-    expect(result.ok).toBe(false);
-  });
-
-  test("accepts a bundle without composite.png (composite is OPTIONAL post-refactor)", () => {
-    // Pre-refactor: composite.png was required; missing entry = invalid.
-    // Post-refactor: composite.png is allowed but optional — new bundles
-    // never write it (readers reconstruct composite from source+overlays
-    // via compose() and the Thumbnail Extension reads
-    // composite_thumbnail.jpg). The three remaining REQUIRED entries
-    // (manifest, overlays, source) are present here, so the bundle
-    // validates.
-    const result = validateBundleZipEntryNames(["manifest.json", "overlays.json", "source.png"]);
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts a bundle with composite_thumbnail.jpg (new optional entry)", () => {
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite_thumbnail.jpg"
-    ]);
-    expect(result.ok).toBe(true);
-  });
-
-  test("rejects a missing required entry (corrupt bundle, partial archive)", () => {
-    // source.png IS still required — its absence still fails validation.
-    const result = validateBundleZipEntryNames(["manifest.json", "overlays.json"]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.missingEntries).toContain("source.png");
-    }
-  });
-
-  test("rejects a bundle with duplicate entries", () => {
-    // ZIP allows duplicate filenames in the central directory; some
-    // attackers exploit this so the "good" entry validates while a
-    // shadow entry overwrites on extract. Refuse on principle.
-    const result = validateBundleZipEntryNames([
-      "manifest.json",
-      "manifest.json",
-      "overlays.json",
-      "source.png",
-      "composite.png"
-    ]);
-    expect(result.ok).toBe(false);
-  });
 });
 
 describe("assertSafeBundleFile — symlink + lstat gate", () => {

@@ -28,14 +28,9 @@ import yauzl from "yauzl";
 import yazl from "yazl";
 
 import {
-  BUNDLE_ENTRY_ALLOWLIST,
-  BUNDLE_ENTRY_REQUIRED,
   BundleDocumentV2,
-  BundleManifestV1,
   BundleManifestV2,
-  isBundleEntryName,
-  validateBundleZipEntryNamesV2,
-  type BundleEntryName
+  validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
 
 import type { CaptureRecord } from "@pwrsnap/shared";
@@ -54,66 +49,13 @@ import { getMainLogger } from "../log";
 const log = getMainLogger("pwrsnap:bundle-store");
 
 /**
- * Validate a ZIP central directory against the four-entry allowlist.
- * Pure function — used by the doctor reconcile pass and the bundle
- * reader before extracting any entry. Returns a structured result so
- * the caller can surface specifics ("bundle X has unknown entry Y")
- * without exposing untrusted attacker-controlled strings into log /
- * UI surfaces unfiltered.
- */
-export type BundleEntryValidation =
-  | { ok: true }
-  | {
-      ok: false;
-      badEntries: readonly string[];
-      missingEntries: readonly BundleEntryName[];
-      duplicateEntries: readonly string[];
-    };
-
-export function validateBundleZipEntryNames(names: readonly string[]): BundleEntryValidation {
-  const badEntries: string[] = [];
-  const seen = new Set<string>();
-  const duplicates: string[] = [];
-
-  for (const name of names) {
-    if (!isBundleEntryName(name)) {
-      badEntries.push(name);
-      continue;
-    }
-    if (seen.has(name)) {
-      duplicates.push(name);
-      continue;
-    }
-    seen.add(name);
-  }
-
-  // Only check the REQUIRED subset for missingness. `composite.png` is
-  // allowed but optional — bundles with `manifest.composite_is_source`
-  // true omit it intentionally (composite would equal source.png byte-
-  // for-byte; storing both was pure duplication). The manifest's flag
-  // is the source of truth for "is the composite present?"; the
-  // central-directory validator just enforces the floor.
-  const missing = BUNDLE_ENTRY_REQUIRED.filter((entry) => !seen.has(entry));
-
-  if (badEntries.length === 0 && duplicates.length === 0 && missing.length === 0) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    badEntries,
-    missingEntries: missing,
-    duplicateEntries: duplicates
-  };
-}
-
-/**
  * Refuse to read or extract a bundle file whose on-disk shape would
  * let an attacker redirect us off-path: a symlink (could point
  * anywhere we have TCC for), a directory (someone built a fake
  * `.pwrsnap/` package directory), or a missing file (race during a
  * doctor walk). Throws — callers catch and quarantine or skip.
  *
- * Distinct from the ZIP entry allowlist (`validateBundleZipEntryNames`):
+ * Distinct from the ZIP entry allowlist (`validateBundleZipEntryNamesV2`):
  * this gate runs against the bundle file ITSELF before yauzl ever
  * opens it.
  */
@@ -385,25 +327,16 @@ export async function packBundleV2(args: PackBundleV2Args): Promise<Buffer> {
  * any byte is extracted.
  */
 /**
- * Internal handle discriminated by bundle_format_version. Most callers
- * consume the higher-level `readBundleView` adapter instead — the
- * version discriminant leaks fewer files this way. Only `composeV2` vs
- * `compose` (separate compositors) and the future v1→v2 migration need
- * the discriminant directly.
+ * Internal handle for an opened, validated v2 bundle. Most callers
+ * consume the higher-level `readBundleView` adapter instead. v2 is the
+ * only bundle format — a v1 bundle on disk fails to parse here.
  */
-type BundleReadHandleV1 = {
-  version: 1;
-  manifest: BundleManifestV1;
-  entries: Map<BundleEntryName, yauzl.Entry>;
-  zipFile: yauzl.ZipFile;
-};
-type BundleReadHandleV2 = {
+type BundleReadHandle = {
   version: 2;
   manifest: BundleManifestV2;
   entries: Map<string, yauzl.Entry>;
   zipFile: yauzl.ZipFile;
 };
-type BundleReadHandle = BundleReadHandleV1 | BundleReadHandleV2;
 
 async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHandle> {
   await assertSafeBundleFile(bundlePath);
@@ -435,9 +368,9 @@ async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHand
       });
 
       zipFile.on("end", () => {
-        // Step 1: manifest.json is the one universal entry across v1
-        // and v2. Read it FIRST to learn the format version. If it's
-        // missing or duplicated, fail closed.
+        // manifest.json is the one universal entry. Read it FIRST to
+        // learn the format version. If it's missing or duplicated, fail
+        // closed.
         const manifestEntry = entriesByName.get("manifest.json");
         const manifestDup = duplicateNames.includes("manifest.json");
         if (manifestEntry === undefined || manifestDup) {
@@ -463,43 +396,16 @@ async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHand
             }
 
             // Read just the format version (without zod-parsing the
-            // full manifest yet — we do that per-version below so the
-            // zod errors are version-appropriate).
+            // full manifest yet — we do that below so the zod errors
+            // are version-appropriate). v2 is the only supported
+            // format; v1 bundles fall through to the "unknown version"
+            // reject below.
             const formatVersion =
               parsedManifest !== null &&
               typeof parsedManifest === "object" &&
               "bundle_format_version" in parsedManifest
                 ? (parsedManifest as { bundle_format_version: unknown }).bundle_format_version
                 : undefined;
-
-            if (formatVersion === 1) {
-              const v1Validation = validateBundleZipEntryNames(allNames);
-              if (!v1Validation.ok) {
-                zipFile.close();
-                return reject(
-                  new Error(
-                    `bundle-store: bundle ${bundlePath} failed v1 central-directory validation`
-                  )
-                );
-              }
-              const v1Entries = new Map<BundleEntryName, yauzl.Entry>();
-              for (const name of BUNDLE_ENTRY_ALLOWLIST) {
-                const entry = entriesByName.get(name);
-                if (entry !== undefined) v1Entries.set(name, entry);
-              }
-              let manifest: BundleManifestV1;
-              try {
-                manifest = BundleManifestV1.parse(parsedManifest);
-              } catch {
-                zipFile.close();
-                return reject(
-                  new Error(
-                    `bundle-store: bundle ${bundlePath} v1 manifest failed schema validation`
-                  )
-                );
-              }
-              return resolve({ version: 1, manifest, entries: v1Entries, zipFile });
-            }
 
             if (formatVersion === 2) {
               const v2Validation = validateBundleZipEntryNamesV2(allNames);
@@ -590,15 +496,6 @@ export type BundleView = {
 export async function readBundleView(bundlePath: string): Promise<BundleView> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version === 1) {
-      return {
-        version: 1,
-        capture_id: handle.manifest.capture_id,
-        canvas: handle.manifest.source_dimensions,
-        paired_png_filename: handle.manifest.paired_png_filename,
-        bundle_modified_at: handle.manifest.bundle_modified_at
-      };
-    }
     return {
       version: 2,
       capture_id: handle.manifest.capture_id,
@@ -612,14 +509,13 @@ export async function readBundleView(bundlePath: string): Promise<BundleView> {
 }
 
 /**
- * Read and zod-parse the bundle's `manifest.json`. Returns a
- * discriminated union — callers that need version-specific fields
- * branch on `bundle_format_version`. Most callers should use
- * `readBundleView` instead.
+ * Read and zod-parse the bundle's `manifest.json`. v2 is the only
+ * supported format — a v1 file fails to parse in `openAndValidateBundle`.
+ * Most callers should use `readBundleView` instead.
  */
 export async function readBundleManifest(
   bundlePath: string
-): Promise<BundleManifestV1 | BundleManifestV2> {
+): Promise<BundleManifestV2> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
     return handle.manifest;
@@ -629,17 +525,11 @@ export async function readBundleManifest(
 }
 
 /**
- * Read and zod-parse the bundle's `document.json` (v2 only). Errors
- * cleanly when called on a v1 bundle.
+ * Read and zod-parse the bundle's `document.json`.
  */
 export async function readBundleDocument(bundlePath: string): Promise<BundleDocumentV2> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version !== 2) {
-      throw new Error(
-        `bundle-store: readBundleDocument called on a v${handle.version} bundle (document.json is v2-only)`
-      );
-    }
     const documentEntry = handle.entries.get("document.json");
     if (documentEntry === undefined) {
       throw new Error("bundle-store: validated v2 bundle missing document.json (impossible)");
@@ -670,11 +560,6 @@ export async function readSourceFromBundle(
 ): Promise<Buffer> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version !== 2) {
-      throw new Error(
-        `bundle-store: readSourceFromBundle called on a v${handle.version} bundle (sources/ entries are v2-only)`
-      );
-    }
     const entry = handle.entries.get(`sources/${sha}.png`);
     if (entry === undefined) {
       // Generic message — does not echo the requested sha, which is
@@ -694,33 +579,6 @@ export async function readSourceFromBundle(
       );
     }
     return bytes;
-  } finally {
-    handle.zipFile.close();
-  }
-}
-
-/**
- * Extract one v1 entry from a validated bundle as a Buffer. v1-only —
- * v2 sources go through `readSourceFromBundle` for content-integrity
- * verification; other v2 entries (layers/*, composite.png) get their
- * own entrypoint when first consumed.
- */
-export async function readBundleEntry(
-  bundlePath: string,
-  entryName: BundleEntryName
-): Promise<Buffer> {
-  const handle = await openAndValidateBundle(bundlePath);
-  try {
-    if (handle.version !== 1) {
-      throw new Error(
-        `bundle-store: readBundleEntry called on a v${handle.version} bundle (v1-only entrypoint)`
-      );
-    }
-    const entry = handle.entries.get(entryName);
-    if (entry === undefined) {
-      throw new Error(`bundle-store: validated bundle missing ${entryName} (impossible)`);
-    }
-    return await readEntryToBuffer(handle.zipFile, entry);
   } finally {
     handle.zipFile.close();
   }

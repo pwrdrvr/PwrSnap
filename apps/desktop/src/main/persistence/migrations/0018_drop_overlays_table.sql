@@ -1,0 +1,35 @@
+-- 0018_drop_overlays_table — removes the v1 `overlays` table.
+--
+-- The `overlays` table was the v1 edit-storage substrate: one row per
+-- annotation (arrow / rect / text / highlight / blur / crop / step),
+-- read by the v1 linear compositor and written through the
+-- `overlays:*` IPC verbs. v2 captures store their edits in the
+-- layer-tree (`layers` table + the v2 bundle's document.json) instead.
+--
+-- By the time this migration lands the entire v1 path is gone:
+--   • the v1 read path (compose.ts linear compositor, the coordinator's
+--     v1 branch) was removed,
+--   • the v1 write path (overlays-repo, the overlays:* handlers/verbs,
+--     legacy-bundle-migration, bundle-store's v1 pack/read arms) was
+--     removed,
+--   • the eager boot sweep already converted every v1 image capture to
+--     v2, so production libraries hold zero v1 image rows.
+--
+-- Nothing in the codebase reads or writes this table anymore, so it is
+-- dead storage. Dropping it reclaims the rows + the two indexes
+-- (idx_overlays_capture_live, idx_overlays_capture_pending), which
+-- SQLite removes automatically with the table.
+--
+-- Safety:
+--   • `overlays` is a CHILD of `captures` (overlays.capture_id →
+--     captures.id) and the PARENT of no other table's foreign key — its
+--     only inbound reference is the self-FK `superseded_by → overlays`.
+--     So DROP is safe even with `PRAGMA foreign_keys = ON` (the runtime
+--     default): no other table's FK is invalidated.
+--   • `IF EXISTS` keeps the migration idempotent / tolerant of a DB
+--     where the table was already removed out-of-band.
+--   • captures.hardDeleteCapture previously relied on this table's
+--     `ON DELETE CASCADE` to clean child rows; with the table gone the
+--     cascade simply has nothing to do.
+
+DROP TABLE IF EXISTS overlays;

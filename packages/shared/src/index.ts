@@ -10,7 +10,6 @@ export * from "./result";
 export * from "./ipc";
 export * from "./arrow";
 export * from "./appearance-arg";
-export * from "./bundle-manifest-schema";
 export * from "./bundle-manifest-schema-v2";
 export * from "./clipboard-layer-fragment";
 export * from "./text-glyph-size";

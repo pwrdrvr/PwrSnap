@@ -1,61 +1,73 @@
-// Off-main-thread composite-thumbnail encoder.
+// Long-lived off-main-thread composite-thumbnail encoder.
 //
-// Runs the bundle's `composite_thumbnail.jpg` sharp pipeline (PNG
-// decode → resize → mozjpeg encode) on a worker_thread so the Chromium
-// main thread never blocks on libvips. This matters most during the
-// boot-time v1→v2 sweep, which builds a thumbnail per capture across the
-// whole library; running that decode on the main thread concurrently
-// with renderer/GPU bring-up was crashing the process (native abort in
-// CrBrowserMain). Mirrors `paste-image-worker.ts`.
+// ── PwrSnap's reference pattern for migration-time image work ─────────
+// This is the template for moving repeated libvips/sharp work off the
+// Chromium main thread during a bulk migration sweep. A SINGLE worker is
+// spawned once and reused for the whole batch (see
+// composite-thumbnail-worker-client.ts), so libvips initializes once per
+// worker rather than once per item — the thing that makes a one-shot-
+// per-item design pathological on a large library. Requests are
+// correlated by `id` so the worker can stream a result back as each
+// encode finishes; concurrent in-flight encodes are fine (sharp runs on
+// libvips' own threadpool, off this worker's JS thread).
 //
-// Protocol (parent → worker on construction via workerData):
+// When this particular v1→v2 migration is eventually deleted, keep this
+// worker/client pair as the blueprint: a dependency-thin sharp module,
+// a reusable worker, and a client that owns lifecycle + crash recovery.
 //
-//   { pngBytes: Uint8Array }
+// Protocol (parent ⇄ worker, over parentPort):
+//   parent → worker:  { id: number; pngBytes: Uint8Array }
+//   worker → parent:  { id: number; ok: true;  jpegBytes: Uint8Array }
+//                  |  { id: number; ok: false; message: string }
 //
-// On success the worker postMessage's:
-//
-//   { ok: true; jpegBytes: Uint8Array }
-//
-// On failure:
-//
-//   { ok: false; message: string }
-//
-// A malformed source that makes libvips abort takes down THIS worker
-// (exit ≠ 0), not the main process — the client surfaces that as a
-// rejection and the caller (the v1→v2 doctor) records it against the
-// per-capture retry budget.
+// A malformed source that makes libvips abort takes down THIS worker.
+// The client observes 'exit'/'error', rejects every in-flight request,
+// and discards the worker so the next request spawns a fresh one — so a
+// poison image fails its own item without corrupting the rest of the
+// batch.
 
-import { parentPort, workerData } from "node:worker_threads";
+import { parentPort } from "node:worker_threads";
 import { buildCompositeThumbnailInProcess } from "../image/composite-thumbnail";
 
-export type CompositeThumbnailWorkerInput = { pngBytes: Uint8Array };
+export type CompositeThumbnailWorkerRequest = {
+  id: number;
+  pngBytes: Uint8Array;
+};
 
-export type CompositeThumbnailWorkerResult =
-  | { ok: true; jpegBytes: Uint8Array }
-  | { ok: false; message: string };
+export type CompositeThumbnailWorkerResponse =
+  | { id: number; ok: true; jpegBytes: Uint8Array }
+  | { id: number; ok: false; message: string };
 
+/**
+ * Pure encode step — decode a composite PNG and return JPEG-thumbnail
+ * bytes. Throws on a sharp decode/encode failure. Exported so it can be
+ * unit-tested directly without spawning a worker.
+ */
 export async function encodeCompositeThumbnail(
-  input: CompositeThumbnailWorkerInput
-): Promise<CompositeThumbnailWorkerResult> {
-  try {
-    const jpeg = await buildCompositeThumbnailInProcess(Buffer.from(input.pngBytes));
-    return { ok: true, jpegBytes: new Uint8Array(jpeg) };
-  } catch (cause) {
-    return {
-      ok: false,
-      message: cause instanceof Error ? cause.message : String(cause)
-    };
-  }
+  pngBytes: Uint8Array
+): Promise<Uint8Array> {
+  const jpeg = await buildCompositeThumbnailInProcess(Buffer.from(pngBytes));
+  return new Uint8Array(jpeg);
 }
 
-// Worker entrypoint. The parent constructs us with `workerData` set to
-// the input; we run once and postMessage the result. No transfer list —
-// the thumbnail is small (≤ ~150 KB JPEG) so the structured-clone copy
-// is negligible, and it keeps the typing clean (matches paste worker).
+// Worker entrypoint — a message loop, not a one-shot. Each request is
+// handled independently and its result tagged with the request `id`; a
+// per-request try/catch keeps one bad encode from tearing down the
+// worker for the rest of the batch.
 if (parentPort !== null) {
-  const input = workerData as CompositeThumbnailWorkerInput;
-  void encodeCompositeThumbnail(input).then((result) => {
-    if (parentPort === null) return;
-    parentPort.postMessage(result);
+  const port = parentPort;
+  port.on("message", (req: CompositeThumbnailWorkerRequest) => {
+    encodeCompositeThumbnail(req.pngBytes).then(
+      (jpegBytes) => {
+        port.postMessage({ id: req.id, ok: true, jpegBytes });
+      },
+      (cause: unknown) => {
+        port.postMessage({
+          id: req.id,
+          ok: false,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    );
   });
 }

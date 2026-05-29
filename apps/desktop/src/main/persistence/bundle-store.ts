@@ -263,15 +263,17 @@ export { COMPOSITE_THUMBNAIL_MAX_DIM_PX } from "../image/composite-thumbnail";
  * `composite_thumbnail.jpg` entry. Always returns a Buffer — never
  * null.
  *
- * Runs the sharp decode/resize/encode on a worker thread when the
- * compiled worker bundle is available (packaged + dev builds), keeping
- * libvips off the Chromium main thread — this is what the boot-time
- * v1→v2 sweep relies on to avoid a native abort while windows are
- * coming up. Under vitest (no worker bundle built) it falls back to the
- * in-process pipeline, so unit tests need no worker setup. A worker-
- * level failure (e.g. a malformed source that aborts libvips) rejects
- * rather than falling back — that isolates a poison image to the worker
- * instead of re-running it on the main thread.
+ * Runs the sharp decode/resize/encode on a shared, reused worker thread
+ * when the compiled worker bundle is available (packaged + dev builds),
+ * keeping libvips off the Chromium main thread — this is what the boot-
+ * time v1→v2 sweep relies on to avoid a native abort while windows are
+ * coming up. The worker is spawned once and reused across the batch (one
+ * libvips init, not one per capture). Under vitest (no worker bundle
+ * built) it falls back to the in-process pipeline, so unit tests need no
+ * worker setup. A worker-level failure (e.g. a malformed source that
+ * aborts libvips) rejects rather than falling back — that fails the one
+ * capture and respawns a clean worker for the rest, instead of re-
+ * running the poison image on the main thread.
  *
  * Why a thumbnail at all: the Finder Thumbnail Extension's fallback
  * chain ends in `composite_thumbnail.jpg → composite.png → source.png →

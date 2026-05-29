@@ -28,16 +28,28 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import {
+  ArrowOverlay,
   BundleLayerNode,
   CanvasRect,
-  Overlay,
-  regionShapeSchema,
+  drawShapeSchema,
+  HighlightOverlay,
+  TextOverlay,
   type CaptureRecord,
   type CommandName,
   type Req
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
+
+/** What `add_annotation` accepts — connectors + labels + emphasis.
+ *  Geometric shapes (rect, and soon circle/oval/square/triangle) go
+ *  through the dedicated `draw_shape` tool instead, so there's one
+ *  obvious way to draw each thing. */
+const annotationShapeSchema = z.discriminatedUnion("kind", [
+  ArrowOverlay,
+  TextOverlay,
+  HighlightOverlay
+]);
 
 /** Run one bus verb and map the Result to a ToolDispatchResult. */
 async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
@@ -251,10 +263,11 @@ const listLayerCapabilities = defineTool({
     ok: true,
     data: {
       coordinate_system: "normalized [0,1] of the canvas; (0,0)=top-left, (1,1)=bottom-right",
-      annotation_kinds: ["arrow", "rect", "text", "highlight"],
+      add_annotation_kinds: ["arrow", "text", "highlight"],
+      draw_shape_types: ["rect"],
+      planned_draw_shape_types: ["circle", "oval", "square", "triangle"],
       redaction: {
-        region_shapes: ["rect"],
-        planned_region_shapes: ["circle", "oval", "square", "triangle"],
+        region: "rectangular ({x,y,w,h})",
         styles: {
           redact: "opaque blackout — IRREVERSIBLE, use for secrets",
           pixelate: "reversible — non-secret content only",
@@ -278,9 +291,9 @@ const addAnnotation = defineTool({
   namespace: "pwrsnap_library",
   name: "add_annotation",
   description:
-    "Add an annotation to a capture: an arrow, rectangle, text label, or highlight. The `shape` uses NORMALIZED coordinates in [0,1] (0,0 = top-left, 1,1 = bottom-right). Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer including its id.",
+    "Add a connector/label annotation: an arrow, a text label, or a highlight. (For geometric shapes — rectangles, and soon circles/ovals/triangles — use draw_shape.) The `shape` uses NORMALIZED coordinates in [0,1] (0,0 = top-left, 1,1 = bottom-right). Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer including its id.",
   annotations: { destructiveHint: false },
-  argsSchema: z.object({ capture_id: z.string(), shape: Overlay }),
+  argsSchema: z.object({ capture_id: z.string(), shape: annotationShapeSchema }),
   dispatch: async (args) => {
     const node = {
       ...commonLayerProps(`AI ${args.shape.kind}`),
@@ -299,15 +312,56 @@ const addAnnotation = defineTool({
   }
 });
 
+const drawShape = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_shape",
+  description:
+    "Draw a geometric shape on a capture. `shape` is discriminated on `type`; today the only type is \"rect\" (x,y = top-left, w,h = size, all NORMALIZED [0,1]; optional `color` #rrggbb + `filled`). Circles, ovals, squares, and triangles are coming — same `shape.type` field. Stoplight colors: red=problem, green=fix, yellow=warning, blue=context. Returns the created layer.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({ capture_id: z.string(), shape: drawShapeSchema }),
+  dispatch: async (args) => {
+    const { shape } = args;
+    // `rect` is the only shape today. circle/oval/square/triangle add
+    // cases here (and a matching Overlay kind + renderer support) later.
+    if (shape.type !== "rect") {
+      return { ok: false, error: `shape "${shape.type}" isn't supported yet — use type "rect"` };
+    }
+    const node = {
+      ...commonLayerProps("AI rect"),
+      kind: "vector" as const,
+      shape: {
+        kind: "rect" as const,
+        rect: { x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+        color: shape.color ?? ("auto" as const),
+        ...(shape.filled !== undefined ? { filled: shape.filled } : {})
+      }
+    };
+    const parsed = BundleLayerNode.safeParse(node);
+    if (!parsed.success) {
+      return { ok: false, error: `built an invalid shape layer: ${parsed.error.message}` };
+    }
+    return runVerb("layers:upsert", {
+      captureId: args.capture_id,
+      layer: parsed.data,
+      bumpZIndexToMax: true
+    });
+  }
+});
+
 const addRedaction = defineTool({
   namespace: "pwrsnap_library",
   name: "add_redaction",
   description:
-    "Redact a region of a capture. `shape` is a discriminated shape; today the only `type` is \"rect\" with NORMALIZED [0,1] coords (x,y = top-left corner, w,h = size). Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the shape slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
+    "Redact a rectangular region of a capture. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left corner, w,h = size). Default style 'redact' is an OPAQUE BLACKOUT — irreversible, the correct choice for secrets (API keys, passwords, account/card/SSN numbers). 'pixelate' and 'gaussian' are REVERSIBLE — only for non-secret content (a face, a logo). Pad the rect slightly beyond the text so anti-aliased edges don't leak. Returns the created layer.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
-    shape: regionShapeSchema,
+    rect: z.object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      w: z.number().min(0).max(1),
+      h: z.number().min(0).max(1)
+    }),
     style: z.enum(["redact", "pixelate", "gaussian"]).optional(),
     radius_px: z.number().positive().max(200).optional()
   }),
@@ -317,18 +371,11 @@ const addRedaction = defineTool({
       return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
     }
     if (meta.value === null) return { ok: false, error: `capture not found: ${args.capture_id}` };
-    // The underlying EffectLayer clip is rectangular. `rect` is the only
-    // region type today; circle/oval/triangle add cases here (and grow
-    // the layer-model clip) when they ship.
-    const { shape } = args;
-    if (shape.type !== "rect") {
-      return { ok: false, error: `redaction shape "${shape.type}" isn't supported yet — use type "rect"` };
-    }
     const clip = CanvasRect.safeParse({
-      x: shape.x * meta.value.width_px,
-      y: shape.y * meta.value.height_px,
-      w: shape.w * meta.value.width_px,
-      h: shape.h * meta.value.height_px
+      x: args.rect.x * meta.value.width_px,
+      y: args.rect.y * meta.value.height_px,
+      w: args.rect.w * meta.value.width_px,
+      h: args.rect.h * meta.value.height_px
     });
     if (!clip.success) {
       return { ok: false, error: `invalid redaction rect: ${clip.error.message}` };
@@ -412,6 +459,7 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   openEditor,
   // edit
   addAnnotation,
+  drawShape,
   addRedaction,
   deleteLayer,
   reorderLayer,

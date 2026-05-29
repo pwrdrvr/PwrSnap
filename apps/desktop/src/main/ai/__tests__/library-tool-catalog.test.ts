@@ -52,6 +52,7 @@ describe("library tool allowlist", () => {
         "open_in_library",
         "open_editor",
         "add_annotation",
+        "draw_shape",
         "add_redaction",
         "delete_layer",
         "reorder_layer",

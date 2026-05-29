@@ -175,22 +175,25 @@ export type ChatApprovalRequest = {
   detail?: string;
 };
 
-// ---- Region shapes (redaction, future shape annotations) ---------------
+// ---- Drawing shapes (the geometric-shape drawing tool) -----------------
 //
-// A geometric region the agent can target. A DISCRIMINATED UNION on
-// `type` so new shapes (circle / oval / square / triangle) slot in
-// later as additional members WITHOUT a breaking change to the tool
-// protocol — adding a member is backward-compatible. Today the only
-// member is `rect`; that's intentional (the underlying EffectLayer
-// clip is rectangular). When a non-rect region ships, add its member
-// here AND teach the dispatch + the layer model how to clip it.
+// The agent's geometric drawing primitive (the `draw_shape` tool). A
+// DISCRIMINATED UNION on `type` so new shapes (circle / oval / square /
+// triangle) slot in later as additional members WITHOUT a breaking
+// change to the tool protocol — adding a member is backward-compatible.
+// Today the only member is `rect`; that's intentional (the renderer +
+// the v2 layer model only draw rectangles so far). When a new shape
+// ships, add its member here AND teach the dispatch + the renderer how
+// to draw it.
+//
+// This is distinct from `add_annotation` (arrows / text / highlight —
+// connectors and labels) and from redaction regions (a plain rect).
 //
 // All coordinates are NORMALIZED to [0,1] of the capture's canvas:
 // (x, y) is the top-left corner, (w, h) the size. Resolution-
-// independent — the tool dispatch multiplies by the capture's pixel
-// dimensions at use time.
+// independent — placement is the same at any capture resolution.
 
-export const regionRectSchema = z.object({
+export const drawShapeRectSchema = z.object({
   type: z.literal("rect"),
   /** Left edge, normalized [0,1]. */
   x: z.number().min(0).max(1),
@@ -199,14 +202,20 @@ export const regionRectSchema = z.object({
   /** Width, normalized [0,1]. */
   w: z.number().min(0).max(1),
   /** Height, normalized [0,1]. */
-  h: z.number().min(0).max(1)
+  h: z.number().min(0).max(1),
+  /** Stroke/fill color as #rrggbb. Omit to let PwrSnap auto-pick from
+   *  the image. Stoplight convention: red=problem, green=fix,
+   *  yellow=warning, blue=context. */
+  color: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
+  /** Solid fill when true; outline-only when false/omitted. */
+  filled: z.boolean().optional()
 });
 
-/** Extensible region shape. One member (`rect`) today; circle / oval /
+/** Extensible drawing shape. One member (`rect`) today; circle / oval /
  *  square / triangle are planned additions (member-only changes). */
-export const regionShapeSchema = z.discriminatedUnion("type", [
-  regionRectSchema
-  // soon: regionCircleSchema { type:"circle", cx, cy, r },
-  //       regionOvalSchema, regionTriangleSchema, …
+export const drawShapeSchema = z.discriminatedUnion("type", [
+  drawShapeRectSchema
+  // soon: drawShapeCircleSchema { type:"circle", cx, cy, r },
+  //       drawShapeOvalSchema, drawShapeSquareSchema, drawShapeTriangleSchema, …
 ]);
-export type RegionShape = z.infer<typeof regionShapeSchema>;
+export type DrawShape = z.infer<typeof drawShapeSchema>;

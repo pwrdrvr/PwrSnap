@@ -26,7 +26,7 @@ import { installBroadcaster } from "../../events";
 import { getDataRoot, getPerfRoot } from "../../persistence/paths";
 import { getMainLogger } from "../../log";
 import { getDb, openDatabase } from "../../persistence/db";
-import { compose } from "../../render/compose";
+import { renderViaCoordinator } from "../../render/coordinator";
 import { findMainLibraryWindow } from "../../window";
 import { createSentinel, wipeDataRoot } from "./wipe";
 import {
@@ -98,10 +98,11 @@ type ThumbRenderJob = {
 };
 
 async function renderOneThumb(job: ThumbRenderJob): Promise<void> {
-  // compose() handles cache-hit / cache-miss / atomic write itself.
-  // We don't go through the coordinator (which de-dupes concurrent
-  // calls) because the seeder dispatches each captureId exactly once.
-  await compose({
+  // renderViaCoordinator walks the capture's v2 layer tree (the only
+  // bundle format) and writes the cache file itself. It reads the
+  // bundle from the DB record, so the srcPath / dims passed here are
+  // ignored — they're kept only to satisfy the RenderRequest shape.
+  await renderViaCoordinator({
     captureId: job.captureId,
     srcPath: job.srcPath,
     imageWidthPx: job.widthPx,

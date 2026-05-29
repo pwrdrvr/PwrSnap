@@ -8,7 +8,6 @@ import { SettingsApp } from "./features/settings/SettingsApp";
 import { SizzleApp } from "./features/sizzle/SizzleApp";
 import { TrayMenu } from "./features/tray/TrayMenu";
 import { AppUpdateBanner } from "./features/update/AppUpdateBanner";
-import { LegacyMigrationBanner } from "./features/library/LegacyMigrationBanner";
 import { RendererErrorBoundary } from "./RendererErrorBoundary";
 import { useAppearanceSync } from "./lib/useAppearance";
 
@@ -137,7 +136,6 @@ export function App() {
     return (
       <div className="app-shell">
         <AppUpdateBanner />
-        <LegacyMigrationBanner />
         <Library />
       </div>
     );

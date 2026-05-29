@@ -8,7 +8,6 @@
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
-import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -1149,26 +1148,6 @@ export type AppUpdateInstallResult =
   | { status: "restarting" }
   | { status: "error"; message: string };
 
-/**
- * Progress payload for `events:legacy-bundle-migration:progress`. Fired
- * by the one-shot legacy → v1-bundle wrapper on first boot post-bundle-
- * format. Library shows an "Upgrading library…" banner while status is
- * "running"; banner auto-dismisses on "complete".
- *
- *   • `total` — rows the runner queued at start. Includes parked
- *     (exhausted-retry) rows in the count so the user sees a stable
- *     denominator even across boots that find new attempts.
- *   • `done` — rows that have either succeeded OR been parked
- *     (giving up after MAX_ATTEMPTS). Both count toward "done" since
- *     neither will be retried this run.
- *   • `failed` — subset of `done` that failed (parked or transient).
- *     A run with `failed > 0` after `status === "complete"` is worth
- *     surfacing as a one-time toast.
- */
-export type LegacyBundleMigrationProgress =
-  | { status: "running"; total: number; done: number; failed: number }
-  | { status: "complete"; total: number; done: number; failed: number };
-
 export type AppUpdateReleaseInfo = {
   version?: string;
   name?: string;
@@ -1435,19 +1414,6 @@ export type Commands = {
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
 
-  /** Current status of the legacy-bundle migration, or `null` if no
-   *  migration has run this boot. The migration also broadcasts live
-   *  updates via `EVENT_CHANNELS.legacyBundleMigrationProgress`; this
-   *  verb exists to recover from the cold-start race where the
-   *  renderer's banner mounts AFTER the first progress events were
-   *  sent (and thus dropped — `webContents.send` is fire-and-forget,
-   *  not buffered). The banner queries this on mount to pick up the
-   *  current snapshot, then watches the event channel for updates. */
-  "migration:status": {
-    req: Record<string, never>;
-    res: LegacyBundleMigrationProgress | null;
-  };
-
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
   "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };
@@ -1456,39 +1422,6 @@ export type Commands = {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
   };
-
-  // ---- overlays (v1 captures only) ----
-  "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
-  /** Insert an overlay row. The repo mints a fresh id (nanoid) and
-   *  stamps `applied_at` / `created_at` server-side.
-   *
-   *  `zIndex` (optional, default omitted) preserves the caller's exact
-   *  z_index for the new row. When omitted, the repo auto-bumps to
-   *  `MAX(existing z_index for this capture) + Z_INDEX_INSERT_GAP` so
-   *  fresh draws land at the top of the stack. Update-in-place callers
-   *  (updateGeometry / updateOverlay) pass the row's PREVIOUS z_index
-   *  here so drag-drop / nudge / style-patch preserves stacking; undo
-   *  restore passes the snapshotted z_index so a deleted row comes
-   *  back at its original position, not on top.
-   *
-   *  Pre-fix the IPC didn't carry `zIndex` at all — every overlays:upsert
-   *  hit the auto-bump path. updateGeometry was the user-visible
-   *  manifestation: drag-dropping a Sent-to-Back rect jumped it back to
-   *  the top because the dispatcher's delete-plus-insert sequence had
-   *  no way to tell the repo "keep this layer at z = 0." */
-  "overlays:upsert": {
-    req: { captureId: string; overlay: Overlay; zIndex?: number };
-    res: OverlayRow;
-  };
-  "overlays:delete": { req: { id: string }; res: void };
-  /** Update an overlay's `z_index`. Mirrors `layers:reorder` for v1
-   *  captures so the renderer can use the same `kind: "reorder"`
-   *  dispatch op across both formats without format-specific
-   *  branching. The handler computes the new value; the renderer
-   *  picks values with gap (~1000-step) so most reorders avoid
-   *  re-numbering neighbors. Atomic UPDATE on z_index; id preserved
-   *  (unlike upsert which would churn the id on every move). */
-  "overlays:reorder": { req: { id: string; zIndex: number }; res: void };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is

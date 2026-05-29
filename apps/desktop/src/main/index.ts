@@ -54,7 +54,6 @@ import {
 } from "./recording/recording-permissions";
 import { getRecordingService } from "./recording/recording-service";
 import { isRecordingActive } from "./recording/recording-state";
-import { registerOverlaysHandlers } from "./handlers/overlays-handlers";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
@@ -78,7 +77,6 @@ import { migrateLegacyCaptureSources } from "./persistence/capture-source-mainte
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
-import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -943,7 +941,6 @@ export function bootstrapApp(): void {
     registerClipboardHandlers();
     registerFloatOverHandlers();
     registerLibraryHandlers();
-    registerOverlaysHandlers();
     registerRecordingHandlers();
     registerStorageHandlers();
     registerLayersHandlers();
@@ -1227,15 +1224,6 @@ export function bootstrapApp(): void {
       log.info("e2e bridge installed");
     }
     void runBootGc();
-    // Legacy-bundle migration runs in the background after window
-    // creation — first launch of the bundle-flow build wraps every
-    // pre-bundle capture into a .pwrsnap. Idempotent re-runs are
-    // free (filtered by `bundle_path IS NULL`).
-    void runLegacyBundleMigration().catch((err: unknown) => {
-      log.warn("legacy-bundle migration failed at boot", {
-        message: err instanceof Error ? err.message : String(err)
-      });
-    });
 
     app.on("activate", () => {
       // Fired when the user clicks the dock icon. Since the dock

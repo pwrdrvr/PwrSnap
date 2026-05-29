@@ -18,8 +18,7 @@ const mocks = vi.hoisted(() => ({
   getCaptureById: vi.fn<(id: string) => unknown>(),
   createEditWindow: vi.fn(),
   createMainWindow: vi.fn(),
-  findMainLibraryWindow: vi.fn(),
-  getLegacyMigrationProgress: vi.fn(() => null)
+  findMainLibraryWindow: vi.fn()
 }));
 
 vi.mock("../../persistence/captures-repo", () => ({
@@ -57,10 +56,6 @@ vi.mock("../../window", () => ({
   createEditWindow: mocks.createEditWindow,
   createMainWindow: mocks.createMainWindow,
   findMainLibraryWindow: mocks.findMainLibraryWindow
-}));
-
-vi.mock("../../persistence/legacy-bundle-migration", () => ({
-  getLegacyMigrationProgress: mocks.getLegacyMigrationProgress
 }));
 
 vi.mock("electron", () => ({

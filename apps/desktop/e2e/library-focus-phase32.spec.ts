@@ -120,18 +120,20 @@ test.skip("library-focus-phase32: lifted hook + crop + selection", async ({}, te
 
     await screenshot(testInfo, win, "03-arrow-drawn.png");
 
-    // Inspect the persisted overlay via the bus — the color field
-    // should be the red hex we picked, not "auto" (the pre-3.2 bug).
-    const list = await app.dispatch("overlays:list", { captureId });
+    // Inspect the persisted layer tree via the bus — the committed
+    // vector-arrow layer's color field should be the red hex we
+    // picked, not "auto" (the pre-3.2 bug).
+    const list = await app.dispatch("layers:list", { captureId });
     expect(list.ok).toBe(true);
     if (list.ok) {
-      const arrowRows = list.value.filter((r) => r.data.kind === "arrow");
-      expect(arrowRows.length, "exactly one arrow committed").toBe(1);
-      const ar = arrowRows[0]?.data;
-      expect(ar?.kind).toBe("arrow");
-      if (ar?.kind === "arrow") {
+      const arrowLayers = list.value.filter(
+        (r) => r.kind === "vector" && r.shape.kind === "arrow"
+      );
+      expect(arrowLayers.length, "exactly one arrow committed").toBe(1);
+      const ar = arrowLayers[0];
+      if (ar?.kind === "vector" && ar.shape.kind === "arrow") {
         expect(
-          ar.color,
+          ar.shape.color,
           "lifted hook should have routed red into persistOverlay"
         ).not.toBe("auto");
       }
@@ -219,16 +221,16 @@ test.skip("library-focus-phase32: lifted hook + crop + selection", async ({}, te
     await win.keyboard.press("Delete");
     await win.waitForTimeout(500);
 
-    const listAfterDelete = await app.dispatch("overlays:list", {
+    const listAfterDelete = await app.dispatch("layers:list", {
       captureId
     });
     expect(listAfterDelete.ok).toBe(true);
     if (listAfterDelete.ok) {
-      const arrowRowsAfter = listAfterDelete.value.filter(
-        (r) => r.data.kind === "arrow"
+      const arrowLayersAfter = listAfterDelete.value.filter(
+        (r) => r.kind === "vector" && r.shape.kind === "arrow"
       );
       expect(
-        arrowRowsAfter.length,
+        arrowLayersAfter.length,
         "arrow should be soft-deleted from the bus list"
       ).toBe(0);
     }

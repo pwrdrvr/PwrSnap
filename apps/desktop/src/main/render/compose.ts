@@ -1,29 +1,21 @@
-// Sharp-based render pipeline with overlay bake. Composes applied
-// overlays onto the source image, then resizes + encodes at the
-// target width/format, atomically writing the result to disk.
+// Overlay-shape SVG generators + pixel-accurate rasterizer, shared
+// with the v2 tree-walking compositor (render/compose-tree-vector.ts).
 //
-// Pipeline shape (per Phase 2 plan §"Render bake"):
+// This module USED to host the v1 linear compositor (`compose()`)
+// alongside these SVG helpers. The v1 read/write path has been
+// retired — every capture is a v2 layer-tree bundle — so the linear
+// compositor, its blur-region extractor, and the overlays-table read
+// are gone. What remains is the SVG-generation + rasterize discipline
+// that v2 reuses verbatim: the wire format is identical (a
+// VectorLayer.shape IS the same Overlay discriminated union as the
+// old OverlayRow.data).
 //
-//   sharp(srcPath)
-//     .composite([overlaySvgs])     ← arrows, rects, text, blur, etc.
-//     .resize(width)
-//     .png() | .webp()
-//
-// Compositing happens at SOURCE resolution then resizes to the
-// target. This preserves the overlays' relationship to the image
-// (e.g. an arrow's stroke-by-image-short-side stays correct), and
-// libvips fuses the demand-driven graph into a single pass —
-// chaining .toBuffer() between hops would force materialization
-// at each step.
-//
-// Cache key is the `render_inputs_hash` over (format, width,
-// applied overlays canonical form), so the cache stays honest
-// across overlay edits without manually invalidating files. The
-// coordinator computes the same hash and looks up by it.
+// Each `*Svg` function takes an overlay's `data` blob + the canvas
+// pixel dimensions and returns an SVG string sized to exactly
+// `imageWidthPx × imageHeightPx`. `rasterize` turns that SVG into a
+// raw-RGBA sharp composite layer with explicit dimensions so sharp's
+// `composite` never rejects it for being larger than the base image.
 
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import sharp from "sharp";
 import type { ArrowEndStyle, OverlayRow } from "@pwrsnap/shared";
 import {
@@ -32,7 +24,6 @@ import {
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
-  readBlurStyle,
   readHighlightBlend,
   readHighlightColor,
   readHighlightOpacity,
@@ -41,13 +32,6 @@ import {
   readRectFilled,
   readTextWeight
 } from "@pwrsnap/shared";
-import { getCacheRoot } from "../persistence/paths";
-import { listLiveOverlays } from "../persistence/overlays-repo";
-import { getMainLogger } from "../log";
-import { optimizePngBuffer } from "../image/png-optimize";
-import { computeRenderHash } from "./overlay-hash";
-
-const log = getMainLogger("pwrsnap:render");
 
 // Main process can't read CSS vars, so the overlay-render default
 // for `color: "auto"` mirrors --accent from the design tokens.
@@ -79,231 +63,6 @@ export type RenderResult = {
 };
 
 /**
- * Compose-on-demand. Idempotent; concurrent calls for the same
- * (captureId, hash, format) coalesce via the RenderCoordinator
- * (see ./coordinator.ts).
- */
-export async function compose(req: RenderRequest): Promise<RenderResult> {
-  // Pull applied overlays in z-order. listLiveOverlays already
-  // filters applied_at IS NOT NULL AND rejected_at IS NULL AND
-  // superseded_by IS NULL.
-  const overlays = listLiveOverlays(req.captureId);
-
-  const renderHash = computeRenderHash({
-    format: req.format,
-    width: req.width,
-    appliedOverlays: overlays
-  });
-
-  const cacheDir = join(getCacheRoot(), req.captureId);
-  const fileName = `${renderHash}.${req.format}`;
-  const cachePath = join(cacheDir, fileName);
-
-  if (existsSync(cachePath)) {
-    const stats = await stat(cachePath);
-    return {
-      cachePath,
-      byteSize: stats.size,
-      fromCache: true,
-      renderHash,
-      overlayCount: overlays.length
-    };
-  }
-
-  await mkdir(cacheDir, { recursive: true });
-
-  // Read the source's ACTUAL pixel dimensions via sharp.metadata
-  // rather than trusting `req.imageWidthPx`/`imageHeightPx` from
-  // the DB. These should match (source-store.ts populates the DB
-  // from sharp.metadata at insert time), BUT a few things can
-  // make them drift:
-  //   • PNGs with `pHYs` density chunks can be re-read at scaled
-  //     dimensions on certain sharp/libvips versions.
-  //   • A migration that updated the row without re-probing the
-  //     file could go stale.
-  //   • A future re-encode would change the file without bumping
-  //     the row.
-  // Since the composite layers MUST match the base's dimensions
-  // (sharp throws "Image to composite must have same dimensions or
-  // smaller" otherwise), reading the truth from sharp at this
-  // exact moment is the only safe input.
-  const srcMeta = await sharp(req.srcPath).metadata();
-  const srcWidthPx = srcMeta.width;
-  const srcHeightPx = srcMeta.height;
-  if (srcWidthPx === undefined || srcHeightPx === undefined) {
-    throw new Error(`compose: sharp.metadata produced no dimensions for ${req.srcPath}`);
-  }
-
-  // Build composite layers. Each entry is either an SVG buffer at
-  // source pixel resolution OR (for blur overlays) a pre-blurred
-  // raster buffer extracted from the source. Sharp paints them on
-  // top of the base image before the resize.
-  //
-  // Blur overlays use mask-style blur per region — we extract the
-  // rect from the source, blur it, and composite back at the same
-  // top/left. This is ~30× cheaper than full-source blur + mask
-  // (per the plan §"Render bake") and produces the right behavior
-  // when multiple non-overlapping blur regions are stacked.
-  const compositeLayers: sharp.OverlayOptions[] = [];
-  for (const row of overlays) {
-    const layers = await buildCompositeLayers(row, req.srcPath, srcWidthPx, srcHeightPx);
-    for (const layer of layers) {
-      compositeLayers.push(layer);
-    }
-  }
-
-  // CRITICAL: sharp's pipeline applies operations in a specific
-  // ORDER, NOT in method-chain order. Per sharp docs, composite
-  // happens AFTER resize/extract/etc. So writing
-  //   sharp(src).composite(layers).resize(140)
-  // actually executes:
-  //   1. read source (3710×1892)
-  //   2. resize to 140 wide → ~71×36
-  //   3. composite 3710×1892 layers onto 71×36 → throws
-  //      "Image to composite must have same dimensions or smaller"
-  //
-  // The fix is to materialize the composite at SOURCE resolution
-  // first (one sharp pass), then resize the composited buffer in a
-  // second sharp pass. The two-pass cost is ~5-10ms — acceptable;
-  // the cache file is reused across all subsequent reads.
-  //
-  // The intermediate format is raw RGBA so we don't pay PNG/WEBP
-  // encode/decode round-trip cost between passes.
-  let bufForResize: Buffer;
-  let intermediateRaw: sharp.CreateRaw | null = null;
-  if (compositeLayers.length > 0) {
-    bufForResize = await sharp(req.srcPath)
-      .composite(compositeLayers)
-      .ensureAlpha()
-      .raw()
-      .toBuffer();
-    intermediateRaw = { width: srcWidthPx, height: srcHeightPx, channels: 4 };
-  } else {
-    // No overlays — skip the materialize step; sharp can resize
-    // straight from disk in one pass.
-    bufForResize = await readFile(req.srcPath);
-  }
-
-  const resizePipeline =
-    intermediateRaw !== null
-      ? sharp(bufForResize, { raw: intermediateRaw })
-      : sharp(bufForResize);
-
-  // Resize-kernel selection. The default (lanczos3) is the right call
-  // for photographic content — sharp edges, good anti-aliasing. But
-  // pixelate blur overlays are baked into the source-resolution
-  // composite as crisp mosaic blocks (`kernel: "nearest"` in
-  // blurLayer()); a subsequent lanczos3 downscale to thumbnail width
-  // smooths those blocks back out so the library grid renders the
-  // pixelate looking like a gaussian blur. Detect a pixelate overlay
-  // and downgrade to `nearest` for that capture's downscale — the
-  // pixelate blocks survive intact, and the rest of the image gets a
-  // slightly harsher (but still legible) thumbnail. Only applies when
-  // an actual downscale is happening; equal-width renders are
-  // pass-through.
-  const hasPixelate = overlays.some(
-    (row) => row.data.kind === "blur" && readBlurStyle(row.data) === "pixelate"
-  );
-  const downscaling = req.width < srcWidthPx;
-  const sized = resizePipeline.resize({
-    width: req.width,
-    withoutEnlargement: true,
-    ...(hasPixelate && downscaling ? { kernel: "nearest" as const } : {})
-  });
-
-  // Do not pass `effort` to Sharp's PNG encoder here: in Sharp, PNG
-  // `effort` implies palette quantization. The follow-up optimizer
-  // treats this encode as the truecolor baseline and only replaces it
-  // with exact palette output after proving raw-pixel identity.
-  const encoded =
-    req.format === "png"
-      ? await sized.png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer()
-      : await sized.webp({ lossless: true, effort: 4 }).toBuffer();
-  const buf =
-    req.format === "png"
-      ? (await optimizePngBuffer(encoded, { recompressTruecolor: false })).buffer
-      : encoded;
-
-  // Atomic write — tmp + rename so concurrent readers never see a
-  // half-written file. PID in the tmp name lets two render workers
-  // coexist on the same key (the coordinator already coalesces
-  // in-process; this guards against a future multi-process world).
-  const tmpPath = `${cachePath}.tmp-${process.pid}`;
-  await writeFile(tmpPath, buf);
-  await rename(tmpPath, cachePath);
-
-  log.info("rendered", {
-    captureId: req.captureId,
-    width: req.width,
-    format: req.format,
-    byteSize: buf.length,
-    overlayCount: overlays.length,
-    composited: compositeLayers.length,
-    renderHash
-  });
-
-  return {
-    cachePath,
-    byteSize: buf.length,
-    fromCache: false,
-    renderHash,
-    overlayCount: overlays.length
-  };
-}
-
-/**
- * Convert a single overlay row into one or more sharp composite
- * layers. Most overlay kinds produce exactly one SVG-buffer layer;
- * `blur` produces one raster-buffer layer (the pre-blurred extract).
- * Future kinds (step, crop) land in their own slices.
- *
- * IMPORTANT: SVG layers are pre-rasterized to exactly
- * `imageWidthPx × imageHeightPx` pixels. Without this, sharp's resvg
- * may render the SVG at a slightly different size due to its
- * default DPI multiplier (72 vs 96, depending on platform/version)
- * and `composite` rejects layers larger than the base image with
- * "Image to composite must have same dimensions or smaller". The
- * raster pre-step forces exact dimensions before composite.
- */
-async function buildCompositeLayers(
-  row: OverlayRow,
-  srcPath: string,
-  imageWidthPx: number,
-  imageHeightPx: number
-): Promise<sharp.OverlayOptions[]> {
-  const data = row.data;
-  switch (data.kind) {
-    case "arrow":
-      return [await rasterize(arrowSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "rect":
-      return [await rasterize(rectSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "highlight": {
-      // Highlight blend modes (multiply / screen / overlay) only take
-      // effect at the sharp composite step — the rasterized SVG alone
-      // would produce flat "over" compositing. Attach blend to the
-      // OverlayOptions after rasterize.
-      const layer = await rasterize(
-        highlightSvg(data, imageWidthPx, imageHeightPx),
-        imageWidthPx,
-        imageHeightPx
-      );
-      return [{ ...layer, blend: highlightBlendMode(data) }];
-    }
-    case "text":
-      return [await rasterize(textSvg(data, imageWidthPx, imageHeightPx), imageWidthPx, imageHeightPx)];
-    case "blur": {
-      const layer = await blurLayer(data, srcPath, imageWidthPx, imageHeightPx);
-      return layer === null ? [] : [layer];
-    }
-    case "step":
-    case "crop":
-      return [];
-    default:
-      return [];
-  }
-}
-
-/**
  * Render an SVG string to a RAW RGBA buffer of exactly
  * `width × height` pixels, returned as a sharp composite layer with
  * explicit dimensions.
@@ -322,12 +81,10 @@ async function buildCompositeLayers(
  * SVG generation which uses pixel-space coords. Without this, resvg
  * may apply a default 96 DPI multiplier and emit a 1.33× bigger
  * raster.
- */
-/**
- * Internal SVG rasterize helper. Exposed via `rasterizeSvgForV2`
- * (re-exported below) so the v2 tree-walking compositor in
- * compose-tree-vector.ts can reuse the same pixel-accurate
- * raw-RGBA produce-composite-layer discipline.
+ *
+ * Exposed via `rasterizeSvgForV2` (re-exported below) so the v2
+ * tree-walking compositor in compose-tree-vector.ts can reuse the
+ * same pixel-accurate raw-RGBA produce-composite-layer discipline.
  */
 async function rasterize(svg: string, width: number, height: number): Promise<sharp.OverlayOptions> {
   const raw = await sharp(Buffer.from(svg), { density: 72 })
@@ -638,8 +395,7 @@ function highlightSvg(
   // it did, the blend would happen between the highlight rect and the
   // SVG background (transparent), not against the photo below. We
   // attach `blend` to the sharp composite layer instead; see the
-  // `case "highlight"` branch in buildCompositeLayers /
-  // buildCompositeLayersForV2.
+  // `case "highlight"` branch in the v2 vector compositor.
   const fillHex = readHighlightColor(data);
   const fillOpacity = readHighlightOpacity(data);
   // Rotation transform — same convention as the live HighlightGlyph;
@@ -680,10 +436,9 @@ function textSvg(
    *  editor renders them (commit `881cff0` made the editor source-
    *  shortSide-based), the bake must use the source's shortSide too.
    *
-   *  v1 callers — and v2 callers that don't have source dims at hand —
-   *  can omit these args; the function falls back to canvas shortSide,
-   *  matching the pre-#110-bake behavior. v1 captures have source ==
-   *  canvas so the fallback is also correct for them. */
+   *  Callers that don't have source dims at hand can omit these args;
+   *  the function falls back to canvas shortSide, matching the
+   *  pre-#110-bake behavior. */
   sourceWidthPx?: number,
   sourceHeightPx?: number
 ): string {
@@ -721,10 +476,9 @@ function textSvg(
   // Multi-line: split body on "\n" and emit one tspan per line, each
   // advancing the baseline by 1.2em. dominant-baseline="central" puts
   // the first line's glyph center on the click point (matches the
-  // editor's click-to-center UX) — the v1 default was "hanging" which
-  // put the click at the TOP of the text, causing it to appear below
-  // the cursor on commit. The renderer (TextGlyph) does the same.
-  // xml-escape each line so user input can't break out of the SVG.
+  // editor's click-to-center UX). The renderer (TextGlyph) does the
+  // same. xml-escape each line so user input can't break out of the
+  // SVG.
   const splitLines = data.body.split("\n");
   const lines = splitLines
     .map((line, i) => {
@@ -785,265 +539,24 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/* ----------------------------- Blur ----------------------------- */
-
-/** Compute the AABB of a rotated rect in pixel space. Used by the
- *  blur bake to know how much source to extract + how big the mask
- *  needs to be. The rect's geometric center is the rotation pivot
- *  (matches the renderer's `RectGlyph` + `compose.ts` `rectSvg`
- *  conventions). Returns the four bounds + a few derived offsets
- *  the caller uses to position the mask. */
-function rotatedRectAabbPx(
-  leftPx: number,
-  topPx: number,
-  widthPx: number,
-  heightPx: number,
-  rotation: number
-): {
-  aabbLeft: number;
-  aabbTop: number;
-  aabbWidth: number;
-  aabbHeight: number;
-} {
-  if (rotation === 0) {
-    return {
-      aabbLeft: leftPx,
-      aabbTop: topPx,
-      aabbWidth: widthPx,
-      aabbHeight: heightPx
-    };
-  }
-  const cx = leftPx + widthPx / 2;
-  const cy = topPx + heightPx / 2;
-  const hw = widthPx / 2;
-  const hh = heightPx / 2;
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
-  // Four corners in the rect's local frame; rotate, translate to
-  // pivot, then compute min/max across all four.
-  const corners = [
-    { x: -hw, y: -hh },
-    { x: hw, y: -hh },
-    { x: hw, y: hh },
-    { x: -hw, y: hh }
-  ].map(({ x, y }) => ({
-    x: cx + x * cos - y * sin,
-    y: cy + x * sin + y * cos
-  }));
-  const xs = corners.map((c) => c.x);
-  const ys = corners.map((c) => c.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  return {
-    aabbLeft: minX,
-    aabbTop: minY,
-    aabbWidth: maxX - minX,
-    aabbHeight: maxY - minY
-  };
-}
-
-/** SVG mask shaped like a rotated rect, rendered at AABB-local
- *  coords. White inside the rect, transparent everywhere else —
- *  ready for sharp's `dest-in` composite to keep only the rect-
- *  shaped subset of the blurred AABB.
- *
- *  Coordinates are AABB-local: caller passes the rect's top-left
- *  position relative to the AABB's origin, plus the rotation pivot
- *  (which is the rect center, also in AABB-local coords). For
- *  unrotated rects the rect fills the AABB exactly (the AABB IS
- *  the rect), so the mask is a solid white fill — but we still
- *  emit the rect form for code uniformity. */
-function rotatedRectMaskSvg(args: {
-  aabbWidth: number;
-  aabbHeight: number;
-  rectLocalLeft: number;
-  rectLocalTop: number;
-  rectWidth: number;
-  rectHeight: number;
-  rotation: number;
-}): Buffer {
-  const rotDeg = (args.rotation * 180) / Math.PI;
-  const cx = args.rectLocalLeft + args.rectWidth / 2;
-  const cy = args.rectLocalTop + args.rectHeight / 2;
-  const transformAttr =
-    args.rotation !== 0 ? ` transform="rotate(${rotDeg} ${cx} ${cy})"` : "";
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${args.aabbWidth}" height="${args.aabbHeight}" viewBox="0 0 ${args.aabbWidth} ${args.aabbHeight}">
-  <rect x="${args.rectLocalLeft}" y="${args.rectLocalTop}" width="${args.rectWidth}" height="${args.rectHeight}" fill="white"${transformAttr} />
-</svg>`;
-  return Buffer.from(svg);
-}
-
-async function blurLayer(
-  data: Extract<OverlayRow["data"], { kind: "blur" }>,
-  srcPath: string,
-  imageWidthPx: number,
-  imageHeightPx: number
-): Promise<sharp.OverlayOptions | null> {
-  // Mask-style overlay: extract the rect from the source, transform
-  // it (Gaussian blur / nearest-neighbor downscale / solid fill),
-  // composite back at the same coords. Cheaper than running the
-  // operation on the full source + masking, because the inner pixel
-  // cost scales with the rect, not the whole image.
-  //
-  // Rotation support: when the row carries a non-zero `rotation`, we
-  // extract the AABB of the ROTATED rect (a few more pixels than the
-  // rect itself), run the operation on the AABB, then mask the result
-  // with a rotated-rect SVG via `dest-in` composite so the visible
-  // blurred region matches the user-rotated shape. Unrotated rows
-  // (rotation === 0) skip the mask step entirely — the operated buffer
-  // is composited back as-is, byte-identical to the pre-rotation bake.
-  const rotation = readOverlayRotation(data);
-  const leftPx = data.rect.x * imageWidthPx;
-  const topPx = data.rect.y * imageHeightPx;
-  const widthPx = data.rect.w * imageWidthPx;
-  const heightPx = data.rect.h * imageHeightPx;
-  if (widthPx <= 0 || heightPx <= 0) return null;
-
-  const aabb = rotatedRectAabbPx(leftPx, topPx, widthPx, heightPx, rotation);
-
-  // Clamp the AABB to image bounds so .extract() doesn't error.
-  // The mask is computed AFTER clamping so partial-off-canvas
-  // rotations still produce a coherent rotated shape.
-  const extractLeft = Math.max(0, Math.floor(aabb.aabbLeft));
-  const extractTop = Math.max(0, Math.floor(aabb.aabbTop));
-  const extractWidth = Math.max(
-    1,
-    Math.min(
-      imageWidthPx - extractLeft,
-      Math.ceil(aabb.aabbLeft + aabb.aabbWidth) - extractLeft
-    )
-  );
-  const extractHeight = Math.max(
-    1,
-    Math.min(
-      imageHeightPx - extractTop,
-      Math.ceil(aabb.aabbTop + aabb.aabbHeight) - extractTop
-    )
-  );
-  if (extractWidth <= 0 || extractHeight <= 0) return null;
-
-  const style = readBlurStyle(data);
-
-  // Produce the operated buffer (pre-mask). Three style branches; the
-  // shape of the output is always extractWidth × extractHeight PNG.
-  let operatedBuf: Buffer;
-  if (style === "redact") {
-    // Solid opaque black — privacy redaction. Cheapest of the three
-    // because no source extraction is needed; we just generate a
-    // flat PNG of the right dimensions.
-    operatedBuf = await sharp({
-      create: {
-        width: extractWidth,
-        height: extractHeight,
-        channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 1 }
-      }
-    })
-      .png()
-      .toBuffer();
-  } else if (style === "pixelate") {
-    // Classic "mosaic" pixelation — downscale the extracted region
-    // to a coarse grid (one pixel per visible block), then scale it
-    // back up with nearest-neighbor so the blocks stay crisp instead
-    // of smoothing back out.
-    //
-    // Block size proportional to the rect's short side: ~16 blocks
-    // along the short side at any rect size keeps the visual chunk
-    // density consistent. Floor to at least 4×4 pixels per block so
-    // tiny rects don't end up looking smooth.
-    const shortSide = Math.min(extractWidth, extractHeight);
-    const blocksAcrossShortSide = 16;
-    const blockSizePx = Math.max(4, Math.round(shortSide / blocksAcrossShortSide));
-    const downW = Math.max(1, Math.floor(extractWidth / blockSizePx));
-    const downH = Math.max(1, Math.floor(extractHeight / blockSizePx));
-    operatedBuf = await sharp(srcPath)
-      .extract({
-        left: extractLeft,
-        top: extractTop,
-        width: extractWidth,
-        height: extractHeight
-      })
-      // First hop: average down to the coarse grid (default bicubic
-      // kernel does the averaging — exactly what mosaic wants).
-      .resize(downW, downH)
-      // Second hop: scale back up with nearest-neighbor so the
-      // blocks stay sharp-edged.
-      .resize(extractWidth, extractHeight, { kernel: "nearest" })
-      .png()
-      .toBuffer();
-  } else {
-    // gaussian (default) — soft Gaussian blur. Sigma proportional to
-    // the rect's short side so the blur amount looks similar
-    // regardless of the rect's size. Cap at 60 to keep the kernel
-    // cost bounded.
-    const rectShortSidePx = Math.min(widthPx, heightPx);
-    const sigma = Math.min(60, Math.max(8, rectShortSidePx / 8));
-    operatedBuf = await sharp(srcPath)
-      .extract({
-        left: extractLeft,
-        top: extractTop,
-        width: extractWidth,
-        height: extractHeight
-      })
-      .blur(sigma)
-      .png()
-      .toBuffer();
-  }
-
-  if (rotation === 0) {
-    // Unrotated — operated buffer IS the visible shape. No mask
-    // step; output is byte-identical to the pre-rotation bake (the
-    // AABB equals the rect for rotation 0, and extractLeft/Top/Width/
-    // Height match the old `clamped` values).
-    return { input: operatedBuf, top: extractTop, left: extractLeft };
-  }
-
-  // Rotated — mask the operated buffer with a rotated-rect SVG so
-  // only the rect-shaped subset of the AABB ends up rendered. The
-  // mask's coords are AABB-local: the rect's original top-left is
-  // at `(leftPx - extractLeft, topPx - extractTop)`, and it's
-  // rotated around its center (which is at `leftPx + widthPx/2 -
-  // extractLeft, topPx + heightPx/2 - extractTop` in AABB-local
-  // coords). `rotatedRectMaskSvg` handles the SVG transform.
-  const maskBuf = rotatedRectMaskSvg({
-    aabbWidth: extractWidth,
-    aabbHeight: extractHeight,
-    rectLocalLeft: leftPx - extractLeft,
-    rectLocalTop: topPx - extractTop,
-    rectWidth: widthPx,
-    rectHeight: heightPx,
-    rotation
-  });
-  const maskedBuf = await sharp(operatedBuf)
-    .composite([{ input: maskBuf, blend: "dest-in" }])
-    .png()
-    .toBuffer();
-  return { input: maskedBuf, top: extractTop, left: extractLeft };
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
 // ── v2 reuse exports ────────────────────────────────────────────────
-// The v2 tree-walking compositor (render/compose-tree.ts) reuses
-// v1's SVG-rasterize discipline for arrow / rect / text / highlight /
-// step shapes — the wire format is identical (VectorLayer.shape is
-// the same Overlay discriminated union as OverlayRow.data). Exporting
-// the helpers under explicit names keeps the v2 import surface small
-// and the v1 internals private to this module.
+// The v2 tree-walking compositor (render/compose-tree-vector.ts)
+// reuses the SVG-rasterize discipline for arrow / rect / text /
+// highlight / step shapes — the wire format is identical
+// (VectorLayer.shape is the same Overlay discriminated union the
+// retired v1 path used as OverlayRow.data). Exporting the helpers
+// under explicit names keeps the v2 import surface small and the
+// generators private to this module.
 export const rasterizeSvgForV2 = rasterize;
 export const arrowSvgForV2 = arrowSvg;
 export const rectSvgForV2 = rectSvg;
 export const highlightSvgForV2 = highlightSvg;
 /** Maps a highlight overlay row to the sharp composite `blend` option
  *  string. Used by the v2 vector compositor to keep the bake's blend
- *  behavior identical to v1's. */
+ *  behavior identical to the retired v1 path's. */
 export const highlightBlendModeForV2 = highlightBlendMode;
 export const textSvgForV2 = textSvg;
-/** Internal blur-layer builder, exported for unit tests so the bake
- *  paths for gaussian / pixelate / redact can be asserted in
- *  isolation without spinning up a full compose() pipeline. */
-export const blurLayerForTests = blurLayer;

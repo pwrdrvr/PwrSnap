@@ -33,17 +33,15 @@ import {
   BundleDocumentV2,
   BundleManifestV1,
   BundleManifestV2,
-  BundleOverlaysV1,
   isBundleEntryName,
   validateBundleZipEntryNamesV2,
   type BundleEntryName
 } from "@pwrsnap/shared";
 
-import type { CaptureRecord, OverlayRow } from "@pwrsnap/shared";
+import type { CaptureRecord } from "@pwrsnap/shared";
 
 import { writeFile } from "node:fs/promises";
 
-import { compose } from "../render/compose";
 import {
   findCaptureBySha256,
   getCaptureById,
@@ -51,7 +49,6 @@ import {
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
-import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:bundle-store");
@@ -213,39 +210,6 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
 // yazl/yauzl pack + unpack surface.
 // ---------------------------------------------------------------------------
 
-export type PackBundleArgs = {
-  manifest: BundleManifestV1;
-  overlays: BundleOverlaysV1;
-  /**
-   * Source PNG bytes — written to the ZIP as `source.png` in STORE
-   * mode (no DEFLATE recompression; PNG is already DEFLATE'd
-   * internally and a second pass costs CPU for negligible size win).
-   */
-  sourcePng: Buffer;
-  /**
-   * Low-resolution composite thumbnail (max 1024px long edge,
-   * JPEG quality 90) written as `composite_thumbnail.jpg`. Generated
-   * by `buildCompositeThumbnail(compositePng)`, which now always
-   * returns a Buffer (it used to return null for tiny captures but
-   * that left v2 bundles with no Finder/Quick-Look thumbnail — see
-   * the function's comment for the full why).
-   *
-   * Optional in the type signature because some migration code paths
-   * (legacy bundle rewrites that don't have the composite bytes
-   * handy) intentionally omit it. New packers always pass the
-   * always-Buffer result of `buildCompositeThumbnail` directly.
-   *
-   * Replaces the legacy `composite.png` entry, which was always
-   * full-resolution and frequently byte-equivalent to `source.png`.
-   * Readers that need the composite at full resolution reconstruct it
-   * via `compose()` from source + overlays (which is what every
-   * renderer in the codebase already does); the in-bundle thumbnail
-   * exists strictly to short-circuit the macOS Thumbnail Extension
-   * (and Quick Look) without paying compose cost.
-   */
-  thumbnailJpg?: Buffer | null;
-};
-
 /**
  * Maximum long-edge dimension for the bundle's `composite_thumbnail.jpg`.
  * Sized to look sharp at macOS Finder's largest icon view (512×512
@@ -319,50 +283,6 @@ export async function buildCompositeThumbnail(
     })
     .jpeg({ quality: COMPOSITE_THUMBNAIL_JPEG_QUALITY, mozjpeg: true })
     .toBuffer();
-}
-
-/**
- * Pack a `.pwrsnap` bundle into an in-memory Buffer. Pure function —
- * does not touch the filesystem. Caller wraps this with
- * `atomicWriteBundle` to land it on disk crash-safely.
- *
- * Manifest + overlays are validated through their zod schemas before
- * serialization. `source.png` uses STORE; JSON entries use DEFLATE;
- * `composite_thumbnail.jpg` uses STORE (already JPEG-compressed).
- *
- * Legacy `composite.png` is NOT written — readers reconstruct the
- * composite from source + overlays via compose() when they need it
- * full-res, and the Thumbnail Extension reads `composite_thumbnail.jpg`
- * for previews.
- */
-export async function packBundle(args: PackBundleArgs): Promise<Buffer> {
-  const validatedManifest = BundleManifestV1.parse(args.manifest);
-  const validatedOverlays = BundleOverlaysV1.parse(args.overlays);
-
-  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
-  const overlaysBuf = Buffer.from(JSON.stringify(validatedOverlays));
-
-  return new Promise<Buffer>((resolve, reject) => {
-    const zip = new yazl.ZipFile();
-    zip.addBuffer(manifestBuf, "manifest.json");
-    zip.addBuffer(overlaysBuf, "overlays.json");
-    zip.addBuffer(args.sourcePng, "source.png", { compress: false });
-    if (args.thumbnailJpg !== null && args.thumbnailJpg !== undefined) {
-      zip.addBuffer(args.thumbnailJpg, "composite_thumbnail.jpg", {
-        compress: false
-      });
-    }
-
-    // Attach listeners BEFORE `zip.end()` — yazl's outputStream
-    // transitions to flowing mode as soon as a data listener is
-    // present; if `end()` ran first the chunks could be missed.
-    const chunks: Buffer[] = [];
-    zip.outputStream.on("data", (chunk: Buffer) => chunks.push(chunk));
-    zip.outputStream.on("end", () => resolve(Buffer.concat(chunks)));
-    zip.outputStream.on("error", reject);
-
-    zip.end();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -709,31 +629,6 @@ export async function readBundleManifest(
 }
 
 /**
- * Read and zod-parse the bundle's `overlays.json` (v1 only). Errors
- * cleanly when called on a v2 bundle — callers should use
- * `readBundleDocument` for v2 captures.
- */
-export async function readBundleOverlays(bundlePath: string): Promise<BundleOverlaysV1> {
-  const handle = await openAndValidateBundle(bundlePath);
-  try {
-    if (handle.version !== 1) {
-      throw new Error(
-        `bundle-store: readBundleOverlays called on a v${handle.version} bundle; use readBundleDocument instead`
-      );
-    }
-    const overlaysEntry = handle.entries.get("overlays.json");
-    if (overlaysEntry === undefined) {
-      throw new Error("bundle-store: validated v1 bundle missing overlays.json (impossible)");
-    }
-    const buf = await readEntryToBuffer(handle.zipFile, overlaysEntry);
-    const json = JSON.parse(buf.toString("utf8"));
-    return BundleOverlaysV1.parse(json);
-  } finally {
-    handle.zipFile.close();
-  }
-}
-
-/**
  * Read and zod-parse the bundle's `document.json` (v2 only). Errors
  * cleanly when called on a v1 bundle.
  */
@@ -742,7 +637,7 @@ export async function readBundleDocument(bundlePath: string): Promise<BundleDocu
   try {
     if (handle.version !== 2) {
       throw new Error(
-        `bundle-store: readBundleDocument called on a v${handle.version} bundle; use readBundleOverlays for v1`
+        `bundle-store: readBundleDocument called on a v${handle.version} bundle (document.json is v2-only)`
       );
     }
     const documentEntry = handle.entries.get("document.json");
@@ -832,55 +727,6 @@ export async function readBundleEntry(
 }
 
 // ---------------------------------------------------------------------------
-// High-level write seam — bundle pair I/O.
-// ---------------------------------------------------------------------------
-
-export type WriteBundleResult = {
-  bundlePath: string;
-};
-
-/**
- * Pack and atomically write the `<id>.pwrsnap` bundle into `outputDir`.
- * The bundle IS the system of record — no paired sibling files written.
- * macOS Finder shows the generic Document icon until the Thumbnail
- * Extension ships; in-app paths read the bundle directly via
- * `effectiveSrcPathFor`/`readSourceFromBundle`.
- *
- * Uses the atomic-rename pattern (temp file in same dir, fsync before
- * rename, fsync dir after). 0o600 on the temp file; no world-readable
- * window.
- *
- * `outputDir` is created if missing — first capture path triggers
- * the macOS TCC prompt for `~/Documents/` access here.
- *
- * Pre-refactor this function (`writeBundlePair`) also wrote a paired
- * `<id>.png` flat composite next to the bundle for Finder visibility.
- * That sibling was never read by any in-app surface — it was pure
- * write-side duplication — and has been removed.
- */
-export async function writeBundle(args: {
-  outputDir: string;
-  filenameStem: string;
-  manifest: BundleManifestV1;
-  overlays: BundleOverlaysV1;
-  sourcePng: Buffer;
-  thumbnailJpg: Buffer | null;
-}): Promise<WriteBundleResult> {
-  const bundlePath = join(args.outputDir, `${args.filenameStem}.pwrsnap`);
-
-  const bundleBuf = await packBundle({
-    manifest: args.manifest,
-    overlays: args.overlays,
-    sourcePng: args.sourcePng,
-    thumbnailJpg: args.thumbnailJpg
-  });
-
-  await atomicWriteBundle(bundlePath, bundleBuf);
-
-  return { bundlePath };
-}
-
-// ---------------------------------------------------------------------------
 // Capture-flow orchestrator — the single seam capture-handlers uses to
 // turn a freshly-captured PNG temp file into a bundle pair + DB row.
 // ---------------------------------------------------------------------------
@@ -905,10 +751,8 @@ export type PersistCaptureFromTempResult = {
 };
 
 // ---------------------------------------------------------------------------
-// Re-pack debounce — replaces the bundle when overlays change.
+// Re-pack debounce — replaces the bundle when the layer tree changes.
 // ---------------------------------------------------------------------------
-
-const REPACK_DEBOUNCE_MS = 1_000;
 
 // Pending timers keyed by capture id. Setting a new timer for the
 // same capture clears the previous — debounce by latest edit, not
@@ -921,17 +765,16 @@ const repackTimers = new Map<string, NodeJS.Timeout>();
 const repackInFlight = new Map<string, Promise<void>>();
 
 /**
- * Debounced re-pack request. Called after every edit (overlay insert
- * / reject for v1, layer upsert / delete for v2) — the existing
- * `captures.edits_version` bump is the convergence trigger.
- * Multiple rapid edits coalesce into one re-pack run.
+ * Debounced re-pack request. Called after every edit (layer upsert /
+ * delete) — the existing `captures.edits_version` bump is the
+ * convergence trigger. Multiple rapid edits coalesce into one re-pack
+ * run.
  *
- * Debounce window is version-aware: v1 captures use 1s (small bundle,
- * fast re-pack); v2 captures use 5s (larger bundle, ~1.5-3s pack cost
- * for tree-walking compositor, hence longer pause to coalesce). When
- * the bundle lives under iCloud Drive (`~/Library/Mobile Documents`),
- * defer to 30s idle so a 100MB bundle re-uploads on natural pauses
- * rather than every keystroke.
+ * Debounce window is 5s (the v2 bundle is larger, ~1.5-3s pack cost
+ * for the tree-walking compositor, hence the longer pause to
+ * coalesce). When the bundle lives under iCloud Drive
+ * (`~/Library/Mobile Documents`), defer to 30s idle so a 100MB bundle
+ * re-uploads on natural pauses rather than every keystroke.
  *
  * The DB stays the live read path during the debounce window. A
  * crash during the window reruns the pack on next boot via the
@@ -947,8 +790,9 @@ export function scheduleRepack(captureId: string): void {
     repackTimers.delete(captureId);
     const record = getCaptureById(captureId);
     if (record === null) return;
-    const runner = record.bundle_format_version >= 2 ? runRepackV2 : runRepack;
-    void runner(captureId).catch((err: unknown) => {
+    // v2 is the only bundle format — every live capture re-packs via
+    // the tree-walking compositor.
+    void runRepackV2(captureId).catch((err: unknown) => {
       log.error("bundle-store: repack failed", {
         captureId,
         message: err instanceof Error ? err.message : String(err)
@@ -963,7 +807,7 @@ const REPACK_DEBOUNCE_MS_ICLOUD = 30_000;
 
 function computeRepackDelayMs(captureId: string): number {
   const record = getCaptureById(captureId);
-  if (record === null) return REPACK_DEBOUNCE_MS;
+  if (record === null) return REPACK_DEBOUNCE_MS_V2;
   // iCloud-aware: a bundle sitting under ~/Library/Mobile Documents/
   // (Apple's iCloud Drive backing dir) triggers a full re-upload on
   // every re-pack. Defer to 30s idle so drawing 10 arrows in
@@ -971,8 +815,7 @@ function computeRepackDelayMs(captureId: string): number {
   if (record.bundle_path !== null && record.bundle_path.includes("/Mobile Documents/")) {
     return REPACK_DEBOUNCE_MS_ICLOUD;
   }
-  if (record.bundle_format_version >= 2) return REPACK_DEBOUNCE_MS_V2;
-  return REPACK_DEBOUNCE_MS;
+  return REPACK_DEBOUNCE_MS_V2;
 }
 
 /**
@@ -985,129 +828,6 @@ export async function awaitInFlightRepack(captureId: string): Promise<void> {
   if (promise !== undefined) {
     await promise;
   }
-}
-
-async function runRepack(captureId: string): Promise<void> {
-  const existing = repackInFlight.get(captureId);
-  if (existing !== undefined) {
-    // Coalesce: a repack is already running for this capture. Wait
-    // for it to finish, then start a fresh one (latest state will
-    // be picked up because we re-read the DB inside the run).
-    await existing;
-  }
-
-  const promise = (async () => {
-    const record = getCaptureById(captureId);
-    if (record === null) {
-      log.warn("bundle-store: repack target missing", { captureId });
-      return;
-    }
-    if (record.bundle_path === null) {
-      // Pre-bundle (legacy) capture or row never finished writing.
-      // Either case, we can't repack — skip silently. The legacy
-      // migration (Phase 1) wraps these into bundles; once that's
-      // done, this branch becomes unreachable.
-      log.warn("bundle-store: repack skipped; no bundle path on row", { captureId });
-      return;
-    }
-
-    const sourcePath = getCacheSourcePath(captureId);
-
-    // compose() reads applied overlays via listLiveOverlays internally;
-    // it produces the source-width composite as a cache file we can
-    // read back. width = source width = no resize.
-    const composeResult = await compose({
-      captureId,
-      srcPath: sourcePath,
-      imageWidthPx: record.width_px,
-      imageHeightPx: record.height_px,
-      width: record.width_px,
-      format: "png"
-    });
-
-    const compositePng = await readFile(composeResult.cachePath);
-    const sourcePng = await readFile(sourcePath);
-
-    const liveOverlays = listLiveOverlays(captureId);
-    const overlaysJson = bundleOverlaysFromRows(record, liveOverlays);
-
-    const now = new Date().toISOString();
-    const manifest: BundleManifestV1 = {
-      bundle_format_version: 1,
-      capture_id: captureId,
-      source_sha256: record.sha256,
-      source_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${captureId}.png`,
-      created_at: record.captured_at,
-      bundle_modified_at: now
-    };
-
-    const thumbnailJpg = await buildCompositeThumbnail(compositePng);
-
-    const bundleBuf = await packBundle({
-      manifest,
-      overlays: overlaysJson,
-      sourcePng,
-      thumbnailJpg
-    });
-
-    // Bundle is the system of record. Atomic-rename pattern handles
-    // crash safety; the doctor reconciles `bundle_edits_version`
-    // against `edits_version` on next boot if we crash before the
-    // DB update below.
-    await atomicWriteBundle(record.bundle_path, bundleBuf);
-
-    updateCaptureBundleAfterRepack(captureId, {
-      bundle_modified_at: now,
-      bundle_edits_version: record.edits_version
-    });
-
-    log.info("bundle-store: repacked", {
-      captureId,
-      overlaysCount: liveOverlays.length,
-      bundleBytes: bundleBuf.length
-    });
-  })();
-
-  repackInFlight.set(captureId, promise);
-  try {
-    await promise;
-  } finally {
-    repackInFlight.delete(captureId);
-  }
-}
-
-function bundleOverlaysFromRows(
-  record: CaptureRecord,
-  rows: readonly OverlayRow[]
-): BundleOverlaysV1 {
-  return {
-    overlays_format_version: 1,
-    // Wire-format JSON field name for v1 bundles stays `overlays_version`
-    // — that's the on-disk shape of overlays.json inside .pwrsnap v1.
-    // The DB column it mirrors was renamed to `edits_version` in
-    // migration 0004.
-    overlays_version: record.edits_version,
-    overlays: rows.map((row) => ({
-      id: row.id,
-      // listLiveOverlays returns rows whose `data` is an Overlay
-      // (already zod-parsed at the repo boundary). The shared
-      // BundleOverlayRecord schema re-validates on pack/unpack so
-      // any drift surfaces loudly.
-      data: row.data,
-      schema_version: row.schema_version,
-      source: row.source,
-      z_index: row.z_index,
-      created_at: row.created_at,
-      applied_at: row.applied_at,
-      rejected_at: row.rejected_at,
-      superseded_by: row.superseded_by,
-      ai_run_id: row.ai_run_id
-    })),
-    tags: [],
-    description: null,
-    ai_runs: []
-  };
 }
 
 function basename(p: string): string {

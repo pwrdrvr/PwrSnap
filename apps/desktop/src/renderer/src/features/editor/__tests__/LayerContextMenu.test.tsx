@@ -202,7 +202,7 @@ describe("LayerContextMenu — dismissal", () => {
     }
   });
 
-  test("Escape stops propagation against a WINDOW-LEVEL CAPTURE-phase competing handler (matches Editor.tsx:2474)", async () => {
+  test("Escape stops propagation against a WINDOW-LEVEL CAPTURE-phase competing handler (matches Editor.tsx)", async () => {
     // PR #150 follow-up: real-world repro. Editor.tsx registers its
     // own keydown listener on WINDOW with `{ capture: true }`. The
     // event-propagation order for capture is:

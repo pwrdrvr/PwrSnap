@@ -6,8 +6,8 @@
 //
 //   • window-capture listeners fire before document-capture in the
 //     DOM event-propagation order. Editor's listener is at
-//     window-capture (Editor.tsx:2509); the menu's at document-
-//     capture (LayerContextMenu.tsx:91). Editor fires first.
+//     window-capture (Editor.tsx); the menu's at document-capture
+//     (LayerContextMenu.tsx). Editor fires first.
 //   • The menu's listener calls `stopPropagation()` but that runs
 //     AFTER Editor's listener has already executed — too late to
 //     undo `clearSelection()`.

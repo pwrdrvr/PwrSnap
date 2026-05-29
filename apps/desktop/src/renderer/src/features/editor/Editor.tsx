@@ -2305,8 +2305,8 @@ export function Editor({
       // is a smooth flow.
       //
       // Why the Editor handles this here instead of relying on the
-      // menu's own `document.addEventListener("keydown", …, { capture
-      // }: true })` listener in LayerContextMenu.tsx:91:
+      // menu's own `document.addEventListener("keydown", …,
+      // { capture: true })` listener in LayerContextMenu.tsx:
       //
       //   Event-propagation order for `capture: true` is
       //   window → document → ... → target. The Editor's listener is
@@ -2322,10 +2322,12 @@ export function Editor({
       //   would still be second.
       //
       //   Cleanest fix: the Editor checks `contextMenuState !== null`
-      //   before its own Escape branches, and closes the menu
-      //   directly. The menu's own listener still runs (and is a no-
-      //   op for the contextMenuState that's already been set to
-      //   null), giving defense in depth.
+      //   before its own Escape branches, closes the menu directly,
+      //   and stops propagation. Stopping at window-capture means the
+      //   event never reaches the menu's document-capture listener —
+      //   so on this path the Editor solely owns the close. (The menu
+      //   still closes itself via click-outside and the close-on-
+      //   selection-change effect for non-Escape dismissals.)
       if (event.key === "Escape" && contextMenuState !== null) {
         event.preventDefault();
         event.stopPropagation();

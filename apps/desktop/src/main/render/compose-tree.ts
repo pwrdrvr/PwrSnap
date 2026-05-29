@@ -1001,7 +1001,7 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           pipelines so the down-sample materializes. */
 const BAKE_PIPELINE_VERSION = "5";
 
-function computeTreeRenderHash(input: {
+export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];
   canvasWidthPx: number;
   canvasHeightPx: number;

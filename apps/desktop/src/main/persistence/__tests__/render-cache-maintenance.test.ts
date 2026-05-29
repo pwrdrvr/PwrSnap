@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   currentRoot: "",
   legacyRoot: "",
-  captureRows: [] as Array<{ id: string }>
+  captureRows: [] as Array<{ id: string; width_px?: number; height_px?: number }>
 }));
 
 vi.mock("../db", () => ({
@@ -22,8 +22,16 @@ vi.mock("../paths", () => ({
   getLegacyCacheRoot: () => mocks.legacyRoot
 }));
 
-vi.mock("../overlays-repo", () => ({
-  listLiveOverlays: () => []
+// The keep-set hashes the live v2 layer tree (empty here) via
+// composeV2's `computeTreeRenderHash`. Mock both so the test stays
+// deterministic and never loads the sharp pipeline — the hash is
+// keyed on `width` so keep140/keep400 are distinct + predictable.
+vi.mock("../layers-repo", () => ({
+  listLayerTree: () => []
+}));
+
+vi.mock("../../render/compose-tree", () => ({
+  computeTreeRenderHash: (input: { width: number }) => `treehash-${input.width}`
 }));
 
 let tempRoot: string;
@@ -68,18 +76,9 @@ describe("migrateLegacyRenderCache", () => {
 
 describe("render-cache maintenance", () => {
   test("trim keeps only the current rapid grid and reel derivatives", async () => {
-    mocks.captureRows = [{ id: "capture-a" }];
-    const { computeRenderHash } = await import("../../render/overlay-hash");
-    const keep140 = `${computeRenderHash({
-      format: "webp",
-      width: 140,
-      appliedOverlays: []
-    })}.webp`;
-    const keep400 = `${computeRenderHash({
-      format: "webp",
-      width: 400,
-      appliedOverlays: []
-    })}.webp`;
+    mocks.captureRows = [{ id: "capture-a", width_px: 1920, height_px: 1080 }];
+    const keep140 = `treehash-140.webp`;
+    const keep400 = `treehash-400.webp`;
 
     await mkdir(join(mocks.currentRoot, "capture-a", "clipboard", "old-hash"), {
       recursive: true

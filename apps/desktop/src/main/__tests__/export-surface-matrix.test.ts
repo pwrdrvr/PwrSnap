@@ -47,9 +47,7 @@ import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, test, vi 
 import type {
   BundleDocumentV2,
   BundleLayerNode,
-  BundleManifestV1,
   BundleManifestV2,
-  BundleOverlaysV1,
   Overlay
 } from "@pwrsnap/shared";
 
@@ -142,7 +140,7 @@ const { registerClipboardHandlers } = await import("../handlers/clipboard-handle
 const { registerCaptureHandlers } = await import("../handlers/capture-handlers");
 const { registerLibraryHandlers } = await import("../handlers/library-handlers");
 const { openDatabase, closeDatabase, getDb } = await import("../persistence/db");
-const { packBundle, packBundleV2, buildCompositeThumbnail } = await import(
+const { packBundleV2, buildCompositeThumbnail } = await import(
   "../persistence/bundle-store"
 );
 const { insertLayerTreeForCapture } = await import("../persistence/layers-repo");
@@ -231,101 +229,6 @@ function annotatedOverlay(): Overlay {
 interface SeedArgs {
   id: string;
   annotated: boolean;
-}
-
-async function seedV1Capture(args: SeedArgs): Promise<void> {
-  const sourcePng = await makeSourcePng();
-  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
-  const bundlePath = join(workDir, "captures", `${args.id}.pwrsnap`);
-  // `flat_png_path` is the user-visible flat composite PNG that lives
-  // as a sibling next to the bundle. Real captures populate this from
-  // the capture flow; we populate it here with the canonical sibling
-  // path AND write the file on disk so any future surface added to
-  // the matrix that reads this column (e.g., a hypothetical
-  // "open in default viewer" or "reveal in Finder") gets a valid path
-  // instead of a NULL footgun. The flat PNG mirrors the source bytes
-  // for unedited variants; for the matrix's pixel assertions only the
-  // re-rendered cache files matter — the flat file is just present.
-  const flatPngPath = join(workDir, "captures", `${args.id}.png`);
-  await writeFile(flatPngPath, sourcePng);
-  const now = new Date().toISOString();
-  const manifest: BundleManifestV1 = {
-    bundle_format_version: 1,
-    capture_id: args.id,
-    source_sha256: sourceSha,
-    source_dimensions: { width_px: SOURCE_WIDTH, height_px: SOURCE_HEIGHT },
-    created_at: now,
-    bundle_modified_at: now,
-    paired_png_filename: `${args.id}.png`
-  };
-  const overlaysJson: BundleOverlaysV1 = {
-    overlays_format_version: 1,
-    overlays_version: args.annotated ? 1 : 0,
-    overlays: [],
-    tags: [],
-    description: null,
-    ai_runs: []
-  };
-  const thumbnailJpg = await buildCompositeThumbnail(sourcePng);
-
-  const bundleBuf = await packBundle({
-    manifest,
-    overlays: overlaysJson,
-    sourcePng,
-    thumbnailJpg
-  });
-  await writeFile(bundlePath, bundleBuf);
-
-  // Insert captures row.
-  getDb()
-    .prepare(
-      `INSERT INTO captures (
-        id, kind, captured_at, source_app_bundle_id, source_app_name,
-        legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
-        bundle_format_version, bundle_edits_version,
-        width_px, height_px, device_pixel_ratio, byte_size,
-        sha256, edits_version, deleted_at
-      ) VALUES (
-        @id, 'image', @captured_at, NULL, NULL,
-        NULL, @bundle_path, @flat_png_path, @captured_at,
-        1, 0,
-        @w, @h, 2.0, @bs,
-        @sha, 0, NULL
-      )`
-    )
-    .run({
-      id: args.id,
-      captured_at: now,
-      bundle_path: bundlePath,
-      flat_png_path: flatPngPath,
-      w: SOURCE_WIDTH,
-      h: SOURCE_HEIGHT,
-      bs: bundleBuf.length,
-      sha: sourceSha
-    });
-
-  // Insert overlay row for annotated variants. The v1 renderer
-  // (compose.ts) reads from this table.
-  if (args.annotated) {
-    getDb()
-      .prepare(
-        `INSERT INTO overlays (
-          id, capture_id, data, schema_version, source,
-          ai_run_id, applied_at, rejected_at, superseded_by,
-          z_index, created_at
-        ) VALUES (
-          @id, @capture_id, @data, 1, 'user',
-          NULL, @applied_at, NULL, NULL,
-          0, @applied_at
-        )`
-      )
-      .run({
-        id: `${args.id}-ov-0`,
-        capture_id: args.id,
-        data: JSON.stringify(annotatedOverlay()),
-        applied_at: now
-      });
-  }
 }
 
 async function seedV2Capture(args: SeedArgs): Promise<void> {
@@ -606,17 +509,11 @@ interface Variant {
   seed(id: string): Promise<void>;
 }
 
+// v2 is the only bundle format. The v1 variants (and the v1 seed
+// helper) were removed when the v1 read/render path was deleted —
+// `renderViaCoordinator` now throws for a non-v2 record, so a v1
+// variant could never produce a render to assert on.
 const VARIANTS: readonly Variant[] = [
-  {
-    name: "v1-unedited",
-    expectsRed: false,
-    seed: (id) => seedV1Capture({ id, annotated: false })
-  },
-  {
-    name: "v1-annotated",
-    expectsRed: true,
-    seed: (id) => seedV1Capture({ id, annotated: true })
-  },
   {
     name: "v2-unedited",
     expectsRed: false,
@@ -633,7 +530,7 @@ const VARIANTS: readonly Variant[] = [
 // The matrix. Each (surface × variant) becomes one test.
 // ---------------------------------------------------------------------
 
-describe("export-surface-matrix: every surface honors the v1/v2 dispatch + overlay set", () => {
+describe("export-surface-matrix: every surface composites the v2 layer set", () => {
   for (const surface of SURFACES) {
     for (const variant of VARIANTS) {
       if (surface.appliesTo !== undefined && !surface.appliesTo(variant.name)) {

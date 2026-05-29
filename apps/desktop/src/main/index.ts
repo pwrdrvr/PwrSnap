@@ -41,6 +41,8 @@ import {
 } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import { registerLibraryChatHandlers } from "./handlers/library-chat-handlers";
+import { registerRenderHandlers } from "./handlers/render-handlers";
 import { registerEditorHandlers } from "./handlers/editor-handlers";
 import { registerExportHandler } from "./handlers/export-handler";
 import { registerFloatOverHandlers } from "./handlers/float-over-handlers";
@@ -981,6 +983,7 @@ export function bootstrapApp(): void {
     registerAppHandlers();
     registerSettingsHandlers();
     registerCodexHandlers();
+    registerLibraryChatHandlers();
     registerCaptureHandlers();
     registerClipboardHandlers();
     registerFloatOverHandlers();
@@ -989,6 +992,7 @@ export function bootstrapApp(): void {
     registerRecordingHandlers();
     registerStorageHandlers();
     registerLayersHandlers();
+    registerRenderHandlers();
     registerV1ToV2DoctorHandlers();
     registerEditorHandlers();
     registerSizzleHandlers();

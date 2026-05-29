@@ -72,13 +72,18 @@ test("library-right-rail: renders Info/OCR/Chat vertical tabs with persistent fo
       win.locator('[data-testid="psl-right-footer"]')
     ).toBeVisible();
 
-    // Switch to Chat.
+    // Switch to Chat. The Library rail now renders the live
+    // LibraryChatPanel (testid "library-chat-panel"), not the editor's
+    // ChatPanel. With no Codex configured in CI, the thread list comes
+    // back empty (filesystem-only — no codex spawn), so the panel
+    // settles into its greeting + composer state. Assert the panel and
+    // its composer are both present.
     await win.locator('[data-testid="psl-right-tab-chat"]').click();
     await win
-      .locator('[data-testid="chat-panel"]')
+      .locator('[data-testid="library-chat-panel"]')
       .waitFor({ state: "visible", timeout: 5_000 });
     await expect(
-      win.locator('[data-testid="chat-context"]')
+      win.locator('[data-testid="composer-root"]')
     ).toBeVisible();
 
     // Footer is still visible — the rail's footer is independent of

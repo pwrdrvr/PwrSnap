@@ -82,7 +82,7 @@ function makeSettings(): Settings {
   return {
     schemaVersion: 1,
     codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
-    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false },
+    ai: { enabled: false, consentAcceptedAt: null, autoAcceptSuggestions: false, chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false } },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",
       region: "",

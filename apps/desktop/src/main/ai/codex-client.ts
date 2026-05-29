@@ -190,7 +190,15 @@ export class CodexAppServerClient {
         version: "1.0.0-alpha.3"
       },
       capabilities: {
-        experimentalApi: true
+        experimentalApi: true,
+        // `requestAttestation` controls whether Codex sends
+        // attestation/generate ServerRequests for x-oai-attestation
+        // headers. PwrSnap's chat surface doesn't need this round-trip
+        // — we don't proxy through OpenAI's edge attestation flow —
+        // and opting in would add per-turn latency for a feature we
+        // don't use. Mirrors PwrAgnt's default. Added when the
+        // --experimental protocol regen surfaced this field.
+        requestAttestation: false
       }
     };
     const response = (await connection.request(

@@ -15,6 +15,7 @@ import type {
   BlurEffectMode,
   BlurRadiusSetting,
   BlurToolStyle,
+  ChatSettings,
   CodexTestResult,
   DesktopCodexCandidateSource as SharedCodexCandidateSource,
   DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
@@ -30,6 +31,7 @@ import type {
   HighlightToolStyle,
   ShapeKind,
   ShapeToolStyle,
+  SensitiveDataPattern,
   Settings,
   SettingsPatch,
   TextFontWeight,
@@ -38,6 +40,7 @@ import type {
   ToolSizePreset
 } from "@pwrsnap/shared";
 import {
+  DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
@@ -45,7 +48,8 @@ import {
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
-  isLibrarySidebarTab
+  isLibrarySidebarTab,
+  isRedactionStyle
 } from "@pwrsnap/shared";
 import {
   compareCodexCliVersions,
@@ -81,7 +85,8 @@ export function defaultSettings(): Settings {
     ai: {
       enabled: false,
       consentAcceptedAt: null,
-      autoAcceptSuggestions: false
+      autoAcceptSuggestions: false,
+      chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
     },
     hotkeys: {
       // Quick Capture default moved off ⌘⇧P (collides with Print in
@@ -460,7 +465,15 @@ function parseV1(raw: unknown): Settings | null {
       autoAcceptSuggestions: pickBoolean(
         ai.autoAcceptSuggestions,
         defaults.ai.autoAcceptSuggestions
-      )
+      ),
+      // `ai.chat.*` landed in the Library Chat plan (Phase 0). Older
+      // files won't have it; parseChatSettings falls through to
+      // DEFAULT_CHAT_SETTINGS for any missing nested field so the
+      // in-memory shape is always complete and the next write rewrites
+      // with the full block. No `schemaVersion` bump per the additive
+      // convention. See docs/plans/2026-05-28-001-feat-library-chat-
+      // editor-interface-plan.md and §F13 substrate compliance.
+      chat: parseChatSettings(ai.chat, defaults.ai.chat)
     },
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
@@ -515,6 +528,49 @@ function parseV1(raw: unknown): Settings | null {
     // `library.*` is additive too — older files won't have it. Falls
     // through to defaultLibrarySettings() (pinned + Info) when missing.
     library: parseLibrarySettings(raw.library, defaults.library)
+  };
+}
+
+/** Parse a single sensitive-data-pattern row from an on-disk JSON
+ *  value. Rejects anything that isn't `{name: string, pattern: string}`;
+ *  trims fields; caps lengths defensively (the bus validator also
+ *  rejects oversize input, but the on-disk path could see corruption
+ *  or an old format we never shipped). Returns `null` for rejection. */
+function parsePatternRow(raw: unknown): SensitiveDataPattern | null {
+  if (!isRecord(raw)) return null;
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  const pattern = typeof raw.pattern === "string" ? raw.pattern.trim() : "";
+  if (name.length === 0 || name.length > 64) return null;
+  if (pattern.length === 0 || pattern.length > 512) return null;
+  return { name, pattern };
+}
+
+/** Parse `Settings.ai.chat` from an on-disk JSON value. Falls through
+ *  to defaults for any missing / corrupt field; dedupes patterns by
+ *  case-sensitive `name` keeping first-seen; caps the array at 32. */
+function parseChatSettings(raw: unknown, defaults: ChatSettings): ChatSettings {
+  if (!isRecord(raw)) return { ...defaults, sensitiveDataPatterns: [...defaults.sensitiveDataPatterns] };
+  const patternsRaw = Array.isArray(raw.sensitiveDataPatterns) ? raw.sensitiveDataPatterns : [];
+  const seen = new Set<string>();
+  const patterns: SensitiveDataPattern[] = [];
+  for (const entry of patternsRaw) {
+    if (patterns.length >= 32) break;
+    const row = parsePatternRow(entry);
+    if (row === null) continue;
+    if (seen.has(row.name)) continue;
+    seen.add(row.name);
+    patterns.push(row);
+  }
+  return {
+    userGuidance: pickString(raw.userGuidance, defaults.userGuidance),
+    sensitiveDataPatterns: patterns,
+    defaultRedactionStyle: isRedactionStyle(raw.defaultRedactionStyle)
+      ? raw.defaultRedactionStyle
+      : defaults.defaultRedactionStyle,
+    firstLaunchBannerDismissed: pickBoolean(
+      raw.firstLaunchBannerDismissed,
+      defaults.firstLaunchBannerDismissed
+    )
   };
 }
 
@@ -863,7 +919,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
   return {
     schemaVersion: 1,
     codex: mergeSection(current.codex, patch.codex),
-    ai: mergeSection(current.ai, patch.ai),
+    ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
     experimental: mergeSection(current.experimental, patch.experimental),
     general: mergeSection(current.general, patch.general),
@@ -872,6 +928,49 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     recording: mergeSection(current.recording, patch.recording),
     editor: mergeEditor(current.editor, patch.editor),
     library: mergeLibrary(current.library, patch.library)
+  };
+}
+
+/** AI merge is one level deeper than the flat-shallow mergeSection
+ *  because `chat` is itself an object that callers want to patch
+ *  field-by-field (e.g., just `userGuidance` from a textarea blur).
+ *  Mirrors `mergeEditor` / `mergeLibrary`. */
+function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings["ai"] {
+  if (patch === undefined) return current;
+  return {
+    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
+    consentAcceptedAt:
+      patch.consentAcceptedAt !== undefined ? patch.consentAcceptedAt : current.consentAcceptedAt,
+    autoAcceptSuggestions:
+      patch.autoAcceptSuggestions !== undefined
+        ? patch.autoAcceptSuggestions
+        : current.autoAcceptSuggestions,
+    // `chat` is a sub-object; merge field-by-field. Empty array on
+    // sensitiveDataPatterns IS a meaningful value (cleared list), not
+    // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
+    chat: mergeChat(current.chat, patch.chat)
+  };
+}
+
+function mergeChat(
+  current: ChatSettings,
+  patch: Partial<ChatSettings> | undefined
+): ChatSettings {
+  if (patch === undefined) return current;
+  return {
+    userGuidance: patch.userGuidance !== undefined ? patch.userGuidance : current.userGuidance,
+    sensitiveDataPatterns:
+      patch.sensitiveDataPatterns !== undefined
+        ? patch.sensitiveDataPatterns
+        : current.sensitiveDataPatterns,
+    defaultRedactionStyle:
+      patch.defaultRedactionStyle !== undefined
+        ? patch.defaultRedactionStyle
+        : current.defaultRedactionStyle,
+    firstLaunchBannerDismissed:
+      patch.firstLaunchBannerDismissed !== undefined
+        ? patch.firstLaunchBannerDismissed
+        : current.firstLaunchBannerDismissed
   };
 }
 

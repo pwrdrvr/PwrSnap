@@ -1087,26 +1087,19 @@ export type LibrarySettings = {
   detailRail: LibrarySidebarSettings;
 };
 
-// ---- Chat message content (Phase 7 prep, exported only) ----------------
+// ---- Chat substrate types (Library Chat — Phase 0) ---------------------
 //
-// Defined here so Phase 7's `chat-schemas.ts` zod definitions and the
-// renderer's chat panel can share the same discriminated-union shape.
-// Phase 1 does NOT reference these — kept so the protocol surface stays
-// a single source of truth as later phases land.
-
-export type ChatMessageContent =
-  | { kind: "text"; text: string }
-  | { kind: "tool_call"; toolName: string; argsJson: string; callId: string }
-  | {
-      kind: "tool_result";
-      callId: string;
-      resultJson: string;
-      /** True for tool failures the AI saw and (typically) self-corrected
-       *  from. Stored so the chat panel can render a subtle "AI's last
-       *  call was rejected — retrying" indicator without inferring it
-       *  from a parse of resultJson. */
-      isError?: boolean;
-    };
+// The RUNTIME SOURCE OF TRUTH for these is `chat-schemas.ts` (zod), and
+// the `@pwrsnap/shared` barrel re-exports that module wholesale. We only
+// IMPORT the few types referenced by the Commands map below — re-
+// exporting them from here too would collide with the barrel's
+// `export * from "./chat-schemas"`. Mirrors how `ArrowEndStyle` is owned
+// by overlay-schemas.ts. See plan §F2 #9.
+import type {
+  ChatApprovalDecision,
+  ChatMessage,
+  LibraryChatThreadView
+} from "./chat-schemas";
 
 // ---- Chat redaction defaults + user-provided patterns ------------------
 //
@@ -2124,6 +2117,75 @@ export type Commands = {
   "codex:sensitiveScan": { req: { captureId: string }; res: { runId: string } };
   "codex:cancel": { req: { runId: string }; res: void };
   "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
+
+  // ---- Library Chat (Phase 0) — long-lived, tool-equipped chat threads ----
+  //
+  // The user-facing agent that lives in the Library sidebar. Threads are
+  // persistent (Codex rollout + our pwrsnap-thread.json sidecar) and
+  // survive relaunch. See docs/plans/2026-05-28-001-feat-library-chat-
+  // editor-interface-plan.md. Streaming + approval flows ride the
+  // `events:libraryChat:*` channels (see ipc.ts), not these verbs.
+
+  /** List all (non-archived by default) chat threads for the thread-list
+   *  rail. `includeArchived` surfaces archived threads for a "show
+   *  archived" toggle. */
+  "codex:libraryChat:list": {
+    req: { includeArchived?: boolean };
+    res: { threads: LibraryChatThreadView[] };
+  };
+  /** Create a new thread. `name` optional — main mints a default
+   *  ("Chat <date>-NNN") when omitted. Returns the view for optimistic
+   *  rendering. */
+  "codex:libraryChat:create": {
+    req: { name?: string };
+    res: LibraryChatThreadView;
+  };
+  /** Send a user message + (optionally) attached image paths. Returns
+   *  the turnId; streaming deltas + the committed assistant message
+   *  arrive via `events:libraryChat:*`. `anchorCaptureId` lets the
+   *  renderer pin the thread to whatever the user is currently viewing
+   *  so the per-turn context is accurate. */
+  "codex:libraryChat:send": {
+    req: {
+      threadId: string;
+      text: string;
+      imageAttachmentPaths?: string[];
+      anchorCaptureId?: string | null;
+    };
+    res: { turnId: string };
+  };
+  /** Full message history for a thread (read on open / re-subscribe). */
+  "codex:libraryChat:history": {
+    req: { threadId: string };
+    res: { messages: ChatMessage[] };
+  };
+  /** Rename a thread. */
+  "codex:libraryChat:rename": {
+    req: { threadId: string; name: string };
+    res: LibraryChatThreadView;
+  };
+  /** Archive / unarchive a thread (soft delete — never destroys the
+   *  Codex rollout). */
+  "codex:libraryChat:archive": {
+    req: { threadId: string; archived: boolean };
+    res: LibraryChatThreadView;
+  };
+  /** Interrupt an in-flight turn (turn/interrupt). No-op if idle. */
+  "codex:libraryChat:interrupt": {
+    req: { threadId: string };
+    res: void;
+  };
+  /** Resolve a pending approval. Carries (threadId, turnId, approvalId)
+   *  so a late resolution can't land in the wrong turn (plan §F10 T3). */
+  "codex:libraryChat:approval": {
+    req: {
+      threadId: string;
+      turnId: string;
+      approvalId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
 
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };

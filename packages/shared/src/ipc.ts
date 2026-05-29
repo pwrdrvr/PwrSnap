@@ -203,7 +203,48 @@ export const EVENT_CHANNELS = {
    * Payload: empty object `{}` — the channel itself is the signal;
    * subscribers re-query whatever they need.
    */
-  clipboardChanged: "events:clipboard:changed"
+  clipboardChanged: "events:clipboard:changed",
+  /**
+   * Main → every BrowserWindow: a Library chat thread's metadata
+   * changed (created, renamed, archived, anchor moved, status flipped
+   * to streaming/awaiting-approval/idle, or last-message preview
+   * updated). The thread-list rail subscribes so it refreshes without
+   * polling. Payload: `{ thread: LibraryChatThreadView }`.
+   */
+  libraryChatThreadUpdated: "events:libraryChat:thread:updated",
+  /**
+   * Main → renderer: a streaming assistant-message delta for an
+   * in-flight turn. High-frequency — the renderer MUST coalesce these
+   * via requestAnimationFrame rather than setState-per-delta (plan
+   * §F10 T2). Payload: `LibraryChatStreamDeltaEvent`.
+   */
+  libraryChatStreamDelta: "events:libraryChat:stream:delta",
+  /**
+   * Main → renderer: a chat message was committed to the thread (user
+   * message persisted before turn/start, or an assistant message
+   * finalized at turn end). The renderer appends / replaces by
+   * `message.id`. Payload: `LibraryChatMessageCommittedEvent`.
+   */
+  libraryChatMessageCommitted: "events:libraryChat:message:committed",
+  /**
+   * Main → renderer: a turn was interrupted (Codex disconnected, user
+   * interrupted, or app is quitting). The renderer marks the in-flight
+   * assistant message `interrupted` and surfaces a Retry affordance
+   * (plan §F11 G15). Payload: `LibraryChatTurnInterruptedEvent`.
+   */
+  libraryChatTurnInterrupted: "events:libraryChat:turn:interrupted",
+  /**
+   * Main → renderer: Codex requested an approval mid-turn. The renderer
+   * shows a modal/card; the user's decision routes back via
+   * `codex:libraryChat:approval`. Payload: `ChatApprovalRequest`.
+   */
+  libraryChatApprovalRequested: "events:libraryChat:approval:requested",
+  /**
+   * Main → renderer: the user just added a sensitive-data pattern in
+   * Settings. The open chat panel shows a one-shot toast nudging
+   * "try 'redact all <name>'" (plan §F11 G3). Payload: `{ name: string }`.
+   */
+  libraryChatPatternLearned: "events:libraryChat:pattern:learned"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -316,11 +357,46 @@ export type PerfMarkPayload =
 // ---------------------------------------------------------------------
 
 import type { DraftCart, SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+import type {
+  ChatApprovalRequest,
+  ChatMessage,
+  LibraryChatThreadView
+} from "./chat-schemas";
+
+/** `events:libraryChat:stream:delta` payload. One streamed token-chunk
+ *  for an in-flight assistant message. The renderer coalesces these by
+ *  `messageId` via rAF (plan §F10 T2). */
+export type LibraryChatStreamDeltaEvent = {
+  threadId: string;
+  turnId: string;
+  messageId: string;
+  delta: string;
+};
+
+/** `events:libraryChat:message:committed` payload. A full message
+ *  landed (user message persisted, or assistant message finalized). */
+export type LibraryChatMessageCommittedEvent = {
+  threadId: string;
+  message: ChatMessage;
+};
+
+/** `events:libraryChat:turn:interrupted` payload. */
+export type LibraryChatTurnInterruptedEvent = {
+  threadId: string;
+  turnId: string;
+  reason: "codex_disconnected" | "user_interrupted" | "app_quitting";
+};
 
 export type EventPayloads = {
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
+  [EVENT_CHANNELS.libraryChatThreadUpdated]: { thread: LibraryChatThreadView };
+  [EVENT_CHANNELS.libraryChatStreamDelta]: LibraryChatStreamDeltaEvent;
+  [EVENT_CHANNELS.libraryChatMessageCommitted]: LibraryChatMessageCommittedEvent;
+  [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
+  [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;
+  [EVENT_CHANNELS.libraryChatPatternLearned]: { name: string };
 };
 
 /** Channel constants that carry a typed payload entry in

@@ -1747,6 +1747,20 @@ export type Commands = {
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
 
+  /** Render the current composite (source + applied layers) to a
+   *  downscaled PNG and return it base64-encoded. Powers the Library
+   *  chat agent's `render_composite` vision tool — the agent grounds
+   *  redaction/annotation placement on the actual pixels. Goes through
+   *  the bake render coordinator (content-addressed cache; does NOT
+   *  bump BAKE_PIPELINE_VERSION). `maxEdgePx` clamps the longest edge
+   *  (default 720, hard max 1440) to bound the bytes sent to the model
+   *  + the LLM image-token cost. PNG (not WebP) for vision-model
+   *  compatibility. Works for image captures only. */
+  "render:composite": {
+    req: { captureId: string; maxEdgePx?: number };
+    res: { base64: string; mimeType: "image/png"; widthPx: number; heightPx: number };
+  };
+
   // ---- canvas (v2 captures only) ----
   /** Update the canvas dimensions of a v2 capture. Writes the new
    *  `width_px`/`height_px` to the `captures` row, bumps `edits_version`

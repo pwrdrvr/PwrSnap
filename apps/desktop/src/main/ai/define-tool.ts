@@ -14,7 +14,10 @@
 // `library-tool-catalog.ts` treat the array uniformly.
 
 import { z } from "zod";
-import type { DynamicToolSpec } from "@pwrsnap/codex-app-server-protocol/v2";
+import type {
+  DynamicToolCallOutputContentItem,
+  DynamicToolSpec
+} from "@pwrsnap/codex-app-server-protocol/v2";
 
 /**
  * Namespace every Library Chat tool lives under. A string-literal union so
@@ -31,6 +34,12 @@ export type ToolNamespace = "pwrsnap_library";
  */
 export type ToolDispatchResult =
   | { ok: true; data: unknown }
+  // For tools that return rich content the agent must SEE rather than
+  // read as JSON — chiefly `render_composite`, which returns an
+  // `inputImage` content item (a data URL) so the model can ground its
+  // reasoning on the actual canvas pixels. The dispatcher passes these
+  // through verbatim instead of JSON-stringifying.
+  | { ok: true; contentItems: DynamicToolCallOutputContentItem[] }
   | { ok: false; error: string };
 
 /**

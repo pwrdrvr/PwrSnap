@@ -81,6 +81,13 @@ export async function dispatchLibraryToolCall(
     return errorResponse(result.error);
   }
 
+  // A tool that returns pre-built content items (e.g. render_composite's
+  // inputImage) passes them through verbatim so the model SEES the image
+  // rather than a JSON blob.
+  if ("contentItems" in result) {
+    return { success: true, contentItems: result.contentItems };
+  }
+
   return {
     success: true,
     contentItems: [{ type: "inputText", text: JSON.stringify(result.data) }]

@@ -181,6 +181,97 @@ const listLayers = defineTool({
   dispatch: async (args) => runVerb("layers:list", { captureId: args.capture_id })
 });
 
+const renderComposite = defineTool({
+  namespace: "pwrsnap_library",
+  name: "render_composite",
+  description:
+    "Render the current canvas (source image + your applied edits) to a picture so you can SEE it. Call this BEFORE placing a redaction or annotation that depends on what's on screen (e.g. to locate a credit-card field), and again AFTER to verify the result landed where you intended. `max_edge_px` (default 720, max 1440) bounds the resolution. Image captures only.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    max_edge_px: z.number().int().min(64).max(1440).optional()
+  }),
+  dispatch: async (args) => {
+    const result = await bus.dispatch(
+      "render:composite",
+      {
+        captureId: args.capture_id,
+        ...(args.max_edge_px !== undefined ? { maxEdgePx: args.max_edge_px } : {})
+      },
+      { principal: "mcp" }
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: `${result.error.kind}/${result.error.code}: ${result.error.message}`
+      };
+    }
+    const { base64, mimeType, widthPx, heightPx } = result.value;
+    return {
+      ok: true,
+      contentItems: [
+        { type: "inputImage", imageUrl: `data:${mimeType};base64,${base64}` },
+        {
+          type: "inputText",
+          text: `Canvas composite shown at ${widthPx}x${heightPx}px (downscaled preview). When you place an annotation or redaction, give coordinates NORMALIZED to [0,1] of the FULL canvas — (0,0) top-left, (1,1) bottom-right — not these preview pixels.`
+        }
+      ]
+    };
+  }
+});
+
+const openInLibrary = defineTool({
+  namespace: "pwrsnap_library",
+  name: "open_in_library",
+  description:
+    "Bring the Library window forward and scroll to / select a capture in inline Focus mode. A read-only navigation aid (no data changes).",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({ capture_id: z.string() }),
+  dispatch: async (args) => runVerb("library:openInLibrary", { captureId: args.capture_id })
+});
+
+const openEditor = defineTool({
+  namespace: "pwrsnap_library",
+  name: "open_editor",
+  description:
+    "Open a capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use add_annotation / add_redaction directly without opening anything.",
+  annotations: {},
+  argsSchema: z.object({ capture_id: z.string() }),
+  dispatch: async (args) => runVerb("editor:open", { captureId: args.capture_id })
+});
+
+const listLayerCapabilities = defineTool({
+  namespace: "pwrsnap_library",
+  name: "list_layer_capabilities",
+  description:
+    "Describe what you can place on a capture: the annotation kinds (for add_annotation), the redaction styles + region shapes (for add_redaction), and the coordinate convention. Call this if you're unsure what's available.",
+  annotations: { readOnlyHint: true },
+  argsSchema: z.object({}),
+  dispatch: async () => ({
+    ok: true,
+    data: {
+      coordinate_system: "normalized [0,1] of the canvas; (0,0)=top-left, (1,1)=bottom-right",
+      annotation_kinds: ["arrow", "rect", "text", "highlight"],
+      redaction: {
+        region_shapes: ["rect"],
+        planned_region_shapes: ["circle", "oval", "square", "triangle"],
+        styles: {
+          redact: "opaque blackout — IRREVERSIBLE, use for secrets",
+          pixelate: "reversible — non-secret content only",
+          gaussian: "reversible — non-secret content only"
+        }
+      },
+      stoplight_colors: {
+        red: "problem / failure",
+        green: "fix / confirmation",
+        yellow: "warning",
+        blue: "neutral context"
+      },
+      vision: "call render_composite to see the current canvas"
+    }
+  })
+});
+
 // ---- edit tools --------------------------------------------------------
 
 const addAnnotation = defineTool({
@@ -310,10 +401,16 @@ const removeTag = defineTool({
  * batch, and capture/recording verbs.
  */
 export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
+  // read / introspect / navigate
   libraryList,
   librarySearch,
   captureMetadata,
   listLayers,
+  listLayerCapabilities,
+  renderComposite,
+  openInLibrary,
+  openEditor,
+  // edit
   addAnnotation,
   addRedaction,
   deleteLayer,

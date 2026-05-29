@@ -821,8 +821,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // if hit. Loading the next page would mean re-running the query,
   // which doesn't compose with FTS5 rank ordering.
   const gridHasMore = isSearchActive ? false : isSourceAppView ? false : hasMore;
+  // Search never paginates (gridHasMore is false), so it must not drive
+  // the grid's bottom "Loading more…" footer — that label would be a
+  // lie (we're re-running a query, not fetching the next page). The
+  // topbar count badge already shows "searching…" for search progress.
   const gridIsLoadingMore = isSearchActive
-    ? searchState.loading
+    ? false
     : isSourceAppView
       ? sourceAppState?.loading ?? false
       : isLoadingMore;
@@ -2144,6 +2148,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
+          {isSearchActive &&
+            !searchState.loading &&
+            searchState.error === null &&
+            searchState.rows.length === 0 && (
+              <div className="psl__search-empty" role="status">
+                No captures match “{searchState.forQuery}”.
+              </div>
+            )}
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}

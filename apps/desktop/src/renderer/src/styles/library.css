@@ -1194,6 +1194,16 @@
 .psl__trash-banner-btn:hover {
   background: var(--danger-soft);
 }
+/* Empty-results message for an active search that matched nothing.
+   Search makes zero-result states common (unlike the filter views),
+   so the grid body needs an explicit "no matches" signal rather than
+   a silent blank pane. */
+.psl__search-empty {
+  margin: 48px 18px;
+  text-align: center;
+  font: 500 13px/1.5 var(--font-sans);
+  color: var(--text-muted);
+}
 
 .psl__cell {
   position: relative;

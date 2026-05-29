@@ -211,6 +211,32 @@ export function SizzleApp(): ReactElement {
     };
   }, [flushPatch]);
 
+  // Live-sync external project mutations (the chat agent's scene edits,
+  // or another window). Without this, an agent `scene_set_script` lands
+  // in the store + broadcasts, but the open editor never sees it — the
+  // textareas stay empty even though the data was written.
+  //
+  // Merge, don't replace: any project with a pending DEBOUNCED local
+  // patch is kept as-is so a broadcast (including the echo of our OWN
+  // write, which round-trips ~350ms after the last keystroke) can't
+  // clobber text the user is still typing. Projects with no in-flight
+  // edit take the authoritative broadcast value.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleProjectsChanged, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const incoming = (payload as { projects?: unknown }).projects;
+      if (!Array.isArray(incoming)) return;
+      const incomingProjects = incoming as SizzleProject[];
+      setProjects((prev) =>
+        incomingProjects.map((p) =>
+          pendingPatches.current.has(p.id)
+            ? (prev.find((lp) => lp.id === p.id) ?? p)
+            : p
+        )
+      );
+    });
+  }, []);
+
   const onDelete = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this sizzle reel?")) return;

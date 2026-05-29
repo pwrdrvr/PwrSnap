@@ -2219,15 +2219,20 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           moment the user checks their first capture. In focus/reel the
           cart is a DetailRail tab instead, so this is gated to grid. */}
       {cartIsOpenInGrid ? (
+        // Render CartPanel DIRECTLY in the base `.psl__right` (which is
+        // a flex column with `overflow: hidden`). Deliberately NOT
+        // `.psl__right--vertical` / `.psl__right-content` /
+        // `.psl__right-body` — those carry `overflow: visible` (a
+        // DetailRail escape hatch so its collapsed hover-pop panel can
+        // bleed leftward into the canvas) which let the cart's content
+        // overflow past the rail's right edge. The cart wants a plain
+        // clipped column; `.psl__cart` fills it and manages its own
+        // scroll + padding.
         <aside
-          className="psl__right psl__right--vertical psl__right--cart"
+          className="psl__right psl__right--cart"
           aria-label="Project asset cart"
         >
-          <div className="psl__right-content">
-            <div className="psl__right-body">
-              <CartPanel />
-            </div>
-          </div>
+          <CartPanel />
         </aside>
       ) : null}
 

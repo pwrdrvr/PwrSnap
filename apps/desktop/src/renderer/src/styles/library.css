@@ -1331,14 +1331,15 @@
 /* The cart's standalone grid-mode rail reuses `.psl__right` chrome
    (see the JSX in Library.tsx). This variant just ensures the body
    fills the column the same way the DetailRail body does. */
-.psl__right--cart .psl__right-content {
-  height: 100%;
-}
 .psl__cart {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  /* min-width: 0 lets the flex chain shrink below content min-content
+     so the nowrap item titles can ellipsis instead of forcing the
+     whole cart wider than its rail column. */
+  min-width: 0;
 }
 .psl__cart-header {
   display: flex; align-items: center; gap: 8px;
@@ -1377,7 +1378,8 @@
 .psl__cart-list {
   list-style: none; margin: 0; padding: 8px;
   overflow-y: auto;
-  flex: 1; min-height: 0;
+  overflow-x: hidden;
+  flex: 1; min-height: 0; min-width: 0;
   display: flex; flex-direction: column; gap: 4px;
 }
 .psl__cart-list-end { height: 0; padding: 0; margin: 0; }
@@ -1387,6 +1389,11 @@
   border-radius: 8px;
   border: 1px solid transparent;
   cursor: grab;
+  /* Without min-width:0 a flex item floors at its min-content width;
+     the nowrap title would force the row wider than the rail and
+     bleed past the right edge (the "cart dimensions" bug). This lets
+     the row shrink so `.psl__cart-body`'s ellipsis engages. */
+  min-width: 0;
 }
 .psl__cart-item:hover { background: var(--bg-panel-hover); }
 .psl__cart-item:active { cursor: grabbing; }

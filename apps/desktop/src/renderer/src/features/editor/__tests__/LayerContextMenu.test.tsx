@@ -201,4 +201,52 @@ describe("LayerContextMenu — dismissal", () => {
       document.removeEventListener("keydown", editorHandler);
     }
   });
+
+  test("Escape stops propagation against a WINDOW-LEVEL CAPTURE-phase competing handler (matches Editor.tsx:2474)", async () => {
+    // PR #150 follow-up: real-world repro. Editor.tsx registers its
+    // own keydown listener on WINDOW with `{ capture: true }`. The
+    // event-propagation order for capture is:
+    //
+    //   window-capture → document-capture → ... → target → bubble back
+    //
+    // So Editor's window-capture listener ALWAYS fires BEFORE the
+    // menu's document-capture listener. The previous coverage above
+    // attached a document-level BUBBLE listener, which the menu's
+    // capture+stopPropagation correctly blocked — but a window-level
+    // CAPTURE handler is upstream of the menu's listener and runs
+    // regardless. This test pins the contract that even against THAT
+    // ordering, the menu's onClose still fires.
+    //
+    // The user-reported manual symptom: "Escape doesn't close the
+    // right-click menu." Click-outside dismissal worked; Escape did
+    // not. Root cause: Editor's window-capture handler ran the
+    // clearSelection branch, did not stop propagation, then the menu's
+    // listener fired (closing the menu via onClose) — but the
+    // clearSelection branch was ALSO violating the "Escape closes the
+    // menu without clearing the selection" spec from PR #150's test
+    // plan. The fix shifts Escape handling priority: when the menu is
+    // open, Editor's window-capture handler must SKIP its own Escape
+    // branches so the menu's listener owns the gesture.
+    //
+    // This test reproduces the exact window-capture timing in a unit
+    // harness so the fix can land with a verified gate.
+    const editorWindowCaptureHandler = vi.fn();
+    window.addEventListener("keydown", editorWindowCaptureHandler, {
+      capture: true
+    });
+    try {
+      const { onClose } = await renderMenu(SAMPLE_ITEMS);
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      });
+      // The menu's listener MUST still close the menu, even when an
+      // upstream window-capture handler has already seen the event.
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("keydown", editorWindowCaptureHandler, {
+        capture: true
+      });
+    }
+  });
+
 });

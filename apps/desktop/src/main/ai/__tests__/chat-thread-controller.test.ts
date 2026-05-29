@@ -46,12 +46,16 @@ class FakeClient {
   private approvalHandler: CodexApprovalRequestHandler | null = null;
   private threadSeq = 0;
   private turnSeq = 0;
+  /** The `input` array of the most recent startTurn — lets tests assert
+   *  what text was actually sent to Codex (incl. injected context). */
+  lastTurnInput: Array<{ text: string }> = [];
 
   async startThread(): Promise<{ threadId: string }> {
     this.threadSeq += 1;
     return { threadId: `thread-${this.threadSeq}` };
   }
-  async startTurn(): Promise<{ turnId: string }> {
+  async startTurn(opts: { input: Array<{ text: string }> }): Promise<{ turnId: string }> {
+    this.lastTurnInput = opts.input;
     this.turnSeq += 1;
     return { turnId: `turn-${this.turnSeq}` };
   }
@@ -251,6 +255,39 @@ describe("ChatThreadController asset gluing", () => {
 
     const all = await controller.listThreads();
     expect(all.map((t) => t.threadId).sort()).toEqual([a.threadId, b.threadId].sort());
+  });
+});
+
+describe("ChatThreadController active-capture context", () => {
+  it("injects the current capture id into the TURN but not the committed user message", async () => {
+    const { client, controller, broadcasts } = build();
+    const view = await controller.createThread({ name: "T", anchorCaptureId: "capXYZ" });
+    await controller.sendMessage({
+      threadId: view.threadId,
+      text: "blur the family photo",
+      anchorCaptureId: "capXYZ"
+    });
+
+    // The turn Codex receives carries the current-capture context.
+    const turnText = client.lastTurnInput[0]?.text ?? "";
+    expect(turnText).toContain("capXYZ");
+    expect(turnText).toContain("blur the family photo");
+
+    // The committed (displayed) user message is the RAW text — no wrapper.
+    const lastUser = broadcasts
+      .filter((b) => b.channel === EVENT_CHANNELS.libraryChatMessageCommitted)
+      .map((b) => b.payload as { message: { role: string; content: Array<{ text?: string }> } })
+      .map((p) => p.message)
+      .filter((m) => m.role === "user")
+      .at(-1);
+    expect(lastUser?.content[0]?.text).toBe("blur the family photo");
+  });
+
+  it("omits the context block when no capture is anchored (library-wide)", async () => {
+    const { client, controller } = build();
+    const view = await controller.createThread({ name: "T" });
+    await controller.sendMessage({ threadId: view.threadId, text: "hello", anchorCaptureId: null });
+    expect(client.lastTurnInput[0]?.text).toBe("hello");
   });
 });
 

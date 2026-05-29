@@ -227,11 +227,22 @@ export class ChatThreadController {
 
     const settingsSnapshot = await this.deps.readSettings();
 
+    // Inject the active-capture context into the TURN (not the committed
+    // user message). Without this the agent has no idea which capture is
+    // on screen and guesses via library_list — which is how an edit
+    // lands on the wrong image. The committed/displayed user message
+    // stays the raw `input.text`; only what Codex sees is prefixed.
+    const anchorForTurn = input.anchorCaptureId ?? null;
+    const turnText =
+      anchorForTurn !== null
+        ? `${buildCurrentCaptureContext(anchorForTurn)}\n\n${input.text}`
+        : input.text;
+
     let turnId: string;
     try {
       const started = await this.deps.client.startTurn({
         threadId,
-        input: [{ type: "text", text: input.text, text_elements: [] }],
+        input: [{ type: "text", text: turnText, text_elements: [] }],
         effort: "medium"
       });
       turnId = started.turnId;
@@ -503,6 +514,24 @@ export class ChatThreadController {
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {
   return `${threadId}::${turnId}::${approvalId}`;
+}
+
+/** The per-turn active-capture context (L3). Prefixed to the TURN the
+ *  agent sees (never the committed user message) so "this image / here /
+ *  it" resolves to the capture the user is actually looking at, and edit
+ *  tools get the right `capture_id`. The base prompt
+ *  (library-chat-base.md §"The capture you're looking at") tells the
+ *  agent how to read this block. */
+function buildCurrentCaptureContext(captureId: string): string {
+  return (
+    `<current_capture id="${captureId}">\n` +
+    `The user is viewing this capture right now. "this", "this image", ` +
+    `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
+    `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
+    `tools unless the user explicitly names a different capture — do NOT ` +
+    `pick a capture from library_list when this block is present.\n` +
+    `</current_capture>`
+  );
 }
 
 /** Map a Codex turn-completion status onto the message lifecycle. A turn

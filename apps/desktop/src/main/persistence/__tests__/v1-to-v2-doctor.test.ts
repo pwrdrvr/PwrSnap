@@ -677,19 +677,22 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
   // happens. So the manifest-read call count is a direct proxy for
   // "which rows did the sweep visit?" — exactly what we need to
   // assert the SQL filter is correct.
+  //
+  // The short-circuit doesn't validate `manifest.capture_id` against
+  // the DB row id, so a single constant manifest is sufficient for
+  // every visited row.
+  const ALREADY_V2_MANIFEST = {
+    bundle_format_version: 2,
+    capture_id: "stub_v2_xxxxxxxx",
+    canvas_dimensions: { width_px: 2000, height_px: 1000 },
+    paired_png_filename: "stub.png",
+    created_at: "2026-05-23T12:00:00.000Z",
+    bundle_modified_at: "2026-05-23T12:00:00.000Z"
+  } as const;
+
   async function stubManifestAlwaysV2(): Promise<void> {
     const bundleStore = await import("../bundle-store");
-    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async (path: string) => {
-      const captureId = path.split("/").pop()?.replace(".pwrsnap", "") ?? "unknown";
-      return {
-        bundle_format_version: 2,
-        capture_id: captureId,
-        canvas_dimensions: { width_px: 2000, height_px: 1000 },
-        paired_png_filename: `${captureId}.png`,
-        created_at: "2026-05-23T12:00:00.000Z",
-        bundle_modified_at: "2026-05-23T12:00:00.000Z"
-      };
-    });
+    vi.mocked(bundleStore.readBundleManifest).mockResolvedValue(ALREADY_V2_MANIFEST);
   }
 
   test("empty library: no-op", async () => {
@@ -777,6 +780,72 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
     expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
   });
 
+  test("picks up rows in the post-legacy-bundle-migration shape", async () => {
+    // Contract lock between `runLegacyBundleMigration` and the eager
+    // sweep — the rollout chain is:
+    //   1. legacy migration wraps pre-bundle rows (`bundle_path IS
+    //      NULL AND legacy_src_path IS NOT NULL`) into v1 bundles.
+    //   2. After the legacy migration UPDATE, the row shape is:
+    //        bundle_path        = <new path>      (just set)
+    //        bundle_format_version = 1            (column default,
+    //                                              never touched)
+    //        v1_to_v2_attempts  = 0               (insert default)
+    //        deleted_at         = NULL
+    //   3. The eager sweep MUST pick these up so the pre-bundle
+    //      captures land as v2 in the same boot. This test mirrors
+    //      the post-step-2 shape exactly via the same UPDATE the
+    //      legacy migration runs (paths to `legacy-bundle-migration.ts`
+    //      → "UPDATE captures SET bundle_path = …").
+    //
+    // If this test ever breaks, the legacy migration's UPDATE has
+    // drifted from the eager sweep's SELECT — the symptom in
+    // production is "pre-bundle captures stay as v1 forever".
+    const bundleStore = await import("../bundle-store");
+    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    await stubManifestAlwaysV2();
+
+    // Step 1: insert a pre-bundle row (legacy_src_path, no
+    // bundle_path). Pure raw insert — neither the helper nor the
+    // legacy migration is the system under test here.
+    mocks.db!
+      .prepare(
+        `INSERT INTO captures (
+           id, kind, captured_at, source_app_bundle_id, source_app_name,
+           legacy_src_path, bundle_path, flat_png_path, bundle_modified_at,
+           bundle_format_version, bundle_edits_version,
+           width_px, height_px, device_pixel_ratio, byte_size,
+           sha256, edits_version, deleted_at, v1_to_v2_attempts
+         ) VALUES (
+           ?, 'image', '2026-05-23T12:00:00.000Z', NULL, NULL,
+           '/tmp/legacy/cap_leg.png', NULL, NULL, '2026-05-23T12:00:00.000Z',
+           1, 0, 2000, 1000, 2.0, 1024,
+           'sha-leg', 0, NULL, 0
+         )`
+      )
+      .run("cap_leg_xxxxxxxx".slice(0, 16));
+
+    // Step 2: mirror the legacy migration's UPDATE — sets
+    // bundle_path but does NOT touch bundle_format_version (it's
+    // already 1 from the column default, set by migration 0008).
+    mocks.db!
+      .prepare(
+        `UPDATE captures
+           SET bundle_path = ?,
+               flat_png_path = NULL,
+               bundle_modified_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        "/tmp/captures/cap_leg.pwrsnap",
+        "2026-05-23T12:01:00.000Z",
+        "cap_leg_xxxxxxxx".slice(0, 16)
+      );
+
+    // Step 3: eager sweep should visit the row.
+    await migrateAllV1OnBoot();
+    expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
+  });
+
   test("per-capture failure does not block remaining rows", async () => {
     const bundleStore = await import("../bundle-store");
     const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
@@ -787,20 +856,12 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
 
     // First row throws on manifest read; subsequent rows resolve to v2.
     let call = 0;
-    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async (path: string) => {
+    vi.mocked(bundleStore.readBundleManifest).mockImplementation(async () => {
       call += 1;
       if (call === 1) {
         throw new Error("simulated read failure");
       }
-      const captureId = path.split("/").pop()?.replace(".pwrsnap", "") ?? "unknown";
-      return {
-        bundle_format_version: 2,
-        capture_id: captureId,
-        canvas_dimensions: { width_px: 2000, height_px: 1000 },
-        paired_png_filename: `${captureId}.png`,
-        created_at: "2026-05-23T12:00:00.000Z",
-        bundle_modified_at: "2026-05-23T12:00:00.000Z"
-      };
+      return ALREADY_V2_MANIFEST;
     });
 
     await migrateAllV1OnBoot();

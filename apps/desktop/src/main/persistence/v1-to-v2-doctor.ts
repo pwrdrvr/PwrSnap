@@ -993,6 +993,12 @@ type EagerSweepRow = { id: string };
  */
 export async function migrateAllV1OnBoot(): Promise<void> {
   const db = getDb();
+  // The `bundle_path IS NOT NULL` filter excludes pre-bundle legacy
+  // captures (`legacy_src_path` only) — the per-capture doctor would
+  // return `no_bundle` for those, so there's no point selecting them.
+  // `runLegacyBundleMigration` wraps those into v1 bundles earlier in
+  // the boot pipeline; this sweep picks them up on the same boot once
+  // they have a `bundle_path`.
   const rows = db
     .prepare<[number], EagerSweepRow>(
       `SELECT id FROM captures
@@ -1004,18 +1010,33 @@ export async function migrateAllV1OnBoot(): Promise<void> {
     )
     .all(MAX_ATTEMPTS);
 
-  if (rows.length === 0) {
+  const total = rows.length;
+
+  if (total === 0) {
     log.info("v1-to-v2-eager-sweep: nothing to do");
     return;
   }
 
-  log.info("v1-to-v2-eager-sweep: start", { total: rows.length });
+  log.info("v1-to-v2-eager-sweep: start", { total });
+
+  // Broadcast the same V1ToV2DoctorProgress shape the reconcile sweep
+  // uses so the renderer banner can show progress without a new
+  // payload type. `captureId: null` marks an aggregate (non per-row)
+  // event; per-row migrations emit their own events from inside
+  // `migrateBundleV1ToV2`.
+  emitProgress({
+    status: "running",
+    captureId: null,
+    total,
+    done: 0,
+    failed: 0
+  });
 
   let migrated = 0;
   let alreadyV2 = 0;
   let parked = 0;
-  let noBundle = 0;
   let failed = 0;
+  let done = 0;
 
   for (const row of rows) {
     try {
@@ -1027,17 +1048,16 @@ export async function migrateAllV1OnBoot(): Promise<void> {
           code: result.error.code,
           message: result.error.message
         });
-        continue;
-      }
-      if (result.value.migrated) {
+      } else if (result.value.migrated) {
         migrated += 1;
       } else if (result.value.reason === "already_v2") {
         alreadyV2 += 1;
       } else if (result.value.reason === "parked") {
         parked += 1;
-      } else if (result.value.reason === "no_bundle") {
-        noBundle += 1;
       }
+      // `no_bundle` is unreachable — the SQL filter above excludes
+      // `bundle_path IS NULL` rows, and that's the only path the
+      // per-capture doctor returns it from.
     } catch (cause) {
       failed += 1;
       log.warn("v1-to-v2-eager-sweep: unexpected throw from doctor", {
@@ -1045,14 +1065,31 @@ export async function migrateAllV1OnBoot(): Promise<void> {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }
+    done += 1;
+    if (done % RECONCILE_PROGRESS_EVERY_N === 0) {
+      emitProgress({
+        status: "running",
+        captureId: null,
+        total,
+        done,
+        failed
+      });
+    }
   }
 
+  emitProgress({
+    status: "complete",
+    captureId: null,
+    total,
+    done,
+    failed
+  });
+
   log.info("v1-to-v2-eager-sweep: done", {
-    total: rows.length,
+    total,
     migrated,
     alreadyV2,
     parked,
-    noBundle,
     failed
   });
 }

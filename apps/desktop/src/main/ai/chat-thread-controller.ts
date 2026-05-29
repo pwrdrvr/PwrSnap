@@ -148,15 +148,17 @@ export class ChatThreadController {
     });
     const displayName =
       opts.name && opts.name.trim().length > 0 ? opts.name.trim() : this.defaultName();
-    let sidecar = await this.deps.store.create({ threadId: started.threadId, name: displayName });
     // Glue the thread to the capture it was started from (plan: chats
-    // are scoped to an asset — the thread list shows only this
-    // capture's threads, so "what is this thread about" is never
-    // ambiguous). Null anchor = a library-wide thread (no capture
-    // focused at creation).
-    if (anchorCaptureId !== null) {
-      sidecar = await this.deps.store.update(started.threadId, { anchorCaptureId });
-    }
+    // are scoped to an asset — the thread list shows only this capture's
+    // threads, so "what is this thread about" is never ambiguous). Null
+    // anchor = a library-wide thread (no capture focused at creation).
+    // The anchor is written in the same insert as the rest of the row —
+    // one write, not create-then-update.
+    const sidecar = await this.deps.store.create({
+      threadId: started.threadId,
+      name: displayName,
+      anchorCaptureId
+    });
     const view = this.toView(sidecar);
     this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, { thread: view });
     return view;
@@ -166,16 +168,15 @@ export class ChatThreadController {
     includeArchived?: boolean;
     anchorCaptureId?: string | null;
   } = {}): Promise<LibraryChatThreadView[]> {
-    const includeArchived = opts.includeArchived ?? false;
-    const sidecars = await this.deps.store.list();
-    return sidecars
-      .filter((s) => includeArchived || !s.archived)
-      // When an anchor is supplied, show ONLY that capture's threads
-      // (chats are glued to assets). When omitted, list everything.
-      .filter((s) =>
-        opts.anchorCaptureId === undefined ? true : s.anchorCaptureId === opts.anchorCaptureId
-      )
-      .map((s) => this.toView(s));
+    // Filtering (archived + anchor scoping) is pushed into the store's
+    // indexed SQL — no full-table scan in TS. When an anchor is supplied
+    // the list is scoped to that capture's threads (chats are glued to
+    // assets); when omitted, every anchor is listed.
+    const sidecars = await this.deps.store.list({
+      includeArchived: opts.includeArchived ?? false,
+      ...(opts.anchorCaptureId !== undefined ? { anchorCaptureId: opts.anchorCaptureId } : {})
+    });
+    return sidecars.map((s) => this.toView(s));
   }
 
   async rename(threadId: string, name: string): Promise<LibraryChatThreadView> {
@@ -314,7 +315,7 @@ export class ChatThreadController {
   private async onTurnCompleted(threadId: string, turnId: string, status: string): Promise<void> {
     const turn = this.turns.get(threadId);
     if (turn === undefined || turn.turnId !== turnId) return;
-    await this.finalizeAssistant(threadId, status === "completed" ? "complete" : "interrupted");
+    await this.finalizeAssistant(threadId, mapTurnStatus(status));
   }
 
   private async onToolCall(params: DynamicToolCallParams): Promise<DynamicToolCallResponse> {
@@ -345,8 +346,29 @@ export class ChatThreadController {
     // Best-effort extraction of (threadId, turnId) from the params; Codex
     // shapes vary by approval method. We always mint our own approvalId.
     const p = (params ?? {}) as Record<string, unknown>;
-    const threadId = typeof p.threadId === "string" ? p.threadId : "";
-    const turnId = typeof p.turnId === "string" ? p.turnId : "";
+    let threadId = typeof p.threadId === "string" ? p.threadId : "";
+    let turnId = typeof p.turnId === "string" ? p.turnId : "";
+
+    // Codex doesn't always tag an approval with its (threadId, turnId).
+    // Without a threadId the renderer can't match the approval to a
+    // visible thread, so the promise below would never resolve and the
+    // turn would hang forever. Recover the only-possible thread when
+    // exactly one turn is in flight; otherwise auto-DENY (Default Access
+    // never auto-APPROVES) with a warning rather than deadlocking.
+    if (threadId.length === 0) {
+      if (this.turns.size === 1) {
+        const [[onlyThreadId, onlyTurn]] = [...this.turns.entries()];
+        threadId = onlyThreadId;
+        if (turnId.length === 0) turnId = onlyTurn.turnId;
+      } else {
+        log.warn("approval request without a routable threadId — auto-denying", {
+          method,
+          inFlightTurns: this.turns.size
+        });
+        return { decision: "denied" };
+      }
+    }
+
     const approvalId = randomUUID();
     const summary = typeof p.summary === "string" ? p.summary : `Approve: ${method}`;
     const detail = typeof p.detail === "string" ? p.detail : undefined;
@@ -367,18 +389,14 @@ export class ChatThreadController {
         resolve
       });
       this.deps.broadcast(EVENT_CHANNELS.libraryChatApprovalRequested, request);
-      if (threadId.length > 0) {
-        void this.broadcastThreadStatus(threadId, { kind: "awaiting_approval", approvalId });
-      }
+      void this.broadcastThreadStatus(threadId, { kind: "awaiting_approval", approvalId });
     });
 
-    if (threadId.length > 0) {
-      const turn = this.turns.get(threadId);
-      void this.broadcastThreadStatus(
-        threadId,
-        turn ? { kind: "streaming", turnId: turn.turnId } : { kind: "idle" }
-      );
-    }
+    const turn = this.turns.get(threadId);
+    void this.broadcastThreadStatus(
+      threadId,
+      turn ? { kind: "streaming", turnId: turn.turnId } : { kind: "idle" }
+    );
     // Map our decision to Codex's expected approval response. Codex's
     // approval responses are method-specific; for Phase 0 we return a
     // generic { decision } the client passes through. The exact shape
@@ -485,6 +503,25 @@ export class ChatThreadController {
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {
   return `${threadId}::${turnId}::${approvalId}`;
+}
+
+/** Map a Codex turn-completion status onto the message lifecycle. A turn
+ *  that genuinely errored must read as "failed" so the UI offers Retry —
+ *  only an explicit interrupt/abort/cancel is "interrupted". Anything
+ *  unrecognized is treated as a failure so a silent error never
+ *  masquerades as a clean stop. */
+function mapTurnStatus(status: string): ChatMessage["status"] {
+  switch (status) {
+    case "completed":
+      return "complete";
+    case "interrupted":
+    case "aborted":
+    case "cancelled":
+    case "canceled":
+      return "interrupted";
+    default:
+      return "failed";
+  }
 }
 
 /** Friendly present-tense label for a tool invocation, shown as an

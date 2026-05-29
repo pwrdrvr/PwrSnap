@@ -22,10 +22,12 @@
 //     canvas dimensions (upsertEffectRect), mirroring overlayToLayer's
 //     blur branch.
 //
-// `render_composite` (vision grounding) is NOT yet available — the bus
-// verb doesn't exist (fast-follow). Until then the agent grounds edits
-// on list_layers + capture_metadata (OCR + dims) and asks when a target
-// is ambiguous.
+// `render_composite` (vision grounding) renders the live canvas to a
+// downscaled PNG (via the `render:composite` bus verb) and hands it
+// back as an `inputImage` so the agent can SEE the canvas before it
+// places a redaction / annotation. It still complements list_layers +
+// capture_metadata (OCR + dims) for grounding when a target is
+// ambiguous.
 
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -510,7 +512,7 @@ const deleteLayer = defineTool({
   namespace: "pwrsnap_library",
   name: "delete_layer",
   description:
-    "Remove a layer from a capture by its id (from list_layers, or the layer returned by add_*). Reversible by the user with ⌘Z.",
+    "Remove a layer from a capture by its id (from list_layers, or the layer returned by a draw_* / redact / blur call). Reversible by the user with ⌘Z.",
   annotations: { destructiveHint: true },
   argsSchema: z.object({ layer_id: z.string() }),
   dispatch: async (args) => runVerb("layers:delete", { id: args.layer_id })
@@ -546,9 +548,9 @@ const removeTag = defineTool({
 });
 
 /**
- * The live catalog. Read tools first, then edits. Phase 1 ships these
- * 10; future phases add `render_composite` (vision), cross-capture
- * batch, and capture/recording verbs.
+ * The live catalog — 18 tools. Read / introspect / navigate first, then
+ * the per-primitive edit tools. Future phases add cross-capture batch,
+ * paste-image, and capture/recording verbs.
  */
 export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   // read / introspect / navigate

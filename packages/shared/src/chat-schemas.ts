@@ -4,9 +4,11 @@
 // drift (mirrors the overlay-schemas.ts ⇄ protocol.ts relationship).
 //
 // Three surfaces consume these:
-//   • main: chat-thread-store validates `pwrsnap-thread.json` on read
-//     (corrupt → quarantine, never crash) and the chat-thread-controller
-//     re-validates every tool-call payload routed back from Codex.
+//   • main: chat-thread-store keeps thread metadata in the SQLite
+//     `chat_threads` index and validates legacy `pwrsnap-thread.json`
+//     sidecars against `chatThreadSidecarSchema` when importing them once
+//     into that index; the chat-thread-controller re-validates every
+//     tool-call payload routed back from Codex.
 //   • renderer: the Library chat panel narrows on the discriminated
 //     unions to render text / tool-call cards / streaming bubbles.
 //   • the command bus: `codex:libraryChat:*` req/res shapes reference
@@ -90,13 +92,16 @@ export const chatMessageSchema = z.object({
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
-// ---- Thread sidecar (pwrsnap-thread.json) ------------------------------
+// ---- Thread metadata (chat_threads index + legacy sidecar) -------------
 //
-// PwrSnap-owned metadata that travels next to Codex's own rollout file
-// under ~/Documents/PwrSnap/Chats/<thread-dir>/. Codex owns the message
-// log (rollout); we own name / anchor / focus history / archive+pin
-// flags. Defaults make older / partial sidecars normalize without a
-// schemaVersion bump.
+// PwrSnap-owned thread metadata: name / anchor / focus history /
+// archive + pin flags. This shape now lives in the SQLite `chat_threads`
+// index (migration 0018); the per-turn message journal stays on disk
+// under ~/Documents/PwrSnap/Chats/<dir>/. The schema is retained as both
+// the `ChatThreadSidecar` domain type the store maps rows to AND the
+// validated shape for the one-time import of pre-existing on-disk
+// `pwrsnap-thread.json` sidecars. Defaults make older / partial sidecars
+// normalize without a schemaVersion bump.
 
 export const chatFocusEntrySchema = z.object({
   captureId: z.string(),

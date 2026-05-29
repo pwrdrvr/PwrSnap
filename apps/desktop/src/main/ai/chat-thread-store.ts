@@ -1,43 +1,47 @@
-// Store for PwrSnap's per-thread sidecar (`pwrsnap-thread.json`) + the
-// per-turn journal (`pwrsnap-thread.journal.jsonl`), which live next to
-// Codex's own rollout file under ~/Documents/PwrSnap/Chats/<thread-dir>/.
-// Codex owns the message log; PwrSnap owns name / anchor / focus history /
-// archive+pin flags.
+// Store for the Library Chat thread INDEX. Thread metadata (name /
+// anchor / focus history / archive + pin flags) lives in the SQLite
+// `chat_threads` table (the "overlay"); the per-turn message journal
+// (`pwrsnap-thread.journal.jsonl`) + attachments stay on disk under
+// ~/Documents/PwrSnap/Chats/<dir_name>/ (founder storage decision
+// 2026-05-28 — chats are portable + visible in the user's Documents).
 //
-// Substrate hygiene mirrors DesktopSettingsService deliberately so fixes
-// flow between the two:
-//   • atomic writes — writeFile(tmp) → rename, ALWAYS (a crash mid-write
-//     never corrupts the live sidecar).
-//   • serialized write queue — a single promise chain using
-//     `.catch(() => undefined).then(task)` so a rejected write doesn't run
-//     the next task on the rejection branch and concurrent `update()`s to
-//     the same thread can't interleave reads/writes.
-//   • corrupt-file quarantine — a sidecar that fails the zod schema is
-//     renamed to `*.corrupt-<iso>.json` and treated as absent; we never
-//     throw on corrupt data and never delete the user's file.
+// Why SQLite for the index: the previous JSON-sidecar design had no way
+// to resolve a threadId → dir except a full `readdir` + `JSON.parse` of
+// every sidecar (`locate()`), so a single `sendMessage` triggered
+// several O(threads) directory scans. The index turns every lookup into
+// one indexed query. Mirrors PwrAgent's SQLite thread overlay: index in
+// the DB, message content on disk (theirs is Codex's rollout; ours is
+// the journal).
 //
-// See docs/solutions/2026-05-12-settings-substrate.md for the rationale
-// and apps/desktop/src/main/settings/desktop-settings-service.ts for the
-// reference implementation.
+// Crash safety:
+//   • metadata writes are single SQLite statements — atomic + durable
+//     under WAL. A read-modify-write (update / appendFocus) does the
+//     SELECT and the UPDATE with NO await in between, so two concurrent
+//     calls can't interleave a torn read (better-sqlite3 is synchronous;
+//     the first call's UPDATE lands before the second's SELECT runs).
+//   • the journal is an append-only log — a single `appendFile` per
+//     line; a torn final line (crash mid-append) is skipped on read.
+//
+// Migration from the old sidecars: `ensureImported()` walks the Chats
+// dir ONCE per process and pulls any pre-existing `pwrsnap-thread.json`
+// into the index (INSERT OR IGNORE — never overwrites a live row, never
+// deletes the sidecar). New threads write only the index row; no sidecar
+// is created going forward.
 
-import {
-  appendFile,
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  stat,
-  unlink,
-  writeFile
-} from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type DatabaseT from "better-sqlite3";
 import type { ChatFocusEntry, ChatThreadSidecar } from "@pwrsnap/shared";
 import { chatThreadSidecarSchema } from "@pwrsnap/shared";
+import { getDb } from "../persistence/db";
 import { getMainLogger } from "../log";
 
 type Logger = ReturnType<typeof getMainLogger>;
+type Database = DatabaseT.Database;
 
-/** Sidecar file name PwrSnap writes next to Codex's rollout. */
+/** Legacy sidecar file name (read once by the importer; never written
+ *  for new threads). */
 const SIDECAR_FILE = "pwrsnap-thread.json";
 /** Append-only per-turn journal (one JSON object per line). */
 const JOURNAL_FILE = "pwrsnap-thread.journal.jsonl";
@@ -46,7 +50,7 @@ const ATTACHMENTS_DIR = "attachments";
 /** Spotlight opt-out sentinel — sits one level above chatsDir (i.e. at
  *  ~/Documents/PwrSnap/.metadata_never_index). */
 const METADATA_NEVER_INDEX = ".metadata_never_index";
-/** Hard cap on focusHistory length — keeps the sidecar small. */
+/** Hard cap on focusHistory length — keeps the row small. */
 const FOCUS_HISTORY_MAX = 20;
 /** Slug length cap for the thread-dir name. */
 const SLUG_MAX = 40;
@@ -54,7 +58,24 @@ const SLUG_MAX = 40;
 export type ChatThreadStoreConfig = {
   /** The ~/Documents/PwrSnap/Chats root. Injectable for tests. */
   chatsDir: string;
+  /** SQLite handle. Defaults to the app singleton (`getDb()`); tests
+   *  inject an in-memory DB with the migrations applied. */
+  db?: Database;
   logger?: Logger;
+};
+
+/** Shape of one `chat_threads` row as read back from SQLite. */
+type ChatThreadRow = {
+  thread_id: string;
+  dir_name: string;
+  name: string;
+  anchor_capture_id: string | null;
+  archived: number;
+  pinned: number;
+  focus_history: string;
+  created_at: string;
+  modified_at: string;
+  schema_version: number;
 };
 
 /**
@@ -77,196 +98,168 @@ export function slugifyThreadName(name: string): string {
 export class ChatThreadStore {
   private readonly chatsDir: string;
   private readonly log: Logger;
-
-  /**
-   * Serializes all writes. Reads aren't gated through this chain — the
-   * file system provides crash consistency via the tmp+rename dance, so a
-   * reader sees either the prior committed sidecar or the next one, never a
-   * torn write.
-   */
-  private writeQueue: Promise<unknown> = Promise.resolve();
+  private readonly injectedDb: Database | null;
 
   /** True once the `.metadata_never_index` sentinel drop has been
    *  attempted, so we don't re-stat it on every `create()`. */
   private sentinelEnsured = false;
+  /** True once the one-time legacy-sidecar import has run for this store
+   *  instance (≈ once per process). */
+  private imported = false;
 
   constructor(config: ChatThreadStoreConfig) {
     this.chatsDir = config.chatsDir;
     this.log = config.logger ?? getMainLogger("pwrsnap:chat-thread-store");
+    this.injectedDb = config.db ?? null;
+  }
+
+  private db(): Database {
+    return this.injectedDb ?? getDb();
   }
 
   /**
-   * Mint a fresh thread dir + sidecar. Returns the parsed sidecar.
-   *
-   * Routed through the write queue so the per-day sequence scan + dir
-   * creation can't race a concurrent `create()`.
+   * Mint a fresh thread dir + index row. `anchorCaptureId` is written in
+   * the SAME insert (no follow-up update), so a freshly-anchored thread
+   * is one write.
    */
-  async create(opts: { threadId: string; name: string }): Promise<ChatThreadSidecar> {
-    return this.enqueue(async () => {
-      await this.ensureMetadataNeverIndex();
-      const now = new Date().toISOString();
-      const threadDir = await this.mintThreadDir(opts.name, now);
-      const sidecar = chatThreadSidecarSchema.parse({
-        schemaVersion: 1,
-        threadId: opts.threadId,
-        name: opts.name,
-        createdAt: now,
-        modifiedAt: now,
-        anchorCaptureId: null,
-        focusHistory: [],
-        archived: false,
-        pinned: false
-      });
-      await mkdir(join(threadDir, ATTACHMENTS_DIR), { recursive: true });
-      await this.atomicWriteSidecar(join(threadDir, SIDECAR_FILE), sidecar);
-      return sidecar;
-    });
+  async create(opts: {
+    threadId: string;
+    name: string;
+    anchorCaptureId?: string | null;
+  }): Promise<ChatThreadSidecar> {
+    this.ensureImported();
+    await this.ensureMetadataNeverIndex();
+    const now = new Date().toISOString();
+    const dirName = await this.mintThreadDir(opts.name, now);
+    // The thread dir holds the journal + attachments; create the
+    // attachments dir now so both exist on disk immediately.
+    await mkdir(join(this.chatsDir, dirName, ATTACHMENTS_DIR), { recursive: true });
+    const anchorCaptureId = opts.anchorCaptureId ?? null;
+    this.db()
+      .prepare(
+        `INSERT INTO chat_threads
+           (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
+         VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1)`
+      )
+      .run(opts.threadId, dirName, opts.name, anchorCaptureId, now, now);
+    return rowToSidecar(this.selectRowOrThrow(opts.threadId));
   }
 
   /**
-   * Scan `<chatsDir>/*\/pwrsnap-thread.json`, parse each via the zod
-   * schema, SKIP (with a logged warn + quarantine) any that fail rather
-   * than throwing. Newest-modified-first.
+   * List threads, newest-activity-first. Filtering is pushed into SQL so
+   * the result set is exactly what the caller asked for — never a full
+   * table scan in TS.
+   *   • includeArchived omitted/false → archived rows excluded.
+   *   • anchorCaptureId omitted → all anchors. `null` → only library-wide
+   *     (unanchored) threads. A string → only that capture's threads.
    */
-  async list(): Promise<ChatThreadSidecar[]> {
-    let entries: string[];
-    try {
-      entries = await readdir(this.chatsDir);
-    } catch (cause) {
-      if (isNodeError(cause) && cause.code === "ENOENT") return [];
-      this.log.warn("chat-thread-store: list readdir failed", {
-        chatsDir: this.chatsDir,
-        message: errMessage(cause)
-      });
-      return [];
-    }
-
-    const rows: Array<{ sidecar: ChatThreadSidecar; mtimeMs: number }> = [];
-    for (const entry of entries) {
-      const sidecarPath = join(this.chatsDir, entry, SIDECAR_FILE);
-      let dirStat;
-      try {
-        dirStat = await stat(join(this.chatsDir, entry));
-      } catch {
-        continue;
+  async list(
+    opts: { includeArchived?: boolean; anchorCaptureId?: string | null } = {}
+  ): Promise<ChatThreadSidecar[]> {
+    this.ensureImported();
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (opts.includeArchived !== true) clauses.push("archived = 0");
+    if (opts.anchorCaptureId !== undefined) {
+      if (opts.anchorCaptureId === null) {
+        clauses.push("anchor_capture_id IS NULL");
+      } else {
+        clauses.push("anchor_capture_id = ?");
+        params.push(opts.anchorCaptureId);
       }
-      if (!dirStat.isDirectory()) continue;
-
-      const parsed = await this.readSidecar(sidecarPath);
-      if (parsed === null) continue;
-      let mtimeMs = 0;
-      try {
-        mtimeMs = (await stat(sidecarPath)).mtimeMs;
-      } catch {
-        /* fall through with mtimeMs = 0 */
-      }
-      rows.push({ sidecar: parsed, mtimeMs });
     }
-
-    rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return rows.map((r) => r.sidecar);
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db()
+      .prepare(`SELECT * FROM chat_threads ${where} ORDER BY modified_at DESC`)
+      .all(...params) as ChatThreadRow[];
+    return rows.map(rowToSidecar);
   }
 
-  /** Returns the sidecar for `threadId`, or null when absent / corrupt. */
+  /** Returns the sidecar for `threadId`, or null when absent. */
   async get(threadId: string): Promise<ChatThreadSidecar | null> {
-    const located = await this.locate(threadId);
-    if (located === null) return null;
-    return this.readSidecar(located.sidecarPath);
+    this.ensureImported();
+    const row = this.selectRow(threadId);
+    return row === undefined ? null : rowToSidecar(row);
   }
 
   /**
-   * Atomic-rename patch of the mutable sidecar fields. Bumps `modifiedAt`.
-   * Serialized so two concurrent `update()`s to the same thread merge
-   * onto each other rather than clobbering — the second read observes the
-   * first write's result.
+   * Patch the mutable metadata fields. Bumps `modified_at`. `undefined`
+   * (or key absent) = leave alone; an explicit value (including `false` /
+   * `null` / `""`) is a write — mirrors the settings-substrate
+   * `undefined ≠ null ≠ ""` rule. The SELECT + UPDATE run with no await
+   * between them, so two concurrent `update()`s merge rather than clobber.
    */
   async update(
     threadId: string,
     patch: Partial<Pick<ChatThreadSidecar, "name" | "anchorCaptureId" | "archived" | "pinned">>
   ): Promise<ChatThreadSidecar> {
-    return this.enqueue(async () => {
-      const located = await this.locate(threadId);
-      if (located === null) {
-        throw new Error(`chat-thread-store: update on unknown thread ${threadId}`);
-      }
-      const current = await this.readSidecar(located.sidecarPath);
-      if (current === null) {
-        throw new Error(`chat-thread-store: update on corrupt thread ${threadId}`);
-      }
-      // `undefined` (or key absent) = leave alone; an explicit value
-      // (including `false` / `null` / `""`) is a write. Mirrors the
-      // settings-substrate `undefined ≠ null ≠ ""` rule.
-      const merged: ChatThreadSidecar = {
-        ...current,
-        name: patch.name !== undefined ? patch.name : current.name,
-        anchorCaptureId:
-          patch.anchorCaptureId !== undefined ? patch.anchorCaptureId : current.anchorCaptureId,
-        archived: patch.archived !== undefined ? patch.archived : current.archived,
-        pinned: patch.pinned !== undefined ? patch.pinned : current.pinned,
-        modifiedAt: new Date().toISOString()
-      };
-      await this.atomicWriteSidecar(located.sidecarPath, merged);
-      return merged;
-    });
+    this.ensureImported();
+    const row = this.selectRow(threadId);
+    if (row === undefined) {
+      throw new Error(`chat-thread-store: update on unknown thread ${threadId}`);
+    }
+    const name = patch.name !== undefined ? patch.name : row.name;
+    const anchorCaptureId =
+      patch.anchorCaptureId !== undefined ? patch.anchorCaptureId : row.anchor_capture_id;
+    const archived = patch.archived !== undefined ? (patch.archived ? 1 : 0) : row.archived;
+    const pinned = patch.pinned !== undefined ? (patch.pinned ? 1 : 0) : row.pinned;
+    const now = new Date().toISOString();
+    this.db()
+      .prepare(
+        `UPDATE chat_threads
+            SET name = ?, anchor_capture_id = ?, archived = ?, pinned = ?, modified_at = ?
+          WHERE thread_id = ?`
+      )
+      .run(name, anchorCaptureId, archived, pinned, now, threadId);
+    return rowToSidecar(this.selectRowOrThrow(threadId));
   }
 
   /**
    * Push a focus entry onto `focusHistory`, capped at the last
-   * FOCUS_HISTORY_MAX (newest kept). Bumps `modifiedAt`. Serialized.
+   * FOCUS_HISTORY_MAX (newest kept). Bumps `modified_at`.
    */
   async appendFocus(threadId: string, captureId: string): Promise<void> {
-    await this.enqueue(async () => {
-      const located = await this.locate(threadId);
-      if (located === null) {
-        throw new Error(`chat-thread-store: appendFocus on unknown thread ${threadId}`);
-      }
-      const current = await this.readSidecar(located.sidecarPath);
-      if (current === null) {
-        throw new Error(`chat-thread-store: appendFocus on corrupt thread ${threadId}`);
-      }
-      const entry: ChatFocusEntry = { captureId, at: new Date().toISOString() };
-      const focusHistory = [...current.focusHistory, entry].slice(-FOCUS_HISTORY_MAX);
-      const merged: ChatThreadSidecar = {
-        ...current,
-        focusHistory,
-        modifiedAt: new Date().toISOString()
-      };
-      await this.atomicWriteSidecar(located.sidecarPath, merged);
-    });
+    this.ensureImported();
+    const row = this.selectRow(threadId);
+    if (row === undefined) {
+      throw new Error(`chat-thread-store: appendFocus on unknown thread ${threadId}`);
+    }
+    const entry: ChatFocusEntry = { captureId, at: new Date().toISOString() };
+    const focusHistory = [...parseFocusHistory(row.focus_history), entry].slice(-FOCUS_HISTORY_MAX);
+    const now = new Date().toISOString();
+    this.db()
+      .prepare(`UPDATE chat_threads SET focus_history = ?, modified_at = ? WHERE thread_id = ?`)
+      .run(JSON.stringify(focusHistory), now, threadId);
   }
 
   /**
-   * Append one JSON line to the per-turn journal. The journal is an
-   * append-only log — NOT atomically rewritten — so a single `appendFile`
-   * is the right primitive (each line is independently parseable; a torn
-   * final line is recoverable by skipping it on read). Serialized so two
-   * concurrent appends can't interleave bytes within a line.
+   * Append one JSON line to the per-turn journal on disk. The journal is
+   * append-only — a single `appendFile` is the right primitive (each line
+   * is independently parseable; a torn final line is recoverable by
+   * skipping it on read). The thread dir is resolved from the index row
+   * (one indexed lookup, no directory scan).
    */
   async journalAppend(threadId: string, entry: unknown): Promise<void> {
-    await this.enqueue(async () => {
-      const located = await this.locate(threadId);
-      if (located === null) {
-        throw new Error(`chat-thread-store: journalAppend on unknown thread ${threadId}`);
-      }
-      const journalPath = join(located.threadDir, JOURNAL_FILE);
-      const line = `${JSON.stringify(entry)}\n`;
-      await appendFile(journalPath, line, "utf8");
-    });
+    this.ensureImported();
+    const dir = this.threadDir(threadId);
+    if (dir === null) {
+      throw new Error(`chat-thread-store: journalAppend on unknown thread ${threadId}`);
+    }
+    await appendFile(join(dir, JOURNAL_FILE), `${JSON.stringify(entry)}\n`, "utf8");
   }
 
   /**
    * Read every parseable JSON line from the per-turn journal, in order.
    * A torn / unparseable final line (crash mid-append) is skipped rather
-   * than throwing — the journal is append-only and recoverable. Returns
-   * `[]` for an unknown thread or a missing journal file.
+   * than throwing. Returns `[]` for an unknown thread or a missing journal.
    */
   async readJournal(threadId: string): Promise<unknown[]> {
-    const located = await this.locate(threadId);
-    if (located === null) return [];
-    const journalPath = join(located.threadDir, JOURNAL_FILE);
+    this.ensureImported();
+    const dir = this.threadDir(threadId);
+    if (dir === null) return [];
     let raw: string;
     try {
-      raw = await readFile(journalPath, "utf8");
+      raw = await readFile(join(dir, JOURNAL_FILE), "utf8");
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") return [];
       throw cause;
@@ -286,90 +279,111 @@ export class ChatThreadStore {
 
   /**
    * Returns the attachments dir path for a thread, creating it on demand.
-   * Throws if the thread dir can't be located.
+   * Throws if the thread is unknown.
    */
   async attachmentsDir(threadId: string): Promise<string> {
-    const located = await this.locate(threadId);
-    if (located === null) {
+    this.ensureImported();
+    const dir = this.threadDir(threadId);
+    if (dir === null) {
       throw new Error(`chat-thread-store: attachmentsDir on unknown thread ${threadId}`);
     }
-    const dir = join(located.threadDir, ATTACHMENTS_DIR);
-    await mkdir(dir, { recursive: true });
-    return dir;
+    const attachments = join(dir, ATTACHMENTS_DIR);
+    await mkdir(attachments, { recursive: true });
+    return attachments;
   }
 
   // ---- internals --------------------------------------------------------
 
-  /**
-   * Read + parse a sidecar. Returns null when the file is missing OR fails
-   * the zod schema (in which case it's quarantined). Never throws on
-   * corrupt data.
-   */
-  private async readSidecar(sidecarPath: string): Promise<ChatThreadSidecar | null> {
-    let raw: string;
-    try {
-      raw = await readFile(sidecarPath, "utf8");
-    } catch (cause) {
-      if (isNodeError(cause) && cause.code === "ENOENT") return null;
-      this.log.warn("chat-thread-store: sidecar read failed", {
-        path: sidecarPath,
-        message: errMessage(cause)
-      });
-      return null;
-    }
+  private selectRow(threadId: string): ChatThreadRow | undefined {
+    return this.db()
+      .prepare("SELECT * FROM chat_threads WHERE thread_id = ?")
+      .get(threadId) as ChatThreadRow | undefined;
+  }
 
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(raw);
-    } catch (cause) {
-      await this.quarantine(sidecarPath, `json_parse: ${errMessage(cause)}`);
-      return null;
+  private selectRowOrThrow(threadId: string): ChatThreadRow {
+    const row = this.selectRow(threadId);
+    if (row === undefined) {
+      throw new Error(`chat-thread-store: row vanished for thread ${threadId}`);
     }
+    return row;
+  }
 
-    const result = chatThreadSidecarSchema.safeParse(parsedJson);
-    if (!result.success) {
-      await this.quarantine(sidecarPath, `schema: ${result.error.message}`);
-      return null;
-    }
-    return result.data;
+  /** Absolute path to a thread's on-disk dir (journal + attachments), or
+   *  null when the thread isn't in the index. */
+  private threadDir(threadId: string): string | null {
+    const row = this.selectRow(threadId);
+    return row === undefined ? null : join(this.chatsDir, row.dir_name);
   }
 
   /**
-   * Find the thread dir + sidecar path for `threadId`. We can't derive the
-   * dir name from the id (it's name+date+seq derived), so scan and match on
-   * the parsed sidecar's `threadId`. Skips corrupt sidecars.
+   * One-time pull of legacy `pwrsnap-thread.json` sidecars into the
+   * index. Idempotent (INSERT OR IGNORE on the threadId PK) and
+   * non-destructive (the sidecar file is left on disk). Synchronous so
+   * the read-modify-write methods stay free of a yield point between
+   * their SELECT and UPDATE. Best-effort — a missing Chats dir or a
+   * corrupt sidecar is silently skipped.
    */
-  private async locate(
-    threadId: string
-  ): Promise<{ threadDir: string; sidecarPath: string } | null> {
+  private ensureImported(): void {
+    if (this.imported) return;
+    this.imported = true;
+
     let entries: string[];
     try {
-      entries = await readdir(this.chatsDir);
+      entries = readdirSync(this.chatsDir);
     } catch {
-      return null;
+      return; // No Chats dir yet → nothing to import.
     }
-    for (const entry of entries) {
-      const threadDir = join(this.chatsDir, entry);
-      const sidecarPath = join(threadDir, SIDECAR_FILE);
-      let parsedJson: unknown;
-      try {
-        parsedJson = JSON.parse(await readFile(sidecarPath, "utf8"));
-      } catch {
-        continue;
+
+    const insert = this.db().prepare(
+      `INSERT OR IGNORE INTO chat_threads
+         (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    );
+    let importedCount = 0;
+    const tx = this.db().transaction(() => {
+      for (const entry of entries) {
+        let parsedJson: unknown;
+        try {
+          parsedJson = JSON.parse(readFileSync(join(this.chatsDir, entry, SIDECAR_FILE), "utf8"));
+        } catch {
+          continue; // No sidecar / unreadable / bad JSON → skip.
+        }
+        const parsed = chatThreadSidecarSchema.safeParse(parsedJson);
+        if (!parsed.success) continue;
+        const s = parsed.data;
+        const info = insert.run(
+          s.threadId,
+          entry,
+          s.name,
+          s.anchorCaptureId,
+          s.archived ? 1 : 0,
+          s.pinned ? 1 : 0,
+          JSON.stringify(s.focusHistory),
+          s.createdAt,
+          s.modifiedAt
+        );
+        if (info.changes > 0) importedCount += 1;
       }
-      const result = chatThreadSidecarSchema.safeParse(parsedJson);
-      if (result.success && result.data.threadId === threadId) {
-        return { threadDir, sidecarPath };
-      }
+    });
+    try {
+      tx();
+    } catch (cause) {
+      this.log.warn("chat-thread-store: legacy sidecar import failed", {
+        message: errMessage(cause)
+      });
+      return;
     }
-    return null;
+    if (importedCount > 0) {
+      this.log.info("chat-thread-store: imported legacy sidecars", { count: importedCount });
+    }
   }
 
   /**
-   * Build a `YYYY-MM-DD-NNN-<slug>` dir and create it. NNN is a per-day
-   * sequence: scan existing dirs sharing today's date prefix and take
-   * max+1 (3-digit, zero-padded). Loops on a collision so a racing create
-   * for the same name+day lands on the next free seq.
+   * Build a `YYYY-MM-DD-NNN-<slug>` dir basename and create the (bare)
+   * dir. NNN is a per-day sequence: scan existing dirs sharing today's
+   * date prefix and take max+1 (3-digit, zero-padded). Loops on a
+   * collision so a racing create for the same name+day lands on the next
+   * free seq. Returns the basename (the index row stores this).
    */
   private async mintThreadDir(name: string, nowIso: string): Promise<string> {
     const datePrefix = nowIso.slice(0, 10); // YYYY-MM-DD
@@ -397,7 +411,7 @@ export class ChatThreadStore {
       try {
         // `recursive: false` so EEXIST surfaces and we bump the seq.
         await mkdir(threadDir, { recursive: false });
-        return threadDir;
+        return dirName;
       } catch (cause) {
         if (isNodeError(cause) && cause.code === "EEXIST") continue;
         // Parent missing — create the chatsDir chain then retry this seq.
@@ -425,7 +439,6 @@ export class ChatThreadStore {
       return;
     } catch (cause) {
       if (!(isNodeError(cause) && cause.code === "ENOENT")) {
-        // Some other stat error — log and bail without writing.
         this.log.warn("chat-thread-store: sentinel stat failed", {
           path: sentinelPath,
           message: errMessage(cause)
@@ -450,60 +463,30 @@ export class ChatThreadStore {
       });
     }
   }
+}
 
-  /** Rename a corrupt sidecar to `<name>.corrupt-<iso>.json`. Never
-   *  throws — best-effort, logged at warn. We do NOT delete: it's the
-   *  user's data and a future tool may recover from it. */
-  private async quarantine(sidecarPath: string, reason: string): Promise<void> {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const quarantinePath = `${sidecarPath}.corrupt-${stamp}.json`;
-    try {
-      await rename(sidecarPath, quarantinePath);
-      this.log.warn("chat-thread-store: quarantined corrupt sidecar", {
-        path: sidecarPath,
-        quarantine: quarantinePath,
-        reason
-      });
-    } catch (cause) {
-      this.log.warn("chat-thread-store: failed to quarantine corrupt sidecar", {
-        path: sidecarPath,
-        reason,
-        message: errMessage(cause)
-      });
-    }
-  }
+function rowToSidecar(row: ChatThreadRow): ChatThreadSidecar {
+  return {
+    schemaVersion: 1,
+    threadId: row.thread_id,
+    name: row.name,
+    createdAt: row.created_at,
+    modifiedAt: row.modified_at,
+    anchorCaptureId: row.anchor_capture_id,
+    focusHistory: parseFocusHistory(row.focus_history),
+    archived: row.archived === 1,
+    pinned: row.pinned === 1
+  };
+}
 
-  /** Write the sidecar via tmp + rename so a crash mid-write never
-   *  corrupts the live file. NEVER write the final path directly. */
-  private async atomicWriteSidecar(sidecarPath: string, value: ChatThreadSidecar): Promise<void> {
-    await mkdir(dirname(sidecarPath), { recursive: true });
-    const tmpPath = `${sidecarPath}.tmp`;
-    const json = `${JSON.stringify(value, null, 2)}\n`;
-    try {
-      await writeFile(tmpPath, json, "utf8");
-      await rename(tmpPath, sidecarPath);
-    } catch (cause) {
-      try {
-        await unlink(tmpPath);
-      } catch {
-        /* ignore — best-effort cleanup of an orphaned tmp */
-      }
-      throw cause;
-    }
-  }
-
-  /**
-   * Chain `task` onto the serialized write queue. Mirrors
-   * DesktopSettingsService.write: `.catch(() => undefined).then(task)` so
-   * the queue's baton is always a resolved promise — a rejected task
-   * doesn't run the next one on the rejection branch. The caller of
-   * `enqueue` still observes any rejection; only the queue swallows it so
-   * subsequent writes proceed.
-   */
-  private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const next = this.writeQueue.catch(() => undefined).then(task);
-    this.writeQueue = next.catch(() => undefined);
-    return next;
+/** Parse the `focus_history` JSON column, defaulting to `[]` on any
+ *  corruption (never throws — the column is PwrSnap-owned and small). */
+function parseFocusHistory(raw: string): ChatFocusEntry[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ChatFocusEntry[]) : [];
+  } catch {
+    return [];
   }
 }
 

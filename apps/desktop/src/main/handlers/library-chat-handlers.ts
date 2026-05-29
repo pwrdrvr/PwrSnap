@@ -36,6 +36,22 @@ import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
+// Per-thread Codex config overlay. PwrSnap's chat is an IMAGE assistant,
+// not a coding agent — but the Codex App Server registers its built-in
+// coding tools (web_search / apply_patch / view_image / shell) by
+// default, and the agent will otherwise advertise + use them ("I can
+// edit files, run shell, apply patches, search the web"). These config
+// keys drop the optional built-ins so only PwrSnap's dynamic tools
+// remain. The core shell/exec tool can't be removed via config; the
+// system prompt forbids claiming/using it and the workspace-write
+// sandbox is scoped to the chat dir. Unknown keys are ignored by
+// Codex's config merge, so this is safe across Codex versions.
+const LIBRARY_CHAT_THREAD_CONFIG: Record<string, unknown> = {
+  tools: { web_search: false },
+  include_apply_patch_tool: false,
+  include_view_image_tool: false
+};
+
 export type LibraryChatSettingsReader = () => Promise<Settings>;
 
 function aiError(code: string, message: string): Result<never, PwrSnapError> {
@@ -92,7 +108,9 @@ export function registerLibraryChatHandlers(params?: {
       dispatchToolCall: dispatchLibraryToolCall,
       // Default Access.
       approvalPolicy: "on-request",
-      sandbox: "workspace-write"
+      sandbox: "workspace-write",
+      // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
+      threadConfig: LIBRARY_CHAT_THREAD_CONFIG
     });
     controller.wire();
     return controller;

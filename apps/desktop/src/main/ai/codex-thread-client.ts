@@ -39,6 +39,11 @@ export type CodexStartThreadOptions = {
   dynamicTools?: DynamicToolSpec[];
   cwd?: string;
   personality?: string;
+  /** Per-thread Codex config overlay (the `-c key=value` mechanism).
+   *  Used to disable Codex's built-in coding tools (web_search /
+   *  apply_patch / view_image) so the chat presents only PwrSnap's
+   *  dynamic tools. Unknown keys are ignored by Codex's config merge. */
+  config?: Record<string, unknown>;
 };
 
 export type CodexStartTurnOptions = {
@@ -147,6 +152,9 @@ export class CodexThreadClient {
     }
     if (opts.dynamicTools !== undefined) {
       params.dynamicTools = opts.dynamicTools;
+    }
+    if (opts.config !== undefined) {
+      params.config = opts.config as NonNullable<ThreadStartParams["config"]>;
     }
 
     const response = (await connection.request(

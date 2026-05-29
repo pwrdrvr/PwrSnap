@@ -75,6 +75,10 @@ export type ChatThreadControllerDeps = {
   /** Default-Access policy applied to every chat thread. */
   approvalPolicy?: string;
   sandbox?: string;
+  /** Per-thread Codex config overlay applied on every thread/start —
+   *  disables Codex's built-in coding tools (web_search / apply_patch /
+   *  view_image) so the agent presents only PwrSnap's dynamic tools. */
+  threadConfig?: Record<string, unknown>;
   /** Injectable clock for tests. */
   now?: () => number;
 };
@@ -145,7 +149,8 @@ export class ChatThreadController {
       ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
       ...(this.deps.sandbox !== undefined ? { sandbox: this.deps.sandbox } : {}),
       baseInstructions,
-      ...(this.deps.catalog !== undefined ? { dynamicTools: this.deps.catalog } : {})
+      ...(this.deps.catalog !== undefined ? { dynamicTools: this.deps.catalog } : {}),
+      ...(this.deps.threadConfig !== undefined ? { config: this.deps.threadConfig } : {})
     });
     const displayName =
       opts.name && opts.name.trim().length > 0 ? opts.name.trim() : this.defaultName();

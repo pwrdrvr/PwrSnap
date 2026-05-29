@@ -49,8 +49,12 @@ class FakeClient {
   /** The `input` array of the most recent startTurn — lets tests assert
    *  what text was actually sent to Codex (incl. injected context). */
   lastTurnInput: Array<{ text: string }> = [];
+  /** The opts of the most recent startThread — lets tests assert the
+   *  Codex config overlay (built-in tool suppression) is forwarded. */
+  lastStartThreadOpts: { config?: Record<string, unknown> } | null = null;
 
-  async startThread(): Promise<{ threadId: string }> {
+  async startThread(opts?: { config?: Record<string, unknown> }): Promise<{ threadId: string }> {
+    this.lastStartThreadOpts = opts ?? null;
     this.threadSeq += 1;
     return { threadId: `thread-${this.threadSeq}` };
   }
@@ -125,7 +129,12 @@ afterEach(async () => {
   await rm(root, { force: true, recursive: true });
 });
 
-function build(opts: { dispatchToolCall?: (p: DynamicToolCallParams) => Promise<DynamicToolCallResponse> } = {}) {
+function build(
+  opts: {
+    dispatchToolCall?: (p: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
+    threadConfig?: Record<string, unknown>;
+  } = {}
+) {
   const client = new FakeClient();
   const store = new ChatThreadStore({ chatsDir: join(root, "Chats"), db });
   const broadcasts: Broadcast[] = [];
@@ -139,6 +148,7 @@ function build(opts: { dispatchToolCall?: (p: DynamicToolCallParams) => Promise<
     broadcast,
     buildSystemPrompt: () => "system",
     ...(opts.dispatchToolCall ? { dispatchToolCall: opts.dispatchToolCall } : {}),
+    ...(opts.threadConfig ? { threadConfig: opts.threadConfig } : {}),
     approvalPolicy: "on-request",
     sandbox: "workspace-write"
   });
@@ -255,6 +265,19 @@ describe("ChatThreadController asset gluing", () => {
 
     const all = await controller.listThreads();
     expect(all.map((t) => t.threadId).sort()).toEqual([a.threadId, b.threadId].sort());
+  });
+});
+
+describe("ChatThreadController thread config (built-in tool suppression)", () => {
+  it("forwards the Codex config overlay to startThread", async () => {
+    const cfg = {
+      tools: { web_search: false },
+      include_apply_patch_tool: false,
+      include_view_image_tool: false
+    };
+    const { client, controller } = build({ threadConfig: cfg });
+    await controller.createThread({ name: "T" });
+    expect(client.lastStartThreadOpts?.config).toEqual(cfg);
   });
 });
 

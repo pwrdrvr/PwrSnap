@@ -50,10 +50,14 @@ class FakeClient {
    *  what text was actually sent to Codex (incl. injected context). */
   lastTurnInput: Array<{ text: string }> = [];
   /** The opts of the most recent startThread — lets tests assert the
-   *  Codex config overlay (built-in tool suppression) is forwarded. */
-  lastStartThreadOpts: { config?: Record<string, unknown> } | null = null;
+   *  Codex config overlay + empty environments (built-in tool
+   *  suppression) are forwarded. */
+  lastStartThreadOpts: { config?: Record<string, unknown>; environments?: unknown[] } | null = null;
 
-  async startThread(opts?: { config?: Record<string, unknown> }): Promise<{ threadId: string }> {
+  async startThread(opts?: {
+    config?: Record<string, unknown>;
+    environments?: unknown[];
+  }): Promise<{ threadId: string }> {
     this.lastStartThreadOpts = opts ?? null;
     this.threadSeq += 1;
     return { threadId: `thread-${this.threadSeq}` };
@@ -133,6 +137,7 @@ function build(
   opts: {
     dispatchToolCall?: (p: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
     threadConfig?: Record<string, unknown>;
+    threadEnvironments?: unknown[];
   } = {}
 ) {
   const client = new FakeClient();
@@ -149,6 +154,7 @@ function build(
     buildSystemPrompt: () => "system",
     ...(opts.dispatchToolCall ? { dispatchToolCall: opts.dispatchToolCall } : {}),
     ...(opts.threadConfig ? { threadConfig: opts.threadConfig } : {}),
+    ...(opts.threadEnvironments ? { threadEnvironments: opts.threadEnvironments } : {}),
     approvalPolicy: "on-request",
     sandbox: "workspace-write"
   });
@@ -269,15 +275,14 @@ describe("ChatThreadController asset gluing", () => {
 });
 
 describe("ChatThreadController thread config (built-in tool suppression)", () => {
-  it("forwards the Codex config overlay to startThread", async () => {
-    const cfg = {
-      tools: { web_search: false },
-      include_apply_patch_tool: false,
-      include_view_image_tool: false
-    };
-    const { client, controller } = build({ threadConfig: cfg });
+  it("forwards the config overlay + empty environments to startThread", async () => {
+    const cfg = { web_search: "disabled" };
+    const { client, controller } = build({ threadConfig: cfg, threadEnvironments: [] });
     await controller.createThread({ name: "T" });
+    // web_search disabled (drops web search) + empty environments (drops
+    // Codex's env-gated shell / exec / apply_patch tools).
     expect(client.lastStartThreadOpts?.config).toEqual(cfg);
+    expect(client.lastStartThreadOpts?.environments).toEqual([]);
   });
 });
 

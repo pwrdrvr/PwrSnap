@@ -40,10 +40,17 @@ export type CodexStartThreadOptions = {
   cwd?: string;
   personality?: string;
   /** Per-thread Codex config overlay (the `-c key=value` mechanism).
-   *  Used to disable Codex's built-in coding tools (web_search /
-   *  apply_patch / view_image) so the chat presents only PwrSnap's
-   *  dynamic tools. Unknown keys are ignored by Codex's config merge. */
+   *  We use it to set `web_search = "disabled"` (default is "cached" =
+   *  ON) so the agent doesn't advertise/use web search. */
   config?: Record<string, unknown>;
+  /** Thread environments. **Empty array disables exec-environment
+   *  access**, which (per codex-rs core/src/tools/spec_plan.rs — the
+   *  shell/exec + apply_patch specs are gated on
+   *  `tool_environment_mode().has_environment()`) drops Codex's built-in
+   *  shell / unified_exec / apply_patch tools. Our dynamic tools are
+   *  added BEFORE that gate, so they survive. This is how we keep the
+   *  agent an image assistant, not a coding agent. */
+  environments?: unknown[];
 };
 
 export type CodexStartTurnOptions = {
@@ -155,6 +162,9 @@ export class CodexThreadClient {
     }
     if (opts.config !== undefined) {
       params.config = opts.config as NonNullable<ThreadStartParams["config"]>;
+    }
+    if (opts.environments !== undefined) {
+      params.environments = opts.environments as NonNullable<ThreadStartParams["environments"]>;
     }
 
     const response = (await connection.request(

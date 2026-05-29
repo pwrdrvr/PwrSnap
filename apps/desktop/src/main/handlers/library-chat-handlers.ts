@@ -36,21 +36,28 @@ import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
-// Per-thread Codex config overlay. PwrSnap's chat is an IMAGE assistant,
-// not a coding agent — but the Codex App Server registers its built-in
-// coding tools (web_search / apply_patch / view_image / shell) by
-// default, and the agent will otherwise advertise + use them ("I can
-// edit files, run shell, apply patches, search the web"). These config
-// keys drop the optional built-ins so only PwrSnap's dynamic tools
-// remain. The core shell/exec tool can't be removed via config; the
-// system prompt forbids claiming/using it and the workspace-write
-// sandbox is scoped to the chat dir. Unknown keys are ignored by
-// Codex's config merge, so this is safe across Codex versions.
+// PwrSnap's chat is an IMAGE assistant, not a coding agent — but Codex
+// registers its built-in coding tools by default and the agent will
+// otherwise advertise + use them ("I can edit files, run shell, apply
+// patches, search the web"). Two source-verified levers (codex-rs):
+//
+//   • EMPTY `environments` disables exec-environment access. The shell /
+//     unified_exec + apply_patch tool specs are gated on
+//     `tool_environment_mode().has_environment()` (spec_plan.rs:547/621),
+//     and `from_count(0) == None == !has_environment` — so an empty list
+//     drops all three. Our DYNAMIC tools are added before that gate, so
+//     they survive.
+//   • `web_search = "disabled"` (the default is "cached" = ON; the key
+//     is a top-level WebSearchMode, NOT `tools.web_search`).
+//
+// The system prompt also forbids claiming/using any coding capability,
+// as a backstop. (`baseInstructions` already fully REPLACES Codex's
+// default coding-agent prompt — the Responses `instructions` field is
+// `base_instructions.text` verbatim.)
 const LIBRARY_CHAT_THREAD_CONFIG: Record<string, unknown> = {
-  tools: { web_search: false },
-  include_apply_patch_tool: false,
-  include_view_image_tool: false
+  web_search: "disabled"
 };
+const LIBRARY_CHAT_THREAD_ENVIRONMENTS: unknown[] = [];
 
 export type LibraryChatSettingsReader = () => Promise<Settings>;
 
@@ -110,7 +117,8 @@ export function registerLibraryChatHandlers(params?: {
       approvalPolicy: "on-request",
       sandbox: "workspace-write",
       // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
-      threadConfig: LIBRARY_CHAT_THREAD_CONFIG
+      threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
+      threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS
     });
     controller.wire();
     return controller;

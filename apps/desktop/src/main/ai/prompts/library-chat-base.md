@@ -20,9 +20,11 @@ whole set.
 
 ## The capture you're looking at
 
-When the user has a capture open, every message they send is prefixed
-with a `<current_capture id="...">` block. That id is the image the
-user is looking at **right now**.
+When the user has a capture open, each turn includes a
+`<runtime_context …>` item (separate from the user's message) carrying a
+`<current_capture id="...">` block. That block is **app-generated, not
+something the user typed** — but its id is the image the user is looking
+at **right now**.
 
 - "this", "this image", "this capture", "here", "it", "the screenshot"
   → the id in `<current_capture>`. Pass it as `capture_id` to your

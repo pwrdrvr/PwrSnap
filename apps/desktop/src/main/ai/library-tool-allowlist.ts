@@ -261,15 +261,25 @@ const listLayerCapabilities = defineTool({
   namespace: "pwrsnap_library",
   name: "list_layer_capabilities",
   description:
-    "Describe what you can place on a capture: the draw tools (draw_arrow / draw_text / draw_highlight / draw_rect), the effect tools (redact / blur), and the coordinate convention. Call this if you're unsure what's available.",
+    "Describe what you can place on a capture: the draw tools (draw_arrow / draw_text / draw_highlight + the shape tools draw_rect / draw_square / draw_circle / draw_oval / draw_parallelogram), the effect tools (redact / blur), and the coordinate convention. Call this if you're unsure what's available.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({}),
   dispatch: async () => ({
     ok: true,
     data: {
       coordinate_system: "normalized [0,1] of the canvas; (0,0)=top-left, (1,1)=bottom-right",
-      draw_tools: ["draw_arrow", "draw_text", "draw_highlight", "draw_rect"],
-      planned_draw_tools: ["draw_circle", "draw_oval", "draw_square", "draw_triangle"],
+      draw_tools: [
+        "draw_arrow",
+        "draw_text",
+        "draw_highlight",
+        "draw_rect",
+        "draw_square",
+        "draw_circle",
+        "draw_oval",
+        "draw_parallelogram"
+      ],
+      shape_note:
+        "rect/square/circle/oval/parallelogram share a normalized bounding rect; keep w==h for a true square or circle. filled=true for solid, omit for outline.",
       effect_tools: {
         redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"
@@ -288,14 +298,16 @@ const listLayerCapabilities = defineTool({
 // ---- edit tools --------------------------------------------------------
 //
 // One tool per primitive (draw_arrow / draw_text / draw_highlight /
-// draw_rect / redact / blur) rather than a single polymorphic
+// draw_rect / draw_square / draw_circle / draw_oval /
+// draw_parallelogram / redact / blur) rather than a single polymorphic
 // add_annotation taking a discriminated union. Rationale: models are
 // reliable at PICKING a named tool but weaker at correctly pairing a
 // discriminator with its matching fields — so the agent picks
-// `draw_highlight` and sees only highlight's flat settings. Still
+// `draw_highlight` and sees only highlight's flat settings. The five
+// shape tools all build main's v2 `ShapeOverlay` (kind: "shape" + a
+// `shape` discriminator) under the hood via `upsertShape`. Still
 // primitives (the agent composes novel results from them), NOT
-// workflow wrappers. New shapes (circle/oval/square/triangle) land as
-// new draw_* tools.
+// workflow wrappers.
 
 /** Shared fragments — flat, normalized [0,1] coords. Points allow
  *  values slightly outside [0,1] so an arrow can come in from off-
@@ -442,28 +454,119 @@ const drawHighlight = defineTool({
     )
 });
 
+// Shapes (rect / square / circle / oval / parallelogram) are all the v2
+// `ShapeOverlay`: a normalized bounding `rect` + a `shape` discriminator,
+// plus color / filled / rotation (and skewDeg for parallelogram). One
+// tool per shape — the agent picks a named tool and only sees that
+// shape's flat settings — but they all funnel through `upsertShape`.
+
+/** Build + upsert a ShapeOverlay. `shape` is main's ShapeKind
+ *  discriminator; square + circle are 1:1-locked in the editor, so the
+ *  tool descriptions tell the agent to keep w == h for those. */
+async function upsertShape(
+  captureId: string,
+  shape: "rect" | "square" | "circle" | "oval" | "parallelogram",
+  args: {
+    rect: { x: number; y: number; w: number; h: number };
+    color?: string | undefined;
+    filled?: boolean | undefined;
+    rotation?: number | undefined;
+    skewDeg?: number | undefined;
+  },
+  name: string
+): Promise<ToolDispatchResult> {
+  return upsertVector(
+    captureId,
+    {
+      kind: "shape",
+      shape,
+      rect: args.rect,
+      color: args.color ?? "auto",
+      ...(args.filled !== undefined ? { filled: args.filled } : {}),
+      ...(args.rotation !== undefined ? { rotation: args.rotation } : {}),
+      ...(shape === "parallelogram" && args.skewDeg !== undefined
+        ? { skewDeg: args.skewDeg }
+        : {})
+    },
+    name
+  );
+}
+
+/** Shared arg schema for the aspect-free shape tools. */
+const shapeArgsSchema = z.object({
+  capture_id: z.string(),
+  rect: normRect,
+  color: hexColor.optional(),
+  filled: z.boolean().optional(),
+  rotation: z.number().finite().optional()
+});
+
 const drawRect = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_rect",
   description:
-    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `filled` true = solid fill, false/omit = outline only. (Circles, ovals, squares, and triangles will arrive as their own draw_* tools.)",
+    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0).",
+  annotations: { destructiveHint: false },
+  argsSchema: shapeArgsSchema,
+  dispatch: async (args) => upsertShape(args.capture_id, "rect", args, "AI rectangle")
+});
+
+const drawSquare = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_square",
+  description:
+    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+  annotations: { destructiveHint: false },
+  argsSchema: shapeArgsSchema,
+  dispatch: async (args) => upsertShape(args.capture_id, "square", args, "AI square")
+});
+
+const drawCircle = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_circle",
+  description:
+    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline.",
+  annotations: { destructiveHint: false },
+  argsSchema: shapeArgsSchema,
+  dispatch: async (args) => upsertShape(args.capture_id, "circle", args, "AI circle")
+});
+
+const drawOval = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_oval",
+  description:
+    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+  annotations: { destructiveHint: false },
+  argsSchema: shapeArgsSchema,
+  dispatch: async (args) => upsertShape(args.capture_id, "oval", args, "AI oval")
+});
+
+const drawParallelogram = defineTool({
+  namespace: "pwrsnap_library",
+  name: "draw_parallelogram",
+  description:
+    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
     color: hexColor.optional(),
-    filled: z.boolean().optional()
+    filled: z.boolean().optional(),
+    rotation: z.number().finite().optional(),
+    skew_deg: z.number().finite().optional()
   }),
   dispatch: async (args) =>
-    upsertVector(
+    upsertShape(
       args.capture_id,
+      "parallelogram",
       {
-        kind: "rect",
         rect: args.rect,
-        color: args.color ?? "auto",
-        ...(args.filled !== undefined ? { filled: args.filled } : {})
+        color: args.color,
+        filled: args.filled,
+        rotation: args.rotation,
+        skewDeg: args.skew_deg
       },
-      "AI rect"
+      "AI parallelogram"
     )
 });
 
@@ -548,9 +651,10 @@ const removeTag = defineTool({
 });
 
 /**
- * The live catalog — 18 tools. Read / introspect / navigate first, then
- * the per-primitive edit tools. Future phases add cross-capture batch,
- * paste-image, and capture/recording verbs.
+ * The live catalog — 22 tools. Read / introspect / navigate first, then
+ * the per-primitive edit tools (one per draw shape + the two effects).
+ * Future phases add cross-capture batch, paste-image, and capture/
+ * recording verbs.
  */
 export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   // read / introspect / navigate
@@ -567,6 +671,10 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   drawText,
   drawHighlight,
   drawRect,
+  drawSquare,
+  drawCircle,
+  drawOval,
+  drawParallelogram,
   redact,
   blur,
   deleteLayer,

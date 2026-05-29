@@ -37,7 +37,8 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
-  DynamicToolSpec
+  DynamicToolSpec,
+  UserInput
 } from "@pwrsnap/codex-app-server-protocol/v2";
 import type { CodexThreadClient } from "./codex-thread-client";
 import type { ChatThreadStore } from "./chat-thread-store";
@@ -227,22 +228,35 @@ export class ChatThreadController {
 
     const settingsSnapshot = await this.deps.readSettings();
 
-    // Inject the active-capture context into the TURN (not the committed
-    // user message). Without this the agent has no idea which capture is
-    // on screen and guesses via library_list — which is how an edit
-    // lands on the wrong image. The committed/displayed user message
-    // stays the raw `input.text`; only what Codex sees is prefixed.
+    // Per-turn active-capture context (which capture is on screen) goes
+    // in a SEPARATE leading turn item, explicitly framed as system-
+    // generated and NOT folded into the user's text. Why:
+    //   • the agent must not read app-context as the user's words;
+    //   • the static system prompt (baseInstructions) stays byte-
+    //     identical across turns so Codex can prompt-cache it — dynamic
+    //     state rides the turn instead;
+    //   • it's emitted only for the CURRENT turn (never accumulated), so
+    //     the thread carries no stale `<current_capture>` blocks.
+    // Without it the agent has no idea which capture is focused and
+    // guesses via library_list — that's how an edit lands on the wrong
+    // image. The committed/displayed user message stays the raw
+    // `input.text`. Pattern mirrors OpenClaw's runtime-context message.
     const anchorForTurn = input.anchorCaptureId ?? null;
-    const turnText =
-      anchorForTurn !== null
-        ? `${buildCurrentCaptureContext(anchorForTurn)}\n\n${input.text}`
-        : input.text;
+    const turnInput: UserInput[] = [];
+    if (anchorForTurn !== null) {
+      turnInput.push({
+        type: "text",
+        text: buildCurrentCaptureContext(anchorForTurn),
+        text_elements: []
+      });
+    }
+    turnInput.push({ type: "text", text: input.text, text_elements: [] });
 
     let turnId: string;
     try {
       const started = await this.deps.client.startTurn({
         threadId,
-        input: [{ type: "text", text: turnText, text_elements: [] }],
+        input: turnInput,
         effort: "medium"
       });
       turnId = started.turnId;
@@ -516,21 +530,26 @@ function approvalKey(threadId: string, turnId: string, approvalId: string): stri
   return `${threadId}::${turnId}::${approvalId}`;
 }
 
-/** The per-turn active-capture context (L3). Prefixed to the TURN the
- *  agent sees (never the committed user message) so "this image / here /
- *  it" resolves to the capture the user is actually looking at, and edit
- *  tools get the right `capture_id`. The base prompt
+/** The per-turn active-capture context (L3), sent as its own leading
+ *  turn item — NOT the committed user message. The `<runtime_context>`
+ *  wrapper + the "not user-authored" note tell the agent this is
+ *  app-generated environment framing, not the user's words (mirrors
+ *  OpenClaw's runtime-context message). The base prompt
  *  (library-chat-base.md §"The capture you're looking at") tells the
- *  agent how to read this block. */
+ *  agent how to read it. Resolves "this image / here / it" to the
+ *  capture the user is actually looking at so edit tools get the right
+ *  `capture_id`. */
 function buildCurrentCaptureContext(captureId: string): string {
   return (
+    `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">\n` +
     `<current_capture id="${captureId}">\n` +
     `The user is viewing this capture right now. "this", "this image", ` +
     `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
     `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
     `tools unless the user explicitly names a different capture — do NOT ` +
     `pick a capture from library_list when this block is present.\n` +
-    `</current_capture>`
+    `</current_capture>\n` +
+    `</runtime_context>`
   );
 }
 
@@ -571,6 +590,10 @@ function humanizeToolCall(tool: string, ok: boolean): string {
     draw_text: "Added a text label",
     draw_highlight: "Added a highlight",
     draw_rect: "Drew a rectangle",
+    draw_square: "Drew a square",
+    draw_circle: "Drew a circle",
+    draw_oval: "Drew an oval",
+    draw_parallelogram: "Drew a parallelogram",
     redact: "Blacked out a region",
     blur: "Blurred a region",
     delete_layer: "Deleted a layer",

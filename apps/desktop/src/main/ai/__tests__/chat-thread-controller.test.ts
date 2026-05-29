@@ -259,7 +259,7 @@ describe("ChatThreadController asset gluing", () => {
 });
 
 describe("ChatThreadController active-capture context", () => {
-  it("injects the current capture id into the TURN but not the committed user message", async () => {
+  it("sends the current capture as a SEPARATE runtime-context item, not the user message", async () => {
     const { client, controller, broadcasts } = build();
     const view = await controller.createThread({ name: "T", anchorCaptureId: "capXYZ" });
     await controller.sendMessage({
@@ -268,10 +268,14 @@ describe("ChatThreadController active-capture context", () => {
       anchorCaptureId: "capXYZ"
     });
 
-    // The turn Codex receives carries the current-capture context.
-    const turnText = client.lastTurnInput[0]?.text ?? "";
-    expect(turnText).toContain("capXYZ");
-    expect(turnText).toContain("blur the family photo");
+    // Two turn items: [0] = runtime context (capture id + explicitly
+    // not-user-authored framing), [1] = the user's raw text — distinct
+    // items, so the agent never reads app-context as the user's words.
+    expect(client.lastTurnInput).toHaveLength(2);
+    const ctx = client.lastTurnInput[0]?.text ?? "";
+    expect(ctx).toContain("capXYZ");
+    expect(ctx).toContain("not user-authored");
+    expect(client.lastTurnInput[1]?.text).toBe("blur the family photo");
 
     // The committed (displayed) user message is the RAW text — no wrapper.
     const lastUser = broadcasts
@@ -283,10 +287,11 @@ describe("ChatThreadController active-capture context", () => {
     expect(lastUser?.content[0]?.text).toBe("blur the family photo");
   });
 
-  it("omits the context block when no capture is anchored (library-wide)", async () => {
+  it("sends a single user item (no context block) when no capture is anchored", async () => {
     const { client, controller } = build();
     const view = await controller.createThread({ name: "T" });
     await controller.sendMessage({ threadId: view.threadId, text: "hello", anchorCaptureId: null });
+    expect(client.lastTurnInput).toHaveLength(1);
     expect(client.lastTurnInput[0]?.text).toBe("hello");
   });
 });

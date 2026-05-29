@@ -143,7 +143,7 @@ test("editor-shape-tool: parallelogram skew slider gates on shape kind + persist
   }
 });
 
-test("editor-shape-tool: drawing a circle commits a ShapeOverlay with shape:'circle'", async () => {
+test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted glyph layer", async () => {
   const app = await launchPwrSnap();
   try {
     const captureId = await seedCapture(app);
@@ -158,11 +158,11 @@ test("editor-shape-tool: drawing a circle commits a ShapeOverlay with shape:'cir
     await editorWindow.keyboard.press("Escape");
 
     // Drag on the canvas to commit the shape. The editor renders the
-    // canvas inside `[data-testid="editor-canvas"]`. A simple diagonal
-    // drag from (200, 150) to (350, 300) (CSS pixels relative to the
-    // canvas) produces a ~150×150 normalized rect — square enough that
-    // even free-aspect ovals would render visibly, but we picked Circle
-    // so the 1:1 lock kicks in.
+    // canvas inside `[data-testid="editor-canvas-wrap"]`. A simple
+    // diagonal drag from (200, 150) to (350, 300) (CSS pixels
+    // relative to the canvas) produces a ~150×150 normalized rect —
+    // the 1:1 lock kicks in because we picked Circle, so the
+    // committed bbox is a true pixel-square.
     const canvas = editorWindow.locator('[data-testid="editor-canvas-wrap"]');
     await canvas.waitFor({ state: "visible", timeout: 5_000 });
     const box = await canvas.boundingBox();
@@ -173,27 +173,35 @@ test("editor-shape-tool: drawing a circle commits a ShapeOverlay with shape:'cir
     await editorWindow.mouse.move(box.x + 350, box.y + 300, { steps: 10 });
     await editorWindow.mouse.up();
 
-    // Give the commit a moment to land in the substrate.
-    await editorWindow.waitForTimeout(300);
+    // After commit, the renderer paints a persisted-glyph mini-SVG
+    // containing an <ellipse> (the primitive ShapeGlyph emits for
+    // `shape: "circle"`). This is a UI-level assertion that doesn't
+    // depend on the v1/v2 storage format the commit landed in
+    // (overlays:upsert vs layers:upsert) — the renderer renders the
+    // same SVG primitive in both paths, branching on the projected
+    // OverlayRow's `data.kind / data.shape`.
+    //
+    // toHaveCount waits up to its default timeout so a slight commit
+    // delay doesn't cause a flake.
+    await expect(
+      editorWindow.locator(
+        '[data-testid="persisted-glyph-svg"] ellipse'
+      )
+    ).toHaveCount(2);
+    // ShapeGlyph emits TWO ellipses for the stroked branch: a wider
+    // white halo (under-stroke for legibility on busy backgrounds)
+    // and the colored stroke on top. Filled mode would emit one;
+    // the popover default is unfilled, so two is the expected count.
 
-    // Pull the committed layer back. The capture was seeded with no
-    // bundle_format_version override → the v2 layer-tree write path
-    // is canonical. `layers:list` returns the flat layer array.
-    const list = await app.dispatch("layers:list", { captureId });
-    expect(list.ok).toBe(true);
-    if (!list.ok) return;
-    // Vector-layer narrowing: `kind === "vector"` carries `shape: Overlay`
-    // (the v1 Overlay shape lives verbatim under .shape). Discriminate
-    // through the kind union so TS can see the .shape field.
-    const vectorLayers = list.value.flatMap((l) =>
-      l.kind === "vector" ? [l] : []
-    );
-    expect(vectorLayers.length).toBeGreaterThanOrEqual(1);
-    // Locate a vector layer whose Overlay is `{kind:"shape", shape:"circle"}`.
-    const circle = vectorLayers.find(
-      (l) => l.shape.kind === "shape" && l.shape.shape === "circle"
-    );
-    expect(circle).toBeTruthy();
+    // And no <rect> overlays — proves the per-shape branch picked
+    // ellipse over rect, not just "default rendering". (The chrome
+    // SVG renders selection outlines as <rect>, but it sits in a
+    // separate `data-testid="chrome-svg"`.)
+    await expect(
+      editorWindow.locator(
+        '[data-testid="persisted-glyph-svg"] rect'
+      )
+    ).toHaveCount(0);
   } finally {
     await app.close();
   }

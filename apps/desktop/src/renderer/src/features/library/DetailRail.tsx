@@ -52,6 +52,8 @@ import "../shared/RightActivityBar.css";
 import { ChatPanel } from "../editor/panels/ChatPanel";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { useCart } from "./CartContext";
+import { CartPanel } from "./CartPanel";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
 
@@ -168,6 +170,12 @@ export function DetailRail({
     }
   }, [containingProjects, activeProjectId]);
 
+  // The Project Asset Cart. The Cart tab appears whenever the cart is
+  // non-empty (in any mode where the rail renders). cartCount drives
+  // the tab badge + the auto-pop effect below.
+  const cart = useCart();
+  const cartCount = cart.captureIds.length;
+
   const isPinControlled =
     pinnedProp !== undefined && onPinChange !== undefined;
   const isTabControlled =
@@ -272,6 +280,19 @@ export function DetailRail({
     [onActiveTabChange]
   );
 
+  // Auto-pop the Cart tab when the user checks their FIRST item (cart
+  // count transitions 0 → 1). Subsequent additions don't re-pop, so
+  // the user can switch to the Info tab while collecting without the
+  // cart yanking focus back on every check. Tracks the previous count
+  // in a ref so we only fire on the rising 0→1 edge.
+  const prevCartCountRef = useRef(cartCount);
+  useEffect(() => {
+    if (prevCartCountRef.current === 0 && cartCount > 0) {
+      writeActiveTab("cart");
+    }
+    prevCartCountRef.current = cartCount;
+  }, [cartCount, writeActiveTab]);
+
   useEffect(() => {
     if (record === null) {
       setEnrichment(null);
@@ -353,10 +374,38 @@ export function DetailRail({
               icon: PROJECT_ICON
             }
           ]
+        : []),
+      // Cart tab appears whenever the draft cart is non-empty. It's a
+      // workspace-global affordance (not per-capture), so unlike the
+      // Project tab it doesn't depend on the selected record. The
+      // count rides in the label so the user sees how many assets
+      // they've collected at a glance.
+      ...(cartCount > 0
+        ? [
+            {
+              id: "cart" as const,
+              label: `Cart ${cartCount}`,
+              title: `${cartCount} asset${cartCount === 1 ? "" : "s"} collected for a Sizzle Reel`,
+              badge: true,
+              icon: CART_ICON
+            }
+          ]
         : [])
     ],
-    [hasOcrText, sizzleProjects.length, containingProjects.length]
+    [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
   );
+
+  // If the active tab no longer exists in the tab set — e.g. the user
+  // was on the Cart tab and then committed/cleared the cart (the Cart
+  // tab is gated on cartCount > 0), or the only sizzle project got
+  // deleted while on the Project tab — fall back to Info. Without this
+  // the RightActivityBar would render a panel for a tab with no
+  // corresponding chip in the strip (an orphaned/headless panel).
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === activeTab)) {
+      writeActiveTab("info");
+    }
+  }, [tabs, activeTab, writeActiveTab]);
 
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.
@@ -434,6 +483,15 @@ export function DetailRail({
             activeProjectId={activeProjectId}
             onSelectProject={setActiveProjectId}
           />
+        </div>
+      );
+    }
+    if (id === "cart") {
+      // CartPanel is workspace-global — it reads the cart itself via
+      // useDraftCart and doesn't need the selected record.
+      return (
+        <div className="psl__right-body">
+          <CartPanel />
         </div>
       );
     }
@@ -706,6 +764,23 @@ const PROJECT_ICON: ReactElement = (
   >
     <rect x="3" y="6" width="14" height="12" rx="2" />
     <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+  </svg>
+);
+
+/** Checklist / collected-items icon for the Cart tab. */
+const CART_ICON: ReactElement = (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M3 5h2l1.6 9.5a1 1 0 0 0 1 .8h8.8a1 1 0 0 0 1-.8L20 8H6" />
+    <circle cx="9" cy="19" r="1.2" fill="currentColor" />
+    <circle cx="17" cy="19" r="1.2" fill="currentColor" />
   </svg>
 );
 

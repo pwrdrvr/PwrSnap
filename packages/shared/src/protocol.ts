@@ -648,6 +648,31 @@ export type SizzleProject = {
   lastRenderedAt: string | null;
 };
 
+/**
+ * The Project Asset Cart — a single global "draft" the user fills by
+ * checking captures in the Library, then commits into a new or
+ * existing Sizzle Reel. Persisted at `<userData>/draft-cart.json` so
+ * it survives app restart (locked decision — Spotify-queue mental
+ * model). There is exactly ONE cart at a time (no multi-draft); the
+ * cart store is a process-wide singleton.
+ *
+ * `captureIds` is ordered by check sequence — the order the user
+ * checked items is the order scenes get created in on commit. New
+ * checks append to the end.
+ */
+export type DraftCart = {
+  /** User-editable label. Defaults to "Untitled draft". Becomes the
+   *  new project's name on `cart:commitToNewProject` if the caller
+   *  doesn't override it. */
+  name: string;
+  /** Capture ids in check order. Deduped — toggling an already-present
+   *  id removes it rather than adding a second entry. */
+  captureIds: string[];
+  createdAt: string;
+  /** Bumped on every mutation. */
+  modifiedAt: string;
+};
+
 export type SizzleRenderProgressPhase =
   | "tts"
   | "compose"
@@ -1014,13 +1039,14 @@ export type EditorSettings = {
  *  `project` is gated at render time to only appear when at least
  *  one sizzle project exists and the active capture is one of its
  *  scenes; absent otherwise. */
-export type LibrarySidebarTab = "info" | "ocr" | "chat" | "project";
+export type LibrarySidebarTab = "info" | "ocr" | "chat" | "project" | "cart";
 
 export const LIBRARY_SIDEBAR_TABS = [
   "info",
   "ocr",
   "chat",
-  "project"
+  "project",
+  "cart"
 ] as const satisfies readonly LibrarySidebarTab[];
 
 export function isLibrarySidebarTab(value: unknown): value is LibrarySidebarTab {
@@ -2028,6 +2054,40 @@ export type Commands = {
   "sizzle:previewSceneAudio": {
     req: { projectId: string; sceneId: string };
     res: { audioBase64: string; mimeType: "audio/mpeg"; durationSec: number };
+  };
+
+  // ── Project Asset Cart ──────────────────────────────────────────────
+  // The single global draft cart the user fills from the Library, then
+  // commits into a new or existing Sizzle Reel. See `DraftCart`. Every
+  // mutating verb returns the updated cart so the renderer can render
+  // optimistically; they ALSO broadcast `events:cart:changed` so other
+  // windows / the DetailRail tab stay in sync.
+  "cart:get": { req: Record<string, never>; res: DraftCart };
+  /** Add the capture if absent, remove it if already present. New
+   *  additions append to the END of `captureIds` (check order). */
+  "cart:toggle": { req: { captureId: string }; res: DraftCart };
+  /** Move the item at `from` to index `to` (clamped to bounds). */
+  "cart:reorder": { req: { from: number; to: number }; res: DraftCart };
+  "cart:remove": { req: { captureId: string }; res: DraftCart };
+  "cart:rename": { req: { name: string }; res: DraftCart };
+  "cart:clear": { req: Record<string, never>; res: DraftCart };
+  /**
+   * Mint a new Sizzle Reel from the cart contents (scenes in cart
+   * order), clear the cart, and return the new project. `name`
+   * overrides the cart's `name` for the project title when supplied.
+   */
+  "cart:commitToNewProject": {
+    req: { name?: string };
+    res: SizzleProject;
+  };
+  /**
+   * Append the cart's captures to an existing project's scenes
+   * (skipping any captureIds already present — the "Add to existing"
+   * affordance de-dups), clear the cart, return the updated project.
+   */
+  "cart:commitToExisting": {
+    req: { projectId: string };
+    res: SizzleProject;
   };
 };
 

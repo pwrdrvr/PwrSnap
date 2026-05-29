@@ -35,6 +35,8 @@ import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { useCart, useCartIsEmpty } from "./CartContext";
+import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -67,6 +69,41 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * so the very first read of a freshly-captured snap composes its
  * 240w.webp on demand and caches it.
  */
+/**
+ * Per-cell cart checkbox. Self-subscribes to the cart via context so a
+ * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
+ * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
+ * `cart:toggle` directly. The hover-reveal + the collected-cell accent
+ * ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ */
+function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElement {
+  const cart = useCart();
+  const inCart = cart.captureIds.includes(captureId);
+  return (
+    <button
+      type="button"
+      className={"psl__cell-cart" + (inCart ? " is-checked" : "")}
+      role="checkbox"
+      aria-checked={inCart}
+      aria-label={inCart ? "Remove from project draft" : "Add to project draft"}
+      title={inCart ? "Remove from project draft" : "Add to project draft"}
+      onClick={(e) => {
+        // Stop propagation so checking doesn't also fire the cell's
+        // onSelectCell (which would open the capture in Focus mode).
+        e.stopPropagation();
+        void dispatch("cart:toggle", { captureId });
+      }}
+    >
+      {inCart ? (
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m5 12 5 5 9-11" />
+        </svg>
+      ) : null}
+    </button>
+  );
+}
+
 function CellThumb({
   capture,
   record,
@@ -453,6 +490,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const { projects: sizzleProjects } = useSizzleProjects();
+  // The Project Asset Cart. Drives the cell checkboxes (which captures
+  // are checked) AND the grid-mode standalone cart rail (which appears
+  // when the cart is non-empty — the "right bar opens when you check"
+  // flow). In focus/reel modes the cart is a DetailRail tab instead.
+  // Library only needs the COARSE empty/non-empty signal (for the
+  // grid-mode rail gate + the data-cart attribute). Consuming the
+  // boolean context means a toggle WITHIN a non-empty cart doesn't
+  // re-render Library (and therefore doesn't reflow the un-memoized
+  // virtualized grid) — only the empty↔non-empty edge does. Per-cell
+  // membership lives in <CartCellCheckbox>, which self-subscribes to
+  // the full-cart context so only the checkboxes re-render on a toggle.
+  const cartIsEmpty = useCartIsEmpty();
+  const cartIsOpenInGrid = view.kind === "grid" && !cartIsEmpty;
   // Library "Types" multi-pick filter. All three on by default so the
   // library looks the same as before for users who don't touch it.
   // Right-click / shift-click on a row sets that row as "Only" (the
@@ -1733,6 +1783,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             ? "pinned"
             : "collapsed"
       }
+      // `data-cart="open"` widens the right column in GRID mode so the
+      // standalone cart rail has room. In focus/reel the cart lives in
+      // the DetailRail tab strip and the column is already 360px, so
+      // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
+      data-cart={cartIsOpenInGrid ? "open" : undefined}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -2340,6 +2395,29 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         onActiveTabChange={setRightActiveTab}
       />
 
+      {/* Grid-mode standalone cart rail. DetailRail returns null in
+          grid mode (its tabs are all per-capture), so the cart — which
+          is workspace-global — gets its own rail here that appears the
+          moment the user checks their first capture. In focus/reel the
+          cart is a DetailRail tab instead, so this is gated to grid. */}
+      {cartIsOpenInGrid ? (
+        // Render CartPanel DIRECTLY in the base `.psl__right` (which is
+        // a flex column with `overflow: hidden`). Deliberately NOT
+        // `.psl__right--vertical` / `.psl__right-content` /
+        // `.psl__right-body` — those carry `overflow: visible` (a
+        // DetailRail escape hatch so its collapsed hover-pop panel can
+        // bleed leftward into the canvas) which let the cart's content
+        // overflow past the rail's right edge. The cart wants a plain
+        // clipped column; `.psl__cart` fills it and manages its own
+        // scroll + padding.
+        <aside
+          className="psl__right psl__right--cart"
+          aria-label="Project asset cart"
+        >
+          <CartPanel />
+        </aside>
+      ) : null}
+
       <footer className="psl__status">
         <div className="psl__status-l">
           <div className="psl__storage" ref={storagePanelRef}>
@@ -2803,6 +2881,13 @@ function CellRow({
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
         const isProject = c.kind === "project";
+        // Cart checkbox shows for real (non-project) captures outside
+        // trash. The checkbox SELF-SUBSCRIBES to the cart (see
+        // <CartCellCheckbox>) so a cart toggle re-renders only the
+        // checkbox, not this whole cell. The collected-cell accent
+        // ring is applied via CSS `:has(.psl__cell-cart.is-checked)`
+        // so the cell wrapper doesn't need React-level membership.
+        const cartEligible = record !== null && !isProject && !isTrashView;
         return (
           <div
             key={c.id}
@@ -2817,6 +2902,9 @@ function CellRow({
           >
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} project={project} width={400} />
+              {cartEligible && record !== null ? (
+                <CartCellCheckbox captureId={record.id} />
+              ) : null}
               <span className="psl__cell-time">{c.time}</span>
               <span className="psl__cell-app-overlay">
                 {isProject ? (

@@ -92,7 +92,17 @@ export function registerLayersHandlers(): void {
       });
     }
     try {
-      const inserted = insertLayer({ captureId: req.captureId, node: parseResult.data });
+      const inserted = insertLayer({
+        captureId: req.captureId,
+        node: parseResult.data,
+        // Fresh-draw callers opt into the monotonic auto-bump by passing
+        // `bumpZIndexToMax: true` on the IPC envelope. Update-in-place
+        // callers (updateGeometry / updateOverlay / undo restore) leave
+        // it off so the repo stores `node.z_index` verbatim — including
+        // 0, which is the Send-to-Back regression. See InsertLayerInput
+        // doc-block in layers-repo.ts for the full repro.
+        ...(req.bumpZIndexToMax === true ? { bumpZIndexToMax: true } : {})
+      });
       log.info("layer inserted", {
         id: inserted.id,
         captureId: req.captureId,

@@ -1,0 +1,75 @@
+/* Right-click context menu over the editor canvas — opens at the
+   click anchor, dismisses on Escape / outside-click / item-pick.
+   Visual language mirrors `ZoomMenu.css` (frosted panel, accent
+   highlight, mono accel labels) so the editor's two popover
+   surfaces stay coherent. Lives in its own stylesheet so a future
+   layer-panel menu can import it and pick up the same shape
+   without dragging in editor-wide CSS. */
+
+.layer-context-menu {
+  position: absolute;
+  /* Pinned to (left, top) by inline style at the click anchor.
+     z-index sits above OverlaySvg + TransformHandles so the menu
+     paints over selection outlines + handles. */
+  z-index: 50;
+  min-width: 200px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* No outline on the focused panel; rows have their own focus
+     ring via :focus-visible. */
+  outline: 0;
+  /* The menu intercepts its own pointer events — clicks INSIDE
+     the menu stay inside (outside-click dismissal is handled by
+     a document-level listener; see useLayerContextMenu). */
+}
+
+.layer-context-menu__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 16px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  text-align: left;
+}
+.layer-context-menu__row:hover:not(.is-disabled),
+.layer-context-menu__row:focus-visible:not(.is-disabled) {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  outline: 0;
+}
+
+.layer-context-menu__row.is-disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.layer-context-menu__accel {
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+.layer-context-menu__separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-subtle);
+  /* Separators are decorative — non-interactive, no pointer
+     behavior. Keyboard nav skips them via the items.filter
+     in the renderer. */
+}

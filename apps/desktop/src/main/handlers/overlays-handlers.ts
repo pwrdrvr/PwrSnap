@@ -87,11 +87,32 @@ export function registerOverlaysHandlers(): void {
         message: `overlay payload failed schema validation: ${parseResult.error.message}`
       });
     }
+    // Finite-number guard on the optional zIndex hint. Same shape as
+    // overlays:reorder's check (line 132) — without this a bad caller
+    // could land NaN/Infinity in SQLite's REAL column, breaking the
+    // ORDER BY z_index sort silently for the whole capture. Same
+    // class of bug as bare numeric IPC inputs anywhere else.
+    if (req.zIndex !== undefined && !Number.isFinite(req.zIndex)) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: `overlays:upsert rejected: zIndex must be finite, got ${String(req.zIndex)}`
+      });
+    }
     const id = nanoid(16);
     const row = insertOverlay({
       id,
       captureId: req.captureId,
-      data: parseResult.data
+      data: parseResult.data,
+      // Thread the optional zIndex preservation hint through to the
+      // repo. When omitted, the repo's existing auto-bump
+      // (MAX(existing) + GAP) kicks in for fresh draws. When present
+      // (updateGeometry / updateOverlay / undo restore), the repo
+      // stores it verbatim — including 0 (the Send-to-Back case).
+      // See the IPC contract's `zIndex` doc-block + the
+      // `bumpZIndexToMax` discussion in `layers-repo.ts` for the
+      // parallel v2 discipline.
+      ...(req.zIndex !== undefined ? { zIndex: req.zIndex } : {})
     });
     log.info("overlay inserted", {
       id,

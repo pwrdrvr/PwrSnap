@@ -583,6 +583,91 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     expect(api!.canUndo).toBe(false);
   });
 
+  test("multi-delete undo preserves EACH row's distinct z_index (Send-to-Back rect + top arrow restore in place)", async () => {
+    // PR #150 follow-up: the multi-delete restore path must forward
+    // EACH row's z_index through the inverse dispatch — not just
+    // count them. User scenario: a Sent-to-Back rect (z=0) and a
+    // top-of-stack arrow (z=5000) both deleted in one Cmd+A → Delete.
+    // The undo must restore the rect AT THE BACK and the arrow AT
+    // THE TOP, not both at MAX + GAP (which would happen if the
+    // legacy fallback dispatch omitted zIndex → repo auto-bumped).
+    //
+    // The dispatcher's `preserveZIndex: true` (under dispatchEdit)
+    // or the legacy fallback's `zIndex: row.z_index` (under direct
+    // bus dispatch) both must thread the original z_index through.
+    // This test exercises the legacy fallback path (dispatchEditRef
+    // is null in this harness); see useUndoRedo.test.ts for the
+    // dispatchEditRef-bound path.
+    let api: UseUndoRedoResult | null = null;
+    render(
+      createElement(Probe, {
+        captureId: "cap-1",
+        onSnapshot: (a) => {
+          api = a;
+        }
+      })
+    );
+
+    // Two rows at DISTINCT z_indexes. makeRow() defaults z_index: 0,
+    // so we override for one of them.
+    const rowBack: OverlayRow = { ...makeRow("rect-back"), z_index: 0 };
+    const rowTop: OverlayRow = { ...makeRow("arrow-top"), z_index: 5000 };
+
+    let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
+    act(() => {
+      token = api!.beginInteraction("delete", "kbd-multi-delete");
+    });
+    act(() => {
+      api!.recordDelete(rowBack, {
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+      advanceTime(5);
+      api!.recordDelete(rowTop, {
+        opKind: "delete",
+        layerId: "kbd-multi-delete",
+        mergeMode: "append"
+      });
+    });
+    act(() => {
+      api!.endInteraction(token);
+    });
+
+    // Capture the upserts WITH their zIndex field.
+    dispatchMock.mockReset();
+    const upsertCalls: Array<{ overlay: unknown; zIndex?: number }> = [];
+    dispatchMock.mockImplementation(
+      async (
+        name: string,
+        args: { overlay?: unknown; zIndex?: number }
+      ) => {
+        if (name === "overlays:upsert") {
+          upsertCalls.push({
+            overlay: args.overlay,
+            ...(args.zIndex !== undefined ? { zIndex: args.zIndex } : {})
+          });
+          return { ok: true, value: makeRow("restored") };
+        }
+        return {
+          ok: false,
+          error: { kind: "validation", code: "unknown", message: name }
+        };
+      }
+    );
+
+    await act(async () => {
+      await api!.undo();
+    });
+
+    // Two restores, EACH with the original row's z_index forwarded.
+    expect(upsertCalls).toHaveLength(2);
+    const sortedZIndexes = upsertCalls
+      .map((c) => c.zIndex)
+      .sort((a, b) => (a ?? 0) - (b ?? 0));
+    expect(sortedZIndexes).toEqual([0, 5000]);
+  });
+
   test("multi-delete WITHOUT mergeMode: append → only LAST row restored (lock the default shape)", async () => {
     // Pins the default ("replace") behavior so callers that forget
     // to pass `mergeMode: "append"` for a different-layer burst

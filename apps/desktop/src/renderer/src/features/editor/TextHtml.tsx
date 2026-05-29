@@ -68,6 +68,14 @@ export interface TextHtmlProps {
    *  the wrapper's CSS transform. Pivot is the visible body-box
    *  center (see computeTextHtmlStyle for the math). */
   rotation?: number | undefined;
+  /** Optional CSS z-index applied to the wrapper div. Persisted
+   *  text overlays pass `row.z_index` for cross-kind stacking
+   *  against blur / arrow / rect / highlight — all participate
+   *  in the canvas-wrap stacking context (the TextHtmlOverlays
+   *  fragment has no z-index of its own → no stacking context,
+   *  children's z-index applies to canvas-wrap). Omit / undefined
+   *  for in-flight draft text. */
+  zIndex?: number | undefined;
 }
 
 /** Read-only display surface for a persisted TextOverlay. Renders as
@@ -94,7 +102,8 @@ export function TextHtml(props: TextHtmlProps): ReactElement {
   // small radius) and select it.
   const wrapperStyle: CSSProperties = {
     ...(style.wrapper as CSSProperties),
-    pointerEvents: "none"
+    pointerEvents: "none",
+    ...(props.zIndex !== undefined ? { zIndex: props.zIndex } : {})
   };
   // User-select also off — the glyph is "rendered", not "selectable
   // text". Selecting it would interfere with the canvas selection

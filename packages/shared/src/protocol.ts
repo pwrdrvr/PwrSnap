@@ -1457,7 +1457,27 @@ export type Commands = {
 
   // ---- overlays (v1 captures only) ----
   "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
-  "overlays:upsert": { req: { captureId: string; overlay: Overlay }; res: OverlayRow };
+  /** Insert an overlay row. The repo mints a fresh id (nanoid) and
+   *  stamps `applied_at` / `created_at` server-side.
+   *
+   *  `zIndex` (optional, default omitted) preserves the caller's exact
+   *  z_index for the new row. When omitted, the repo auto-bumps to
+   *  `MAX(existing z_index for this capture) + Z_INDEX_INSERT_GAP` so
+   *  fresh draws land at the top of the stack. Update-in-place callers
+   *  (updateGeometry / updateOverlay) pass the row's PREVIOUS z_index
+   *  here so drag-drop / nudge / style-patch preserves stacking; undo
+   *  restore passes the snapshotted z_index so a deleted row comes
+   *  back at its original position, not on top.
+   *
+   *  Pre-fix the IPC didn't carry `zIndex` at all — every overlays:upsert
+   *  hit the auto-bump path. updateGeometry was the user-visible
+   *  manifestation: drag-dropping a Sent-to-Back rect jumped it back to
+   *  the top because the dispatcher's delete-plus-insert sequence had
+   *  no way to tell the repo "keep this layer at z = 0." */
+  "overlays:upsert": {
+    req: { captureId: string; overlay: Overlay; zIndex?: number };
+    res: OverlayRow;
+  };
   "overlays:delete": { req: { id: string }; res: void };
   /** Update an overlay's `z_index`. Mirrors `layers:reorder` for v1
    *  captures so the renderer can use the same `kind: "reorder"`
@@ -1475,8 +1495,21 @@ export type Commands = {
   "layers:list": { req: { captureId: string }; res: BundleLayerNode[] };
   /** Insert a layer node. The node carries its own id (nanoid) and
    *  parent_id. Caller validates the shape; main re-validates via
-   *  the zod discriminated union before persisting. */
-  "layers:upsert": { req: { captureId: string; layer: BundleLayerNode }; res: BundleLayerNode };
+   *  the zod discriminated union before persisting.
+   *
+   *  `bumpZIndexToMax` (optional, default false) signals that the
+   *  insert is a FRESH DRAW that should land at the top of the stack
+   *  — the repo resolves z_index to `MAX(existing) + Z_INDEX_INSERT_GAP`
+   *  and ignores `layer.z_index`. Fresh-draw callers
+   *  (commitArrow / commitRect / etc.) pass `true`. Update-in-place
+   *  callers (updateGeometry / updateOverlay / undo restore) leave it
+   *  off and the repo stores `layer.z_index` verbatim — including 0
+   *  (the Send-to-Back case, which the heuristic-based pre-fix mis-
+   *  detected and auto-bumped on every drag-drop). */
+  "layers:upsert": {
+    req: { captureId: string; layer: BundleLayerNode; bumpZIndexToMax?: boolean };
+    res: BundleLayerNode;
+  };
   /** Move a layer to a new parent (or root via newParentId=null).
    *  Refuses cycles via a recursive-CTE check inside a BEGIN
    *  IMMEDIATE transaction — safe under concurrent reparents from

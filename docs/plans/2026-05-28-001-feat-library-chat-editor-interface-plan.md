@@ -164,6 +164,44 @@ corrections), §F4 (security), §F10 (frontend races). Those are the
 sections most likely to invalidate code written from the
 as-originally-drafted plan.
 
+## Shipping Status
+
+**Phase 0 substrate SHIPPED** (branch `feat/library-chat-substrate`,
+PR #159). The Library chat tab is live end-to-end as **conversational
+text chat** against the user’s local Codex, with the full substrate in
+place for the tool catalog to land on:
+
+- ✅ Protocol regen with `--experimental` (unlocks `dynamicTools` on
+  `thread/start`); the generate script now carries the flag.
+- ✅ `Settings.ai.chat` (User Guidance, sensitive-data patterns,
+  default redaction style, banner flag) + bus validators incl. the
+  secret-shape sniff + Settings → AI → Library Chat card.
+- ✅ `chat-schemas.ts` (zod source of truth), 8 `codex:libraryChat:*`
+  bus verbs, 6 `events:libraryChat:*` channels.
+- ✅ `CodexThreadClient` (long-lived, multi-thread on one connection),
+  `ChatThreadStore` (sidecar + journal + `.metadata_never_index`
+  sentinel + corrupt-quarantine), `ChatThreadController` (per-thread
+  TurnState, settings-snapshot-per-turn, approval pump, rate limit).
+- ✅ `defineTool` generic + tool-catalog generator + **empty**
+  allowlist (Phase 1 fills it).
+- ✅ Shared renderer primitives at `features/shared/chat/`
+  (MessageList rAF-streaming, Composer, ChatApprovalModal,
+  ConfirmBatchCard, AiRunBadge) + `LibraryChatPanel` wired into the
+  DetailRail chat tab.
+- ✅ Default Access (`approvalPolicy: on-request`, `sandbox:
+  workspace-write`); L1 system prompt with stoplight semantics,
+  redaction/blackout guidance, off-canvas artistic license,
+  quantity-from-adjective, prompt-injection defense.
+- ✅ 1927/1927 unit tests pass; typecheck + license + color lint green.
+
+**NEXT (Phase 1 — the agent gains actions):** populate
+`LIBRARY_TOOL_ALLOWLIST` with the read-only tools (`library_list`,
+`current_capture`, `render_composite`, `layers_list`, …) then the
+mutating catalog (§"Updated Acceptance Criteria"). Until then the
+agent can converse but the catalog is empty, so it has no tools to
+call. Plus: FTS5 search backing for `library_search`, per-turn L3
+context injection, and the deferred Phases 6–8.
+
 ## Overview
 
 PwrSnap’s **third** chat surface (after Editor Phase 7 and Sizzle

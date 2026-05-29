@@ -2205,6 +2205,54 @@ export type Commands = {
     res: void;
   };
 
+  // ── Sizzle composer chat ────────────────────────────────────────────
+  // Second surface on the shared chat substrate (mirrors codex:libraryChat:*).
+  // `anchorCaptureId` carries the Sizzle PROJECT id this thread is scoped
+  // to — the substrate's anchor field is surface-neutral, and a project id
+  // (`sz_…`) never collides with a capture id. Mutations are bound to it.
+  "codex:sizzleChat:list": {
+    req: { includeArchived?: boolean; anchorCaptureId?: string | null };
+    res: { threads: LibraryChatThreadView[] };
+  };
+  "codex:sizzleChat:create": {
+    req: { name?: string; anchorCaptureId?: string | null };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:send": {
+    req: {
+      threadId: string;
+      text: string;
+      imageAttachmentPaths?: string[];
+      anchorCaptureId?: string | null;
+    };
+    res: { turnId: string };
+  };
+  "codex:sizzleChat:history": {
+    req: { threadId: string };
+    res: { messages: ChatMessage[] };
+  };
+  "codex:sizzleChat:rename": {
+    req: { threadId: string; name: string };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:archive": {
+    req: { threadId: string; archived: boolean };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:interrupt": {
+    req: { threadId: string };
+    res: void;
+  };
+  "codex:sizzleChat:approval": {
+    req: {
+      threadId: string;
+      turnId: string;
+      approvalId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
+
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
   "sizzle:create": { req: { name: string }; res: SizzleProject };

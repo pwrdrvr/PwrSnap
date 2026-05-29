@@ -216,6 +216,7 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 
 .szl__editor-head {
@@ -737,43 +738,45 @@
   text-align: center;
 }
 
-/* ── Composer mode toggle (Editor ⟷ Chat) ─────────────────────────── */
-.szl__mode-toggle {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-}
-
-.szl__mode-tab {
+/* ── Composer chat toggle ─────────────────────────────────────────── */
+.szl__chat-toggle {
   appearance: none;
-  border: none;
-  background: transparent;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
   color: var(--text-secondary);
   font: 600 12px/1 var(--font-sans);
-  padding: 6px 14px;
-  border-radius: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
   cursor: pointer;
 }
 
-.szl__mode-tab:hover {
+.szl__chat-toggle:hover {
   color: var(--text-primary);
 }
 
-.szl__mode-tab.is-active {
+.szl__chat-toggle.is-active {
   background: var(--accent);
   color: var(--button-text-on-accent);
+  border-color: var(--accent);
 }
 
-/* ── Per-project agent chat ───────────────────────────────────────── */
-.szl__chat {
+/* Editor + chat live side by side, so the scene list stays visible and
+   updates live as the agent edits it. */
+.szl__workspace {
   flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ── Per-project agent chat (right sidebar) ───────────────────────── */
+.szl__chat {
+  flex: 0 0 400px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
 }
 
 .szl__chat-head {

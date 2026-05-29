@@ -319,26 +319,15 @@ export function SizzleApp(): ReactElement {
         {active !== null ? (
           <>
             <span className="szl__spacer" />
-            <div className="szl__mode-toggle" role="tablist" aria-label="Composer mode">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={!showChat}
-                className={"szl__mode-tab" + (!showChat ? " is-active" : "")}
-                onClick={() => setShowChat(false)}
-              >
-                Editor
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={showChat}
-                className={"szl__mode-tab" + (showChat ? " is-active" : "")}
-                onClick={() => setShowChat(true)}
-              >
-                Chat
-              </button>
-            </div>
+            <button
+              type="button"
+              className={"szl__chat-toggle" + (showChat ? " is-active" : "")}
+              aria-pressed={showChat}
+              onClick={() => setShowChat((v) => !v)}
+              title={showChat ? "Hide agent chat" : "Show agent chat"}
+            >
+              {showChat ? "Hide chat" : "Chat with agent"}
+            </button>
           </>
         ) : null}
       </header>
@@ -376,9 +365,8 @@ export function SizzleApp(): ReactElement {
       <main className="szl__main">
         {active === null ? (
           <EmptyState />
-        ) : showChat ? (
-          <ChatPanel key={active.id} projectId={active.id} />
         ) : (
+          <div className="szl__workspace">
           <Editor
             project={active}
             captures={captures}
@@ -398,6 +386,8 @@ export function SizzleApp(): ReactElement {
             onDelete={() => onDelete(active.id)}
             status={status}
           />
+            {showChat ? <ChatPanel key={active.id} projectId={active.id} /> : null}
+          </div>
         )}
       </main>
 

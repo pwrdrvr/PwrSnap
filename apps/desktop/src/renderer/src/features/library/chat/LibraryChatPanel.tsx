@@ -54,7 +54,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setLoading(false);
         return;
       }
-      setThreads(result.value.threads);
+      setThreads(result.value?.threads ?? []);
       setLoading(false);
     })();
     return () => {
@@ -218,7 +218,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   if (codexError !== null) {
     return (
-      <div className="ps-libchat ps-libchat--empty">
+      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
         <p className="ps-libchat-empty-body">{codexError}</p>
         <p className="ps-libchat-empty-body">
@@ -244,13 +244,17 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   }
 
   if (loading) {
-    return <div className="ps-libchat ps-libchat--empty">Loading…</div>;
+    return (
+      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
+        Loading…
+      </div>
+    );
   }
 
   const showGreeting = activeThreadId === null;
 
   return (
-    <div className="ps-libchat">
+    <div className="ps-libchat" data-testid="library-chat-panel">
       <div className="ps-libchat-threads">
         <button type="button" className="ps-libchat-newchat" onClick={() => void onNewChat()}>
           + New chat

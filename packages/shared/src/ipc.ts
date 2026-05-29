@@ -147,6 +147,15 @@ export const EVENT_CHANNELS = {
    */
   sizzleProjectsChanged: "events:sizzle:projects:changed",
   /**
+   * Main → every BrowserWindow: the single global Project Asset Cart
+   * changed (toggle / reorder / remove / rename / clear / commit). The
+   * Library's cell checkboxes + the DetailRail Cart tab subscribe so
+   * they reflect the cart without polling. Payload is the full cart so
+   * subscribers don't round-trip `cart:get`.
+   * Type: `{ cart: DraftCart }`.
+   */
+  cartChanged: "events:cart:changed",
+  /**
    * Main → every BrowserWindow: PwrSnap just changed the OS clipboard's
    * image contents (clipboard:copy, clipboard:copyLayerFragment, or
    * any future write). Fires AFTER the write completes so subscribers
@@ -280,11 +289,12 @@ export type PerfMarkPayload =
 // subscribers, schema growth over time).
 // ---------------------------------------------------------------------
 
-import type { SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+import type { DraftCart, SizzleProject, SizzleRenderProgressEvent } from "./protocol";
 
 export type EventPayloads = {
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
+  [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };
 };
 
 /** Channel constants that carry a typed payload entry in

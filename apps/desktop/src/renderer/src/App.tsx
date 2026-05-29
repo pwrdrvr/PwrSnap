@@ -1,6 +1,7 @@
 import { Editor } from "./features/editor/Editor";
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
+import { CartProvider } from "./features/library/CartContext";
 import { FloatOverHost } from "./features/float-over/FloatOverHost";
 import { RecordingController } from "./features/recording/RecordingController";
 import { RegionSelector } from "./features/region/RegionSelector";
@@ -136,7 +137,9 @@ export function App() {
     return (
       <div className="app-shell">
         <AppUpdateBanner />
-        <Library />
+        <CartProvider>
+          <Library />
+        </CartProvider>
       </div>
     );
   })();

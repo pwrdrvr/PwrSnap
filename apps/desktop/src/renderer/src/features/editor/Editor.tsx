@@ -2211,6 +2211,43 @@ export function Editor({
         setDraft(null);
         return;
       }
+      // Escape on the open right-click context menu closes the menu
+      // WITHOUT clearing the selection. Per the PR #150 spec ("Escape
+      // closes the menu without clearing the selection"), the menu
+      // owns the Escape gesture once it's open; the selection should
+      // survive so right-click-on-the-same-layer-and-redo-the-action
+      // is a smooth flow.
+      //
+      // Why the Editor handles this here instead of relying on the
+      // menu's own `document.addEventListener("keydown", …,
+      // { capture: true })` listener in LayerContextMenu.tsx:
+      //
+      //   Event-propagation order for `capture: true` is
+      //   window → document → ... → target. The Editor's listener is
+      //   on WINDOW with capture; the menu's is on DOCUMENT with
+      //   capture. So the Editor's listener ALWAYS fires first. By
+      //   the time the menu's listener runs, the selection-clearing
+      //   branch below has already executed — `stopPropagation()` in
+      //   the menu's listener can't retroactively undo that.
+      //
+      //   We could move the menu's listener to window-capture too,
+      //   but listeners on the same target fire in REGISTRATION
+      //   order. Editor mounts first, registers first; the menu
+      //   would still be second.
+      //
+      //   Cleanest fix: the Editor checks `contextMenuState !== null`
+      //   before its own Escape branches, closes the menu directly,
+      //   and stops propagation. Stopping at window-capture means the
+      //   event never reaches the menu's document-capture listener —
+      //   so on this path the Editor solely owns the close. (The menu
+      //   still closes itself via click-outside and the close-on-
+      //   selection-change effect for non-Escape dismissals.)
+      if (event.key === "Escape" && contextMenuState !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenuState(null);
+        return;
+      }
       // Don't interpret as a tool shortcut when text input has focus.
       const target = event.target as HTMLElement | null;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") return;
@@ -2388,7 +2425,7 @@ export function Editor({
     window.addEventListener("keydown", onKey, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKey, { capture: true });
-  }, [draft, isControlled, selectedLayerIds, setTool, tool]);
+  }, [contextMenuState, draft, isControlled, selectedLayerIds, setTool, tool]);
 
   // Hook-owned deleter (populated by EditorLoaded once it knows the
   // bundle format). Like recordCreateRef, this lives in the outer

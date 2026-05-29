@@ -467,7 +467,15 @@
      in Focus/Reel (DetailRail returns null in Grid). */
   --left-col: 220px;
   --right-col: 0px;
-  grid-template-columns: var(--left-col) 1fr var(--right-col);
+  /* `minmax(0, 1fr)` for the center column — NOT bare `1fr`. A bare
+     `1fr` is `minmax(auto, 1fr)`, whose `auto` minimum is the grid's
+     MIN-CONTENT. When the cart rail opens (right column → 360px) on a
+     narrow window, that min-content floor can refuse to shrink, blow
+     the total grid past the container width, and push the left bar +
+     leftmost cells off-screen. `minmax(0, …)` lets the center column
+     shrink (the grid-wrap inside scrolls/reflows its own cells) so the
+     left + right columns always stay on-screen. */
+  grid-template-columns: var(--left-col) minmax(0, 1fr) var(--right-col);
   grid-template-rows: 52px 1fr 32px;
   background: var(--bg-app);
   border: 1px solid var(--border-default);
@@ -493,6 +501,14 @@
 .psl[data-mode="focus"][data-right="collapsed"],
 .psl[data-mode="reel"][data-right="collapsed"] {
   --right-col: 38px;
+}
+/* Grid mode normally has a 0-width right column (DetailRail returns
+   null). When the draft cart is non-empty, Library sets
+   `data-cart="open"` and we widen the column so the standalone cart
+   rail has room — this is the "right bar opens when you check an
+   item" behavior. */
+.psl[data-mode="grid"][data-cart="open"] {
+  --right-col: 360px;
 }
 /* Collapsed left bar — only the 36px spine sticks out. Peek state
    reuses the same column width; the panel itself slides on as an
@@ -552,13 +568,29 @@
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  padding: 0 10px 0 28px;
+  padding: 0 26px 0 28px;
   color: var(--text-primary);
   font: 400 12px/1 var(--font-sans);
   outline: none;
 }
-.psl__search-wrap { position: relative; }
-.psl__search-wrap svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.psl__search:focus {
+  border-color: var(--accent-border);
+}
+.psl__search:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.psl__search-wrap { position: relative; display: inline-flex; align-items: center; }
+.psl__search-wrap > svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.psl__search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  height: 16px; width: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; padding: 0; border-radius: 50%;
+  background: var(--text-muted); color: var(--bg-input);
+  cursor: pointer;
+}
+.psl__search-clear:hover { background: var(--text-primary); }
 
 /* Left: Source Apps.
  *
@@ -1178,6 +1210,16 @@
 .psl__trash-banner-btn:hover {
   background: var(--danger-soft);
 }
+/* Empty-results message for an active search that matched nothing.
+   Search makes zero-result states common (unlike the filter views),
+   so the grid body needs an explicit "no matches" signal rather than
+   a silent blank pane. */
+.psl__search-empty {
+  margin: 48px 18px;
+  text-align: center;
+  font: 500 13px/1.5 var(--font-sans);
+  color: var(--text-muted);
+}
 
 .psl__cell {
   position: relative;
@@ -1271,6 +1313,238 @@
 .psl__cell-trash--restore:hover {
   background: var(--accent-soft);
   color: var(--accent-bright, var(--accent));
+}
+
+/* === Project Asset Cart — per-cell checkbox === */
+/* Top-LEFT of the cell so it never overlaps the bottom-right trash
+   affordance. Hover-revealed like the trash button, but ALSO stays
+   visible when checked (`.psl__cell.is-in-cart`) so the user can scan
+   what they've already collected at a glance. */
+.psl__cell-cart {
+  position: absolute; top: 5px; left: 5px;
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-app) 78%, transparent);
+  border: 1px solid var(--border-subtle);
+  color: var(--accent-bright, var(--accent));
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms var(--ease-out), background 100ms var(--ease-out),
+    border-color 100ms var(--ease-out);
+}
+.psl__cell:hover .psl__cell-cart,
+.psl__cell-cart:focus-visible {
+  opacity: 1;
+}
+.psl__cell-cart:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+/* Checked state: filled accent, always visible (overrides the
+   hover-only opacity above). */
+.psl__cell-cart.is-checked {
+  opacity: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+/* A subtle accent ring on the whole cell when it's in the cart, so
+   collected items read as a set even when the checkbox is small.
+   Driven by `:has()` rather than a React class so a cart toggle
+   restyles the cell WITHOUT re-rendering it — CartCellCheckbox
+   self-subscribes and toggles `.is-checked`; this selector reacts to
+   that purely in CSS (the cell + grid never reconcile on a toggle). */
+.psl__cell:has(.psl__cell-cart.is-checked) {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+/* === Project Asset Cart — panel === */
+/* The cart's standalone grid-mode rail reuses `.psl__right` chrome
+   (see the JSX in Library.tsx). This variant just ensures the body
+   fills the column the same way the DetailRail body does. */
+.psl__cart {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  /* min-width: 0 lets the flex chain shrink below content min-content
+     so the nowrap item titles can ellipsis instead of forcing the
+     whole cart wider than its rail column. */
+  min-width: 0;
+}
+.psl__cart-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.psl__cart-name {
+  flex: 1; min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--text-primary);
+  font: 600 13px/1.3 var(--font-sans);
+}
+.psl__cart-name:hover { border-color: var(--border-subtle); }
+.psl__cart-name:focus-visible {
+  outline: none;
+  border-color: var(--accent-border);
+  background: var(--bg-panel-elevated);
+}
+.psl__cart-count {
+  flex-shrink: 0;
+  font: 600 11px/1 var(--font-mono);
+  color: var(--button-text-on-accent);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 3px 7px;
+}
+.psl__cart-empty {
+  padding: 16px 14px;
+  color: var(--text-muted);
+  font: 400 12px/1.5 var(--font-sans);
+}
+.psl__cart-list {
+  list-style: none; margin: 0; padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.psl__cart-list-end { height: 0; padding: 0; margin: 0; }
+.psl__cart-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: grab;
+  /* Without min-width:0 a flex item floors at its min-content width;
+     the nowrap title would force the row wider than the rail and
+     bleed past the right edge (the "cart dimensions" bug). This lets
+     the row shrink so `.psl__cart-body`'s ellipsis engages. */
+  min-width: 0;
+}
+.psl__cart-item:hover { background: var(--bg-panel-hover); }
+.psl__cart-item:active { cursor: grabbing; }
+.psl__cart-order {
+  flex-shrink: 0;
+  width: 20px;
+  font: 600 10px/1 var(--font-mono);
+  color: var(--text-muted);
+  text-align: center;
+}
+.psl__cart-thumb {
+  position: relative;
+  flex-shrink: 0;
+  width: 48px; height: 32px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+}
+.psl__cart-thumb img,
+.psl__cart-thumb video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.psl__cart-thumb-missing {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.psl__cart-thumb-kind {
+  position: absolute; bottom: 1px; right: 2px;
+  font-size: 9px;
+  color: var(--media-scrim-text);
+  text-shadow: var(--media-scrim-shadow);
+}
+.psl__cart-body { flex: 1; min-width: 0; }
+.psl__cart-item-title {
+  display: block;
+  font: 400 12px/1.35 var(--font-sans);
+  color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.psl__cart-remove {
+  flex-shrink: 0;
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 5px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px; line-height: 1;
+}
+.psl__cart-remove:hover {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.psl__cart-footer {
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column; gap: 6px;
+  position: relative;
+}
+.psl__cart-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  font: 600 12px/1 var(--font-sans);
+  cursor: pointer;
+  transition: background 100ms var(--ease-out), border-color 100ms var(--ease-out);
+}
+.psl__cart-btn:hover:not(:disabled) { background: var(--bg-panel-hover); }
+.psl__cart-btn:disabled { opacity: 0.45; cursor: default; }
+.psl__cart-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--button-text-on-accent);
+}
+.psl__cart-btn--primary:hover:not(:disabled) {
+  background: var(--accent-bright, var(--accent));
+}
+.psl__cart-add-existing { position: relative; }
+.psl__cart-picker {
+  list-style: none; margin: 0; padding: 4px;
+  position: absolute; bottom: calc(100% + 4px); left: 0; right: 0;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-base) 45%, transparent);
+  max-height: 240px; overflow-y: auto;
+  z-index: 40;
+}
+.psl__cart-picker-row {
+  width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: transparent; border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+.psl__cart-picker-row:hover { background: var(--bg-panel-hover); }
+.psl__cart-picker-name {
+  flex: 1; min-width: 0;
+  font: 500 12px/1.3 var(--font-sans);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.psl__cart-picker-meta {
+  flex-shrink: 0;
+  font: 400 10px/1 var(--font-mono);
+  color: var(--text-muted);
 }
 /* HoverRevealPanel — pin / auto-hide side panel.
    Lives in features/shared/HoverRevealPanel.tsx. Extracted from the

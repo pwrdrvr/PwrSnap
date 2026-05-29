@@ -57,6 +57,7 @@ import { isRecordingActive } from "./recording/recording-state";
 import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings-handlers";
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
+import { registerCartHandlers } from "./handlers/cart-handlers";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
@@ -946,6 +947,7 @@ export function bootstrapApp(): void {
     registerLayersHandlers();
     registerEditorHandlers();
     registerSizzleHandlers();
+    registerCartHandlers();
     // Wire the floating recording HUD so it appears whenever the
     // recording service is non-idle. Has to be installed AFTER the
     // BrowserWindow + handler plumbing because the controller creates

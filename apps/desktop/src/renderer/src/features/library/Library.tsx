@@ -10,6 +10,7 @@ import {
 } from "react";
 import type {
   CaptureRecord,
+  CaptureSearchResultRow,
   LibraryCursor,
   LibrarySidebarTab,
   PwrSnapError,
@@ -34,6 +35,8 @@ import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
+import { useCart, useCartIsEmpty } from "./CartContext";
+import { CartPanel } from "./CartPanel";
 import { formatBytes } from "../../lib/format-bytes";
 import { useLibrary } from "../../lib/useLibrary";
 import { useStorageSnapshot } from "../../lib/useStorageSnapshot";
@@ -66,6 +69,41 @@ const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
  * so the very first read of a freshly-captured snap composes its
  * 240w.webp on demand and caches it.
  */
+/**
+ * Per-cell cart checkbox. Self-subscribes to the cart via context so a
+ * cart toggle re-renders ONLY the checkboxes, not the enclosing cells
+ * (thumbnail, app tag, etc.) or the whole virtualized grid. Dispatches
+ * `cart:toggle` directly. The hover-reveal + the collected-cell accent
+ * ring are pure CSS (`.psl__cell:hover .psl__cell-cart`,
+ * `.psl__cell:has(.psl__cell-cart.is-checked)`).
+ */
+function CartCellCheckbox({ captureId }: { captureId: string }): React.ReactElement {
+  const cart = useCart();
+  const inCart = cart.captureIds.includes(captureId);
+  return (
+    <button
+      type="button"
+      className={"psl__cell-cart" + (inCart ? " is-checked" : "")}
+      role="checkbox"
+      aria-checked={inCart}
+      aria-label={inCart ? "Remove from project draft" : "Add to project draft"}
+      title={inCart ? "Remove from project draft" : "Add to project draft"}
+      onClick={(e) => {
+        // Stop propagation so checking doesn't also fire the cell's
+        // onSelectCell (which would open the capture in Focus mode).
+        e.stopPropagation();
+        void dispatch("cart:toggle", { captureId });
+      }}
+    >
+      {inCart ? (
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m5 12 5 5 9-11" />
+        </svg>
+      ) : null}
+    </button>
+  );
+}
+
 function CellThumb({
   capture,
   record,
@@ -290,6 +328,30 @@ type ActiveLibraryFilter =
 export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [selected, setSelected] = useState(initialSelected);
   const [activeFilter, setActiveFilter] = useState<ActiveLibraryFilter>({ kind: "all" });
+  // Library full-text search — wired to `library:search` (bus verb landed
+  // in PR #154). The input lives in the topbar at `.psl__search`. When
+  // the trimmed query is non-empty the grid renders search results
+  // instead of the keyset-paginated `library:list` snapshot; when empty
+  // the normal pipeline resumes. Source-app + Today filters are
+  // intentionally bypassed during search — the model is Spotify-style
+  // "search across everything," matching the placeholder copy. Trash
+  // search is unsupported because `library:search` only returns live
+  // rows (captures-repo's WHERE clause); we disable the input in trash.
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchState, setSearchState] = useState<{
+    /** Trimmed query the rows below reflect — guards against showing
+     *  stale results while a newer debounced dispatch is in flight. */
+    forQuery: string;
+    rows: CaptureRecord[];
+    /** True when the response returned exactly LIMIT rows, so callers
+     *  can show a "refine your search" hint instead of pretending the
+     *  hit count is the full match set. The bus has no cursor; LIMIT
+     *  is the hard ceiling. */
+    capped: boolean;
+    loading: boolean;
+    error: string | null;
+  }>({ forQuery: "", rows: [], capped: false, loading: false, error: null });
   const [sourceAppRows, setSourceAppRows] = useState<Record<string, SourceAppRowsState>>(
     {}
   );
@@ -428,6 +490,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // ./__tests__/library-view.test.ts.
   const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
   const { projects: sizzleProjects } = useSizzleProjects();
+  // The Project Asset Cart. Drives the cell checkboxes (which captures
+  // are checked) AND the grid-mode standalone cart rail (which appears
+  // when the cart is non-empty — the "right bar opens when you check"
+  // flow). In focus/reel modes the cart is a DetailRail tab instead.
+  // Library only needs the COARSE empty/non-empty signal (for the
+  // grid-mode rail gate + the data-cart attribute). Consuming the
+  // boolean context means a toggle WITHIN a non-empty cart doesn't
+  // re-render Library (and therefore doesn't reflow the un-memoized
+  // virtualized grid) — only the empty↔non-empty edge does. Per-cell
+  // membership lives in <CartCellCheckbox>, which self-subscribes to
+  // the full-cart context so only the checkboxes re-render on a toggle.
+  const cartIsEmpty = useCartIsEmpty();
+  const cartIsOpenInGrid = view.kind === "grid" && !cartIsEmpty;
   // Library "Types" multi-pick filter. All three on by default so the
   // library looks the same as before for users who don't touch it.
   // Right-click / shift-click on a row sets that row as "Only" (the
@@ -696,13 +771,84 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     sourceAppBundleKey
   ]);
 
+  // Search dispatch — debounced ~150ms so keystrokes coalesce into one
+  // round-trip, with a monotonic seq guarding against stale resolutions
+  // clobbering newer ones. Empty / whitespace-only queries short-circuit
+  // back to a clean state without hitting the bus. The 500-row limit is
+  // the repo-side max (SEARCH_MAX_LIMIT); we request it so the cap-hint
+  // affordance below is meaningful for power users with huge libraries.
+  const SEARCH_LIMIT = 500;
+  const searchSeqRef = useRef(0);
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    const seq = ++searchSeqRef.current;
+    if (trimmed.length === 0) {
+      setSearchState({
+        forQuery: "",
+        rows: [],
+        capped: false,
+        loading: false,
+        error: null
+      });
+      return;
+    }
+    setSearchState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null
+    }));
+    const timer = setTimeout(() => {
+      void (async () => {
+        const result: Result<Res<"library:search">, PwrSnapError> = await dispatch(
+          "library:search",
+          { query: trimmed, limit: SEARCH_LIMIT }
+        );
+        if (searchSeqRef.current !== seq) return;
+        if (!result.ok) {
+          setSearchState({
+            forQuery: trimmed,
+            rows: [],
+            capped: false,
+            loading: false,
+            error: result.error.message
+          });
+          return;
+        }
+        const rows: CaptureRecord[] = result.value.rows.map(
+          (r: CaptureSearchResultRow) => r.record
+        );
+        setSearchState({
+          forQuery: trimmed,
+          rows,
+          capped: rows.length >= SEARCH_LIMIT,
+          loading: false,
+          error: null
+        });
+      })();
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [searchQuery]);
+
+  // True whenever the user has a non-empty trimmed query — drives the
+  // grid swap, the "Search results" hdr, and the cap-hint affordance.
+  const isSearchActive = searchQuery.trim().length > 0;
+
   // Universe of records the current view operates on. Trash is a
   // top-level swap (not a per-app filter) so the per-app filter only
-  // applies when viewing live captures.
+  // applies when viewing live captures. Search takes precedence over
+  // everything — when the user is searching, the source-app sidebar +
+  // Today/Trash filters are bypassed and the grid renders the search
+  // result set directly. Bus-side `library:search` excludes soft-
+  // deleted rows (see captures-repo:503), so search ∩ trash is empty
+  // by construction; the input is disabled in trash to make that clear.
   const sourceAppState =
     activeSourceAppId === null ? undefined : sourceAppRows[activeSourceAppId];
   const universeRecordsRaw = isTrashView
     ? trashRecords
+    : isSearchActive
+    ? searchState.rows
     : sourceAppState?.bundleKey === sourceAppBundleKey
     ? sourceAppState.rows
     : liveRecords;
@@ -720,8 +866,20 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       return true;
     });
   }, [universeRecordsRaw, visibleTypes.images, visibleTypes.videos, isTrashView]);
-  const gridHasMore = isSourceAppView ? false : hasMore;
-  const gridIsLoadingMore = isSourceAppView ? sourceAppState?.loading ?? false : isLoadingMore;
+  // `library:search` has no cursor — the bus surface caps at
+  // SEARCH_LIMIT and the caller renders a "refine your search" hint
+  // if hit. Loading the next page would mean re-running the query,
+  // which doesn't compose with FTS5 rank ordering.
+  const gridHasMore = isSearchActive ? false : isSourceAppView ? false : hasMore;
+  // Search never paginates (gridHasMore is false), so it must not drive
+  // the grid's bottom "Loading more…" footer — that label would be a
+  // lie (we're re-running a query, not fetching the next page). The
+  // topbar count badge already shows "searching…" for search progress.
+  const gridIsLoadingMore = isSearchActive
+    ? false
+    : isSourceAppView
+      ? sourceAppState?.loading ?? false
+      : isLoadingMore;
 
   // Project fixtures only fold into the grid when:
   //   • the Types filter has "Projects" on (UI control), AND
@@ -734,12 +892,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // filtering to "Safari" can still narrow further to just images
   // from Safari). Projects can't compose that way because they have
   // no source-app dimension to begin with.
+  // Projects don't participate in `library:search` (the FTS5 index is
+  // captures-only), so they drop out of the grid while a query is
+  // active — same reasoning as the source-app filter exclusion below.
   const gridProjects = useMemo(
     () =>
-      visibleTypes.projects && !isTrashView && activeSourceAppId === null
+      visibleTypes.projects && !isTrashView && !isSearchActive && activeSourceAppId === null
         ? sizzleProjects
         : [],
-    [visibleTypes.projects, isTrashView, activeSourceAppId, sizzleProjects]
+    [visibleTypes.projects, isTrashView, isSearchActive, activeSourceAppId, sizzleProjects]
   );
   const fixtureBacking = useMemo(
     () => new FixtureBackedRecords(universeRecords, gridProjects),
@@ -751,8 +912,13 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
 
-  const visible =
-    activeFilter.kind === "all" || isTrashView
+  // Search bypasses every other filter — the user gets exactly the
+  // result set from the bus, in rank/date order. Source-app + Today
+  // composition is a follow-up (see PR-2 cart plan); v1 keeps the
+  // grid swap unambiguous.
+  const visible = isSearchActive
+    ? fixtureCaptures
+    : activeFilter.kind === "all" || isTrashView
       ? fixtureCaptures
       : isTodayView
       ? fixtureCaptures.filter((c) => c.day === "Today")
@@ -1279,6 +1445,21 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [selectedRecord]);
   useEffect(() => {
     function onKey(event: KeyboardEvent): void {
+      // ⌘F — focus the library search input. Runs BEFORE the
+      // text-field bail so the chord works even when focus is
+      // already inside an input (matches every browser's Find).
+      // Disabled in Trash view because the input is too (the bus
+      // surface only returns live captures).
+      if (event.metaKey && !event.ctrlKey && !event.altKey && event.key === "f") {
+        const input = searchInputRef.current;
+        if (input !== null && !input.disabled) {
+          event.preventDefault();
+          input.focus();
+          input.select();
+          return;
+        }
+      }
+
       const target = event.target as HTMLElement | null;
       // Skip when the user is typing in an input — single-letter
       // shortcuts and Esc must not steal focus from text fields.
@@ -1602,6 +1783,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             ? "pinned"
             : "collapsed"
       }
+      // `data-cart="open"` widens the right column in GRID mode so the
+      // standalone cart rail has room. In focus/reel the cart lives in
+      // the DetailRail tab strip and the column is already 360px, so
+      // this only matters for grid. See `.psl[data-mode="grid"][data-cart="open"]`.
+      data-cart={cartIsOpenInGrid ? "open" : undefined}
     >
       <header className="psl__topbar">
         <div className="psl__topbar-l">
@@ -1612,9 +1798,17 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             <PwrSnapWordmark />
           </div>
           <span className="psl__count">
-            {isTrashView
-              ? `${trashRecords.length} in trash`
-              : `${totalLive} captures`}
+            {isSearchActive
+              ? searchState.loading && searchState.forQuery !== searchQuery.trim()
+                ? "searching…"
+                : searchState.error !== null
+                  ? "search failed"
+                  : searchState.capped
+                    ? `${searchState.rows.length}+ matches`
+                    : `${searchState.rows.length} ${searchState.rows.length === 1 ? "match" : "matches"}`
+              : isTrashView
+                ? `${trashRecords.length} in trash`
+                : `${totalLive} captures`}
           </span>
         </div>
         <div className="psl__topbar-c">
@@ -1649,17 +1843,52 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </div>
         </div>
         <div className="psl__topbar-r">
-          {/* Search not yet implemented — hidden until the index lands. */}
-          <div className="psl__search-wrap" style={{ display: "none" }}>
+          {/* Library full-text search — `library:search` (FTS5 over
+              title / description / OCR / source-app name). Disabled
+              in Trash because the bus surface only returns live
+              captures. Esc clears the query; ⌘F (handled in the
+              capture-phase keydown listener) focuses the input. */}
+          <div className="psl__search-wrap">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
               <path d="m20 20-3.5-3.5" />
             </svg>
             <input
+              ref={searchInputRef}
               className="psl__search"
-              placeholder="Search captures, tags, OCR…"
-              defaultValue=""
+              placeholder={
+                isTrashView
+                  ? "Search unavailable in Trash"
+                  : "Search captures, tags, OCR…"
+              }
+              value={searchQuery}
+              disabled={isTrashView}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && searchQuery.length > 0) {
+                  e.preventDefault();
+                  setSearchQuery("");
+                }
+              }}
+              aria-label="Search captures"
             />
+            {searchQuery.length > 0 && (
+              <button
+                type="button"
+                className="psl__search-clear"
+                aria-label="Clear search"
+                title="Clear (Esc)"
+                onClick={() => {
+                  setSearchQuery("");
+                  searchInputRef.current?.focus();
+                }}
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M6 6l12 12" />
+                  <path d="M18 6L6 18" />
+                </svg>
+              </button>
+            )}
           </div>
           {/* VS Code-style layout chips — toggle the primary (left)
               and secondary (right) side bars from the title bar. Same
@@ -1974,6 +2203,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               )}
             </div>
           )}
+          {isSearchActive &&
+            !searchState.loading &&
+            searchState.error === null &&
+            searchState.rows.length === 0 && (
+              <div className="psl__search-empty" role="status">
+                No captures match “{searchState.forQuery}”.
+              </div>
+            )}
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
@@ -2157,6 +2394,29 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
         activeTab={rightActiveTab}
         onActiveTabChange={setRightActiveTab}
       />
+
+      {/* Grid-mode standalone cart rail. DetailRail returns null in
+          grid mode (its tabs are all per-capture), so the cart — which
+          is workspace-global — gets its own rail here that appears the
+          moment the user checks their first capture. In focus/reel the
+          cart is a DetailRail tab instead, so this is gated to grid. */}
+      {cartIsOpenInGrid ? (
+        // Render CartPanel DIRECTLY in the base `.psl__right` (which is
+        // a flex column with `overflow: hidden`). Deliberately NOT
+        // `.psl__right--vertical` / `.psl__right-content` /
+        // `.psl__right-body` — those carry `overflow: visible` (a
+        // DetailRail escape hatch so its collapsed hover-pop panel can
+        // bleed leftward into the canvas) which let the cart's content
+        // overflow past the rail's right edge. The cart wants a plain
+        // clipped column; `.psl__cart` fills it and manages its own
+        // scroll + padding.
+        <aside
+          className="psl__right psl__right--cart"
+          aria-label="Project asset cart"
+        >
+          <CartPanel />
+        </aside>
+      ) : null}
 
       <footer className="psl__status">
         <div className="psl__status-l">
@@ -2621,6 +2881,13 @@ function CellRow({
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
         const isProject = c.kind === "project";
+        // Cart checkbox shows for real (non-project) captures outside
+        // trash. The checkbox SELF-SUBSCRIBES to the cart (see
+        // <CartCellCheckbox>) so a cart toggle re-renders only the
+        // checkbox, not this whole cell. The collected-cell accent
+        // ring is applied via CSS `:has(.psl__cell-cart.is-checked)`
+        // so the cell wrapper doesn't need React-level membership.
+        const cartEligible = record !== null && !isProject && !isTrashView;
         return (
           <div
             key={c.id}
@@ -2635,6 +2902,9 @@ function CellRow({
           >
             <div className="psl__cell-thumb">
               <CellThumb capture={c} record={record} project={project} width={400} />
+              {cartEligible && record !== null ? (
+                <CartCellCheckbox captureId={record.id} />
+              ) : null}
               <span className="psl__cell-time">{c.time}</span>
               <span className="psl__cell-app-overlay">
                 {isProject ? (

@@ -1,4 +1,4 @@
--- 0018_drop_overlays_table — removes the v1 `overlays` table.
+-- 0020_drop_overlays_table — removes the v1 `overlays` table.
 --
 -- The `overlays` table was the v1 edit-storage substrate: one row per
 -- annotation (arrow / rect / text / highlight / blur / crop / step),

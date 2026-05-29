@@ -16,7 +16,7 @@ v1→v2 doctor, the v1 linear compositor, `overlays-repo`, the
 `overlays:*` IPC verbs, the renderer v1 model arm + doctor banners,
 `legacy-bundle-migration`, the v1 bundle read handle, the v1 zod
 schemas (`bundle-manifest-schema.ts`), and the `overlays` SQLite table
-(migration `0018`). `coordinator.ts` is v2-only and throws on non-v2;
+(migration `0020`). `coordinator.ts` is v2-only and throws on non-v2;
 `compose.ts` survives only as the v2 SVG-helper holder. The
 bullets below are **historical** — `feature-flags.ts`, the
 `PWRSNAP_BUNDLE_V2` env var, and the dual-format read path they

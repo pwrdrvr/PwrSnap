@@ -164,7 +164,7 @@ linear compositor (`compose()` in `compose.ts`), `overlays-repo.ts`,
 the `overlays:*` IPC verbs, the renderer's v1 model arm + doctor
 banners, `legacy-bundle-migration.ts`, the v1 bundle read handle, the
 v1 manifest/overlays zod schemas (`bundle-manifest-schema.ts`), and the
-`overlays` SQLite table (migration `0018_drop_overlays_table.sql`) —
+`overlays` SQLite table (migration `0020_drop_overlays_table.sql`) —
 has been deleted. `compose.ts` survives only as a holder for the v2
 SVG rasterize helpers (`arrowSvgForV2` etc.) that `compose-tree.ts`
 imports; the v2 compositor is `composeV2` in `compose-tree.ts`.

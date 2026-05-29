@@ -452,6 +452,15 @@
   grid-template-columns: repeat(3, 1fr);
   gap: 5px;
 }
+/* Video export grid slot. Wraps the shared `VideoExportPresetsPanel`
+   in the tray's last-snap section. The panel owns its own internal
+   layout (two `.psl__copy-row-group` children, each a 3-col
+   `.psl__copy-row`) so the wrapper is a plain block — no grid here,
+   unlike the sibling `.ps-tray__last-copy` slot the image L/M/H
+   buttons use. */
+.ps-tray__last-export {
+  display: block;
+}
 
 /* ============================================================
    LIBRARY 3-PANE

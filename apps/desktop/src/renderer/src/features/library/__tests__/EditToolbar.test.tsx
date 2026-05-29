@@ -36,6 +36,7 @@ import {
   vi
 } from "vitest";
 import type {
+  BundleLayerNode,
   OverlayRow,
   Settings
 } from "@pwrsnap/shared";
@@ -184,6 +185,32 @@ function makeArrowRow(
   };
 }
 
+/** Wrap an OverlayRow into a vector BundleLayerNode. EditToolbar reads
+ *  the layer tree (v2) via useCaptureModel and projects vector layers
+ *  back to OverlayRow shape for placement detection — this is the
+ *  inverse, so tests can keep authoring overlay rows. */
+function rowToVectorLayer(row: OverlayRow): BundleLayerNode {
+  return {
+    id: row.id,
+    parent_id: "ly_root",
+    kind: "vector",
+    shape: row.data,
+    name: "Arrow",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: row.z_index,
+    source: row.source,
+    ai_run_id: row.ai_run_id,
+    applied_at: row.applied_at,
+    rejected_at: row.rejected_at,
+    superseded_by: row.superseded_by,
+    created_at: row.created_at
+  };
+}
+
 // ---- Render harness -------------------------------------------------
 
 let root: Root | null = null;
@@ -281,10 +308,10 @@ async function fireClick(
   });
 }
 
-/** v1 CaptureRecord stub used by both initial-load and broadcast
- *  refetch paths. Tests don't care about the record fields beyond
- *  what useCaptureModel + the renderer touch — bundle_format_version
- *  matters most (must be 1 so the model resolves to the v1 branch). */
+/** CaptureRecord stub used by both initial-load and broadcast refetch
+ *  paths. Tests don't care about the record fields beyond what
+ *  useCaptureModel + the renderer touch — bundle_format_version
+ *  matters most (must be 2 so the model resolves the v2 layer tree). */
 function makeStubRecord() {
   return {
     id: "cap-1",
@@ -294,7 +321,7 @@ function makeStubRecord() {
     bundle_path: "/tmp/cap-1.pwrsnap",
     flat_png_path: null,
     bundle_modified_at: "2026-05-23T12:00:00.000Z",
-    bundle_format_version: 1,
+    bundle_format_version: 2,
     bundle_edits_version: 0,
     width_px: 800,
     height_px: 600,
@@ -310,15 +337,17 @@ function makeStubRecord() {
 
 async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
   // Configure the mock so the subscribe handler's awaited library:byId
-  // + overlays:list refetch returns fresh data. useCaptureModel's
+  // + layers:list refetch returns fresh data. useCaptureModel's
   // events:overlays:changed handler does ONE library:byId + ONE
-  // overlays:list per broadcast for v1 captures, so both verbs need
-  // to resolve.
+  // layers:list per broadcast, so both verbs need to resolve. The
+  // authored OverlayRows are wrapped as vector layers; EditToolbar
+  // projects them back to OverlayRow shape for placement detection.
+  const layers = rows.map(rowToVectorLayer);
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:byId") {
       return { ok: true, value: makeStubRecord() };
     }
-    if (name === "overlays:list") return { ok: true, value: rows };
+    if (name === "layers:list") return { ok: true, value: layers };
     return { ok: true, value: undefined };
   });
   await act(async () => {
@@ -339,16 +368,16 @@ async function fireBroadcast(rows: OverlayRow[]): Promise<void> {
 
 beforeEach(() => {
   dispatchMock.mockReset();
-  // Default dispatch: library:byId returns a v1 capture; overlays:list
-  // returns empty; settings:write OK. Phase 2 EditToolbar reads through
-  // useCaptureModel which dispatches library:byId before overlays:list,
+  // Default dispatch: library:byId returns a v2 capture; layers:list
+  // returns empty; settings:write OK. EditToolbar reads through
+  // useCaptureModel which dispatches library:byId before layers:list,
   // so both verbs must respond for the model to resolve out of
   // `kind: "loading"`.
   dispatchMock.mockImplementation(async (name: string) => {
     if (name === "library:byId") {
       return { ok: true, value: makeStubRecord() };
     }
-    if (name === "overlays:list") return { ok: true, value: [] };
+    if (name === "layers:list") return { ok: true, value: [] };
     return { ok: true, value: undefined };
   });
   subscribeMock.mockClear();

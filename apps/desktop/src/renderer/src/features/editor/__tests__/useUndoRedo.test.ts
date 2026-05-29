@@ -1,6 +1,6 @@
 // Unit tests for the editor's session-memory undo/redo hook. The hook
-// dispatches `overlays:upsert` / `overlays:delete` via the renderer's
-// `dispatch` shim; tests stub the shim so we can assert IPC shape
+// hands layer ops to a `dispatchEdit` callback (wired from the resolved
+// CaptureModel); tests stub that callback so we can assert the op shape
 // without spinning up the main process.
 
 import { act, createElement, useEffect, useRef } from "react";
@@ -14,14 +14,7 @@ import {
   test,
   vi
 } from "vitest";
-import type { OverlayRow } from "@pwrsnap/shared";
-
-// Stub the dispatch surface BEFORE importing the hook so the import
-// resolves the mocked module. Each test resets the mock's call log.
-const dispatchMock = vi.fn();
-vi.mock("../../../lib/pwrsnap", () => ({
-  dispatch: (...args: unknown[]) => dispatchMock(...args)
-}));
+import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
 
 import {
   useUndoRedo,
@@ -34,23 +27,59 @@ beforeAll(() => {
     true;
 });
 
+// A v2 dispatchEdit spy that records every op and returns plausible
+// results. Tests assert against `dispatchEditMock.mock.calls`. Reset
+// per-test in beforeEach.
+const dispatchEditMock = vi.fn<UndoRedoDispatchEdit>();
+
 beforeEach(() => {
-  dispatchMock.mockReset();
-  // Default: every dispatch resolves to an ok-Result with a synthetic
-  // OverlayRow whose id is derived from the call count so tests can
-  // distinguish round-trips.
+  dispatchEditMock.mockReset();
   let n = 0;
-  dispatchMock.mockImplementation(async (name: string, _req: unknown) => {
+  dispatchEditMock.mockImplementation(async (op) => {
     n += 1;
-    if (name === "overlays:upsert") {
-      return { ok: true, value: makeRow(`fresh-${n}`) };
+    if (op.kind === "upsert") {
+      return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
     }
-    if (name === "overlays:delete") {
-      return { ok: true, value: undefined };
+    if (op.kind === "delete") {
+      return { ok: true, value: { kind: "delete" } };
     }
-    return { ok: false, error: { kind: "validation", code: "unknown", message: name } };
+    if (op.kind === "crop") {
+      return {
+        ok: true,
+        value: { kind: "crop", artifact: { previousWidthPx: 0, previousHeightPx: 0 } }
+      };
+    }
+    if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
+      return {
+        ok: true,
+        value: { kind: "update", artifact: { format: 2, node: makeNode(`fresh-${n}`) } }
+      };
+    }
+    return { ok: false, error: { kind: "validation", code: "unknown", message: op.kind } };
   });
 });
+
+function makeNode(id: string): BundleLayerNode {
+  return {
+    id,
+    parent_id: null,
+    kind: "vector",
+    shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" },
+    name: "Arrow",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: 0,
+    source: "user",
+    ai_run_id: null,
+    applied_at: "2026-05-20T00:00:00.000Z",
+    rejected_at: null,
+    superseded_by: null,
+    created_at: "2026-05-20T00:00:00.000Z"
+  };
+}
 
 function makeRow(id: string): OverlayRow {
   return {
@@ -80,7 +109,8 @@ function Probe(props: ProbeProps): null {
   const internal = useRef(false);
   const api = useUndoRedo({
     captureId: props.captureId,
-    applyingRef: props.applyingRef ?? internal
+    applyingRef: props.applyingRef ?? internal,
+    dispatchEdit: dispatchEditMock
   });
   useEffect(() => {
     props.onSnapshot(api);
@@ -112,7 +142,7 @@ afterEach(() => {
 });
 
 describe("useUndoRedo", () => {
-  test("recordCreate then undo → dispatches overlays:delete with the row id", async () => {
+  test("recordCreate then undo → dispatches layers:delete with the layer id", async () => {
     let api: UseUndoRedoResult | null = null;
     render(
       createElement(Probe, {
@@ -125,7 +155,7 @@ describe("useUndoRedo", () => {
 
     const row = makeRow("row-A");
     act(() => {
-      api!.recordCreate(row);
+      api!.recordCreate(row, { node: makeNode("row-A") });
     });
     expect(api!.canUndo).toBe(true);
     expect(api!.canRedo).toBe(false);
@@ -134,12 +164,12 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    expect(dispatchMock).toHaveBeenCalledWith("overlays:delete", { id: "row-A" });
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "delete", id: "row-A" });
     expect(api!.canUndo).toBe(false);
     expect(api!.canRedo).toBe(true);
   });
 
-  test("recordDelete then undo → dispatches overlays:upsert with the row's data", async () => {
+  test("recordDelete then undo → dispatches layers:upsert with the original node", async () => {
     let api: UseUndoRedoResult | null = null;
     render(
       createElement(Probe, {
@@ -151,23 +181,19 @@ describe("useUndoRedo", () => {
     );
 
     const row = makeRow("row-B");
+    const node = makeNode("row-B");
     act(() => {
-      api!.recordDelete(row);
+      api!.recordDelete(row, { node });
     });
     await act(async () => {
       await api!.undo();
     });
 
-    // Undo of delete preserves the row's original z_index — without
-    // it the restored row auto-bumps to MAX + GAP, breaking the
-    // user-mental-model "undo puts it back where it was." See
-    // OverlayEditOp.upsert + overlays:upsert IPC contract for the
-    // preserveZIndex / zIndex discipline.
-    expect(dispatchMock).toHaveBeenCalledWith("overlays:upsert", {
-      captureId: "cap-1",
-      overlay: row.data,
-      zIndex: row.z_index
-    });
+    // Undo of delete re-inserts the structurally-identical layer; the
+    // node carries its original z_index so the restored layer comes
+    // back where it was (layers:upsert preserves node.z_index when
+    // bumpZIndexToMax isn't set).
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
   });
 
   test("undo then redo replays the original op", async () => {
@@ -182,27 +208,22 @@ describe("useUndoRedo", () => {
     );
 
     const row = makeRow("row-C");
+    const node = makeNode("row-C");
     act(() => {
-      api!.recordCreate(row);
+      api!.recordCreate(row, { node });
     });
     await act(async () => {
       await api!.undo();
     });
-    dispatchMock.mockClear();
+    dispatchEditMock.mockClear();
 
     await act(async () => {
       await api!.redo();
     });
 
-    // Redoing a `create` re-dispatches the upsert with the row's data
-    // AND the original z_index — so the redone layer lands at the
-    // same logical position, not on top of any layers added since
-    // the undo. See OverlayEditOp.upsert.preserveZIndex doc-block.
-    expect(dispatchMock).toHaveBeenCalledWith("overlays:upsert", {
-      captureId: "cap-1",
-      overlay: row.data,
-      zIndex: row.z_index
-    });
+    // Redoing a `create` re-dispatches the upsert with the original
+    // node — so the redone layer lands at the same logical position.
+    expect(dispatchEditMock).toHaveBeenCalledWith({ kind: "upsert", node });
     expect(api!.canUndo).toBe(true);
     expect(api!.canRedo).toBe(false);
   });
@@ -323,9 +344,7 @@ describe("useUndoRedo", () => {
       await api!.undo();
     });
 
-    // The hook MUST go through dispatchEdit — NOT touch the bus
-    // directly with overlays:* (which would be refused on v2).
-    expect(dispatchMock).not.toHaveBeenCalled();
+    // The hook routes the inverse through dispatchEdit.
     expect(dispatchEdit).toHaveBeenCalledTimes(1);
     expect(dispatchEdit.mock.calls[0]?.[0]).toEqual({
       kind: "delete",
@@ -540,7 +559,7 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 1, row: makeRow(`fresh-${Math.random()}`) }
+            artifact: { format: 2, node: makeNode(`fresh-${Math.random()}`) }
           }
         };
       }
@@ -609,7 +628,7 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 1, row: makeRow(`replay-${idCounter}`) }
+            artifact: { format: 2, node: makeNode(`replay-${idCounter}`) }
           }
         };
       }
@@ -659,7 +678,7 @@ describe("useUndoRedo", () => {
           ok: true,
           value: {
             kind: "update",
-            artifact: { format: 1, row: makeRow("fresh") }
+            artifact: { format: 2, node: makeNode("fresh") }
           }
         };
       }

@@ -252,19 +252,17 @@ export function EditToolbar({
   // hooks) with a sentinel when no capture is selected.
   const model = useCaptureModel(captureId ?? NO_CAPTURE_SENTINEL);
 
-  // Resolve to a uniform OverlayRow[] view. v1 returns it natively;
-  // v2 captures (Phase 2 read-only) get back-projected via the same
-  // shape Editor uses. EditToolbar reads `data.kind` to feed
-  // describePlacement, which is overlay-shaped — projecting keeps the
-  // call site format-agnostic. When the hook is loading / errored /
-  // sentinel-mounted, the list is empty.
+  // Resolve to a uniform OverlayRow[] view. v2 captures get
+  // back-projected via the same shape Editor uses. EditToolbar reads
+  // `data.kind` to feed describePlacement, which is overlay-shaped —
+  // projecting keeps the call site format-agnostic. When the hook is
+  // loading / errored / sentinel-mounted, the list is empty.
   const overlayRows: OverlayRow[] = useMemo(() => {
     if (captureId === undefined) return [];
     if (model.kind !== "loaded") return [];
-    if (model.format === 1) return model.overlays;
-    // v2: re-shape vector + blur-effect layers back into OverlayRow
-    // shape. EditToolbar only needs id + data.kind + created_at +
-    // source for placement detection, all of which carry through.
+    // Re-shape vector + blur-effect layers back into OverlayRow shape.
+    // EditToolbar only needs id + data.kind + created_at + source for
+    // placement detection, all of which carry through.
     const rows: OverlayRow[] = [];
     for (const layer of model.layers) {
       if (layer.kind === "vector") {
@@ -347,11 +345,9 @@ export function EditToolbar({
   }, [captureId, overlayRows]);
 
   const overlayCount = overlayRows.length;
-  // v2 cropped-state detector for the Reset button. For v1 captures
-  // a crop is a CropOverlay row — already counted in `overlayCount`
-  // via `overlayRows` above — so Reset enables naturally when only
-  // a crop exists. For v2 the crop has TWO representations (both
-  // written by the v2 crop dispatcher in useCaptureModel.ts):
+  // Cropped-state detector for the Reset button. A crop has TWO
+  // representations (both written by the crop dispatcher in
+  // useCaptureModel.ts):
   //
   //   1. A VectorLayer with shape.kind === "crop" in the layer tree
   //      — the layer-tree-native signal (post #109/#110's crop-as-
@@ -362,14 +358,14 @@ export function EditToolbar({
   //
   //   2. captures.{width,height}_px < raster.natural_{width,height}_px
   //      — the cached canvas dim shrink. The bake reads this, and
-  //      legacy v2 captures cropped BEFORE the crop-as-layer dispatch
-  //      landed only have this representation (no VectorLayer).
+  //      captures cropped BEFORE the crop-as-layer dispatch landed
+  //      only have this representation (no VectorLayer).
   //
   // We check both: if EITHER is true the capture is cropped and
   // Reset should be enabled. New captures cropped on this PR's code
   // have both signals; legacy captures have only the dim shrink.
   const isV2Cropped = useMemo(() => {
-    if (model.kind !== "loaded" || model.format !== 2) return false;
+    if (model.kind !== "loaded") return false;
     // Signal 1 — VectorLayer<crop> in the layer tree.
     for (const layer of model.layers) {
       if (layer.kind === "vector" && layer.shape.kind === "crop") {
@@ -732,107 +728,89 @@ export function EditToolbar({
           onConfirm={async () => {
             if (captureId === undefined) return;
             setResetArmedAt(null);
-            // Format-branch — Phase 3 doctor migrates captures to v2 on
-            // first edit-open, and the bus-side gates refuse cross-
-            // format IPC (v2 captures → `overlays:list` returns
-            // Result.err `v2_capture_use_layers_ipc`). Before this fix
-            // Reset silently no-op'd on every doctored capture.
             const recordRes = await dispatch("library:byId", { id: captureId });
             if (!recordRes.ok || recordRes.value === null) return;
-            const isV2 = recordRes.value.bundle_format_version >= 2;
-            if (isV2) {
-              const list = await dispatch("layers:list", { captureId });
-              if (!list.ok) return;
-              // Find the raster's natural dims BEFORE we delete layers
-              // — we need them to restore canvas dimensions if the user
-              // had previously cropped. v2 crop writes to the captures
-              // row's width_px/height_px (non-destructively, the raster
-              // source bytes are preserved) via
-              // `bundle:updateCanvasDimensions`; without restoring those
-              // here, Reset would only clear annotations and leave the
-              // capture in its cropped state forever. The user's
-              // intuition is "Reset = full original" so we restore both.
-              let rasterDims: { width: number; height: number } | null = null;
-              // Snapshot the raster layer too — Reset needs to restore
-              // its transform to identity if a previous off-origin crop
-              // translated it (useCaptureModel.ts Step 0.5 writes
-              // raster.transform[4]/[5] when the user drags a non-(0,0)
-              // crop rect, per PR #110). Without resetting, the
-              // captures-row dim restore below leaves the raster
-              // shifted inside the now-full canvas — visible as the
-              // image appearing offset from the canvas's top-left with
-              // empty space on the opposite edges. (Reproduced live
-              // by the user after Reset on lPK1jAx7uXAACf9k.)
-              let rasterNeedingReset: (typeof list.value)[number] | null = null;
-              for (const node of list.value) {
-                if (
-                  node.kind === "raster" &&
-                  node.parent_id !== null
-                ) {
-                  rasterDims = {
-                    width: node.natural_width_px,
-                    height: node.natural_height_px
-                  };
-                  if (node.transform[4] !== 0 || node.transform[5] !== 0) {
-                    rasterNeedingReset = node;
-                  }
-                  break;
-                }
-              }
-              // Skip the synthesized root group + raster source; just
-              // delete user-facing annotation layers. Sequential per
-              // the same broadcast / edits_version reasoning as v1.
-              for (const node of list.value) {
-                if (node.kind === "group" || node.kind === "raster") continue;
-                // eslint-disable-next-line no-await-in-loop
-                await dispatch("layers:delete", { id: node.id });
-              }
-              // Restore the raster's identity transform if a previous
-              // off-origin crop translated it. Delete + reinsert mirrors
-              // the dispatcher's pattern (the IPC surface has no
-              // updateLayer verb; v2 edits are delete-plus-insert via
-              // `layers:delete` + `layers:upsert`). Skip when transform
-              // is already identity so the common case stays churn-free.
-              if (rasterNeedingReset !== null) {
-                await dispatch("layers:delete", { id: rasterNeedingReset.id });
-                await dispatch("layers:upsert", {
-                  captureId,
-                  layer: {
-                    ...rasterNeedingReset,
-                    id: nanoid(16),
-                    transform: [1, 0, 0, 1, 0, 0]
-                  }
-                });
-              }
-              // Restore canvas to raster-natural dims if the capture
-              // was cropped. The `updateCanvasDimensions` handler
-              // refuses values exceeding the raster's natural dims so
-              // this can never grow the canvas past the source — only
-              // restore it to what was captured originally. Skip when
-              // already at natural dims (no-op writes burn an
-              // edits_version bump + a captures:changed broadcast for
-              // nothing).
+            const list = await dispatch("layers:list", { captureId });
+            if (!list.ok) return;
+            // Find the raster's natural dims BEFORE we delete layers
+            // — we need them to restore canvas dimensions if the user
+            // had previously cropped. Crop writes to the captures
+            // row's width_px/height_px (non-destructively, the raster
+            // source bytes are preserved) via
+            // `bundle:updateCanvasDimensions`; without restoring those
+            // here, Reset would only clear annotations and leave the
+            // capture in its cropped state forever. The user's
+            // intuition is "Reset = full original" so we restore both.
+            let rasterDims: { width: number; height: number } | null = null;
+            // Snapshot the raster layer too — Reset needs to restore
+            // its transform to identity if a previous off-origin crop
+            // translated it (useCaptureModel.ts Step 0.5 writes
+            // raster.transform[4]/[5] when the user drags a non-(0,0)
+            // crop rect, per PR #110). Without resetting, the
+            // captures-row dim restore below leaves the raster
+            // shifted inside the now-full canvas — visible as the
+            // image appearing offset from the canvas's top-left with
+            // empty space on the opposite edges. (Reproduced live
+            // by the user after Reset on lPK1jAx7uXAACf9k.)
+            let rasterNeedingReset: (typeof list.value)[number] | null = null;
+            for (const node of list.value) {
               if (
-                rasterDims !== null &&
-                (recordRes.value.width_px !== rasterDims.width ||
-                  recordRes.value.height_px !== rasterDims.height)
+                node.kind === "raster" &&
+                node.parent_id !== null
               ) {
-                await dispatch("bundle:updateCanvasDimensions", {
-                  captureId,
-                  widthPx: rasterDims.width,
-                  heightPx: rasterDims.height
-                });
+                rasterDims = {
+                  width: node.natural_width_px,
+                  height: node.natural_height_px
+                };
+                if (node.transform[4] !== 0 || node.transform[5] !== 0) {
+                  rasterNeedingReset = node;
+                }
+                break;
               }
-            } else {
-              const list = await dispatch("overlays:list", { captureId });
-              if (!list.ok) return;
-              // Sequentially — the overlays handler updates app_stats /
-              // edits_version per row + broadcasts. Parallel deletes
-              // would race those side-effects.
-              for (const row of list.value) {
-                // eslint-disable-next-line no-await-in-loop
-                await dispatch("overlays:delete", { id: row.id });
-              }
+            }
+            // Skip the synthesized root group + raster source; just
+            // delete user-facing annotation layers. Sequential to
+            // avoid racing the per-write broadcasts / edits_version.
+            for (const node of list.value) {
+              if (node.kind === "group" || node.kind === "raster") continue;
+              // eslint-disable-next-line no-await-in-loop
+              await dispatch("layers:delete", { id: node.id });
+            }
+            // Restore the raster's identity transform if a previous
+            // off-origin crop translated it. Delete + reinsert mirrors
+            // the dispatcher's pattern (the IPC surface has no
+            // updateLayer verb; edits are delete-plus-insert via
+            // `layers:delete` + `layers:upsert`). Skip when transform
+            // is already identity so the common case stays churn-free.
+            if (rasterNeedingReset !== null) {
+              await dispatch("layers:delete", { id: rasterNeedingReset.id });
+              await dispatch("layers:upsert", {
+                captureId,
+                layer: {
+                  ...rasterNeedingReset,
+                  id: nanoid(16),
+                  transform: [1, 0, 0, 1, 0, 0]
+                }
+              });
+            }
+            // Restore canvas to raster-natural dims if the capture
+            // was cropped. The `updateCanvasDimensions` handler
+            // refuses values exceeding the raster's natural dims so
+            // this can never grow the canvas past the source — only
+            // restore it to what was captured originally. Skip when
+            // already at natural dims (no-op writes burn an
+            // edits_version bump + a captures:changed broadcast for
+            // nothing).
+            if (
+              rasterDims !== null &&
+              (recordRes.value.width_px !== rasterDims.width ||
+                recordRes.value.height_px !== rasterDims.height)
+            ) {
+              await dispatch("bundle:updateCanvasDimensions", {
+                captureId,
+                widthPx: rasterDims.width,
+                heightPx: rasterDims.height
+              });
             }
           }}
         />

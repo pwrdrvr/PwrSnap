@@ -1,14 +1,10 @@
 // Renderer-side Overlay → BundleLayerNode adapter for v2 captures.
 //
-// Phase 2 of the v2 editor refresh made the READ path dual-format —
-// `useCaptureModel` discovers `bundle_format_version` and dispatches
-// either `overlays:list` or `layers:list`, then projects v2 layers back
-// into the `OverlayRow[]` shape the renderer consumes. Phase 3 shipped
-// the v1 → v2 lazy doctor, so any v1 capture is doctored to v2 on first
-// edit-open.
+// v2 is the only bundle format. `useCaptureModel` reads the layer tree
+// via `layers:list`; this adapter is the WRITE side.
 //
 // This adapter is what `persistOverlay` calls to project the editor's
-// v1-shaped Overlay payloads (arrow/rect/text/highlight/blur) into v2
+// drawn Overlay payloads (arrow/rect/text/highlight/blur) into v2
 // BundleLayerNodes for `layers:upsert`. The renderer doesn't
 // independently track v2-shape state — drag handlers produce normalized
 // Overlays as the source of truth, and the adapter mints a fresh
@@ -155,9 +151,8 @@ export function overlayToBundleLayerNode(
     return { ok: true, layer };
   }
 
-  // arrow / rect / highlight / text / step — all carry the v1 Overlay
-  // shape verbatim under `shape`. Mirrors the migration path in
-  // `synthesizeV2DocumentFromV1Overlays`.
+  // arrow / rect / highlight / text / step — all carry the Overlay
+  // shape verbatim under `shape`.
   const layer: BundleLayerNode = {
     id,
     parent_id: parentId,
@@ -183,9 +178,8 @@ export function overlayToBundleLayerNode(
 /**
  * Find the document root group's id in a flat layer list. The doctor
  * synthesizes exactly one `kind: "group"` layer with `parent_id: null`
- * per migrated capture (see `synthesizeV2DocumentFromV1Overlays`); a
- * native v2 capture from a Phase 4+ surface will follow the same
- * invariant. Returns `null` if no root group is found (caller should
+ * per capture; a native v2 capture from a Phase 4+ surface follows the
+ * same invariant. Returns `null` if no root group is found (caller should
  * fall back to `parent_id: null` on the new layer, which still renders
  * via the flat projection in Editor.tsx).
  */
@@ -198,10 +192,7 @@ export function findRootGroupId(layers: readonly BundleLayerNode[]): string | nu
   return null;
 }
 
-/** Mirror of `layerNameForVector` in `v1-to-v2-doctor.ts`. Kept
- *  intentionally duplicated rather than importing across the
- *  renderer/main boundary — the doctor module is main-only and
- *  pulling it would yank node-only code into the renderer bundle. */
+/** Human-readable layer name for a vector overlay kind. */
 function layerNameForVector(
   kind: Exclude<Overlay["kind"], "blur">
 ): string {

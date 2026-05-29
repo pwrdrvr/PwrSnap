@@ -1,12 +1,11 @@
-// Unit tests for `useCaptureModel` — the v2-editor refresh's data-
-// access hook that branches the renderer on `bundle_format_version`.
+// Unit tests for `useCaptureModel` — the editor's data-access hook.
 //
-// The hook returns a discriminated union (loading / loaded-v1 /
-// loaded-v2 / error). v1 captures resolve via `library:byId` +
-// `overlays:list`; v2 captures resolve via `library:byId` +
-// `layers:list`. A single `cancelled` flag covers both branches so a
-// slow request resolving SECOND can't clobber a newer captureId's
-// state.
+// v2 is the only bundle format. The hook returns a discriminated union
+// (loading / loaded / error). A loaded capture resolves via
+// `library:byId` + `layers:list`; a record with
+// `bundle_format_version < 2` is surfaced as an error. A single
+// `cancelled` flag covers both dispatches so a slow request resolving
+// SECOND can't clobber a newer captureId's state.
 //
 // Mirrors `useUndoRedo.test.ts` and `useEditorToolState.test.ts`'s
 // bare-react + createRoot + act harness. No `@testing-library/react`
@@ -236,15 +235,11 @@ describe("useCaptureModel", () => {
     expect(model!.captureId).toBe("cap_1");
   });
 
-  test("2. v1 capture: loads record + overlays + synthesizes LayerView", async () => {
+  test("2. record with bundle_format_version < 2 → error model", async () => {
     const record = makeRecord("cap_1", 1);
-    const overlay = makeOverlayRow("ov_1", "cap_1");
     dispatchMock.mockImplementation((name: string) => {
       if (name === "library:byId") {
         return Promise.resolve({ ok: true, value: record });
-      }
-      if (name === "overlays:list") {
-        return Promise.resolve({ ok: true, value: [overlay] });
       }
       return Promise.resolve({ ok: true, value: null });
     });
@@ -262,19 +257,11 @@ describe("useCaptureModel", () => {
     await flush();
 
     const m = model!;
-    expect(m.kind).toBe("loaded");
-    if (m.kind === "loaded") {
-      expect(m.format).toBe(1);
-      if (m.format === 1) {
-        expect(m.overlays).toEqual([overlay]);
-        expect(m.layers.length).toBe(1);
-        const view: LayerView = m.layers[0]!;
-        expect(view.kind).toBe("vector");
-        if (view.kind === "vector") {
-          expect(view.geometry.kind).toBe("arrow");
-        }
-      }
-    }
+    expect(m.kind).toBe("error");
+    // A v1 (or below-v2) record never resolves a loaded model and never
+    // dispatches overlays:list.
+    const verbs = dispatchMock.mock.calls.map((c) => c[0]);
+    expect(verbs).not.toContain("overlays:list");
   });
 
   test("3. v2 capture: loads record + layers from layers:list", async () => {
@@ -314,34 +301,6 @@ describe("useCaptureModel", () => {
     }
   });
 
-  test("4. dispatched IPC verb is correct by format", async () => {
-    const record = makeRecord("cap_1", 1);
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId") {
-        return Promise.resolve({ ok: true, value: record });
-      }
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const verbs = dispatchMock.mock.calls.map((c) => c[0]);
-    expect(verbs).toContain("library:byId");
-    expect(verbs).toContain("overlays:list");
-    expect(verbs).not.toContain("layers:list");
-  });
-
   test("4b. v2 capture only calls layers:list, not overlays:list", async () => {
     const record = makeRecord("cap_2", 2);
     dispatchMock.mockImplementation((name: string) => {
@@ -367,72 +326,6 @@ describe("useCaptureModel", () => {
     const verbs = dispatchMock.mock.calls.map((c) => c[0]);
     expect(verbs).toContain("layers:list");
     expect(verbs).not.toContain("overlays:list");
-  });
-
-  test("5a. v1 dispatchEdit: upsert → overlays:upsert", async () => {
-    const record = makeRecord("cap_1", 1);
-    const overlay = makeOverlayRow("ov_1", "cap_1");
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId") {
-        return Promise.resolve({ ok: true, value: record });
-      }
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [overlay] });
-      if (name === "overlays:upsert") return Promise.resolve({ ok: true, value: overlay });
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    expect(m.kind).toBe("loaded");
-    if (m.kind === "loaded" && m.format === 1) {
-      await act(async () => {
-        await m.dispatchEdit({ kind: "upsert", row: overlay });
-      });
-    }
-    const upsertCalls = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upsertCalls.length).toBe(1);
-    expect(upsertCalls[0]?.[1]).toEqual({ captureId: "cap_1", overlay: overlay.data });
-  });
-
-  test("5b. v1 dispatchEdit: delete → overlays:delete", async () => {
-    const record = makeRecord("cap_1", 1);
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind === "loaded" && m.format === 1) {
-      await act(async () => {
-        await m.dispatchEdit({ kind: "delete", id: "ov_1" });
-      });
-    }
-    const deleteCalls = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:delete");
-    expect(deleteCalls.length).toBe(1);
-    expect(deleteCalls[0]?.[1]).toEqual({ id: "ov_1" });
   });
 
   test("5c. v2 dispatchEdit: upsert → layers:upsert", async () => {
@@ -465,95 +358,6 @@ describe("useCaptureModel", () => {
     const upsertCalls = dispatchMock.mock.calls.filter((c) => c[0] === "layers:upsert");
     expect(upsertCalls.length).toBe(1);
     expect(upsertCalls[0]?.[1]).toEqual({ captureId: "cap_2", layer });
-  });
-
-  test("5c'. v1 dispatchEdit: upsert artifact carries the inserted row", async () => {
-    const record = makeRecord("cap_1", 1);
-    const inserted = makeOverlayRow("ov_fresh", "cap_1");
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId")
-        return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "overlays:upsert") return Promise.resolve({ ok: true, value: inserted });
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const placeholder = makeOverlayRow("placeholder", "cap_1");
-    const r = await m.dispatchEdit({ kind: "upsert", row: placeholder });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.value.kind).toBe("upsert");
-    if (r.value.kind !== "upsert") throw new Error("unreachable");
-    expect(r.value.artifact.format).toBe(1);
-    if (r.value.artifact.format !== 1) throw new Error("unreachable");
-    expect(r.value.artifact.row).toEqual(inserted);
-  });
-
-  test("5e. v1 dispatchEdit: crop → overlays:upsert with CropOverlay + previous dims", async () => {
-    const record = makeRecord("cap_1", 1);
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId")
-        return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "overlays:upsert") {
-        // Return a synthesized OverlayRow shaped like the request's
-        // overlay so the dispatcher's artifact projection works.
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: {
-            ...makeOverlayRow("ov_crop", "cap_1"),
-            data: r.overlay
-          }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "crop",
-      rect: { x: 0, y: 0, w: 0.5, h: 0.5 }
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.value.kind).toBe("crop");
-    if (r.value.kind !== "crop") throw new Error("unreachable");
-    // v1 surfaces the current capture's dims as "previous" — they
-    // don't actually change, but the shape is uniform with v2.
-    expect(r.value.artifact.previousWidthPx).toBe(record.width_px);
-    expect(r.value.artifact.previousHeightPx).toBe(record.height_px);
-    // overlays:upsert was called with a CropOverlay.
-    const upsertCalls = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upsertCalls.length).toBe(1);
-    expect((upsertCalls[0]?.[1] as { overlay: { kind: string } })?.overlay.kind).toBe(
-      "crop"
-    );
   });
 
   test("5f. v2 dispatchEdit: crop → bundle:updateCanvasDimensions with derived dims", async () => {
@@ -1089,10 +893,9 @@ describe("useCaptureModel", () => {
   });
 
   test("6. cancel-safety: capture-change drops stale resolution", async () => {
-    const recordA = makeRecord("cap_1", 1);
-    const recordB = makeRecord("cap_2", 1);
-    const overlayA = makeOverlayRow("ov_a", "cap_1");
-    const overlayB = makeOverlayRow("ov_b", "cap_2");
+    const recordA = makeRecord("cap_1", 2);
+    const recordB = makeRecord("cap_2", 2);
+    const layerB = makeLayerNode("ly_b");
 
     // First call: library:byId for cap_1 → slow.
     // Subsequent calls: cap_2 → fast.
@@ -1104,11 +907,11 @@ describe("useCaptureModel", () => {
         if (req.id === "cap_1") return slowRecord.promise;
         if (req.id === "cap_2") return Promise.resolve({ ok: true, value: recordB });
       }
-      if (name === "overlays:list") {
+      if (name === "layers:list") {
         if (req.captureId === "cap_1")
-          return Promise.resolve({ ok: true, value: [overlayA] });
+          return Promise.resolve({ ok: true, value: [] });
         if (req.captureId === "cap_2")
-          return Promise.resolve({ ok: true, value: [overlayB] });
+          return Promise.resolve({ ok: true, value: [layerB] });
       }
       return Promise.resolve({ ok: true, value: null });
     });
@@ -1147,9 +950,7 @@ describe("useCaptureModel", () => {
       expect(m.kind).toBe("loaded");
       if (m.kind === "loaded") {
         expect(m.captureId).toBe("cap_2");
-        if (m.format === 1) {
-          expect(m.overlays).toEqual([overlayB]);
-        }
+        expect(m.layers).toEqual([layerB]);
       }
     }
     expect(recordCalls).toBeGreaterThanOrEqual(2);
@@ -1213,11 +1014,11 @@ describe("useCaptureModel", () => {
   });
 
   test("8. events:overlays:changed re-fetches for this capture", async () => {
-    const record = makeRecord("cap_1", 1);
+    const record = makeRecord("cap_1", 2);
     let listCalls = 0;
     dispatchMock.mockImplementation((name: string) => {
       if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") {
+      if (name === "layers:list") {
         listCalls += 1;
         return Promise.resolve({ ok: true, value: [] });
       }
@@ -1256,16 +1057,17 @@ describe("useCaptureModel", () => {
     expect(listCalls).toBe(2);
   });
 
-  test("9. events:captures:changed with format flip switches the IPC family", async () => {
-    let recordV1 = makeRecord("cap_1", 1);
-    const recordV2 = makeRecord("cap_1", 2);
-    let useV2 = false;
+  test("9. events:captures:changed re-fetches the layer tree", async () => {
+    const record = makeRecord("cap_1", 2);
+    let listCalls = 0;
     dispatchMock.mockImplementation((name: string) => {
       if (name === "library:byId") {
-        return Promise.resolve({ ok: true, value: useV2 ? recordV2 : recordV1 });
+        return Promise.resolve({ ok: true, value: record });
       }
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      if (name === "layers:list") return Promise.resolve({ ok: true, value: [] });
+      if (name === "layers:list") {
+        listCalls += 1;
+        return Promise.resolve({ ok: true, value: [] });
+      }
       return Promise.resolve({ ok: true, value: null });
     });
 
@@ -1279,17 +1081,8 @@ describe("useCaptureModel", () => {
       })
     );
     await flush();
+    expect(listCalls).toBe(1);
 
-    {
-      const m = model!;
-      expect(m.kind).toBe("loaded");
-      if (m.kind === "loaded") {
-        expect(m.format).toBe(1);
-      }
-    }
-
-    // Doctor ran; capture is now v2. Broadcast triggers re-fetch.
-    useV2 = true;
     await act(async () => {
       broadcast("events:captures:changed", { changedIds: ["cap_1"] });
       await Promise.resolve();
@@ -1304,11 +1097,7 @@ describe("useCaptureModel", () => {
         expect(m.format).toBe(2);
       }
     }
-    // After the flip, the latest list call should be layers:list.
-    const recentList = dispatchMock.mock.calls
-      .map((c) => c[0])
-      .filter((n) => n === "overlays:list" || n === "layers:list");
-    expect(recentList[recentList.length - 1]).toBe("layers:list");
+    expect(listCalls).toBe(2);
   });
 
   test("10. error: library:byId returns Err → error model", async () => {
@@ -1403,136 +1192,6 @@ describe("useCaptureModel", () => {
     expect(consoleWarn).not.toHaveBeenCalled();
     consoleError.mockRestore();
     consoleWarn.mockRestore();
-  });
-
-  test("13a. v1 dispatchEdit: updateGeometry → overlays:delete + overlays:upsert with merged data", async () => {
-    const record = makeRecord("cap_1", 1);
-    const existing = makeOverlayRow("ov_orig", "cap_1");
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateGeometry",
-      layerId: "ov_orig",
-      geometry: {
-        kind: "arrow",
-        from: { x: 0.3, y: 0.3 },
-        to: { x: 0.9, y: 0.9 }
-      }
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.value.kind).toBe("update");
-    if (r.value.kind !== "update") throw new Error("unreachable");
-    expect(r.value.artifact.format).toBe(1);
-    // overlays:delete on the original id, then overlays:upsert with
-    // the merged geometry.
-    const deletes = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:delete");
-    expect(deletes.length).toBe(1);
-    expect(deletes[0]?.[1]).toEqual({ id: "ov_orig" });
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upserts.length).toBe(1);
-    const sentOverlay = (upserts[0]?.[1] as { overlay: { kind: string; from: { x: number }; to: { x: number } } }).overlay;
-    expect(sentOverlay.kind).toBe("arrow");
-    expect(sentOverlay.from.x).toBeCloseTo(0.3);
-    expect(sentOverlay.to.x).toBeCloseTo(0.9);
-  });
-
-  test("13b. v1 dispatchEdit: updateGeometry refuses on missing layerId", async () => {
-    const record = makeRecord("cap_1", 1);
-    dispatchMock.mockImplementation((name: string) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [] });
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateGeometry",
-      layerId: "missing",
-      geometry: { kind: "rect", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }
-    });
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.error.code).toBe("layer_not_found");
-  });
-
-  test("13c. v1 dispatchEdit: updateOverlay → overlays:delete + overlays:upsert with patched data", async () => {
-    const record = makeRecord("cap_1", 1);
-    const existing = makeOverlayRow("ov_orig", "cap_1");
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateOverlay",
-      layerId: "ov_orig",
-      patch: { kind: "arrow", color: "#ff0000" }
-    });
-    expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upserts.length).toBe(1);
-    const sentOverlay = (upserts[0]?.[1] as { overlay: { color: string } }).overlay;
-    expect(sentOverlay.color).toBe("#ff0000");
   });
 
   test("13d. v2 dispatchEdit: updateGeometry → layers:delete + layers:upsert with merged vector shape", async () => {
@@ -1643,149 +1302,6 @@ describe("useCaptureModel", () => {
   // refactor breaks z_index preservation, they fail before any user
   // sees the regression.
   // ───────────────────────────────────────────────────────────────────────
-
-  test("13e. v1 dispatchEdit: updateGeometry preserves current.z_index in overlays:upsert payload (Send-to-Back regression)", async () => {
-    const record = makeRecord("cap_1", 1);
-    // The load-bearing setup: existing row is at z_index = 0 (the
-    // user Sent it to Back). After updateGeometry the new row must
-    // ALSO be at z_index = 0 — anything else jumps the rect to the
-    // top of the stack on drag-drop.
-    const existing: OverlayRow = { ...makeOverlayRow("ov_stb", "cap_1"), z_index: 0 };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 0 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateGeometry",
-      layerId: "ov_stb",
-      geometry: {
-        kind: "arrow",
-        from: { x: 0.3, y: 0.3 },
-        to: { x: 0.9, y: 0.9 }
-      }
-    });
-    expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upserts.length).toBe(1);
-    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
-    // The dispatcher MUST forward the original z_index. Pre-fix this
-    // field was absent → handler called insertOverlay without zIndex
-    // → auto-bump → user's Send-to-Back was undone by every drag.
-    expect(sentReq.zIndex).toBe(0);
-  });
-
-  test("13f. v1 dispatchEdit: updateGeometry preserves current.z_index > 0 in overlays:upsert payload", async () => {
-    // Mid-stack preservation. A row at z_index = 2000 (some middle-
-    // of-stack reorder) must stay at 2000 across drag-drop.
-    const record = makeRecord("cap_1", 1);
-    const existing: OverlayRow = { ...makeOverlayRow("ov_mid", "cap_1"), z_index: 2000 };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 2000 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateGeometry",
-      layerId: "ov_mid",
-      geometry: {
-        kind: "arrow",
-        from: { x: 0.4, y: 0.4 },
-        to: { x: 0.8, y: 0.8 }
-      }
-    });
-    expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
-    expect(sentReq.zIndex).toBe(2000);
-  });
-
-  test("13g. v1 dispatchEdit: updateOverlay preserves current.z_index in overlays:upsert payload", async () => {
-    // Same shape for style-patch (color/thickness/etc.). Style edits
-    // shouldn't change stacking order.
-    const record = makeRecord("cap_1", 1);
-    const existing: OverlayRow = { ...makeOverlayRow("ov_stl", "cap_1"), z_index: 0 };
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: [existing] });
-      if (name === "overlays:delete") return Promise.resolve({ ok: true, value: undefined });
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown };
-        return Promise.resolve({
-          ok: true,
-          value: { ...makeOverlayRow("ov_new", "cap_1"), data: r.overlay, z_index: 0 }
-        });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-    const r = await m.dispatchEdit({
-      kind: "updateOverlay",
-      layerId: "ov_stl",
-      patch: { kind: "arrow", color: "#00ff00" }
-    });
-    expect(r.ok).toBe(true);
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
-    expect(sentReq.zIndex).toBe(0);
-  });
 
   test("13h. v2 dispatchEdit: updateGeometry preserves layer.z_index = 0 (Send-to-Back regression)", async () => {
     // v2 mirror of 13e. layers:upsert receives the merged layer with
@@ -2038,73 +1554,6 @@ describe("useCaptureModel", () => {
     }
   });
 
-  test("13k. v1 multi-drag preserves EACH overlay's distinct z_index across the sequence", async () => {
-    // v1 mirror of 13j. Same shape: per-row updateGeometry dispatches
-    // each forward their CURRENT row's z_index to overlays:upsert.
-    const record = makeRecord("cap_1", 1);
-    function mkRow(id: string, zIndex: number): OverlayRow {
-      return { ...makeOverlayRow(id, "cap_1"), z_index: zIndex };
-    }
-    const a = mkRow("ov_md_a", 0);
-    const b = mkRow("ov_md_b", 2000);
-    const c = mkRow("ov_md_c", 5000);
-    let liveRows = [a, b, c];
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: liveRows });
-      if (name === "overlays:delete") {
-        const r = req as { id: string };
-        liveRows = liveRows.filter((o) => o.id !== r.id);
-        return Promise.resolve({ ok: true, value: undefined });
-      }
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown; zIndex?: number };
-        const newRow: OverlayRow = {
-          ...makeOverlayRow(`${liveRows.length}`, "cap_1"),
-          data: r.overlay as OverlayRow["data"],
-          ...(r.zIndex !== undefined ? { z_index: r.zIndex } : {})
-        };
-        liveRows = [...liveRows, newRow];
-        return Promise.resolve({ ok: true, value: newRow });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-
-    for (const row of [a, b, c]) {
-      if (row.data.kind !== "arrow") continue;
-      const result = await m.dispatchEdit({
-        kind: "updateGeometry",
-        layerId: row.id,
-        geometry: {
-          kind: "arrow",
-          from: { x: row.data.from.x + 0.1, y: row.data.from.y + 0.1 },
-          to: { x: row.data.to.x + 0.1, y: row.data.to.y + 0.1 }
-        }
-      });
-      expect(result.ok).toBe(true);
-    }
-
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upserts.length).toBe(3);
-    const sentZIndexes = upserts.map(
-      (call) => (call[1] as { zIndex?: number }).zIndex
-    );
-    expect(sentZIndexes).toEqual([0, 2000, 5000]);
-  });
-
   test("13l. v2 Send-to-Back → drag-drop end-to-end: z_index stays at 0 across the full sequence", async () => {
     // The user's exact repro flow: "I right-clicked the rotated red
     // rectangle and chose Send to Back. I dragged it. It jumped in
@@ -2250,106 +1699,6 @@ describe("useCaptureModel", () => {
     };
     expect(sentReq.layer.z_index).toBe(0);
     expect(sentReq.bumpZIndexToMax).not.toBe(true);
-  });
-
-  test("13m. v1 Send-to-Back → drag-drop end-to-end: z_index stays at 0 across the full sequence", async () => {
-    // v1 mirror of 13l. Same flow: overlays:reorder → updateGeometry's
-    // overlays:delete + overlays:upsert. The dispatcher reads
-    // current.z_index from the LIVE row (post-reorder = 0) and
-    // forwards it on the upsert.
-    const record = makeRecord("cap_1", 1);
-    const initialRow: OverlayRow = {
-      ...makeOverlayRow("ov_stb_flow", "cap_1"),
-      data: {
-        kind: "rect",
-        rect: { x: 0.2, y: 0.3, w: 0.4, h: 0.3 },
-        color: "auto"
-      },
-      z_index: 5000
-    };
-    let liveRows: OverlayRow[] = [initialRow];
-    dispatchMock.mockImplementation((name: string, req: unknown) => {
-      if (name === "library:byId") return Promise.resolve({ ok: true, value: record });
-      if (name === "overlays:list") return Promise.resolve({ ok: true, value: liveRows });
-      if (name === "overlays:reorder") {
-        const r = req as { id: string; zIndex: number };
-        liveRows = liveRows.map((o) =>
-          o.id === r.id ? { ...o, z_index: r.zIndex } : o
-        );
-        return Promise.resolve({ ok: true, value: undefined });
-      }
-      if (name === "overlays:delete") {
-        const r = req as { id: string };
-        liveRows = liveRows.filter((o) => o.id !== r.id);
-        return Promise.resolve({ ok: true, value: undefined });
-      }
-      if (name === "overlays:upsert") {
-        const r = req as { overlay: unknown; zIndex?: number };
-        // Mirror post-fix overlays-repo: when zIndex is present, store
-        // it verbatim; omitted → auto-bump (not exercised here).
-        const newRow: OverlayRow = {
-          ...makeOverlayRow(`ov_new_${liveRows.length}`, "cap_1"),
-          data: r.overlay as OverlayRow["data"],
-          ...(r.zIndex !== undefined ? { z_index: r.zIndex } : {})
-        };
-        liveRows = [...liveRows, newRow];
-        return Promise.resolve({ ok: true, value: newRow });
-      }
-      return Promise.resolve({ ok: true, value: null });
-    });
-
-    let model: CaptureModel | null = null;
-    render(
-      createElement(Probe, {
-        captureId: "cap_1",
-        onSnapshot: (m) => {
-          model = m;
-        }
-      })
-    );
-    await flush();
-    const m = model!;
-    if (m.kind !== "loaded" || m.format !== 1) throw new Error("unexpected model");
-
-    // Step 1: Send to Back.
-    const reorderResult = await m.dispatchEdit({
-      kind: "reorder",
-      layerId: "ov_stb_flow",
-      zIndex: 0
-    });
-    expect(reorderResult.ok).toBe(true);
-    const afterReorder = liveRows.find((r) => r.id === "ov_stb_flow");
-    expect(afterReorder?.z_index).toBe(0);
-
-    // Same broadcast simulation as 13l. See its comment for the
-    // rationale on why the broadcast must land before the drag for
-    // this test to exercise the user's actual flow.
-    await act(async () => {
-      broadcast("events:overlays:changed", { captureId: record.id });
-      await Promise.resolve();
-    });
-
-    // Step 2: Drag-drop.
-    const dragResult = await m.dispatchEdit({
-      kind: "updateGeometry",
-      layerId: "ov_stb_flow",
-      geometry: {
-        kind: "rect",
-        rect: { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }
-      }
-    });
-    expect(dragResult.ok).toBe(true);
-    if (!dragResult.ok) throw new Error("unreachable");
-    if (dragResult.value.kind !== "update") throw new Error("unreachable");
-    if (dragResult.value.artifact.format !== 1) throw new Error("unreachable");
-    // The new row (different id, same logical row) must still be at z=0.
-    expect(dragResult.value.artifact.row.z_index).toBe(0);
-
-    // The overlays:upsert call must carry zIndex: 0 explicitly.
-    const upserts = dispatchMock.mock.calls.filter((c) => c[0] === "overlays:upsert");
-    expect(upserts.length).toBe(1);
-    const sentReq = upserts[0]?.[1] as { overlay: unknown; zIndex?: number };
-    expect(sentReq.zIndex).toBe(0);
   });
 
   test("12. invalid bundle_format_version (99) returns error", async () => {

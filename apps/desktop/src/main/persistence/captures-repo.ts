@@ -488,7 +488,10 @@ export function listCaptures(filter: ListCapturesArgs): ListCapturesResult {
  * than paginate — there's no cursor.
  */
 const SEARCH_DEFAULT_LIMIT = 100;
-const SEARCH_MAX_LIMIT = 500;
+/** Hard cap on `searchCaptures` row count. Exported so the validator
+ *  layer (`validateLibrarySearch`) can reference it instead of
+ *  hard-coding `500` and silently drifting if the cap moves. */
+export const SEARCH_MAX_LIMIT = 500;
 
 export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResultRow[] {
   const db = getDb();
@@ -500,32 +503,49 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
   const where: string[] = ["captures.deleted_at IS NULL"];
   const params: Record<string, unknown> = { limit };
 
-  if (filter.appBundleIds !== undefined && filter.appBundleIds.length > 0) {
-    const exactClauses: string[] = [];
-    let includesNullBundle = false;
-    for (const [index, bundleId] of filter.appBundleIds.entries()) {
-      if (bundleId === null) {
-        includesNullBundle = true;
-        continue;
+  if (filter.appBundleIds !== undefined) {
+    // Explicit empty array means "from this set of zero apps" —
+    // semantically match-nothing, not match-all. Push `0 = 1` so
+    // the query short-circuits to zero rows. Without this, an
+    // empty-array caller would silently see the entire library.
+    if (filter.appBundleIds.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const exactClauses: string[] = [];
+      let includesNullBundle = false;
+      for (const [index, bundleId] of filter.appBundleIds.entries()) {
+        if (bundleId === null) {
+          includesNullBundle = true;
+          continue;
+        }
+        const key = `appBundleId${index}`;
+        exactClauses.push(`captures.source_app_bundle_id = @${key}`);
+        params[key] = bundleId;
       }
-      const key = `appBundleId${index}`;
-      exactClauses.push(`captures.source_app_bundle_id = @${key}`);
-      params[key] = bundleId;
+      const bundleWhere = [
+        ...exactClauses,
+        ...(includesNullBundle ? ["captures.source_app_bundle_id IS NULL"] : [])
+      ];
+      // bundleWhere is guaranteed non-empty here (we entered the
+      // else branch because length > 0), so the join always
+      // produces at least one OR clause.
+      where.push(`(${bundleWhere.join(" OR ")})`);
     }
-    const bundleWhere = [
-      ...exactClauses,
-      ...(includesNullBundle ? ["captures.source_app_bundle_id IS NULL"] : [])
-    ];
-    where.push(bundleWhere.length > 0 ? `(${bundleWhere.join(" OR ")})` : "0 = 1");
   }
-  if (filter.kinds !== undefined && filter.kinds.length > 0) {
-    const placeholders = filter.kinds
-      .map((_, i) => `@kind${i}`)
-      .join(", ");
-    for (const [i, kind] of filter.kinds.entries()) {
-      params[`kind${i}`] = kind;
+  if (filter.kinds !== undefined) {
+    // Same match-nothing semantics as appBundleIds — explicit
+    // empty array means the caller wants zero rows back.
+    if (filter.kinds.length === 0) {
+      where.push("0 = 1");
+    } else {
+      const placeholders = filter.kinds
+        .map((_, i) => `@kind${i}`)
+        .join(", ");
+      for (const [i, kind] of filter.kinds.entries()) {
+        params[`kind${i}`] = kind;
+      }
+      where.push(`captures.kind IN (${placeholders})`);
     }
-    where.push(`captures.kind IN (${placeholders})`);
   }
   if (filter.dateRange !== undefined) {
     where.push("captures.captured_at BETWEEN @date_start AND @date_end");
@@ -549,10 +569,19 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
   let captureRows: CaptureRow[];
   const snippetByCaptureId = new Map<string, string>();
 
-  if (filter.query !== undefined && filter.query.trim().length > 0) {
+  // Two paths share the query branch trigger: an explicit query
+  // string ALWAYS goes through FTS5 (even if sanitization drops it
+  // to empty — in which case buildFts5Query returns null and we
+  // short-circuit to []). An undefined query goes through the
+  // filter-only branch.
+  if (filter.query !== undefined) {
     const fts5Query = buildFts5Query(filter.query);
     if (fts5Query === null) {
       // Query had no usable tokens after sanitization — return empty.
+      // This includes the empty-string and pure-punctuation cases
+      // that previously were caught by a separate trim() check; we
+      // collapse to one decision point so the test can pin both
+      // "empty input" and "only-junk input" via the same branch.
       return [];
     }
     params.fts5_query = fts5Query;
@@ -611,12 +640,21 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
  *
  * Strategy:
  *
- *   1. Tokenize by whitespace.
- *   2. For each token, strip embedded double quotes (FTS5's phrase
- *      delimiter) and any other FTS5 metacharacters (`*` `^` `:` `(`
- *      `)` and a few more).
- *   3. Skip tokens that end up empty after stripping (e.g. user typed
- *      pure punctuation).
+ *   1. SPLIT on the union of whitespace AND every character the
+ *      `unicode61` tokenizer uses as a separator (punctuation,
+ *      hyphens, slashes, etc.). This is the critical bit — the
+ *      tokenizer indexes content "spotify-playlist" as separate
+ *      tokens `spotify` + `playlist`, so a user query of
+ *      "spotify-playlist" must ALSO split into the same two tokens
+ *      to match. The previous version (split on whitespace, then
+ *      strip `-` from inside tokens) produced "spotifyplaylist"
+ *      which matched nothing.
+ *   2. For each token, strip any remaining FTS5 metacharacters
+ *      (double quotes, `*`, etc.) that would break MATCH parsing.
+ *      This catches edge cases like a query already containing
+ *      a literal quote.
+ *   3. Skip tokens that end up empty after stripping (e.g. user
+ *      typed pure punctuation that's NOT a separator, like emoji).
  *   4. Wrap each surviving token in double quotes (phrase-mode for
  *      safety) AND append a `*` for prefix matching ("telegram"
  *      matches "telegrams", "telegraph", etc.).
@@ -626,18 +664,27 @@ export function searchCaptures(filter: CaptureSearchRequest): CaptureSearchResul
  * that as "empty result set" rather than dispatching a query.
  */
 function buildFts5Query(raw: string): string | null {
+  // Token separator: anything that's NOT a Unicode letter or digit.
+  // This mirrors SQLite's `unicode61` tokenizer default behavior —
+  // which treats sequences of letters + digits as tokens and every
+  // other character (whitespace, punctuation, hyphens, emoji, …) as
+  // a separator. Using the negative-Unicode-class split keeps query
+  // tokenization in lockstep with content tokenization so a query
+  // "spotify-playlist" produces ["spotify", "playlist"] — the same
+  // shape the indexed content "Spotify-Playlist" was tokenized into.
+  // The previous version (whitespace-split + strip `-` inside tokens)
+  // produced "spotifyplaylist" which matched nothing.
   const tokens = raw
-    .trim()
-    .split(/\s+/)
-    .map((token) =>
-      // Strip FTS5 special characters: " * ^ : ( ) - + AND OR NOT
-      // would have query-language meaning. We're forcing phrase mode
-      // so even AND/OR/NOT as bare tokens would be interpreted —
-      // wrapping in "" + escaping " neutralizes that.
-      token.replace(/["*^:()+\-]/g, "").trim()
-    )
+    .split(/[^\p{L}\p{N}]+/u)
     .filter((token) => token.length > 0);
   if (tokens.length === 0) return null;
+  // Wrap each token as a quoted phrase + prefix wildcard:
+  //   • `"…"` is FTS5 phrase mode — content inside is matched as a
+  //     literal token, so any AND/OR/NOT or operator characters that
+  //     somehow survived the split (shouldn't, but defense in depth)
+  //     don't trigger the query parser.
+  //   • `*` suffix is prefix matching — "telegram" matches
+  //     "telegrams", "telegraph", etc.
   return tokens.map((token) => `"${token}"*`).join(" ");
 }
 

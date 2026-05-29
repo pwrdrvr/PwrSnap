@@ -37,6 +37,7 @@ import {
   type SizzleVoice,
   type PwrSnapError
 } from "@pwrsnap/shared";
+import { SEARCH_MAX_LIMIT } from "../persistence/captures-repo";
 
 /** Hard caps. Generous for legitimate use, tight enough to keep
  *  the JSON store small and TTS calls bounded. OpenAI's TTS API
@@ -645,10 +646,16 @@ export function validateLibrarySearch(
         error: validationError("limit_invalid", "limit must be a positive number when provided")
       };
     }
-    if (req.limit > 500) {
+    // Reference the canonical SEARCH_MAX_LIMIT from captures-repo
+    // rather than hardcoding 500 — keeps the validator and the
+    // repo in lockstep if the cap ever moves.
+    if (req.limit > SEARCH_MAX_LIMIT) {
       return {
         ok: false,
-        error: validationError("limit_too_large", "limit must be ≤ 500")
+        error: validationError(
+          "limit_too_large",
+          `limit must be ≤ ${SEARCH_MAX_LIMIT}`
+        )
       };
     }
     out.limit = Math.floor(req.limit);

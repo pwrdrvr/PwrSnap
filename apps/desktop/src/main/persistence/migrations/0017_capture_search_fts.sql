@@ -59,6 +59,15 @@ END;
 -- 2. captures.UPDATE of source_app_name: re-sync only that field
 --    while preserving any AI-derived columns the enrichment triggers
 --    populated.
+--
+-- FUTURE: if another searchable column gets added to the captures
+-- table (not capture_enrichments), this trigger needs updating:
+--   • add the column to the `OF …` list so the trigger fires on it
+--   • add the column to the `UPDATE … SET …` body so it propagates
+--   • add the column to captures_ai_fts (INSERT trigger above)
+--   • add it to the backfill SELECT at the bottom of the file
+--   • add it as a column on capture_search_fts (top of file)
+-- Doing only some of these is a silent search-drift bug.
 CREATE TRIGGER IF NOT EXISTS captures_au_fts
 AFTER UPDATE OF source_app_name ON captures
 BEGIN

@@ -73,7 +73,14 @@ vi.mock("../../persistence/captures-repo", () => ({
   listSoftDeletedIds: mocks.listSoftDeletedIds,
   restoreCapture: mocks.restoreCapture,
   searchCaptures: mocks.searchCaptures,
-  softDeleteCapture: mocks.softDeleteCapture
+  softDeleteCapture: mocks.softDeleteCapture,
+  // sizzle-validators now imports SEARCH_MAX_LIMIT from this module
+  // (was hard-coded 500 before, now the canonical cap lives in the
+  // repo). The validator's "limit_too_large" branch needs this
+  // constant defined in the mock or the test crashes loading the
+  // handler chain. Keep the test value matched to the production
+  // value so test assertions on the boundary stay meaningful.
+  SEARCH_MAX_LIMIT: 500
 }));
 
 vi.mock("../../persistence/enrichment-repo", () => ({

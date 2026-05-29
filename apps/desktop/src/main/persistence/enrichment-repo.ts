@@ -194,13 +194,9 @@ export function listEnrichmentsByCaptureIds(
   const placeholders = captureIds.map(() => "?").join(", ");
 
   // 1) Enrichment rows — left-joined to ai_runs for the status column.
-  type EnrichRow = EnrichmentRow & {
-    capture_id_present: string; // alias so destructuring stays sane
-  };
   const enrichRows = db
     .prepare(
-      `SELECT capture_enrichments.capture_id AS capture_id_present,
-              capture_enrichments.capture_id,
+      `SELECT capture_enrichments.capture_id,
               capture_enrichments.latest_ai_run_id,
               ai_runs.status,
               capture_enrichments.ocr_text,
@@ -217,7 +213,7 @@ export function listEnrichmentsByCaptureIds(
          LEFT JOIN ai_runs ON ai_runs.id = capture_enrichments.latest_ai_run_id
         WHERE capture_enrichments.capture_id IN (${placeholders})`
     )
-    .all(...captureIds) as EnrichRow[];
+    .all(...captureIds) as EnrichmentRow[];
 
   // 2) Tag suggestions — bulk for any latest_ai_run_ids the enrichment
   //    rows carry. We need to know the captureId mapping so we group
@@ -225,32 +221,26 @@ export function listEnrichmentsByCaptureIds(
   //    by ai_run_id — multiple captures can share an ai_run_id under
   //    weird edge cases, and we want each capture's own suggestions).
   type TagSugRow = TagSuggestionRow & { capture_id: string };
-  const tagSugRows: TagSugRow[] =
-    captureIds.length === 0
-      ? []
-      : (db
-          .prepare(
-            `SELECT id, capture_id, label, confidence, accepted_at, rejected_at
-               FROM enrichment_tag_suggestions
-              WHERE capture_id IN (${placeholders})
-              ORDER BY accepted_at IS NOT NULL DESC, confidence DESC, created_at ASC`
-          )
-          .all(...captureIds) as TagSugRow[]);
+  const tagSugRows = db
+    .prepare(
+      `SELECT id, capture_id, label, confidence, accepted_at, rejected_at
+         FROM enrichment_tag_suggestions
+        WHERE capture_id IN (${placeholders})
+        ORDER BY accepted_at IS NOT NULL DESC, confidence DESC, created_at ASC`
+    )
+    .all(...captureIds) as TagSugRow[];
 
   // 3) Accepted tags — bulk. Same shape, ordered by created_at then label.
   type AcceptedRow = { capture_id: string; label: string };
-  const acceptedRows: AcceptedRow[] =
-    captureIds.length === 0
-      ? []
-      : (db
-          .prepare(
-            `SELECT capture_tags.capture_id, tags.label
-               FROM capture_tags
-               JOIN tags ON tags.id = capture_tags.tag_id
-              WHERE capture_tags.capture_id IN (${placeholders})
-              ORDER BY capture_tags.created_at ASC, tags.label ASC`
-          )
-          .all(...captureIds) as AcceptedRow[]);
+  const acceptedRows = db
+    .prepare(
+      `SELECT capture_tags.capture_id, tags.label
+         FROM capture_tags
+         JOIN tags ON tags.id = capture_tags.tag_id
+        WHERE capture_tags.capture_id IN (${placeholders})
+        ORDER BY capture_tags.created_at ASC, tags.label ASC`
+    )
+    .all(...captureIds) as AcceptedRow[];
 
   // Index helpers — group tag rows by capture_id once so the merge
   // below is O(rows) instead of O(rows × captures).

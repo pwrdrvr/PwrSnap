@@ -222,15 +222,39 @@ describe("0017_capture_search_fts — trigger sync", () => {
     expect(row.source_app_name).toBe("Notion");
   });
 
-  test("captures UPDATE of source_app_name propagates to FTS5", () => {
+  test("captures UPDATE of source_app_name propagates to FTS5 + preserves AI fields", () => {
     insertCapture(mocks.db!, { id: "cap-3", sourceAppName: "Discord" });
+    // Populate the AI-derived columns BEFORE the source_app_name
+    // update so we can assert they survive. A regression that
+    // wrote all four FTS5 columns instead of just source_app_name
+    // would silently wipe these.
+    insertEnrichment(mocks.db!, {
+      captureId: "cap-3",
+      title: "Voice channel UI",
+      description: "Discord voice channel screen",
+      ocrText: "General · 4 users"
+    });
+
     mocks.db!
       .prepare("UPDATE captures SET source_app_name = ? WHERE id = ?")
       .run("Slack", "cap-3");
+
     const row = mocks.db!
-      .prepare("SELECT source_app_name FROM capture_search_fts WHERE capture_id = ?")
-      .get("cap-3") as { source_app_name: string };
+      .prepare(
+        "SELECT title, description, ocr_text, source_app_name FROM capture_search_fts WHERE capture_id = ?"
+      )
+      .get("cap-3") as {
+      title: string;
+      description: string;
+      ocr_text: string;
+      source_app_name: string;
+    };
+    // source_app_name updated.
     expect(row.source_app_name).toBe("Slack");
+    // AI-derived columns preserved.
+    expect(row.title).toBe("Voice channel UI");
+    expect(row.description).toBe("Discord voice channel screen");
+    expect(row.ocr_text).toBe("General · 4 users");
   });
 
   test("captures DELETE cascades to FTS5 (no orphan row)", () => {
@@ -358,6 +382,94 @@ describe("searchCaptures — FTS5 query path", () => {
     expect(() => searchCaptures({ query: '"; DROP TABLE; --' })).not.toThrow();
     expect(() => searchCaptures({ query: "AND OR NOT" })).not.toThrow();
     expect(() => searchCaptures({ query: "(((foo)))" })).not.toThrow();
+  });
+
+  test("hyphenated query matches hyphenated content (split on punctuation)", async () => {
+    // Regression for the buildFts5Query bug where hyphens inside
+    // a token were stripped instead of being treated as a separator.
+    // The unicode61 tokenizer indexes "spotify-playlist" as two
+    // tokens (`spotify`, `playlist`), so the query must split on the
+    // hyphen too — otherwise "spotify-playlist" becomes the single
+    // token "spotifyplaylist" and matches nothing.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "hyph-cap", sourceAppName: "App" });
+    insertEnrichment(mocks.db!, {
+      captureId: "hyph-cap",
+      title: "Spotify-Playlist editor",
+      description: null,
+      ocrText: null
+    });
+    const rows = searchCaptures({ query: "spotify-playlist" });
+    expect(rows.map((r) => r.record.id)).toContain("hyph-cap");
+  });
+
+  test("colon-separated tokens in query match content (tts-1-hd)", async () => {
+    // Same root cause as hyphens — the test pins another real-world
+    // example. The Sizzle Reels feature has model names like
+    // "tts-1-hd" that show up in agent context; the user expects
+    // searching for "tts-1-hd" to find captures mentioning it.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "tts-cap", sourceAppName: "Settings" });
+    insertEnrichment(mocks.db!, {
+      captureId: "tts-cap",
+      title: "OpenAI TTS model: tts-1-hd",
+      description: null,
+      ocrText: null
+    });
+    const rows = searchCaptures({ query: "tts-1-hd" });
+    expect(rows.map((r) => r.record.id)).toContain("tts-cap");
+  });
+
+  test("path-style query matches content with the same shape", async () => {
+    // Reverse-domain bundle ids are a common search target. The
+    // tokenizer splits "com.tinyspeck.slackmacgap" on dots → tokens
+    // [com, tinyspeck, slackmacgap]. Query must do the same.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "bundle-cap", sourceAppName: "Slack" });
+    insertEnrichment(mocks.db!, {
+      captureId: "bundle-cap",
+      title: "Bundle: com.tinyspeck.slackmacgap",
+      description: null,
+      ocrText: null
+    });
+    const rows = searchCaptures({ query: "com.tinyspeck.slackmacgap" });
+    expect(rows.map((r) => r.record.id)).toContain("bundle-cap");
+  });
+
+  test("diacritic-insensitive match (résumé matches resume content)", async () => {
+    // The unicode61 tokenizer's `remove_diacritics 2` setting strips
+    // accents at index time AND query time, so user-typed "resume"
+    // matches indexed content "résumé" and vice versa. Pin it.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "accent-cap", sourceAppName: "App" });
+    insertEnrichment(mocks.db!, {
+      captureId: "accent-cap",
+      title: "Résumé draft",
+      description: null,
+      ocrText: null
+    });
+    // Query without accent matches indexed content with accent.
+    const r1 = searchCaptures({ query: "resume" });
+    expect(r1.map((r) => r.record.id)).toContain("accent-cap");
+    // And the reverse direction.
+    const r2 = searchCaptures({ query: "Résumé" });
+    expect(r2.map((r) => r.record.id)).toContain("accent-cap");
+  });
+
+  test("emoji + punctuation in query degrade gracefully to the surviving tokens", async () => {
+    // User-typed prompt: "🎬 Telegram, pairing" — the emoji and
+    // comma are separators, so the surviving tokens are
+    // ["Telegram", "pairing"]. Should match content with both.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "emoji-cap", sourceAppName: "Telegram" });
+    insertEnrichment(mocks.db!, {
+      captureId: "emoji-cap",
+      title: "Telegram pairing screen",
+      description: null,
+      ocrText: null
+    });
+    const rows = searchCaptures({ query: "🎬 Telegram, pairing" });
+    expect(rows.map((r) => r.record.id)).toContain("emoji-cap");
   });
 
   test("empty-after-sanitize query returns []", async () => {
@@ -522,6 +634,24 @@ describe("searchCaptures — filter-only path", () => {
     expect(rows.length).toBe(5);
   });
 
+  test("appBundleIds=[] returns [] (explicit empty = match-nothing, NOT match-all)", async () => {
+    // Footgun guard: a caller passing { appBundleIds: [] } means
+    // "from this set of zero apps, find captures" — the answer is
+    // always zero. The earlier draft of searchCaptures silently
+    // turned [] into match-all, which would dump the entire library
+    // back to a caller expecting empty.
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "any-1" });
+    insertCapture(mocks.db!, { id: "any-2" });
+    expect(searchCaptures({ appBundleIds: [] })).toEqual([]);
+  });
+
+  test("kinds=[] returns [] (same match-nothing semantics)", async () => {
+    const { searchCaptures } = await import("../captures-repo");
+    insertCapture(mocks.db!, { id: "img" });
+    expect(searchCaptures({ kinds: [] })).toEqual([]);
+  });
+
   test("filters compose conjunctively (kinds + dateRange + hasOcr together)", async () => {
     const { searchCaptures } = await import("../captures-repo");
     // Match: image, in range, has OCR.
@@ -558,6 +688,82 @@ describe("searchCaptures — filter-only path", () => {
       hasOcr: true
     });
     expect(rows.map((r) => r.record.id)).toEqual(["match"]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// Query plan — the EXISTS subquery for hasOcr must use the
+// capture_enrichments primary key index, not a table scan. Performance
+// of the agent's `library_search` tool depends on this — a SCAN here
+// would make every hasOcr=true search O(captures × enrichments).
+describe("searchCaptures — hasOcr EXISTS uses an index", () => {
+  test("EXPLAIN QUERY PLAN reports SEARCH (index lookup), not SCAN", () => {
+    // Seed a few rows so SQLite has stats to work with. The planner
+    // can default to SCAN on empty tables, which would false-positive
+    // this test.
+    for (let i = 0; i < 10; i++) {
+      insertCapture(mocks.db!, { id: `cap-${i}` });
+      if (i % 2 === 0) {
+        insertEnrichment(mocks.db!, {
+          captureId: `cap-${i}`,
+          ocrText: i === 0 ? "" : `OCR ${i}`
+        });
+      }
+    }
+    mocks.db!.exec("ANALYZE");
+
+    // EXPLAIN QUERY PLAN on the same SQL shape searchCaptures emits
+    // for the hasOcr filter-only path. Pinning the inner EXISTS
+    // separately from searchCaptures' full SQL keeps this test
+    // resilient to future formatting/whitespace changes in the
+    // composer — the LOAD-BEARING contract is the index usage on
+    // the EXISTS subquery, not the overall string.
+    const plan = mocks.db!
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT captures.id FROM captures
+          WHERE captures.deleted_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM capture_enrichments
+               WHERE capture_enrichments.capture_id = captures.id
+                 AND capture_enrichments.ocr_text IS NOT NULL
+                 AND capture_enrichments.ocr_text != ''
+            )
+          ORDER BY captures.captured_at DESC, captures.id DESC
+          LIMIT 100`
+      )
+      .all() as Array<{ id: number; parent: number; notused: number; detail: string }>;
+
+    // What we care about is the NEGATIVE — `SCAN capture_enrichments`
+    // anywhere in the plan would mean SQLite is reading the entire
+    // table to evaluate the EXISTS subquery (catastrophic at scale).
+    //
+    // SQLite reports indexed lookups in a few shapes that all
+    // indicate "the planner is using an index":
+    //   • `SEARCH capture_enrichments USING INDEX …`
+    //   • `SEARCH capture_enrichments USING ROWID …`
+    //   • `BLOOM FILTER ON capture_enrichments (capture_id=?)` —
+    //      SQLite ≥3.38 wraps an indexed EXISTS lookup in a bloom
+    //      filter to skip rows that can't possibly match.
+    // All three are good. The only bad outcome is bare
+    // `SCAN capture_enrichments` (no qualifier).
+    const enrichmentPlanLines = plan.filter((row) =>
+      row.detail.includes("capture_enrichments")
+    );
+    expect(enrichmentPlanLines.length).toBeGreaterThan(0);
+    for (const line of enrichmentPlanLines) {
+      // Catch the bad outcome explicitly.
+      expect(line.detail).not.toMatch(/^SCAN capture_enrichments(?!\s+USING)/);
+    }
+    // And confirm at least one line shows index-style access (either
+    // SEARCH … USING or a BLOOM FILTER). Either is fine — we don't
+    // care which SQLite version's planner produced it.
+    const hasIndexedAccess = enrichmentPlanLines.some(
+      (line) =>
+        /SEARCH .*capture_enrichments .*USING/.test(line.detail) ||
+        /BLOOM FILTER ON capture_enrichments/.test(line.detail)
+    );
+    expect(hasIndexedAccess).toBe(true);
   });
 });
 

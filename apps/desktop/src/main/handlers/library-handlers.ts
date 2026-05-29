@@ -27,8 +27,11 @@ import {
   searchCaptures,
   softDeleteCapture
 } from "../persistence/captures-repo";
-import { listEnrichmentsByCaptureIds } from "../persistence/enrichment-repo";
-import { addUserTag, removeTag } from "../persistence/enrichment-repo";
+import {
+  addUserTag,
+  listEnrichmentsByCaptureIds,
+  removeTag
+} from "../persistence/enrichment-repo";
 import {
   moveBundlePairToTrash,
   purgeBundlePairFromTrash,

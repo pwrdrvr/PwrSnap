@@ -1,4 +1,12 @@
--- 0018_chat_threads — Library Chat thread INDEX (the "overlay").
+-- 0019_chat_threads — Library Chat thread INDEX (the "overlay").
+--
+-- NOTE on the version number: this started life as 0018, but three open
+-- branches (this one, #157 drop-overlays, #135 captures-sha256) each
+-- grabbed 0018. The migration runner keys off the version NUMBER, so on
+-- any DB that already ran a sibling's 0018 our table would be silently
+-- skipped. Renumbered to 0019 to clear that trio, and made idempotent
+-- (IF NOT EXISTS) so a DB that DID run the earlier 0018_chat_threads is a
+-- safe no-op. Final number is reconciled at merge per merge order.
 --
 -- PwrSnap owns chat metadata (name / anchor / focus history / archive +
 -- pin); the message log + attachments stay on disk under
@@ -21,7 +29,7 @@
 -- anchor_capture_id: a chat may outlive the capture it was anchored to,
 -- and a null anchor marks a library-wide thread.
 
-CREATE TABLE chat_threads (
+CREATE TABLE IF NOT EXISTS chat_threads (
   thread_id         TEXT NOT NULL PRIMARY KEY,
   dir_name          TEXT NOT NULL,
   name              TEXT NOT NULL,
@@ -36,9 +44,9 @@ CREATE TABLE chat_threads (
 
 -- Hot path: the thread list scoped to a focused capture (chats are
 -- glued to assets), newest activity first.
-CREATE INDEX idx_chat_threads_anchor
+CREATE INDEX IF NOT EXISTS idx_chat_threads_anchor
   ON chat_threads (anchor_capture_id, modified_at DESC);
 
 -- Hot path: the library-wide thread list, newest activity first.
-CREATE INDEX idx_chat_threads_modified
+CREATE INDEX IF NOT EXISTS idx_chat_threads_modified
   ON chat_threads (modified_at DESC);

@@ -96,7 +96,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 //
 // PwrSnap-owned thread metadata: name / anchor / focus history /
 // archive + pin flags. This shape now lives in the SQLite `chat_threads`
-// index (migration 0018); the per-turn message journal stays on disk
+// index (migration 0019); the per-turn message journal stays on disk
 // under ~/Documents/PwrSnap/Chats/<dir>/. The schema is retained as both
 // the `ChatThreadSidecar` domain type the store maps rows to AND the
 // validated shape for the one-time import of pre-existing on-disk

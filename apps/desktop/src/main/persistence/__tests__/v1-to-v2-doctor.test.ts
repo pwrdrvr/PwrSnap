@@ -705,6 +705,27 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
     expect(bundleStore.readBundleManifest).not.toHaveBeenCalled();
   });
 
+  test("all rows already v2 on disk → stays silent (no toast)", async () => {
+    const { migrateAllV1OnBoot, getLastDoctorProgressSnapshot } = await import(
+      "../v1-to-v2-doctor"
+    );
+    await stubManifestAlwaysV2();
+
+    // Two rows whose DB flag says v1 but whose on-disk manifest is v2
+    // (a stale projection reconcile didn't reach). Both short-circuit
+    // as `already_v2` — the sweep converts nothing the user would
+    // recognize, so it must not paint the library toast.
+    insertCaptureRow(mocks.db!, { id: "cap_av2a_xxxxxxx".slice(0, 16) });
+    insertCaptureRow(mocks.db!, { id: "cap_av2b_xxxxxxx".slice(0, 16) });
+
+    const before = getLastDoctorProgressSnapshot();
+    await migrateAllV1OnBoot();
+
+    // emitProgress assigns a fresh object each call; an unchanged
+    // reference proves zero aggregate events fired across the sweep.
+    expect(getLastDoctorProgressSnapshot()).toBe(before);
+  });
+
   test("only visits v1 rows — skips v2, deleted, and bundle-less", async () => {
     const bundleStore = await import("../bundle-store");
     const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
@@ -846,9 +867,11 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
     expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(1);
   });
 
-  test("per-capture failure does not block remaining rows", async () => {
+  test("per-capture failure does not block remaining rows, and paints the toast", async () => {
     const bundleStore = await import("../bundle-store");
-    const { migrateAllV1OnBoot } = await import("../v1-to-v2-doctor");
+    const { migrateAllV1OnBoot, getLastDoctorProgressSnapshot } = await import(
+      "../v1-to-v2-doctor"
+    );
 
     insertCaptureRow(mocks.db!, { id: "cap_fail_xxxxxxx".slice(0, 16) });
     insertCaptureRow(mocks.db!, { id: "cap_ok_b_xxxxxxx".slice(0, 16) });
@@ -868,5 +891,17 @@ describe("migrateAllV1OnBoot — eager bulk sweep", () => {
 
     // All three rows attempted despite the first throwing.
     expect(bundleStore.readBundleManifest).toHaveBeenCalledTimes(3);
+
+    // A genuine failure is user-meaningful work, so — unlike a pure
+    // already_v2 run — the sweep DOES paint the toast and closes it
+    // out with a `complete` event carrying the failure count.
+    const snap = getLastDoctorProgressSnapshot();
+    expect(snap?.status).toBe("complete");
+    if (snap?.status === "complete") {
+      expect(snap.captureId).toBeNull();
+      expect(snap.total).toBe(3);
+      expect(snap.done).toBe(3);
+      expect(snap.failed).toBe(1);
+    }
   });
 });

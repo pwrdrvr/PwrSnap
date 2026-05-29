@@ -22,6 +22,7 @@ import {
   type SegmentOption
 } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import { ChatSettingsCard } from "./ChatSettingsCard";
 
 const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
@@ -236,6 +237,8 @@ export function AIProvidersPage(): ReactElement {
           </div>
         </Row>
       </Card>
+
+      <ChatSettingsCard />
 
       <Card eyebrow="PROVIDER" title="Grok">
         <Row

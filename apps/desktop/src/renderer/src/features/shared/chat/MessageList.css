@@ -302,3 +302,68 @@
 .ml__jump-arrow {
   color: var(--accent);
 }
+
+/* ---------- inline tool-activity chips ---------- */
+/* Friendly per-turn activity ("Looked at the canvas") rendered in the
+   transcript flow — above the turn's assistant bubble, and as a trailing
+   "pending" group while the turn is in flight. Lives in the message log
+   (not a fixed bar) so it scrolls with history and persists for the
+   session. Tokens only. */
+.ml__activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+.ml__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 500 var(--fs-meta)/1.3 var(--font-sans);
+}
+.ml__chip.is-error {
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+.ml__chip-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* The in-flight (pending) group has no bubble chrome — it's just the
+   chips + Thinking sitting where the next message will land. */
+.ml__msg--pending .ml__bubble {
+  background: transparent;
+  border: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+.ml__thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-tertiary, var(--text-secondary));
+  font: 500 var(--fs-meta)/1.3 var(--font-sans);
+}
+.ml__thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ml-thinking-pulse 1s ease-in-out infinite;
+}
+@keyframes ml-thinking-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ml__thinking-dot { animation: none; }
+}

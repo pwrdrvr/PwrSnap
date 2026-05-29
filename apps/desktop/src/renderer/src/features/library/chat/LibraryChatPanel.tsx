@@ -18,7 +18,7 @@ import type {
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
-import { MessageList } from "../../shared/chat/MessageList";
+import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
 import "./LibraryChatPanel.css";
@@ -39,18 +39,56 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  // The in-flight turn + the activity chips it has produced so far
-  // (point 3: show "Thinking…" + which tools ran while the agent works).
+  // Tool-activity lives IN the transcript flow, not a fixed bar:
+  //   • activityByMsg — chips for completed turns, keyed by the assistant
+  //     message they produced (rendered above that bubble). Retained for
+  //     the session; reset only on thread switch, never on turn end.
+  //   • pendingChips — chips for the IN-FLIGHT turn whose assistant
+  //     message id isn't known yet (the agent is running tools before any
+  //     text streams). Rendered as the trailing group + "Thinking…", then
+  //     flushed into activityByMsg once the message id is known.
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-  const [toolChips, setToolChips] = useState<Array<{ callId: string; summary: string; ok: boolean }>>(
-    []
-  );
+  const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
+  const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
 
   const activeThreadRef = useRef<string | null>(null);
   activeThreadRef.current = activeThreadId;
   const activeTurnRef = useRef<string | null>(null);
   activeTurnRef.current = activeTurnId;
+  const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
+  pendingChipsRef.current = pendingChips;
+  // turnId → the assistant message id that turn produced, learned from the
+  // first stream delta (or the commit for tool-only turns). Lets a tool
+  // chip attach to the right bubble in the transcript.
+  const turnMsgRef = useRef<Map<string, string>>(new Map());
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
+
+  /** Append a chip to a message's activity (dedup by callId). */
+  const appendActivity = useCallback(
+    (messageId: string, chip: ChatActivityChip): void => {
+      setActivityByMsg((prev) => {
+        const existing = prev[messageId] ?? [];
+        if (existing.some((c) => c.callId === chip.callId)) return prev;
+        return { ...prev, [messageId]: [...existing, chip] };
+      });
+    },
+    []
+  );
+
+  /** Move the in-flight pending chips onto a now-known assistant message
+   *  (dedup), then clear pending. No-op when there's nothing pending. */
+  const flushPendingTo = useCallback((messageId: string): void => {
+    const pending = pendingChipsRef.current;
+    if (pending.length === 0) return;
+    setActivityByMsg((prev) => {
+      const merged = [...(prev[messageId] ?? [])];
+      for (const c of pending) {
+        if (!merged.some((m) => m.callId === c.callId)) merged.push(c);
+      }
+      return { ...prev, [messageId]: merged };
+    });
+    setPendingChips([]);
+  }, []);
 
   // Thread list — SCOPED to the focused capture (chats are glued to
   // assets). Re-runs when the user navigates to a different capture:
@@ -61,7 +99,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setActiveThreadId(null);
     setMessages([]);
     setActiveTurnId(null);
-    setToolChips([]);
+    setActivityByMsg({});
+    setPendingChips([]);
+    turnMsgRef.current.clear();
     setLoading(true);
     void (async () => {
       const result = await dispatch("codex:libraryChat:list", { anchorCaptureId });
@@ -79,8 +119,15 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     };
   }, [anchorCaptureId]);
 
-  // Load history when the active thread changes.
+  // Load history when the active thread changes. Switching threads is a
+  // fresh view: drop the prior thread's in-memory activity + turn state
+  // (it isn't journaled, so it doesn't reload — that's fine).
   useEffect(() => {
+    setActivityByMsg({});
+    setPendingChips([]);
+    setActiveTurnId(null);
+    setStreamingMessageId(null);
+    turnMsgRef.current.clear();
     if (activeThreadId === null) {
       setMessages([]);
       return;
@@ -117,6 +164,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       subscribe(EVENT_CHANNELS.libraryChatStreamDelta, (payload) => {
         const e = payload as LibraryChatStreamDeltaEvent;
         if (e.threadId !== activeThreadRef.current) return;
+        // First delta tells us which assistant message this turn produced
+        // → attach any chips that arrived before the text started.
+        if (turnMsgRef.current.get(e.turnId) !== e.messageId) {
+          turnMsgRef.current.set(e.turnId, e.messageId);
+          flushPendingTo(e.messageId);
+        }
         let entry = streamState.current.get(e.messageId);
         if (entry === undefined) {
           entry = { full: "", listeners: new Set() };
@@ -147,13 +200,20 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
         // A tool fired → the agent is working. Adopt the turn id if we
-        // didn't capture it from the send result, and append the chip.
+        // didn't capture it from the send result.
         if (activeTurnRef.current === null) setActiveTurnId(e.turnId);
-        setToolChips((prev) =>
-          prev.some((c) => c.callId === e.callId)
-            ? prev
-            : [...prev, { callId: e.callId, summary: e.summary, ok: e.ok }]
-        );
+        const chip: ChatActivityChip = { callId: e.callId, summary: e.summary, ok: e.ok };
+        const msgId = turnMsgRef.current.get(e.turnId);
+        if (msgId !== undefined) {
+          // The turn's assistant message already exists → attach inline
+          // above it.
+          appendActivity(msgId, chip);
+        } else {
+          // Message not known yet → hold in the trailing (pending) group.
+          setPendingChips((prev) =>
+            prev.some((c) => c.callId === chip.callId) ? prev : [...prev, chip]
+          );
+        }
       })
     );
 
@@ -172,11 +232,14 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           next[idx] = e.message;
           return next;
         });
-        // The assistant turn finished → clear the working indicator +
-        // activity chips (they're transient, per-turn).
+        // Assistant turn finished. Attach any still-pending chips to this
+        // committed message (a tool-only turn that produced no streamed
+        // text never learned its message id until now), then stop the
+        // "Thinking…" indicator. The chips STAY in the transcript — they
+        // are not cleared on turn end.
         if (e.message.role === "assistant" && e.message.status !== "streaming") {
+          flushPendingTo(e.message.id);
           setActiveTurnId(null);
-          setToolChips([]);
         }
       })
     );
@@ -195,7 +258,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         if (e.threadId !== activeThreadRef.current) return;
         setStreamingMessageId(null);
         setActiveTurnId(null);
-        setToolChips([]);
+        // Drop the in-flight pending chips, but keep whatever already
+        // attached to committed messages.
+        setPendingChips([]);
       })
     );
 
@@ -229,7 +294,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setThreads((prev) => [result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)]);
     setActiveThreadId(result.value.threadId);
     setMessages([]);
-    setToolChips([]);
+    setActivityByMsg({});
+    setPendingChips([]);
+    turnMsgRef.current.clear();
   }, [anchorCaptureId]);
 
   const onSubmit = useCallback(
@@ -245,9 +312,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setThreads((prev) => [created.value, ...prev]);
         setActiveThreadId(threadId);
       }
-      // Reset activity for the new turn; the working indicator shows
-      // until the assistant message commits.
-      setToolChips([]);
+      // Fresh turn: clear only the pending (in-flight) chips. Prior
+      // turns' chips stay attached to their messages in the transcript.
+      setPendingChips([]);
       const result = await dispatch("codex:libraryChat:send", {
         threadId,
         text,
@@ -341,27 +408,14 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             messages={messages}
             streamingMessageId={streamingMessageId}
             subscribeToStream={subscribeToStream}
+            activityByMessageId={activityByMsg}
+            trailingActivity={
+              activeTurnId !== null
+                ? { chips: pendingChips, thinking: streamingMessageId === null }
+                : null
+            }
           />
         )}
-        {activeTurnId !== null ? (
-          <div className="ps-libchat-working" aria-live="polite">
-            {toolChips.map((c) => (
-              <div
-                key={c.callId}
-                className={"ps-libchat-chip" + (c.ok ? "" : " is-error")}
-              >
-                <span className="ps-libchat-chip-dot" />
-                {c.summary}
-              </div>
-            ))}
-            {streamingMessageId === null ? (
-              <div className="ps-libchat-thinking">
-                <span className="ps-libchat-thinking-dot" />
-                Thinking…
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
       </div>
 

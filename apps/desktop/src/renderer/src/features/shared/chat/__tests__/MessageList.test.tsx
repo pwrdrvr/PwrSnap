@@ -493,3 +493,48 @@ describe("MessageList — sticky-bottom-only-if-at-bottom", () => {
     expect(scroll!.scrollTop).toBe(scroll!.scrollHeight);
   });
 });
+
+describe("MessageList — inline tool activity", () => {
+  test("renders activity chips above the matching assistant bubble", async () => {
+    const el = await render({
+      messages: [
+        msg({ id: "u1", role: "user", content: [{ kind: "text", text: "blur it" }] }),
+        msg({ id: "a1", content: [{ kind: "text", text: "Done." }] })
+      ],
+      activityByMessageId: {
+        a1: [
+          { callId: "c1", summary: "Looked at the canvas", ok: true },
+          { callId: "c2", summary: "Blacked out a region", ok: true }
+        ]
+      }
+    });
+    const bubble = el.querySelector('[data-testid="message-list-msg-a1"]');
+    expect(bubble).not.toBeNull();
+    const chips = bubble?.querySelectorAll('[data-testid="message-list-chip"]');
+    expect(chips?.length).toBe(2);
+    expect(bubble?.textContent).toContain("Looked at the canvas");
+    expect(bubble?.textContent).toContain("Blacked out a region");
+  });
+
+  test("renders the trailing pending group + Thinking while a turn is in flight", async () => {
+    const el = await render({
+      messages: [msg({ id: "u1", role: "user", content: [{ kind: "text", text: "hi" }] })],
+      trailingActivity: {
+        chips: [{ callId: "c1", summary: "Searched the library", ok: true }],
+        thinking: true
+      }
+    });
+    const pending = el.querySelector('[data-testid="message-list-pending"]');
+    expect(pending).not.toBeNull();
+    expect(pending?.textContent).toContain("Searched the library");
+    expect(pending?.textContent).toContain("Thinking");
+  });
+
+  test("no pending block when trailingActivity is null", async () => {
+    const el = await render({
+      messages: [msg({ id: "a1", content: [{ kind: "text", text: "hello" }] })],
+      trailingActivity: null
+    });
+    expect(el.querySelector('[data-testid="message-list-pending"]')).toBeNull();
+  });
+});

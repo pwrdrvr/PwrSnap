@@ -50,10 +50,34 @@ import type {
 } from "@pwrsnap/shared";
 import "./MessageList.css";
 
+/** A friendly, present-tense record of one tool the agent ran this turn
+ *  ("Looked at the canvas", "Drew an arrow"). Rendered as a small chip in
+ *  the transcript flow — distinct from the technical `tool_call` content
+ *  cards. Kept in the parent's session state so it persists after the
+ *  turn finishes. */
+export interface ChatActivityChip {
+  readonly callId: string;
+  readonly summary: string;
+  readonly ok: boolean;
+}
+
 export interface MessageListProps {
   readonly messages: readonly ChatMessage[];
   /** The id of the message currently streaming, if any. */
   readonly streamingMessageId?: string | null;
+  /** Tool-activity chips to render INLINE, above each message's bubble,
+   *  keyed by message id. These are the agent's actions for the turn that
+   *  produced that message — they live in the transcript flow (not a
+   *  fixed bar) and persist for the session. */
+  readonly activityByMessageId?: Readonly<Record<string, readonly ChatActivityChip[]>>;
+  /** Activity for the IN-FLIGHT turn whose assistant message doesn't
+   *  exist yet (the agent is running tools before producing text), plus
+   *  the "Thinking…" state. Rendered after the last message — i.e. where
+   *  the next message will appear. */
+  readonly trailingActivity?: {
+    readonly chips: readonly ChatActivityChip[];
+    readonly thinking: boolean;
+  } | null;
   /** Subscribe to streaming deltas for the streaming message. The parent
    *  owns the delta source; MessageList coalesces via rAF. The callback
    *  receives the FULL accumulated text each delta (not an incremental
@@ -80,6 +104,8 @@ export function MessageList(props: MessageListProps): ReactElement {
   const {
     messages,
     streamingMessageId = null,
+    activityByMessageId,
+    trailingActivity = null,
     subscribeToStream,
     onRejectAiRun,
     onRetry,
@@ -113,13 +139,17 @@ export function MessageList(props: MessageListProps): ReactElement {
     }
   }, [measureAtBottom]);
 
-  // On new messages (count change) auto-scroll only if we were pinned.
-  // Reads the ref, not the state, so we react to the freshest position.
+  // On new messages (count change) — or new trailing activity — auto-
+  // scroll only if we were pinned. Reads the ref, not the state, so we
+  // react to the freshest position.
+  const trailingSig = trailingActivity
+    ? `${trailingActivity.chips.length}:${trailingActivity.thinking ? 1 : 0}`
+    : "";
   useLayoutEffect(() => {
     if (atBottomRef.current) {
       scrollToBottom();
     }
-  }, [messages.length, scrollToBottom]);
+  }, [messages.length, trailingSig, scrollToBottom]);
 
   // Called by the streaming bubble after each rAF flush so the viewport
   // tracks growing streamed content — but only while pinned.
@@ -174,6 +204,7 @@ export function MessageList(props: MessageListProps): ReactElement {
               key={message.id}
               message={message}
               isStreaming={isStreaming}
+              activity={activityByMessageId?.[message.id]}
               resultsByCallId={resultsByCallId}
               subscribeToStream={subscribeToStream}
               onStreamGrow={handleStreamGrow}
@@ -183,6 +214,24 @@ export function MessageList(props: MessageListProps): ReactElement {
             />
           );
         })}
+
+        {trailingActivity !== null &&
+          (trailingActivity.chips.length > 0 || trailingActivity.thinking) && (
+            <div
+              className="ml__msg ml__msg--assistant ml__msg--pending"
+              data-testid={`${testIdPrefix}-pending`}
+            >
+              <div className="ml__bubble">
+                <ActivityChips chips={trailingActivity.chips} testIdPrefix={testIdPrefix} />
+                {trailingActivity.thinking && (
+                  <div className="ml__thinking" aria-live="polite">
+                    <span className="ml__thinking-dot" aria-hidden="true" />
+                    Thinking…
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
       </div>
 
       {!atBottom && (
@@ -208,6 +257,7 @@ type ToolCallBlock = Extract<ChatMessageContent, { kind: "tool_call" }>;
 interface MessageBubbleProps {
   message: ChatMessage;
   isStreaming: boolean;
+  activity: readonly ChatActivityChip[] | undefined;
   resultsByCallId: Map<string, ToolResultBlock>;
   subscribeToStream:
     | ((messageId: string, onDelta: (fullText: string) => void) => () => void)
@@ -228,6 +278,7 @@ const MessageBubble = memo(function MessageBubble(
   const {
     message,
     isStreaming,
+    activity,
     resultsByCallId,
     subscribeToStream,
     onStreamGrow,
@@ -246,6 +297,9 @@ const MessageBubble = memo(function MessageBubble(
       data-status={message.status}
     >
       <div className="ml__bubble">
+        {activity !== undefined && (
+          <ActivityChips chips={activity} testIdPrefix={testIdPrefix} />
+        )}
         {message.content.map((block, index) => (
           <ContentBlock
             // Content blocks are positional + immutable per message; index
@@ -278,6 +332,32 @@ const MessageBubble = memo(function MessageBubble(
     </div>
   );
 });
+
+/** Friendly tool-activity chips ("Looked at the canvas", "Drew an
+ *  arrow") rendered in the transcript flow. Presentational only. */
+function ActivityChips({
+  chips,
+  testIdPrefix
+}: {
+  chips: readonly ChatActivityChip[];
+  testIdPrefix: string;
+}): ReactElement | null {
+  if (chips.length === 0) return null;
+  return (
+    <div className="ml__activity" data-testid={`${testIdPrefix}-activity`}>
+      {chips.map((chip) => (
+        <span
+          key={chip.callId}
+          className={`ml__chip${chip.ok ? "" : " is-error"}`}
+          data-testid={`${testIdPrefix}-chip`}
+        >
+          <span className="ml__chip-dot" aria-hidden="true" />
+          {chip.summary}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 interface ContentBlockProps {
   block: ChatMessageContent;

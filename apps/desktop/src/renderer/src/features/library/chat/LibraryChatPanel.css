@@ -81,53 +81,7 @@
 }
 .ps-libchat-greeting { flex: 1 1 auto; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
 
-/* Live activity (point 3): tool-call chips + Thinking… while a turn runs. */
-.ps-libchat-working {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 12px 8px;
-}
-.ps-libchat-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  align-self: flex-start;
-  max-width: 100%;
-  padding: 3px 9px;
-  border: 1px solid var(--border-default);
-  border-radius: 999px;
-  background: var(--bg-input);
-  color: var(--text-secondary);
-  font: 500 11px/1.3 var(--font-sans);
-}
-.ps-libchat-chip.is-error { border-color: var(--accent-border); color: var(--text-primary); }
-.ps-libchat-chip-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: 0 0 auto;
-}
-.ps-libchat-thinking {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-tertiary, var(--text-secondary));
-  font: 500 11px/1.3 var(--font-sans);
-}
-.ps-libchat-thinking-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: ps-libchat-pulse 1s ease-in-out infinite;
-}
-@keyframes ps-libchat-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ps-libchat-thinking-dot { animation: none; }
-}
+/* Tool-activity chips + "Thinking…" now render INSIDE the transcript
+   (MessageList: .ml__activity / .ml__chip / .ml__thinking), so they flow
+   with the conversation and persist for the session — not a fixed bar
+   above the composer. */

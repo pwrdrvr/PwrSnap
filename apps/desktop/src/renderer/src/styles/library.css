@@ -552,13 +552,29 @@
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
-  padding: 0 10px 0 28px;
+  padding: 0 26px 0 28px;
   color: var(--text-primary);
   font: 400 12px/1 var(--font-sans);
   outline: none;
 }
-.psl__search-wrap { position: relative; }
-.psl__search-wrap svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.psl__search:focus {
+  border-color: var(--accent-border);
+}
+.psl__search:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.psl__search-wrap { position: relative; display: inline-flex; align-items: center; }
+.psl__search-wrap > svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.psl__search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  height: 16px; width: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; padding: 0; border-radius: 50%;
+  background: var(--text-muted); color: var(--bg-input);
+  cursor: pointer;
+}
+.psl__search-clear:hover { background: var(--text-primary); }
 
 /* Left: Source Apps.
  *

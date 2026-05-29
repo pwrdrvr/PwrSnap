@@ -52,7 +52,7 @@ import "../shared/RightActivityBar.css";
 import { ChatPanel } from "../editor/panels/ChatPanel";
 import { cacheUrl, captureSrcUrl, dispatch, startCaptureDrag } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
-import { useDraftCart } from "../../lib/useDraftCart";
+import { useCart } from "./CartContext";
 import { CartPanel } from "./CartPanel";
 import { mapBundleIdToAppId } from "./adapter";
 import type { LibraryView } from "./library-view";
@@ -173,7 +173,7 @@ export function DetailRail({
   // The Project Asset Cart. The Cart tab appears whenever the cart is
   // non-empty (in any mode where the rail renders). cartCount drives
   // the tab badge + the auto-pop effect below.
-  const { cart } = useDraftCart();
+  const cart = useCart();
   const cartCount = cart.captureIds.length;
 
   const isPinControlled =
@@ -394,6 +394,18 @@ export function DetailRail({
     ],
     [hasOcrText, sizzleProjects.length, containingProjects.length, cartCount]
   );
+
+  // If the active tab no longer exists in the tab set — e.g. the user
+  // was on the Cart tab and then committed/cleared the cart (the Cart
+  // tab is gated on cartCount > 0), or the only sizzle project got
+  // deleted while on the Project tab — fall back to Info. Without this
+  // the RightActivityBar would render a panel for a tab with no
+  // corresponding chip in the strip (an orphaned/headless panel).
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === activeTab)) {
+      writeActiveTab("info");
+    }
+  }, [tabs, activeTab, writeActiveTab]);
 
   // Grid mode: rail not rendered. Future surfaces that want a rail
   // in Grid (bulk-select, etc.) only change one component.

@@ -1316,8 +1316,12 @@
   color: var(--button-text-on-accent);
 }
 /* A subtle accent ring on the whole cell when it's in the cart, so
-   collected items read as a set even when the checkbox is small. */
-.psl__cell.is-in-cart {
+   collected items read as a set even when the checkbox is small.
+   Driven by `:has()` rather than a React class so a cart toggle
+   restyles the cell WITHOUT re-rendering it — CartCellCheckbox
+   self-subscribes and toggles `.is-checked`; this selector reacts to
+   that purely in CSS (the cell + grid never reconcile on a toggle). */
+.psl__cell:has(.psl__cell-cart.is-checked) {
   outline: 2px solid var(--accent-border);
   outline-offset: -2px;
   border-radius: 8px;

@@ -7,7 +7,7 @@ import {
 } from "react";
 import type { CaptureRecord, CaptureEnrichment } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch } from "../../lib/pwrsnap";
-import { useDraftCart } from "../../lib/useDraftCart";
+import { useCart } from "./CartContext";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 
 // The Project Asset Cart panel. Renders the single global draft cart:
@@ -57,44 +57,55 @@ function previewText(row: CartRow): string {
 }
 
 export function CartPanel(): ReactElement {
-  const { cart } = useDraftCart();
+  const cart = useCart();
   const { projects } = useSizzleProjects();
   // Hydrated capture metadata for the cart's ids, keyed by captureId.
-  // Re-fetched whenever the id SET changes (not on reorder — reorder
-  // doesn't change which captures we need metadata for).
+  // Grows incrementally — see the fetch effect below.
   const [rowsById, setRowsById] = useState<Map<string, CartRow>>(new Map());
   const [committing, setCommitting] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const listEndRef = useRef<HTMLLIElement | null>(null);
   const prevCountRef = useRef(cart.captureIds.length);
 
-  // Sort the id set into a stable string so the effect only re-fetches
-  // when membership changes, not on reorder.
+  // Incremental metadata fetch (L5): only fetch ids we don't already
+  // have, and drop entries for ids no longer in the cart. Adding the
+  // 6th item fetches metadata for just that one capture, not all six.
+  // The `idSetKey` membership fingerprint gates the effect so reorder
+  // (same set, different order) doesn't trigger any fetch at all.
   const idSetKey = [...cart.captureIds].sort().join(",");
   useEffect(() => {
     const ids = cart.captureIds;
-    if (ids.length === 0) {
-      setRowsById(new Map());
-      return;
-    }
+    // Prune rows for ids that left the cart, and find ids we haven't
+    // hydrated yet. Both derived from the CURRENT cart membership.
+    setRowsById((prev) => {
+      const idSet = new Set(ids);
+      let changed = false;
+      const pruned = new Map<string, CartRow>();
+      for (const [id, row] of prev) {
+        if (idSet.has(id)) pruned.set(id, row);
+        else changed = true;
+      }
+      return changed ? pruned : prev;
+    });
+    const missing = ids.filter((id) => !rowsById.has(id));
+    if (missing.length === 0) return;
     let mounted = true;
-    void dispatch("library:listByIdsWithMetadata", { ids }).then((r) => {
-      if (!mounted) return;
-      if (!r.ok) {
-        setRowsById(new Map());
-        return;
-      }
-      const next = new Map<string, CartRow>();
-      for (const { record, enrichment } of r.value.rows) {
-        next.set(record.id, { captureId: record.id, record, enrichment });
-      }
-      setRowsById(next);
+    void dispatch("library:listByIdsWithMetadata", { ids: missing }).then((r) => {
+      if (!mounted || !r.ok) return;
+      setRowsById((prev) => {
+        const next = new Map(prev);
+        for (const { record, enrichment } of r.value.rows) {
+          next.set(record.id, { captureId: record.id, record, enrichment });
+        }
+        return next;
+      });
     });
     return () => {
       mounted = false;
     };
-    // idSetKey is the membership fingerprint; ESLint can't see that
-    // it's derived from cart.captureIds.
+    // idSetKey is the membership fingerprint. rowsById is read for the
+    // missing-id diff but intentionally NOT a dep — including it would
+    // re-run the effect on every fetch resolution (infinite-ish loop).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idSetKey]);
 
@@ -107,9 +118,41 @@ export function CartPanel(): ReactElement {
     prevCountRef.current = cart.captureIds.length;
   }, [cart.captureIds.length]);
 
-  const onRename = useCallback((name: string) => {
-    void dispatch("cart:rename", { name });
+  // Rename: local-state input + debounced dispatch (M1). The input is
+  // uncontrolled-by-IPC — it tracks `nameDraft` locally so fast typing
+  // never fights the async broadcast round-trip (the controlled-input
+  // cursor race the sizzle composer already hit). We dispatch
+  // `cart:rename` 350ms after the last keystroke, and flush on blur so
+  // the rename always persists even if the user tabs away quickly.
+  const [nameDraft, setNameDraft] = useState(cart.name);
+  const renameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Sync the draft from external cart.name changes (another window
+  // renamed, or our own debounced dispatch landed). Safe mid-typing:
+  // the debounce means cart.name doesn't change until 350ms after the
+  // last keystroke, so this never clobbers in-flight input.
+  useEffect(() => {
+    setNameDraft(cart.name);
+  }, [cart.name]);
+  const flushRename = useCallback((value: string) => {
+    if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
+    renameTimerRef.current = null;
+    void dispatch("cart:rename", { name: value });
   }, []);
+  const onNameChange = useCallback((value: string) => {
+    setNameDraft(value);
+    if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
+    renameTimerRef.current = setTimeout(() => {
+      renameTimerRef.current = null;
+      void dispatch("cart:rename", { name: value });
+    }, 350);
+  }, []);
+  // Flush any pending rename on unmount so a fast switch-away persists.
+  useEffect(
+    () => () => {
+      if (renameTimerRef.current !== null) clearTimeout(renameTimerRef.current);
+    },
+    []
+  );
 
   const onRemove = useCallback((captureId: string) => {
     void dispatch("cart:remove", { captureId });
@@ -151,10 +194,11 @@ export function CartPanel(): ReactElement {
         <input
           className="psl__cart-name"
           type="text"
-          value={cart.name}
+          value={nameDraft}
           aria-label="Project draft name"
           placeholder="Untitled draft"
-          onChange={(e) => onRename(e.target.value)}
+          onChange={(e) => onNameChange(e.target.value)}
+          onBlur={(e) => flushRename(e.target.value)}
         />
         <span className="psl__cart-count" aria-label={`${cart.captureIds.length} items`}>
           {cart.captureIds.length}

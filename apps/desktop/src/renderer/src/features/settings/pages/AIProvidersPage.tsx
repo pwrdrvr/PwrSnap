@@ -156,11 +156,15 @@ export function AIProvidersPage(): ReactElement {
 
   useEffect(() => {
     void refreshUsage();
-    const unsubscribe = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+    const unsubscribeRun = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+      void refreshUsage();
+    });
+    const unsubscribeUsage = subscribe(EVENT_CHANNELS.aiUsageUpdated, () => {
       void refreshUsage();
     });
     return () => {
-      unsubscribe();
+      unsubscribeRun();
+      unsubscribeUsage();
     };
   }, [refreshUsage]);
 

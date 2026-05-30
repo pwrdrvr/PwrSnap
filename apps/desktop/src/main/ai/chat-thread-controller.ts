@@ -590,6 +590,12 @@ export class ChatThreadController {
         tokens
       })
     });
+    this.deps.broadcast(EVENT_CHANNELS.aiUsageUpdated, {
+      subjectKind: "thread",
+      threadId,
+      threadSurface: this.deps.usageSurface,
+      turnId: turn.turnId
+    });
   }
 
   private async commitMessage(threadId: string, message: ChatMessage): Promise<void> {

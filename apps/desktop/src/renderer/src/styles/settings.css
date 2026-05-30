@@ -989,8 +989,18 @@
   flex-shrink: 0;
 }
 .pss__key-btn:hover { border-color: var(--accent-border); }
+.pss__key-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--border-default);
+}
+.pss__key-btn:disabled:hover { border-color: var(--border-default); }
 .pss__key-btn.is-danger { color: var(--danger-text); }
 .pss__key-btn.is-danger:hover { border-color: var(--danger-border); background: var(--danger-soft); }
+.pss__key-btn.is-danger:disabled:hover {
+  border-color: var(--border-default);
+  background: var(--bg-panel);
+}
 .pss__key-meta {
   display: inline-flex;
   gap: 6px;

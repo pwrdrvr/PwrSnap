@@ -741,7 +741,7 @@ type SecretKeyControlProps = {
   onClear: () => Promise<void>;
 };
 
-function SecretKeyControl({
+export function SecretKeyControl({
   status,
   placeholder,
   onReplace,
@@ -751,6 +751,7 @@ function SecretKeyControl({
   const [draft, setDraft] = useState<string>("");
   const [working, setWorking] = useState<boolean>(false);
   const configured = status?.configured === true;
+  const canSubmit = draft.length > 0;
 
   // Cancel disables itself while a write is in flight (see the
   // disabled={working} below), but the user can still trigger
@@ -765,7 +766,7 @@ function SecretKeyControl({
   }, []);
 
   const submit = async (): Promise<void> => {
-    if (draft.length === 0) return;
+    if (!canSubmit) return;
     setWorking(true);
     try {
       await onReplace(draft);
@@ -779,81 +780,69 @@ function SecretKeyControl({
     }
   };
 
+  const startEditing = (): void => {
+    if (working) return;
+    setEditing(true);
+  };
+
   return (
     <>
       <div className="pss__keyrow">
+        <input
+          className="pss__input"
+          type="password"
+          autoFocus={editing}
+          readOnly={!editing}
+          value={editing ? draft : configured ? "••••••••••••••••" : ""}
+          placeholder={editing ? placeholder : configured ? "" : "Enter a key"}
+          onFocus={startEditing}
+          onClick={startEditing}
+          onChange={(e) => {
+            if (editing) setDraft(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (!editing) return;
+            if (e.key === "Enter") {
+              void submit();
+            } else if (e.key === "Escape") {
+              setDraft("");
+              setEditing(false);
+            }
+          }}
+        />
+        <button
+          className="pss__key-btn"
+          type="button"
+          onClick={() => {
+            void submit();
+          }}
+          disabled={working || !canSubmit}
+        >
+          {configured ? "Replace" : "Set"}
+        </button>
         {editing ? (
-          <>
-            <input
-              className="pss__input"
-              type="password"
-              autoFocus
-              value={draft}
-              placeholder={placeholder}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  void submit();
-                } else if (e.key === "Escape") {
-                  setDraft("");
-                  setEditing(false);
-                }
-              }}
-            />
-            <button
-              className="pss__key-btn"
-              type="button"
-              onClick={() => {
-                void submit();
-              }}
-              disabled={working || draft.length === 0}
-            >
-              Save
-            </button>
-            <button
-              className="pss__key-btn"
-              type="button"
-              disabled={working}
-              onClick={() => {
-                setDraft("");
-                setEditing(false);
-              }}
-            >
-              Cancel
-            </button>
-          </>
+          <button
+            className="pss__key-btn"
+            type="button"
+            disabled={working}
+            onClick={() => {
+              setDraft("");
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </button>
         ) : (
-          <>
-            <input
-              className="pss__input"
-              type="password"
-              readOnly
-              value={configured ? "••••••••••••••••" : ""}
-              placeholder={configured ? "" : "Click Set to enter a key"}
-              onFocus={() => {
-                if (!configured) setEditing(true);
-              }}
-            />
-            <button
-              className="pss__key-btn"
-              type="button"
-              onClick={() => {
-                setEditing(true);
-              }}
-            >
-              {configured ? "Replace" : "Set"}
-            </button>
-            <button
-              className="pss__key-btn is-danger"
-              type="button"
-              disabled={!configured}
-              onClick={() => {
-                void onClear();
-              }}
-            >
-              Clear
-            </button>
-          </>
+          <button
+            className="pss__key-btn is-danger"
+            type="button"
+            disabled={!configured}
+            onClick={() => {
+              void onClear();
+            }}
+          >
+            Clear
+          </button>
         )}
       </div>
       <div className="pss__key-meta">

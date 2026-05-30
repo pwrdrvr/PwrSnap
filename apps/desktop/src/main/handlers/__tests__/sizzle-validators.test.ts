@@ -457,6 +457,7 @@ describe("validateSizzleUpdate — sequence scene validation", () => {
             kind: "sequence",
             scriptLine: "",
             narration: "Open the wizard, then enable Telegram in Settings.",
+            audioSource: "muted",
             durationOverrideSec: null,
             beats: [
               {
@@ -493,6 +494,7 @@ describe("validateSizzleUpdate — sequence scene validation", () => {
       expect(scene.captureId).toBe("cap_wizard");
       expect(scene.scriptLine).toBe("Open the wizard, then enable Telegram in Settings.");
       expect(scene.narration).toBe(scene.scriptLine);
+      expect(scene.audioSource).toBe("voiceover");
       expect(scene.beats).toHaveLength(2);
       expect(scene.beats![1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
       expect(scene.beats![1]!.videoFit).toBe("loop");

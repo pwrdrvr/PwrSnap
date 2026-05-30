@@ -650,7 +650,7 @@ function validateScene(
     scriptLine: scriptSource,
     durationOverrideSec,
     mediaTrim: trimResult.value,
-    audioSource,
+    audioSource: kind === "sequence" ? "voiceover" : audioSource,
     transition: transitionResult.value
   };
   if (kind === "sequence") {

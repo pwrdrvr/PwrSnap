@@ -227,6 +227,50 @@ describe("planSequenceScene", () => {
     );
   });
 
+  it("keeps phrase anchors in narration time when durationOverrideSec is longer than TTS audio", () => {
+    const scene = sequenceScene({
+      durationOverrideSec: 4,
+      scriptLine: "Open the wizard then approve pairing",
+      narration: "Open the wizard then approve pairing",
+      beats: [
+        {
+          id: "bt_intro",
+          captureId: "cap_1",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_approve",
+          captureId: "cap_2",
+          timing: { kind: "phrase", phrase: "approve", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const plan = planSequenceScene({
+      scene,
+      capturesById: new Map([
+        ["cap_1", capture("cap_1", "image")],
+        ["cap_2", capture("cap_2", "image")]
+      ]),
+      imagePathByCaptureId: new Map([
+        ["cap_1", "/tmp/cap_1.png"],
+        ["cap_2", "/tmp/cap_2.png"]
+      ]),
+      narrationAudioPath: "/tmp/narration.mp3",
+      speechTiming: timing(scene.scriptLine, 2)
+    });
+
+    expect(plan.beatPlans[1]!.startSec).toBeGreaterThan(0);
+    expect(plan.beatPlans[1]!.startSec).toBeLessThan(2);
+    expect(plan.beatPlans[1]!.endSec).toBe(4);
+    expect(plan.sceneInputs[1]!.audioStartSec).toBe(plan.beatPlans[1]!.startSec);
+  });
+
   it("chooses loop for a short video smart-fit beat", () => {
     const scene = sequenceScene({
       beats: [

@@ -244,7 +244,7 @@ function sanitizeScene(s: SizzleScene): SizzleScene {
     // New fields with backward-compatible defaults. Older projects on
     // disk predate these — readBlob hands them through here.
     mediaTrim: sanitizeMediaTrim(s.mediaTrim),
-    audioSource: sanitizeAudioSource(s.audioSource),
+    audioSource: kind === "sequence" ? "voiceover" : sanitizeAudioSource(s.audioSource),
     transition: normalizeSizzleTransition(s.transition, { type: "crossfade" })
   };
   if (kind === "sequence") {

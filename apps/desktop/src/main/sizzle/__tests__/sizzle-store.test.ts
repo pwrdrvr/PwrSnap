@@ -124,7 +124,7 @@ describe("SizzleStore", () => {
           narration: "Open the wizard, then approve the pairing.",
           durationOverrideSec: null,
           mediaTrim: null,
-          audioSource: "voiceover",
+          audioSource: "muted",
           transition: { type: "dip-black", durationSec: 0.25 },
           beats: [
             {
@@ -153,6 +153,7 @@ describe("SizzleStore", () => {
     expect(scene.captureId).toBe("cap_wizard");
     expect(scene.scriptLine).toBe("Open the wizard, then approve the pairing.");
     expect(scene.narration).toBe(scene.scriptLine);
+    expect(scene.audioSource).toBe("voiceover");
     expect(scene.transition).toEqual({ type: "dip-black", durationSec: 0.25 });
     expect(scene.beats).toHaveLength(2);
     expect(scene.beats![0]!.id).toMatch(/^bt_/);

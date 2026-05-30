@@ -163,8 +163,6 @@ function resolveBeatWindows(
   diagnostics: SequencePlannerDiagnostic[]
 ): Array<{ startSec: number; endSec: number }> {
   const duration = Math.max(0.1, timelineDurationSec);
-  const phraseScale =
-    speechTiming.durationSec > 0 ? duration / speechTiming.durationSec : 1;
   const latestStart = Math.max(0, duration - 0.1);
   const starts = beats.map((beat, index) => {
     if (beat.timing.kind === "offset") return clamp(beat.timing.startSec, 0, latestStart);
@@ -174,7 +172,7 @@ function resolveBeatWindows(
       offsetSec: beat.timing.offsetSec,
       durationSec: beat.timing.durationSec
     });
-    if (resolved !== null) return clamp(resolved.startSec * phraseScale, 0, latestStart);
+    if (resolved !== null) return clamp(resolved.startSec, 0, latestStart);
     diagnostics.push({
       beatId: beat.id,
       code: "phrase_unresolved",

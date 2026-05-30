@@ -28,7 +28,7 @@ import { cpus, homedir, tmpdir } from "node:os";
 const FFMPEG_VERSION = "8.1.1";
 const FFMPEG_SHA256 = "b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3";
 const FFMPEG_URL = `https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz`;
-const BUILD_PROFILE_VERSION = "lgpl-v1";
+const BUILD_PROFILE_VERSION = "lgpl-v2";
 const PKG_CONFIG_MANIFEST = "disabled-shim-v2";
 const MIN_MACOS_VERSION = "14.0";
 const FORBIDDEN_CONFIG_FLAGS = [
@@ -189,6 +189,7 @@ function buildSlice(tarballPath, arch) {
     "--disable-ffplay",
     "--disable-ffprobe",
     "--disable-network",
+    "--disable-x86asm",
     "--enable-audiotoolbox",
     "--enable-videotoolbox",
     `--arch=${arch}`,

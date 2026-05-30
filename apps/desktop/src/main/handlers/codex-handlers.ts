@@ -640,7 +640,7 @@ export function registerCodexHandlers(params?: {
     activeRuns.get(req.runId)?.abort();
     activeRuns.delete(req.runId);
     const run = cancelAiRun(req.runId);
-    const enrichment = run ? getCaptureEnrichment(run.captureId) : null;
+    const enrichment = run?.captureId ? getCaptureEnrichment(run.captureId) : null;
     broadcastAiRunUpdated({ run, enrichment });
     return ok(undefined);
   });

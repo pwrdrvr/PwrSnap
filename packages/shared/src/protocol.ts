@@ -961,6 +961,8 @@ export type AiEnrichmentTriggerSource =
   | "popover-regenerate"
   | "library-regenerate"
   | "library-action"
+  | "library-chat"
+  | "sizzle-chat"
   | "annotate"
   | "describe"
   | "tag"
@@ -1544,8 +1546,8 @@ export type AppUpdateReleaseVersions = {
 
 export type AiRunSnapshot = {
   id: string;
-  captureId: string;
-  kind: "enrich";
+  captureId: string | null;
+  kind: "enrich" | "chat";
   task: string;
   triggerSource: AiEnrichmentTriggerSource;
   selectedModel: string | null;
@@ -1645,6 +1647,7 @@ export type AiRunUsageDetail = {
 };
 
 export type AiUsageSummaryWindow = "24h" | "7d" | "30d";
+export type AiUsageThreadSurface = "library-chat" | "sizzle-chat";
 
 export type AiUsageSummaryBucket = {
   task: string;
@@ -1680,6 +1683,11 @@ export type AiUsageSummary = {
 
 export type AiUsageRunListItem = {
   run: AiRunSnapshot;
+  subjectKind: "run" | "thread";
+  threadId: string | null;
+  threadName: string | null;
+  threadSurface: AiUsageThreadSurface | null;
+  turnCount: number | null;
   model: string | null;
   modelProvider: string | null;
   serviceTier: string | null;

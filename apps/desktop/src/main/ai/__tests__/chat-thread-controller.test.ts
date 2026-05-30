@@ -29,6 +29,8 @@ import type {
   CodexAgentMessageDeltaEvent,
   CodexApprovalRequestHandler,
   CodexToolCallHandler,
+  CodexThreadSettingsEvent,
+  CodexThreadTokenUsageEvent,
   CodexTurnCompletedEvent
 } from "../codex-thread-client";
 import type { ChatBroadcast } from "../chat-thread-controller";
@@ -42,6 +44,8 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 class FakeClient {
   private deltaCb: ((e: CodexAgentMessageDeltaEvent) => void) | null = null;
   private completedCb: ((e: CodexTurnCompletedEvent) => void) | null = null;
+  private tokenUsageCb: ((e: CodexThreadTokenUsageEvent) => void) | null = null;
+  private settingsCb: ((e: CodexThreadSettingsEvent) => void) | null = null;
   private toolHandler: CodexToolCallHandler | null = null;
   private approvalHandler: CodexApprovalRequestHandler | null = null;
   private threadSeq = 0;
@@ -67,10 +71,20 @@ class FakeClient {
     cwd?: string;
     runtimeWorkspaceRoots?: string[];
     serviceName?: string;
-  }): Promise<{ threadId: string }> {
+  }): Promise<{
+    threadId: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+  }> {
     this.lastStartThreadOpts = opts ?? null;
     this.threadSeq += 1;
-    return { threadId: `thread-${this.threadSeq}` };
+    return {
+      threadId: `thread-${this.threadSeq}`,
+      model: "gpt-5.4-mini",
+      modelProvider: "openai",
+      serviceTier: null
+    };
   }
   async clearThreadGitInfo(threadId: string): Promise<void> {
     this.clearedGitThreadIds.push(threadId);
@@ -94,6 +108,14 @@ class FakeClient {
     this.completedCb = cb;
     return () => undefined;
   }
+  onTokenUsageUpdated(cb: (e: CodexThreadTokenUsageEvent) => void): () => void {
+    this.tokenUsageCb = cb;
+    return () => undefined;
+  }
+  onThreadSettingsUpdated(cb: (e: CodexThreadSettingsEvent) => void): () => void {
+    this.settingsCb = cb;
+    return () => undefined;
+  }
   onToolCall(h: CodexToolCallHandler): () => void {
     this.toolHandler = h;
     return () => undefined;
@@ -109,6 +131,29 @@ class FakeClient {
   }
   fireCompleted(threadId: string, turnId: string, status: string): void {
     this.completedCb?.({ threadId, turnId, status });
+  }
+  fireTokenUsage(threadId: string, turnId: string, inputTokens: number): void {
+    this.tokenUsageCb?.({
+      threadId,
+      turnId,
+      tokenUsage: {
+        total: {
+          totalTokens: inputTokens + 10,
+          inputTokens,
+          cachedInputTokens: 100,
+          outputTokens: 10,
+          reasoningOutputTokens: 2
+        },
+        last: {
+          totalTokens: inputTokens + 10,
+          inputTokens,
+          cachedInputTokens: 100,
+          outputTokens: 10,
+          reasoningOutputTokens: 2
+        },
+        modelContextWindow: 258400
+      }
+    });
   }
   fireToolCall(params: DynamicToolCallParams): Promise<DynamicToolCallResponse> {
     if (this.toolHandler === null) throw new Error("no tool handler wired");

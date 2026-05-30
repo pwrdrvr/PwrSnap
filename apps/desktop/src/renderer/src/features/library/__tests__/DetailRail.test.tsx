@@ -614,7 +614,7 @@ describe("DetailRail", () => {
 
     const usage = el.querySelector(".psl__ai-usage");
     expect(usage?.textContent).toContain("gpt-5.4-mini");
-    expect(usage?.textContent).toContain("<$0.01");
+    expect(usage?.textContent).toContain("$0.002");
     expect(usage?.textContent).toContain("800 uncached in");
     expect(usage?.textContent).toContain("100 cached");
     expect(usage?.textContent).toContain("300 out (25 reasoning)");

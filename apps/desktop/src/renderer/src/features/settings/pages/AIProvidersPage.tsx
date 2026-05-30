@@ -557,10 +557,10 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
             <div className="pss__usage-run" key={item.run.id}>
               <div className="pss__usage-run-main">
                 <span className="pss__usage-run-title">
-                  {usageTaskLabel(item.run.task, item.run.triggerSource)}
+                  {usageActivityTitle(item)}
                 </span>
                 <span className="pss__usage-run-sub">
-                  {item.model ?? "model unavailable"} · {formatLastSetAt(item.run.completedAt ?? item.run.createdAt)}
+                  {usageActivitySub(item)}
                 </span>
               </div>
               <div className="pss__usage-run-right">
@@ -606,10 +606,32 @@ function UsageMetric({
   );
 }
 
+function usageActivityTitle(item: AiUsageRunsPage["items"][number]): string {
+  if (item.subjectKind === "thread") {
+    return item.threadSurface === "sizzle-chat" ? "Sizzle chat" : "Library chat";
+  }
+  return usageTaskLabel(item.run.task, item.run.triggerSource);
+}
+
+function usageActivitySub(item: AiUsageRunsPage["items"][number]): string {
+  const model = item.model ?? "model unavailable";
+  const when = formatLastSetAt(item.run.completedAt ?? item.run.createdAt);
+  if (item.subjectKind === "thread") {
+    const name = item.threadName ?? "Untitled thread";
+    const turns = item.turnCount === null
+      ? "turns unavailable"
+      : `${formatTokenCount(item.turnCount)} turn${item.turnCount === 1 ? "" : "s"}`;
+    return `${name} · ${turns} · ${model} · ${when}`;
+  }
+  return `${model} · ${when}`;
+}
+
 function usageTaskLabel(task: string, triggerSource: string): string {
   if (triggerSource === "auto-enrichment") return "Auto enrichment";
   if (triggerSource === "library-regenerate") return "Library regenerate";
   if (triggerSource === "popover-regenerate") return "Float-over regenerate";
+  if (triggerSource === "library-chat") return "Library chat";
+  if (triggerSource === "sizzle-chat") return "Sizzle chat";
   if (triggerSource === "annotate") return "Annotate";
   if (triggerSource === "describe") return "Describe";
   if (triggerSource === "tag") return "Tag";

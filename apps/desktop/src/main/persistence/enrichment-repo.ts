@@ -335,6 +335,10 @@ export function storeCompletedEnrichment(params: {
    * click "Use draft" before dismissing the float-over toast. Skipped
    * for any field that already has an accepted value so we don't
    * clobber user edits.
+   *
+   * Filename is intentionally different: suggested_filename_stem is
+   * already the effective default while accepted_filename_stem is the
+   * user's override. Auto-accept must not collapse that distinction.
    */
   autoAccept?: boolean;
 }): CaptureEnrichment {
@@ -464,20 +468,6 @@ export function storeCompletedEnrichment(params: {
                updated_at = datetime('now')
            WHERE capture_id = @captureId`
         ).run({ captureId: params.captureId, description: descriptionValue });
-      }
-
-      const filenameValue = (parsed.filenameStem ?? "").trim();
-      if (
-        filenameValue.length > 0 &&
-        (priorAccepted?.accepted_filename_stem ?? null) === null
-      ) {
-        db.prepare(
-          `UPDATE capture_enrichments
-           SET accepted_filename_stem = @filenameStem,
-               filename_accepted_at = datetime('now'),
-               updated_at = datetime('now')
-           WHERE capture_id = @captureId`
-        ).run({ captureId: params.captureId, filenameStem: filenameValue });
       }
 
       // Auto-accept the top 2 suggested tags inserted above. We can't

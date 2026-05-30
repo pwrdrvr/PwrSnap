@@ -337,40 +337,28 @@ describe("DetailRail", () => {
     expect(copyCall?.[1]).toEqual({ text: "secret contents" });
   });
 
-  test("Export filename: renders Codex's draft as suggested input + Use promotes via codex:acceptFilenameStem", async () => {
+  test("Export filename: renders Codex's suggested filename as the current value without a draft Use action", async () => {
     const { el, dispatch } = await renderDetailRail(
       enrichment({ suggestedFilenameStem: "telegram-aquarium-chat-thread" })
     );
 
     const monoInput = el.querySelector<HTMLInputElement>(".psl__field-input--mono");
     expect(monoInput?.value).toBe("telegram-aquarium-chat-thread");
-    expect(monoInput?.classList.contains("is-suggested")).toBe(true);
+    expect(monoInput?.classList.contains("is-suggested")).toBe(false);
 
-    // Three Use buttons total — one per draft field (title +
-    // description + filename). The filename one is the third.
-    const useButtons = Array.from(
-      el.querySelectorAll<HTMLButtonElement>(".psl__field-use")
-    );
-    expect(useButtons.length).toBeGreaterThanOrEqual(1);
-    // Click the filename Use button — the field's label exposes it
-    // next to "Export filename".
     const filenameLabel = Array.from(el.querySelectorAll(".psl__field-label")).find((node) =>
       node.textContent?.includes("Export filename")
     );
-    const useButton = filenameLabel?.querySelector<HTMLButtonElement>(".psl__field-use");
-    expect(useButton).not.toBeNull();
+    const copyButton = filenameLabel?.querySelector<HTMLButtonElement>(".psl__field-use");
+    expect(copyButton?.textContent).toBe("Copy");
     await act(async () => {
-      useButton?.click();
+      copyButton?.click();
       await Promise.resolve();
     });
 
-    const filenameCalls = dispatch.mock.calls.filter(
-      ([name]) => name === "codex:acceptFilenameStem"
-    );
-    expect(filenameCalls[0]?.[1]).toEqual({
-      captureId: "cap_1",
-      filenameStem: "telegram-aquarium-chat-thread"
-    });
+    expect(dispatch.mock.calls.some(([name]) => name === "codex:acceptFilenameStem")).toBe(false);
+    const copyCall = dispatch.mock.calls.find(([name]) => name === "clipboard:copyText");
+    expect(copyCall?.[1]).toEqual({ text: "telegram-aquarium-chat-thread" });
   });
 
   test("Export filename: once accepted, the label exposes a Copy button that routes through clipboard:copyText", async () => {
@@ -484,14 +472,13 @@ describe("DetailRail", () => {
     expect(acceptAllCalls[0]?.[1]).toEqual({
       captureId: "cap_1",
       title: "Codex headline",
-      description: "Codex body",
-      filenameStem: "codex-stem"
+      description: "Codex body"
     });
     const tagCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTag");
     expect(tagCalls).toHaveLength(0);
   });
 
-  test("Bulk Use draft also overrides mid-edit manual values in all three fields", async () => {
+  test("Bulk Use draft overrides title and description manual values but leaves filename edits alone", async () => {
     const { el } = await renderDetailRail(
       enrichment({
         suggestedTitle: "Codex headline",
@@ -537,10 +524,10 @@ describe("DetailRail", () => {
 
     expect(titleInput?.value).toBe("Codex headline");
     expect(descTextarea?.value).toBe("Codex body");
-    expect(filenameInput?.value).toBe("codex-stem");
+    expect(filenameInput?.value).toBe("mid-edit-stem");
   });
 
-  test("AI strip hides Use draft once all three text drafts are already accepted", async () => {
+  test("AI strip hides Use draft once title and description drafts are already accepted", async () => {
     const { el } = await renderDetailRail(
       enrichment({
         suggestedTitle: "Codex headline",
@@ -549,9 +536,7 @@ describe("DetailRail", () => {
         suggestedDescription: "Codex body",
         acceptedDescription: "Codex body",
         descriptionAcceptedAt: "2026-05-19T18:00:00.000Z",
-        suggestedFilenameStem: "codex-stem",
-        acceptedFilenameStem: "codex-stem",
-        filenameAcceptedAt: "2026-05-19T18:00:00.000Z"
+        suggestedFilenameStem: "codex-stem"
       })
     );
 

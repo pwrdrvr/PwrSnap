@@ -49,6 +49,8 @@ import {
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { getMainLogger } from "../log";
+import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
+import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 
 const log = getMainLogger("pwrsnap:bundle-store");
 
@@ -588,9 +590,38 @@ export type PersistCaptureFromTempResult = {
 const repackTimers = new Map<string, NodeJS.Timeout>();
 
 // In-flight repack promises so concurrent doctor walks (Phase 2)
-// can cooperate via a shared mutex instead of racing on the same
-// capture's bundle file.
+// can cooperate instead of racing on the same capture's bundle file.
 const repackInFlight = new Map<string, Promise<void>>();
+
+// Per-capture bundle-file operation queue. Repacking rewrites the
+// bundle at its current path, while filename maintenance moves that
+// same file and updates captures.bundle_path. They must not overlap.
+const bundleFileOperations = new Map<string, Promise<void>>();
+
+export async function runExclusiveBundleFileOperation<T>(
+  captureId: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = bundleFileOperations.get(captureId);
+  const current = (async (): Promise<T> => {
+    if (previous !== undefined) {
+      await previous.catch(() => undefined);
+    }
+    return operation();
+  })();
+  const currentDone = current.then(
+    () => undefined,
+    () => undefined
+  );
+  bundleFileOperations.set(captureId, currentDone);
+  try {
+    return await current;
+  } finally {
+    if (bundleFileOperations.get(captureId) === currentDone) {
+      bundleFileOperations.delete(captureId);
+    }
+  }
+}
 
 /**
  * Debounced re-pack request. Called after every edit (layer upsert /
@@ -656,11 +687,23 @@ export async function awaitInFlightRepack(captureId: string): Promise<void> {
   if (promise !== undefined) {
     await promise;
   }
+  const bundleOperation = bundleFileOperations.get(captureId);
+  if (bundleOperation !== undefined) {
+    await bundleOperation;
+  }
 }
 
 function basename(p: string): string {
   const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
   return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function uniqueBundleFilenameStem(outputDir: string, preferredStem: string): string {
+  for (let index = 0; index < 100; index += 1) {
+    const stem = index === 0 ? preferredStem : `${preferredStem}-${index + 1}`;
+    if (!existsSync(join(outputDir, `${stem}.pwrsnap`))) return stem;
+  }
+  throw new Error(`bundle-store: no available filename for ${preferredStem}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +744,14 @@ export async function persistCaptureFromTempV2(
 
   const now = new Date().toISOString();
   const outputDir = args.outputDir ?? getCapturesRoot();
-  const filenameStem = id;
+  const timestampZone = await readBundleFilenameTimestampZone();
+  const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({
+    capturedAt: now,
+    sourceAppName: args.sourceApp?.appName ?? null,
+    effectiveFilenameStem: null,
+    sha256,
+    timestampZone
+  }));
   const pairedPngFilename = `${filenameStem}.png`;
 
   const rootGroupId = nanoid(16);
@@ -844,7 +894,7 @@ async function runRepackV2(captureId: string): Promise<void> {
   const { listLayerTree } = await import("./layers-repo");
   const { composeV2 } = await import("../render/compose-tree");
 
-  const promise = (async () => {
+  const promise = runExclusiveBundleFileOperation(captureId, async () => {
     const record = getCaptureById(captureId);
     if (record === null) {
       log.warn("bundle-store: v2 repack target missing", { captureId });
@@ -890,11 +940,12 @@ async function runRepackV2(captureId: string): Promise<void> {
     }
 
     const now = new Date().toISOString();
+    const filenameStem = bundleStemFromPath(record.bundle_path);
     const manifest: BundleManifestV2 = {
       bundle_format_version: 2,
       capture_id: captureId,
       canvas_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${captureId}.png`,
+      paired_png_filename: `${filenameStem}.png`,
       created_at: record.captured_at,
       bundle_modified_at: now
     };
@@ -929,7 +980,7 @@ async function runRepackV2(captureId: string): Promise<void> {
       layerCount: layers.length,
       bundleBytes: bundleBuf.length
     });
-  })();
+  });
 
   repackInFlight.set(captureId, promise);
   try {

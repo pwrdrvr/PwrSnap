@@ -27,6 +27,7 @@ import type {
   EditorSidebarPanel,
   EditorSidebarSettings,
   EditorToolStyles,
+  FilenameTimestampZone,
   LibrarySidebarTab,
   HighlightBlendMode,
   HighlightToolStyle,
@@ -127,6 +128,11 @@ export function defaultSettings(): Settings {
       // "prerelease" in Settings; auto-updater picks it up on the next
       // check (hourly, or immediately via Help → Check for Updates).
       channel: "latest"
+    },
+    storage: {
+      // Local timestamps match what single users remember seeing on
+      // screen/Finder. UTC is still available for shared-drive teams.
+      filenameTimestampZone: "local"
     },
     recording: {
       // Audio defaults OFF — recording either source is privacy-
@@ -259,6 +265,13 @@ function pickMode(value: unknown): "auto" | "pinned" {
 
 function pickAppearanceTheme(value: unknown, fallback: AppearanceTheme): AppearanceTheme {
   return isAppearanceTheme(value) ? value : fallback;
+}
+
+function pickFilenameTimestampZone(
+  value: unknown,
+  fallback: FilenameTimestampZone
+): FilenameTimestampZone {
+  return value === "utc" || value === "local" ? value : fallback;
 }
 
 function pickNumber(value: unknown, fallback: number): number {
@@ -447,6 +460,7 @@ function parseV1(raw: unknown): Settings | null {
   const general = isRecord(raw.general) ? raw.general : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
+  const storage = isRecord(raw.storage) ? raw.storage : {};
   const recording = isRecord(raw.recording) ? raw.recording : {};
   return {
     schemaVersion: 1,
@@ -508,6 +522,15 @@ function parseV1(raw: unknown): Settings | null {
       // have it. Fall back to the current default ("latest") so the
       // field is always present in-memory.
       channel: updates.channel === "prerelease" ? "prerelease" : defaults.updates.channel
+    },
+    storage: {
+      // `storage.filenameTimestampZone` landed after v1 shipped;
+      // older files default to local time so filenames match what
+      // users remember from their wall clock.
+      filenameTimestampZone: pickFilenameTimestampZone(
+        storage.filenameTimestampZone,
+        defaults.storage.filenameTimestampZone
+      )
     },
     recording: {
       // `recording.*` landed after v1 shipped; older files won't have
@@ -935,6 +958,7 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     general: mergeSection(current.general, patch.general),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),
+    storage: mergeSection(current.storage, patch.storage),
     recording: mergeSection(current.recording, patch.recording),
     editor: mergeEditor(current.editor, patch.editor),
     library: mergeLibrary(current.library, patch.library)

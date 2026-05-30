@@ -319,6 +319,29 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_hotkey");
   });
 
+  test("settings:write rejects an invalid filename timestamp zone", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { storage: { filenameTimestampZone: "localish" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_storage_filenameTimestampZone");
+  });
+
+  test("settings:write accepts UTC filename timestamps", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { storage: { filenameTimestampZone: "utc" } },
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.storage.filenameTimestampZone).toBe("utc");
+  });
+
   test("settings:clearSecret rejects unknown secret name", async () => {
     const result = await bus.dispatch(
       "settings:clearSecret",

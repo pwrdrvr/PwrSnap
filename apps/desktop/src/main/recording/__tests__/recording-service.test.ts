@@ -146,6 +146,10 @@ vi.mock("../../persistence/video-repo", () => ({
   insertVideoMetadata: vi.fn()
 }));
 
+vi.mock("../../persistence/video-filename-maintenance", () => ({
+  renameVideoSourceToEffectiveFilename: vi.fn(async () => "renamed")
+}));
+
 vi.mock("../../log", () => ({
   getMainLogger: () => ({
     debug: () => undefined,

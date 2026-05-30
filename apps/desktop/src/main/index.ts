@@ -81,6 +81,8 @@ import { migrateLegacyCaptureSources } from "./persistence/capture-source-mainte
 import { migrateLegacyRenderCache } from "./persistence/render-cache-maintenance";
 import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle-store";
 import { getCacheSourcePath } from "./persistence/paths";
+import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
+import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -768,6 +770,7 @@ const protocolResolver: ProtocolResolver = {
 };
 
 const log = getMainLogger("pwrsnap:bootstrap");
+const ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS = 2_000;
 
 async function runBootGc(): Promise<void> {
   // Tmp file orphans first — cheap, no DB.
@@ -783,6 +786,18 @@ async function runBootGc(): Promise<void> {
     await Promise.allSettled([sweepTrash(expired), sweepBundleTrash(expired)]);
     gcHardDeleteCaptures(expired);
   }
+}
+
+function scheduleAssetFilenameMaintenance(): void {
+  setTimeout(() => {
+    void runBundleFilenameMaintenanceOnBoot()
+      .then(() => runVideoFilenameMaintenanceOnBoot())
+      .catch((err: unknown) => {
+        log.warn("asset filename maintenance failed", {
+          message: err instanceof Error ? err.message : String(err)
+        });
+      });
+  }, ASSET_FILENAME_MAINTENANCE_BOOT_DELAY_MS);
 }
 
 function shouldPreWarmRegionSelector(): boolean {
@@ -1018,6 +1033,7 @@ export function bootstrapApp(): void {
       // No-op in development (skips gracefully).
       initAppUpdater();
     }
+    scheduleAssetFilenameMaintenance();
 
     // ── Dev probe-only CLI mode ───────────────────────────────────
     // Detect `--probe=<profile>` AFTER the full boot — unlike --seed,

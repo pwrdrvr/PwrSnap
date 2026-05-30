@@ -1,9 +1,17 @@
 import type { ReactElement } from "react";
-import { Card, Row } from "../components";
+import type { FilenameTimestampZone } from "@pwrsnap/shared";
+import { Card, Row, SegmentedControl, type SegmentOption } from "../components";
 import { formatBytes } from "../../../lib/format-bytes";
 import { useStorageSnapshot } from "../../../lib/useStorageSnapshot";
+import { useSettingsContext } from "../SettingsContext";
+
+const FILENAME_TIMESTAMP_ZONE_OPTIONS: readonly SegmentOption<FilenameTimestampZone>[] = [
+  { id: "local", label: "Local" },
+  { id: "utc", label: "UTC" }
+];
 
 export function StoragePage(): ReactElement {
+  const { settings, patch } = useSettingsContext();
   const {
     summary,
     snapshot,
@@ -22,6 +30,15 @@ export function StoragePage(): ReactElement {
   const sourceCaptureBytes =
     summary?.sourceCaptures.bytes ?? snapshot?.sourceCaptures.bytes ?? 0;
   const storageBusy = workingAction !== null;
+  const timestampZone: FilenameTimestampZone =
+    settings?.storage.filenameTimestampZone ?? "local";
+  const ready = settings !== null;
+
+  const onTimestampZoneChange = ready
+    ? (next: FilenameTimestampZone): void => {
+        void patch({ storage: { filenameTimestampZone: next } });
+      }
+    : (): void => {};
 
   return (
     <>
@@ -146,6 +163,20 @@ export function StoragePage(): ReactElement {
                 )} other`
           }
         />
+      </Card>
+
+      <Card eyebrow="FILENAMES" title="Capture filename timestamps">
+        <Row
+          label="Timestamp zone"
+          sub="Local matches the date and time you saw on screen. UTC is useful for shared drives across time zones."
+          tag={timestampZone === "utc" ? "UTC" : "local"}
+        >
+          <SegmentedControl
+            options={FILENAME_TIMESTAMP_ZONE_OPTIONS}
+            value={timestampZone}
+            onChange={onTimestampZoneChange}
+          />
+        </Row>
       </Card>
     </>
   );

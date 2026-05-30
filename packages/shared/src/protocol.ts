@@ -760,6 +760,32 @@ export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel 
   );
 }
 
+export type AiEnrichmentTriggerSource =
+  | "auto-enrichment"
+  | "popover-enable"
+  | "popover-regenerate"
+  | "library-regenerate"
+  | "library-action"
+  | "annotate"
+  | "describe"
+  | "tag"
+  | "filename"
+  | "sensitive-scan"
+  | "unknown";
+
+export type AiEnrichmentBudgetMode = "available" | "slow" | "safety_disabled";
+
+export type AiEnrichmentBudgetStatus = {
+  mode: AiEnrichmentBudgetMode;
+  tokensAvailable: number;
+  capacity: number;
+  refillIntervalMs: number;
+  nextTokenAt: string | null;
+  limitedAttemptsLastHour: number;
+  disableThreshold: number;
+  disabledAt: string | null;
+};
+
 export type AppDocumentKind = "changelog" | "third-party-licenses";
 
 export type AppDocument = {
@@ -792,6 +818,8 @@ export type Settings = {
     enabled: boolean;
     /** ISO-8601; null until the user accepts the AI consent modal. */
     consentAcceptedAt: string | null;
+    /** ISO-8601; null unless the budget circuit breaker disabled AI. */
+    budgetSafetyDisabledAt: string | null;
     /** When true, completed Codex enrichments are promoted from
      *  `suggested_*` to `accepted_*` automatically — the user doesn't
      *  have to click "Use draft" in the float-over toast. Off by
@@ -1240,6 +1268,7 @@ export type SettingsPatch = {
   ai?: {
     enabled?: Settings["ai"]["enabled"];
     consentAcceptedAt?: Settings["ai"]["consentAcceptedAt"];
+    budgetSafetyDisabledAt?: Settings["ai"]["budgetSafetyDisabledAt"];
     autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
     chat?: Partial<ChatSettings>;
   };
@@ -1954,7 +1983,10 @@ export type Commands = {
   };
 
   // ---- codex (Phase 4+) — declared here so Phase 4 lands without protocol bumps ----
-  "codex:enrich": { req: { captureId: string }; res: { runId: string } };
+  "codex:enrich": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
   "codex:enrichment": { req: { captureId: string }; res: CaptureEnrichment | null };
   "codex:enrichmentsForCaptures": {
     req: { captureIds: string[] };
@@ -1995,11 +2027,27 @@ export type Commands = {
     res: CaptureEnrichment;
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
-  "codex:annotate": { req: { captureId: string }; res: { runId: string } };
-  "codex:describe": { req: { captureId: string }; res: { runId: string } };
-  "codex:tag": { req: { captureId: string }; res: { runId: string } };
-  "codex:filename": { req: { captureId: string }; res: { runId: string } };
-  "codex:sensitiveScan": { req: { captureId: string }; res: { runId: string } };
+  "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
+  "codex:annotate": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
+  "codex:describe": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
+  "codex:tag": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
+  "codex:filename": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
+  "codex:sensitiveScan": {
+    req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
+    res: { runId: string };
+  };
   "codex:cancel": { req: { runId: string }; res: void };
   "codex:ask": { req: { captureId: string; message: string }; res: { threadId: string } };
 

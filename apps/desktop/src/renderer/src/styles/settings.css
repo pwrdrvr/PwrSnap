@@ -471,6 +471,11 @@
   background: var(--accent-soft);
   border-color: var(--accent-border);
 }
+.pss__badge.is-danger {
+  color: var(--danger-text);
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+}
 .pss__opt-use {
   flex-shrink: 0;
   height: 28px;

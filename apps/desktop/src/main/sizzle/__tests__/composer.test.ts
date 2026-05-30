@@ -514,6 +514,52 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     expect(graph).toContain("xfade=transition=fade:duration=0.4");
   });
 
+  it("object transitions map to ffmpeg xfade transitions and custom durations", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          {
+            ...imageScene(1, "cut"),
+            transition: { type: "dip-black", durationSec: 0.25 }
+          },
+          {
+            ...imageScene(2, "cut"),
+            transition: { type: "push-left", durationSec: 0.18 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("xfade=transition=fadeblack:duration=0.25");
+    expect(graph).toContain("xfade=transition=slideleft:duration=0.18");
+  });
+
+  it("object cut/none transitions remain hard cuts", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          {
+            ...imageScene(1, "cut"),
+            transition: { type: "none", durationSec: 0 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).not.toContain("xfade=");
+    expect((graph.match(/concat=n=2:v=1:a=0/g) ?? []).length).toBe(1);
+  });
+
   it("3 scenes, [cut, crossfade]: one concat + one xfade", () => {
     // scene[0].transition is ignored (nothing precedes it). The
     // boundary between scene[0]→scene[1] is determined by

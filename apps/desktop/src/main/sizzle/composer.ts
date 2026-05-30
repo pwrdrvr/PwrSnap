@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { SIZZLE_CROSSFADE_SEC, type SizzleTransition } from "@pwrsnap/shared";
+import {
+  sizzleTransitionDurationSec,
+  sizzleTransitionType,
+  type SizzleTransition,
+  type SizzleTransitionType
+} from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
 import type { VideoFitRenderMode } from "./video-fit";
@@ -155,8 +160,8 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *
  * - Boundaries between scenes are built as a left-fold over the
  *   scene list. For each pair (chain-so-far, next scene):
- *     • `transition: "crossfade"` → splice an `xfade` filter with
- *       SIZZLE_CROSSFADE_SEC overlap; the resulting chain duration
+ *     • fade-like transitions → splice an `xfade` filter with
+ *       the transition duration overlap; the resulting chain duration
  *       shrinks by SIZZLE_CROSSFADE_SEC.
  *     • `transition: "cut"` → a 2-input `concat` (drops to a hard
  *       cut, no audio drift, chain duration is the sum).
@@ -164,7 +169,7 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  * - Audio comes from the concat-demuxer input that follows the scene
  *   inputs. Audio sees only cuts — every scene's `audioPath` is
  *   stitched end-to-end. With crossfades the audio is ~SIZZLE_CROSSFADE_SEC
- *   per crossfade longer than video; `-shortest` truncates to the
+ *   per xfade longer than video; `-shortest` truncates to the
  *   shorter, so the trailing silence at the end of the last audio
  *   gets clipped. Acceptable for narration-paced content; audio-side
  *   crossfade (`acrossfade`) is a future enhancement.
@@ -354,19 +359,21 @@ function buildTransitionChain(
   for (let i = 1; i < scenes.length; i++) {
     const next = scenes[i]!;
     const nextLabel = `chain${i}`;
-    if (next.transition === "crossfade") {
-      // xfade overlaps the last SIZZLE_CROSSFADE_SEC of the chain
-      // with the first SIZZLE_CROSSFADE_SEC of the next scene.
+    const xfade = xfadeForTransition(next.transition);
+    if (xfade !== null) {
+      // xfade overlaps the last transition duration of the chain
+      // with the first transition duration of the next scene.
       // `offset` is when the crossfade begins in the chain's
-      // timeline, so chainEndSec - SIZZLE_CROSSFADE_SEC.
-      const offsetSec = Math.max(0, chainEndSec - SIZZLE_CROSSFADE_SEC);
+      // timeline, so chainEndSec - duration.
+      const durationSec = Math.min(xfade.durationSec, chainEndSec, next.durationSec);
+      const offsetSec = Math.max(0, chainEndSec - durationSec);
       filters.push(
-        `[${chainLabel}][v${i}]xfade=transition=fade:` +
-          `duration=${SIZZLE_CROSSFADE_SEC}:offset=${offsetSec.toFixed(3)}` +
+        `[${chainLabel}][v${i}]xfade=transition=${xfade.ffmpegName}:` +
+          `duration=${formatFilterSec(durationSec)}:offset=${offsetSec.toFixed(3)}` +
           `[${nextLabel}]`
       );
       // Chain duration grows by next.durationSec but loses the overlap.
-      chainEndSec = chainEndSec + next.durationSec - SIZZLE_CROSSFADE_SEC;
+      chainEndSec = chainEndSec + next.durationSec - durationSec;
     } else {
       // Hard cut — concat with n=2.
       filters.push(
@@ -377,6 +384,42 @@ function buildTransitionChain(
     chainLabel = nextLabel;
   }
   return chainLabel;
+}
+
+function formatFilterSec(value: number): string {
+  return Number(value.toFixed(3)).toString();
+}
+
+function xfadeForTransition(
+  transition: SizzleTransition
+): { ffmpegName: string; durationSec: number } | null {
+  const type = sizzleTransitionType(transition);
+  if (type === "none" || type === "cut") return null;
+  const durationSec = sizzleTransitionDurationSec(transition);
+  if (durationSec <= 0) return null;
+  return {
+    ffmpegName: ffmpegXfadeName(type),
+    durationSec
+  };
+}
+
+function ffmpegXfadeName(type: SizzleTransitionType): string {
+  switch (type) {
+    case "crossfade":
+      return "fade";
+    case "dip-black":
+      return "fadeblack";
+    case "dip-white":
+      return "fadewhite";
+    case "push-left":
+    case "slide-left":
+      return "slideleft";
+    case "zoom-cut":
+      return "zoomin";
+    case "none":
+    case "cut":
+      return "fade";
+  }
 }
 
 function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {

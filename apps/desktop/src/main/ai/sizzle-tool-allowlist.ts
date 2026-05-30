@@ -20,7 +20,8 @@ import {
   type CommandName,
   type Req,
   type SizzleProject,
-  type SizzleScene
+  type SizzleScene,
+  type SizzleTransition
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
@@ -52,10 +53,18 @@ export type SizzleToolDeps = {
 
 // ── arg coercion + views ─────────────────────────────────────────────
 
+const transitionInputSchema = z.union([
+  z.enum(["cut", "crossfade"]),
+  z.object({
+    type: z.enum(["none", "cut", "crossfade", "dip-black", "dip-white", "push-left", "slide-left", "zoom-cut"]),
+    durationSec: z.number().min(0).max(3)
+  })
+]);
+
 const sceneInputSchema = z.object({
   captureId: z.string().min(1),
   scriptLine: z.string().optional(),
-  transition: z.enum(["cut", "crossfade"]).optional(),
+  transition: transitionInputSchema.optional(),
   audioSource: z.enum(["auto", "native", "voiceover", "muted"]).optional(),
   durationOverrideSec: z.number().positive().nullable().optional(),
   mediaTrim: z
@@ -64,6 +73,43 @@ const sceneInputSchema = z.object({
     .optional()
 });
 type SceneInput = z.infer<typeof sceneInputSchema>;
+
+const beatTimingInputSchema = z.union([
+  z.object({
+    kind: z.literal("offset"),
+    startSec: z.number().min(0),
+    endSec: z.number().min(0).nullable().optional()
+  }),
+  z.object({
+    kind: z.literal("phrase"),
+    phrase: z.string().min(1).max(160),
+    occurrence: z.number().int().positive().nullable().optional(),
+    offsetSec: z.number().optional(),
+    durationSec: z.number().positive().nullable().optional()
+  })
+]);
+
+const sequenceBeatInputSchema = z.object({
+  id: z.string().min(1).optional(),
+  captureId: z.string().min(1),
+  timing: beatTimingInputSchema,
+  mediaTrim: z
+    .object({ startSec: z.number().min(0), endSec: z.number().min(0) })
+    .nullable()
+    .optional(),
+  transition: transitionInputSchema.optional(),
+  videoFit: z.enum(["trim", "freeze-end", "loop", "ping-pong", "speed-to-fit", "smart-fit"]).optional()
+});
+
+const sequenceSceneInputSchema = z.object({
+  narration: z.string().min(1),
+  beats: z.array(sequenceBeatInputSchema).min(1),
+  transition: transitionInputSchema.optional(),
+  durationOverrideSec: z.number().positive().nullable().optional()
+});
+
+type SequenceSceneInput = z.infer<typeof sequenceSceneInputSchema>;
+type SequenceBeatInput = z.infer<typeof sequenceBeatInputSchema>;
 
 function toScene(input: SceneInput): SizzleScene {
   return {
@@ -83,6 +129,52 @@ function toScene(input: SceneInput): SizzleScene {
   };
 }
 
+function toSequenceScene(input: SequenceSceneInput): SizzleScene {
+  const firstBeat = input.beats[0]!;
+  return {
+    id: `sc_${nanoid(10)}`,
+    kind: "sequence",
+    captureId: firstBeat.captureId,
+    scriptLine: input.narration,
+    narration: input.narration,
+    beats: input.beats.map(toSequenceBeat),
+    durationOverrideSec:
+      typeof input.durationOverrideSec === "number" && input.durationOverrideSec > 0
+        ? input.durationOverrideSec
+        : null,
+    mediaTrim: null,
+    audioSource: "voiceover",
+    transition: input.transition ?? "crossfade"
+  };
+}
+
+function toSequenceBeat(input: SequenceBeatInput): NonNullable<SizzleScene["beats"]>[number] {
+  return {
+    id: input.id ?? `bt_${nanoid(10)}`,
+    captureId: input.captureId,
+    timing:
+      input.timing.kind === "offset"
+        ? {
+            kind: "offset",
+            startSec: input.timing.startSec,
+            endSec: input.timing.endSec ?? null
+          }
+        : {
+            kind: "phrase",
+            phrase: input.timing.phrase,
+            occurrence: input.timing.occurrence ?? null,
+            offsetSec: input.timing.offsetSec ?? 0,
+            durationSec: input.timing.durationSec ?? null
+          },
+    mediaTrim:
+      input.mediaTrim != null
+        ? { startSec: input.mediaTrim.startSec, endSec: input.mediaTrim.endSec }
+        : null,
+    transition: input.transition ?? "cut",
+    videoFit: input.videoFit ?? "smart-fit"
+  };
+}
+
 function projectView(p: SizzleProject): unknown {
   return {
     id: p.id,
@@ -93,8 +185,19 @@ function projectView(p: SizzleProject): unknown {
     lastRenderedAt: p.lastRenderedAt,
     scenes: p.scenes.map((s) => ({
       sceneId: s.id,
+      kind: s.kind ?? "simple",
       captureId: s.captureId,
       scriptLine: s.scriptLine,
+      narration: s.narration ?? null,
+      beats:
+        s.beats?.map((beat) => ({
+          beatId: beat.id,
+          captureId: beat.captureId,
+          timing: beat.timing,
+          transition: beat.transition,
+          videoFit: beat.videoFit,
+          mediaTrim: beat.mediaTrim
+        })) ?? null,
       transition: s.transition,
       audioSource: s.audioSource,
       durationOverrideSec: s.durationOverrideSec,
@@ -261,6 +364,15 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     }),
     defineTool({
       namespace: "pwrsnap_sizzle",
+      name: "sequence_scene_append",
+      description:
+        "Append one sequence scene: one continuous narration block with multiple timed visual beats. Prefer this for workflows, quick UI progressions, and app demos where one sentence spans several captures.",
+      argsSchema: z.object({ scene: sequenceSceneInputSchema }),
+      dispatch: async (args, ctx) =>
+        mutateScenes(ctx.threadId, (scenes) => [...scenes, toSequenceScene(args.scene)])
+    }),
+    defineTool({
+      namespace: "pwrsnap_sizzle",
       name: "scenes_insert",
       description: "Insert one or more scenes at a 0-based index.",
       argsSchema: z.object({ index: z.number().int().min(0), scenes: z.array(sceneInputSchema).min(1) }),
@@ -318,18 +430,52 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       argsSchema: z.object({ sceneId: z.string().min(1), scriptLine: z.string() }),
       dispatch: async (args, ctx) => editScene(ctx.threadId, mutateScenes, args.sceneId, (s) => ({
         ...s,
-        scriptLine: args.scriptLine
+        scriptLine: args.scriptLine,
+        ...(s.kind === "sequence" ? { narration: args.scriptLine } : {})
       }))
     }),
     defineTool({
       namespace: "pwrsnap_sizzle",
       name: "scene_set_transition",
-      description: "Set one scene's transition (cut or crossfade).",
-      argsSchema: z.object({ sceneId: z.string().min(1), transition: z.enum(["cut", "crossfade"]) }),
+      description: "Set one scene's transition.",
+      argsSchema: z.object({ sceneId: z.string().min(1), transition: transitionInputSchema }),
       dispatch: async (args, ctx) => editScene(ctx.threadId, mutateScenes, args.sceneId, (s) => ({
         ...s,
-        transition: args.transition
+        transition: args.transition as SizzleTransition
       }))
+    }),
+    defineTool({
+      namespace: "pwrsnap_sizzle",
+      name: "sequence_beat_update",
+      description:
+        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats.",
+      argsSchema: z.object({
+        sceneId: z.string().min(1),
+        beatId: z.string().min(1),
+        captureId: z.string().min(1).optional(),
+        timing: beatTimingInputSchema.optional(),
+        transition: transitionInputSchema.optional(),
+        videoFit: z.enum(["trim", "freeze-end", "loop", "ping-pong", "speed-to-fit", "smart-fit"]).optional(),
+        mediaTrim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0) }).nullable().optional()
+      }),
+      dispatch: async (args, ctx) =>
+        editScene(ctx.threadId, mutateScenes, args.sceneId, (s) => {
+          if (s.kind !== "sequence" || s.beats === undefined) return s;
+          return {
+            ...s,
+            beats: s.beats.map((beat) => {
+              if (beat.id !== args.beatId) return beat;
+              return {
+                ...beat,
+                ...(args.captureId !== undefined ? { captureId: args.captureId } : {}),
+                ...(args.timing !== undefined ? { timing: toSequenceBeat({ captureId: beat.captureId, timing: args.timing }).timing } : {}),
+                ...(args.transition !== undefined ? { transition: args.transition as SizzleTransition } : {}),
+                ...(args.videoFit !== undefined ? { videoFit: args.videoFit } : {}),
+                ...(args.mediaTrim !== undefined ? { mediaTrim: args.mediaTrim } : {})
+              };
+            })
+          };
+        })
     }),
     defineTool({
       namespace: "pwrsnap_sizzle",

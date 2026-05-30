@@ -615,7 +615,9 @@ describe("DetailRail", () => {
     const usage = el.querySelector(".psl__ai-usage");
     expect(usage?.textContent).toContain("gpt-5.4-mini");
     expect(usage?.textContent).toContain("<$0.01");
-    expect(usage?.textContent).toContain("1,200 tokens");
+    expect(usage?.textContent).toContain("800 uncached in");
+    expect(usage?.textContent).toContain("100 cached");
+    expect(usage?.textContent).toContain("300 out (25 reasoning)");
     expect(usage?.textContent).toContain("1024×742 JPEG");
     expect(usage?.textContent).toContain("q75");
   });
@@ -650,7 +652,7 @@ describe("DetailRail", () => {
       await Promise.resolve();
     });
 
-    expect(el.querySelector(".psl__ai-usage")?.textContent).toContain("1,200 tokens");
+    expect(el.querySelector(".psl__ai-usage")?.textContent).toContain("800 uncached in");
     expect(
       dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
     ).toHaveLength(2);

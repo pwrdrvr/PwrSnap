@@ -531,7 +531,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
         <UsageMetric
           label="Input"
           value={formatTokenCount(summary.inputTokens)}
-          sub={`${formatTokenCount(summary.cachedInputTokens)} cached`}
+          sub={`${formatTokenCount(uncachedInputTokens(summary.inputTokens, summary.cachedInputTokens))} uncached · ${formatTokenCount(summary.cachedInputTokens)} cached`}
         />
         <UsageMetric
           label="Output"
@@ -571,7 +571,12 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
                 </span>
                 <span className="pss__usage-run-tokens">
                   {item.usageStatus === "available" && item.totalTokens !== null
-                    ? `${formatTokenCount(item.totalTokens)} tokens`
+                    ? formatUsageTokenBreakdown({
+                        inputTokens: item.inputTokens,
+                        cachedInputTokens: item.cachedInputTokens,
+                        outputTokens: item.outputTokens,
+                        reasoningOutputTokens: item.reasoningOutputTokens
+                      })
                     : "Usage unavailable"}
                 </span>
               </div>
@@ -949,6 +954,26 @@ export function formatCostMicros(micros: number | null): string {
 export function formatTokenCount(tokens: number | null): string {
   if (tokens === null) return "—";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(tokens);
+}
+
+export function formatUsageTokenBreakdown(tokens: {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+}): string {
+  const inputTokens = tokens.inputTokens ?? 0;
+  const cachedInputTokens = tokens.cachedInputTokens ?? 0;
+  const outputTokens = tokens.outputTokens ?? 0;
+  const reasoningOutputTokens = tokens.reasoningOutputTokens ?? 0;
+  const output = reasoningOutputTokens > 0
+    ? `${formatTokenCount(outputTokens)} out (${formatTokenCount(reasoningOutputTokens)} reasoning)`
+    : `${formatTokenCount(outputTokens)} out`;
+  return `${formatTokenCount(uncachedInputTokens(inputTokens, cachedInputTokens))} uncached in · ${formatTokenCount(cachedInputTokens)} cached · ${output}`;
+}
+
+function uncachedInputTokens(inputTokens: number | null, cachedInputTokens: number | null): number {
+  return Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0));
 }
 
 function codexAuthBadgeLabel(

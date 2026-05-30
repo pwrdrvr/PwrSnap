@@ -1248,7 +1248,7 @@ function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement
   const tokens =
     detail.tokens === null
       ? "Usage unavailable"
-      : `${formatTokenCount(detail.tokens.totalTokens)} tokens`;
+      : formatUsageTokenBreakdown(detail.tokens);
   const media = detail.mediaInputs[0] ?? null;
   const mediaText =
     media === null
@@ -1284,6 +1284,19 @@ function formatCostMicros(micros: number): string {
 
 function formatTokenCount(tokens: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(tokens);
+}
+
+function formatUsageTokenBreakdown(tokens: {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}): string {
+  const uncachedInput = Math.max(0, tokens.inputTokens - tokens.cachedInputTokens);
+  const output = tokens.reasoningOutputTokens > 0
+    ? `${formatTokenCount(tokens.outputTokens)} out (${formatTokenCount(tokens.reasoningOutputTokens)} reasoning)`
+    : `${formatTokenCount(tokens.outputTokens)} out`;
+  return `${formatTokenCount(uncachedInput)} uncached in · ${formatTokenCount(tokens.cachedInputTokens)} cached · ${output}`;
 }
 
 type TagEditorProps = {

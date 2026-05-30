@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.0-beta.10 - 2026-05-29
+
+- Added Sizzle Composer Chat, bringing the shared agent chat substrate into the
+  sizzle composition workflow.
+- Added AI enrichment controls for managing capture enrichment behavior.
+- Fixed sizzle project date handling so project timestamps stay stable.
+
 ## v1.0.0-beta.9 - 2026-05-29
 
 - Added Library Chat, a live Codex-powered agent surface that can browse, edit,

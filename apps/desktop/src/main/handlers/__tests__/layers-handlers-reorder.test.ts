@@ -226,4 +226,62 @@ describe("layers:update", () => {
       .get("arrow_layer_0001");
     expect(row?.count).toBe(1);
   });
+
+  test("rejects parent_id changes so update cannot create layer-tree cycles", async () => {
+    seedV2Capture("cap_update_parent");
+    const original = seedArrowLayer("cap_update_parent");
+
+    const result = await bus.dispatch(
+      "layers:update",
+      {
+        captureId: "cap_update_parent",
+        layer: {
+          ...original,
+          parent_id: original.id
+        }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected immutable parent_id rejection");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("immutable_layer_identity");
+
+    const row = testDb
+      .prepare<[string], { parent_id: string | null }>(
+        `SELECT parent_id FROM layers WHERE id = ?`
+      )
+      .get(original.id);
+    expect(row?.parent_id).toBeNull();
+  });
+
+  test("rejects kind changes so update cannot bypass kind-specific invariants", async () => {
+    seedV2Capture("cap_update_kind");
+    const original = seedArrowLayer("cap_update_kind");
+    const { shape: _shape, ...common } = original;
+
+    const result = await bus.dispatch(
+      "layers:update",
+      {
+        captureId: "cap_update_kind",
+        layer: {
+          ...common,
+          kind: "group",
+          collapsed: false
+        }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected immutable kind rejection");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("immutable_layer_identity");
+
+    const row = testDb
+      .prepare<[string], { kind: string }>(`SELECT kind FROM layers WHERE id = ?`)
+      .get(original.id);
+    expect(row?.kind).toBe("vector");
+  });
 });

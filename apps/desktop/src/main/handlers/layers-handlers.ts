@@ -139,21 +139,28 @@ export function registerLayersHandlers(): void {
         captureId: req.captureId,
         node: parseResult.data
       });
-      if (updated === null) {
+      if (updated.status === "not_found") {
         return err({
           kind: "validation",
           code: "not_found",
           message: `live layer not found for capture ${req.captureId}: ${req.layer.id}`
         });
       }
+      if (updated.status === "immutable_violation") {
+        return err({
+          kind: "validation",
+          code: "immutable_layer_identity",
+          message: updated.message
+        });
+      }
       log.info("layer updated", {
-        id: updated.id,
+        id: updated.node.id,
         captureId: req.captureId,
-        kind: updated.kind
+        kind: updated.node.kind
       });
       broadcastLayersChanged(req.captureId);
       scheduleRepack(req.captureId);
-      return ok(updated);
+      return ok(updated.node);
     } catch (cause) {
       return err({
         kind: "persistence",

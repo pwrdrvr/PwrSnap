@@ -2,11 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   type CaptureRecord,
+  type SizzleBeatTiming,
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene,
+  type SizzleSequenceBeat,
+  type SizzleTransition,
+  type SizzleTransitionType,
+  type SizzleVideoFitPolicy,
   type SizzleVoice
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
@@ -20,6 +26,10 @@ type RenderStatus = {
   ratio: number;
   error: string | null;
 };
+
+type PickerTarget =
+  | { kind: "scene" }
+  | { kind: "sequenceBeat"; sceneId: string };
 
 const IDLE_STATUS: RenderStatus = {
   phase: "idle",
@@ -52,6 +62,15 @@ function formatDur(seconds: number): string {
   const secs = Math.round(seconds % 60);
   if (mins === 0) return `${secs}s`;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function transitionType(transition: SizzleTransition): SizzleTransitionType {
+  return typeof transition === "string" ? transition : transition.type;
+}
+
+function transitionFromType(type: SizzleTransitionType): SizzleTransition {
+  if (type === "cut" || type === "crossfade") return type;
+  return { type, durationSec: type === "none" ? 0 : 0.18 };
 }
 
 function formatProjectDate(iso: string): string {
@@ -105,7 +124,7 @@ export function SizzleApp(): ReactElement {
   // activeId is still null, so this never gets clobbered.
   const [activeId, setActiveId] = useState<string | null>(() => readInitialProjectId());
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
-  const [picker, setPicker] = useState(false);
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
@@ -396,9 +415,46 @@ export function SizzleApp(): ReactElement {
         transition: "crossfade"
       };
       await onUpdate(active.id, { scenes: [...active.scenes, scene] });
-      setPicker(false);
+      setPicker(null);
     },
-    [active, onUpdate]
+    [active, captures, onUpdate]
+  );
+
+  const onAddSequenceBeat = useCallback(
+    async (sceneId: string, captureId: string) => {
+      if (active === null) return;
+      const captureRecord = captures.find((c) => c.id === captureId) ?? null;
+      const captureVideo =
+        captureRecord?.kind === "video" ? captureRecord.video ?? null : null;
+      const mediaTrim =
+        captureVideo !== null
+          ? {
+              startSec: captureVideo.defaultRange.start,
+              endSec: captureVideo.defaultRange.end
+            }
+          : null;
+      const nextScenes = active.scenes.map((scene) => {
+        if (scene.id !== sceneId || scene.kind !== "sequence") return scene;
+        const beats = scene.beats ?? [];
+        const last = beats.at(-1);
+        const startSec =
+          last?.timing.kind === "offset" && last.timing.endSec !== null
+            ? last.timing.endSec
+            : beats.length;
+        const beat: SizzleSequenceBeat = {
+          id: `bt_${Date.now().toString(36)}`,
+          captureId,
+          timing: { kind: "offset", startSec, endSec: null },
+          mediaTrim,
+          transition: "cut",
+          videoFit: "smart-fit"
+        };
+        return { ...scene, beats: normalizeSizzleSequenceBeatContinuity([...beats, beat]) };
+      });
+      await onUpdate(active.id, { scenes: nextScenes });
+      setPicker(null);
+    },
+    [active, captures, onUpdate]
   );
 
   return (
@@ -506,7 +562,8 @@ export function SizzleApp(): ReactElement {
               }
               onScenes={(scenes) => onUpdate(active.id, { scenes })}
               onFlushPending={() => flushPatch(active.id)}
-              onPickCapture={() => setPicker(true)}
+              onPickCapture={() => setPicker({ kind: "scene" })}
+              onPickSequenceBeat={(sceneId) => setPicker({ kind: "sequenceBeat", sceneId })}
               onRender={onRender}
               onReveal={onReveal}
               onDelete={() => onDelete(active.id)}
@@ -521,12 +578,24 @@ export function SizzleApp(): ReactElement {
         )}
       </main>
 
-      {picker && active !== null ? (
+      {picker !== null && active !== null ? (
         <CapturePicker
           captures={captures}
-          onPick={onAddScene}
-          onClose={() => setPicker(false)}
-          existing={new Set(active.scenes.map((s) => s.captureId))}
+          onPick={(captureId) =>
+            picker.kind === "scene"
+              ? void onAddScene(captureId)
+              : void onAddSequenceBeat(picker.sceneId, captureId)
+          }
+          onClose={() => setPicker(null)}
+          existing={
+            new Set(
+              picker.kind === "scene"
+                ? active.scenes.map((s) => s.captureId)
+                : active.scenes
+                    .find((s) => s.id === picker.sceneId)
+                    ?.beats?.map((beat) => beat.captureId) ?? []
+            )
+          }
         />
       ) : null}
     </div>
@@ -594,6 +663,7 @@ type EditorProps = {
   onScenes: (scenes: SizzleScene[]) => void;
   onFlushPending: () => Promise<void>;
   onPickCapture: () => void;
+  onPickSequenceBeat: (sceneId: string) => void;
   onRender: () => void;
   onReveal: () => void;
   onDelete: () => void;
@@ -613,6 +683,7 @@ function Editor(props: EditorProps): ReactElement {
     onScenes,
     onFlushPending,
     onPickCapture,
+    onPickSequenceBeat,
     onRender,
     onReveal,
     onDelete
@@ -780,6 +851,107 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
+  const editSequenceBeat = (
+    sceneId: string,
+    beatId: string,
+    patch: Partial<SizzleSequenceBeat>
+  ): void => {
+    onScenes(
+      project.scenes.map((s) => {
+        if (s.id !== sceneId || s.kind !== "sequence" || s.beats === undefined) return s;
+        return {
+          ...s,
+          beats: normalizeSizzleSequenceBeatContinuity(s.beats.map((beat) =>
+            beat.id === beatId ? { ...beat, ...patch } : beat
+          ))
+        };
+      })
+    );
+  };
+
+  const nextBeatStartSec = (beats: SizzleSequenceBeat[]): number => {
+    const last = beats.at(-1);
+    if (last?.timing.kind === "offset" && last.timing.endSec !== null) {
+      return last.timing.endSec;
+    }
+    return beats.length;
+  };
+
+  const beatFromScene = (scene: SizzleScene, startSec: number): SizzleSequenceBeat => ({
+    id: `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    captureId: scene.captureId,
+    timing: { kind: "offset", startSec, endSec: null },
+    mediaTrim: scene.mediaTrim,
+    transition: "cut",
+    videoFit: "smart-fit"
+  });
+
+  const convertToSequence = (sceneId: string): void => {
+    onScenes(
+      project.scenes.map((scene) => {
+        if (scene.id !== sceneId || scene.kind === "sequence") return scene;
+        return {
+          ...scene,
+          kind: "sequence",
+          narration: scene.scriptLine,
+          scriptLine: scene.scriptLine,
+          audioSource: "voiceover",
+          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene, 0)])
+        };
+      })
+    );
+  };
+
+  const appendNextSceneAsBeat = (sceneId: string): void => {
+    const idx = project.scenes.findIndex((scene) => scene.id === sceneId);
+    const scene = project.scenes[idx];
+    const nextScene = project.scenes[idx + 1];
+    if (idx < 0 || scene?.kind !== "sequence" || nextScene === undefined || nextScene.kind === "sequence") return;
+    const beats = scene.beats ?? [];
+    const beat = beatFromScene(nextScene, nextBeatStartSec(beats));
+    const narration = [scene.narration ?? scene.scriptLine, nextScene.scriptLine]
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join(" ");
+    const next = [...project.scenes];
+    next[idx] = {
+      ...scene,
+      scriptLine: narration,
+      narration,
+      beats: normalizeSizzleSequenceBeatContinuity([...beats, beat])
+    };
+    next.splice(idx + 1, 1);
+    onScenes(next);
+  };
+
+  const moveSequenceBeat = (sceneId: string, beatIdx: number, delta: number): void => {
+    onScenes(
+      project.scenes.map((scene) => {
+        if (scene.id !== sceneId || scene.kind !== "sequence" || scene.beats === undefined) return scene;
+        const target = beatIdx + delta;
+        if (target < 0 || target >= scene.beats.length) return scene;
+        const beats = [...scene.beats];
+        [beats[beatIdx], beats[target]] = [beats[target]!, beats[beatIdx]!];
+        return { ...scene, beats: normalizeSizzleSequenceBeatContinuity(beats) };
+      })
+    );
+  };
+
+  const removeSequenceBeat = (sceneId: string, beatId: string): void => {
+    onScenes(
+      project.scenes.map((scene) => {
+        if (scene.id !== sceneId || scene.kind !== "sequence" || scene.beats === undefined) return scene;
+        if (scene.beats.length <= 1) return scene;
+        return {
+          ...scene,
+          beats: normalizeSizzleSequenceBeatContinuity(
+            scene.beats.filter((beat) => beat.id !== beatId)
+          )
+        };
+      })
+    );
+  };
+
   const totalScenes = project.scenes.length;
   const rendering =
     status.phase !== "idle" &&
@@ -898,7 +1070,7 @@ function Editor(props: EditorProps): ReactElement {
                   key={`tr-${scene.id}`}
                   className={
                     "szl__transition" +
-                    (scene.transition === "crossfade"
+                    (transitionType(scene.transition) === "crossfade"
                       ? " szl__transition--crossfade"
                       : " szl__transition--cut")
                   }
@@ -909,12 +1081,12 @@ function Editor(props: EditorProps): ReactElement {
                     onClick={() =>
                       editScene(scene.id, {
                         transition:
-                          scene.transition === "crossfade" ? "cut" : "crossfade"
+                          transitionType(scene.transition) === "crossfade" ? "cut" : "crossfade"
                       })
                     }
                     title="Toggle between Cut and Crossfade"
                   >
-                    {scene.transition === "crossfade" ? "⌒ Crossfade ⌒" : "─ Cut ─"}
+                    {transitionType(scene.transition) === "crossfade" ? "⌒ Crossfade ⌒" : "─ Cut ─"}
                   </button>
                 </li>
               );
@@ -950,6 +1122,271 @@ function Editor(props: EditorProps): ReactElement {
                   )}
                 </div>
                 <div className="szl__scene-body">
+                  {scene.kind === "sequence" ? (
+                    <>
+                      <textarea
+                        className="szl__scene-script"
+                        placeholder="Narration for this sequence"
+                        value={scene.narration ?? scene.scriptLine}
+                        onChange={(e) =>
+                          editScene(scene.id, {
+                            scriptLine: e.target.value,
+                            narration: e.target.value
+                          })
+                        }
+                      />
+                      <div className="szl__scene-row">
+                        <span className="szl__scene-app">
+                          Sequence · one narration block
+                        </span>
+                        <span className="szl__spacer" />
+                        <button
+                          className="szl__scene-action"
+                          onClick={() => onPickSequenceBeat(scene.id)}
+                          type="button"
+                        >
+                          + Beat
+                        </button>
+                        <button
+                          className="szl__scene-action"
+                          onClick={() => appendNextSceneAsBeat(scene.id)}
+                          disabled={
+                            project.scenes[idx + 1] === undefined ||
+                            project.scenes[idx + 1]?.kind === "sequence"
+                          }
+                          type="button"
+                        >
+                          Add next scene
+                        </button>
+                      </div>
+                      <div className="szl__sequence-beats">
+                        {(scene.beats ?? []).map((beat, beatIdx) => {
+                          const beatCapture = captureMap.get(beat.captureId) ?? null;
+                          const beatThumb =
+                            beatCapture?.edits_version !== undefined
+                              ? cacheUrl(beat.captureId, 160, "webp", beatCapture.edits_version)
+                              : cacheUrl(beat.captureId, 160, "webp");
+                          const timingKind = beat.timing.kind;
+                          const isFirstBeat = beatIdx === 0;
+                          const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
+                          return (
+                            <div className="szl__sequence-beat" key={beat.id}>
+                              <span className="szl__sequence-beat-num">{beatIdx + 1}</span>
+                              <span className="szl__sequence-beat-thumb">
+                                {beatCapture !== null ? (
+                                  beatCapture.kind === "video" ? (
+                                    <video src={captureSrcUrl(beat.captureId)} muted playsInline preload="metadata" />
+                                  ) : (
+                                    <img src={beatThumb} alt="" />
+                                  )
+                                ) : (
+                                  <span>missing</span>
+                                )}
+                              </span>
+                              <span className="szl__sequence-beat-title">
+                                {beatCapture?.source_app_name ?? beat.captureId}
+                              </span>
+                              <select
+                                value={timingKind}
+                                disabled={isFirstBeat}
+                                onChange={(e) => {
+                                  const kind = e.target.value as SizzleBeatTiming["kind"];
+                                  editSequenceBeat(scene.id, beat.id, {
+                                    timing:
+                                      kind === "offset"
+                                        ? { kind: "offset", startSec: 0, endSec: null }
+                                        : { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
+                                  });
+                                }}
+                                title={isFirstBeat ? "The first beat always starts at 0" : "Beat start timing"}
+                              >
+                                <option value="offset">Offset</option>
+                                <option value="phrase">Phrase</option>
+                              </select>
+                              {beat.timing.kind === "offset" ? (
+                                <>
+                                  <label className="szl__sequence-time-field">
+                                    <span>Start</span>
+                                    <input
+                                      className="szl__sequence-time"
+                                      type="number"
+                                      min={0}
+                                      step={0.1}
+                                      value={beat.timing.startSec}
+                                      disabled={isFirstBeat}
+                                      onChange={(e) => {
+                                        const v = Number(e.target.value);
+                                        if (!Number.isFinite(v)) return;
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "offset",
+                                            startSec: Math.max(0, v),
+                                            endSec: beat.timing.kind === "offset" ? beat.timing.endSec : null
+                                          }
+                                        });
+                                      }}
+                                      title={isFirstBeat ? "The first beat always starts at 0" : "Beat start seconds"}
+                                    />
+                                  </label>
+                                  <label className="szl__sequence-time-field">
+                                    <span>End</span>
+                                    <input
+                                      className="szl__sequence-time"
+                                      type="number"
+                                      min={0}
+                                      step={0.1}
+                                      placeholder="auto"
+                                      value={isFinalBeat ? beat.timing.endSec ?? "" : ""}
+                                      disabled={!isFinalBeat}
+                                      onChange={(e) => {
+                                        if (!isFinalBeat) return;
+                                        const raw = e.target.value.trim();
+                                        const v = raw === "" ? null : Number(raw);
+                                        if (v !== null && !Number.isFinite(v)) return;
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "offset",
+                                            startSec: beat.timing.kind === "offset" ? beat.timing.startSec : 0,
+                                            endSec: v
+                                          }
+                                        });
+                                      }}
+                                      title={isFinalBeat ? "Optional final beat end seconds" : "Non-final beats end automatically at the next beat anchor"}
+                                    />
+                                  </label>
+                                </>
+                              ) : (
+                                <>
+                                  <input
+                                    className="szl__sequence-phrase"
+                                    value={beat.timing.phrase}
+                                    placeholder="spoken phrase"
+                                    title="Phrase to match in the narration"
+                                    onChange={(e) =>
+                                      editSequenceBeat(scene.id, beat.id, {
+                                        timing: {
+                                          kind: "phrase",
+                                          phrase: e.target.value,
+                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                          offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
+                                          durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                        }
+                                      })
+                                    }
+                                  />
+                                  <label className="szl__sequence-time-field">
+                                    <span>Offset</span>
+                                    <input
+                                      className="szl__sequence-time"
+                                      type="number"
+                                      step={0.1}
+                                      value={beat.timing.offsetSec}
+                                      onChange={(e) => {
+                                        const v = Number(e.target.value);
+                                        if (!Number.isFinite(v)) return;
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "phrase",
+                                            phrase: beat.timing.kind === "phrase" ? beat.timing.phrase : "",
+                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                            offsetSec: v,
+                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                          }
+                                        });
+                                      }}
+                                      title="Seconds to shift from the matched phrase start. Negative starts before the phrase; positive starts after it."
+                                    />
+                                  </label>
+                                </>
+                              )}
+                              <select
+                                value={beat.videoFit}
+                                onChange={(e) =>
+                                  editSequenceBeat(scene.id, beat.id, {
+                                    videoFit: e.target.value as SizzleVideoFitPolicy
+                                  })
+                                }
+                              >
+                                <option value="smart-fit">Smart</option>
+                                <option value="loop">Loop</option>
+                                <option value="ping-pong">Ping-pong</option>
+                                <option value="speed-to-fit">Speed</option>
+                                <option value="freeze-end">Freeze</option>
+                                <option value="trim">Trim</option>
+                              </select>
+                              <select
+                                value={transitionType(beat.transition)}
+                                onChange={(e) =>
+                                  editSequenceBeat(scene.id, beat.id, {
+                                    transition: transitionFromType(e.target.value as SizzleTransitionType)
+                                  })
+                                }
+                              >
+                                <option value="cut">Cut</option>
+                                <option value="crossfade">Fade</option>
+                                <option value="dip-black">Dip black</option>
+                                <option value="dip-white">Dip white</option>
+                                <option value="push-left">Push left</option>
+                                <option value="slide-left">Slide left</option>
+                                <option value="zoom-cut">Zoom</option>
+                              </select>
+                              <button
+                                className="szl__scene-mini"
+                                onClick={() => moveSequenceBeat(scene.id, beatIdx, -1)}
+                                disabled={beatIdx === 0}
+                                type="button"
+                                title="Move beat up"
+                              >
+                                ↑
+                              </button>
+                              <button
+                                className="szl__scene-mini"
+                                onClick={() => moveSequenceBeat(scene.id, beatIdx, 1)}
+                                disabled={beatIdx === (scene.beats?.length ?? 0) - 1}
+                                type="button"
+                                title="Move beat down"
+                              >
+                                ↓
+                              </button>
+                              <button
+                                className="szl__scene-mini szl__scene-mini--danger"
+                                onClick={() => removeSequenceBeat(scene.id, beat.id)}
+                                disabled={(scene.beats?.length ?? 0) <= 1}
+                                type="button"
+                                title="Remove beat"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="szl__scene-hint">
+                        Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
+                      </div>
+                      <div className="szl__scene-row">
+                        <span className="szl__scene-app">sequence</span>
+                        <span className="szl__spacer" />
+                        <button
+                          className="szl__scene-mini szl__scene-mini--play"
+                          onClick={() => void onPreviewScene(scene.id)}
+                          disabled={previewLoadingSceneId === scene.id || scene.scriptLine.trim().length === 0}
+                          type="button"
+                          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence narration"}
+                        >
+                          {previewLoadingSceneId === scene.id
+                            ? "…"
+                            : previewingSceneId === scene.id
+                              ? "■"
+                              : "▶"}
+                        </button>
+                        <button className="szl__scene-mini" onClick={() => moveScene(idx, -1)} disabled={idx === 0} type="button" title="Move up">↑</button>
+                        <button className="szl__scene-mini" onClick={() => moveScene(idx, 1)} disabled={idx === project.scenes.length - 1} type="button" title="Move down">↓</button>
+                        <button className="szl__scene-mini szl__scene-mini--danger" onClick={() => removeScene(scene.id)} type="button" title="Remove scene">✕</button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
                   <textarea
                     className="szl__scene-script"
                     placeholder={
@@ -1100,6 +1537,13 @@ function Editor(props: EditorProps): ReactElement {
                     </span>
                     <span className="szl__spacer" />
                     <button
+                      className="szl__scene-action"
+                      onClick={() => convertToSequence(scene.id)}
+                      type="button"
+                    >
+                      Sequence
+                    </button>
+                    <button
                       className="szl__scene-mini szl__scene-mini--play"
                       onClick={() => void onPreviewScene(scene.id)}
                       disabled={previewDisabled}
@@ -1139,6 +1583,8 @@ function Editor(props: EditorProps): ReactElement {
                       ✕
                     </button>
                   </div>
+                    </>
+                  )}
                 </div>
               </li>
             );

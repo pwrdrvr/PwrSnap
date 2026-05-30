@@ -514,6 +514,52 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     expect(graph).toContain("xfade=transition=fade:duration=0.4");
   });
 
+  it("object transitions map to ffmpeg xfade transitions and custom durations", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          {
+            ...imageScene(1, "cut"),
+            transition: { type: "dip-black", durationSec: 0.25 }
+          },
+          {
+            ...imageScene(2, "cut"),
+            transition: { type: "push-left", durationSec: 0.18 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("xfade=transition=fadeblack:duration=0.25");
+    expect(graph).toContain("xfade=transition=slideleft:duration=0.18");
+  });
+
+  it("object cut/none transitions remain hard cuts", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          imageScene(0, "cut"),
+          {
+            ...imageScene(1, "cut"),
+            transition: { type: "none", durationSec: 0 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).not.toContain("xfade=");
+    expect((graph.match(/concat=n=2:v=1:a=0/g) ?? []).length).toBe(1);
+  });
+
   it("3 scenes, [cut, crossfade]: one concat + one xfade", () => {
     // scene[0].transition is ignored (nothing precedes it). The
     // boundary between scene[0]→scene[1] is determined by
@@ -703,5 +749,130 @@ describe("buildCompositionArgs — xfade transition chain", () => {
       }
     );
     expect(filterGraph(args)).not.toContain("tpad=");
+  });
+
+  it("sequence beat audio can start from the middle of a narration file", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/narration.mp3",
+            audioStartSec: 1.25,
+            durationSec: 0.75,
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    expect(filterGraph(args)).toContain("atrim=1.250:2.000");
+  });
+
+  it("sequence beat audio duration can differ from visual duration for xfade overlap", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/narration.mp3",
+            audioStartSec: 1,
+            audioDurationSec: 1,
+            durationSec: 1.18,
+            transition: { type: "push-left", durationSec: 0.18 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    expect(filterGraph(args)).toContain("atrim=1.000:2.000");
+  });
+
+  it("loop video fit repeats a short clip to fill the target duration", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 1,
+            durationSec: 4,
+            audioPath: "/x/a.mp3",
+            transition: "cut",
+            videoFit: { mode: "loop", playbackRate: 1 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("loop=loop=3:size=30:start=0");
+    expect(graph).toContain("trim=duration=4.000");
+  });
+
+  it("speed-to-fit video fit changes PTS rather than freezing the tail", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 3,
+            durationSec: 2,
+            audioPath: "/x/a.mp3",
+            transition: "cut",
+            videoFit: { mode: "speed-to-fit", playbackRate: 1.5 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("setpts=0.666667*PTS");
+    expect(graph).not.toContain("tpad=stop_mode=clone");
+  });
+
+  it("ping-pong video fit alternates forward and reverse frames", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 1,
+            durationSec: 4,
+            audioPath: "/x/a.mp3",
+            transition: "cut",
+            videoFit: { mode: "ping-pong", playbackRate: 1 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("split=2");
+    expect(graph).toContain("reverse");
+    expect(graph).toContain("concat=n=2:v=1:a=0");
+    expect(graph).toContain("loop=loop=1:size=60:start=0");
   });
 });

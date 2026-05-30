@@ -566,18 +566,190 @@ export const SIZZLE_AUDIO_SOURCES = [
   "muted"
 ] as const satisfies readonly SizzleAudioSource[];
 
+export type SizzleTransitionType =
+  | "none"
+  | "cut"
+  | "crossfade"
+  | "dip-black"
+  | "dip-white"
+  | "push-left"
+  | "slide-left"
+  | "zoom-cut";
+
 /**
- * Transition INTO this scene from the previous one. The first scene's
- * `transition` is ignored (nothing precedes it). Composer translates
- * "crossfade" into ffmpeg's `xfade` filter with a fixed 0.4s overlap.
+ * Transition INTO this scene or beat from the previous one. The first
+ * scene/beat transition is ignored (nothing precedes it). Older projects
+ * stored this as a bare string ("cut" | "crossfade"); the object form
+ * carries per-boundary duration while keeping read-path compatibility.
  */
-export type SizzleTransition = "cut" | "crossfade";
+export type SizzleTransition =
+  | "cut"
+  | "crossfade"
+  | { type: SizzleTransitionType; durationSec: number };
 
-export const SIZZLE_TRANSITIONS = ["cut", "crossfade"] as const satisfies readonly SizzleTransition[];
+export const SIZZLE_TRANSITIONS = [
+  "none",
+  "cut",
+  "crossfade",
+  "dip-black",
+  "dip-white",
+  "push-left",
+  "slide-left",
+  "zoom-cut"
+] as const satisfies readonly SizzleTransitionType[];
 
-/** Crossfade duration in seconds. Visible in the UI as just "Crossfade"
- *  (no per-scene timing); locked to keep the surface area small. */
+/** Default crossfade duration in seconds. */
 export const SIZZLE_CROSSFADE_SEC = 0.4;
+export const SIZZLE_BEAT_TRANSITION_SEC = 0.18;
+
+export function sizzleTransitionType(
+  transition: SizzleTransition
+): SizzleTransitionType {
+  return typeof transition === "string" ? transition : transition.type;
+}
+
+export function sizzleTransitionDurationSec(
+  transition: SizzleTransition
+): number {
+  if (typeof transition !== "string") return transition.durationSec;
+  return transition === "crossfade" ? SIZZLE_CROSSFADE_SEC : 0;
+}
+
+export function normalizeSizzleTransition(
+  transition: SizzleTransition | SizzleTransitionType | null | undefined,
+  defaults: { type?: SizzleTransitionType; durationSec?: number } = {}
+): SizzleTransition {
+  if (transition === "cut" || transition === "crossfade") return transition;
+  if (typeof transition === "string") {
+    return {
+      type: transition,
+      durationSec:
+        defaults.durationSec ??
+        (transition === "none" ? 0 : SIZZLE_BEAT_TRANSITION_SEC)
+    };
+  }
+  if (transition !== null && transition !== undefined) {
+    return {
+      type: transition.type,
+      durationSec: transition.durationSec
+    };
+  }
+  const type = defaults.type ?? "crossfade";
+  if (type === "cut" || type === "crossfade") return type;
+  return {
+    type,
+    durationSec: defaults.durationSec ?? SIZZLE_BEAT_TRANSITION_SEC
+  };
+}
+
+export type SizzleVideoFitPolicy =
+  | "trim"
+  | "freeze-end"
+  | "loop"
+  | "ping-pong"
+  | "speed-to-fit"
+  | "smart-fit";
+
+export const SIZZLE_VIDEO_FIT_POLICIES = [
+  "trim",
+  "freeze-end",
+  "loop",
+  "ping-pong",
+  "speed-to-fit",
+  "smart-fit"
+] as const satisfies readonly SizzleVideoFitPolicy[];
+
+export type SizzleBeatTiming =
+  | {
+      kind: "offset";
+      startSec: number;
+      endSec: number | null;
+    }
+  | {
+      kind: "phrase";
+      phrase: string;
+      occurrence: number | null;
+      offsetSec: number;
+      durationSec: number | null;
+    };
+
+export type SizzleSequenceBeat = {
+  id: string;
+  captureId: string;
+  timing: SizzleBeatTiming;
+  mediaTrim: SizzleMediaTrim | null;
+  transition: SizzleTransition;
+  videoFit: SizzleVideoFitPolicy;
+};
+
+/**
+ * Sequence beats are start anchors, not independent audio clips.
+ * A non-final beat must run until the next beat's anchor; otherwise the
+ * composer would cut a hole out of the continuous narration. The first
+ * beat is pinned to the beginning because there is no earlier visual to
+ * cover narration before it.
+ */
+export function normalizeSizzleSequenceBeatContinuity(
+  beats: SizzleSequenceBeat[]
+): SizzleSequenceBeat[] {
+  return beats.map((beat, index) => {
+    let timing = beat.timing;
+    if (index === 0 && timing.kind === "phrase") {
+      timing = { kind: "offset", startSec: 0, endSec: null };
+    } else if (index === 0 && timing.kind === "offset" && timing.startSec !== 0) {
+      timing = { ...timing, startSec: 0 };
+    }
+    if (index < beats.length - 1) {
+      if (timing.kind === "offset" && timing.endSec !== null) {
+        timing = { ...timing, endSec: null };
+      } else if (timing.kind === "phrase" && timing.durationSec !== null) {
+        timing = { ...timing, durationSec: null };
+      }
+    }
+    return timing === beat.timing ? beat : { ...beat, timing };
+  });
+}
+
+export type SizzleSpeechTimingQuality = "precise" | "approximate";
+
+export type SizzleSpeechTimingWarningCode =
+  | "precise_unavailable"
+  | "precise_failed"
+  | "timing_cache_failed"
+  | "empty_narration"
+  | "invalid_duration"
+  | "phrase_unresolved";
+
+export type SizzleSpeechTimingWarning = {
+  code: SizzleSpeechTimingWarningCode;
+  message: string;
+};
+
+export type SizzleWordTiming = {
+  index: number;
+  word: string;
+  normalized: string;
+  startSec: number;
+  endSec: number;
+};
+
+export type SizzleSpeechTiming = {
+  text: string;
+  durationSec: number;
+  quality: SizzleSpeechTimingQuality;
+  words: SizzleWordTiming[];
+  warnings: SizzleSpeechTimingWarning[];
+};
+
+export type SizzleResolvedPhraseTiming = {
+  startSec: number;
+  endSec: number;
+  quality: SizzleSpeechTimingQuality;
+  wordStartIndex: number;
+  wordEndIndex: number;
+  matchedText: string;
+  warnings: SizzleSpeechTimingWarning[];
+};
 
 /**
  * Resolve a scene's audio source policy to a concrete choice at
@@ -618,8 +790,16 @@ export function resolveSizzleAudioSource(
 
 export type SizzleScene = {
   id: string;
+  /** `simple` is the legacy/current one-capture scene. `sequence`
+   *  keeps one continuous narration block with many visual beats.
+   *  Older projects have no kind; the store normalizes them to simple. */
+  kind?: "simple" | "sequence";
   captureId: string;
+  /** For sequence scenes this mirrors `narration` for compatibility
+   *  with legacy UI and agent views until every surface is sequence-aware. */
   scriptLine: string;
+  narration?: string;
+  beats?: SizzleSequenceBeat[];
   durationOverrideSec: number | null;
   /** Trim range for video-backed scenes. NULL for image scenes (the
    *  composer ignores it for images). Required at render time for
@@ -629,7 +809,7 @@ export type SizzleScene = {
    *  based on capture kind + scriptLine at render time. */
   audioSource: SizzleAudioSource;
   /** Transition INTO this scene. Ignored on scene 0. Defaults to
-   *  "crossfade" for new scenes (the visual win we want). */
+   *  "crossfade" for new simple scenes. */
   transition: SizzleTransition;
 };
 

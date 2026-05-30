@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { SIZZLE_CROSSFADE_SEC, type SizzleTransition } from "@pwrsnap/shared";
+import {
+  sizzleTransitionDurationSec,
+  sizzleTransitionType,
+  type SizzleTransition,
+  type SizzleTransitionType
+} from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
+import type { VideoFitRenderMode } from "./video-fit";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
 
@@ -27,8 +33,15 @@ export type ImageSceneInput = {
   kind: "image";
   imagePath: string;
   audioPath: string;
+  audioStartSec?: number;
+  audioDurationSec?: number;
   durationSec: number;
   transition: SizzleTransition;
+};
+
+export type VideoFitRenderPlan = {
+  mode: VideoFitRenderMode;
+  playbackRate: number;
 };
 
 export type VideoSceneInput = {
@@ -48,7 +61,10 @@ export type VideoSceneInput = {
    *  for the remainder. When equal, no padding fires. */
   durationSec: number;
   audioPath: string;
+  audioStartSec?: number;
+  audioDurationSec?: number;
   transition: SizzleTransition;
+  videoFit?: VideoFitRenderPlan;
 };
 
 export type SceneInput = ImageSceneInput | VideoSceneInput;
@@ -146,8 +162,8 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *
  * - Boundaries between scenes are built as a left-fold over the
  *   scene list. For each pair (chain-so-far, next scene):
- *     • `transition: "crossfade"` → splice an `xfade` filter with
- *       SIZZLE_CROSSFADE_SEC overlap; the resulting chain duration
+ *     • fade-like transitions → splice an `xfade` filter with
+ *       the transition duration overlap; the resulting chain duration
  *       shrinks by SIZZLE_CROSSFADE_SEC.
  *     • `transition: "cut"` → a 2-input `concat` (drops to a hard
  *       cut, no audio drift, chain duration is the sum).
@@ -155,7 +171,7 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  * - Audio comes from the concat-demuxer input that follows the scene
  *   inputs. Audio sees only cuts — every scene's `audioPath` is
  *   stitched end-to-end. With crossfades the audio is ~SIZZLE_CROSSFADE_SEC
- *   per crossfade longer than video; `-shortest` truncates to the
+ *   per xfade longer than video; `-shortest` truncates to the
  *   shorter, so the trailing silence at the end of the last audio
  *   gets clipped. Acceptable for narration-paced content; audio-side
  *   crossfade (`acrossfade`) is a future enhancement.
@@ -239,19 +255,16 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
       // composer a scene where `durationSec > native-audio length`,
       // `-shortest` truncates the whole reel at that point — caller's
       // job to keep them in sync, not the composer's to defend.
-      const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
-      const tpadFilter =
-        padSec > 0.05
-          ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
-          : "";
+      const fit = scene.videoFit ?? { mode: "freeze-end", playbackRate: 1 };
+      const baseLabel = `vb${i}`;
       filters.push(
         `[${i}:v]` +
           `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
           `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
           `fps=${req.fps},setsar=1,format=yuv420p` +
-          tpadFilter +
-          `[v${i}]`
+          `[${baseLabel}]`
       );
+      filters.push(...videoFitFilters(baseLabel, `v${i}`, scene, fit, req.fps));
     }
   });
 
@@ -294,6 +307,52 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
   return args;
 }
 
+function videoFitFilters(
+  inputLabel: string,
+  outputLabel: string,
+  scene: VideoSceneInput,
+  fit: VideoFitRenderPlan,
+  fps: number
+): string[] {
+  if (fit.mode === "speed-to-fit") {
+    const factor = 1 / Math.max(0.01, fit.playbackRate);
+    return [
+      `[${inputLabel}]setpts=${factor.toFixed(6)}*PTS,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
+  }
+  if (fit.mode === "loop") {
+    const frames = Math.max(1, Math.round(scene.trimDurationSec * fps));
+    const repeats = Math.max(1, Math.ceil(scene.durationSec / Math.max(0.01, scene.trimDurationSec)) - 1);
+    return [
+      `[${inputLabel}]loop=loop=${repeats}:size=${frames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
+  }
+  if (fit.mode === "ping-pong") {
+    const frames = Math.max(1, Math.round(scene.trimDurationSec * fps));
+    const pairFrames = frames * 2;
+    const pairDurationSec = Math.max(0.01, scene.trimDurationSec * 2);
+    const repeats = Math.max(0, Math.ceil(scene.durationSec / pairDurationSec) - 1);
+    const fwd = `${inputLabel}f`;
+    const revIn = `${inputLabel}r`;
+    const rev = `${inputLabel}rv`;
+    const pair = `${inputLabel}pp`;
+    return [
+      `[${inputLabel}]split=2[${fwd}][${revIn}]`,
+      `[${revIn}]reverse[${rev}]`,
+      `[${fwd}][${rev}]concat=n=2:v=1:a=0[${pair}]`,
+      `[${pair}]loop=loop=${repeats}:size=${pairFrames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
+  }
+  const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
+  const tpadFilter =
+    padSec > 0.05
+      ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
+      : "";
+  return [
+    `[${inputLabel}]${tpadFilter.startsWith(",") ? tpadFilter.slice(1) + "," : ""}trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+  ];
+}
+
 function videoBitrate(width: number, height: number, fps: number): string {
   const bitsPerPixelFrame = 0.12;
   const bitrate = Math.max(
@@ -325,19 +384,21 @@ function buildTransitionChain(
   for (let i = 1; i < scenes.length; i++) {
     const next = scenes[i]!;
     const nextLabel = `chain${i}`;
-    if (next.transition === "crossfade") {
-      // xfade overlaps the last SIZZLE_CROSSFADE_SEC of the chain
-      // with the first SIZZLE_CROSSFADE_SEC of the next scene.
+    const xfade = xfadeForTransition(next.transition);
+    if (xfade !== null) {
+      // xfade overlaps the last transition duration of the chain
+      // with the first transition duration of the next scene.
       // `offset` is when the crossfade begins in the chain's
-      // timeline, so chainEndSec - SIZZLE_CROSSFADE_SEC.
-      const offsetSec = Math.max(0, chainEndSec - SIZZLE_CROSSFADE_SEC);
+      // timeline, so chainEndSec - duration.
+      const durationSec = Math.min(xfade.durationSec, chainEndSec, next.durationSec);
+      const offsetSec = Math.max(0, chainEndSec - durationSec);
       filters.push(
-        `[${chainLabel}][v${i}]xfade=transition=fade:` +
-          `duration=${SIZZLE_CROSSFADE_SEC}:offset=${offsetSec.toFixed(3)}` +
+        `[${chainLabel}][v${i}]xfade=transition=${xfade.ffmpegName}:` +
+          `duration=${formatFilterSec(durationSec)}:offset=${offsetSec.toFixed(3)}` +
           `[${nextLabel}]`
       );
       // Chain duration grows by next.durationSec but loses the overlap.
-      chainEndSec = chainEndSec + next.durationSec - SIZZLE_CROSSFADE_SEC;
+      chainEndSec = chainEndSec + next.durationSec - durationSec;
     } else {
       // Hard cut — concat with n=2.
       filters.push(
@@ -350,15 +411,53 @@ function buildTransitionChain(
   return chainLabel;
 }
 
+function formatFilterSec(value: number): string {
+  return Number(value.toFixed(3)).toString();
+}
+
+function xfadeForTransition(
+  transition: SizzleTransition
+): { ffmpegName: string; durationSec: number } | null {
+  const type = sizzleTransitionType(transition);
+  if (type === "none" || type === "cut") return null;
+  const durationSec = sizzleTransitionDurationSec(transition);
+  if (durationSec <= 0) return null;
+  return {
+    ffmpegName: ffmpegXfadeName(type),
+    durationSec
+  };
+}
+
+function ffmpegXfadeName(type: SizzleTransitionType): string {
+  switch (type) {
+    case "crossfade":
+      return "fade";
+    case "dip-black":
+      return "fadeblack";
+    case "dip-white":
+      return "fadewhite";
+    case "push-left":
+    case "slide-left":
+      return "slideleft";
+    case "zoom-cut":
+      return "zoomin";
+    case "none":
+    case "cut":
+      return "fade";
+  }
+}
+
 function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
   scenes.forEach((scene, i) => {
     const inputIndex = scenes.length + i;
+    const audioDurationSec = scene.audioDurationSec ?? scene.durationSec;
+    const audioStartSec = scene.audioStartSec ?? 0;
     filters.push(
       `[${inputIndex}:a]` +
         "aresample=44100," +
         "aformat=sample_fmts=fltp:channel_layouts=stereo," +
         "apad," +
-        `atrim=0:${scene.durationSec.toFixed(3)},` +
+        `atrim=${audioStartSec.toFixed(3)}:${(audioStartSec + audioDurationSec).toFixed(3)},` +
         "asetpts=PTS-STARTPTS" +
         `[a${i}]`
     );

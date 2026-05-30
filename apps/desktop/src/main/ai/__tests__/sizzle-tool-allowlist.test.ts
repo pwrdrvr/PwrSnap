@@ -93,9 +93,9 @@ beforeEach(() => {
 });
 
 describe("buildSizzleToolAllowlist", () => {
-  it("exposes all 14 tools under the pwrsnap_sizzle namespace", () => {
+  it("exposes all 16 tools under the pwrsnap_sizzle namespace", () => {
     const allow = boundAllowlist();
-    expect(allow).toHaveLength(14);
+    expect(allow).toHaveLength(16);
     expect(allow.every((t) => t.namespace === "pwrsnap_sizzle")).toBe(true);
     expect(allow.map((t) => t.name)).toEqual(
       expect.arrayContaining([
@@ -104,11 +104,13 @@ describe("buildSizzleToolAllowlist", () => {
         "project_get",
         "scenes_set",
         "scenes_append",
+        "sequence_scene_append",
         "scenes_insert",
         "scenes_remove",
         "scenes_reorder",
         "scene_set_script",
         "scene_set_transition",
+        "sequence_beat_update",
         "scene_set_audio_source",
         "scene_set_media_trim",
         "scene_set_duration_override",
@@ -153,6 +155,127 @@ describe("buildSizzleToolAllowlist", () => {
     const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     expect(scenes.find((s) => s.id === "sc_a")?.scriptLine).toBe("");
     expect(scenes.find((s) => s.id === "sc_b")?.scriptLine).toBe("new");
+  });
+
+  it("sequence_scene_append creates one narration block with timed beats", async () => {
+    primeBus(project([]));
+    const r = await tool(boundAllowlist(), "sequence_scene_append").dispatch(
+      {
+        scene: {
+          narration: "Open Settings, then enable Telegram.",
+          beats: [
+            {
+              captureId: "cap_settings",
+              timing: { kind: "offset", startSec: 0, endSec: 1 },
+              transition: "cut",
+              videoFit: "smart-fit"
+            },
+            {
+              captureId: "cap_telegram",
+              timing: { kind: "phrase", phrase: "Telegram", occurrence: 1 },
+              transition: { type: "push-left", durationSec: 0.18 },
+              videoFit: "loop"
+            }
+          ]
+        }
+      },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
+    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]!.kind).toBe("sequence");
+    expect(scenes[0]!.scriptLine).toBe("Open Settings, then enable Telegram.");
+    expect(scenes[0]!.beats).toHaveLength(2);
+    expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
+    expect(scenes[0]!.beats![1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
+    expect(scenes[0]!.beats![1]!.videoFit).toBe("loop");
+  });
+
+  it("sequence_beat_update changes one beat without replacing siblings", async () => {
+    primeBus(project([
+      scene({
+        id: "sc_seq",
+        kind: "sequence",
+        narration: "Open Settings then enable Telegram",
+        scriptLine: "Open Settings then enable Telegram",
+        beats: [
+          {
+            id: "bt_a",
+            captureId: "cap_a",
+            timing: { kind: "offset", startSec: 0, endSec: 1 },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          },
+          {
+            id: "bt_b",
+            captureId: "cap_b",
+            timing: { kind: "offset", startSec: 1, endSec: 2 },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          }
+        ]
+      })
+    ]));
+    const r = await tool(boundAllowlist(), "sequence_beat_update").dispatch(
+      {
+        sceneId: "sc_seq",
+        beatId: "bt_b",
+        timing: { kind: "phrase", phrase: "Telegram", offsetSec: -0.1, durationSec: 0.5 },
+        transition: { type: "dip-black", durationSec: 0.2 },
+        videoFit: "speed-to-fit"
+      },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
+    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    const beats = scenes[0]!.beats!;
+    expect(beats[0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
+    expect(beats[1]!.timing).toEqual({
+      kind: "phrase",
+      phrase: "Telegram",
+      occurrence: null,
+      offsetSec: -0.1,
+      durationSec: 0.5
+    });
+    expect(beats[1]!.transition).toEqual({ type: "dip-black", durationSec: 0.2 });
+    expect(beats[1]!.videoFit).toBe("speed-to-fit");
+  });
+
+  it("sequence_beat_update errors when the beat id is unknown", async () => {
+    primeBus(project([
+      scene({
+        id: "sc_seq",
+        kind: "sequence",
+        narration: "Open Settings",
+        scriptLine: "Open Settings",
+        beats: [
+          {
+            id: "bt_a",
+            captureId: "cap_a",
+            timing: { kind: "offset", startSec: 0, endSec: 1 },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          }
+        ]
+      })
+    ]));
+    const r = await tool(boundAllowlist(), "sequence_beat_update").dispatch(
+      {
+        sceneId: "sc_seq",
+        beatId: "missing",
+        videoFit: "loop"
+      },
+      CTX
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Beat missing not found");
+    expect(dispatch.mock.calls.some((c) => c[0] === "sizzle:update")).toBe(false);
   });
 
   it("scene_set_script on an unknown scene errors and does NOT write", async () => {

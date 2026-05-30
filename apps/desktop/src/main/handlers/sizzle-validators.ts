@@ -26,12 +26,19 @@
 import {
   SIZZLE_AUDIO_SOURCES,
   SIZZLE_TRANSITIONS,
+  SIZZLE_VIDEO_FIT_POLICIES,
   SIZZLE_VOICES,
+  normalizeSizzleSequenceBeatContinuity,
+  normalizeSizzleTransition,
   type SizzleAudioSource,
+  type SizzleBeatTiming,
   type SizzleMediaTrim,
   type SizzleProject,
   type SizzleScene,
+  type SizzleSequenceBeat,
   type SizzleTransition,
+  type SizzleTransitionType,
+  type SizzleVideoFitPolicy,
   type SizzleTtsModel,
   type SizzleTtsProvider,
   type SizzleVoice,
@@ -46,6 +53,8 @@ import { SEARCH_MAX_LIMIT } from "../persistence/captures-repo";
 export const SIZZLE_LIMITS = {
   projectNameMax: 200,
   sceneScriptLineMax: 4000,
+  sequenceBeatsMax: 80,
+  beatPhraseMax: 160,
   scenesPerProjectMax: 200,
   durationOverrideSecMin: 0.5,
   durationOverrideSecMax: 60,
@@ -54,6 +63,8 @@ export const SIZZLE_LIMITS = {
    *  minutes per scene. */
   mediaTrimSecMin: 0.1,
   mediaTrimSecMax: 60,
+  beatTimingSecMax: 600,
+  transitionDurationSecMax: 3,
   /** Cap on bulk capture lookups via `library:listByIds`. The Library
    *  project view fetches a project's scenes in one go; 500 is well
    *  beyond the scenes-per-project cap and gives any caller a generous
@@ -239,8 +250,12 @@ function isAudioSource(v: unknown): v is SizzleAudioSource {
   return typeof v === "string" && (SIZZLE_AUDIO_SOURCES as readonly string[]).includes(v);
 }
 
-function isTransition(v: unknown): v is SizzleTransition {
+function isTransitionType(v: unknown): v is SizzleTransitionType {
   return typeof v === "string" && (SIZZLE_TRANSITIONS as readonly string[]).includes(v);
+}
+
+function isVideoFitPolicy(v: unknown): v is SizzleVideoFitPolicy {
+  return typeof v === "string" && (SIZZLE_VIDEO_FIT_POLICIES as readonly string[]).includes(v);
 }
 
 function validateMediaTrim(
@@ -289,6 +304,245 @@ function validateMediaTrim(
   return { ok: true, value: { startSec, endSec } };
 }
 
+function validateTransition(
+  v: unknown,
+  _idx: number,
+  field: string,
+  defaults: { type?: SizzleTransitionType; durationSec?: number } = {}
+): { ok: true; value: SizzleTransition } | { ok: false; error: PwrSnapError } {
+  if (v === undefined || v === null) {
+    return { ok: true, value: normalizeSizzleTransition(undefined, defaults) };
+  }
+  if (typeof v === "string") {
+    if (!isTransitionType(v)) {
+      return {
+        ok: false,
+        error: validationError(
+          "scene_transition_invalid",
+          `${field} must be one of ${SIZZLE_TRANSITIONS.join(", ")}`
+        )
+      };
+    }
+    return { ok: true, value: normalizeSizzleTransition(v, defaults) };
+  }
+  if (!isRecord(v)) {
+    return {
+      ok: false,
+      error: validationError("scene_transition_invalid", `${field} must be a string or object`)
+    };
+  }
+  if (!isTransitionType(v.type)) {
+    return {
+      ok: false,
+      error: validationError(
+        "scene_transition_invalid",
+        `${field}.type must be one of ${SIZZLE_TRANSITIONS.join(", ")}`
+      )
+    };
+  }
+  if (
+    typeof v.durationSec !== "number" ||
+    !Number.isFinite(v.durationSec) ||
+    v.durationSec < 0 ||
+    v.durationSec > SIZZLE_LIMITS.transitionDurationSecMax
+  ) {
+    return {
+      ok: false,
+      error: validationError(
+        "scene_transition_duration_invalid",
+        `${field}.durationSec must be a finite number in [0, ${SIZZLE_LIMITS.transitionDurationSecMax}]`
+      )
+    };
+  }
+  return {
+    ok: true,
+    value: normalizeSizzleTransition(
+      { type: v.type, durationSec: v.durationSec },
+      defaults
+    )
+  };
+}
+
+function validateBeatTiming(
+  v: unknown,
+  sceneIdx: number,
+  beatIdx: number
+): { ok: true; value: SizzleBeatTiming } | { ok: false; error: PwrSnapError } {
+  const field = `scene[${sceneIdx}].beats[${beatIdx}].timing`;
+  if (!isRecord(v)) {
+    return {
+      ok: false,
+      error: validationError("scene_beat_timing_invalid", `${field} must be an object`)
+    };
+  }
+  if (v.kind === "offset") {
+    if (typeof v.startSec !== "number" || !Number.isFinite(v.startSec) || v.startSec < 0) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_timing_invalid", `${field}.startSec must be a finite number ≥ 0`)
+      };
+    }
+    if (v.startSec > SIZZLE_LIMITS.beatTimingSecMax) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_timing_out_of_range", `${field}.startSec is too large`)
+      };
+    }
+    if (v.endSec !== null && v.endSec !== undefined) {
+      if (typeof v.endSec !== "number" || !Number.isFinite(v.endSec) || v.endSec <= v.startSec) {
+        return {
+          ok: false,
+          error: validationError("scene_beat_timing_invalid", `${field}.endSec must be > startSec or null`)
+        };
+      }
+      if (v.endSec > SIZZLE_LIMITS.beatTimingSecMax) {
+        return {
+          ok: false,
+          error: validationError("scene_beat_timing_out_of_range", `${field}.endSec is too large`)
+        };
+      }
+    }
+    return {
+      ok: true,
+      value: { kind: "offset", startSec: v.startSec, endSec: typeof v.endSec === "number" ? v.endSec : null }
+    };
+  }
+  if (v.kind === "phrase") {
+    if (typeof v.phrase !== "string" || v.phrase.trim().length === 0) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_phrase_invalid", `${field}.phrase must be a non-empty string`)
+      };
+    }
+    if (v.phrase.length > SIZZLE_LIMITS.beatPhraseMax) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_phrase_too_long", `${field}.phrase is too long`)
+      };
+    }
+    const occurrence =
+      typeof v.occurrence === "number" && Number.isInteger(v.occurrence) && v.occurrence > 0
+        ? v.occurrence
+        : null;
+    const offsetSec =
+      typeof v.offsetSec === "number" && Number.isFinite(v.offsetSec)
+        ? v.offsetSec
+        : 0;
+    if (Math.abs(offsetSec) > SIZZLE_LIMITS.beatTimingSecMax) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_timing_out_of_range", `${field}.offsetSec is too large`)
+      };
+    }
+    if (v.durationSec !== null && v.durationSec !== undefined) {
+      if (typeof v.durationSec !== "number" || !Number.isFinite(v.durationSec) || v.durationSec <= 0) {
+        return {
+          ok: false,
+          error: validationError("scene_beat_timing_invalid", `${field}.durationSec must be a positive number or null`)
+        };
+      }
+      if (v.durationSec > SIZZLE_LIMITS.beatTimingSecMax) {
+        return {
+          ok: false,
+          error: validationError("scene_beat_timing_out_of_range", `${field}.durationSec is too large`)
+        };
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "phrase",
+        phrase: v.phrase.trim(),
+        occurrence,
+        offsetSec,
+        durationSec: typeof v.durationSec === "number" ? v.durationSec : null
+      }
+    };
+  }
+  return {
+    ok: false,
+    error: validationError("scene_beat_timing_invalid", `${field}.kind must be offset or phrase`)
+  };
+}
+
+function validateSequenceBeats(
+  v: unknown,
+  sceneIdx: number
+): { ok: true; value: SizzleSequenceBeat[] } | { ok: false; error: PwrSnapError } {
+  if (!Array.isArray(v)) {
+    return {
+      ok: false,
+      error: validationError("scene_beats_invalid", `scene[${sceneIdx}].beats must be an array`)
+    };
+  }
+  if (v.length === 0) {
+    return {
+      ok: false,
+      error: validationError("scene_beats_empty", `scene[${sceneIdx}].beats must not be empty`)
+    };
+  }
+  if (v.length > SIZZLE_LIMITS.sequenceBeatsMax) {
+    return {
+      ok: false,
+      error: validationError("scene_beats_too_many", `scene[${sceneIdx}].beats has too many entries`)
+    };
+  }
+  const out: SizzleSequenceBeat[] = [];
+  for (let i = 0; i < v.length; i++) {
+    const beat = v[i];
+    const field = `scene[${sceneIdx}].beats[${i}]`;
+    if (!isRecord(beat)) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_invalid", `${field} must be an object`)
+      };
+    }
+    if (typeof beat.id !== "string" || beat.id.length === 0) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_id_invalid", `${field}.id must be a non-empty string`)
+      };
+    }
+    if (typeof beat.captureId !== "string" || beat.captureId.length === 0) {
+      return {
+        ok: false,
+        error: validationError("scene_beat_captureId_invalid", `${field}.captureId must be a non-empty string`)
+      };
+    }
+    const timing = validateBeatTiming(beat.timing, sceneIdx, i);
+    if (!timing.ok) return timing;
+    const trim = validateMediaTrim(beat.mediaTrim, sceneIdx);
+    if (!trim.ok) return trim;
+    const transition = validateTransition(beat.transition, sceneIdx, `${field}.transition`, {
+      type: "cut",
+      durationSec: 0
+    });
+    if (!transition.ok) return transition;
+    const videoFit =
+      beat.videoFit === undefined || beat.videoFit === null
+        ? "smart-fit"
+        : beat.videoFit;
+    if (!isVideoFitPolicy(videoFit)) {
+      return {
+        ok: false,
+        error: validationError(
+          "scene_beat_videoFit_invalid",
+          `${field}.videoFit must be one of ${SIZZLE_VIDEO_FIT_POLICIES.join(", ")}`
+        )
+      };
+    }
+    out.push({
+      id: beat.id,
+      captureId: beat.captureId,
+      timing: timing.value,
+      mediaTrim: trim.value,
+      transition: transition.value,
+      videoFit
+    });
+  }
+  return { ok: true, value: normalizeSizzleSequenceBeatContinuity(out) };
+}
+
 function validateScene(
   v: unknown,
   idx: number
@@ -299,19 +553,39 @@ function validateScene(
   if (typeof v.id !== "string" || v.id.length === 0) {
     return { ok: false, error: validationError("scene_id_invalid", `scene[${idx}].id must be a non-empty string`) };
   }
-  if (typeof v.captureId !== "string" || v.captureId.length === 0) {
+  if (v.kind !== undefined && v.kind !== null && v.kind !== "simple" && v.kind !== "sequence") {
+    return {
+      ok: false,
+      error: validationError("scene_kind_invalid", `scene[${idx}].kind must be simple or sequence`)
+    };
+  }
+  const kind = v.kind === "sequence" ? "sequence" : "simple";
+  const beatsResult =
+    kind === "sequence" ? validateSequenceBeats(v.beats, idx) : null;
+  if (beatsResult !== null && !beatsResult.ok) return beatsResult;
+
+  const fallbackCaptureId =
+    beatsResult !== null && beatsResult.ok ? beatsResult.value[0]!.captureId : null;
+  if (
+    (typeof v.captureId !== "string" || v.captureId.length === 0) &&
+    fallbackCaptureId === null
+  ) {
     return {
       ok: false,
       error: validationError("scene_captureId_invalid", `scene[${idx}].captureId must be a non-empty string`)
     };
   }
-  if (typeof v.scriptLine !== "string") {
+  const scriptSource =
+    kind === "sequence" && typeof v.narration === "string"
+      ? v.narration
+      : v.scriptLine;
+  if (typeof scriptSource !== "string") {
     return {
       ok: false,
       error: validationError("scene_scriptLine_invalid", `scene[${idx}].scriptLine must be a string`)
     };
   }
-  if (v.scriptLine.length > SIZZLE_LIMITS.sceneScriptLineMax) {
+  if (scriptSource.length > SIZZLE_LIMITS.sceneScriptLineMax) {
     return {
       ok: false,
       error: validationError(
@@ -363,32 +637,30 @@ function validateScene(
     }
     audioSource = v.audioSource;
   }
-  // transition is optional in the wire format (older projects predate
-  // this field); absent / undefined defaults to "crossfade".
-  let transition: SizzleTransition = "crossfade";
-  if (v.transition !== undefined && v.transition !== null) {
-    if (!isTransition(v.transition)) {
-      return {
-        ok: false,
-        error: validationError(
-          "scene_transition_invalid",
-          `scene[${idx}].transition must be one of ${SIZZLE_TRANSITIONS.join(", ")}`
-        )
-      };
-    }
-    transition = v.transition;
+  const transitionResult = validateTransition(v.transition, idx, `scene[${idx}].transition`, {
+    type: "crossfade"
+  });
+  if (!transitionResult.ok) return transitionResult;
+  const value: ValidatedScene = {
+    id: v.id,
+    captureId:
+      typeof v.captureId === "string" && v.captureId.length > 0
+        ? v.captureId
+        : fallbackCaptureId!,
+    scriptLine: scriptSource,
+    durationOverrideSec,
+    mediaTrim: trimResult.value,
+    audioSource: kind === "sequence" ? "voiceover" : audioSource,
+    transition: transitionResult.value
+  };
+  if (kind === "sequence") {
+    value.kind = "sequence";
+    value.narration = scriptSource;
+    value.beats = beatsResult!.value;
   }
   return {
     ok: true,
-    value: {
-      id: v.id,
-      captureId: v.captureId,
-      scriptLine: v.scriptLine,
-      durationOverrideSec,
-      mediaTrim: trimResult.value,
-      audioSource,
-      transition
-    }
+    value
   };
 }
 

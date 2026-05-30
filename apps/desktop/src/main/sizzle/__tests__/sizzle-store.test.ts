@@ -111,6 +111,58 @@ describe("SizzleStore", () => {
     expect(next.scenes[1]!.durationOverrideSec).toBe(4);
   });
 
+  it("update() preserves sequence scenes and normalizes beat defaults", async () => {
+    const store = makeStore();
+    const p = await store.create("Demo");
+    const next = await store.update(p.id, {
+      scenes: [
+        {
+          id: "sc_sequence",
+          kind: "sequence",
+          captureId: "",
+          scriptLine: "",
+          narration: "Open the wizard, then approve the pairing.",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "muted",
+          transition: { type: "dip-black", durationSec: 0.25 },
+          beats: [
+            {
+              id: "",
+              captureId: "cap_wizard",
+              timing: { kind: "offset", startSec: 0, endSec: 1 },
+              mediaTrim: null,
+              transition: "cut",
+              videoFit: "smart-fit"
+            },
+            {
+              id: "bt_pairing",
+              captureId: "cap_pairing",
+              timing: { kind: "phrase", phrase: "approve", occurrence: 1, offsetSec: 0, durationSec: null },
+              mediaTrim: null,
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            }
+          ]
+        }
+      ]
+    });
+    expect(next.scenes).toHaveLength(1);
+    const scene = next.scenes[0]!;
+    expect(scene.kind).toBe("sequence");
+    expect(scene.captureId).toBe("cap_wizard");
+    expect(scene.scriptLine).toBe("Open the wizard, then approve the pairing.");
+    expect(scene.narration).toBe(scene.scriptLine);
+    expect(scene.audioSource).toBe("voiceover");
+    expect(scene.transition).toEqual({ type: "dip-black", durationSec: 0.25 });
+    expect(scene.beats).toHaveLength(2);
+    expect(scene.beats![0]!.id).toMatch(/^bt_/);
+    expect(scene.beats![0]!.captureId).toBe("cap_wizard");
+    expect(scene.beats![0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
+    expect(scene.beats![0]!.transition).toBe("cut");
+    expect(scene.beats![0]!.videoFit).toBe("smart-fit");
+  });
+
   it("delete() removes a project and is idempotent on a missing id", async () => {
     const store = makeStore();
     const p = await store.create("Demo");

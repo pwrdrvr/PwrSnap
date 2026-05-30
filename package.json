@@ -26,9 +26,14 @@
     "release:check": "node ./scripts/check-desktop-release-metadata.mjs"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "24.12.4",
     "jsdom": "^29.0.2",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "@types/node": "24.12.4"
+    }
   }
 }

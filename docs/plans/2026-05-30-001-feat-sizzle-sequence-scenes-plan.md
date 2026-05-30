@@ -1,7 +1,7 @@
 ---
 title: feat: Add Sizzle sequence scenes
 type: feat
-status: active
+status: completed
 date: 2026-05-30
 origin: docs/brainstorms/2026-05-30-sizzle-sequence-scenes-requirements.md
 deepened: 2026-05-30

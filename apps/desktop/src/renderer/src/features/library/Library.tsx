@@ -19,7 +19,7 @@ import type {
   ScrollProbeRequest,
   Settings
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS, type SizzleProject } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type SettingsChangedEvent, type SizzleProject } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -423,6 +423,17 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     rightPinnedRef.current = rightPinned;
   }, [rightPinned]);
+
+  const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
+  const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
+  const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
+  const userTouchedAiRef = useRef<boolean>(false);
+
+  const applyAiSettings = useCallback((settings: Settings): void => {
+    setAiEnabledState(settings.ai.enabled);
+    setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
@@ -435,6 +446,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           setRightActiveTabState(rail.lastSelectedTab);
         }
       }
+      if (result.ok && !userTouchedAiRef.current) {
+        applyAiSettings(result.value);
+      }
       // Always mark hydrated — even on read failure / user-touched
       // bail — so the rail doesn't stay in its pre-hydration phantom
       // state forever. Mirror of the same pattern in DetailRail's
@@ -444,7 +458,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyAiSettings]);
+  useEffect(() => {
+    const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
+      const evt = payload as SettingsChangedEvent;
+      applyAiSettings(evt.settings);
+    });
+    return unsubscribe;
+  }, [applyAiSettings]);
   // All three setters mark `userTouchedRailRef` synchronously BEFORE
   // any state write. The settings:read resolution checks this flag
   // and bails — see the race-guard comment above. The setters use
@@ -481,6 +502,33 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       library: { detailRail: { pinned: next } }
     });
   }, []);
+
+  const toggleAiEnabled = useCallback((): void => {
+    const next = !aiEnabled;
+    const previousEnabled = aiEnabled;
+    const previousConsentAcceptedAt = aiConsentAcceptedAt;
+    const consentAcceptedAt =
+      next && aiConsentAcceptedAt === null ? new Date().toISOString() : aiConsentAcceptedAt;
+
+    userTouchedAiRef.current = true;
+    setAiToggleBusy(true);
+    setAiEnabledState(next);
+    setAiConsentAcceptedAtState(consentAcceptedAt);
+    void dispatch("settings:write", {
+      ai: {
+        enabled: next,
+        consentAcceptedAt
+      }
+    }).then((result) => {
+      setAiToggleBusy(false);
+      if (result.ok) {
+        applyAiSettings(result.value);
+        return;
+      }
+      setAiEnabledState(previousEnabled);
+      setAiConsentAcceptedAtState(previousConsentAcceptedAt);
+    });
+  }, [aiConsentAcceptedAt, aiEnabled, applyAiSettings]);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
@@ -2489,9 +2537,26 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               </div>
             ) : null}
           </div>
-          <span>
-            Codex auto-tag <b>on</b>
-          </span>
+          <button
+            type="button"
+            className={"psl__ai-toggle" + (aiEnabled ? " is-on" : "")}
+            role="switch"
+            aria-checked={aiEnabled}
+            disabled={aiToggleBusy}
+            title={
+              aiEnabled
+                ? "Turn off automatic Codex enrichment for new captures"
+                : "Turn on automatic Codex enrichment for new captures"
+            }
+            onClick={toggleAiEnabled}
+          >
+            <span className="psl__ai-toggle-track" aria-hidden="true">
+              <span className="psl__ai-toggle-thumb" />
+            </span>
+            <span>
+              Codex enrich <b>{aiEnabled ? "on" : "off"}</b>
+            </span>
+          </button>
         </div>
         <div className="psl__status-r">
           <span>
@@ -2962,4 +3027,3 @@ function CellRow({
     </div>
   );
 }
-

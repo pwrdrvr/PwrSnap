@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.0.0-beta.9 - 2026-05-29
+
+- Added Library Chat, a live Codex-powered agent surface that can browse, edit,
+  and redact captures from the Library.
+- Added Project Asset Cart support for collecting captures into Sizzle Reel
+  projects, backed by the new Library search and metadata lookup substrate.
+- Wired Library search into the topbar search input.
+- Added the Shape tool with rectangle, square, circle, oval, and parallelogram
+  options.
+- Added a right-click editor context menu for layer operations, including Escape
+  handling that closes open context menus without dropping the current selection.
+- Wired the six-card video export grid into the tray and float-over surfaces.
+- Improved v1-to-v2 migration by removing the v1 capture write path and
+  deferring/offloading the boot sweep to avoid startup crashes.
+- Fixed editor effect fidelity so rotated blur and pixelate previews match the
+  baked output.
+- Fixed capture and permissions polish, including keeping the Library visible
+  after capture cancel and triggering first-run TCC prompts for Screen Recording
+  and System Audio.
+- Documented the bake render cache model as content-addressed with tolerated
+  orphan entries.
+
 ## v1.0.0-beta.8 - 2026-05-28
 
 - Added Sizzle Reels MVP and Phase 2/3a project-mode work, including narrated

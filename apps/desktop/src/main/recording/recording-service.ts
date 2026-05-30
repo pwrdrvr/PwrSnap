@@ -31,6 +31,7 @@ import {
   statSource
 } from "../persistence/source-store";
 import { insertVideoMetadata } from "../persistence/video-repo";
+import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
 import { getRecordingControllerPid } from "./recording-controller";
 import {
   isRecordingActive,
@@ -370,6 +371,14 @@ class NativeRecorderService implements RecordingService {
       hasMicrophoneAudio: stopped.hasMicrophoneAudio,
       subject
     });
+    try {
+      await renameVideoSourceToEffectiveFilename(record.id);
+    } catch (cause) {
+      log.warn("recording source rename skipped", {
+        captureId: record.id,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
 
     // Re-read through getCaptureById so the record we ship to the
     // float-over has `record.video` populated. `insertOrFindCapture`

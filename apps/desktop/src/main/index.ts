@@ -85,6 +85,7 @@ import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { migrateAllV1OnBoot, reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
 import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
+import { runVideoFilenameMaintenanceOnBoot } from "./persistence/video-filename-maintenance";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -1306,8 +1307,9 @@ export function bootstrapApp(): void {
       .then(() => reconcileV1ToV2OnBoot())
       .then(() => scheduleEagerV1ToV2Sweep())
       .then(() => runBundleFilenameMaintenanceOnBoot())
+      .then(() => runVideoFilenameMaintenanceOnBoot())
       .catch((err: unknown) => {
-        log.warn("bundle doctor boot pipeline failed", {
+        log.warn("asset doctor boot pipeline failed", {
           message: err instanceof Error ? err.message : String(err)
         });
       });

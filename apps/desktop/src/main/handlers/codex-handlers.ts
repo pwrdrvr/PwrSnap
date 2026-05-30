@@ -52,6 +52,7 @@ import {
   storeCompletedEnrichment
 } from "../persistence/enrichment-repo";
 import { renameBundleToEffectiveFilename } from "../persistence/bundle-filename-maintenance";
+import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filename-maintenance";
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
@@ -97,11 +98,19 @@ function mapError(error: unknown): Result<never, PwrSnapError> {
   });
 }
 
-async function tryRenameBundleToEffectiveFilename(captureId: string): Promise<void> {
+async function tryRenameCaptureAssetToEffectiveFilename(captureId: string): Promise<void> {
   try {
     await renameBundleToEffectiveFilename(captureId);
   } catch (error) {
     log.warn("bundle filename rename skipped after enrichment update", {
+      captureId,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+  try {
+    await renameVideoSourceToEffectiveFilename(captureId);
+  } catch (error) {
+    log.warn("video filename rename skipped after enrichment update", {
       captureId,
       message: error instanceof Error ? error.message : String(error)
     });
@@ -255,7 +264,7 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptFilenameStem(parsed.data.captureId, parsed.data.filenameStem);
-      await tryRenameBundleToEffectiveFilename(parsed.data.captureId);
+      await tryRenameCaptureAssetToEffectiveFilename(parsed.data.captureId);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -274,7 +283,7 @@ export function registerCodexHandlers(params?: {
       // clean.
       const enrichment = acceptAllDrafts(parsed.data);
       if (parsed.data.filenameStem !== undefined) {
-        await tryRenameBundleToEffectiveFilename(parsed.data.captureId);
+        await tryRenameCaptureAssetToEffectiveFilename(parsed.data.captureId);
       }
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
@@ -442,7 +451,7 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
-    await tryRenameBundleToEffectiveFilename(captureId);
+    await tryRenameCaptureAssetToEffectiveFilename(captureId);
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({
       run: completed,

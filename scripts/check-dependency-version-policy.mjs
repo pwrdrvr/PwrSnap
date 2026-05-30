@@ -194,6 +194,11 @@ function runCli() {
   console.log("dependency version policy check passed");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(metaUrl, argvPath = process.argv[1]) {
+  if (argvPath === undefined) return false;
+  return fileURLToPath(metaUrl) === resolve(argvPath);
+}
+
+if (isCliEntrypoint(import.meta.url)) {
   runCli();
 }

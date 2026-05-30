@@ -1,8 +1,12 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { checkDependencyVersionPolicy } from "../check-dependency-version-policy.mjs";
+import {
+  checkDependencyVersionPolicy,
+  isCliEntrypoint,
+} from "../check-dependency-version-policy.mjs";
 
 let tempRoots = [];
 
@@ -87,5 +91,11 @@ describe("checkDependencyVersionPolicy", () => {
     expect(checkDependencyVersionPolicy(root)).toEqual([
       "pnpm-lock.yaml importer apps/desktop: React runtime versions must match exactly; found react@19.2.6, react-dom@19.2.5",
     ]);
+  });
+
+  test("recognizes the CLI entrypoint when the checkout path has escaped characters", () => {
+    const scriptPath = join(tempRoot(), "path with spaces", "check-dependency-version-policy.mjs");
+
+    expect(isCliEntrypoint(pathToFileURL(scriptPath).href, scriptPath)).toBe(true);
   });
 });

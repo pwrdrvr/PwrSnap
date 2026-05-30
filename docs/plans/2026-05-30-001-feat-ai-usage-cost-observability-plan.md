@@ -1,7 +1,7 @@
 ---
 title: Add AI Usage and Cost Observability
 type: feat
-status: active
+status: completed
 date: 2026-05-30
 ---
 

@@ -112,6 +112,30 @@ class FakeTransport implements JsonRpcTransport {
       });
       setTimeout(() => {
         this.emit({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            tokenUsage: {
+              total: {
+                totalTokens: 1200,
+                inputTokens: 900,
+                cachedInputTokens: 100,
+                outputTokens: 300,
+                reasoningOutputTokens: 25
+              },
+              last: {
+                totalTokens: 1200,
+                inputTokens: 900,
+                cachedInputTokens: 100,
+                outputTokens: 300,
+                reasoningOutputTokens: 25
+              },
+              modelContextWindow: 400000
+            }
+          }
+        });
+        this.emit({
           method: "item/completed",
           params: {
             threadId: "thread-1",
@@ -192,6 +216,18 @@ describe("CodexAppServerClient", () => {
       title: "",
       description: "A screenshot with visible text.",
       tags: [{ label: "text", confidence: 0.8 }]
+    });
+    expect(response).toMatchObject({
+      model: "gpt-test",
+      modelProvider: "openai",
+      serviceTier: null,
+      tokenUsage: {
+        last: {
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300
+        }
+      }
     });
     expect(transport.outbound.map((message) => message.method)).toEqual([
       "initialize",

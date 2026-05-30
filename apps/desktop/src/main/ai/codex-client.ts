@@ -9,6 +9,8 @@ import type {
 import type {
   DynamicToolCallResponse,
   ItemCompletedNotification,
+  ThreadTokenUsage,
+  ThreadTokenUsageUpdatedNotification,
   ThreadStartResponse,
   TurnCompletedNotification,
   TurnStartResponse
@@ -40,6 +42,10 @@ export type CodexCaptureEnrichmentResponse = {
   threadId: string;
   turnId: string;
   userAgent: string;
+  model: string;
+  modelProvider: string;
+  serviceTier: string | null;
+  tokenUsage: ThreadTokenUsage | null;
 };
 
 export type CodexAppServerClientOptions = {
@@ -53,7 +59,8 @@ type PendingTurn = {
   threadId: string;
   turnId: string;
   agentMessages: string[];
-  resolve: (value: string) => void;
+  tokenUsage: ThreadTokenUsage | null;
+  resolve: (value: { rawText: string; tokenUsage: ThreadTokenUsage | null }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -145,13 +152,17 @@ export class CodexAppServerClient {
         throw new DOMException("capture enrichment aborted", "AbortError");
       }
 
-      const rawText = await this.waitForTurn(threadId, turnId);
+      const { rawText, tokenUsage } = await this.waitForTurn(threadId, turnId);
       const result = parseCaptureEnrichmentResponse(rawText);
       return {
         result,
         threadId,
         turnId,
-        userAgent: initialized.userAgent
+        userAgent: initialized.userAgent,
+        model: threadResponse.model,
+        modelProvider: threadResponse.modelProvider,
+        serviceTier: threadResponse.serviceTier,
+        tokenUsage
       };
     } finally {
       request.abortSignal?.removeEventListener("abort", abortHandler);
@@ -230,12 +241,16 @@ export class CodexAppServerClient {
     return connection;
   }
 
-  private waitForTurn(threadId: string, turnId: string): Promise<string> {
+  private waitForTurn(
+    threadId: string,
+    turnId: string
+  ): Promise<{ rawText: string; tokenUsage: ThreadTokenUsage | null }> {
     if (this.pendingTurn) {
       throw new Error("codex capture enrichment already has an active turn");
     }
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<{ rawText: string; tokenUsage: ThreadTokenUsage | null }>(
+      (resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingTurn = null;
         reject(new Error("codex capture enrichment timed out"));
@@ -244,11 +259,13 @@ export class CodexAppServerClient {
         threadId,
         turnId,
         agentMessages: [],
+        tokenUsage: null,
         resolve,
         reject,
         timer
       };
-    });
+      }
+    );
   }
 
   private handleNotification(method: string, params: unknown): void {
@@ -258,6 +275,10 @@ export class CodexAppServerClient {
     }
     if (method === "rawResponseItem/completed") {
       this.handleRawResponseItemCompleted(params as ServerNotification["params"]);
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      this.handleThreadTokenUsageUpdated(params as ThreadTokenUsageUpdatedNotification);
       return;
     }
     if (method === "turn/completed") {
@@ -320,7 +341,17 @@ export class CodexAppServerClient {
       pending.reject(new Error("codex capture enrichment returned no assistant message"));
       return;
     }
-    pending.resolve(rawText);
+    pending.resolve({ rawText, tokenUsage: pending.tokenUsage });
+  }
+
+  private handleThreadTokenUsageUpdated(
+    params: ThreadTokenUsageUpdatedNotification
+  ): void {
+    const pending = this.pendingTurn;
+    if (!pending || params.threadId !== pending.threadId || params.turnId !== pending.turnId) {
+      return;
+    }
+    pending.tokenUsage = params.tokenUsage;
   }
 
   private async handleServerRequest(method: string, params: unknown): Promise<unknown> {

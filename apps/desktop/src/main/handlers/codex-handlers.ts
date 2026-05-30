@@ -6,6 +6,7 @@ import {
   AcceptTitleRequestSchema,
   AcceptTagRequestSchema,
   EVENT_CHANNELS,
+  DEFAULT_CODEX_CAPTION_MODEL,
   RejectTagRequestSchema,
   err,
   ok
@@ -22,6 +23,7 @@ import type {
   SettingsPatch
 } from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
+import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
   prepareEnrichmentImage,
@@ -40,6 +42,11 @@ import {
   getAiRun,
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
+import {
+  replaceAiRunMediaInputs,
+  saveAiRunUsage,
+  type SaveAiRunMediaInput
+} from "../persistence/ai-usage-repo";
 import { getCaptureById } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
@@ -96,6 +103,49 @@ function preparedMediaShape(
     maxEdgePx: Math.max(prepared.width, prepared.height),
     byteSizes: [prepared.byteSize],
     videoFrameSamplePositions: []
+  };
+}
+
+function preparedMediaInputs(
+  prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames
+): SaveAiRunMediaInput[] {
+  if ("frames" in prepared) {
+    return prepared.frames.map((frame, index) => ({
+      ...preparedImageAccountingBase(frame, index),
+      role: "video-frame",
+      transform: "video-frame",
+      videoPositionPct: frame.positionPct,
+      videoTimestampSec: frame.timestampSec
+    }));
+  }
+  return [
+    {
+      ...preparedImageAccountingBase(prepared, 0),
+      role: "capture",
+      transform: "prepared-jpeg"
+    }
+  ];
+}
+
+function preparedImageAccountingBase(
+  image: PreparedEnrichmentImage,
+  ordinal: number
+): Omit<SaveAiRunMediaInput, "role" | "transform"> {
+  return {
+    ordinal,
+    sourceMimeType: image.sourceMimeType,
+    sentMimeType: image.sentMimeType,
+    format: image.format,
+    encoder: image.encoder,
+    quality: image.quality,
+    sourceWidthPx: image.sourceWidth,
+    sourceHeightPx: image.sourceHeight,
+    sentWidthPx: image.width,
+    sentHeightPx: image.height,
+    sentByteSize: image.byteSize,
+    maxEdgePx: image.maxEdgePx,
+    maxBytes: image.maxBytes,
+    scaleRatio: image.scaleRatio
   };
 }
 
@@ -303,6 +353,8 @@ export function registerCodexHandlers(params?: {
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
+      triggerSource,
+      selectedModel: settings.codex.captionModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -561,6 +613,8 @@ async function runCaptureEnrichment(params: {
       }
       prepared = await prepareEnrichmentVideoFrames(sourcePath, {
         durationSec: metadata.videoDurationSec,
+        sourceWidthPx: metadata.widthPx,
+        sourceHeightPx: metadata.heightPx,
         abortSignal: abortController.signal
       });
       metadata.videoFrameSamples = prepared.frames.map(({ positionPct, timestampSec }) => ({
@@ -574,6 +628,8 @@ async function runCaptureEnrichment(params: {
       });
       imagePaths = [prepared.path];
     }
+
+    replaceAiRunMediaInputs(params.runId, preparedMediaInputs(prepared));
 
     log.info("capture enrichment turn starting", {
       runId: params.runId,
@@ -620,6 +676,30 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
+    const tokens =
+      response.tokenUsage == null
+        ? null
+        : {
+            ...response.tokenUsage.last,
+            modelContextWindow: response.tokenUsage.modelContextWindow
+          };
+    saveAiRunUsage({
+      aiRunId: params.runId,
+      threadId: response.threadId,
+      turnId: response.turnId,
+      model: response.model ?? null,
+      modelProvider: response.modelProvider ?? null,
+      serviceTier: response.serviceTier ?? null,
+      usageStatus: tokens === null ? "unavailable" : "available",
+      usageUnavailableReason: tokens === null ? "Codex did not report token usage" : null,
+      tokens,
+      cost: estimateAiUsageCost({
+        model: response.model ?? null,
+        provider: response.modelProvider ?? null,
+        serviceTier: response.serviceTier ?? null,
+        tokens
+      })
+    });
     await tryRenameCaptureAssetToEffectiveFilename(captureId);
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({
@@ -644,6 +724,21 @@ async function runCaptureEnrichment(params: {
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
+    try {
+      saveAiRunUsage({
+        aiRunId: params.runId,
+        usageStatus: "unavailable",
+        usageUnavailableReason: isAbort
+          ? "AI run was cancelled before Codex reported token usage"
+          : "Codex did not report token usage before the run failed",
+        cost: { status: "unavailable", reason: "usage unavailable" }
+      });
+    } catch (usageError) {
+      log.warn("AI usage accounting skipped after run failure", {
+        runId: params.runId,
+        message: usageError instanceof Error ? usageError.message : String(usageError)
+      });
+    }
     const run = isAbort
       ? cancelAiRun(params.runId)
       : failAiRun(

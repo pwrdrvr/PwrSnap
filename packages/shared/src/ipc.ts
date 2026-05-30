@@ -173,6 +173,14 @@ export const EVENT_CHANNELS = {
    */
   sizzleProjectsChanged: "events:sizzle:projects:changed",
   /**
+   * Main → the Sizzle composer window: navigate to a project (e.g. the
+   * user clicked a Sizzle Reel in the Library while the composer is
+   * already open). For a NEWLY-created composer window the target rides
+   * the URL hash (`projectId=…`) instead, so this event only needs to
+   * reach an already-loaded window. Payload: `{ projectId: string }`.
+   */
+  sizzleNav: "events:sizzle:nav",
+  /**
    * Main → every BrowserWindow: the single global Project Asset Cart
    * changed (toggle / reorder / remove / rename / clear / commit). The
    * Library's cell checkboxes + the DetailRail Cart tab subscribe so
@@ -252,7 +260,18 @@ export const EVENT_CHANNELS = {
    * Settings. The open chat panel shows a one-shot toast nudging
    * "try 'redact all <name>'" (plan §F11 G3). Payload: `{ name: string }`.
    */
-  libraryChatPatternLearned: "events:libraryChat:pattern:learned"
+  libraryChatPatternLearned: "events:libraryChat:pattern:learned",
+  // ── Sizzle composer chat ──────────────────────────────────────────
+  // Second surface on the shared chat substrate (Library is the first).
+  // Same payload shapes as the libraryChat channels (the controller is
+  // surface-parameterized), scoped to a Sizzle project rather than a
+  // capture. The Sizzle composer window subscribes.
+  sizzleChatThreadUpdated: "events:sizzleChat:thread:updated",
+  sizzleChatStreamDelta: "events:sizzleChat:stream:delta",
+  sizzleChatToolCall: "events:sizzleChat:tool:call",
+  sizzleChatMessageCommitted: "events:sizzleChat:message:committed",
+  sizzleChatTurnInterrupted: "events:sizzleChat:turn:interrupted",
+  sizzleChatApprovalRequested: "events:sizzleChat:approval:requested"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -418,6 +437,14 @@ export type EventPayloads = {
   [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
   [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;
   [EVENT_CHANNELS.libraryChatPatternLearned]: { name: string };
+  // Sizzle composer chat — identical payloads to the libraryChat
+  // channels (shared controller, different surface scope).
+  [EVENT_CHANNELS.sizzleChatThreadUpdated]: { thread: LibraryChatThreadView };
+  [EVENT_CHANNELS.sizzleChatStreamDelta]: LibraryChatStreamDeltaEvent;
+  [EVENT_CHANNELS.sizzleChatToolCall]: LibraryChatToolCallEvent;
+  [EVENT_CHANNELS.sizzleChatMessageCommitted]: LibraryChatMessageCommittedEvent;
+  [EVENT_CHANNELS.sizzleChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
+  [EVENT_CHANNELS.sizzleChatApprovalRequested]: ChatApprovalRequest;
 };
 
 /** Channel constants that carry a typed payload entry in

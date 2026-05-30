@@ -1,11 +1,10 @@
-// LibraryChatPanel — the live Library chat surface. Wires the shared
-// renderer primitives (MessageList, Composer, ChatApprovalModal) to the
-// codex:libraryChat:* bus verbs + the events:libraryChat:* stream.
+// SizzleChatPanel — the live Sizzle composer chat surface. Wires the
+// shared renderer primitives (MessageList, Composer, ChatApprovalModal)
+// to the codex:sizzleChat:* bus verbs + the events:sizzleChat:* stream.
 //
-// Scope: thread list + active-thread message view + composer. The
-// current capture (anchorCaptureId) is passed on send so the agent's
-// per-turn context tracks whatever the user is viewing. Three empty
-// states: no Codex, zero threads, normal (plan §F11 G1/G2/G15).
+// Mirrors LibraryChatPanel; the anchor is the active SIZZLE PROJECT
+// (passed as `anchorCaptureId` on the wire — the substrate's anchor field
+// is surface-neutral). Reuses LibraryChatPanel's chrome CSS (.ps-libchat*).
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
@@ -17,21 +16,21 @@ import type {
   LibraryChatThreadView
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import { dispatch, subscribe } from "../../../lib/pwrsnap";
-import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
-import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
-import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
-import "../../shared/chat/chat-panel.css";
+import { dispatch, subscribe } from "../../lib/pwrsnap";
+import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
+import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
+import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
+import "../shared/chat/chat-panel.css";
 
-export interface LibraryChatPanelProps {
-  /** The capture the user is currently viewing, passed as the thread
-   *  anchor on send. Null when viewing the Library grid. */
-  anchorCaptureId?: string | null;
+export interface SizzleChatPanelProps {
+  /** The Sizzle project this chat composes — passed as the thread anchor
+   *  so the agent's tools are scoped to it. */
+  projectId: string;
 }
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
 
-export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelProps): ReactElement {
+export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactElement {
   const [threads, setThreads] = useState<LibraryChatThreadView[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -39,14 +38,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
   const [codexError, setCodexError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  // Tool-activity lives IN the transcript flow, not a fixed bar:
-  //   • activityByMsg — chips for completed turns, keyed by the assistant
-  //     message they produced (rendered above that bubble). Retained for
-  //     the session; reset only on thread switch, never on turn end.
-  //   • pendingChips — chips for the IN-FLIGHT turn whose assistant
-  //     message id isn't known yet (the agent is running tools before any
-  //     text streams). Rendered as the trailing group + "Thinking…", then
-  //     flushed into activityByMsg once the message id is known.
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
@@ -57,26 +48,17 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   activeTurnRef.current = activeTurnId;
   const pendingChipsRef = useRef<ChatActivityChip[]>(pendingChips);
   pendingChipsRef.current = pendingChips;
-  // turnId → the assistant message id that turn produced, learned from the
-  // first stream delta (or the commit for tool-only turns). Lets a tool
-  // chip attach to the right bubble in the transcript.
   const turnMsgRef = useRef<Map<string, string>>(new Map());
   const streamState = useRef<Map<string, StreamEntry>>(new Map());
 
-  /** Append a chip to a message's activity (dedup by callId). */
-  const appendActivity = useCallback(
-    (messageId: string, chip: ChatActivityChip): void => {
-      setActivityByMsg((prev) => {
-        const existing = prev[messageId] ?? [];
-        if (existing.some((c) => c.callId === chip.callId)) return prev;
-        return { ...prev, [messageId]: [...existing, chip] };
-      });
-    },
-    []
-  );
+  const appendActivity = useCallback((messageId: string, chip: ChatActivityChip): void => {
+    setActivityByMsg((prev) => {
+      const existing = prev[messageId] ?? [];
+      if (existing.some((c) => c.callId === chip.callId)) return prev;
+      return { ...prev, [messageId]: [...existing, chip] };
+    });
+  }, []);
 
-  /** Move the in-flight pending chips onto a now-known assistant message
-   *  (dedup), then clear pending. No-op when there's nothing pending. */
   const flushPendingTo = useCallback((messageId: string): void => {
     const pending = pendingChipsRef.current;
     if (pending.length === 0) return;
@@ -90,10 +72,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setPendingChips([]);
   }, []);
 
-  // Thread list — SCOPED to the focused capture (chats are glued to
-  // assets). Re-runs when the user navigates to a different capture:
-  // resets the selection + working state, then lists that capture's
-  // threads. `anchorCaptureId === null` lists library-wide threads.
+  // Thread list — scoped to the active project. Re-runs on project switch.
   useEffect(() => {
     let cancelled = false;
     setActiveThreadId(null);
@@ -104,7 +83,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     turnMsgRef.current.clear();
     setLoading(true);
     void (async () => {
-      const result = await dispatch("codex:libraryChat:list", { anchorCaptureId });
+      const result = await dispatch("codex:sizzleChat:list", { anchorCaptureId: projectId });
       if (cancelled) return;
       if (!result.ok) {
         setCodexError(result.error.message);
@@ -113,20 +92,18 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       }
       const found = result.value?.threads ?? [];
       setThreads(found);
-      // Resume this capture's most-recent chat (threads are modified_at
-      // DESC) instead of dropping to the greeting — so navigating away
-      // and back (and relaunching) reopens the conversation.
+      // Resume the reel's most-recent chat (threads are modified_at DESC)
+      // instead of dropping to the greeting — so switching reels (and
+      // relaunching the app) reopens the conversation for that reel.
       if (found.length > 0) setActiveThreadId(found[0]!.threadId);
       setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [anchorCaptureId]);
+  }, [projectId]);
 
-  // Load history when the active thread changes. Switching threads is a
-  // fresh view: drop the prior thread's in-memory activity + turn state
-  // (it isn't journaled, so it doesn't reload — that's fine).
+  // Load history when the active thread changes.
   useEffect(() => {
     setActivityByMsg({});
     setPendingChips([]);
@@ -139,7 +116,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     }
     let cancelled = false;
     void (async () => {
-      const result = await dispatch("codex:libraryChat:history", { threadId: activeThreadId });
+      const result = await dispatch("codex:sizzleChat:history", { threadId: activeThreadId });
       if (cancelled || !result.ok) return;
       setMessages(result.value.messages);
     })();
@@ -153,7 +130,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatThreadUpdated, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatThreadUpdated, (payload) => {
         const { thread } = payload as { thread: LibraryChatThreadView };
         setThreads((prev) => {
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
@@ -166,11 +143,9 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatStreamDelta, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatStreamDelta, (payload) => {
         const e = payload as LibraryChatStreamDeltaEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        // First delta tells us which assistant message this turn produced
-        // → attach any chips that arrived before the text started.
         if (turnMsgRef.current.get(e.turnId) !== e.messageId) {
           turnMsgRef.current.set(e.turnId, e.messageId);
           flushPendingTo(e.messageId);
@@ -201,20 +176,15 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatToolCall, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatToolCall, (payload) => {
         const e = payload as LibraryChatToolCallEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        // A tool fired → the agent is working. Adopt the turn id if we
-        // didn't capture it from the send result.
         if (activeTurnRef.current === null) setActiveTurnId(e.turnId);
         const chip: ChatActivityChip = { callId: e.callId, summary: e.summary, ok: e.ok };
         const msgId = turnMsgRef.current.get(e.turnId);
         if (msgId !== undefined) {
-          // The turn's assistant message already exists → attach inline
-          // above it.
           appendActivity(msgId, chip);
         } else {
-          // Message not known yet → hold in the trailing (pending) group.
           setPendingChips((prev) =>
             prev.some((c) => c.callId === chip.callId) ? prev : [...prev, chip]
           );
@@ -223,10 +193,10 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatMessageCommitted, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatMessageCommitted, (payload) => {
         const e = payload as LibraryChatMessageCommittedEvent;
         if (e.threadId !== activeThreadRef.current) return;
-        if (streamingMessageIdMatches(e.message.id, streamState)) {
+        if (streamState.current.has(e.message.id)) {
           streamState.current.delete(e.message.id);
         }
         setStreamingMessageId((cur) => (cur === e.message.id ? null : cur));
@@ -237,11 +207,6 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           next[idx] = e.message;
           return next;
         });
-        // Assistant turn finished. Attach any still-pending chips to this
-        // committed message (a tool-only turn that produced no streamed
-        // text never learned its message id until now), then stop the
-        // "Thinking…" indicator. The chips STAY in the transcript — they
-        // are not cleared on turn end.
         if (e.message.role === "assistant" && e.message.status !== "streaming") {
           flushPendingTo(e.message.id);
           setActiveTurnId(null);
@@ -250,7 +215,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatApprovalRequested, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatApprovalRequested, (payload) => {
         const req = payload as ChatApprovalRequest;
         if (req.threadId !== activeThreadRef.current) return;
         setApproval(req);
@@ -258,13 +223,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     );
 
     unsubs.push(
-      subscribe(EVENT_CHANNELS.libraryChatTurnInterrupted, (payload) => {
+      subscribe(EVENT_CHANNELS.sizzleChatTurnInterrupted, (payload) => {
         const e = payload as { threadId: string };
         if (e.threadId !== activeThreadRef.current) return;
         setStreamingMessageId(null);
         setActiveTurnId(null);
-        // Drop the in-flight pending chips, but keep whatever already
-        // attached to committed messages.
         setPendingChips([]);
       })
     );
@@ -272,7 +235,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     return () => {
       for (const u of unsubs) u();
     };
-  }, []);
+  }, [appendActivity, flushPendingTo]);
 
   const subscribeToStream = useCallback(
     (messageId: string, onDelta: (fullText: string) => void): (() => void) => {
@@ -291,7 +254,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   );
 
   const onNewChat = useCallback(async () => {
-    const result = await dispatch("codex:libraryChat:create", { anchorCaptureId });
+    const result = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
     if (!result.ok) {
       setCodexError(result.error.message);
       return;
@@ -302,13 +265,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     setActivityByMsg({});
     setPendingChips([]);
     turnMsgRef.current.clear();
-  }, [anchorCaptureId]);
+  }, [projectId]);
 
   const onSubmit = useCallback(
     async (text: string, _attachments: readonly ComposerAttachment[]): Promise<void> => {
       let threadId = activeThreadRef.current;
       if (threadId === null) {
-        const created = await dispatch("codex:libraryChat:create", { anchorCaptureId });
+        const created = await dispatch("codex:sizzleChat:create", { anchorCaptureId: projectId });
         if (!created.ok) {
           setCodexError(created.error.message);
           return;
@@ -323,13 +286,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         ]);
         setActiveThreadId(threadId);
       }
-      // Fresh turn: clear only the pending (in-flight) chips. Prior
-      // turns' chips stay attached to their messages in the transcript.
       setPendingChips([]);
-      const result = await dispatch("codex:libraryChat:send", {
+      const result = await dispatch("codex:sizzleChat:send", {
         threadId,
         text,
-        anchorCaptureId
+        anchorCaptureId: projectId
       });
       if (!result.ok) {
         setCodexError(result.error.message);
@@ -337,12 +298,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       }
       setActiveTurnId(result.value.turnId);
     },
-    [anchorCaptureId]
+    [projectId]
   );
 
   if (codexError !== null) {
     return (
-      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
+      <div className="ps-libchat ps-libchat--empty" data-testid="sizzle-chat-panel">
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
         <p className="ps-libchat-empty-body">{codexError}</p>
         <p className="ps-libchat-empty-body">
@@ -354,7 +315,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           onClick={() => {
             setCodexError(null);
             setLoading(true);
-            void dispatch("codex:libraryChat:list", { anchorCaptureId }).then((r) => {
+            void dispatch("codex:sizzleChat:list", { anchorCaptureId: projectId }).then((r) => {
               if (r.ok) setThreads(r.value.threads);
               else setCodexError(r.error.message);
               setLoading(false);
@@ -369,7 +330,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
 
   if (loading) {
     return (
-      <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
+      <div className="ps-libchat ps-libchat--empty" data-testid="sizzle-chat-panel">
         Loading…
       </div>
     );
@@ -378,13 +339,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const showGreeting = activeThreadId === null;
 
   return (
-    <div className="ps-libchat" data-testid="library-chat-panel">
+    <div className="ps-libchat" data-testid="sizzle-chat-panel">
       <div className="ps-libchat-threads">
         <button
           type="button"
           className="ps-libchat-newchat"
           onClick={() => void onNewChat()}
-          title="Start a new chat for this capture"
+          title="Start a new chat for this reel"
         >
           + New
         </button>
@@ -393,9 +354,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             <button
               type="button"
               key={t.threadId}
-              className={
-                "ps-libchat-thread" + (t.threadId === activeThreadId ? " is-active" : "")
-              }
+              className={"ps-libchat-thread" + (t.threadId === activeThreadId ? " is-active" : "")}
               onClick={() => setActiveThreadId(t.threadId)}
             >
               <span className="ps-libchat-thread-name">{t.name}</span>
@@ -408,10 +367,11 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       <div className="ps-libchat-main">
         {showGreeting ? (
           <div className="ps-libchat-greeting">
-            <div className="ps-libchat-empty-title">PwrSnap chat</div>
+            <div className="ps-libchat-empty-title">Reel composer</div>
             <p className="ps-libchat-empty-body">
-              I can edit the capture you’re viewing, redact sensitive data, browse
-              your library, and answer “how do I…”. Type below to start.
+              Describe the video you want. I can search your library, propose
+              scenes, write narrator scripts, set transitions, and render this
+              reel. Type below to start.
             </p>
           </div>
         ) : (
@@ -427,14 +387,14 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             }
           />
         )}
-        <Composer onSubmit={onSubmit} placeholder="Ask PwrSnap to edit, redact, or find…" />
+        <Composer onSubmit={onSubmit} placeholder="Describe the reel, or ask for an edit…" />
       </div>
 
       {approval !== null ? (
         <ChatApprovalModal
           request={approval}
           onResolve={async (decision) => {
-            await dispatch("codex:libraryChat:approval", {
+            await dispatch("codex:sizzleChat:approval", {
               threadId: approval.threadId,
               turnId: approval.turnId,
               approvalId: approval.approvalId,
@@ -446,11 +406,4 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       ) : null}
     </div>
   );
-}
-
-function streamingMessageIdMatches(
-  messageId: string,
-  streamState: React.MutableRefObject<Map<string, StreamEntry>>
-): boolean {
-  return streamState.current.has(messageId);
 }

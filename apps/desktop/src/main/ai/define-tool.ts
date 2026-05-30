@@ -25,7 +25,7 @@ import type {
  * one member exists today; add members here if a future surface needs its
  * own namespace.
  */
-export type ToolNamespace = "pwrsnap_library";
+export type ToolNamespace = "pwrsnap_library" | "pwrsnap_sizzle";
 
 /**
  * Result of a tool `dispatch`. Mirrors the command bus's `Result` shape but

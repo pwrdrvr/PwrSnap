@@ -11,6 +11,7 @@ import {
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { SizzleChatPanel } from "./SizzleChatPanel";
 import "./sizzle.css";
 
 type RenderStatus = {
@@ -62,14 +63,29 @@ function mergeProjectPatch(
   };
 }
 
+/** The project a freshly-opened composer window should focus, passed by
+ *  `sizzle:open` via the URL hash (`#stage=sizzle&projectId=…`). Null when
+ *  opened without a target. */
+function readInitialProjectId(): string | null {
+  const hash = window.location.hash.replace(/^#/, "");
+  return new URLSearchParams(hash).get("projectId");
+}
+
 export function SizzleApp(): ReactElement {
   const [projects, setProjects] = useState<SizzleProject[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Seed from the hash so a window opened to a specific reel lands on it,
+  // not on projects[0]. reloadProjects only defaults to projects[0] when
+  // activeId is still null, so this never gets clobbered.
+  const [activeId, setActiveId] = useState<string | null>(readInitialProjectId);
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [picker, setPicker] = useState(false);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
+  // Chat lives in a right sidebar alongside the editor (not a full-pane
+  // swap) so the scene list stays visible + updates live as the agent
+  // edits. Shown by default — chat is the primary way to compose a reel.
+  const [showChat, setShowChat] = useState(true);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -206,6 +222,45 @@ export function SizzleApp(): ReactElement {
     };
   }, [flushPatch]);
 
+  // Live-sync external project mutations (e.g. a chat agent's scene
+  // edits, or another window). Without this, an external write lands in
+  // the store + broadcasts, but the open editor never sees it.
+  //
+  // Merge, don't replace: any project with a pending DEBOUNCED local
+  // patch is kept as-is so a broadcast (including the echo of our OWN
+  // write, which round-trips ~350ms after the last keystroke) can't
+  // clobber text the user is still typing. Projects with no in-flight
+  // edit take the authoritative broadcast value.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleProjectsChanged, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const incoming = (payload as { projects?: unknown }).projects;
+      if (!Array.isArray(incoming)) return;
+      const incomingProjects = incoming as SizzleProject[];
+      setProjects((prev) =>
+        incomingProjects.map((p) =>
+          pendingPatches.current.has(p.id)
+            ? (prev.find((lp) => lp.id === p.id) ?? p)
+            : p
+        )
+      );
+    });
+  }, []);
+
+  // Navigate when the user clicks a Sizzle Reel in the Library while this
+  // composer window is already open (a new window instead gets the target
+  // via the hash — see readInitialProjectId). Without this the click
+  // focuses the window but the reel selection never changes.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleNav, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const projectId = (payload as { projectId?: unknown }).projectId;
+      if (typeof projectId === "string" && projectId.length > 0) {
+        setActiveId(projectId);
+      }
+    });
+  }, []);
+
   const onDelete = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this sizzle reel?")) return;
@@ -311,6 +366,20 @@ export function SizzleApp(): ReactElement {
             </>
           ) : null}
         </span>
+        {active !== null ? (
+          <>
+            <span className="szl__spacer" />
+            <button
+              type="button"
+              className={"szl__chat-toggle" + (showChat ? " is-active" : "")}
+              aria-pressed={showChat}
+              onClick={() => setShowChat((v) => !v)}
+              title={showChat ? "Hide agent chat" : "Show agent chat"}
+            >
+              {showChat ? "Hide chat" : "Chat with agent"}
+            </button>
+          </>
+        ) : null}
       </header>
       <aside className="szl__rail">
         <button className="szl__new" onClick={onCreate} type="button">
@@ -347,25 +416,32 @@ export function SizzleApp(): ReactElement {
         {active === null ? (
           <EmptyState />
         ) : (
-          <Editor
-            project={active}
-            captures={captures}
-            autoFocusTitle={focusTitleForId === active.id}
-            onTitleFocused={() => setFocusTitleForId(null)}
-            onRename={(name) => onUpdate(active.id, { name })}
-            onVoice={(voice) => onUpdate(active.id, { voice })}
-            onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
-            onResolution={(resolution) =>
-              onUpdate(active.id, { resolution })
-            }
-            onScenes={(scenes) => onUpdate(active.id, { scenes })}
-            onFlushPending={() => flushPatch(active.id)}
-            onPickCapture={() => setPicker(true)}
-            onRender={onRender}
-            onReveal={onReveal}
-            onDelete={() => onDelete(active.id)}
-            status={status}
-          />
+          <div className="szl__workspace">
+            <Editor
+              project={active}
+              captures={captures}
+              autoFocusTitle={focusTitleForId === active.id}
+              onTitleFocused={() => setFocusTitleForId(null)}
+              onRename={(name) => onUpdate(active.id, { name })}
+              onVoice={(voice) => onUpdate(active.id, { voice })}
+              onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
+              onResolution={(resolution) =>
+                onUpdate(active.id, { resolution })
+              }
+              onScenes={(scenes) => onUpdate(active.id, { scenes })}
+              onFlushPending={() => flushPatch(active.id)}
+              onPickCapture={() => setPicker(true)}
+              onRender={onRender}
+              onReveal={onReveal}
+              onDelete={() => onDelete(active.id)}
+              status={status}
+            />
+            {showChat ? (
+              <aside className="szl__chat">
+                <SizzleChatPanel key={active.id} projectId={active.id} />
+              </aside>
+            ) : null}
+          </div>
         )}
       </main>
 

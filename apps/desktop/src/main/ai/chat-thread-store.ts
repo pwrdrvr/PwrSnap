@@ -28,7 +28,7 @@
 // deletes the sidecar). New threads write only the index row; no sidecar
 // is created going forward.
 
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type DatabaseT from "better-sqlite3";
@@ -212,6 +212,22 @@ export class ChatThreadStore {
       )
       .run(name, anchorCaptureId, archived, pinned, now, threadId);
     return rowToSidecar(this.selectRowOrThrow(threadId));
+  }
+
+  /**
+   * Hard-delete a thread: remove its index row AND its on-disk directory
+   * (journal + attachments). Used by the Sizzle project-delete cascade so
+   * deleting a reel leaves no orphan chat dir (decision #6). No-op for an
+   * unknown thread. The dir path is resolved BEFORE the row is removed
+   * (it's derived from the row's `dir_name`).
+   */
+  async delete(threadId: string): Promise<void> {
+    this.ensureImported();
+    const dir = this.threadDir(threadId);
+    this.db().prepare(`DELETE FROM chat_threads WHERE thread_id = ?`).run(threadId);
+    if (dir !== null) {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   /**

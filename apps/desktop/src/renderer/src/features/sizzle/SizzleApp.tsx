@@ -1144,6 +1144,19 @@ function Editor(props: EditorProps): ReactElement {
                       <div className="szl__scene-row">
                         <span className="szl__scene-app">sequence</span>
                         <span className="szl__spacer" />
+                        <button
+                          className="szl__scene-mini szl__scene-mini--play"
+                          onClick={() => void onPreviewScene(scene.id)}
+                          disabled={previewLoadingSceneId === scene.id || scene.scriptLine.trim().length === 0}
+                          type="button"
+                          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence narration"}
+                        >
+                          {previewLoadingSceneId === scene.id
+                            ? "…"
+                            : previewingSceneId === scene.id
+                              ? "■"
+                              : "▶"}
+                        </button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, -1)} disabled={idx === 0} type="button" title="Move up">↑</button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, 1)} disabled={idx === project.scenes.length - 1} type="button" title="Move down">↓</button>
                         <button className="szl__scene-mini szl__scene-mini--danger" onClick={() => removeScene(scene.id)} type="button" title="Remove scene">✕</button>

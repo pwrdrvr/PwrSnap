@@ -102,9 +102,8 @@ export function recordToFixture(record: CaptureRecord, sequence: number, now: Da
  * Project a SizzleProject into the fixture-shaped Capture so the
  * Library day-grouped grid + virtualizer can render it as a cell
  * alongside image/video captures. Day-bucket pivots on
- * `project.modifiedAt` so a project moves up the grid when the user
- * edits it (matches what the user expects — "I just touched this,
- * I want to see it near my recent captures").
+ * `project.createdAt` so the grid position is stable while the user
+ * edits or renders the project.
  *
  * `app` is a synthetic key (`"_sizzle_"`) that the Source App filter
  * doesn't enumerate; projects never appear under a source-app filter
@@ -115,8 +114,8 @@ export function projectToFixture(
   sequence: number,
   now: Date
 ): Capture {
-  const modified = new Date(project.modifiedAt);
-  const { day, date } = dayBucket(modified, now);
+  const created = new Date(project.createdAt);
+  const { day, date } = dayBucket(created, now);
   return {
     id: sequence,
     app: PROJECT_APP_KEY,
@@ -126,7 +125,7 @@ export function projectToFixture(
     tags: [],
     day,
     date,
-    time: timeLabel(modified),
+    time: timeLabel(created),
     size: 0,
     w: 1920,
     h: 1080,
@@ -203,7 +202,7 @@ export function mapBundleIdToAppId(bundleId: string | null): AppId {
  *
  * Accepts an optional `projects` argument so the grid renders Sizzle
  * Reels projects inline with captures, ordered into the same
- * day-buckets by `project.modifiedAt`. Project fixtures get a
+ * day-buckets by `project.createdAt`. Project fixtures get a
  * synthetic `app: "_sizzle_"` so the Source App filter doesn't
  * enumerate them. `recordFor` returns null for project fixtures;
  * call `projectFor(sequence)` instead.

@@ -173,6 +173,14 @@ export const EVENT_CHANNELS = {
    */
   sizzleProjectsChanged: "events:sizzle:projects:changed",
   /**
+   * Main → the Sizzle composer window: navigate to a project (e.g. the
+   * user clicked a Sizzle Reel in the Library while the composer is
+   * already open). For a NEWLY-created composer window the target rides
+   * the URL hash (`projectId=…`) instead, so this event only needs to
+   * reach an already-loaded window. Payload: `{ projectId: string }`.
+   */
+  sizzleNav: "events:sizzle:nav",
+  /**
    * Main → every BrowserWindow: the single global Project Asset Cart
    * changed (toggle / reorder / remove / rename / clear / commit). The
    * Library's cell checkboxes + the DetailRail Cart tab subscribe so

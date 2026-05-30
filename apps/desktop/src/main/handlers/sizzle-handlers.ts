@@ -284,13 +284,24 @@ export function registerSizzleHandlers(): void {
     const v = validateSizzleOpenRequest(req);
     if (!v.ok) return err(v.error);
     const existing = findSizzleWindow();
-    const window = existing ?? createSizzleWindow();
-    if (existing !== null && existing.isMinimized()) existing.restore();
+    if (existing !== null) {
+      // Window already loaded → navigate via a live event (the renderer
+      // is subscribed). Mirrors settings:open.
+      if (existing.isMinimized()) existing.restore();
+      existing.show();
+      existing.focus();
+      if (v.projectId !== undefined) {
+        existing.webContents.send(EVENT_CHANNELS.sizzleNav, { projectId: v.projectId });
+      }
+      return ok(undefined);
+    }
+    // New window → the target rides the URL hash so the renderer opens to
+    // it on mount (no event race against the renderer's subscribe).
+    const window = createSizzleWindow(
+      v.projectId !== undefined ? `projectId=${encodeURIComponent(v.projectId)}` : undefined
+    );
     window.show();
     window.focus();
-    if (v.projectId !== undefined) {
-      window.webContents.send("events:sizzle:nav", { projectId: v.projectId });
-    }
     return ok(undefined);
   });
 

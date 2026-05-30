@@ -63,9 +63,20 @@ function mergeProjectPatch(
   };
 }
 
+/** The project a freshly-opened composer window should focus, passed by
+ *  `sizzle:open` via the URL hash (`#stage=sizzle&projectId=…`). Null when
+ *  opened without a target. */
+function readInitialProjectId(): string | null {
+  const hash = window.location.hash.replace(/^#/, "");
+  return new URLSearchParams(hash).get("projectId");
+}
+
 export function SizzleApp(): ReactElement {
   const [projects, setProjects] = useState<SizzleProject[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Seed from the hash so a window opened to a specific reel lands on it,
+  // not on projects[0]. reloadProjects only defaults to projects[0] when
+  // activeId is still null, so this never gets clobbered.
+  const [activeId, setActiveId] = useState<string | null>(readInitialProjectId);
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [picker, setPicker] = useState(false);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
@@ -233,6 +244,20 @@ export function SizzleApp(): ReactElement {
             : p
         )
       );
+    });
+  }, []);
+
+  // Navigate when the user clicks a Sizzle Reel in the Library while this
+  // composer window is already open (a new window instead gets the target
+  // via the hash — see readInitialProjectId). Without this the click
+  // focuses the window but the reel selection never changes.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleNav, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const projectId = (payload as { projectId?: unknown }).projectId;
+      if (typeof projectId === "string" && projectId.length > 0) {
+        setActiveId(projectId);
+      }
     });
   }, []);
 

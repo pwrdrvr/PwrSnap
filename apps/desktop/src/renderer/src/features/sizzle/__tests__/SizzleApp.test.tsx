@@ -46,15 +46,18 @@ function project(patch: Partial<SizzleProject> = {}): SizzleProject {
   };
 }
 
-function installApi(initial: SizzleProject): {
+function installApi(projects: SizzleProject[]): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
 } {
   const handlers = new Map<string, Set<Handler>>();
-  const dispatch = vi.fn(async (name: string) => {
-    if (name === "sizzle:list") return { ok: true, value: { projects: [initial] } };
+  const dispatch = vi.fn(async (name: string, req?: unknown) => {
+    if (name === "sizzle:list") return { ok: true, value: { projects } };
     if (name === "library:list") return { ok: true, value: { rows: [] } };
-    if (name === "sizzle:update") return { ok: true, value: initial };
+    if (name === "sizzle:update") {
+      const id = (req as { id?: string } | undefined)?.id;
+      return { ok: true, value: projects.find((p) => p.id === id) ?? projects[0] };
+    }
     return { ok: true, value: undefined };
   });
   const on = (channel: string, handler: Handler): (() => void) => {
@@ -74,11 +77,12 @@ function installApi(initial: SizzleProject): {
   return { dispatch, emit };
 }
 
-async function renderApp(initial: SizzleProject): Promise<{
+async function renderApp(initial: SizzleProject | SizzleProject[]): Promise<{
   el: HTMLDivElement;
   emit: (channel: string, payload: unknown) => void;
+  dispatch: ReturnType<typeof vi.fn>;
 }> {
-  const { emit } = installApi(initial);
+  const { dispatch, emit } = installApi(Array.isArray(initial) ? initial : [initial]);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -90,7 +94,11 @@ async function renderApp(initial: SizzleProject): Promise<{
     await Promise.resolve();
     await Promise.resolve();
   });
-  return { el: container, emit };
+  return { el: container, emit, dispatch };
+}
+
+function titleValue(el: HTMLElement): string {
+  return el.querySelector<HTMLInputElement>(".szl__editor-title")?.value ?? "";
 }
 
 function scriptBox(el: HTMLElement): HTMLTextAreaElement {
@@ -116,6 +124,9 @@ afterEach(async () => {
   container?.remove();
   container = null;
   root = null;
+  // jsdom shares window across a file's tests — reset the nav hash so one
+  // test's projectId seed can't leak into the next.
+  window.location.hash = "";
 });
 
 describe("SizzleApp live project sync", () => {
@@ -167,5 +178,30 @@ describe("SizzleApp live project sync", () => {
       emit(EVENT_CHANNELS.sizzleProjectsChanged, null);
     });
     expect(scriptBox(el).value).toBe("kept");
+  });
+});
+
+describe("SizzleApp open-to-project navigation", () => {
+  const first = project({ id: "sz_1", name: "First reel" });
+  const second = project({ id: "sz_2", name: "Second reel" });
+
+  test("events:sizzle:nav switches to the clicked reel when already open", async () => {
+    // The reported bug: clicking the 2nd Sizzle Reel in the Library opened
+    // the composer on the 1st project. With the nav subscription the open
+    // window jumps to the clicked one.
+    const { el, emit } = await renderApp([first, second]);
+    expect(titleValue(el)).toBe("First reel"); // defaults to projects[0]
+
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleNav, { projectId: "sz_2" });
+    });
+    expect(titleValue(el)).toBe("Second reel");
+  });
+
+  test("a newly-opened window honors the projectId in the URL hash", async () => {
+    window.location.hash = "#stage=sizzle&projectId=sz_2";
+    const { el } = await renderApp([first, second]);
+    // Seeded from the hash → lands on the 2nd reel, not projects[0].
+    expect(titleValue(el)).toBe("Second reel");
   });
 });

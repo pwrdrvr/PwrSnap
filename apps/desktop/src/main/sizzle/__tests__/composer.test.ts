@@ -704,4 +704,78 @@ describe("buildCompositionArgs — xfade transition chain", () => {
     );
     expect(filterGraph(args)).not.toContain("tpad=");
   });
+
+  it("sequence beat audio can start from the middle of a narration file", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "image",
+            imagePath: "/x/a.png",
+            audioPath: "/x/narration.mp3",
+            audioStartSec: 1.25,
+            durationSec: 0.75,
+            transition: "cut"
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    expect(filterGraph(args)).toContain("atrim=1.250:2.000");
+  });
+
+  it("loop video fit repeats a short clip to fill the target duration", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 1,
+            durationSec: 4,
+            audioPath: "/x/a.mp3",
+            transition: "cut",
+            videoFit: { mode: "loop", playbackRate: 1 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("loop=loop=3:size=30:start=0");
+    expect(graph).toContain("trim=duration=4.000");
+  });
+
+  it("speed-to-fit video fit changes PTS rather than freezing the tail", () => {
+    const args = buildCompositionArgs(
+      {
+        scenes: [
+          {
+            kind: "video",
+            videoPath: "/x/clip.mp4",
+            startSec: 0,
+            trimDurationSec: 3,
+            durationSec: 2,
+            audioPath: "/x/a.mp3",
+            transition: "cut",
+            videoFit: { mode: "speed-to-fit", playbackRate: 1.5 }
+          }
+        ],
+        outputPath: "/x/out.mp4",
+        width: 1280,
+        height: 720,
+        fps: 30
+      }
+    );
+    const graph = filterGraph(args);
+    expect(graph).toContain("setpts=0.666667*PTS");
+    expect(graph).not.toContain("tpad=stop_mode=clone");
+  });
 });

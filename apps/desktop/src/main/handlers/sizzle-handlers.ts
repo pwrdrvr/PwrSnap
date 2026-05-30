@@ -20,6 +20,11 @@ import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
 import { cleanupProjectChats } from "./sizzle-chat-handlers";
 import { pruneTtsCache, synthesize, TtsError } from "../sizzle/tts";
+import { resolveSpeechTiming } from "../sizzle/speech-timing";
+import {
+  planSequenceScene,
+  SequencePlannerError
+} from "../sizzle/sequence-planner";
 import {
   compose,
   ComposeError,
@@ -109,6 +114,9 @@ function toError(cause: unknown, fallbackCode: string): PwrSnapError {
   }
   if (cause instanceof SceneError) {
     return { kind: "validation", code: "scene_invalid", message: cause.message };
+  }
+  if (cause instanceof SequencePlannerError) {
+    return { kind: "validation", code: cause.code, message: cause.message };
   }
   if (cause instanceof SizzleProjectNotFoundError) {
     return { kind: "validation", code: "not_found", message: cause.message };
@@ -557,13 +565,66 @@ export function registerSizzleHandlers(): void {
     // phase from ~hundreds of ms to single digits. The synchronous
     // validation walk that follows still emits errors in scene order
     // (first failing scene wins, matching the prior loop's behavior).
+    const captureIds = [
+      ...new Set(
+        project.scenes.flatMap((scene) =>
+          scene.kind === "sequence" && scene.beats !== undefined
+            ? scene.beats.map((beat) => beat.captureId)
+            : [scene.captureId]
+        )
+      )
+    ];
     const loadedCaptures = await Promise.all(
-      project.scenes.map((scene) => loadCapture(scene.captureId))
+      captureIds.map(async (captureId) => [captureId, await loadCapture(captureId)] as const)
     );
+    const captureMap = new Map<string, CaptureRecord>();
+    for (const [captureId, capture] of loadedCaptures) {
+      if (capture !== null) captureMap.set(captureId, capture);
+    }
     const captures: Array<{ scene: SizzleScene; capture: CaptureRecord; effectiveAudio: "native" | "voiceover" | "muted" }> = [];
     for (let i = 0; i < project.scenes.length; i++) {
       const scene = project.scenes[i]!;
-      const capture = loadedCaptures[i]!;
+      const capture = captureMap.get(scene.captureId) ?? null;
+      if (scene.kind === "sequence") {
+        if (scene.scriptLine.trim().length === 0) {
+          const message = `Scene ${i + 1}: sequence scenes require non-empty narration`;
+          broadcastRenderProgress({
+            projectId: project.id,
+            phase: "failed",
+            message,
+            ratio: 0,
+            error: { code: "empty_script", message }
+          });
+          return err({ kind: "validation", code: "empty_script", message });
+        }
+        for (const beat of scene.beats ?? []) {
+          if (!captureMap.has(beat.captureId)) {
+            const message = `Scene ${i + 1}, beat ${beat.id}: capture ${beat.captureId} not found (it may have been deleted)`;
+            broadcastRenderProgress({
+              projectId: project.id,
+              phase: "failed",
+              message,
+              ratio: 0,
+              error: { code: "capture_missing", message }
+            });
+            return err({ kind: "validation", code: "capture_missing", message });
+          }
+        }
+        const firstBeatCapture = scene.beats?.[0] !== undefined ? captureMap.get(scene.beats[0].captureId) : capture;
+        if (firstBeatCapture === undefined || firstBeatCapture === null) {
+          const message = `Scene ${i + 1}: sequence scene has no loadable beats`;
+          broadcastRenderProgress({
+            projectId: project.id,
+            phase: "failed",
+            message,
+            ratio: 0,
+            error: { code: "capture_missing", message }
+          });
+          return err({ kind: "validation", code: "capture_missing", message });
+        }
+        captures.push({ scene, capture: firstBeatCapture, effectiveAudio: "voiceover" });
+        continue;
+      }
       if (capture === null) {
         const message = `Scene ${i + 1}: capture ${scene.captureId} not found (it may have been deleted)`;
         broadcastRenderProgress({
@@ -653,21 +714,60 @@ export function registerSizzleHandlers(): void {
     // order — not scene order. That's fine for the progress bar
     // (which reads ratio, not scene-index). The final sceneInputs
     // array is rebuilt in scene order before the composer runs.
-    const sceneInputs: SceneInput[] = new Array(captures.length);
+    const sceneInputGroups: SceneInput[][] = new Array(captures.length);
     let prepared = 0;
     try {
       await Promise.all(
         captures.map(async ({ scene, capture, effectiveAudio }, i) => {
-          const sceneInput = await prepareSceneInput({
-            scene,
-            capture,
-            effectiveAudio,
-            project,
-            apiKey,
-            sceneIdx: i + 1,
-            imageWidth: dims.w
-          });
-          sceneInputs[i] = sceneInput;
+          if (scene.kind === "sequence") {
+            const tts = await synthesize({
+              provider: project.ttsProvider,
+              apiKey: apiKey!,
+              text: scene.scriptLine.trim(),
+              voice: project.voice,
+              model: project.ttsModel
+            });
+            const durationSec = await probeDurationSec(tts.audioPath);
+            const speechTiming = await resolveSpeechTiming({
+              provider: project.ttsProvider,
+              model: project.ttsModel,
+              voice: project.voice,
+              text: scene.scriptLine.trim(),
+              audioPath: tts.audioPath,
+              durationSec,
+              apiKey
+            });
+            const imagePathByCaptureId = new Map<string, string>();
+            await Promise.all(
+              (scene.beats ?? []).map(async (beat) => {
+                const beatCapture = captureMap.get(beat.captureId);
+                if (beatCapture?.kind !== "image") return;
+                const imagePath = await resolveImagePath(beat.captureId, dims.w);
+                if (imagePath === null) {
+                  throw new SceneError(`Scene ${i + 1}, beat ${beat.id}: could not render capture image`);
+                }
+                imagePathByCaptureId.set(beat.captureId, imagePath);
+              })
+            );
+            sceneInputGroups[i] = planSequenceScene({
+              scene,
+              capturesById: captureMap,
+              imagePathByCaptureId,
+              narrationAudioPath: tts.audioPath,
+              speechTiming
+            }).sceneInputs;
+          } else {
+            const sceneInput = await prepareSceneInput({
+              scene,
+              capture,
+              effectiveAudio,
+              project,
+              apiKey,
+              sceneIdx: i + 1,
+              imageWidth: dims.w
+            });
+            sceneInputGroups[i] = [sceneInput];
+          }
           prepared += 1;
           broadcastRenderProgress({
             projectId: project.id,
@@ -682,6 +782,7 @@ export function registerSizzleHandlers(): void {
       broadcastRenderProgress({ projectId: project.id, phase: "failed", message: e.message, ratio: 0, error: { code: e.code, message: e.message } });
       return err(e);
     }
+    const sceneInputs = sceneInputGroups.flat();
 
     broadcastRenderProgress({ projectId: project.id, phase: "compose", message: "Composing video", ratio: 0.5 });
 

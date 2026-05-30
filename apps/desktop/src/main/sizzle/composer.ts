@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { SIZZLE_CROSSFADE_SEC, type SizzleTransition } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import { getMainLogger } from "../log";
+import type { VideoFitRenderMode } from "./video-fit";
 
 const log = getMainLogger("pwrsnap:sizzle-composer");
 
@@ -27,8 +28,14 @@ export type ImageSceneInput = {
   kind: "image";
   imagePath: string;
   audioPath: string;
+  audioStartSec?: number;
   durationSec: number;
   transition: SizzleTransition;
+};
+
+export type VideoFitRenderPlan = {
+  mode: VideoFitRenderMode;
+  playbackRate: number;
 };
 
 export type VideoSceneInput = {
@@ -48,7 +55,9 @@ export type VideoSceneInput = {
    *  for the remainder. When equal, no padding fires. */
   durationSec: number;
   audioPath: string;
+  audioStartSec?: number;
   transition: SizzleTransition;
+  videoFit?: VideoFitRenderPlan;
 };
 
 export type SceneInput = ImageSceneInput | VideoSceneInput;
@@ -239,17 +248,15 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
       // composer a scene where `durationSec > native-audio length`,
       // `-shortest` truncates the whole reel at that point — caller's
       // job to keep them in sync, not the composer's to defend.
-      const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
-      const tpadFilter =
-        padSec > 0.05
-          ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
-          : "";
+      const fit = scene.videoFit ?? { mode: "freeze-end", playbackRate: 1 };
+      const fitFilter = videoFitFilter(scene, fit, req.fps);
       filters.push(
         `[${i}:v]` +
           `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
           `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-          `fps=${req.fps},setsar=1,format=yuv420p` +
-          tpadFilter +
+          `fps=${req.fps}` +
+          fitFilter +
+          `,setsar=1,format=yuv420p` +
           `[v${i}]`
       );
     }
@@ -292,6 +299,28 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
     req.outputPath
   );
   return args;
+}
+
+function videoFitFilter(
+  scene: VideoSceneInput,
+  fit: VideoFitRenderPlan,
+  fps: number
+): string {
+  if (fit.mode === "speed-to-fit") {
+    const factor = 1 / Math.max(0.01, fit.playbackRate);
+    return `,setpts=${factor.toFixed(6)}*PTS,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
+  }
+  if (fit.mode === "loop") {
+    const frames = Math.max(1, Math.round(scene.trimDurationSec * fps));
+    const repeats = Math.max(1, Math.ceil(scene.durationSec / Math.max(0.01, scene.trimDurationSec)) - 1);
+    return `,loop=loop=${repeats}:size=${frames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
+  }
+  const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
+  const tpadFilter =
+    padSec > 0.05
+      ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
+      : "";
+  return `${tpadFilter},trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
 }
 
 function videoBitrate(width: number, height: number, fps: number): string {
@@ -358,7 +387,7 @@ function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
         "aresample=44100," +
         "aformat=sample_fmts=fltp:channel_layouts=stereo," +
         "apad," +
-        `atrim=0:${scene.durationSec.toFixed(3)},` +
+        `atrim=${(scene.audioStartSec ?? 0).toFixed(3)}:${((scene.audioStartSec ?? 0) + scene.durationSec).toFixed(3)},` +
         "asetpts=PTS-STARTPTS" +
         `[a${i}]`
     );

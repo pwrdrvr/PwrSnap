@@ -1261,6 +1261,7 @@ function Editor(props: EditorProps): ReactElement {
                                     className="szl__sequence-phrase"
                                     value={beat.timing.phrase}
                                     placeholder="spoken phrase"
+                                    title="Phrase to match in the narration"
                                     onChange={(e) =>
                                       editSequenceBeat(scene.id, beat.id, {
                                         timing: {
@@ -1273,26 +1274,29 @@ function Editor(props: EditorProps): ReactElement {
                                       })
                                     }
                                   />
-                                  <input
-                                    className="szl__sequence-time"
-                                    type="number"
-                                    step={0.1}
-                                    value={beat.timing.offsetSec}
-                                    onChange={(e) => {
-                                      const v = Number(e.target.value);
-                                      if (!Number.isFinite(v)) return;
-                                      editSequenceBeat(scene.id, beat.id, {
-                                        timing: {
-                                          kind: "phrase",
-                                          phrase: beat.timing.kind === "phrase" ? beat.timing.phrase : "",
-                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
-                                          offsetSec: v,
-                                          durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                                        }
-                                      });
-                                    }}
-                                    title="Phrase offset seconds"
-                                  />
+                                  <label className="szl__sequence-time-field">
+                                    <span>Offset</span>
+                                    <input
+                                      className="szl__sequence-time"
+                                      type="number"
+                                      step={0.1}
+                                      value={beat.timing.offsetSec}
+                                      onChange={(e) => {
+                                        const v = Number(e.target.value);
+                                        if (!Number.isFinite(v)) return;
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "phrase",
+                                            phrase: beat.timing.kind === "phrase" ? beat.timing.phrase : "",
+                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                            offsetSec: v,
+                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                          }
+                                        });
+                                      }}
+                                      title="Seconds to shift from the matched phrase start. Negative starts before the phrase; positive starts after it."
+                                    />
+                                  </label>
                                 </>
                               )}
                               <select

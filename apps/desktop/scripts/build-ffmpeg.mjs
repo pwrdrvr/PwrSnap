@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cpus, homedir } from "node:os";
+import { cpus, homedir, tmpdir } from "node:os";
 
 const FFMPEG_VERSION = "8.1.1";
 const FFMPEG_SHA256 = "b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3";
@@ -50,7 +50,11 @@ const cacheRoot = resolve(
   process.env.PWRSNAP_FFMPEG_CACHE_DIR ??
     join(homedir(), "Library", "Caches", "PwrSnap", "ffmpeg-builds")
 );
-const localCacheRoot = join(desktopRoot, "build", "ffmpeg-cache");
+const legacyBuildWorkRoot = join(desktopRoot, "build", "ffmpeg-cache");
+const workCacheRoot = resolve(
+  process.env.PWRSNAP_FFMPEG_WORK_DIR ??
+    join(tmpdir(), "PwrSnap", "ffmpeg-work")
+);
 const disabledPkgConfigPath = join(cacheRoot, "pkg-config-disabled");
 const outputPath = join(buildRoot, "ffmpeg");
 const manifestPath = join(buildRoot, "manifest.json");
@@ -62,7 +66,8 @@ if (process.platform !== "darwin") {
 
 mkdirSync(buildRoot, { recursive: true });
 mkdirSync(cacheRoot, { recursive: true });
-mkdirSync(localCacheRoot, { recursive: true });
+rmSync(legacyBuildWorkRoot, { recursive: true, force: true });
+mkdirSync(workCacheRoot, { recursive: true });
 ensureDisabledPkgConfig();
 
 const universal = process.env.PWRSNAP_FFMPEG_UNIVERSAL === "1";
@@ -165,14 +170,14 @@ function downloadSource() {
 }
 
 function buildSlice(tarballPath, arch) {
-  const workRoot = join(localCacheRoot, `work-${buildKey}-${arch}`);
+  const workRoot = join(workCacheRoot, `work-${buildKey}-${arch}`);
   const sourceRoot = join(workRoot, `ffmpeg-${FFMPEG_VERSION}`);
   const prefix = join(workRoot, "prefix");
   const slicePath = join(binaryCacheRoot, `ffmpeg-${arch}`);
   rmSync(workRoot, { recursive: true, force: true });
   rmSync(slicePath, { force: true });
   mkdirSync(workRoot, { recursive: true });
-  run("tar", ["-xf", tarballPath, "-C", workRoot], { cwd: localCacheRoot });
+  run("tar", ["-xf", tarballPath, "-C", workRoot], { cwd: workCacheRoot });
 
   const hostArch = process.arch === "x64" ? "x86_64" : process.arch;
   const configureArgs = [

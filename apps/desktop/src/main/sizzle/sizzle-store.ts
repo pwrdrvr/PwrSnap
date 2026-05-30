@@ -52,7 +52,7 @@ export class SizzleStore {
       const blob = await this.readBlob();
       return [...blob.projects].sort(
         (a, b) =>
-          new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime()
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
     });
   }

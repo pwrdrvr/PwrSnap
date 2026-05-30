@@ -169,24 +169,22 @@ describe("projectToFixture — shape + day bucketing", () => {
   //                                 enumerating projects
   //   - `projectId`              → click handler dispatches sizzle:open
   //   - `day` / `date`           → day-grouped grid bucket key (must
-  //                                 reflect `modifiedAt`, not now)
+  //                                 reflect stable `createdAt`, not now)
   //
   // The tests below are scoped to those invariants — the rest of the
   // fixture (placeholder dims, zero size) is implementation detail
   // the grid happens to tolerate today.
 
-  test("project pivots on modifiedAt for day bucketing", () => {
+  test("project pivots on createdAt for stable day bucketing", () => {
     // Reference "now" pinned to 2026-05-27 14:00 local. A project
-    // modified at 2026-05-26 23:30 should land in the "Yesterday"
-    // bucket — the day pivot must read modifiedAt, NOT createdAt
-    // (which would say "Today" because createdAt is from before
-    // the user touched the reel today).
+    // created at 2026-05-26 23:30 should land in the "Yesterday"
+    // bucket even if it was edited today.
     const now = new Date(2026, 4, 27, 14, 0, 0);
     const yesterdayLate = new Date(2026, 4, 26, 23, 30, 0).toISOString();
-    const longAgo = new Date(2025, 0, 1, 0, 0, 0).toISOString();
+    const today = new Date(2026, 4, 27, 12, 0, 0).toISOString();
     const project = makeProject({
-      createdAt: longAgo,
-      modifiedAt: yesterdayLate
+      createdAt: yesterdayLate,
+      modifiedAt: today
     });
     const fixture = projectToFixture(project, 1, now);
     expect(fixture.day).toBe("Yesterday");

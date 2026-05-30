@@ -46,6 +46,18 @@ function project(patch: Partial<SizzleProject> = {}): SizzleProject {
   };
 }
 
+function projects(count: number): SizzleProject[] {
+  return Array.from({ length: count }, (_, i) => {
+    const n = i + 1;
+    return project({
+      id: `sz_${n}`,
+      name: `Reel ${n}`,
+      createdAt: new Date(Date.UTC(2026, 4, n, 12, 0, 0)).toISOString(),
+      modifiedAt: new Date(Date.UTC(2026, 4, n, 13, 0, 0)).toISOString()
+    });
+  });
+}
+
 function installApi(projects: SizzleProject[]): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
@@ -115,6 +127,19 @@ function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   )!.set!;
   setter.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function projectRowNames(list: Element | null): string[] {
+  return Array.from(list?.querySelectorAll(".szl__row-name") ?? []).map(
+    (el) => el.textContent ?? ""
+  );
+}
+
+function clickProjectRow(list: Element | null, name: string): void {
+  const button = Array.from(list?.querySelectorAll<HTMLButtonElement>(".szl__row") ?? [])
+    .find((row) => row.textContent?.includes(name) === true);
+  if (button === undefined) throw new Error(`project row not found: ${name}`);
+  button.click();
 }
 
 afterEach(async () => {
@@ -203,5 +228,52 @@ describe("SizzleApp open-to-project navigation", () => {
     const { el } = await renderApp([first, second]);
     // Seeded from the hash → lands on the 2nd reel, not projects[0].
     expect(titleValue(el)).toBe("Second reel");
+  });
+});
+
+describe("SizzleApp project rail", () => {
+  test("shows creation and update dates on project rows", async () => {
+    const p = project({
+      scenes: [scene(), scene({ id: "sc_b" })],
+      createdAt: "2026-05-24T12:00:00.000Z",
+      modifiedAt: "2026-05-28T12:00:00.000Z"
+    });
+    const { el } = await renderApp(p);
+    const activeRow = el.querySelector(".szl__row.is-active");
+    expect(activeRow?.textContent).toContain("Demo Reel");
+    expect(activeRow?.textContent).toContain("Created");
+    expect(activeRow?.textContent).toContain("2 clips");
+    expect(activeRow?.textContent).toContain("Updated");
+    expect(activeRow?.textContent).toContain("2026");
+  });
+
+  test("caps the scrollable projects list while keeping an opened project visible in Recents", async () => {
+    window.location.hash = "#stage=sizzle&projectId=sz_105";
+    const { el } = await renderApp(projects(106));
+
+    const recents = el.querySelector('[data-testid="sizzle-recents-list"]');
+    const projectList = el.querySelector('[data-testid="sizzle-projects-list"]');
+    expect(projectList?.classList.contains("szl__list--projects")).toBe(true);
+    expect(projectList?.querySelectorAll(".szl__row")).toHaveLength(100);
+    expect(recents?.textContent).toContain("Reel 105");
+    expect(recents?.querySelector(".szl__row.is-active")?.textContent).toContain("Reel 105");
+  });
+
+  test("clicking an existing recent project does not reorder Recents", async () => {
+    const { el } = await renderApp(projects(3));
+    const recents = el.querySelector('[data-testid="sizzle-recents-list"]');
+    const projectList = el.querySelector('[data-testid="sizzle-projects-list"]');
+    expect(projectRowNames(recents)).toEqual(["Reel 1"]);
+
+    await act(async () => {
+      clickProjectRow(projectList, "Reel 2");
+    });
+    expect(projectRowNames(recents)).toEqual(["Reel 2", "Reel 1"]);
+
+    await act(async () => {
+      clickProjectRow(recents, "Reel 1");
+    });
+    expect(projectRowNames(recents)).toEqual(["Reel 2", "Reel 1"]);
+    expect(recents?.querySelector(".szl__row.is-active")?.textContent).toContain("Reel 1");
   });
 });

@@ -92,8 +92,9 @@
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   padding: 14px 12px 12px;
-  gap: 8px;
+  gap: 12px;
   overflow: hidden;
+  min-height: 0;
 }
 
 .szl__new {
@@ -115,12 +116,51 @@
 
 .szl__list {
   list-style: none;
-  margin: 4px 0 0;
+  margin: 0;
   padding: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
+}
+
+.szl__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.szl__section--projects {
+  flex: 1;
+}
+
+.szl__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.szl__section-count {
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.szl__list--recents {
+  flex: 0 0 auto;
+  max-height: 280px;
+}
+
+.szl__list--projects {
+  flex: 1;
 }
 
 .szl__empty,
@@ -158,12 +198,19 @@
 
 .szl__row-name {
   font: 600 12px/1.2 var(--font-sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .szl__row-meta {
   font: 500 10px/1.2 var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
+}
+
+.szl__row-meta--sub {
+  opacity: 0.78;
 }
 
 /* Main pane — empty state OR active editor. */

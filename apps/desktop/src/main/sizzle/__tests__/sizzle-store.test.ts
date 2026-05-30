@@ -45,12 +45,14 @@ describe("SizzleStore", () => {
     expect(p.name).toBe("Untitled Sizzle");
   });
 
-  it("list() returns most-recently-modified first", async () => {
+  it("list() returns newest-created first even after an older project is updated", async () => {
     const store = makeStore();
     const a = await store.create("First");
-    // Force a measurable gap so modifiedAt comparisons are stable.
+    // Force a measurable gap so createdAt comparisons are stable.
     await new Promise((r) => setTimeout(r, 5));
     const b = await store.create("Second");
+    await new Promise((r) => setTimeout(r, 5));
+    await store.update(a.id, { name: "First, edited later" });
     const projects = await store.list();
     expect(projects.map((p) => p.id)).toEqual([b.id, a.id]);
   });

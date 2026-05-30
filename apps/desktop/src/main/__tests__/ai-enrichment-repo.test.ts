@@ -446,7 +446,7 @@ describe("AI enrichment repositories", () => {
     expect(() => removeTag("cap_missing", "anything")).toThrow(/not found/);
   });
 
-  test("storeCompletedEnrichment with autoAccept promotes title + description + filename + top tags", () => {
+  test("storeCompletedEnrichment with autoAccept promotes title + description + top tags but leaves filename as suggested", () => {
     const run = createAiRun({ captureId: "cap_1" });
     const enrichment = storeCompletedEnrichment({
       captureId: "cap_1",
@@ -467,10 +467,11 @@ describe("AI enrichment repositories", () => {
 
     expect(enrichment.acceptedTitle).toBe("Deploy succeeded");
     expect(enrichment.acceptedDescription).toBe("CI dashboard with a green deploy badge.");
-    expect(enrichment.acceptedFilenameStem).toBe("ci-deploy-success-dashboard");
+    expect(enrichment.suggestedFilenameStem).toBe("ci-deploy-success-dashboard");
+    expect(enrichment.acceptedFilenameStem).toBeNull();
     expect(enrichment.titleAcceptedAt).not.toBeNull();
     expect(enrichment.descriptionAcceptedAt).not.toBeNull();
-    expect(enrichment.filenameAcceptedAt).not.toBeNull();
+    expect(enrichment.filenameAcceptedAt).toBeNull();
     // Top 2 tags promoted; the third stays as a pending suggestion.
     expect(enrichment.acceptedTags).toEqual(["ci", "deploy"]);
     expect(

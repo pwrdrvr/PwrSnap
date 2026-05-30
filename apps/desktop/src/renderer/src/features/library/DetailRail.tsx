@@ -813,6 +813,7 @@ function DetailTab({
   const suggestedDescription = enrichment?.suggestedDescription ?? "";
   const acceptedFilenameStem = enrichment?.acceptedFilenameStem ?? "";
   const suggestedFilenameStem = enrichment?.suggestedFilenameStem ?? "";
+  const effectiveFilenameStem = acceptedFilenameStem || suggestedFilenameStem;
 
   const [titleValue, titleOrigin, setTitleEdit, commitTitle] = useFieldEditor({
     captureId: record.id,
@@ -825,10 +826,10 @@ function DetailTab({
       accepted: acceptedDescription,
       suggested: suggestedDescription
     });
-  const [filenameValue, filenameOrigin, setFilenameEdit, commitFilename] = useFieldEditor({
+  const [filenameValue, filenameOrigin, setFilenameEdit] = useFieldEditor({
     captureId: record.id,
-    accepted: acceptedFilenameStem,
-    suggested: suggestedFilenameStem
+    accepted: effectiveFilenameStem,
+    suggested: ""
   });
 
   const pendingTags =
@@ -869,14 +870,14 @@ function DetailTab({
     async (value: string) => {
       const trimmed = value.trim();
       if (trimmed.length === 0) return;
-      if (trimmed === acceptedFilenameStem) return;
+      if (trimmed === effectiveFilenameStem) return;
       const result = await dispatch("codex:acceptFilenameStem", {
         captureId: record.id,
         filenameStem: trimmed
       });
       if (result.ok) onEnrichmentUpdate(result.value);
     },
-    [acceptedFilenameStem, onEnrichmentUpdate, record.id]
+    [effectiveFilenameStem, onEnrichmentUpdate, record.id]
   );
 
   // Per-field draft acceptance — the prior bulk "Use draft" button
@@ -942,65 +943,38 @@ function DetailTab({
     suggestedDescription
   ]);
 
-  const useFilenameDraft = useCallback(async () => {
-    if (suggestedFilenameStem.trim().length === 0) return;
-    commitFilename(suggestedFilenameStem, "accepted");
-    const result = await dispatch("codex:acceptFilenameStem", {
-      captureId: record.id,
-      filenameStem: suggestedFilenameStem
-    });
-    if (result.ok) {
-      onEnrichmentUpdate(result.value);
-    } else {
-      commitFilename(
-        acceptedFilenameStem,
-        acceptedFilenameStem.length > 0 ? "accepted" : "suggested"
-      );
-    }
-  }, [
-    acceptedFilenameStem,
-    commitFilename,
-    onEnrichmentUpdate,
-    record.id,
-    suggestedFilenameStem
-  ]);
-
   const titleDraftDiverged =
     suggestedTitle.trim().length > 0 && suggestedTitle !== acceptedTitle;
   const descriptionDraftDiverged =
     suggestedDescription.trim().length > 0 && suggestedDescription !== acceptedDescription;
-  const filenameDraftDiverged =
-    suggestedFilenameStem.trim().length > 0 &&
-    suggestedFilenameStem !== acceptedFilenameStem;
 
   const regenerate = useCallback(() => {
     void dispatch("codex:enrich", { captureId: record.id });
   }, [record.id]);
 
-  // Bulk "Use draft" — applies title + description + filename atomically
+  // Bulk "Use draft" — applies title + description atomically
   // in one server transaction via `codex:acceptAllDrafts`. Optimistic
   // local commits for instant feedback; the server broadcast that
-  // lands moments later is a no-op. Tags stay user-driven (their own
-  // +/× chip controls) to avoid surprise-accepts.
+  // lands moments later is a no-op. Filename suggestions are already
+  // the effective filename while accepted_filename_stem remains a
+  // user override, so the bulk action deliberately leaves filename
+  // alone. Tags stay user-driven (their own +/× chip controls) to
+  // avoid surprise-accepts.
   const useAllTextDrafts = useCallback(async () => {
     const wantTitle = titleDraftDiverged;
     const wantDescription = descriptionDraftDiverged;
-    const wantFilename = filenameDraftDiverged;
-    if (!wantTitle && !wantDescription && !wantFilename) return;
+    if (!wantTitle && !wantDescription) return;
 
     if (wantTitle) commitTitle(suggestedTitle, "accepted");
     if (wantDescription) commitDescription(suggestedDescription, "accepted");
-    if (wantFilename) commitFilename(suggestedFilenameStem, "accepted");
 
     const payload: {
       captureId: string;
       title?: string;
       description?: string;
-      filenameStem?: string;
     } = { captureId: record.id };
     if (wantTitle) payload.title = suggestedTitle;
     if (wantDescription) payload.description = suggestedDescription;
-    if (wantFilename) payload.filenameStem = suggestedFilenameStem;
 
     const result = await dispatch("codex:acceptAllDrafts", payload);
     if (result.ok) {
@@ -1015,30 +989,21 @@ function DetailTab({
           acceptedDescription,
           acceptedDescription.length > 0 ? "accepted" : "suggested"
         );
-      if (wantFilename)
-        commitFilename(
-          acceptedFilenameStem,
-          acceptedFilenameStem.length > 0 ? "accepted" : "suggested"
-        );
     }
   }, [
     acceptedDescription,
-    acceptedFilenameStem,
     acceptedTitle,
     commitDescription,
-    commitFilename,
     commitTitle,
     descriptionDraftDiverged,
-    filenameDraftDiverged,
     onEnrichmentUpdate,
     record.id,
     suggestedDescription,
-    suggestedFilenameStem,
     suggestedTitle,
     titleDraftDiverged
   ]);
 
-  const hasAnyDraft = titleDraftDiverged || descriptionDraftDiverged || filenameDraftDiverged;
+  const hasAnyDraft = titleDraftDiverged || descriptionDraftDiverged;
   const codexBusy = codexStatus === "queued" || codexStatus === "running";
 
   return (
@@ -1180,19 +1145,7 @@ function DetailTab({
         <label className="psl__field">
           <span className="psl__field-label">
             <span>Export filename</span>
-            {filenameOrigin === "suggested" ? (
-              <>
-                <span className="psl__field-origin">draft from Codex</span>
-                <button
-                  type="button"
-                  className="psl__field-use"
-                  onClick={() => void useFilenameDraft()}
-                  title="Save this Codex draft as the export filename"
-                >
-                  Use
-                </button>
-              </>
-            ) : filenameValue.length > 0 ? (
+            {filenameValue.length > 0 ? (
               <button
                 type="button"
                 className="psl__field-use"
@@ -1217,13 +1170,6 @@ function DetailTab({
             onChange={(event) => setFilenameEdit(event.target.value)}
             onBlur={() => void acceptFilenameIfNeeded(filenameValue)}
           />
-          {filenameDraftDiverged && filenameOrigin !== "suggested" ? (
-            <DraftPreview
-              label="Codex draft"
-              text={suggestedFilenameStem}
-              onUse={() => void useFilenameDraft()}
-            />
-          ) : null}
         </label>
       </div>
 

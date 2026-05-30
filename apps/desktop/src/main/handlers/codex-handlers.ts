@@ -51,6 +51,7 @@ import {
   setLatestEnrichmentRun,
   storeCompletedEnrichment
 } from "../persistence/enrichment-repo";
+import { renameBundleToEffectiveFilename } from "../persistence/bundle-filename-maintenance";
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
@@ -94,6 +95,17 @@ function mapError(error: unknown): Result<never, PwrSnapError> {
     message: error instanceof Error ? error.message : String(error),
     cause: error
   });
+}
+
+async function tryRenameBundleToEffectiveFilename(captureId: string): Promise<void> {
+  try {
+    await renameBundleToEffectiveFilename(captureId);
+  } catch (error) {
+    log.warn("bundle filename rename skipped after enrichment update", {
+      captureId,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 export function maybeEnqueueCaptureEnrichment(captureId: string): void {
@@ -243,6 +255,7 @@ export function registerCodexHandlers(params?: {
     }
     try {
       const enrichment = acceptFilenameStem(parsed.data.captureId, parsed.data.filenameStem);
+      await tryRenameBundleToEffectiveFilename(parsed.data.captureId);
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -260,6 +273,9 @@ export function registerCodexHandlers(params?: {
       // than being explicitly enumerated — keeps the repo signature
       // clean.
       const enrichment = acceptAllDrafts(parsed.data);
+      if (parsed.data.filenameStem !== undefined) {
+        await tryRenameBundleToEffectiveFilename(parsed.data.captureId);
+      }
       broadcastAiRunUpdated({ run: null, enrichment });
       return ok(enrichment);
     } catch (error) {
@@ -426,6 +442,7 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
+    await tryRenameBundleToEffectiveFilename(captureId);
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({
       run: completed,

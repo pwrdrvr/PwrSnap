@@ -58,6 +58,7 @@ import {
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
+import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 
 const log = getMainLogger("pwrsnap:bundle-store");
 
@@ -1004,12 +1005,13 @@ async function runRepack(captureId: string): Promise<void> {
     const overlaysJson = bundleOverlaysFromRows(record, liveOverlays);
 
     const now = new Date().toISOString();
+    const filenameStem = bundleStemFromPath(record.bundle_path);
     const manifest: BundleManifestV1 = {
       bundle_format_version: 1,
       capture_id: captureId,
       source_sha256: record.sha256,
       source_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${captureId}.png`,
+      paired_png_filename: `${filenameStem}.png`,
       created_at: record.captured_at,
       bundle_modified_at: now
     };
@@ -1087,6 +1089,14 @@ function basename(p: string): string {
   return idx >= 0 ? p.slice(idx + 1) : p;
 }
 
+function uniqueBundleFilenameStem(outputDir: string, preferredStem: string): string {
+  for (let index = 0; index < 100; index += 1) {
+    const stem = index === 0 ? preferredStem : `${preferredStem}-${index + 1}`;
+    if (!existsSync(join(outputDir, `${stem}.pwrsnap`))) return stem;
+  }
+  throw new Error(`bundle-store: no available filename for ${preferredStem}`);
+}
+
 // ---------------------------------------------------------------------------
 // v2 capture-flow orchestrator.
 // ---------------------------------------------------------------------------
@@ -1133,7 +1143,12 @@ export async function persistCaptureFromTempV2(
 
   const now = new Date().toISOString();
   const outputDir = args.outputDir ?? getCapturesRoot();
-  const filenameStem = id;
+  const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({
+    capturedAt: now,
+    sourceAppName: args.sourceApp?.appName ?? null,
+    effectiveFilenameStem: null,
+    sha256
+  }));
   const pairedPngFilename = `${filenameStem}.png`;
 
   const rootGroupId = nanoid(16);
@@ -1322,11 +1337,12 @@ async function runRepackV2(captureId: string): Promise<void> {
     }
 
     const now = new Date().toISOString();
+    const filenameStem = bundleStemFromPath(record.bundle_path);
     const manifest: BundleManifestV2 = {
       bundle_format_version: 2,
       capture_id: captureId,
       canvas_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${captureId}.png`,
+      paired_png_filename: `${filenameStem}.png`,
       created_at: record.captured_at,
       bundle_modified_at: now
     };

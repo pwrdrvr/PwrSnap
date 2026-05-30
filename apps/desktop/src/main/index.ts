@@ -84,6 +84,7 @@ import { persistCaptureFromTempV2, sweepBundleTrash } from "./persistence/bundle
 import { getCacheSourcePath } from "./persistence/paths";
 import { runLegacyBundleMigration } from "./persistence/legacy-bundle-migration";
 import { migrateAllV1OnBoot, reconcileV1ToV2OnBoot } from "./persistence/v1-to-v2-doctor";
+import { runBundleFilenameMaintenanceOnBoot } from "./persistence/bundle-filename-maintenance";
 import { ensureEffectiveSrcPath, sweepStaleTempFiles, sweepTrash } from "./persistence/source-store";
 import { resolveCacheFile } from "./render/coordinator";
 import { destroyTextBakePool } from "./render/text-html-bake";
@@ -1279,7 +1280,7 @@ export function bootstrapApp(): void {
     // creation — first launch of the bundle-flow build wraps every
     // pre-bundle capture into a .pwrsnap. Idempotent re-runs are
     // free (filtered by `bundle_path IS NULL`).
-    void runLegacyBundleMigration().catch((err: unknown) => {
+    const legacyBundleMigration = runLegacyBundleMigration().catch((err: unknown) => {
       log.warn("legacy-bundle migration failed at boot", {
         message: err instanceof Error ? err.message : String(err)
       });
@@ -1301,10 +1302,12 @@ export function bootstrapApp(): void {
     // itself can be deleted. Renderer-driven lazy upgrades via
     // `v1ToV2:upgrade` remain as a safety net for any capture that fails
     // the eager pass.
-    void reconcileV1ToV2OnBoot()
+    void legacyBundleMigration
+      .then(() => reconcileV1ToV2OnBoot())
       .then(() => scheduleEagerV1ToV2Sweep())
+      .then(() => runBundleFilenameMaintenanceOnBoot())
       .catch((err: unknown) => {
-        log.warn("v1 → v2 doctor boot pipeline failed", {
+        log.warn("bundle doctor boot pipeline failed", {
           message: err instanceof Error ? err.message : String(err)
         });
       });

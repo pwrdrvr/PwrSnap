@@ -251,6 +251,15 @@ export function updateCaptureBundleAfterRepack(
   ).run({ id: captureId, ...fields });
 }
 
+export function updateCaptureBundlePath(captureId: string, bundlePath: string): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE captures
+     SET bundle_path = @bundle_path
+     WHERE id = @id`
+  ).run({ id: captureId, bundle_path: bundlePath });
+}
+
 /**
  * Update the canvas dimensions (width_px, height_px) of a capture and
  * bump its edits_version atomically. Returns the PREVIOUS dims so the

@@ -228,6 +228,64 @@ describe("AI usage repository", () => {
     ]);
   });
 
+  test("summarizes sqlite datetime rows on the window boundary date", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-30T12:00:00.000Z"));
+    try {
+      const run = createAiRun({
+        captureId: "cap_1",
+        task: "enrich",
+        triggerSource: "auto-enrichment"
+      });
+      testDb
+        .prepare("UPDATE ai_runs SET created_at = ? WHERE id = ?")
+        .run("2026-05-29 13:00:00", run.id);
+      saveAiRunUsage({
+        aiRunId: run.id,
+        model: "gpt-5.4-mini",
+        usageStatus: "available",
+        tokens: {
+          totalTokens: 300,
+          inputTokens: 200,
+          cachedInputTokens: 20,
+          outputTokens: 100,
+          reasoningOutputTokens: 10,
+          modelContextWindow: null
+        },
+        cost: {
+          status: "available",
+          currency: "USD",
+          catalogVersion: "2026-05-30",
+          pricingSourceUrl: "https://developers.openai.com/api/docs/pricing",
+          pricedAt: "2026-05-30T00:00:00.000Z",
+          rateSnapshot: {
+            model: "gpt-5.4-mini",
+            serviceTier: null,
+            contextClass: "standard",
+            inputUsdPerMillion: 0.75,
+            cachedInputUsdPerMillion: 0.075,
+            outputUsdPerMillion: 4.5
+          },
+          uncachedInputTokens: 180,
+          cachedInputTokens: 20,
+          outputTokens: 100,
+          uncachedInputCostMicros: 135,
+          cachedInputCostMicros: 2,
+          outputCostMicros: 450,
+          totalCostMicros: 587
+        }
+      });
+
+      const summary = getAiUsageSummary("24h");
+
+      expect(summary.since).toBe("2026-05-29T12:00:00.000Z");
+      expect(summary.runCount).toBe(1);
+      expect(summary.totalTokens).toBe(300);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("deleting a capture cascades usage and media rows", () => {
     const run = createAiRun({ captureId: "cap_1" });
     saveAiRunUsage({

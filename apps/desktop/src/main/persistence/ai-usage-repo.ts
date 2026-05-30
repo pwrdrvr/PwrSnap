@@ -456,7 +456,9 @@ function rowToUsageRunListItem(row: AiRunUsageListRow): AiUsageRunListItem {
 export function getAiUsageSummary(window: AiUsageSummaryWindow): AiUsageSummary {
   const hours = window === "24h" ? 24 : window === "7d" ? 24 * 7 : 24 * 30;
   const generatedAt = new Date().toISOString();
-  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const sinceDate = new Date(Date.now() - hours * 60 * 60 * 1000);
+  const since = sinceDate.toISOString();
+  const sinceSql = sinceDate.toISOString().slice(0, 19).replace("T", " ");
   const rows = getDb()
     .prepare(
       `SELECT
@@ -476,11 +478,11 @@ export function getAiUsageSummary(window: AiUsageSummaryWindow): AiUsageSummary 
         COALESCE(SUM(u.estimated_total_cost_micros), 0) AS estimated_total_cost_micros
       FROM ai_runs r
       LEFT JOIN ai_run_usage u ON u.ai_run_id = r.id
-      WHERE r.created_at >= @since
+      WHERE datetime(r.created_at) >= datetime(@since)
       GROUP BY r.task, r.trigger_source, u.model
       ORDER BY r.task, r.trigger_source, u.model`
     )
-    .all({ since }) as Array<{
+    .all({ since: sinceSql }) as Array<{
     task: string;
     trigger_source: AiEnrichmentTriggerSource;
     model: string | null;

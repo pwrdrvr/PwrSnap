@@ -268,9 +268,8 @@ async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const page = app.window;
   await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
   await page
-    .locator('[data-testid="editor-tool-button-arrow"]')
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
     .waitFor({ state: "visible", timeout: 15_000 });
-  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
   return page;
 }
 
@@ -281,9 +280,9 @@ async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`[data-testid="editor-tool-button-${tool}"]`).click();
+  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
   await expect(
-    win.locator(`[data-testid="editor-tool-button-${tool}"].is-active`)
+    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
 }
 

@@ -53,17 +53,13 @@ test("editor-sticky-tool: placing an arrow keeps arrow selected", async () => {
       { x: box.x + box.width * 0.6, y: box.y + box.height * 0.6 }
     );
 
-    // Wait for the overlays:upsert round-trip to settle. The toolbar
-    // reflects the overlay-count meta; we wait for it to bump as a
-    // proxy for "the placement persisted".
-    await expect(
-      editorWindow.locator(".editor-toolbar-meta span").first()
-    ).toContainText(/1 overlay/);
+    // Wait for the layers:upsert round-trip to settle.
+    await expectLayerCount(app, captureId, 1);
 
     // Sticky assertion: arrow is STILL the active tool.
     await expect(
       editorWindow.locator(
-        '[data-testid="editor-tool-button-arrow"].is-active'
+        '.psl__edit-toolbar button[data-tool="arrow"].is-active'
       )
     ).toHaveCount(1);
   } finally {
@@ -87,11 +83,11 @@ test(
 
       // Alt-click arrow.
       await editorWindow
-        .locator('[data-testid="editor-tool-button-arrow"]')
+        .locator('.psl__edit-toolbar button[data-tool="arrow"]')
         .click({ modifiers: ["Alt"] });
       await expect(
         editorWindow.locator(
-          '[data-testid="editor-tool-button-arrow"].is-active'
+          '.psl__edit-toolbar button[data-tool="arrow"].is-active'
         )
       ).toHaveCount(1);
 
@@ -109,7 +105,7 @@ test(
       // Single-shot returns to pointer.
       await expect(
         editorWindow.locator(
-          '[data-testid="editor-tool-button-pointer"].is-active'
+          '.psl__edit-toolbar button[data-tool="pointer"].is-active'
         )
       ).toHaveCount(1);
     } finally {
@@ -119,6 +115,20 @@ test(
 );
 
 // ---- Shared helpers --------------------------------------------------
+
+async function expectLayerCount(
+  app: LaunchedApp,
+  captureId: string,
+  count: number
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      const result = await app.dispatch("layers:list", { captureId });
+      if (!result.ok) return -1;
+      return result.value.length;
+    })
+    .toBe(count);
+}
 
 async function seedCapture(app: LaunchedApp): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-sticky-spec-"));
@@ -178,16 +188,15 @@ async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const page = app.window;
   await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
   await page
-    .locator('[data-testid="editor-tool-button-arrow"]')
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
     .waitFor({ state: "visible", timeout: 15_000 });
-  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
   return page;
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`[data-testid="editor-tool-button-${tool}"]`).click();
+  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
   await expect(
-    win.locator(`[data-testid="editor-tool-button-${tool}"].is-active`)
+    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
 }
 

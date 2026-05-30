@@ -108,6 +108,11 @@ function sendOpenCaptureWhenReady(
     });
   } else {
     send();
+    // Existing Library windows can still be in the narrow post-load /
+    // pre-React-effect interval during cold E2E launches. Repeat once
+    // after the same grace used for newly-created windows so the
+    // renderer subscription has a second chance to observe the intent.
+    setTimeout(send, 100);
   }
 }
 

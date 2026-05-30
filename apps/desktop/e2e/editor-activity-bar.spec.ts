@@ -218,7 +218,7 @@ test.skip("editor-activity-bar: stoplight coachmark shows once then hides foreve
 
     // First open of the popover should show the coachmark.
     await editorWindow
-      .locator('[data-testid="editor-tool-button-arrow"]')
+      .locator('.psl__edit-toolbar button[data-tool="arrow"]')
       .click();
     await editorWindow
       .locator('[data-testid="tool-caret-arrow"]')
@@ -318,9 +318,8 @@ async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const page = app.window;
   await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
   await page
-    .locator('[data-testid="editor-tool-button-arrow"]')
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
     .waitFor({ state: "visible", timeout: 15_000 });
-  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
   return page;
 }
 

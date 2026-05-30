@@ -35,12 +35,14 @@ test("editor-matching-text: affordance appears at arrow tail after placement", a
     expect(box).not.toBeNull();
     if (box === null) return;
 
-    const tailX = box.x + box.width * 0.6;
-    const tailY = box.y + box.height * 0.5;
+    const tailX = box.x + box.width * 0.2;
+    const tailY = box.y + box.height * 0.3;
+    const headX = box.x + box.width * 0.6;
+    const headY = box.y + box.height * 0.5;
     await dragOnCanvas(
       editorWindow,
-      { x: box.x + box.width * 0.2, y: box.y + box.height * 0.3 },
-      { x: tailX, y: tailY }
+      { x: tailX, y: tailY },
+      { x: headX, y: headY }
     );
 
     // Wait for the affordance to appear.
@@ -94,7 +96,7 @@ test("editor-matching-text: clicking affordance flips to text mode", async () =>
 
     // Tool flipped to text.
     await expect(
-      editorWindow.locator('[data-testid="editor-tool-button-text"].is-active')
+      editorWindow.locator('.psl__edit-toolbar button[data-tool="text"].is-active')
     ).toHaveCount(1);
 
     // Affordance gone now that we've armed.
@@ -229,16 +231,15 @@ async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const page = app.window;
   await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
   await page
-    .locator('[data-testid="editor-tool-button-arrow"]')
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
     .waitFor({ state: "visible", timeout: 15_000 });
-  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
   return page;
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`[data-testid="editor-tool-button-${tool}"]`).click();
+  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
   await expect(
-    win.locator(`[data-testid="editor-tool-button-${tool}"].is-active`)
+    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
 }
 

@@ -176,6 +176,52 @@ describe("update_layer edits existing layers in place", () => {
     expect(dispatch.mock.calls.some((call) => call[0] === "layers:delete")).toBe(false);
     expect(BundleLayerNode.safeParse(updated).success).toBe(true);
   });
+
+  it("refuses to downgrade an opaque redaction to reversible pixelation", async () => {
+    const now = new Date().toISOString();
+    const existing = {
+      id: "redaction_layer_1",
+      parent_id: null,
+      kind: "effect",
+      name: "AI redaction",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1000,
+      source: "codex",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now,
+      effect: { type: "blur", radius_px: 1, style: "redact" },
+      clip_rect: { x: 100, y: 80, w: 200, h: 80 }
+    };
+    dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
+      if (name === "layers:list") return { ok: true, value: [existing] };
+      if (name === "layers:update") return { ok: true, value: req.layer };
+      if (name === "library:byId") {
+        return { ok: true, value: { id: req.id, kind: "image", width_px: 1000, height_px: 800 } };
+      }
+      return { ok: true, value: {} };
+    });
+
+    const res = await toolByName("update_layer").dispatch(
+      {
+        capture_id: "cap1",
+        layer_id: "redaction_layer_1",
+        pixelate: true
+      },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("expected redaction downgrade to be refused");
+    expect(res.error).toContain("redaction");
+    expect(dispatch.mock.calls.some((call) => call[0] === "layers:update")).toBe(false);
+  });
 });
 
 describe("effect tools emit a valid v2 EffectLayer with a pixel clip_rect", () => {

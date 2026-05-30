@@ -938,6 +938,13 @@ async function applyAgentLayerPatch(
   if (args.radius_px !== undefined) effect.radius_px = args.radius_px;
   if (args.rotation !== undefined) effect.rotation = args.rotation;
   if (args.pixelate !== undefined) {
+    if (effect.style === "redact") {
+      return {
+        ok: false,
+        error:
+          "cannot change a redaction layer to blur/pixelate; redactions must stay opaque"
+      };
+    }
     effect.style = args.pixelate ? "pixelate" : "gaussian";
   }
   return { ok: true, data: { ...layer, clip_rect: clipRect, effect } };

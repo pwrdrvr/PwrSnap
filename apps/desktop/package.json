@@ -41,7 +41,7 @@
     "electron-updater": "^6.8.3",
     "nanoid": "^5.0.9",
     "react": "^19.2.6",
-    "react-dom": "^19.2.0",
+    "react-dom": "^19.2.6",
     "safe-stable-stringify": "^2.5.0",
     "sharp": "^0.34.0",
     "transformation-matrix": "^3.1.0",

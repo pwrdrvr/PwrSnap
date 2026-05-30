@@ -301,7 +301,17 @@ export function registerCodexHandlers(params?: {
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
-  const clientFactory = params?.clientFactory ?? ((command) => new CodexAppServerClient({ command }));
+  const defaultClients = new Map<string, CodexAppServerClient>();
+  const clientFactory =
+    params?.clientFactory ??
+    ((command) => {
+      const existing = defaultClients.get(command);
+      if (existing) return existing;
+      const client = new CodexAppServerClient({ command });
+      defaultClients.set(command, client);
+      return client;
+    });
+  const closeClientAfterRun = params?.clientFactory !== undefined;
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
   const settingsWriter = params?.settingsWriter ?? defaultSettingsWriter;
   const budget = params?.budget ?? aiEnrichmentBudget;
@@ -445,7 +455,8 @@ export function registerCodexHandlers(params?: {
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
       ctx,
-      clientFactory
+      clientFactory,
+      closeClientAfterRun
     });
     return ok({ runId: run.id });
   });
@@ -682,6 +693,7 @@ async function runCaptureEnrichment(params: {
   budgetAfter: AiEnrichmentBudgetStatus;
   ctx: CommandContext;
   clientFactory: CodexClientFactory;
+  closeClientAfterRun: boolean;
 }): Promise<void> {
   const captureId = params.capture.id;
   const startedAt = performance.now();
@@ -893,11 +905,13 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     });
-    await client?.close().catch((error: unknown) => {
-      log.warn("codex client close failed", {
-        runId: params.runId,
-        message: error instanceof Error ? error.message : String(error)
+    if (params.closeClientAfterRun) {
+      await client?.close().catch((error: unknown) => {
+        log.warn("codex client close failed", {
+          runId: params.runId,
+          message: error instanceof Error ? error.message : String(error)
+        });
       });
-    });
+    }
   }
 }

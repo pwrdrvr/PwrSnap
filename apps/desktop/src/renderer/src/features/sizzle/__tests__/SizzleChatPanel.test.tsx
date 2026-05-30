@@ -15,12 +15,16 @@ let root: Root | null = null;
 
 type Handler = (payload: unknown) => void;
 
-function makeThread(threadId: string, name: string): unknown {
+function makeThread(
+  threadId: string,
+  name: string,
+  modifiedAt = "2026-05-30T10:00:00.000Z"
+): unknown {
   return {
     threadId,
     name,
-    createdAt: "",
-    modifiedAt: "",
+    createdAt: modifiedAt,
+    modifiedAt,
     anchorCaptureId: "sz_1",
     archived: false,
     pinned: false,
@@ -117,6 +121,17 @@ describe("SizzleChatPanel", () => {
     expect(dispatch).toHaveBeenCalledWith("codex:sizzleChat:history", { threadId: "t1" });
     expect(el.textContent).not.toContain("Describe the video you want");
     expect(el.textContent).toContain("Earlier chat");
+  });
+
+  test("orders thread chips newest to oldest", async () => {
+    const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
+    const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");
+    const { el, dispatch } = await renderPanel([older, newer]);
+
+    expect(
+      Array.from(el.querySelectorAll(".ps-libchat-thread-name")).map((node) => node.textContent)
+    ).toEqual(["Newer chat", "Older chat"]);
+    expect(dispatch).toHaveBeenCalledWith("codex:sizzleChat:history", { threadId: "t2" });
   });
 
   test("starting the first chat does NOT create a duplicate thread tile", async () => {

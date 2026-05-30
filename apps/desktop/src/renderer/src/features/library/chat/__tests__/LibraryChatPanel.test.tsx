@@ -15,12 +15,16 @@ let root: Root | null = null;
 
 type Handler = (payload: unknown) => void;
 
-function makeThread(threadId: string, name: string): LibraryChatThreadView {
+function makeThread(
+  threadId: string,
+  name: string,
+  modifiedAt = "2026-05-30T10:00:00.000Z"
+): LibraryChatThreadView {
   return {
     threadId,
     name,
-    createdAt: "",
-    modifiedAt: "",
+    createdAt: modifiedAt,
+    modifiedAt,
     anchorCaptureId: "cap-1",
     archived: false,
     pinned: false,
@@ -82,9 +86,20 @@ afterEach(async () => {
 });
 
 describe("LibraryChatPanel", () => {
+  test("orders thread chips newest to oldest", async () => {
+    const older = makeThread("t1", "Older chat", "2026-05-30T10:00:00.000Z");
+    const newer = makeThread("t2", "Newer chat", "2026-05-30T11:00:00.000Z");
+    const { el, dispatch } = await renderPanel([older, newer]);
+
+    expect(
+      Array.from(el.querySelectorAll(".ps-libchat-thread-name")).map((node) => node.textContent)
+    ).toEqual(["Newer chat", "Older chat"]);
+    expect(dispatch).toHaveBeenCalledWith("codex:libraryChat:history", { threadId: "t2" });
+  });
+
   test("archives a thread when its close chip is clicked", async () => {
-    const first = makeThread("t1", "Old chat");
-    const second = makeThread("t2", "Keep chat");
+    const first = makeThread("t1", "Old chat", "2026-05-30T11:00:00.000Z");
+    const second = makeThread("t2", "Keep chat", "2026-05-30T10:00:00.000Z");
     const { el, dispatch } = await renderPanel([first, second]);
 
     const close = el.querySelector<HTMLButtonElement>(".ps-libchat-thread-close")!;

@@ -94,11 +94,12 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         return;
       }
       const found = result.value?.threads ?? [];
-      setThreads(found);
+      const sorted = sortChatThreads(found);
+      setThreads(sorted);
       // Resume the reel's most-recent chat (threads are modified_at DESC)
       // instead of dropping to the greeting — so switching reels (and
       // relaunching the app) reopens the conversation for that reel.
-      if (found.length > 0) setActiveThreadId(found[0]!.threadId);
+      if (sorted.length > 0) setActiveThreadId(sorted[0]!.threadId);
       setLoading(false);
     })();
     return () => {
@@ -138,10 +139,10 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         setThreads((prev) => {
           if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
-          if (idx === -1) return [thread, ...prev];
+          if (idx === -1) return sortChatThreads([thread, ...prev]);
           const next = [...prev];
           next[idx] = thread;
-          return next;
+          return sortChatThreads(next);
         });
       })
     );
@@ -263,7 +264,9 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
       setCodexError(errorFor(result.error));
       return;
     }
-    setThreads((prev) => [result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)]);
+    setThreads((prev) =>
+      sortChatThreads([result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)])
+    );
     setActiveThreadId(result.value.threadId);
     setMessages([]);
     setActivityByMsg({});
@@ -284,10 +287,12 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         // Dedup: the controller also broadcasts threadUpdated for this new
         // thread, which can land before this optimistic add — without the
         // filter the same thread shows as two tiles.
-        setThreads((prev) => [
-          created.value,
-          ...prev.filter((t) => t.threadId !== created.value.threadId)
-        ]);
+        setThreads((prev) =>
+          sortChatThreads([
+            created.value,
+            ...prev.filter((t) => t.threadId !== created.value.threadId)
+          ])
+        );
         setActiveThreadId(threadId);
       }
       setPendingChips([]);
@@ -335,7 +340,7 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
             setCodexError(null);
             setLoading(true);
             void dispatch("codex:sizzleChat:list", { anchorCaptureId: projectId }).then((r) => {
-              if (r.ok) setThreads(r.value.threads);
+              if (r.ok) setThreads(sortChatThreads(r.value.threads));
               else setCodexError(errorFor(r.error));
               setLoading(false);
             });
@@ -457,4 +462,19 @@ function errorFor(error: { code?: string; message: string }): ChatPanelError {
       : error.message,
     showSettingsHint: !staleThread
   };
+}
+
+function sortChatThreads(threads: LibraryChatThreadView[]): LibraryChatThreadView[] {
+  return [...threads].sort((a, b) => {
+    const modified = dateValue(b.modifiedAt) - dateValue(a.modifiedAt);
+    if (modified !== 0) return modified;
+    const created = dateValue(b.createdAt) - dateValue(a.createdAt);
+    if (created !== 0) return created;
+    return b.threadId.localeCompare(a.threadId);
+  });
+}
+
+function dateValue(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

@@ -90,8 +90,11 @@ const LIBRARY_TOOL_LABELS: Record<string, string> = {
   draw_parallelogram: "Drew a parallelogram",
   redact: "Blacked out a region",
   blur: "Blurred a region",
+  crop: "Cropped the image",
+  update_layer: "Updated a layer",
   delete_layer: "Deleted a layer",
   reorder_layer: "Reordered a layer",
+  reorder_layers: "Reordered layers",
   add_tag: "Added a tag",
   remove_tag: "Removed a tag"
 };

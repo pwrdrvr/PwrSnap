@@ -19,6 +19,9 @@ describe("estimateAiUsageCost", () => {
 
     expect(estimate.status).toBe("available");
     if (estimate.status === "available") {
+      expect(estimate.pricingSourceUrl).toBe(
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
+      );
       expect(estimate.uncachedInputTokens).toBe(800);
       expect(estimate.cachedInputTokens).toBe(200);
       expect(estimate.outputTokens).toBe(500);

@@ -2,7 +2,8 @@ import type { AiUsageRateSnapshot } from "@pwrsnap/shared";
 
 export const AI_PRICING_CATALOG_VERSION = "2026-05-30-openai-public";
 export const AI_PRICING_EFFECTIVE_DATE = "2026-05-30";
-export const AI_PRICING_SOURCE_URL = "https://developers.openai.com/api/docs/pricing";
+export const AI_PRICING_SOURCE_URL =
+  "https://developers.openai.com/api/docs/models/gpt-5.4-mini";
 
 export type AiPricingCatalogEntry = {
   model: string;

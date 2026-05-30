@@ -76,10 +76,7 @@ test("editor-v2-capture-open: ⌘Z on a freshly-opened v2 capture is a no-op (bu
     const editorWindow = await openEditor(app, captureId);
 
     // Toolbar mounted; undo button is in the DOM and starts disabled
-    // (fresh capture has no edit history). Note: the undo hook is
-    // owned by EditorLoaded and only mounts for `chrome === "full"`
-    // (standalone editor window) — Library Focus is chromeless, but
-    // editor:open opens a standalone window so chrome === "full" here.
+    // (fresh capture has no edit history).
     const undoButton = editorWindow.locator('[data-testid="editor-undo"]');
     await expect(undoButton).toBeVisible();
     await expect(undoButton).toBeDisabled();
@@ -185,27 +182,11 @@ async function seedCapture(
 async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const result = await app.dispatch("editor:open", { captureId });
   expect(result.ok, "editor:open should succeed").toBe(true);
-
-  // Poll for the editor window — main may take a tick to construct it.
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const candidate of app.electronApp.windows()) {
-      const url = candidate.url();
-      if (url.includes("stage=edit") && url.includes(captureId)) {
-        await candidate
-          .waitForLoadState("domcontentloaded")
-          .catch(() => undefined);
-        // Wait for the toolbar to mount (proof the renderer hydrated
-        // past the `useCaptureModel` loading state into the loaded
-        // branch). The toolbar only renders in the loaded branch —
-        // loading/error branches show their own placeholder div.
-        await candidate
-          .locator('[data-testid="editor-tool-button-arrow"]')
-          .waitFor({ state: "visible", timeout: 15_000 });
-        return candidate;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error("editor window never appeared");
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('[data-testid="editor-tool-button-arrow"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
+  return page;
 }

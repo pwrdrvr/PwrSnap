@@ -226,22 +226,13 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
 async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const result = await app.dispatch("editor:open", { captureId });
   expect(result.ok).toBe(true);
-
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const candidate of app.electronApp.windows()) {
-      const url = candidate.url();
-      if (url.includes("stage=edit") && url.includes(captureId)) {
-        await candidate.waitForLoadState("domcontentloaded").catch(() => undefined);
-        await candidate
-          .locator('[data-testid="editor-tool-button-arrow"]')
-          .waitFor({ state: "visible", timeout: 15_000 });
-        return candidate;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error("editor window never appeared");
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('[data-testid="editor-tool-button-arrow"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
+  return page;
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {

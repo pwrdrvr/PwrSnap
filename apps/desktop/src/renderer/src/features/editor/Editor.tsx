@@ -112,10 +112,11 @@ import "./editor.css";
 
 /** Three structural shapes for the editor:
  *
- *   • "full"       — standalone editor window: titlebar + bottom
- *                    toolbar, wrapped in <EditorChrome> (Phase 1 v2
- *                    refresh: activity bar + collapsible right panel).
- *                    Default when no chrome prop is passed.
+ *   • "full"       — full editor chrome: titlebar + bottom toolbar,
+ *                    wrapped in <EditorChrome> (Phase 1 v2 refresh:
+ *                    activity bar + collapsible right panel). Kept
+ *                    for component-level coverage; production opens
+ *                    captures through Library Focus.
  *   • "embedded"   — inline-in-Library mode (Phase 2 Slice C / Phase
  *                    A transitional): no titlebar, but keeps the
  *                    bottom toolbar. This branch was dropped in
@@ -897,8 +898,7 @@ export function Editor({
   onZoomChange
 }: {
   captureId: string;
-  /** Chrome shape — see `EditorChromeKind` above. Defaults to `"full"`
-   *  (standalone editor window). */
+  /** Chrome shape — see `EditorChromeKind` above. Defaults to `"full"`. */
   chrome?: EditorChromeKind;
   /** Optional controlled tool state. If both `tool` and `onToolChange`
    *  are passed, Editor is fully controlled — Library owns the tool
@@ -914,18 +914,15 @@ export function Editor({
    *  `onAnnotationPlaced` from this shared hook instance instead of
    *  its own dormant copy. The lift fixes the long-standing "popover
    *  picks land in EditToolbar's hook, persistOverlay reads from
-   *  Editor's hook, so style choices don't stick" bug. The standalone
-   *  Editor window leaves this undefined and keeps owning its own
-   *  hook (its EditorChrome panels also need a single source of truth
-   *  in-window). */
+   *  Editor's hook, so style choices don't stick" bug. Full editor
+   *  chrome leaves this undefined and keeps owning its own hook. */
   toolState?: UseEditorToolStateReturn;
   /** Optional controlled blur-style state. When provided (Library
    *  mode), Library owns the v1-string-shaped blur mode and writes
    *  it back via the EditToolbar's hook-mirror effect (post-
    *  BlurMenu-fold the picker UI lives in the unified
-   *  ToolStylePopover). When omitted (standalone window), the
-   *  editor falls back to the `useEditorToolState` blur tool style
-   *  block (which the right-sidebar ToolConfigPanel + popover edit). */
+   *  ToolStylePopover). When omitted, the editor falls back to the
+   *  `useEditorToolState` blur tool style block. */
   blurStyle?: BlurStyle;
   /** Called whenever the editor's zoom state changes. Library uses
    *  this to render the zoom indicator in the floating EditToolbar
@@ -950,7 +947,7 @@ export function Editor({
   //   • Controlled (Library Focus): `tool` + `onToolChange` props are
   //     both passed. Library is the single owner; per-tool style memory
   //     lives in the floating EditToolbar's own hook in task #10.
-  //   • Standalone window (chrome === "full"): we own the hook here.
+  //   • Full editor chrome (chrome === "full"): we own the hook here.
   //     Active tool + per-tool style memory + matching-text affordance
   //     all live in `useEditorToolState`.
   //
@@ -962,7 +959,7 @@ export function Editor({
   // Phase 3.2 lift: in Library Focus, the parent owns ONE hook instance
   // that's also threaded into EditToolbar — so popover style picks land
   // in the same `activeStyle` that `persistOverlay` reads here. When
-  // not lifted (standalone editor window), instantiate our own hook.
+  // not lifted, instantiate our own hook.
   // We always call the hook (rules of hooks), then pick whichever source
   // is active. `effectiveToolState` is what every downstream read uses.
   const ownToolState = useEditorToolState({ captureId });

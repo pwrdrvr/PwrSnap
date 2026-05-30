@@ -1,8 +1,6 @@
-/* Zoom menu — used by both the Library's floating EditToolbar and
-   the standalone Editor window's bottom toolbar. Owns its own
-   stylesheet so both surfaces pick up the styling via the component
-   import (Library doesn't load editor.css; the standalone editor
-   doesn't load library.css). */
+/* Zoom menu — used by Library's floating EditToolbar and by full
+   editor chrome in component tests. Owns its own stylesheet so both
+   surfaces pick up the styling via the component import. */
 
 .ed-zoom {
   position: relative;

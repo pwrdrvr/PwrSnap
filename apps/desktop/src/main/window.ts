@@ -38,7 +38,6 @@ const appDocumentWindows = new Map<AppDocumentKind, BrowserWindow>();
 type RendererStage =
   | "tray"
   | "float-over"
-  | "edit"
   | "settings"
   | "document"
   | "sizzle"
@@ -608,43 +607,6 @@ export function createFloatOverWindow(): BrowserWindow {
   // and `ready-to-show` only fires on the FIRST load — subsequent
   // `loadURL` calls don't re-fire it). The window is constructed
   // hidden; `showFloatOverForCapture` anchors + shows it.
-
-  return window;
-}
-
-/**
- * Phase 2 Edit window — opens a dedicated, full-screen-ish window
- * sized for annotating a specific capture. Carries the captureId in
- * the URL hash so the renderer can fetch + render it; subsequent
- * edits route through `overlays:upsert`.
- *
- * Each call creates a fresh window: edit windows are per-capture,
- * not singletons. Closing one hides nothing else; the user can have
- * multiple captures open in parallel editor windows if they want.
- */
-export function createEditWindow(captureId: string): BrowserWindow {
-  const window = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 720,
-    minHeight: 540,
-    show: false,
-    title: "PwrSnap Editor",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 20, y: 18 },
-    backgroundColor: getStartupBackgroundColor(),
-    webPreferences: themedWebPreferences()
-  });
-
-  loadRenderer(window, rendererTarget("edit", `captureId=${encodeURIComponent(captureId)}`));
-
-  showWindowWhenReady(window, {
-    label: `edit/${captureId}`,
-    // Focus the edit window so the user's next keystroke lands on the
-    // canvas (Cmd+Z for undo, tool letters, etc.) rather than the
-    // launching window.
-    onShow: () => window.focus()
-  });
 
   return window;
 }

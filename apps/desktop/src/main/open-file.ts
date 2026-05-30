@@ -19,8 +19,8 @@
 // Resolving a path to an open-editor action:
 //   - Read manifest.json from the ZIP → `capture_id`.
 //   - Look up `captures.id = capture_id` in SQLite.
-//   - If found → `createEditWindow(captureId)` (same code path as
-//     `editor:open` bus verb).
+//   - If found → `library:openInLibrary` (the same inline Library
+//     Focus editor used by the rest of the app).
 //   - If not found → notify the user; cross-machine import is a
 //     future feature and shouldn't crash the open flow.
 //
@@ -30,10 +30,11 @@
 import { app, BrowserWindow, Notification } from "electron";
 import { extname } from "node:path";
 
+import { bus } from "./command-bus";
 import { getMainLogger } from "./log";
 import { readBundleManifest } from "./persistence/bundle-store";
 import { getCaptureById } from "./persistence/captures-repo";
-import { createEditWindow, createMainWindow, findMainLibraryWindow } from "./window";
+import { createMainWindow, findMainLibraryWindow } from "./window";
 
 const log = getMainLogger("open-file");
 
@@ -165,19 +166,21 @@ async function openPwrsnapInEditor(bundlePath: string): Promise<void> {
     return;
   }
 
-  log.info("open-file: opening editor", { bundlePath, captureId });
-  // Raise the library too. Two reasons:
-  //   1. On cold-start double-click, `createMainWindow()` and our
-  //      `createEditWindow` run back-to-back; the editor often lands
-  //      in front of an as-yet-invisible library and the user has no
-  //      obvious way back to the rest of their captures.
-  //   2. The not-in-library and in-trash branches above both raise
-  //      the library — consistency.
-  // We raise BEFORE creating the editor so the editor naturally lands
-  // in front (most-recently-focused win).
-  const main = findMainLibraryWindow() ?? createMainWindow();
-  raiseToFront(main);
-  createEditWindow(captureId);
+  log.info("open-file: opening capture in library", { bundlePath, captureId });
+  const result = await bus.dispatch(
+    "library:openInLibrary",
+    { captureId },
+    { principal: "ipc" }
+  );
+  if (!result.ok) {
+    log.warn("open-file: library open failed", {
+      bundlePath,
+      captureId,
+      code: result.error.code,
+      message: result.error.message
+    });
+    notifyUser("Can't open PwrSnap file", result.error.message);
+  }
 }
 
 function raiseToFront(window: BrowserWindow): void {

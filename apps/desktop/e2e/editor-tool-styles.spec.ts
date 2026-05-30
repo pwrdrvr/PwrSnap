@@ -205,40 +205,19 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
 async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const result = await app.dispatch("editor:open", { captureId });
   expect(result.ok, "editor:open should succeed").toBe(true);
-
-  // Poll for the editor window — main may take a tick to construct it.
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const candidate of app.electronApp.windows()) {
-      const url = candidate.url();
-      if (url.includes("stage=edit") && url.includes(captureId)) {
-        await candidate.waitForLoadState("domcontentloaded").catch(() => undefined);
-        // Wait for the toolbar to mount (proof the renderer hydrated).
-        await candidate
-          .locator('[data-testid="editor-tool-button-arrow"]')
-          .waitFor({ state: "visible", timeout: 15_000 });
-        return candidate;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error("editor window never appeared");
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('[data-testid="editor-tool-button-arrow"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  await expect(page.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(/is-selected/);
+  return page;
 }
 
 async function closeEditorWindow(app: LaunchedApp, win: Page): Promise<void> {
-  // Closing via the page.close() route is enough — main's
-  // window-closed handler will drop the BrowserWindow entry. We then
-  // wait for the windows() list to drop it so the next openEditor()
-  // doesn't accidentally bind to the just-closed page object.
-  const targetUrl = win.url();
-  await win.close();
-  await expect
-    .poll(() =>
-      app.electronApp
-        .windows()
-        .some((w) => !w.isClosed() && w.url() === targetUrl)
-    )
-    .toBe(false);
+  void app;
+  await win.locator(".psl__focus-close").click();
+  await expect(win.locator(".psl__focus")).toHaveCount(0);
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {

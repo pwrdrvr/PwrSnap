@@ -16,7 +16,6 @@ import { describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getCaptureById: vi.fn<(id: string) => unknown>(),
-  createEditWindow: vi.fn(),
   createMainWindow: vi.fn(),
   findMainLibraryWindow: vi.fn()
 }));
@@ -53,7 +52,6 @@ vi.mock("../../persistence/source-store", () => ({
 }));
 
 vi.mock("../../window", () => ({
-  createEditWindow: mocks.createEditWindow,
   createMainWindow: mocks.createMainWindow,
   findMainLibraryWindow: mocks.findMainLibraryWindow
 }));
@@ -87,9 +85,7 @@ describe("editor:open", () => {
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("not_found");
     expect(result.error.message).toContain("no-such-capture-xyz");
-    // not_found must short-circuit before window creation — otherwise we
-    // would spawn an empty edit window for a deleted/missing capture id.
-    expect(mocks.createEditWindow).not.toHaveBeenCalled();
+    expect(mocks.createMainWindow).not.toHaveBeenCalled();
   });
 
   test("returns deleted when the capture is in the trash", async () => {
@@ -108,6 +104,37 @@ describe("editor:open", () => {
     if (result.ok) throw new Error("expected error");
     expect(result.error.kind).toBe("validation");
     expect(result.error.code).toBe("deleted");
-    expect(mocks.createEditWindow).not.toHaveBeenCalled();
+    expect(mocks.createMainWindow).not.toHaveBeenCalled();
+  });
+
+  test("opens a live capture in the Library Focus surface", async () => {
+    const send = vi.fn();
+    const fakeWindow = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      isVisible: () => true,
+      focus: vi.fn(),
+      webContents: {
+        isLoading: () => false,
+        send
+      }
+    };
+    mocks.getCaptureById.mockReturnValueOnce({
+      id: "cap-live",
+      deleted_at: null
+    });
+    mocks.findMainLibraryWindow.mockReturnValueOnce(fakeWindow);
+
+    const result = await bus.dispatch(
+      "editor:open",
+      { captureId: "cap-live" },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(fakeWindow.focus).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("events:library:open-capture", {
+      captureId: "cap-live"
+    });
   });
 });

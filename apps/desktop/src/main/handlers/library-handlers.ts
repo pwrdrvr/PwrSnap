@@ -43,7 +43,7 @@ import {
   purgeOneFromTrash,
   restoreSourceFromTrash
 } from "../persistence/source-store";
-import { createEditWindow, createMainWindow, findMainLibraryWindow } from "../window";
+import { createMainWindow, findMainLibraryWindow } from "../window";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -465,8 +465,9 @@ export function registerLibraryHandlers(): void {
         message: `capture is in trash: ${req.captureId}`
       });
     }
-    createEditWindow(req.captureId);
-    log.info("editor opened", { captureId: req.captureId });
+    const { window: main, justCreated } = bringLibraryForward();
+    sendOpenCaptureWhenReady(main, req.captureId, justCreated);
+    log.info("editor opened in library", { captureId: req.captureId });
     return ok(undefined);
   });
 }

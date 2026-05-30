@@ -2,8 +2,8 @@
 // `.pwrsnap` path in argv (the `open foo.pwrsnap` / cold-start
 // double-click code path), routes through
 // `wireOpenFileHandler` → `readBundleManifest` →
-// `getCaptureById` → `createEditWindow` and ends up showing an
-// editor window for the right capture.
+// `getCaptureById` → `library:openInLibrary` and ends up showing
+// the capture in the Library Focus editor.
 //
 // macOS GUI double-click uses Apple's `app.on('open-file')` event
 // (not argv), but the runtime path inside open-file.ts is the
@@ -13,12 +13,12 @@
 //
 // Two scenarios:
 //
-//   1. Capture exists in the library — the editor window opens
-//      with the correct captureId in its URL hash.
+//   1. Capture exists in the library — the Library window opens
+//      Focus mode for that capture.
 //   2. Capture not in the library (cross-device file, never
 //      imported) — open-file falls back to opening the library
-//      window with a notification. We assert the editor window
-//      did NOT spawn for an unknown captureId, and the library
+//      window with a notification. We assert a standalone editor
+//      window did NOT spawn for an unknown captureId, and the library
 //      is the front-most user-facing surface.
 
 import { expect, test } from "@playwright/test";
@@ -158,7 +158,7 @@ async function triggerOpenFile(
 test.describe("open-file handler", () => {
   test.skip(!isMac, "open-file event + macOS double-click semantics are macOS-only");
 
-  test("argv-passed .pwrsnap opens the editor when the capture exists", async () => {
+  test("argv-passed .pwrsnap opens Library Focus when the capture exists", async () => {
     const fixturesDir = await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"));
     const captureId = "openfile-known";
     const bundlePath = await packFixtureBundle({
@@ -180,20 +180,10 @@ test.describe("open-file handler", () => {
       // feed enqueueOrOpen → processQueuedOpenFiles.
       await triggerOpenFile(app, bundlePath);
 
-      // The editor window's URL hash carries `captureId=<id>` (set
-      // by `createEditWindow` in main/window.ts). Poll the
-      // BrowserWindow list for one matching.
-      const editorPresent = await expect
-        .poll(async () =>
-          app.electronApp.evaluate(({ BrowserWindow }, target) => {
-            return BrowserWindow.getAllWindows().some((win) => {
-              if (win.isDestroyed()) return false;
-              const url = win.webContents.getURL();
-              return url.includes(`captureId=${encodeURIComponent(target.captureId)}`);
-            });
-          }, { captureId })
-        )
-        .toBe(true);
+      await expect(app.window.locator(".psl__focus")).toBeVisible();
+      await expect(app.window.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(
+        /is-selected/
+      );
     } finally {
       await app.close();
     }

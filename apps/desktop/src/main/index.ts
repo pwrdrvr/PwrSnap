@@ -1204,7 +1204,7 @@ export function bootstrapApp(): void {
         // double-click), `process.argv` cold-start sweeps (terminal
         // `open foo.pwrsnap`), and `second-instance` argv routing.
         // Specs use this to verify the read-manifest → look-up-row
-        // → createEditWindow chain without needing to dispatch
+        // → open-in-Library chain without needing to dispatch
         // real macOS NSAppleEvents from Playwright.
         triggerOpenFile: (bundlePath: string) => {
           handleSecondInstanceArgv([bundlePath]);

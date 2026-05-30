@@ -37,11 +37,14 @@ import { getCaptureById } from "./persistence/captures-repo";
 import { createMainWindow, findMainLibraryWindow } from "./window";
 
 const log = getMainLogger("open-file");
+const SECOND_INSTANCE_OPEN_FILE_PATHS_KEY = "pwrsnapOpenFilePaths";
 
 // Files received before `app.whenReady()` resolves go here and get
 // drained later. After ready, paths are dispatched immediately.
 const pendingPaths: string[] = [];
 let isReady = false;
+let forwardToPrimaryOnly = false;
+const forwardedPaths = new Set<string>();
 
 /**
  * Pull any `.pwrsnap` paths out of an argv slice. Skips electron's
@@ -57,6 +60,15 @@ function extractPwrsnapPaths(argv: readonly string[]): string[] {
   });
 }
 
+function extractHandoffOpenFilePaths(additionalData: unknown): string[] {
+  if (typeof additionalData !== "object" || additionalData === null) return [];
+  const candidate = (additionalData as Record<string, unknown>)[
+    SECOND_INSTANCE_OPEN_FILE_PATHS_KEY
+  ];
+  if (!Array.isArray(candidate)) return [];
+  return extractPwrsnapPaths(candidate.filter((item): item is string => typeof item === "string"));
+}
+
 /**
  * Register the macOS `open-file` listener and the cold-start argv
  * sweep. Idempotent — safe to call multiple times. MUST be called
@@ -70,6 +82,9 @@ export function wireOpenFileHandler(): void {
     // immediately, especially during cold start.
     event.preventDefault();
     enqueueOrOpen(path);
+    if (forwardToPrimaryOnly) {
+      forwardQueuedOpenFilesToPrimary();
+    }
   });
 
   // Cold-start argv sweep. On macOS double-click doesn't pass the
@@ -79,6 +94,46 @@ export function wireOpenFileHandler(): void {
   for (const path of extractPwrsnapPaths(process.argv.slice(1))) {
     enqueueOrOpen(path);
   }
+}
+
+/**
+ * Build the payload passed to `requestSingleInstanceLock(additionalData)`.
+ *
+ * This is load-bearing for dev/manual testing: Finder may launch the
+ * installed `/Applications/PwrSnap.app` for a `.pwrsnap` while a
+ * source-tree dev build already owns the single-instance lock. The
+ * installed app will lose the lock and exit, but Electron forwards
+ * this payload to the running instance before it does. Without it,
+ * macOS open-file paths captured in the losing process die with that
+ * process.
+ */
+export function singleInstanceOpenFileHandoffData(): Record<string, unknown> {
+  return openFileHandoffData(pendingPaths);
+}
+
+function openFileHandoffData(paths: readonly string[]): Record<string, unknown> {
+  return {
+    [SECOND_INSTANCE_OPEN_FILE_PATHS_KEY]: [...paths]
+  };
+}
+
+export function enableOpenFileForwardingToPrimary(): void {
+  forwardToPrimaryOnly = true;
+}
+
+export function markQueuedOpenFilesForwarded(): void {
+  for (const path of pendingPaths) {
+    forwardedPaths.add(path);
+  }
+}
+
+export function forwardQueuedOpenFilesToPrimary(): void {
+  const unforwarded = pendingPaths.filter((path) => !forwardedPaths.has(path));
+  if (unforwarded.length === 0) return;
+  for (const path of unforwarded) {
+    forwardedPaths.add(path);
+  }
+  app.requestSingleInstanceLock(openFileHandoffData(unforwarded));
 }
 
 /**
@@ -96,8 +151,18 @@ export function wireOpenFileHandler(): void {
  * version. Mostly defense-in-depth so a future macOS behavior
  * change doesn't silently drop file opens.
  */
-export function handleSecondInstanceArgv(argv: readonly string[]): void {
-  for (const path of extractPwrsnapPaths(argv)) {
+export function handleSecondInstanceArgv(
+  argv: readonly string[],
+  additionalData?: unknown
+): void {
+  const paths = [
+    ...extractHandoffOpenFilePaths(additionalData),
+    ...extractPwrsnapPaths(argv)
+  ];
+  const seen = new Set<string>();
+  for (const path of paths) {
+    if (seen.has(path)) continue;
+    seen.add(path);
     enqueueOrOpen(path);
   }
 }
@@ -116,6 +181,12 @@ export function processQueuedOpenFiles(): void {
 }
 
 function enqueueOrOpen(path: string): void {
+  if (forwardToPrimaryOnly) {
+    if (extractPwrsnapPaths([path]).length > 0) {
+      pendingPaths.push(path);
+    }
+    return;
+  }
   if (isReady) {
     void openPwrsnapInEditor(path);
   } else {

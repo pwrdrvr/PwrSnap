@@ -100,8 +100,12 @@ import {
 } from "./tray";
 import { createMainWindow, findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "./window";
 import {
+  enableOpenFileForwardingToPrimary,
+  forwardQueuedOpenFilesToPrimary,
   handleSecondInstanceArgv,
+  markQueuedOpenFilesForwarded,
   processQueuedOpenFiles,
+  singleInstanceOpenFileHandoffData,
   wireOpenFileHandler
 } from "./open-file";
 
@@ -830,6 +834,14 @@ export function bootstrapApp(): void {
   }
   app.commandLine.appendSwitch("disk-cache-size", String(CHROMIUM_DISK_CACHE_LIMIT_BYTES));
 
+  // open-file MUST be registered before the single-instance lock and
+  // before `app.whenReady()` resolves. macOS can fire it during cold
+  // start with the path the user double-clicked in Finder. If this
+  // process loses the single-instance lock, those queued paths are
+  // forwarded to the already-running instance via Electron's
+  // `additionalData` handoff below.
+  wireOpenFileHandler();
+
   // Single-instance lock. Without this, electron-vite hot-reloads
   // and crashed-but-orphaned dev runs accumulate parallel app
   // instances — both tray icons, both global shortcuts, both
@@ -837,12 +849,22 @@ export function bootstrapApp(): void {
   // first instance acquires the lock; subsequent processes find an
   // existing app, focus its main window, and exit immediately.
   if (!isE2E) {
-    const gotLock = app.requestSingleInstanceLock();
+    const gotLock = app.requestSingleInstanceLock(singleInstanceOpenFileHandoffData());
     if (!gotLock) {
-      app.quit();
+      // Finder may deliver macOS's open-file event just after the
+      // losing process asks for the single-instance lock. Stay alive
+      // briefly as a forward-only stub so that event can still be
+      // relayed to the primary/dev instance before this process exits.
+      enableOpenFileForwardingToPrimary();
+      markQueuedOpenFilesForwarded();
+      forwardQueuedOpenFilesToPrimary();
+      setTimeout(() => {
+        forwardQueuedOpenFilesToPrimary();
+        app.quit();
+      }, 350);
       return;
     }
-    app.on("second-instance", (_event, argv) => {
+    app.on("second-instance", (_event, argv, _workingDirectory, additionalData) => {
       // Another `pnpm dev` (or another launch of the .app) tried to
       // start. Raise (or recreate) the library singleton so the user
       // gets the window they were trying to launch.
@@ -850,22 +872,14 @@ export function bootstrapApp(): void {
       if (main.isMinimized()) main.restore();
       if (!main.isVisible()) main.show();
       main.focus();
-      // If the second instance was launched via `open foo.pwrsnap` /
-      // `PwrSnap.app /path/to/foo.pwrsnap`, route those paths to the
-      // open-file pipeline. macOS's GUI double-click uses the
-      // open-file event (already wired below); this catches CLI
-      // launches and drag-onto-Dock-while-running.
-      handleSecondInstanceArgv(argv);
+      // If the second instance was launched with a file path, route it
+      // to the open-file pipeline. Paths can come from argv (CLI /
+      // drag-to-Dock) or from the losing process's open-file queue
+      // via Electron's additionalData handoff (Finder double-click of
+      // the installed app while a dev build owns the lock).
+      handleSecondInstanceArgv(argv, additionalData);
     });
   }
-
-  // open-file MUST be registered before `app.whenReady()` resolves —
-  // macOS can fire it during cold start with the path the user
-  // double-clicked in Finder. The handler queues paths and drains
-  // them after `processQueuedOpenFiles()` is called inside the
-  // whenReady block below, once the DB is open + handlers are
-  // registered (so `editor:open` is dispatchable).
-  wireOpenFileHandler();
 
   // Privileged schemes MUST be registered before app is ready.
   registerSchemesAsPrivileged();
@@ -1206,8 +1220,13 @@ export function bootstrapApp(): void {
         // Specs use this to verify the read-manifest → look-up-row
         // → open-in-Library chain without needing to dispatch
         // real macOS NSAppleEvents from Playwright.
-        triggerOpenFile: (bundlePath: string) => {
-          handleSecondInstanceArgv([bundlePath]);
+        triggerOpenFile: (path: string) => {
+          handleSecondInstanceArgv([path]);
+        },
+        triggerOpenFileHandoff: (path: string) => {
+          handleSecondInstanceArgv([], {
+            pwrsnapOpenFilePaths: [path]
+          });
         },
         // Dock-icon test surface (dock-lifecycle.spec.ts). The
         // capture flow's `activateApp(previousAppPid)` deactivates

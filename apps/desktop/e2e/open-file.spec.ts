@@ -15,14 +15,17 @@
 //
 //   1. Capture exists in the library — the Library window opens
 //      Focus mode for that capture.
-//   2. Capture not in the library (cross-device file, never
+//   2. A losing second instance forwards a queued `.pwrsnap` path
+//      through Electron's single-instance additionalData handoff.
+//   3. Capture not in the library (cross-device file, never
 //      imported) — open-file falls back to opening the library
 //      window with a notification. We assert a standalone editor
 //      window did NOT spawn for an unknown captureId, and the library
 //      is the front-most user-facing surface.
 
 import { expect, test } from "@playwright/test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
@@ -32,10 +35,6 @@ import yazl from "yazl";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
 const isMac = process.platform === "darwin";
-
-/** A valid 64-char hex sha256 placeholder for fixture bundles. */
-const PLACEHOLDER_SHA256 =
-  "0000000000000000000000000000000000000000000000000000000000000000";
 
 async function makeFixturePng(): Promise<Buffer> {
   return sharp({
@@ -50,40 +49,76 @@ async function makeFixturePng(): Promise<Buffer> {
     .toBuffer();
 }
 
-/**
- * Pack a v1 `.pwrsnap` bundle with the given capture_id. Same yazl
- * shape the production writer produces — manifest.json, overlays.json,
- * source.png. No composite_thumbnail.jpg (image is small enough that
- * buildCompositeThumbnail would bypass it anyway).
- */
 async function packFixtureBundle(opts: {
   captureId: string;
   outputDir: string;
 }): Promise<string> {
   const sourcePng = await makeFixturePng();
+  const sourceSha = createHash("sha256").update(sourcePng).digest("hex");
   const bundlePath = join(opts.outputDir, `${opts.captureId}.pwrsnap`);
   await new Promise<void>((res, reject) => {
     const zip = new yazl.ZipFile();
+    const now = "2026-01-01T00:00:00.000Z";
     const manifest = {
-      bundle_format_version: 1,
+      bundle_format_version: 2,
       capture_id: opts.captureId,
-      source_sha256: PLACEHOLDER_SHA256,
-      source_dimensions: { width_px: 100, height_px: 100 },
+      canvas_dimensions: { width_px: 100, height_px: 100 },
       paired_png_filename: `${opts.captureId}.png`,
-      created_at: "2026-01-01T00:00:00.000Z",
-      bundle_modified_at: "2026-01-01T00:00:00.000Z"
+      created_at: now,
+      bundle_modified_at: now
     };
-    const overlays = {
-      overlays_format_version: 1,
-      overlays_version: 0,
-      overlays: [],
+    const document = {
+      document_format_version: 1,
+      edits_version: 0,
+      layers: [
+        {
+          id: "rootlayer0000001",
+          parent_id: null,
+          kind: "group",
+          collapsed: false,
+          name: "Root",
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blend_mode: "normal",
+          transform: [1, 0, 0, 1, 0, 0],
+          z_index: 0,
+          source: "user",
+          ai_run_id: null,
+          applied_at: now,
+          rejected_at: null,
+          superseded_by: null,
+          created_at: now
+        },
+        {
+          id: "sourcelayer00001",
+          parent_id: "rootlayer0000001",
+          kind: "raster",
+          source_ref: { kind: "embedded", sha256: sourceSha },
+          natural_width_px: 100,
+          natural_height_px: 100,
+          name: "Source",
+          visible: true,
+          locked: false,
+          opacity: 1,
+          blend_mode: "normal",
+          transform: [1, 0, 0, 1, 0, 0],
+          z_index: 0,
+          source: "user",
+          ai_run_id: null,
+          applied_at: now,
+          rejected_at: null,
+          superseded_by: null,
+          created_at: now
+        }
+      ],
       tags: [],
       description: null,
       ai_runs: []
     };
     zip.addBuffer(Buffer.from(JSON.stringify(manifest)), "manifest.json");
-    zip.addBuffer(Buffer.from(JSON.stringify(overlays)), "overlays.json");
-    zip.addBuffer(sourcePng, "source.png", { compress: false });
+    zip.addBuffer(Buffer.from(JSON.stringify(document)), "document.json");
+    zip.addBuffer(sourcePng, `sources/${sourceSha}.png`, { compress: false });
     const chunks: Buffer[] = [];
     zip.outputStream.on("data", (c: Buffer) => chunks.push(c));
     zip.outputStream.on("end", () => {
@@ -155,6 +190,23 @@ async function triggerOpenFile(
   }, bundlePath);
 }
 
+async function triggerOpenFileHandoff(
+  app: Awaited<ReturnType<typeof launchPwrSnap>>,
+  bundlePath: string
+): Promise<void> {
+  await app.electronApp.evaluate((_ctx, path) => {
+    const bridge = (
+      globalThis as unknown as {
+        __PWRSNAP_TEST__?: { triggerOpenFileHandoff: (path: string) => void };
+      }
+    ).__PWRSNAP_TEST__;
+    if (bridge === undefined) {
+      throw new Error("__PWRSNAP_TEST__ bridge not installed");
+    }
+    bridge.triggerOpenFileHandoff(path);
+  }, bundlePath);
+}
+
 test.describe("open-file handler", () => {
   test.skip(!isMac, "open-file event + macOS double-click semantics are macOS-only");
 
@@ -180,10 +232,31 @@ test.describe("open-file handler", () => {
       // feed enqueueOrOpen → processQueuedOpenFiles.
       await triggerOpenFile(app, bundlePath);
 
-      await expect(app.window.locator(".psl__focus")).toBeVisible();
-      await expect(app.window.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(
-        /is-selected/
-      );
+      await expect(
+        app.window.locator(`.psl__focus[data-capture-id="${captureId}"]`)
+      ).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("single-instance handoff .pwrsnap opens Library Focus when the capture exists", async () => {
+    const fixturesDir = await mkdtemp(join(tmpdir(), "pwrsnap-openfile-fixtures-"));
+    const captureId = "openfile-handoff";
+    const bundlePath = await packFixtureBundle({
+      captureId,
+      outputDir: fixturesDir
+    });
+
+    const app = await launchPwrSnap();
+    try {
+      await seedCaptureRow(app, { captureId, bundlePath });
+
+      await triggerOpenFileHandoff(app, bundlePath);
+
+      await expect(
+        app.window.locator(`.psl__focus[data-capture-id="${captureId}"]`)
+      ).toBeVisible();
     } finally {
       await app.close();
     }

@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BundleManifestV1, BundleOverlaysV1 } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
-  db: null as Database.Database | null
+  db: null as Database.Database | null,
+  filenameTimestampZone: "utc" as "local" | "utc"
 }));
 
 vi.mock("../db", () => ({
@@ -25,6 +26,11 @@ vi.mock("../../log", () => ({
     warn: () => undefined,
     error: () => undefined
   })
+}));
+
+vi.mock("../bundle-filename-settings", () => ({
+  readBundleFilenameTimestampZone: async (): Promise<"local" | "utc"> =>
+    mocks.filenameTimestampZone
 }));
 
 const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
@@ -130,6 +136,7 @@ async function writeBundleFixture(path: string, captureId: string): Promise<void
 }
 
 beforeEach(async () => {
+  mocks.filenameTimestampZone = "utc";
   workDir = await mkdtemp(join(tmpdir(), "pwrsnap-bundle-filenames-"));
   mocks.db = new Database(":memory:");
   mocks.db.pragma("foreign_keys = ON");
@@ -149,9 +156,26 @@ describe("bundle filename policy", () => {
         capturedAt: "2026-05-29T18:38:12.345Z",
         sourceAppName: "Safari",
         effectiveFilenameStem: "Checkout Flow!",
-        sha256: "a1b2c3d4".repeat(8)
+        sha256: "a1b2c3d4".repeat(8),
+        timestampZone: "utc"
       })
     ).toBe("2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4");
+  });
+
+  test("formats local-time prefixes when requested", () => {
+    const capturedAt = "2026-05-29T18:38:12.345Z";
+    const date = new Date(capturedAt);
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    const expectedLocalPrefix = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+    expect(
+      buildCaptureBundleFilenameStem({
+        capturedAt,
+        sourceAppName: "Safari",
+        effectiveFilenameStem: "Checkout Flow!",
+        sha256: "a1b2c3d4".repeat(8),
+        timestampZone: "local"
+      })
+    ).toBe(`${expectedLocalPrefix}_safari_checkout-flow_a1b2c3d4`);
   });
 });
 
@@ -202,7 +226,7 @@ describe("bundle filename maintenance", () => {
     });
 
     await renameBundleToEffectiveFilename(captureId);
-    expect(expectedBundleStemForCapture(captureId)).toBe(
+    expect(expectedBundleStemForCapture(captureId, "utc")).toBe(
       "2026-05-29T18-38-12_terminal_user-override_deadbeef"
     );
     expect(

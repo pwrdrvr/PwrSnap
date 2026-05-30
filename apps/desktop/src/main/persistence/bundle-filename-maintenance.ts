@@ -2,8 +2,11 @@ import { existsSync } from "node:fs";
 import { lstat, readdir, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import type { FilenameTimestampZone } from "@pwrsnap/shared";
+
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
+import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 import { getDb } from "./db";
 import { readBundleManifest, runExclusiveBundleFileOperation } from "./bundle-store";
 import { updateCaptureBundlePath } from "./captures-repo";
@@ -64,9 +67,11 @@ export async function runBundleFilenameMaintenanceOnBoot(): Promise<BundleFilena
     failed: 0
   };
 
+  const timestampZone = await readBundleFilenameTimestampZone();
+
   for (const row of rows) {
     try {
-      const outcome = await renameBundleRow(row);
+      const outcome = await renameBundleRow(row, timestampZone);
       result[outcome] += 1;
     } catch (error) {
       result.failed += 1;
@@ -107,17 +112,20 @@ function getFilenameRow(captureId: string): FilenameRow | null {
 }
 
 async function renameBundleRow(
-  row: FilenameRow
+  row: FilenameRow,
+  timestampZone?: FilenameTimestampZone
 ): Promise<"renamed" | "repaired" | "skipped"> {
+  const zone = timestampZone ?? (await readBundleFilenameTimestampZone());
   return runExclusiveBundleFileOperation(row.id, async () => {
     const currentRow = getFilenameRow(row.id);
     if (currentRow === null) return "skipped";
-    return renameBundleRowLocked(currentRow);
+    return renameBundleRowLocked(currentRow, zone);
   });
 }
 
 async function renameBundleRowLocked(
-  row: FilenameRow
+  row: FilenameRow,
+  timestampZone: FilenameTimestampZone
 ): Promise<"renamed" | "repaired" | "skipped"> {
   if (row.bundle_path === null) return "skipped";
 
@@ -128,7 +136,8 @@ async function renameBundleRowLocked(
     capturedAt: row.captured_at,
     sourceAppName: row.source_app_name,
     effectiveFilenameStem: row.accepted_filename_stem ?? row.suggested_filename_stem,
-    sha256: row.sha256
+    sha256: row.sha256,
+    timestampZone
   });
   const desiredPath = await resolveAvailableTargetPath(currentPath, desiredStem, row.id);
 
@@ -225,14 +234,18 @@ async function assertBundleBelongsToCapture(bundlePath: string, captureId: strin
   }
 }
 
-export function expectedBundleStemForCapture(captureId: string): string | null {
+export function expectedBundleStemForCapture(
+  captureId: string,
+  timestampZone: FilenameTimestampZone = "local"
+): string | null {
   const row = getFilenameRow(captureId);
   if (row === null) return null;
   return buildCaptureBundleFilenameStem({
     capturedAt: row.captured_at,
     sourceAppName: row.source_app_name,
     effectiveFilenameStem: row.accepted_filename_stem ?? row.suggested_filename_stem,
-    sha256: row.sha256
+    sha256: row.sha256,
+    timestampZone
   });
 }
 

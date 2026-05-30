@@ -346,6 +346,36 @@ export function validateSettingsWrite(
     }
   }
 
+  if (p.storage !== undefined) {
+    if (
+      typeof p.storage !== "object" ||
+      p.storage === null ||
+      Array.isArray(p.storage)
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_storage",
+          "settings:write: storage must be an object"
+        )
+      };
+    }
+    const storage = p.storage as Record<string, unknown>;
+    if (
+      !isUndefined(storage.filenameTimestampZone) &&
+      storage.filenameTimestampZone !== "local" &&
+      storage.filenameTimestampZone !== "utc"
+    ) {
+      return {
+        ok: false,
+        error: validationError(
+          "invalid_storage_filenameTimestampZone",
+          "settings:write: storage.filenameTimestampZone must be \"local\" or \"utc\""
+        )
+      };
+    }
+  }
+
   if (p.recording !== undefined) {
     if (
       typeof p.recording !== "object" ||

@@ -370,6 +370,16 @@ describe("mergeSettings", () => {
     // Other sections untouched.
     expect(merged.codex.mode).toBe(current.codex.mode);
   });
+
+  test("storage.filenameTimestampZone patch overwrites only the specified field", () => {
+    const current = defaultSettings();
+    expect(current.storage.filenameTimestampZone).toBe("local");
+    const merged = mergeSettings(current, {
+      storage: { filenameTimestampZone: "utc" }
+    });
+    expect(merged.storage.filenameTimestampZone).toBe("utc");
+    expect(merged.codex.mode).toBe(current.codex.mode);
+  });
 });
 
 describe("DesktopSettingsService.appearance defaulting", () => {
@@ -412,6 +422,46 @@ describe("DesktopSettingsService.appearance defaulting", () => {
     expect(written.appearance.theme).toBe("dark");
     const reread = await svc.read();
     expect(reread.appearance.theme).toBe("dark");
+  });
+});
+
+describe("DesktopSettingsService.storage filename timestamp zone", () => {
+  test("v1 file written before `storage` landed gets local-time filename default", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.storage.filenameTimestampZone).toBe("local");
+  });
+
+  test("invalid filename timestamp zone on disk falls back to local", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        storage: { filenameTimestampZone: "mars" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.storage.filenameTimestampZone).toBe("local");
+  });
+
+  test("write({ storage: { filenameTimestampZone: \"utc\" } }) persists and round-trips", async () => {
+    const svc = makeService();
+    const written = await svc.write({ storage: { filenameTimestampZone: "utc" } });
+    expect(written.storage.filenameTimestampZone).toBe("utc");
+    const reread = await svc.read();
+    expect(reread.storage.filenameTimestampZone).toBe("utc");
   });
 });
 

@@ -33,6 +33,7 @@ const baseSettings: Settings = {
   general: { developerMode: false },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
+  storage: { filenameTimestampZone: "local" },
   recording: {
     includeSystemAudio: false,
     includeMicrophone: false,

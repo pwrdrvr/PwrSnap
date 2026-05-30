@@ -59,6 +59,7 @@ import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
 import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
+import { readBundleFilenameTimestampZone } from "./bundle-filename-settings";
 
 const log = getMainLogger("pwrsnap:bundle-store");
 
@@ -1176,11 +1177,13 @@ export async function persistCaptureFromTempV2(
 
   const now = new Date().toISOString();
   const outputDir = args.outputDir ?? getCapturesRoot();
+  const timestampZone = await readBundleFilenameTimestampZone();
   const filenameStem = uniqueBundleFilenameStem(outputDir, buildCaptureBundleFilenameStem({
     capturedAt: now,
     sourceAppName: args.sourceApp?.appName ?? null,
     effectiveFilenameStem: null,
-    sha256
+    sha256,
+    timestampZone
   }));
   const pairedPngFilename = `${filenameStem}.png`;
 

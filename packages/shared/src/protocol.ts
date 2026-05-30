@@ -838,6 +838,13 @@ export type Settings = {
      *  Updates from the Help menu). */
     channel: UpdateChannel;
   };
+  /** Library storage and filename preferences. */
+  storage: {
+    /** Local is the single-user default so Finder filenames match the
+     *  date/time the user remembers. UTC is opt-in for shared-drive /
+     *  cross-timezone workflows where absolute ordering matters more. */
+    filenameTimestampZone: FilenameTimestampZone;
+  };
   /**
    * Per-user defaults the recording UI seeds from. Audio toggles
    * default to OFF — recording the user's microphone or system audio
@@ -1200,6 +1207,9 @@ export const DEFAULT_APPEARANCE: Settings["appearance"] = {
 
 export type UpdateChannel = "latest" | "prerelease";
 
+/** Timestamp zone used in generated `.pwrsnap` filenames. */
+export type FilenameTimestampZone = "local" | "utc";
+
 /** Deep-partial patch shape. `undefined` = leave untouched. Each nested
  *  object is independently optional so a renderer can write a single
  *  field without echoing the rest. */
@@ -1223,6 +1233,7 @@ export type SettingsPatch = {
   general?: Partial<Settings["general"]>;
   appearance?: Partial<Settings["appearance"]>;
   updates?: Partial<Settings["updates"]>;
+  storage?: Partial<Settings["storage"]>;
   recording?: Partial<Settings["recording"]>;
   /** Editor preferences are deep-nested (toolStyles per tool kind),
    *  so the patch type drops one level deeper than the other branches.

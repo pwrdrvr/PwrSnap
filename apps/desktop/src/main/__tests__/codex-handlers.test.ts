@@ -90,6 +90,9 @@ function unregisterCodexHandlers(): void {
     "codex:rejectTag",
     "codex:runStatus",
     "codex:budgetStatus",
+    "codex:usageSummary",
+    "codex:usageRuns",
+    "codex:usageRunDetail",
     "codex:cancel",
     "codex:annotate",
     "codex:describe",
@@ -113,11 +116,56 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 class FakeCodexClient {
-  async enrichCapture(): Promise<{ result: EnrichmentResult; threadId: string; turnId: string; userAgent: string }> {
+  async enrichCapture(): Promise<{
+    result: EnrichmentResult;
+    threadId: string;
+    turnId: string;
+    userAgent: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+    tokenUsage: {
+      total: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      last: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      modelContextWindow: number | null;
+    };
+  }> {
     return {
       threadId: "thread-1",
       turnId: "turn-1",
       userAgent: "codex-test",
+      model: "gpt-5.4-mini",
+      modelProvider: "openai",
+      serviceTier: null,
+      tokenUsage: {
+        total: {
+          totalTokens: 1200,
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningOutputTokens: 25
+        },
+        last: {
+          totalTokens: 1200,
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningOutputTokens: 25
+        },
+        modelContextWindow: 400_000
+      },
       result: {
         ocrText: "Visible text",
         title: "",
@@ -248,6 +296,77 @@ describe("Codex handlers", () => {
     expect(
       (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
     ).toBe("completed");
+  });
+
+  test("usage commands expose token, cost, and media accounting", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () =>
+        testSettings({
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+
+    const detail = await bus.dispatch(
+      "codex:usageRunDetail",
+      { runId: started.value.runId },
+      { principal: "ipc" }
+    );
+    expect(detail.ok).toBe(true);
+    if (!detail.ok) return;
+    expect(detail.value?.tokens?.cachedInputTokens).toBe(100);
+    expect(detail.value?.mediaInputs[0]).toMatchObject({
+      transform: "prepared-jpeg",
+      sentMimeType: "image/jpeg",
+      sentWidthPx: 640,
+      sentHeightPx: 360,
+      quality: 75
+    });
+    expect(detail.value?.cost.status).toBe("available");
+    if (detail.value?.cost.status === "available") {
+      expect(detail.value.cost.totalCostMicros).toBe(1958);
+    }
+
+    const summary = await bus.dispatch(
+      "codex:usageSummary",
+      { window: "24h" },
+      { principal: "ipc" }
+    );
+    expect(summary.ok).toBe(true);
+    if (summary.ok) {
+      expect(summary.value.runCount).toBe(1);
+      expect(summary.value.totalTokens).toBe(1200);
+      expect(summary.value.estimatedTotalCostMicros).toBe(1958);
+    }
+
+    const page = await bus.dispatch(
+      "codex:usageRuns",
+      { limit: 10, offset: 0 },
+      { principal: "ipc" }
+    );
+    expect(page.ok).toBe(true);
+    if (page.ok) {
+      expect(page.value.items[0]).toMatchObject({
+        model: "gpt-5.4-mini",
+        usageStatus: "available",
+        estimatedTotalCostMicros: 1958
+      });
+    }
   });
 
   test("codex:enrich refuses to run without consent", async () => {

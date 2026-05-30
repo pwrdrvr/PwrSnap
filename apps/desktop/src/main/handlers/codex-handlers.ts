@@ -43,6 +43,9 @@ import {
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
 import {
+  getAiRunUsageDetail,
+  getAiUsageSummary,
+  listAiUsageRuns,
   replaceAiRunMediaInputs,
   saveAiRunUsage,
   type SaveAiRunMediaInput
@@ -158,6 +161,25 @@ function broadcastAiBudgetUpdated(payload: AiEnrichmentBudgetStatus): void {
 
 function validationError(code: string, message: string): Result<never, PwrSnapError> {
   return err({ kind: "validation", code, message });
+}
+
+function isUsageSummaryWindow(value: unknown): value is "24h" | "7d" | "30d" {
+  return value === "24h" || value === "7d" || value === "30d";
+}
+
+function parseUsageRunsPage(req: {
+  limit?: number;
+  offset?: number;
+}): Result<{ limit: number; offset: number }, PwrSnapError> {
+  const limit = req.limit ?? 25;
+  const offset = req.offset ?? 0;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return validationError("invalid_request", "usage run limit must be an integer from 1 to 100");
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    return validationError("invalid_request", "usage run offset must be a non-negative integer");
+  }
+  return ok({ limit, offset });
 }
 
 async function defaultSettingsReader(): Promise<Settings> {
@@ -517,6 +539,26 @@ export function registerCodexHandlers(params?: {
       });
     }
     return ok(budget.status(settings));
+  });
+
+  bus.register("codex:usageSummary", async (req) => {
+    if (!isUsageSummaryWindow(req.window)) {
+      return validationError("invalid_request", "usage summary window must be 24h, 7d, or 30d");
+    }
+    return ok(getAiUsageSummary(req.window));
+  });
+
+  bus.register("codex:usageRuns", async (req) => {
+    const parsed = parseUsageRunsPage(req);
+    if (!parsed.ok) return parsed;
+    return ok(listAiUsageRuns(parsed.value));
+  });
+
+  bus.register("codex:usageRunDetail", async (req) => {
+    if (typeof req.runId !== "string" || req.runId.trim() === "") {
+      return validationError("invalid_request", "runId is required");
+    }
+    return ok(getAiRunUsageDetail(req.runId));
   });
 
   bus.register("codex:cancel", async (req) => {

@@ -33,6 +33,13 @@ describe("formatLastSetAt", () => {
     vi.useRealTimers();
   });
 
+  test("treats SQLite UTC timestamps as UTC instead of local time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-30T17:30:00.000Z"));
+    expect(formatLastSetAt("2026-05-30 17:23:08")).toBe("6 mins ago");
+    vi.useRealTimers();
+  });
+
   test("falls back to an absolute YYYY-MM-DD past one week", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));

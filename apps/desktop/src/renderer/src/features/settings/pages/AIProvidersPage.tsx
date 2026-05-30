@@ -924,7 +924,7 @@ function JobRoutingRow({
 
 export function formatLastSetAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "—";
-  const then = Date.parse(iso);
+  const then = parseTimestampMs(iso);
   if (Number.isNaN(then)) return iso;
   const now = Date.now();
   const deltaMs = Math.max(0, now - then);
@@ -1019,7 +1019,7 @@ function codexAuthSubLine(
 
 export function formatNextTokenAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "soon";
-  const then = Date.parse(iso);
+  const then = parseTimestampMs(iso);
   if (Number.isNaN(then)) return iso;
   const deltaMs = then - Date.now();
   if (deltaMs <= 0) return "now";
@@ -1029,6 +1029,13 @@ export function formatNextTokenAt(iso: string | null): string {
   if (min < 60) return `in ${min} min${min === 1 ? "" : "s"}`;
   const hr = Math.ceil(min / 60);
   return `in ${hr} hour${hr === 1 ? "" : "s"}`;
+}
+
+function parseTimestampMs(value: string): number {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+    return Date.parse(`${value.replace(" ", "T")}Z`);
+  }
+  return Date.parse(value);
 }
 
 export function codexTestBadgeLabel(

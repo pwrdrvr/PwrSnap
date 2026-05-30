@@ -4,6 +4,7 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
+  AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
   SettingsChangedEvent
@@ -86,8 +87,87 @@ function installFakeApi(initial: CaptureEnrichment): {
     acceptedFilenameStem: initial.suggestedFilenameStem,
     filenameAcceptedAt: "2026-05-15T18:25:00.000Z"
   });
+  const usageDetail: AiRunUsageDetail = {
+    run: {
+      id: "run_1",
+      captureId: "cap_1",
+      kind: "enrich",
+      task: "enrich",
+      triggerSource: "library-regenerate",
+      selectedModel: "gpt-5.4-mini",
+      status: "completed",
+      error: null,
+      latencyMs: 1000,
+      createdAt: "2026-05-15T18:25:00.000Z",
+      startedAt: "2026-05-15T18:25:00.000Z",
+      completedAt: "2026-05-15T18:25:01.000Z"
+    },
+    threadId: "thread-1",
+    turnId: "turn-1",
+    model: "gpt-5.4-mini",
+    modelProvider: "openai",
+    serviceTier: null,
+    usageStatus: "available",
+    usageUnavailableReason: null,
+    tokens: {
+      totalTokens: 1200,
+      inputTokens: 900,
+      cachedInputTokens: 100,
+      outputTokens: 300,
+      reasoningOutputTokens: 25,
+      modelContextWindow: 400_000
+    },
+    cost: {
+      status: "available",
+      currency: "USD",
+      catalogVersion: "2026-05-30",
+      pricingSourceUrl: "https://developers.openai.com/api/docs/pricing",
+      pricedAt: "2026-05-30T00:00:00.000Z",
+      rateSnapshot: {
+        model: "gpt-5.4-mini",
+        serviceTier: null,
+        contextClass: "standard",
+        inputUsdPerMillion: 0.75,
+        cachedInputUsdPerMillion: 0.075,
+        outputUsdPerMillion: 4.5
+      },
+      uncachedInputTokens: 800,
+      cachedInputTokens: 100,
+      outputTokens: 300,
+      uncachedInputCostMicros: 600,
+      cachedInputCostMicros: 8,
+      outputCostMicros: 1350,
+      totalCostMicros: 1958
+    },
+    mediaInputs: [
+      {
+        id: "media_1",
+        aiRunId: "run_1",
+        ordinal: 0,
+        role: "capture",
+        transform: "prepared-jpeg",
+        sourceMimeType: "image/png",
+        sentMimeType: "image/jpeg",
+        format: "jpeg",
+        encoder: "sharp mozjpeg",
+        quality: 75,
+        sourceWidthPx: 2654,
+        sourceHeightPx: 1922,
+        sentWidthPx: 1024,
+        sentHeightPx: 742,
+        sentByteSize: 123456,
+        maxEdgePx: 1024,
+        maxBytes: 1_000_000,
+        scaleRatio: 0.385832,
+        videoPositionPct: null,
+        videoTimestampSec: null,
+        createdAt: "2026-05-15T18:25:00.000Z"
+      }
+    ]
+  };
   const dispatch = vi.fn(async (name: string) => {
     if (name === "codex:enrichment") return { ok: true, value: initial };
+    if (name === "codex:usageRunDetail") return { ok: true, value: usageDetail };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
     if (name === "codex:acceptTitle") return { ok: true, value: accepted };
     if (name === "codex:acceptFilenameStem") return { ok: true, value: accepted };
@@ -146,6 +226,7 @@ async function renderDetailRail(initial: CaptureEnrichment): Promise<{
     }));
   });
   await act(async () => {
+    await Promise.resolve();
     await Promise.resolve();
   });
   return { el: container, dispatch, pushEvent };
@@ -510,6 +591,17 @@ describe("DetailRail", () => {
     });
     const tagCalls = dispatch.mock.calls.filter(([name]) => name === "codex:acceptTag");
     expect(tagCalls).toHaveLength(0);
+  });
+
+  test("shows latest AI run usage and sent media accounting", async () => {
+    const { el } = await renderDetailRail(enrichment());
+
+    const usage = el.querySelector(".psl__ai-usage");
+    expect(usage?.textContent).toContain("gpt-5.4-mini");
+    expect(usage?.textContent).toContain("<$0.01");
+    expect(usage?.textContent).toContain("1,200 tokens");
+    expect(usage?.textContent).toContain("1024×742 JPEG");
+    expect(usage?.textContent).toContain("q75");
   });
 
   test("Bulk Use draft overrides title and description manual values but leaves filename edits alone", async () => {

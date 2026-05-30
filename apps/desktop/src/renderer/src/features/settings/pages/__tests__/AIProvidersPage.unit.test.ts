@@ -1,7 +1,12 @@
 // Pure-function unit tests for the AI Providers page helpers.
 
 import { describe, expect, test, vi } from "vitest";
-import { formatLastSetAt, formatNextTokenAt } from "../AIProvidersPage";
+import {
+  formatCostMicros,
+  formatLastSetAt,
+  formatNextTokenAt,
+  formatTokenCount
+} from "../AIProvidersPage";
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {
@@ -57,5 +62,20 @@ describe("formatNextTokenAt", () => {
     expect(formatNextTokenAt("2026-05-12T11:59:00.000Z")).toBe("now");
     expect(formatNextTokenAt("not-an-iso-date")).toBe("not-an-iso-date");
     vi.useRealTimers();
+  });
+});
+
+describe("usage formatting helpers", () => {
+  test("formats micro-dollar estimates without hiding sub-cent usage", () => {
+    expect(formatCostMicros(null)).toBe("—");
+    expect(formatCostMicros(0)).toBe("$0.00");
+    expect(formatCostMicros(1_958)).toBe("<$0.01");
+    expect(formatCostMicros(1_250_000)).toBe("$1.25");
+  });
+
+  test("formats token counts with grouping", () => {
+    expect(formatTokenCount(null)).toBe("—");
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(1234567)).toBe("1,234,567");
   });
 });

@@ -763,6 +763,81 @@
   border-color: var(--border-default);
 }
 
+.pss__usage {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pss__usage-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.pss__usage-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__usage-metric-label {
+  font: 600 10px/1 var(--font-sans);
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.pss__usage-metric-value {
+  font: 700 18px/1.1 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__usage-metric-sub,
+.pss__usage-note,
+.pss__usage-empty,
+.pss__usage-run-sub,
+.pss__usage-run-tokens {
+  font: 400 11px/1.35 var(--font-sans);
+  color: var(--text-muted);
+}
+.pss__usage-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pss__usage-run {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-row);
+}
+.pss__usage-run-main,
+.pss__usage-run-right {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.pss__usage-run-title,
+.pss__usage-run-cost {
+  font: 600 12px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+.pss__usage-run-main {
+  flex: 1 1 auto;
+}
+.pss__usage-run-right {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
 /* Below ~880px (typical default Settings frame), drop the rigid
    240px label gutter and let label + control stack vertically.
    Keeps long paths from wrapping under buttons. */
@@ -770,6 +845,16 @@
   .pss__row {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+  .pss__usage-metrics {
+    grid-template-columns: 1fr;
+  }
+  .pss__usage-run {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .pss__usage-run-right {
+    text-align: left;
   }
 }
 

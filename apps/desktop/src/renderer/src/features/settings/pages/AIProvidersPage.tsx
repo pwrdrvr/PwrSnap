@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   AiEnrichmentBudgetStatus,
+  AiUsageRunsPage,
+  AiUsageSummary,
   CodexCaptionModel,
   CodexTestResult,
   DesktopCodexDiscoveryCandidate,
@@ -49,10 +51,23 @@ export function AIProvidersPage(): ReactElement {
   const [codexTest, setCodexTest] = useState<CodexTestResult | null>(null);
   const [codexTesting, setCodexTesting] = useState<boolean>(false);
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
+  const [usageSummary, setUsageSummary] = useState<AiUsageSummary | null>(null);
+  const [usageRuns, setUsageRuns] = useState<AiUsageRunsPage | null>(null);
+  const [usageLoading, setUsageLoading] = useState<boolean>(true);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
     if (result.ok) setBudgetStatus(result.value);
+  }, []);
+
+  const refreshUsage = useCallback(async (): Promise<void> => {
+    const [summaryResult, runsResult] = await Promise.all([
+      dispatch("codex:usageSummary", { window: "30d" }),
+      dispatch("codex:usageRuns", { limit: 5, offset: 0 })
+    ]);
+    if (summaryResult.ok) setUsageSummary(summaryResult.value);
+    if (runsResult.ok) setUsageRuns(runsResult.value);
+    setUsageLoading(false);
   }, []);
 
   // Cache-friendly first fetch on mount; only force=true when the user
@@ -81,6 +96,16 @@ export function AIProvidersPage(): ReactElement {
       unsubscribe();
     };
   }, [refreshBudgetStatus]);
+
+  useEffect(() => {
+    void refreshUsage();
+    const unsubscribe = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+      void refreshUsage();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshUsage]);
 
   const onRefresh = async (): Promise<void> => {
     setSnapshotLoading(true);
@@ -195,6 +220,36 @@ export function AIProvidersPage(): ReactElement {
               </button>
             </div>
           </div>
+        </Row>
+      </Card>
+
+      <Card
+        eyebrow="USAGE"
+        title="AI usage"
+        headerAction={
+          <button
+            className="pss__top-btn"
+            type="button"
+            disabled={usageLoading}
+            onClick={() => {
+              setUsageLoading(true);
+              void refreshUsage();
+            }}
+          >
+            {usageLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        }
+      >
+        <Row
+          label="PwrSnap usage"
+          sub="Observed Codex runs from this app. Cost is an OpenAI public list-price equivalent, not an account invoice."
+          tag="30 days"
+        >
+          <AiUsagePanel
+            summary={usageSummary}
+            runs={usageRuns}
+            loading={usageLoading}
+          />
         </Row>
       </Card>
 
@@ -387,6 +442,116 @@ type CodexCandidatesProps = {
   loading: boolean;
   onPin: (path: string) => void;
 };
+
+type AiUsagePanelProps = {
+  summary: AiUsageSummary | null;
+  runs: AiUsageRunsPage | null;
+  loading: boolean;
+};
+
+function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactElement {
+  if (summary === null || runs === null) {
+    return (
+      <div className="pss__usage">
+        <div className="pss__usage-empty">
+          {loading ? "Loading usage accounting." : "No usage accounting recorded yet."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pss__usage">
+      <div className="pss__usage-metrics">
+        <UsageMetric
+          label="List-price"
+          value={formatCostMicros(summary.estimatedTotalCostMicros)}
+          sub={`${summary.runCount} runs`}
+        />
+        <UsageMetric
+          label="Input"
+          value={formatTokenCount(summary.inputTokens)}
+          sub={`${formatTokenCount(summary.cachedInputTokens)} cached`}
+        />
+        <UsageMetric
+          label="Output"
+          value={formatTokenCount(summary.outputTokens)}
+          sub={`${formatTokenCount(summary.reasoningOutputTokens)} reasoning`}
+        />
+      </div>
+      {summary.usageUnavailableCount > 0 || summary.priceUnavailableCount > 0 ? (
+        <div className="pss__usage-note">
+          {summary.usageUnavailableCount > 0
+            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing Codex usage. `
+            : ""}
+          {summary.priceUnavailableCount > 0
+            ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} missing price data.`
+            : ""}
+        </div>
+      ) : null}
+      <div className="pss__usage-runs">
+        {runs.items.length === 0 ? (
+          <div className="pss__usage-empty">No recent AI runs.</div>
+        ) : (
+          runs.items.map((item) => (
+            <div className="pss__usage-run" key={item.run.id}>
+              <div className="pss__usage-run-main">
+                <span className="pss__usage-run-title">
+                  {usageTaskLabel(item.run.task, item.run.triggerSource)}
+                </span>
+                <span className="pss__usage-run-sub">
+                  {item.model ?? "model unavailable"} · {formatLastSetAt(item.run.completedAt ?? item.run.createdAt)}
+                </span>
+              </div>
+              <div className="pss__usage-run-right">
+                <span className="pss__usage-run-cost">
+                  {item.priceStatus === "available" && item.estimatedTotalCostMicros !== null
+                    ? formatCostMicros(item.estimatedTotalCostMicros)
+                    : "Price unavailable"}
+                </span>
+                <span className="pss__usage-run-tokens">
+                  {item.usageStatus === "available" && item.totalTokens !== null
+                    ? `${formatTokenCount(item.totalTokens)} tokens`
+                    : "Usage unavailable"}
+                </span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UsageMetric({
+  label,
+  value,
+  sub
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}): ReactElement {
+  return (
+    <div className="pss__usage-metric">
+      <span className="pss__usage-metric-label">{label}</span>
+      <span className="pss__usage-metric-value">{value}</span>
+      <span className="pss__usage-metric-sub">{sub}</span>
+    </div>
+  );
+}
+
+function usageTaskLabel(task: string, triggerSource: string): string {
+  if (triggerSource === "auto-enrichment") return "Auto enrichment";
+  if (triggerSource === "library-regenerate") return "Library regenerate";
+  if (triggerSource === "popover-regenerate") return "Float-over regenerate";
+  if (triggerSource === "annotate") return "Annotate";
+  if (triggerSource === "describe") return "Describe";
+  if (triggerSource === "tag") return "Tag";
+  if (triggerSource === "filename") return "Filename";
+  if (triggerSource === "sensitive-scan") return "Sensitive scan";
+  return task === "enrich" ? "Capture enrichment" : task;
+}
 
 function CodexCandidates({
   snapshot,
@@ -707,6 +872,23 @@ export function formatLastSetAt(iso: string | null): string {
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
   return new Date(then).toISOString().slice(0, 10);
+}
+
+export function formatCostMicros(micros: number | null): string {
+  if (micros === null) return "—";
+  const dollars = micros / 1_000_000;
+  if (dollars > 0 && dollars < 0.01) return "<$0.01";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: dollars < 10 ? 2 : 0,
+    maximumFractionDigits: dollars < 10 ? 2 : 0
+  }).format(dollars);
+}
+
+export function formatTokenCount(tokens: number | null): string {
+  if (tokens === null) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(tokens);
 }
 
 function codexAuthBadgeLabel(

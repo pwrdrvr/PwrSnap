@@ -38,6 +38,17 @@ jobs:
         with:
           node-version: "24.14.1"
 
+      - name: Restore FFmpeg source/build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/Library/Caches/PwrSnap/ffmpeg-builds
+            apps/desktop/build/ffmpeg
+            apps/desktop/build/ffmpeg-source
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/desktop/scripts/build-ffmpeg.mjs') }}
+          restore-keys: |
+            ffmpeg-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Check release metadata
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -156,6 +167,19 @@ jobs:
             --repo pwrdrvr/PwrSnap \
             --clobber
 
+      - name: Publish FFmpeg source archive
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT || github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          source_dir="apps/desktop/release-stage/build/ffmpeg-source"
+          gh release upload "$RELEASE_TAG" \
+            "$source_dir"/ffmpeg-*.tar.xz \
+            "$source_dir"/ffmpeg-*.tar.xz.sha256 \
+            --repo pwrdrvr/PwrSnap \
+            --clobber
+
       - name: Upload release artifacts (debug retention)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
@@ -167,4 +191,5 @@ jobs:
             apps/desktop/release-stage/dist/*.blockmap
             apps/desktop/release-stage/dist/latest-mac.yml
             apps/desktop/release-stage/dist/builder-debug.yml
+            apps/desktop/release-stage/build/ffmpeg-source/*
           retention-days: 30

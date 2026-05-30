@@ -13,6 +13,7 @@
     "build": "electron-vite build",
     "dev": "node ./scripts/dev.mjs",
     "build:native": "node ./scripts/build-native.mjs",
+    "build:ffmpeg": "node ./scripts/build-ffmpeg.mjs",
     "rebuild:electron-native": "node ./scripts/rebuild-native-for-electron.mjs && node ./scripts/build-native.mjs",
     "package:dryrun": "node ./scripts/release.mjs --dryrun",
     "package:skip-notarize": "node ./scripts/release.mjs --no-publish --skip-notarize",
@@ -29,7 +30,6 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@fontsource/geist-mono": "^5.2.5",
     "@fontsource/geist-sans": "^5.2.5",
     "@pwrsnap/codex-app-server-protocol": "workspace:*",

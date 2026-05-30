@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { SIZZLE_CROSSFADE_SEC, type SizzleTransition } from "@pwrsnap/shared";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
@@ -16,7 +16,7 @@ const log = getMainLogger("pwrsnap:sizzle-composer");
  *      duration` on the input side.
  *
  * Both shapes carry an `audioPath` — the composer treats it as a
- * black-box mp3/m4a that's already the right length for the scene.
+ * black-box audio file and decodes it as a normal ffmpeg input.
  * The handler decides whether it's a TTS voiceover, the video's
  * extracted native audio, or a synthesized silent stretch.
  *
@@ -62,8 +62,7 @@ export type ComposeRequest = {
   onProgress?: (ratio: number) => void;
   /** AbortSignal threaded from the bus's per-dispatch controller. On
    *  abort, the in-flight ffmpeg child gets SIGKILL and the compose
-   *  promise rejects with a `cancelled` ComposeError. The temp audio-
-   *  list file is cleaned up either way. */
+   *  promise rejects with a `cancelled` ComposeError. */
   signal?: AbortSignal;
 };
 
@@ -165,10 +164,7 @@ export async function probeDurationSec(audioPath: string): Promise<number> {
  *   audio durations are tuned to match per-scene video durations
  *   (`measured + 0.35s` tail) so the trim is small.
  */
-export function buildCompositionArgs(
-  req: ComposeRequest,
-  audioListPath: string
-): string[] {
+export function buildCompositionArgs(req: ComposeRequest): string[] {
   const args: string[] = ["-y", "-hide_banner"];
   for (const scene of req.scenes) {
     if (scene.kind === "image") {
@@ -189,7 +185,9 @@ export function buildCompositionArgs(
       );
     }
   }
-  args.push("-f", "concat", "-safe", "0", "-i", audioListPath);
+  for (const scene of req.scenes) {
+    args.push("-i", scene.audioPath);
+  }
 
   const filters: string[] = [];
 
@@ -262,15 +260,16 @@ export function buildCompositionArgs(
   // its transition (xfade for crossfade, concat for cut). Final label
   // is `chainOut`.
   const finalLabel = buildTransitionChain(req.scenes, filters);
+  const finalAudioLabel = buildAudioConcat(req.scenes, filters);
   args.push(
     "-filter_complex",
     filters.join(";"),
     "-map",
     `[${finalLabel}]`,
     "-map",
-    `${req.scenes.length}:a:0`,
+    `[${finalAudioLabel}]`,
     // h264_videotoolbox: macOS-native hardware H.264 encoder. NOT
-    // libx264 (GPL — issue #127 tracks switching the bundled binary).
+    // libx264; the bundled ffmpeg is built without GPL/nonfree flags.
     "-c:v",
     "h264_videotoolbox",
     // GitHub-hosted macOS runners sometimes cannot allocate a hardware
@@ -351,6 +350,29 @@ function buildTransitionChain(
   return chainLabel;
 }
 
+function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
+  scenes.forEach((scene, i) => {
+    const inputIndex = scenes.length + i;
+    filters.push(
+      `[${inputIndex}:a]` +
+        "aresample=44100," +
+        "aformat=sample_fmts=fltp:channel_layouts=stereo," +
+        "apad," +
+        `atrim=0:${scene.durationSec.toFixed(3)},` +
+        "asetpts=PTS-STARTPTS" +
+        `[a${i}]`
+    );
+  });
+
+  if (scenes.length === 1) return "a0";
+
+  filters.push(
+    scenes.map((_, i) => `[a${i}]`).join("") +
+      `concat=n=${scenes.length}:v=0:a=1[aout]`
+  );
+  return "aout";
+}
+
 export async function compose(req: ComposeRequest): Promise<void> {
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
@@ -362,30 +384,19 @@ export async function compose(req: ComposeRequest): Promise<void> {
 
   await mkdir(dirname(req.outputPath), { recursive: true });
 
-  const audioListPath = `${req.outputPath}.audio-list.txt`;
-  const audioConcat = req.scenes
-    .map((s) => `file '${s.audioPath.replace(/'/g, "'\\''")}'`)
-    .join("\n");
-  await writeFile(audioListPath, audioConcat, "utf8");
-
-  try {
-    const args = buildCompositionArgs(req, audioListPath);
-    log.info("ffmpeg compose", {
-      scenes: req.scenes.length,
-      kinds: req.scenes.map((s) => s.kind),
-      transitions: req.scenes.slice(1).map((s) => s.transition),
-      width: req.width,
-      height: req.height,
-      fps: req.fps,
-      totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
-    });
-    const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
-    await runFfmpeg(ffmpeg, args, totalSec, req.onProgress, req.signal);
-  } finally {
-    // Clean up the audio concat list whether ffmpeg succeeded, failed,
-    // or was aborted. Don't leak temp files into ~/Movies/PwrSnap/.
-    await unlink(audioListPath).catch(() => undefined);
-  }
+  const args = buildCompositionArgs(req);
+  log.info("ffmpeg compose", {
+    ffmpegPath: ffmpeg,
+    scenes: req.scenes.length,
+    kinds: req.scenes.map((s) => s.kind),
+    transitions: req.scenes.slice(1).map((s) => s.transition),
+    width: req.width,
+    height: req.height,
+    fps: req.fps,
+    totalSec: req.scenes.reduce((acc, s) => acc + s.durationSec, 0).toFixed(2)
+  });
+  const totalSec = req.scenes.reduce((acc, s) => acc + s.durationSec, 0);
+  await runFfmpeg(ffmpeg, args, totalSec, req.onProgress, req.signal);
 }
 
 function runFfmpeg(

@@ -41,9 +41,9 @@ vi.mock("../../recording/recording-exporter", () => ({
     high: { width: 720, fps: 30 }
   },
   MP4_PRESETS: {
-    low: { width: 720, crf: 28 },
-    med: { width: 1080, crf: 23 },
-    high: { width: null, crf: null }
+    low: { width: 720, bitrate: "2000k" },
+    med: { width: 1080, bitrate: "5000k" },
+    high: { width: null, bitrate: null }
   }
 }));
 

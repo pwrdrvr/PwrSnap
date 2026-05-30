@@ -30,6 +30,17 @@ jobs:
         with:
           node-version: "24.14.1"
 
+      - name: Restore FFmpeg source/build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/PwrSnap/ffmpeg-builds
+            apps/desktop/build/ffmpeg
+            apps/desktop/build/ffmpeg-source
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/desktop/scripts/build-ffmpeg.mjs') }}
+          restore-keys: |
+            ffmpeg-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Compute preview version
         id: version
         run: |
@@ -59,5 +70,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: PwrSnap-${{ steps.version.outputs.version }}-preview
-          path: apps/desktop/release-stage/dist/*.dmg
+          path: |
+            apps/desktop/release-stage/dist/*.dmg
+            apps/desktop/build/ffmpeg-source/*
           retention-days: 14

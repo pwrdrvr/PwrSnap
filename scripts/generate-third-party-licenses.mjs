@@ -17,6 +17,22 @@ const outputPath = join(repoRoot, "THIRD_PARTY_LICENSES");
 const desktopFilter = "@pwrsnap/desktop";
 const supplementalMacArm64Records = [
   {
+    name: "FFmpeg",
+    version: "8.1.1",
+    declaredLicense: "LGPL-2.1-or-later",
+    source: "https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+    description:
+      "Bundled ffmpeg executable built by apps/desktop/scripts/build-ffmpeg.mjs without GPL or nonfree configure flags",
+    licenseText: [
+      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.",
+      "The build script verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.",
+      "",
+      "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
+      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+      "License guidance: https://ffmpeg.org/legal.html"
+    ].join("\n"),
+  },
+  {
     name: "@img/sharp-darwin-arm64",
     version: "0.34.5",
     declaredLicense: "Apache-2.0",
@@ -189,6 +205,8 @@ function enrichRecord(record) {
   const licensePath = findLicenseFile(record.packagePath);
   const licenseText = licensePath
     ? normalizeLicenseText(readFileSync(licensePath, "utf8"))
+    : typeof record.licenseText === "string"
+      ? normalizeLicenseText(record.licenseText)
     : declaredLicenseFallbackText(record, packageJson);
   return {
     ...record,
@@ -201,6 +219,8 @@ function enrichRecord(record) {
     ),
     licenseFile: licensePath
       ? relative(record.packagePath, licensePath)
+      : typeof record.licenseText === "string"
+        ? "supplemental notice"
       : "package metadata",
     licenseText,
     licenseTextHash: createHash("sha256").update(licenseText).digest("hex"),

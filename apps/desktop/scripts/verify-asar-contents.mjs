@@ -34,7 +34,7 @@ const forbidden = [
 
 const allowedForbiddenEntries = [/^\/out\/main\/prompts\/[^/]+\.md$/];
 
-const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md"];
+const requiredResources = ["THIRD_PARTY_LICENSES", "CHANGELOG.md", "PwrSnapFFmpeg"];
 
 // Universal-build invariants for unpacked native dependencies.
 // Each entry: a glob-like path expectation under
@@ -72,16 +72,6 @@ const requiredUnpackedNative = [
     dir: "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib",
     mustContain: ".dylib"
   },
-  {
-    label: "@ffmpeg-installer/darwin-arm64 binary",
-    dir: "app.asar.unpacked/node_modules/@ffmpeg-installer/darwin-arm64",
-    mustContain: "ffmpeg"
-  },
-  {
-    label: "@ffmpeg-installer/darwin-x64 binary",
-    dir: "app.asar.unpacked/node_modules/@ffmpeg-installer/darwin-x64",
-    mustContain: "ffmpeg"
-  }
 ];
 
 export function findForbiddenAsarEntries(listing) {

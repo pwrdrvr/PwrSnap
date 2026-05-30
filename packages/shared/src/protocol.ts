@@ -2154,15 +2154,15 @@ export type Commands = {
     req: { projectId: string; captureId: string };
     res: SizzleProject;
   };
-  /** Synthesize (or fetch from cache) the per-scene voiceover and
-   *  return it as a base64-encoded MP3 the renderer can play in an
+  /** Synthesize (or fetch from cache) the per-scene audio and
+   *  return it as a base64-encoded audio blob the renderer can play in an
    *  <audio> tag. Used by the per-scene ▶ button so users can preview
-   *  the voiceover for a single line without rendering the full reel.
+   *  the voiceover or native clip audio without rendering the full reel.
    *  Returns the same audio file the renderer pipeline will use, so
    *  what you preview is what you get. */
   "sizzle:previewSceneAudio": {
     req: { projectId: string; sceneId: string };
-    res: { audioBase64: string; mimeType: "audio/mpeg"; durationSec: number };
+    res: { audioBase64: string; mimeType: "audio/mpeg" | "audio/mp4"; durationSec: number };
   };
 
   // ── Project Asset Cart ──────────────────────────────────────────────

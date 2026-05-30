@@ -16,9 +16,9 @@
 // Track selection happens via ffmpeg's `-map` flags; the source
 // container places system audio on track 1, microphone on track 2
 // when both are present (the recorder writes them in that order).
-// The preset drives target width + CRF:
-//   LOW : 720p  · CRF 28 · web-friendly
-//   MED : 1080p · CRF 23 · visually-lossless
+// The preset drives target width + VideoToolbox bitrate:
+//   LOW : 720p  · 2 Mbps · web-friendly
+//   MED : 1080p · 5 Mbps · visually-lossless
 //   HIGH: source resolution · stream-copy (no re-encode)
 
 import { spawn } from "node:child_process";
@@ -46,7 +46,7 @@ const log = getMainLogger("pwrsnap:recording-exporter");
 
 /** Per-(format, preset) encode profile. Source-resolution presets
  *  (HIGH for MP4) set `width: null` to signal "no downscale". MP4
- *  HIGH also sets `crf: null` to signal "stream-copy" (no
+ *  HIGH also sets `bitrate: null` to signal "stream-copy" (no
  *  re-encode).
  *
  *  GIF tiers are picked to land in roughly log-spaced byte sizes for
@@ -63,7 +63,7 @@ const log = getMainLogger("pwrsnap:recording-exporter");
  *  headroom (CRF + H.264 motion compensation) to handle high-res
  *  screen content without exploding. */
 export type GifPresetSpec = { readonly width: number | null; readonly fps: number };
-export type Mp4PresetSpec = { readonly width: number | null; readonly crf: number | null };
+export type Mp4PresetSpec = { readonly width: number | null; readonly bitrate: string | null };
 
 export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
   low: { width: 480, fps: 15 },
@@ -72,9 +72,9 @@ export const GIF_PRESETS: Readonly<Record<VideoPreset, GifPresetSpec>> = {
 };
 
 export const MP4_PRESETS: Readonly<Record<VideoPreset, Mp4PresetSpec>> = {
-  low: { width: 720, crf: 28 },
-  med: { width: 1080, crf: 23 },
-  high: { width: null, crf: null }
+  low: { width: 720, bitrate: "2000k" },
+  med: { width: 1080, bitrate: "5000k" },
+  high: { width: null, bitrate: null }
 };
 
 /** Compute output dimensions for a given preset against a source
@@ -231,7 +231,7 @@ async function encodeAndRecord(
   const ffmpeg = resolveFfmpegPath();
   if (ffmpeg === null) {
     throw new Error(
-      "ffmpeg binary not available — install @ffmpeg-installer/ffmpeg or set PWRSNAP_FFMPEG_PATH"
+      "ffmpeg binary not available — run build:ffmpeg or set PWRSNAP_FFMPEG_PATH"
     );
   }
 
@@ -382,28 +382,25 @@ async function encodeMp4(
 
   // Video track. HIGH preset = stream-copy (`-c:v copy`) — no
   // re-encode, no downscale, instant. LOW / MED preset = re-encode
-  // via libx264 with a per-preset CRF + downscale-to-target-width.
+  // via VideoToolbox with a per-preset bitrate + downscale-to-target-width.
   args.push("-map", "0:v:0");
-  if (spec.width === null || spec.crf === null) {
+  if (spec.width === null || spec.bitrate === null) {
     // HIGH: stream-copy. The source is already H.264 (per the
     // recorder config) so this is a trim + remux, ~instant on disk.
     args.push("-c:v", "copy");
   } else {
-    // LOW / MED: scale + re-encode. `-vf scale=W:-2` produces an
-    // even-snapped height; `-preset veryfast` is the sweet-spot
-    // tradeoff between encode CPU and file size at the same CRF
-    // for screen content. `-crf` is the rate-distortion knob (lower
-    // = higher quality + larger file; CRF 23 is x264's "visually
-    // lossless" default, CRF 28 is web-friendly).
+    // LOW / MED: scale + re-encode through Apple's VideoToolbox
+    // H.264 encoder. Do not use libx264; the bundled ffmpeg is an
+    // LGPL build and this path must stay GPL-clean.
     args.push(
       "-vf",
       `scale=${spec.width}:-2:flags=lanczos`,
       "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      String(spec.crf),
+      "h264_videotoolbox",
+      "-allow_sw",
+      "1",
+      "-b:v",
+      spec.bitrate,
       "-pix_fmt",
       "yuv420p"
     );

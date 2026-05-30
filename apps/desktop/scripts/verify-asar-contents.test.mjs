@@ -41,9 +41,7 @@ const allUnpackedNativeFixtures = [
   "app.asar.unpacked/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node",
   "app.asar.unpacked/node_modules/@img/sharp-darwin-x64/lib/sharp-darwin-x64.node",
   "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.17.3.dylib",
-  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib",
-  "app.asar.unpacked/node_modules/@ffmpeg-installer/darwin-arm64/ffmpeg",
-  "app.asar.unpacked/node_modules/@ffmpeg-installer/darwin-x64/ffmpeg"
+  "app.asar.unpacked/node_modules/@img/sharp-libvips-darwin-x64/lib/libvips-cpp.8.17.3.dylib"
 ];
 
 function writeUnpackedNativeFixtures(resources, fixtures = allUnpackedNativeFixtures) {
@@ -83,6 +81,7 @@ describe("verify-asar-contents", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual([]);
     expect(() => verifyPackagedResources(appPath)).not.toThrow();
@@ -91,6 +90,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when third-party notices are missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "CHANGELOG.md");
+    writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["THIRD_PARTY_LICENSES"]);
     expect(() => verifyPackagedResources(appPath)).toThrow(
@@ -101,6 +101,7 @@ describe("verify-asar-contents", () => {
   test("fails packaged resource verification when changelog is missing", () => {
     const { appPath, resources } = fakeApp();
     writeResource(resources, "THIRD_PARTY_LICENSES");
+    writeResource(resources, "PwrSnapFFmpeg");
 
     expect(findMissingPackagedResources(appPath)).toEqual(["CHANGELOG.md"]);
     expect(() => verifyPackagedResources(appPath)).toThrow(

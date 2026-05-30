@@ -55,9 +55,9 @@ ISC
 - semver@7.7.4 | https://github.com/npm/node-semver
 - wrappy@1.0.2 | https://github.com/npm/wrappy
 
-LGPL-2.1
-~~~~~~~~
-- @ffmpeg-installer/ffmpeg@1.1.0 | https://github.com/kribblo/node-ffmpeg-installer
+LGPL-2.1-or-later
+~~~~~~~~~~~~~~~~~
+- FFmpeg@8.1.1 | https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz
 
 LGPL-3.0-or-later
 ~~~~~~~~~~~~~~~~~
@@ -137,17 +137,6 @@ Python-2.0
 
 License Texts
 -------------
-
-@ffmpeg-installer/ffmpeg@1.1.0 (LGPL-2.1)
------------------------------------------
-
-Applies to:
-- @ffmpeg-installer/ffmpeg@1.1.0 (LGPL-2.1)
-
-Representative file: @ffmpeg-installer/ffmpeg@1.1.0/package metadata
-
-No license text file was found in the installed package for @ffmpeg-installer/ffmpeg@1.1.0.
-The package declares license: LGPL-2.1.
 
 @fontsource/geist-mono@5.2.7 (OFL-1.1)
 --------------------------------------
@@ -1475,6 +1464,21 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+FFmpeg@8.1.1 (LGPL-2.1-or-later)
+--------------------------------
+
+Applies to:
+- FFmpeg@8.1.1 (LGPL-2.1-or-later)
+
+Representative file: FFmpeg@8.1.1/supplemental notice
+
+PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release.
+The build script verifies that the resulting binary configuration does not contain --enable-gpl, --enable-nonfree, --enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac.
+
+FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.
+Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz
+License guidance: https://ffmpeg.org/legal.html
 
 file-uri-to-path@1.0.0 (MIT)
 ----------------------------

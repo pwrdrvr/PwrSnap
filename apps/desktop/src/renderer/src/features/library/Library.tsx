@@ -32,6 +32,7 @@ import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
+import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
@@ -558,20 +559,27 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [aiConsentAcceptedAt, aiEnabled, applyAiSettings]);
 
   const toggleAiEnabled = useCallback((): void => {
-    if (codexAvailable === false) {
-      void dispatch("settings:open", { page: "ai" });
-      return;
+    const action = resolveLibraryAiToggleAction({
+      aiEnabled,
+      aiConsentAcceptedAt,
+      codexAvailable
+    });
+    switch (action) {
+      case "disable":
+        writeAiEnabled(false, aiConsentAcceptedAt);
+        return;
+      case "configure":
+        void dispatch("settings:open", { page: "ai" });
+        return;
+      case "consent":
+        userTouchedAiRef.current = true;
+        setAiConsentDialogOpen(true);
+        return;
+      case "enable":
+        userTouchedAiRef.current = true;
+        writeAiEnabled(true, aiConsentAcceptedAt);
+        return;
     }
-    if (aiEnabled) {
-      writeAiEnabled(false, aiConsentAcceptedAt);
-      return;
-    }
-    userTouchedAiRef.current = true;
-    if (aiConsentAcceptedAt === null) {
-      setAiConsentDialogOpen(true);
-      return;
-    }
-    writeAiEnabled(true, aiConsentAcceptedAt);
   }, [aiConsentAcceptedAt, aiEnabled, codexAvailable, writeAiEnabled]);
 
   const acceptAiConsent = useCallback((): void => {
@@ -2590,14 +2598,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
             type="button"
             className={
               "psl__ai-toggle" +
-              (aiEnabled && codexAvailable !== false ? " is-on" : "") +
+              (aiEnabled ? " is-on" : "") +
               (codexAvailable === false ? " is-configure" : "")
             }
             role="switch"
-            aria-checked={aiEnabled && codexAvailable !== false}
+            aria-checked={aiEnabled}
             disabled={aiToggleBusy}
             title={
-              codexAvailable === false
+              codexAvailable === false && !aiEnabled
                 ? "Open AI Providers settings to configure Codex"
                 : aiEnabled
                 ? "Turn off automatic Codex enrichment for new captures"
@@ -2609,7 +2617,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               <span className="psl__ai-toggle-thumb" />
             </span>
             <span>
-              {codexAvailable === false ? (
+              {codexAvailable === false && !aiEnabled ? (
                 <>
                   Configure <b>AI</b>
                 </>

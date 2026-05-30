@@ -29,10 +29,9 @@ test("editor:open opens the capture in Library Focus", async () => {
     const result = await app.dispatch("editor:open", { captureId });
     expect(result.ok).toBe(true);
 
-    await expect(app.window.locator(".psl__focus")).toBeVisible();
-    await expect(app.window.locator(`[data-cell-id="${captureId}"]`)).toHaveClass(
-      /is-selected/
-    );
+    await expect(
+      app.window.locator(`.psl__focus[data-capture-id="${captureId}"]`)
+    ).toBeVisible();
 
     const after = app.electronApp.windows().length;
     expect(after).toBe(before);

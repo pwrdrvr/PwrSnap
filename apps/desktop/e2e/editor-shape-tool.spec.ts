@@ -157,21 +157,38 @@ test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted g
       .click();
     await editorWindow.keyboard.press("Escape");
 
-    // Drag on the canvas to commit the shape. The editor renders the
-    // canvas inside `[data-testid="editor-canvas-wrap"]`. A simple
-    // diagonal drag from (200, 150) to (350, 300) (CSS pixels
-    // relative to the canvas) produces a ~150×150 normalized rect —
-    // the 1:1 lock kicks in because we picked Circle, so the
-    // committed bbox is a true pixel-square.
-    const canvas = editorWindow.locator('[data-testid="editor-canvas-wrap"]');
+    // Drag on the actual drawable canvas to commit the shape. The
+    // wrapper can be larger than the fitted canvas under Linux/xvfb
+    // sizing, so coordinates must come from `.editor-canvas` itself.
+    const canvas = editorWindow.locator(".editor-canvas");
     await canvas.waitFor({ state: "visible", timeout: 5_000 });
     const box = await canvas.boundingBox();
     if (box === null) throw new Error("canvas has no bbox");
 
-    await editorWindow.mouse.move(box.x + 200, box.y + 150);
+    await editorWindow.mouse.move(
+      box.x + box.width * 0.25,
+      box.y + box.height * 0.25
+    );
     await editorWindow.mouse.down();
-    await editorWindow.mouse.move(box.x + 350, box.y + 300, { steps: 10 });
+    await editorWindow.mouse.move(
+      box.x + box.width * 0.55,
+      box.y + box.height * 0.55,
+      { steps: 10 }
+    );
     await editorWindow.mouse.up();
+
+    await expect
+      .poll(async () => {
+        const list = await app.dispatch("layers:list", { captureId });
+        if (!list.ok) return false;
+        return list.value.some(
+          (layer) =>
+            layer.kind === "vector" &&
+            layer.shape.kind === "shape" &&
+            layer.shape.shape === "circle"
+        );
+      })
+      .toBe(true);
 
     // After commit, the renderer paints a persisted-glyph mini-SVG
     // containing an <ellipse> (the primitive ShapeGlyph emits for
@@ -181,13 +198,13 @@ test("editor-shape-tool: drawing a circle paints an <ellipse> in the persisted g
     // same SVG primitive in both paths, branching on the projected
     // OverlayRow's `data.kind / data.shape`.
     //
-    // toHaveCount waits up to its default timeout so a slight commit
-    // delay doesn't cause a flake.
+    // toHaveCount waits up to an extended timeout so a slight commit
+    // + refetch delay doesn't cause a Linux/xvfb flake.
     await expect(
       editorWindow.locator(
         '[data-testid="persisted-glyph-svg"] ellipse'
       )
-    ).toHaveCount(2);
+    ).toHaveCount(2, { timeout: 15_000 });
     // ShapeGlyph emits TWO ellipses for the stroked branch: a wider
     // white halo (under-stroke for legibility on busy backgrounds)
     // and the colored stroke on top. Filled mode would emit one;

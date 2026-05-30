@@ -386,6 +386,7 @@ export async function compose(req: ComposeRequest): Promise<void> {
 
   const args = buildCompositionArgs(req);
   log.info("ffmpeg compose", {
+    ffmpegPath: ffmpeg,
     scenes: req.scenes.length,
     kinds: req.scenes.map((s) => s.kind),
     transitions: req.scenes.slice(1).map((s) => s.transition),

@@ -36,6 +36,7 @@ import {
   SecretUnavailableError
 } from "../settings/desktop-secret-store";
 import { resolveCacheFile } from "../render/coordinator";
+import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import {
   validateSizzleCreate,
   validateSizzleIdRequest,
@@ -609,6 +610,7 @@ export function registerSizzleHandlers(): void {
       projectId: project.id,
       voice: project.voice,
       model: project.ttsModel,
+      ffmpegPath: resolveFfmpegPath(),
       scenes: captures.map((c, i) => ({
         idx: i + 1,
         kind: c.capture.kind,

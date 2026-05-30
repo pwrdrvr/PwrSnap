@@ -17,6 +17,8 @@ const SIZZLE_CHAT_BASE_INSTRUCTIONS = [
   "  and OCR text. Use these to ground scene choices in real screens.",
   "- `project_get`: read the current reel (scenes, voice, resolution).",
   "  Call it before editing so you know the current state.",
+  "- `project_set_metadata`: rename the current reel when the user asks",
+  "  you to name or rename it.",
   "- `scenes_set` / `scenes_append` / `scenes_insert` / `scenes_remove` /",
   "  `scenes_reorder`: build and arrange the scene list. Each scene pairs",
   "  one capture with a narrator script line and a transition.",

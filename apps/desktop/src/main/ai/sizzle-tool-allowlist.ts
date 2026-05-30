@@ -350,6 +350,26 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     }),
     defineTool({
       namespace: "pwrsnap_sizzle",
+      name: "project_set_metadata",
+      description:
+        "Set metadata for this reel. Currently supports renaming the reel with a non-empty name.",
+      argsSchema: z.object({ name: z.string().trim().min(1).max(200) }),
+      dispatch: async (args, ctx) => {
+        const project = await loadProject(ctx.threadId);
+        if (project === null) {
+          return { ok: false, error: "No Sizzle project is linked to this chat." };
+        }
+        const r = await bus.dispatch(
+          "sizzle:update",
+          { id: project.id, patch: { name: args.name } },
+          { principal: "mcp" }
+        );
+        if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
+        return { ok: true, data: projectView(r.value) };
+      }
+    }),
+    defineTool({
+      namespace: "pwrsnap_sizzle",
       name: "scenes_set",
       description:
         "Replace the reel's entire scene list (must be non-empty — use scenes_remove to delete scenes). Use when drafting a fresh reel from scratch.",

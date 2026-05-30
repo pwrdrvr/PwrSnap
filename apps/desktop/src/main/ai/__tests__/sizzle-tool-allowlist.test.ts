@@ -93,15 +93,16 @@ beforeEach(() => {
 });
 
 describe("buildSizzleToolAllowlist", () => {
-  it("exposes all 16 tools under the pwrsnap_sizzle namespace", () => {
+  it("exposes all 17 tools under the pwrsnap_sizzle namespace", () => {
     const allow = boundAllowlist();
-    expect(allow).toHaveLength(16);
+    expect(allow).toHaveLength(17);
     expect(allow.every((t) => t.namespace === "pwrsnap_sizzle")).toBe(true);
     expect(allow.map((t) => t.name)).toEqual(
       expect.arrayContaining([
         "library_search",
         "library_get_metadata",
         "project_get",
+        "project_set_metadata",
         "scenes_set",
         "scenes_append",
         "sequence_scene_append",
@@ -127,6 +128,20 @@ describe("buildSizzleToolAllowlist", () => {
     if (r.ok && "data" in r) {
       expect((r.data as { rows: Array<{ captureId: string }> }).rows[0]?.captureId).toBe("cap_x");
     }
+  });
+
+  it("project_set_metadata renames the resolved project", async () => {
+    primeBus(project([scene()]));
+    const r = await tool(boundAllowlist(), "project_set_metadata").dispatch(
+      { name: "PwrSnap: From Screens to Story" },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    expect(dispatch).toHaveBeenCalledWith(
+      "sizzle:update",
+      { id: PROJECT_ID, patch: { name: "PwrSnap: From Screens to Story" } },
+      { principal: "mcp" }
+    );
   });
 
   it("scenes_append writes sizzle:update for the RESOLVED project (no project_id arg)", async () => {

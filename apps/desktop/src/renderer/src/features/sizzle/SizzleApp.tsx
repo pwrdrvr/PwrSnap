@@ -9,6 +9,8 @@ import {
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene,
+  type SizzleSequencePreviewBeat,
+  type SizzleSequencePreviewPlan,
   type SizzleSequenceBeat,
   type SizzleTransition,
   type SizzleTransitionType,
@@ -73,6 +75,17 @@ function transitionFromType(type: SizzleTransitionType): SizzleTransition {
   return { type, durationSec: type === "none" ? 0 : 0.18 };
 }
 
+function transitionLabel(transition: SizzleTransition): string {
+  return transitionType(transition)
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function clampTime(value: number, durationSec: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), Math.max(0, durationSec));
+}
+
 function formatProjectDate(iso: string): string {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return "Unknown date";
@@ -115,6 +128,174 @@ function mergeProjectPatch(
 function readInitialProjectId(): string | null {
   const hash = window.location.hash.replace(/^#/, "");
   return new URLSearchParams(hash).get("projectId");
+}
+
+function fallbackSequenceBeats(scene: SizzleScene): SizzleSequencePreviewBeat[] {
+  const beats = normalizeSizzleSequenceBeatContinuity(scene.beats ?? []);
+  const durationSec = Math.max(1, scene.durationOverrideSec ?? beats.length);
+  const starts = beats.map((beat, index) =>
+    beat.timing.kind === "offset"
+      ? clampTime(beat.timing.startSec, durationSec)
+      : (durationSec / Math.max(1, beats.length)) * index
+  );
+  return beats.map((beat, index) => {
+    const startSec = Math.min(starts[index] ?? 0, Math.max(0, durationSec - 0.1));
+    const configuredEnd =
+      beat.timing.kind === "offset" && beat.timing.endSec !== null
+        ? beat.timing.endSec
+        : null;
+    const endSec = configuredEnd ?? starts[index + 1] ?? durationSec;
+    return {
+      beatId: beat.id,
+      captureId: beat.captureId,
+      startSec,
+      endSec: Math.min(durationSec, Math.max(startSec + 0.1, clampTime(endSec, durationSec))),
+      timing: beat.timing,
+      transition: index === 0 ? scene.transition : beat.transition,
+      videoFit: beat.videoFit
+    };
+  });
+}
+
+function SequenceTimelinePreview(props: {
+  scene: SizzleScene;
+  captureMap: Map<string, CaptureRecord>;
+  plan: SizzleSequencePreviewPlan | undefined;
+  currentTimeSec: number;
+  playing: boolean;
+  loading: boolean;
+  onPlay: () => void;
+  onSeek: (timeSec: number) => void;
+}): ReactElement {
+  const { scene, captureMap, plan, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const fallbackBeats = fallbackSequenceBeats(scene);
+  const beats = plan?.beats ?? fallbackBeats;
+  const fallbackDuration = Math.max(
+    1,
+    scene.durationOverrideSec ?? fallbackBeats.at(-1)?.endSec ?? fallbackBeats.length
+  );
+  const durationSec = Math.max(0.1, plan?.durationSec ?? fallbackDuration);
+  const timeSec = clampTime(currentTimeSec, durationSec);
+  const activeBeat =
+    beats.find((beat) => timeSec >= beat.startSec && timeSec < beat.endSec) ??
+    beats.at(-1) ??
+    null;
+  const activeCapture =
+    activeBeat === null ? null : captureMap.get(activeBeat.captureId) ?? null;
+  const activeThumb =
+    activeCapture?.edits_version !== undefined && activeBeat !== null
+      ? cacheUrl(activeBeat.captureId, 640, "webp", activeCapture.edits_version)
+      : activeBeat !== null
+        ? cacheUrl(activeBeat.captureId, 640, "webp")
+        : "";
+  const barCount = 52;
+  const playheadLeft = `${(timeSec / durationSec) * 100}%`;
+
+  const seekFromPointer = (clientX: number, target: HTMLElement): void => {
+    const rect = target.getBoundingClientRect();
+    const ratio = rect.width <= 0 ? 0 : (clientX - rect.left) / rect.width;
+    onSeek(clampTime(ratio * durationSec, durationSec));
+  };
+
+  return (
+    <div className="szl__sequence-preview">
+      <div className="szl__sequence-preview-stage">
+        {activeBeat === null ? (
+          <span className="szl__sequence-preview-empty">No beats</span>
+        ) : activeCapture?.kind === "video" ? (
+          <video
+            key={activeBeat.beatId}
+            src={captureSrcUrl(activeBeat.captureId)}
+            muted
+            playsInline
+            autoPlay={playing}
+            loop
+          />
+        ) : activeCapture !== null ? (
+          <img src={activeThumb} alt="" />
+        ) : (
+          <span className="szl__sequence-preview-empty">Missing capture</span>
+        )}
+      </div>
+      <div className="szl__sequence-preview-controls">
+        <button
+          className="szl__scene-mini szl__scene-mini--play"
+          onClick={onPlay}
+          disabled={loading || scene.scriptLine.trim().length === 0}
+          type="button"
+          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence"}
+        >
+          {loading ? "…" : playing ? "■" : "▶"}
+        </button>
+        <button
+          className="szl__scene-mini"
+          onClick={() => onSeek(0)}
+          type="button"
+          title="Seek to start"
+        >
+          ↤
+        </button>
+        <span className="szl__sequence-preview-time">
+          {formatDur(timeSec)} / {formatDur(durationSec)}
+        </span>
+        <span className="szl__spacer" />
+        <span className="szl__sequence-preview-quality">
+          {plan === undefined
+            ? "unresolved"
+            : plan.timingQuality === "precise"
+              ? "word timing"
+              : "approx timing"}
+        </span>
+      </div>
+      <button
+        className="szl__sequence-timeline"
+        type="button"
+        onClick={(event) => seekFromPointer(event.clientX, event.currentTarget)}
+        aria-label="Sequence timeline"
+      >
+        <span className="szl__sequence-wave" aria-hidden="true">
+          {Array.from({ length: barCount }, (_, index) => (
+            <span
+              key={index}
+              style={{
+                height: `${22 + ((index * 17) % 34)}%`
+              }}
+            />
+          ))}
+        </span>
+        <span className="szl__sequence-track" aria-hidden="true">
+          {beats.map((beat, index) => {
+            const left = (beat.startSec / durationSec) * 100;
+            const width = Math.max(1, ((beat.endSec - beat.startSec) / durationSec) * 100);
+            const capture = captureMap.get(beat.captureId);
+            const isActive = activeBeat?.beatId === beat.beatId;
+            return (
+              <span
+                key={beat.beatId}
+                className={"szl__sequence-track-beat" + (isActive ? " is-active" : "")}
+                style={{ left: `${left}%`, width: `${width}%` }}
+              >
+                <span>{index + 1}</span>
+                <small>{capture?.source_app_name ?? "Capture"}</small>
+                {index > 0 ? <em>{transitionLabel(beat.transition)}</em> : null}
+              </span>
+            );
+          })}
+        </span>
+        <span className="szl__sequence-playhead" style={{ left: playheadLeft }} aria-hidden="true" />
+      </button>
+      {plan?.warnings.length ? (
+        <div className="szl__sequence-warnings">
+          {plan.warnings.slice(0, 3).map((warning, index) => (
+            <span key={`${warning.code}-${warning.beatId ?? "scene"}-${index}`}>
+              {warning.beatId === undefined ? "" : "Beat warning: "}
+              {warning.message}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function SizzleApp(): ReactElement {
@@ -725,8 +906,13 @@ function Editor(props: EditorProps): ReactElement {
     return () => revokeAudioObjectUrl();
   }, []);
   const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
+  const [previewLoadedSceneId, setPreviewLoadedSceneId] = useState<string | null>(null);
   const [previewLoadingSceneId, setPreviewLoadingSceneId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewTimeSec, setPreviewTimeSec] = useState(0);
+  const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
+    Record<string, SizzleSequencePreviewPlan>
+  >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
   // bumps it; the response only applies if it's still current.
@@ -761,6 +947,23 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewLoadingSceneId(null);
       return;
     }
+    if (previewLoadedSceneId === sceneId && audioRef.current !== null && audioRef.current.src.length > 0) {
+      const el = audioRef.current;
+      const durationSec = sequencePreviewPlans[sceneId]?.durationSec ?? previewDurations[sceneId] ?? el.duration;
+      if (Number.isFinite(durationSec) && el.currentTime >= durationSec - 0.05) {
+        el.currentTime = 0;
+        setPreviewTimeSec(0);
+      }
+      setPreviewError(null);
+      setPreviewingSceneId(sceneId);
+      try {
+        await el.play();
+      } catch (cause) {
+        setPreviewError(cause instanceof Error ? cause.message : String(cause));
+        setPreviewingSceneId(null);
+      }
+      return;
+    }
     const gen = bumpPreviewGeneration(sceneId);
     setPreviewError(null);
     setPreviewLoadingSceneId(sceneId);
@@ -773,10 +976,27 @@ function Editor(props: EditorProps): ReactElement {
       sceneId
     });
     if (!isPreviewCurrent(sceneId, gen)) return;
-    setPreviewLoadingSceneId(null);
     if (!result.ok) {
+      setPreviewLoadingSceneId(null);
       setPreviewError(result.error.message);
       return;
+    }
+    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    if (scene?.kind === "sequence") {
+      const planResult = await dispatch("sizzle:previewSequenceScenePlan", {
+        projectId: project.id,
+        sceneId
+      });
+      if (!isPreviewCurrent(sceneId, gen)) return;
+      if (!planResult.ok) {
+        setPreviewLoadingSceneId(null);
+        setPreviewError(planResult.error.message);
+        return;
+      }
+      setSequencePreviewPlans((prev) => ({
+        ...prev,
+        [sceneId]: planResult.value
+      }));
     }
     // Cache the measured audio duration so the editor can surface
     // an inline "voiceover is X.Xs vs Y.Ys trim" hint on the video
@@ -786,7 +1006,10 @@ function Editor(props: EditorProps): ReactElement {
       [sceneId]: result.value.durationSec
     }));
     const el = audioRef.current;
-    if (el === null) return;
+    if (el === null) {
+      setPreviewLoadingSceneId(null);
+      return;
+    }
     // Decode the base64 into a Blob, hand the audio element an
     // object URL, and revoke the previous one. This keeps a single
     // buffer alive at a time instead of accumulating data URLs.
@@ -798,6 +1021,10 @@ function Editor(props: EditorProps): ReactElement {
     const objectUrl = URL.createObjectURL(blob);
     audioObjectUrlRef.current = objectUrl;
     el.src = objectUrl;
+    el.currentTime = 0;
+    setPreviewTimeSec(0);
+    setPreviewLoadingSceneId(null);
+    setPreviewLoadedSceneId(sceneId);
     setPreviewingSceneId(sceneId);
     try {
       await el.play();
@@ -822,10 +1049,32 @@ function Editor(props: EditorProps): ReactElement {
           audioRef.current.pause();
           setPreviewingSceneId(null);
         }
+        if (previewLoadedSceneId === scene.id) setPreviewLoadedSceneId(null);
+        setSequencePreviewPlans((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
       }
       lastScriptByScene.current.set(scene.id, scene.scriptLine);
     }
-  }, [project.scenes, previewingSceneId]);
+  }, [project.scenes, previewingSceneId, previewLoadedSceneId]);
+
+  const seekPreview = (sceneId: string, timeSec: number): void => {
+    const durationSec =
+      sequencePreviewPlans[sceneId]?.durationSec ??
+      previewDurations[sceneId] ??
+      0;
+    const clamped = clampTime(timeSec, durationSec);
+    setPreviewTimeSec(clamped);
+    if (
+      (previewingSceneId === sceneId || previewLoadedSceneId === sceneId) &&
+      audioRef.current !== null
+    ) {
+      audioRef.current.currentTime = clamped;
+    }
+  };
 
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();
@@ -1364,22 +1613,23 @@ function Editor(props: EditorProps): ReactElement {
                       <div className="szl__scene-hint">
                         Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
                       </div>
+                      <SequenceTimelinePreview
+                        scene={scene}
+                        captureMap={captureMap}
+                        plan={sequencePreviewPlans[scene.id]}
+                        currentTimeSec={
+                          previewingSceneId === scene.id || previewLoadedSceneId === scene.id
+                            ? previewTimeSec
+                            : 0
+                        }
+                        playing={previewingSceneId === scene.id}
+                        loading={previewLoadingSceneId === scene.id}
+                        onPlay={() => void onPreviewScene(scene.id)}
+                        onSeek={(timeSec) => seekPreview(scene.id, timeSec)}
+                      />
                       <div className="szl__scene-row">
                         <span className="szl__scene-app">sequence</span>
                         <span className="szl__spacer" />
-                        <button
-                          className="szl__scene-mini szl__scene-mini--play"
-                          onClick={() => void onPreviewScene(scene.id)}
-                          disabled={previewLoadingSceneId === scene.id || scene.scriptLine.trim().length === 0}
-                          type="button"
-                          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence narration"}
-                        >
-                          {previewLoadingSceneId === scene.id
-                            ? "…"
-                            : previewingSceneId === scene.id
-                              ? "■"
-                              : "▶"}
-                        </button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, -1)} disabled={idx === 0} type="button" title="Move up">↑</button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, 1)} disabled={idx === project.scenes.length - 1} type="button" title="Move down">↓</button>
                         <button className="szl__scene-mini szl__scene-mini--danger" onClick={() => removeScene(scene.id)} type="button" title="Remove scene">✕</button>
@@ -1598,7 +1848,11 @@ function Editor(props: EditorProps): ReactElement {
       ) : null}
       <audio
         ref={audioRef}
-        onEnded={() => setPreviewingSceneId(null)}
+        onTimeUpdate={(event) => setPreviewTimeSec(event.currentTarget.currentTime)}
+        onEnded={() => {
+          setPreviewingSceneId(null);
+          setPreviewTimeSec(0);
+        }}
         onPause={() => {
           // Treat any pause (including end-of-track) as "no longer playing"
           // so the button flips back to ▶.

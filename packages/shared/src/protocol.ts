@@ -751,6 +751,29 @@ export type SizzleResolvedPhraseTiming = {
   warnings: SizzleSpeechTimingWarning[];
 };
 
+export type SizzleSequencePreviewWarning = {
+  beatId?: string;
+  code: string;
+  message: string;
+};
+
+export type SizzleSequencePreviewBeat = {
+  beatId: string;
+  captureId: string;
+  startSec: number;
+  endSec: number;
+  timing: SizzleBeatTiming;
+  transition: SizzleTransition;
+  videoFit: SizzleVideoFitPolicy;
+};
+
+export type SizzleSequencePreviewPlan = {
+  durationSec: number;
+  timingQuality: SizzleSpeechTimingQuality;
+  warnings: SizzleSequencePreviewWarning[];
+  beats: SizzleSequencePreviewBeat[];
+};
+
 /**
  * Resolve a scene's audio source policy to a concrete choice at
  * render time. Single source of truth — `auto` collapses based on
@@ -2569,6 +2592,14 @@ export type Commands = {
   "sizzle:previewSceneAudio": {
     req: { projectId: string; sceneId: string };
     res: { audioBase64: string; mimeType: "audio/mpeg" | "audio/mp4"; durationSec: number };
+  };
+  /** Resolve a sequence scene's narration timing into visual beat windows
+   *  for the editor timeline. This is intentionally lighter than render:
+   *  it synthesizes/loads narration timing, resolves phrase anchors, and
+   *  returns beat windows plus warnings, but it does not compose video. */
+  "sizzle:previewSequenceScenePlan": {
+    req: { projectId: string; sceneId: string };
+    res: SizzleSequencePreviewPlan;
   };
 
   // ── Project Asset Cart ──────────────────────────────────────────────

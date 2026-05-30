@@ -13,7 +13,8 @@ import {
   type Result,
   type SizzleProject,
   type SizzleRenderProgressEvent,
-  type SizzleScene
+  type SizzleScene,
+  type SizzleSequencePreviewPlan
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
@@ -23,6 +24,7 @@ import { pruneTtsCache, synthesize, TtsError } from "../sizzle/tts";
 import { resolveSpeechTiming } from "../sizzle/speech-timing";
 import {
   planSequenceScene,
+  planSequenceTimeline,
   SequencePlannerError
 } from "../sizzle/sequence-planner";
 import {
@@ -517,6 +519,90 @@ export function registerSizzleHandlers(): void {
       });
     } catch (cause) {
       return err(toError(cause, "preview_failed"));
+    }
+  });
+
+  bus.register("sizzle:previewSequenceScenePlan", async (req) => {
+    const v = validateSizzlePreviewRequest(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.projectId);
+    if (project === null) {
+      return err({ kind: "validation", code: "not_found", message: "Project not found" });
+    }
+    const scene = project.scenes.find((s) => s.id === v.sceneId);
+    if (scene === undefined) {
+      return err({ kind: "validation", code: "not_found", message: "Scene not found" });
+    }
+    if (scene.kind !== "sequence") {
+      return err({
+        kind: "validation",
+        code: "not_sequence",
+        message: "Scene is not a sequence scene"
+      });
+    }
+    const text = scene.scriptLine.trim();
+    if (text.length === 0) {
+      return err({
+        kind: "validation",
+        code: "empty_script",
+        message: "Write narration first, then preview the sequence timeline"
+      });
+    }
+
+    let apiKey: string | null;
+    try {
+      apiKey = await getSecrets().getValue(
+        project.ttsProvider === "openai" ? "openaiApiKey" : "grokApiKey"
+      );
+    } catch (cause) {
+      return err(toError(cause, "secret_read_failed"));
+    }
+    if (apiKey === null || apiKey.length === 0) {
+      return err({
+        kind: "validation",
+        code: "no_api_key",
+        message: `Set your ${project.ttsProvider === "openai" ? "OpenAI" : "xAI"} API key in Settings → AI Providers`
+      });
+    }
+
+    try {
+      const tts = await synthesize({
+        provider: project.ttsProvider,
+        apiKey,
+        text,
+        voice: project.voice,
+        model: project.ttsModel
+      });
+      const durationSec = await probeDurationSec(tts.audioPath);
+      const speechTiming = await resolveSpeechTiming({
+        provider: project.ttsProvider,
+        model: project.ttsModel,
+        voice: project.voice,
+        text,
+        audioPath: tts.audioPath,
+        durationSec,
+        apiKey
+      });
+      const timeline = planSequenceTimeline(scene, speechTiming);
+      const warnings: SizzleSequencePreviewPlan["warnings"] = [
+        ...speechTiming.warnings.map((warning) => ({
+          code: warning.code,
+          message: warning.message
+        })),
+        ...timeline.diagnostics.map((diagnostic) => ({
+          beatId: diagnostic.beatId,
+          code: diagnostic.code,
+          message: diagnostic.message
+        }))
+      ];
+      return ok({
+        durationSec: timeline.durationSec,
+        timingQuality: speechTiming.quality,
+        warnings,
+        beats: timeline.beatPlans
+      });
+    } catch (cause) {
+      return err(toError(cause, "sizzle_sequence_preview_failed"));
     }
   });
 

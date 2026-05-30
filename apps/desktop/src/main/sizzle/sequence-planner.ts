@@ -1,6 +1,7 @@
 import type {
   CaptureRecord,
   SizzleScene,
+  SizzleSequencePreviewBeat,
   SizzleSequenceBeat,
   SizzleSpeechTiming,
   SizzleTransition
@@ -23,13 +24,17 @@ export type SequencePlannerDiagnostic = {
 export type SequenceRenderPlan = {
   sceneInputs: SceneInput[];
   diagnostics: SequencePlannerDiagnostic[];
-  beatPlans: Array<{
-    beatId: string;
-    startSec: number;
-    endSec: number;
-    captureId: string;
-    fit?: VideoFitDecision;
-  }>;
+  beatPlans: SequenceRenderBeatPlan[];
+};
+
+export type SequenceTimelinePlan = {
+  durationSec: number;
+  diagnostics: SequencePlannerDiagnostic[];
+  beatPlans: SizzleSequencePreviewBeat[];
+};
+
+export type SequenceRenderBeatPlan = SizzleSequencePreviewBeat & {
+  fit?: VideoFitDecision;
 };
 
 export type SequencePlannerRequest = {
@@ -41,23 +46,11 @@ export type SequencePlannerRequest = {
 };
 
 export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPlan {
-  if (req.scene.kind !== "sequence" || req.scene.beats === undefined || req.scene.beats.length === 0) {
-    throw new SequencePlannerError("not_sequence", "Scene is not a sequence scene");
-  }
-  const diagnostics: SequencePlannerDiagnostic[] = [];
-  const timelineDurationSec =
-    req.scene.durationOverrideSec !== null && req.scene.durationOverrideSec > 0
-      ? req.scene.durationOverrideSec
-      : req.speechTiming.durationSec;
-  const beats = normalizeSizzleSequenceBeatContinuity(req.scene.beats);
-  const windows = resolveBeatWindows(
-    beats,
-    req.speechTiming,
-    timelineDurationSec,
-    diagnostics
-  );
+  const timeline = planSequenceTimeline(req.scene, req.speechTiming);
+  const diagnostics: SequencePlannerDiagnostic[] = [...timeline.diagnostics];
+  const beats = normalizeSizzleSequenceBeatContinuity(req.scene.beats ?? []);
   const sceneInputs: SceneInput[] = [];
-  const beatPlans: SequenceRenderPlan["beatPlans"] = [];
+  const beatPlans: SequenceRenderBeatPlan[] = [];
 
   beats.forEach((beat, index) => {
     const capture = req.capturesById.get(beat.captureId);
@@ -67,8 +60,8 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
         `Beat ${index + 1}: capture ${beat.captureId} not found`
       );
     }
-    const window = windows[index]!;
-    const transition: SizzleTransition = index === 0 ? req.scene.transition : beat.transition;
+    const window = timeline.beatPlans[index]!;
+    const transition: SizzleTransition = window.transition;
     const audioDurationSec = Math.max(0.1, window.endSec - window.startSec);
     const transitionOverlapSec =
       index > 0 ? transitionOverlapDurationSec(transition) : 0;
@@ -129,17 +122,47 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
       });
     }
 
-    const beatPlan: SequenceRenderPlan["beatPlans"][number] = {
-      beatId: beat.id,
-      startSec: window.startSec,
-      endSec: window.endSec,
-      captureId: beat.captureId
-    };
+    const beatPlan: SequenceRenderBeatPlan = { ...window };
     if (fit !== undefined) beatPlan.fit = fit;
     beatPlans.push(beatPlan);
   });
 
   return { sceneInputs, diagnostics, beatPlans };
+}
+
+export function planSequenceTimeline(
+  scene: SizzleScene,
+  speechTiming: SizzleSpeechTiming
+): SequenceTimelinePlan {
+  if (scene.kind !== "sequence" || scene.beats === undefined || scene.beats.length === 0) {
+    throw new SequencePlannerError("not_sequence", "Scene is not a sequence scene");
+  }
+  const diagnostics: SequencePlannerDiagnostic[] = [];
+  const timelineDurationSec =
+    scene.durationOverrideSec !== null && scene.durationOverrideSec > 0
+      ? scene.durationOverrideSec
+      : speechTiming.durationSec;
+  const durationSec = roundSec(Math.max(0.1, timelineDurationSec));
+  const beats = normalizeSizzleSequenceBeatContinuity(scene.beats);
+  const windows = resolveBeatWindows(
+    beats,
+    speechTiming,
+    durationSec,
+    diagnostics
+  );
+  const beatPlans = beats.map((beat, index): SizzleSequencePreviewBeat => {
+    const window = windows[index]!;
+    return {
+      beatId: beat.id,
+      captureId: beat.captureId,
+      startSec: window.startSec,
+      endSec: window.endSec,
+      timing: beat.timing,
+      transition: index === 0 ? scene.transition : beat.transition,
+      videoFit: beat.videoFit
+    };
+  });
+  return { durationSec, diagnostics, beatPlans };
 }
 
 export class SequencePlannerError extends Error {

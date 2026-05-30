@@ -9,6 +9,14 @@ beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   // jsdom implements neither of these; the composer touches them.
   Element.prototype.scrollIntoView = vi.fn();
+  URL.createObjectURL = vi.fn(() => "blob:preview");
+  URL.revokeObjectURL = vi.fn();
+  HTMLMediaElement.prototype.play = vi.fn(async function play(this: HTMLMediaElement) {
+    this.dispatchEvent(new Event("timeupdate"));
+  });
+  HTMLMediaElement.prototype.pause = vi.fn(function pause(this: HTMLMediaElement) {
+    this.dispatchEvent(new Event("pause"));
+  });
 });
 
 let container: HTMLDivElement | null = null;
@@ -69,6 +77,42 @@ function installApi(projects: SizzleProject[]): {
     if (name === "sizzle:update") {
       const id = (req as { id?: string } | undefined)?.id;
       return { ok: true, value: projects.find((p) => p.id === id) ?? projects[0] };
+    }
+    if (name === "sizzle:previewSceneAudio") {
+      return {
+        ok: true,
+        value: { audioBase64: "AA==", mimeType: "audio/mpeg", durationSec: 4 }
+      };
+    }
+    if (name === "sizzle:previewSequenceScenePlan") {
+      return {
+        ok: true,
+        value: {
+          durationSec: 4,
+          timingQuality: "approximate",
+          warnings: [],
+          beats: [
+            {
+              beatId: "bt_1",
+              captureId: "cap_a",
+              startSec: 0,
+              endSec: 2,
+              timing: { kind: "offset", startSec: 0, endSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            },
+            {
+              beatId: "bt_2",
+              captureId: "cap_b",
+              startSec: 2,
+              endSec: 4,
+              timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            }
+          ]
+        }
+      };
     }
     return { ok: true, value: undefined };
   });
@@ -229,6 +273,53 @@ describe("SizzleApp sequence authoring", () => {
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
     expect(el.textContent).toContain("non-final beats end automatically");
+    expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
+    expect(el.textContent).toContain("unresolved");
+  });
+
+  test("loads a resolved sequence timeline when previewing", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }));
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
+    expect(el.textContent).toContain("approx timing");
+    expect(el.textContent).toContain("4s");
   });
 });
 

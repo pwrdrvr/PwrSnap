@@ -38,7 +38,7 @@ export const TOOLS: ReadonlyArray<{
   // Pointer is the default — no-op on drag. Lets the user click on
   // the canvas to focus / inspect without accidentally drawing.
   // Drawing tools require an explicit click on the toolbar (or a key
-  // shortcut: A R H B T).
+  // shortcut: A S H B T).
   {
     id: "pointer",
     label: "Pointer",
@@ -68,7 +68,7 @@ export const TOOLS: ReadonlyArray<{
   {
     id: "shape",
     label: "Shape",
-    key: "R",
+    key: "S",
     icon: (
       // Outline rect + inscribed circle hints at the multi-shape
       // picker behind this tool (Rect / Square / Circle / Oval /

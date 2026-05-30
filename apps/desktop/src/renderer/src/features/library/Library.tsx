@@ -1435,8 +1435,8 @@ export function Library() {
   });
   const tool = liftedToolState.activeTool;
   const setTool = liftedToolState.setActiveTool;
-  // Resets to "pointer" on every mode change so a user who pressed R
-  // in Focus doesn't accidentally drag-rect on a filmstrip click
+  // Resets to "pointer" on every mode change so a user who pressed S
+  // in Focus doesn't accidentally drag-shape on a filmstrip click
   // after Esc → Reel (julik concern #3, plan resolved decision:
   // option A — predictable beats clever).
   useEffect(() => {
@@ -1785,7 +1785,7 @@ export function Library() {
   // captures in Focus + Reel. Single listener for the lifetime of
   // Library mount; reads current state via refs so no stale-closure
   // bug after mode flips (julik concern #4a). Editor's own keydown
-  // handler runs first for canvas-level concerns (V/A/R/H/T/B tool
+  // handler runs first for canvas-level concerns (V/A/S/H/T/B tool
   // hotkeys, Esc-to-cancel-draft).
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);

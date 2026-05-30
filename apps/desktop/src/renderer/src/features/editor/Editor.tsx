@@ -4703,7 +4703,7 @@ function EditorLoaded({
         help: (
           <div className="pse-panel-stub" data-testid="panel-help-stub">
             <p>
-              Editor shortcuts: V/A/R/H/B/T/C — tools · ⌘Z — undo · ⌘⇧Z — redo ·
+              Editor shortcuts: V/A/S/H/B/T/C — tools · ⌘Z — undo · ⌘⇧Z — redo ·
               ⌘\ — toggle sidebar · ⌘1/⌘2/⌘3 — panels · ⌘+ / ⌘− — zoom · ⌘0 —
               fit · ⌘1 — actual size · Esc — cancel · ↵ — commit text/crop
             </p>

@@ -231,7 +231,9 @@ function fileSha256(path: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = createReadStream(path);
-    stream.on("data", (chunk: Buffer) => hash.update(chunk));
+    stream.on("data", (chunk: Buffer | string) => {
+      hash.update(chunk);
+    });
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
   });

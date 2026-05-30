@@ -17,7 +17,8 @@ import type {
   Res,
   Result,
   ScrollProbeRequest,
-  Settings
+  Settings,
+  DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import { EVENT_CHANNELS, type SettingsChangedEvent, type SizzleProject } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
@@ -49,6 +50,13 @@ import { AiConsentDialog } from "../shared/AiConsentDialog";
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
+
+function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
+  if (snapshot.resolvedPath === null) return false;
+  return snapshot.candidates.some(
+    (candidate) => candidate.available && candidate.path === snapshot.resolvedPath
+  );
+}
 
 function copyPresetForShortcutKey(key: string): CopyPreset | null {
   if (key === "1") return "low";
@@ -429,6 +437,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
   const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
+  const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   const userTouchedAiRef = useRef<boolean>(false);
 
   const applyAiSettings = useCallback((settings: Settings): void => {
@@ -465,9 +474,27 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
       const evt = payload as SettingsChangedEvent;
       applyAiSettings(evt.settings);
+      void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+        if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
+      });
     });
     return unsubscribe;
   }, [applyAiSettings]);
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        const snapshot = result.value as DesktopCodexDiscoverySnapshot;
+        setCodexAvailable(codexAvailableInSnapshot(snapshot));
+      } else {
+        setCodexAvailable(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // All three setters mark `userTouchedRailRef` synchronously BEFORE
   // any state write. The settings:read resolution checks this flag
   // and bails — see the race-guard comment above. The setters use
@@ -530,6 +557,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   }, [aiConsentAcceptedAt, aiEnabled, applyAiSettings]);
 
   const toggleAiEnabled = useCallback((): void => {
+    if (codexAvailable === false) {
+      void dispatch("settings:open", { page: "ai" });
+      return;
+    }
     if (aiEnabled) {
       writeAiEnabled(false, aiConsentAcceptedAt);
       return;
@@ -540,7 +571,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       return;
     }
     writeAiEnabled(true, aiConsentAcceptedAt);
-  }, [aiConsentAcceptedAt, aiEnabled, writeAiEnabled]);
+  }, [aiConsentAcceptedAt, aiEnabled, codexAvailable, writeAiEnabled]);
 
   const acceptAiConsent = useCallback((): void => {
     setAiConsentDialogOpen(false);
@@ -2556,12 +2587,18 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </div>
           <button
             type="button"
-            className={"psl__ai-toggle" + (aiEnabled ? " is-on" : "")}
+            className={
+              "psl__ai-toggle" +
+              (aiEnabled && codexAvailable !== false ? " is-on" : "") +
+              (codexAvailable === false ? " is-configure" : "")
+            }
             role="switch"
-            aria-checked={aiEnabled}
+            aria-checked={aiEnabled && codexAvailable !== false}
             disabled={aiToggleBusy}
             title={
-              aiEnabled
+              codexAvailable === false
+                ? "Open AI Providers settings to configure Codex"
+                : aiEnabled
                 ? "Turn off automatic Codex enrichment for new captures"
                 : "Turn on automatic Codex enrichment for new captures"
             }
@@ -2571,7 +2608,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               <span className="psl__ai-toggle-thumb" />
             </span>
             <span>
-              Codex enrich <b>{aiEnabled ? "on" : "off"}</b>
+              {codexAvailable === false ? (
+                <>
+                  Configure <b>AI</b>
+                </>
+              ) : (
+                <>
+                  Codex enrich <b>{aiEnabled ? "on" : "off"}</b>
+                </>
+              )}
             </span>
           </button>
         </div>

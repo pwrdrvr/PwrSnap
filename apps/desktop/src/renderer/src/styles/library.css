@@ -2552,6 +2552,13 @@
   background: var(--accent-bright);
   transform: translateX(8px);
 }
+.psl__ai-toggle.is-configure .psl__ai-toggle-track {
+  border-color: var(--warn-border);
+  background: var(--warn-soft);
+}
+.psl__ai-toggle.is-configure .psl__ai-toggle-thumb {
+  background: var(--warn-text);
+}
 
 .psl__storage {
   position: relative;

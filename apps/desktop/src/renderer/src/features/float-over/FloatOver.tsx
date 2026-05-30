@@ -172,10 +172,12 @@ export function FloatOver({
   initialDescription = "",
   initialTags = [],
   enrichment,
+  codexAvailable = true,
   aiEnabled = false,
   aiConsentAccepted = false,
   autoAcceptSuggestions = false,
   onEnableAi,
+  onConfigureAi,
   onSetAutoAccept,
   onAcceptTitle,
   onAcceptDescription,
@@ -217,6 +219,7 @@ export function FloatOver({
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
+  codexAvailable?: boolean;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
@@ -225,6 +228,7 @@ export function FloatOver({
    *  moment the enrichment completes. */
   autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  onConfigureAi?: () => void;
   /** Persist a flip of the auto-accept toggle. Wired to a
    *  `settings:write` dispatch in the host so the change survives
    *  the toast closing and applies to subsequent captures. */
@@ -729,7 +733,11 @@ export function FloatOver({
             needsConsent={aiNeedsConsent}
             action={
               !thinking && !aiFailed ? (
-                suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !codexAvailable ? (
+                  <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
+                    Configure AI
+                  </button>
+                ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
                   <button
                     className="fo__ai-accept"
                     onClick={() => {

@@ -103,7 +103,6 @@ vi.mock("../../persistence/source-store", () => ({
 }));
 
 vi.mock("../../window", () => ({
-  createEditWindow: vi.fn(),
   createMainWindow: vi.fn(),
   findMainLibraryWindow: vi.fn()
 }));

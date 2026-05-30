@@ -553,6 +553,32 @@
   background: var(--bg-panel-elevated);
   border: 1px solid var(--accent-border);
 }
+.psl__history {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.psl__history-btn {
+  width: 24px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.psl__history-btn:not(:disabled):hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+  background: var(--bg-panel-elevated);
+}
+.psl__history-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
 .psl__count { font: 500 10px/1 var(--font-mono); color: var(--text-muted); padding: 3px 6px; background: var(--bg-panel-elevated); border-radius: var(--radius-pill); }
 .psl__topbar-c { display: flex; align-items: center; gap: 4px; }
 .psl__view {

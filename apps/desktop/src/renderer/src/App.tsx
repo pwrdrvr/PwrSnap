@@ -1,4 +1,3 @@
-import { Editor } from "./features/editor/Editor";
 import { AppDocumentWindow } from "./features/documents/AppDocumentWindow";
 import { Library } from "./features/library/Library";
 import { CartProvider } from "./features/library/CartContext";
@@ -17,7 +16,6 @@ type Stage =
   | "float-over"
   | "tray"
   | "region"
-  | "edit"
   | "settings"
   | "sizzle"
   | "document"
@@ -32,7 +30,6 @@ function readStage(): Stage {
     v === "tray" ||
     v === "float-over" ||
     v === "region" ||
-    v === "edit" ||
     v === "settings" ||
     v === "sizzle" ||
     v === "document" ||
@@ -53,17 +50,7 @@ function readDocumentKind(): AppDocumentKind | null {
   return null;
 }
 
-function readCaptureId(): string | null {
-  const hash = window.location.hash.replace(/^#/, "");
-  const params = new URLSearchParams(hash);
-  // Edit windows pass `captureId=<id>`. Float-over no longer uses the
-  // hash for captureId — main drives it via `events:float-over:state`
-  // IPC so the renderer stays mounted across captures.
-  return params.get("captureId");
-}
-
 const STAGE = readStage();
-const CAPTURE_ID = readCaptureId();
 const DOCUMENT_KIND = readDocumentKind();
 document.body.dataset.stage = STAGE;
 
@@ -81,7 +68,6 @@ const TITLE_BY_STAGE: Record<Stage, string> = {
   tray: "PwrSnap Tray",
   "float-over": "PwrSnap Toast",
   region: "PwrSnap Capture",
-  edit: "PwrSnap Editor",
   settings: "PwrSnap Settings",
   sizzle: "PwrSnap Sizzle Reels",
   "recording-controller": "PwrSnap Recording",
@@ -123,16 +109,6 @@ export function App() {
     }
     if (STAGE === "document") {
       return <AppDocumentWindow kind={DOCUMENT_KIND} />;
-    }
-    if (STAGE === "edit") {
-      if (CAPTURE_ID === null) {
-        return (
-          <div style={{ padding: 24, color: "var(--danger-text)", font: "500 13px var(--font-sans)" }}>
-            Editor opened without a captureId — close this window and try again.
-          </div>
-        );
-      }
-      return <Editor captureId={CAPTURE_ID} />;
     }
     return (
       <div className="app-shell">

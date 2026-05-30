@@ -301,7 +301,7 @@ const openEditor = defineTool({
   namespace: "pwrsnap_library",
   name: "open_editor",
   description:
-    "Open an IMAGE capture in its own editor window. Use when the user wants to hand-edit; for AI edits you can use draw_arrow / draw_text / draw_rect / redact / blur etc. directly without opening anything. Video captures aren't editable here — don't open them.",
+    "Open an IMAGE capture in the Library Focus editor. Use when the user wants to hand-edit; for AI edits you can use draw_arrow / draw_text / draw_rect / redact / blur etc. directly without opening anything. Video captures aren't editable here — don't open them.",
   annotations: {},
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => {

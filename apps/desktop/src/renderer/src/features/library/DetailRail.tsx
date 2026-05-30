@@ -660,7 +660,7 @@ export function DetailRail({
               {view.kind !== "focus" && view.kind !== "reel" && (
                 <button
                   type="button"
-                  title="Open in standalone editor window"
+                  title="Open in editor"
                   onClick={() => {
                     void dispatch("editor:open", { captureId: record.id });
                   }}

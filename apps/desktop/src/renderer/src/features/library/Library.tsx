@@ -4,7 +4,6 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState
 } from "react";
@@ -33,7 +32,8 @@ import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
-import { initialLibraryView, libraryReducer } from "./library-view";
+import { mergeOpenedLiveRecords } from "./library-records";
+import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
@@ -336,9 +336,68 @@ type ActiveLibraryFilter =
   | { kind: "trash" }
   | { kind: "sourceApp"; appId: string };
 
-export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
-  const [selected, setSelected] = useState(initialSelected);
+type LibraryHistoryLocation = {
+  readonly view: LibraryView;
+  readonly activeFilter: ActiveLibraryFilter;
+  readonly searchQuery: string;
+};
+
+type PendingOpenCapture = {
+  readonly captureId: string;
+  readonly from: LibraryHistoryLocation;
+  readonly scrollTop: number;
+};
+
+function capturesChangedIds(payload: unknown): string[] | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const raw = (payload as { changedIds?: unknown }).changedIds;
+  if (!Array.isArray(raw)) return null;
+  const ids = raw.filter((id): id is string => typeof id === "string");
+  return ids.length === 0 ? null : ids;
+}
+
+function sameActiveFilter(a: ActiveLibraryFilter, b: ActiveLibraryFilter): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind !== "sourceApp" || b.kind !== "sourceApp" || a.appId === b.appId;
+}
+
+function sameLibraryView(a: LibraryView, b: LibraryView): boolean {
+  if (a.kind !== b.kind || a.selectedRecordId !== b.selectedRecordId) return false;
+  if (a.kind === "focus" && b.kind === "focus") {
+    return (
+      a.returnAnchor.cellId === b.returnAnchor.cellId &&
+      a.returnAnchor.scrollTop === b.returnAnchor.scrollTop
+    );
+  }
+  return true;
+}
+
+function sameHistoryLocation(
+  a: LibraryHistoryLocation,
+  b: LibraryHistoryLocation
+): boolean {
+  return (
+    sameLibraryView(a.view, b.view) &&
+    sameActiveFilter(a.activeFilter, b.activeFilter) &&
+    a.searchQuery === b.searchQuery
+  );
+}
+
+function appendHistoryLocation(
+  stack: LibraryHistoryLocation[],
+  location: LibraryHistoryLocation
+): LibraryHistoryLocation[] {
+  const last = stack[stack.length - 1];
+  if (last !== undefined && sameHistoryLocation(last, location)) return stack;
+  return [...stack, location].slice(-50);
+}
+
+export function Library() {
   const [activeFilter, setActiveFilter] = useState<ActiveLibraryFilter>({ kind: "all" });
+  const activeFilterRef = useRef(activeFilter);
+  useEffect(() => {
+    activeFilterRef.current = activeFilter;
+  }, [activeFilter]);
   // Library full-text search — wired to `library:search` (bus verb landed
   // in PR #154). The input lives in the topbar at `.psl__search`. When
   // the trimmed query is non-empty the grid renders search results
@@ -349,6 +408,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // search is unsupported because `library:search` only returns live
   // rows (captures-repo's WHERE clause); we disable the input in trash.
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const searchQueryRef = useRef(searchQuery);
+  useEffect(() => {
+    searchQueryRef.current = searchQuery;
+  }, [searchQuery]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchState, setSearchState] = useState<{
     /** Trimmed query the rows below reflect — guards against showing
@@ -366,6 +429,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [sourceAppRows, setSourceAppRows] = useState<Record<string, SourceAppRowsState>>(
     {}
   );
+  const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
+  const openedRecordsRef = useRef(openedRecords);
+  useEffect(() => {
+    openedRecordsRef.current = openedRecords;
+  }, [openedRecords]);
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -593,7 +661,72 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // selectedRecordId). Plan: docs/plans/2026-05-05-001-feat-library-
   // three-state-view-model-plan.md, Phase A. Tests at
   // ./__tests__/library-view.test.ts.
-  const [view, viewDispatch] = useReducer(libraryReducer, initialLibraryView);
+  const [view, setView] = useState<LibraryView>(initialLibraryView);
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  const [navHistory, setNavHistory] = useState<{
+    back: LibraryHistoryLocation[];
+    forward: LibraryHistoryLocation[];
+  }>({ back: [], forward: [] });
+  const currentHistoryLocation = useCallback(
+    (): LibraryHistoryLocation => ({
+      view: viewRef.current,
+      activeFilter: activeFilterRef.current,
+      searchQuery: searchQueryRef.current
+    }),
+    []
+  );
+  const restoreHistoryLocation = useCallback((location: LibraryHistoryLocation): void => {
+    activeFilterRef.current = location.activeFilter;
+    searchQueryRef.current = location.searchQuery;
+    viewRef.current = location.view;
+    setActiveFilter(location.activeFilter);
+    setSearchQuery(location.searchQuery);
+    setView(location.view);
+  }, []);
+  const viewDispatch = useCallback(
+    (action: LibraryAction, options?: { history?: "push" | "replace" }): void => {
+      const current = currentHistoryLocation();
+      const nextView = libraryReducer(current.view, action);
+      if (sameLibraryView(current.view, nextView)) return;
+      const historyMode = options?.history ?? "push";
+      if (historyMode === "push") {
+        setNavHistory((prev) => ({
+          back: appendHistoryLocation(prev.back, current),
+          forward: []
+        }));
+      }
+      viewRef.current = nextView;
+      setView(nextView);
+    },
+    [currentHistoryLocation]
+  );
+  const goBack = useCallback((): void => {
+    const previous = navHistory.back[navHistory.back.length - 1];
+    if (previous === undefined) return;
+    const current = currentHistoryLocation();
+    setNavHistory({
+      back: navHistory.back.slice(0, -1),
+      forward: sameHistoryLocation(current, previous)
+        ? navHistory.forward
+        : [current, ...navHistory.forward].slice(0, 50)
+    });
+    restoreHistoryLocation(previous);
+  }, [currentHistoryLocation, navHistory, restoreHistoryLocation]);
+  const goForward = useCallback((): void => {
+    const next = navHistory.forward[0];
+    if (next === undefined) return;
+    const current = currentHistoryLocation();
+    setNavHistory({
+      back: sameHistoryLocation(current, next)
+        ? navHistory.back
+        : appendHistoryLocation(navHistory.back, current),
+      forward: navHistory.forward.slice(1)
+    });
+    restoreHistoryLocation(next);
+  }, [currentHistoryLocation, navHistory, restoreHistoryLocation]);
   const { projects: sizzleProjects } = useSizzleProjects();
   // The Project Asset Cart. Drives the cell checkboxes (which captures
   // are checked) AND the grid-mode standalone cart rail (which appears
@@ -627,6 +760,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       projects: key === "projects"
     });
   };
+  const ensureRecordTypeVisible = useCallback((record: CaptureRecord): void => {
+    if (record.kind === "image") {
+      setVisibleTypes((prev) => (prev.images ? prev : { ...prev, images: true }));
+      return;
+    }
+    if (record.kind === "video") {
+      setVisibleTypes((prev) => (prev.videos ? prev : { ...prev, videos: true }));
+    }
+  }, []);
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
@@ -639,6 +781,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     totalLive,
     appStats
   } = useLibrary();
+  const recordsRef = useRef(records);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
   const storage = useStorageSnapshot();
   const storageLabel =
     storage.snapshot !== null
@@ -766,14 +912,76 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // `includeDeleted: true`, so the keyset-paginated snapshot contains
   // both; we partition here so the Trash sidebar entry swaps the
   // active universe without a second fetch.
-  const liveRecords = useMemo(
-    () => records.filter((r) => r.deleted_at === null),
-    [records]
-  );
+  const liveRecords = useMemo(() => {
+    return mergeOpenedLiveRecords(records, openedRecords);
+  }, [openedRecords, records]);
   const trashRecords = useMemo(
     () => records.filter((r) => r.deleted_at !== null),
     [records]
   );
+
+  const revalidateOpenedRecords = useCallback((changedIds: readonly string[] | null) => {
+    const opened = openedRecordsRef.current;
+    if (opened.length === 0) return;
+    const changedSet = changedIds === null ? null : new Set(changedIds);
+    const ids = opened
+      .filter((record) => changedSet === null || changedSet.has(record.id))
+      .map((record) => record.id);
+    if (ids.length === 0) return;
+
+    void (async () => {
+      const refreshed = await Promise.all(
+        ids.map(async (id) => {
+          const result: Result<Res<"library:byId">, PwrSnapError> = await dispatch(
+            "library:byId",
+            { id }
+          );
+          return { id, result };
+        })
+      );
+      const idSet = new Set(ids);
+      const failedIds = new Set<string>();
+      const liveById = new Map<string, CaptureRecord>();
+      for (const { id, result } of refreshed) {
+        if (!result.ok) {
+          failedIds.add(id);
+          continue;
+        }
+        if (result.value === null || result.value.deleted_at !== null) {
+          continue;
+        }
+        liveById.set(result.value.id, result.value);
+      }
+      setOpenedRecords((prev) => {
+        let changed = false;
+        const next: CaptureRecord[] = [];
+        for (const record of prev) {
+          if (!idSet.has(record.id)) {
+            next.push(record);
+            continue;
+          }
+          if (failedIds.has(record.id)) {
+            next.push(record);
+            continue;
+          }
+          const replacement = liveById.get(record.id);
+          if (replacement === undefined) {
+            changed = true;
+            continue;
+          }
+          next.push(replacement);
+          if (replacement !== record) changed = true;
+        }
+        return changed ? next : prev;
+      });
+    })();
+  }, []);
+
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.capturesChanged, (payload) => {
+      revalidateOpenedRecords(capturesChangedIds(payload));
+    });
+  }, [revalidateOpenedRecords]);
 
   const isTodayView = activeFilter.kind === "today";
   const isTrashView = activeFilter.kind === "trash";
@@ -1031,7 +1239,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       ? fixtureCaptures
       : fixtureCaptures.filter((c) => c.app === activeSourceAppId);
   const grouped = useMemo(() => groupByDay(visible), [visible]);
-  const current = fixtureCaptures.find((c) => c.id === selected) ?? fixtureCaptures[0];
 
   // Per-app capture counts — memoized so the per-render `filter().length`
   // cost (N apps × M captures = NM ops/render) doesn't accumulate. Used
@@ -1168,12 +1375,14 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // buttons in Focus + Reel modes (Phase C). Null = nothing selected.
   const selectedRecord: CaptureRecord | null = useMemo(() => {
     if (selectedRecordId === null) return null;
+    const fallbackRecord = records.find((r) => r.id === selectedRecordId) ?? null;
     return (
       universeRecords.find((r) => r.id === selectedRecordId) ??
-      records.find((r) => r.id === selectedRecordId) ??
-      null
+      (fallbackRecord !== null && (isTrashView || fallbackRecord.deleted_at === null)
+        ? fallbackRecord
+        : null)
     );
-  }, [records, selectedRecordId, universeRecords]);
+  }, [isTrashView, records, selectedRecordId, universeRecords]);
 
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation
@@ -1277,9 +1486,10 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
 
   function selectFilter(next: ActiveLibraryFilter): void {
     gridReturnScrollTopRef.current = 0;
-    viewDispatch({ type: "RESET_FOCUS_RETURN_SCROLL" });
+    viewDispatch({ type: "RESET_FOCUS_RETURN_SCROLL" }, { history: "replace" });
     const el = gridScrollRef.current;
     if (el !== null) el.scrollTop = 0;
+    activeFilterRef.current = next;
     setActiveFilter(next);
   }
 
@@ -1465,8 +1675,11 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     if (selectedRecordId === null) return;
     if (selectedRecord !== null) return;
-    viewDispatch({ type: "FILTER_CHANGED", visibleIds: universeRecords.map((r) => r.id) });
-  }, [selectedRecordId, selectedRecord, universeRecords]);
+    viewDispatch(
+      { type: "FILTER_CHANGED", visibleIds: universeRecords.map((r) => r.id) },
+      { history: "replace" }
+    );
+  }, [selectedRecordId, selectedRecord, universeRecords, viewDispatch]);
 
   // External "open this capture in Focus" trigger. Fired by main when
   // the float-over toast's Edit button (or any future entry point)
@@ -1474,41 +1687,80 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // and broadcasts the captureId; we navigate.
   //
   // Two-stage effect so an event that lands BEFORE useLibrary has
-  // refetched the new capture still resolves cleanly:
-  //   1. Subscribe handler stashes the captureId in `pendingOpenId`
-  //      and resets activeFilter to "all" so the capture isn't filtered
-  //      out by the current Trash / Today / app-source view.
+  // fetched that capture still resolves cleanly:
+  //   1. Subscribe handler stashes the captureId and the pre-open
+  //      Library location for titlebar Back, resets activeFilter to
+  //      "all", and asks `library:byId` for the row as a fallback.
   //   2. A separate effect watches for that captureId to appear in
-  //      records, then dispatches OPEN_FOCUS once. Self-clearing.
-  const [pendingOpenId, setPendingOpenId] = useState<string | null>(null);
+  //      the live-record universe, then opens Focus once.
+  const [pendingOpen, setPendingOpen] = useState<PendingOpenCapture | null>(null);
   useEffect(() => {
     return subscribe(EVENT_CHANNELS.libraryOpenCapture, (payload) => {
       if (typeof payload !== "object" || payload === null) return;
       const id = (payload as { captureId?: unknown }).captureId;
       if (typeof id !== "string") return;
-      setPendingOpenId(id);
+      const allFilter: ActiveLibraryFilter = { kind: "all" };
+      const knownRecord =
+        recordsRef.current.find((record) => record.id === id) ??
+        openedRecordsRef.current.find((record) => record.id === id) ??
+        null;
+      if (knownRecord !== null && knownRecord.deleted_at === null) {
+        ensureRecordTypeVisible(knownRecord);
+      }
+      setPendingOpen({
+        captureId: id,
+        from: currentHistoryLocation(),
+        scrollTop: gridScrollRef.current?.scrollTop ?? 0
+      });
+      activeFilterRef.current = allFilter;
+      searchQueryRef.current = "";
       setActiveFilter({ kind: "all" });
+      setSearchQuery("");
+      void (async () => {
+        const result: Result<Res<"library:byId">, PwrSnapError> = await dispatch(
+          "library:byId",
+          { id }
+        );
+        if (!result.ok || result.value === null || result.value.deleted_at !== null) return;
+        const record = result.value;
+        ensureRecordTypeVisible(record);
+        setOpenedRecords((prev) => [
+          record,
+          ...prev.filter((existing) => existing.id !== record.id)
+        ]);
+      })();
     });
-  }, []);
+  }, [currentHistoryLocation, ensureRecordTypeVisible]);
   useEffect(() => {
-    if (pendingOpenId === null) return;
-    const record = records.find((r) => r.id === pendingOpenId);
-    // Wait until the record lands in the live list (capture commit
-    // races: the broadcast may arrive before useLibrary's refetch).
+    if (pendingOpen === null) return;
+    const record = liveRecords.find((r) => r.id === pendingOpen.captureId);
+    // Wait until the record lands in the live list or the byId
+    // fallback above has supplemented the list.
     if (record === undefined) return;
-    setPendingOpenId(null);
-    if (record.deleted_at !== null) return; // user trashed it mid-flight; bail.
-    const savedScrollTop = gridScrollRef.current?.scrollTop ?? 0;
-    gridReturnScrollTopRef.current = savedScrollTop;
-    viewDispatch({
-      type: "OPEN_FOCUS",
-      recordId: record.id,
+    setPendingOpen(null);
+    const nextView: LibraryView = {
+      kind: "focus",
+      selectedRecordId: record.id,
       returnAnchor: {
-        scrollTop: savedScrollTop,
+        scrollTop: pendingOpen.scrollTop,
         cellId: record.id
       }
-    });
-  }, [pendingOpenId, records]);
+    };
+    const target: LibraryHistoryLocation = {
+      view: nextView,
+      activeFilter: { kind: "all" },
+      searchQuery: ""
+    };
+    if (!sameHistoryLocation(pendingOpen.from, target)) {
+      setNavHistory((prev) => ({
+        back: appendHistoryLocation(prev.back, pendingOpen.from),
+        forward: []
+      }));
+    }
+    gridReturnScrollTopRef.current = pendingOpen.scrollTop;
+    viewRef.current = nextView;
+    setView(nextView);
+  }, [liveRecords, pendingOpen]);
 
   // Filter-change-while-Focus bail: when the active filter changes and the
   // current selection is no longer in the visible set, the reducer
@@ -1519,12 +1771,15 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     const resetReturnScroll = prevActiveFilterKeyRef.current !== activeFilterKey;
     prevActiveFilterKeyRef.current = activeFilterKey;
-    viewDispatch({
-      type: "FILTER_CHANGED",
-      visibleIds: visibleRecords.map((r) => r.id),
-      resetReturnScroll
-    });
-  }, [activeFilterKey, visibleRecords]);
+    viewDispatch(
+      {
+        type: "FILTER_CHANGED",
+        visibleIds: visibleRecords.map((r) => r.id),
+        resetReturnScroll
+      },
+      { history: "replace" }
+    );
+  }, [activeFilterKey, visibleRecords, viewDispatch]);
 
   // Window keydown handler — Esc closes Focus, ←/→ navigate between
   // captures in Focus + Reel. Single listener for the lifetime of
@@ -1532,13 +1787,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   // bug after mode flips (julik concern #4a). Editor's own keydown
   // handler runs first for canvas-level concerns (V/A/R/H/T/B tool
   // hotkeys, Esc-to-cancel-draft).
-  const viewRef = useRef(view);
   const prevRecordIdRef = useRef(prevRecordId);
   const nextRecordIdRef = useRef(nextRecordId);
   const selectedRecordRef = useRef(selectedRecord);
-  useEffect(() => {
-    viewRef.current = view;
-  }, [view]);
   useEffect(() => {
     prevRecordIdRef.current = prevRecordId;
   }, [prevRecordId]);
@@ -1645,7 +1896,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [viewDispatch]);
 
   /**
    * Single-click handler for grid cells. Phase C: dispatches
@@ -1655,7 +1906,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    * NAVIGATE-only click handler (no Focus open from filmstrip).
    */
   function onSelectCell(c: Capture): void {
-    setSelected(c.id);
     // Project cell → open the sizzle window for that project.
     // Click handler doesn't transition into focus/reel for projects;
     // projects are edited in the dedicated Sizzle Reels window.
@@ -1685,7 +1935,6 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
    * opening Focus.
    */
   function onSelectFrame(c: Capture): void {
-    setSelected(c.id);
     const record = fixtureBacking.recordFor(c.id);
     if (record === null) return;
     viewDispatch({ type: "NAVIGATE", recordId: record.id });
@@ -1901,6 +2150,32 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               <PwrSnapMark size={18} />
             </span>
             <PwrSnapWordmark />
+          </div>
+          <div className="psl__history" aria-label="Navigation history">
+            <button
+              type="button"
+              className="psl__history-btn"
+              aria-label="Back"
+              title="Back"
+              disabled={navHistory.back.length === 0}
+              onClick={goBack}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="psl__history-btn"
+              aria-label="Forward"
+              title="Forward"
+              disabled={navHistory.forward.length === 0}
+              onClick={goForward}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
           </div>
           <span className="psl__count">
             {isSearchActive
@@ -2319,7 +2594,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           <VirtualizedGrid
             grouped={grouped}
             scrollElement={gridScrollRef}
-            selected={selected}
+            selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
             appLabels={appLabels}
             onSelectCell={onSelectCell}
@@ -2698,7 +2973,7 @@ type LibraryRow =
 type VirtualizedGridProps = {
   grouped: DayGroup[];
   scrollElement: React.RefObject<HTMLDivElement | null>;
-  selected: number;
+  selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
@@ -2751,7 +3026,7 @@ function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): 
 function VirtualizedGrid({
   grouped,
   scrollElement,
-  selected,
+  selectedRecordId,
   fixtureBacking,
   appLabels,
   onSelectCell,
@@ -2938,7 +3213,7 @@ function VirtualizedGrid({
                 cells={row.cells}
                 gridTemplate={gridTemplate}
                 isLastInDay={row.isLastInDay}
-                selected={selected}
+                selectedRecordId={selectedRecordId}
                 fixtureBacking={fixtureBacking}
                 appLabels={appLabels}
                 onSelectCell={onSelectCell}
@@ -2975,7 +3250,7 @@ function CellRow({
   cells,
   gridTemplate,
   isLastInDay,
-  selected,
+  selectedRecordId,
   fixtureBacking,
   appLabels,
   onSelectCell,
@@ -2988,7 +3263,7 @@ function CellRow({
   cells: DayGroup["items"];
   gridTemplate: string;
   isLastInDay: boolean;
-  selected: number;
+  selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
@@ -3035,7 +3310,7 @@ function CellRow({
             key={c.id}
             className={
               "psl__cell" +
-              (c.id === selected ? " is-selected" : "") +
+              (record?.id === selectedRecordId ? " is-selected" : "") +
               (isProject ? " psl__cell--project" : "")
             }
             data-cell-id={record?.id ?? ""}

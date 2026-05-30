@@ -1,9 +1,9 @@
-// Phase 2 starter Editor — `editor:open` window spec.
+// `editor:open` Library Focus spec.
 //
 // Inserts a synthetic capture row directly via the better-sqlite3
 // instance (no Screen Recording perms required), then drives
-// `editor:open` and asserts a new BrowserWindow with the right
-// stage + captureId hash appears.
+// `editor:open` and asserts the existing Library window enters
+// Focus mode for the requested capture.
 //
 // Keeps the test deterministic across platforms (no PNG decode, no
 // renderer drag simulation — the renderer Editor.tsx is exercised
@@ -20,7 +20,7 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
 
-test("editor:open creates a new window with the captureId hash", async () => {
+test("editor:open opens the capture in Library Focus", async () => {
   const app = await launchPwrSnap();
   try {
     const captureId = await seedCapture(app);
@@ -29,17 +29,12 @@ test("editor:open creates a new window with the captureId hash", async () => {
     const result = await app.dispatch("editor:open", { captureId });
     expect(result.ok).toBe(true);
 
-    // A new window appears whose URL hash has stage=edit.
-    await expect
-      .poll(async () =>
-        app.electronApp
-          .windows()
-          .some((w) => w.url().includes("stage=edit") && w.url().includes(captureId))
-      )
-      .toBe(true);
+    await expect(
+      app.window.locator(`.psl__focus[data-capture-id="${captureId}"]`)
+    ).toBeVisible();
 
     const after = app.electronApp.windows().length;
-    expect(after).toBeGreaterThan(before);
+    expect(after).toBe(before);
   } finally {
     await app.close();
   }

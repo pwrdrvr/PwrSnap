@@ -110,7 +110,11 @@ function FocusStage(props: StageProps): ReactElement {
   };
 
   return (
-    <div className="psl__focus" aria-label="Capture editor">
+    <div
+      className="psl__focus"
+      aria-label="Capture editor"
+      data-capture-id={props.record.id}
+    >
       <div className="psl__stage-wrap">
         <StageBody {...props} onClose={onClose} />
       </div>

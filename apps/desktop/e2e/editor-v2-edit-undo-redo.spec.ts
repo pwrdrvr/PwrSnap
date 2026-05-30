@@ -17,16 +17,13 @@
 // These flows have unit coverage (useCaptureModel.test.ts,
 // useUndoRedo.test.ts) but no E2E proof that the real toolbar → hook →
 // IPC → DB → refetch pipeline still works after the teardown collapsed
-// the dual-format model down to v2-only. Driving the undo/redo BUTTONS
-// (not the keyboard) keeps the assertion on the hook pipeline rather
-// than the global key handler.
+// the dual-format model down to v2-only. Library Focus uses keyboard
+// undo/redo; the standalone undo/redo toolbar buttons were retired
+// with the separate editor window.
 //
 // Selectors (all data-testid / stable classnames; additive):
-//   - editor-tool-button-arrow / .is-active → toolbar + active tool
+//   - .psl__edit-toolbar button[data-tool="arrow"] → toolbar + active tool
 //   - .editor-canvas                        → draw surface
-//   - .editor-toolbar-meta span             → "N overlay(s)" applied count
-//   - editor-undo / editor-redo             → toolbar buttons (disabled
-//                                             via canUndo / canRedo)
 //   - editor-error                          → error banner; assert absent
 //   - editor-root[data-bundle-format-version] → "2"
 
@@ -44,23 +41,15 @@ test("editor-v2-edit-undo-redo: draw → undo → redo round-trips through layer
     const captureId = await seedCapture(app);
     const editorWindow = await openEditor(app, captureId);
 
-    const meta = editorWindow.locator(".editor-toolbar-meta span").first();
-    const undoButton = editorWindow.locator('[data-testid="editor-undo"]');
-    const redoButton = editorWindow.locator('[data-testid="editor-redo"]');
-
     // Fresh capture: nothing placed, nothing to undo/redo.
-    await expect(meta).toContainText(/0 overlays/);
-    await expect(undoButton).toBeDisabled();
-    await expect(redoButton).toBeDisabled();
+    await expectLayerCount(app, captureId, 0);
 
     // Place an arrow.
     await selectTool(editorWindow, "arrow");
     await drawOnCanvas(editorWindow);
 
-    // The placement persisted: meta bumped, undo armed, redo still empty.
-    await expect(meta).toContainText(/1 overlay/);
-    await expect(undoButton).toBeEnabled();
-    await expect(redoButton).toBeDisabled();
+    // The placement persisted.
+    await expectLayerCount(app, captureId, 1);
 
     // And it actually hit the DB through the v2 write path (layers:*,
     // NOT the deleted overlays:*). The fresh layer tree was empty, so a
@@ -70,17 +59,13 @@ test("editor-v2-edit-undo-redo: draw → undo → redo round-trips through layer
     if (afterDraw.ok) expect(afterDraw.value.length).toBeGreaterThan(0);
 
     // Undo → the arrow is removed (useUndoRedo dispatches layers:delete).
-    await undoButton.click();
-    await expect(meta).toContainText(/0 overlays/);
-    await expect(undoButton).toBeDisabled();
-    await expect(redoButton).toBeEnabled();
+    await editorWindow.keyboard.press(`${accel()}+Z`);
+    await expectLayerCount(app, captureId, 0);
 
     // Redo → the arrow comes back (useUndoRedo dispatches layers:upsert
     // with the original node, preserving z_index).
-    await redoButton.click();
-    await expect(meta).toContainText(/1 overlay/);
-    await expect(undoButton).toBeEnabled();
-    await expect(redoButton).toBeDisabled();
+    await editorWindow.keyboard.press(`${accel()}+Shift+Z`);
+    await expectLayerCount(app, captureId, 1);
 
     // Never tipped into the error model, never silently fell back off v2.
     await expect(
@@ -102,24 +87,20 @@ test("editor-v2-edit-undo-redo: a placed annotation survives an editor reopen", 
 
     await selectTool(firstWindow, "arrow");
     await drawOnCanvas(firstWindow);
-    await expect(
-      firstWindow.locator(".editor-toolbar-meta span").first()
-    ).toContainText(/1 overlay/);
+    await expectLayerCount(app, captureId, 1);
 
     // Persisted to the DB.
     const persisted = await app.dispatch("layers:list", { captureId });
     expect(persisted.ok).toBe(true);
     if (persisted.ok) expect(persisted.value.length).toBeGreaterThan(0);
 
-    // Close the editor window and reopen a fresh one. The reopened
+    // Close Focus and reopen it. The reopened
     // editor must reload the persisted layer through useCaptureModel's
-    // layers:list fetch — the applied-overlay meta reads "1 overlay"
-    // again with no error banner.
-    await firstWindow.close();
+    // layers:list fetch again with no error banner.
+    await firstWindow.locator(".psl__focus-close").click();
+    await expect(firstWindow.locator(".psl__focus")).toHaveCount(0);
     const reopened = await openEditor(app, captureId);
-    await expect(
-      reopened.locator(".editor-toolbar-meta span").first()
-    ).toContainText(/1 overlay/);
+    await expectLayerCount(app, captureId, 1);
     await expect(
       reopened.locator('[data-testid="editor-error"]')
     ).toHaveCount(0);
@@ -129,6 +110,24 @@ test("editor-v2-edit-undo-redo: a placed annotation survives an editor reopen", 
 });
 
 // ---- Shared helpers (mirror editor-sticky-tool.spec.ts) --------------
+
+function accel(): "Meta" | "Control" {
+  return process.platform === "darwin" ? "Meta" : "Control";
+}
+
+async function expectLayerCount(
+  app: LaunchedApp,
+  captureId: string,
+  count: number
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      const result = await app.dispatch("layers:list", { captureId });
+      if (!result.ok) return -1;
+      return result.value.length;
+    })
+    .toBe(count);
+}
 
 async function seedCapture(app: LaunchedApp): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pwrsnap-edit-undo-spec-"));
@@ -191,29 +190,18 @@ async function seedCapture(app: LaunchedApp): Promise<string> {
 async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const result = await app.dispatch("editor:open", { captureId });
   expect(result.ok, "editor:open should succeed").toBe(true);
-
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const candidate of app.electronApp.windows()) {
-      if (candidate.isClosed()) continue;
-      const url = candidate.url();
-      if (url.includes("stage=edit") && url.includes(captureId)) {
-        await candidate.waitForLoadState("domcontentloaded").catch(() => undefined);
-        await candidate
-          .locator('[data-testid="editor-tool-button-arrow"]')
-          .waitFor({ state: "visible", timeout: 15_000 });
-        return candidate;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error("editor window never appeared");
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  return page;
 }
 
 async function selectTool(win: Page, tool: string): Promise<void> {
-  await win.locator(`[data-testid="editor-tool-button-${tool}"]`).click();
+  await win.locator(`.psl__edit-toolbar button[data-tool="${tool}"]`).click();
   await expect(
-    win.locator(`[data-testid="editor-tool-button-${tool}"].is-active`)
+    win.locator(`.psl__edit-toolbar button[data-tool="${tool}"].is-active`)
   ).toHaveCount(1);
 }
 

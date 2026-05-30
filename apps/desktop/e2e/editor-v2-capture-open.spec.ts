@@ -4,9 +4,9 @@
 //   1. v2 captures (seeded with `bundle_format_version: 2`) open through
 //      `layers:list`. The editor mounts the canvas + image + toolbar;
 //      `.editor-root` carries `data-bundle-format-version="2"`.
-//   2. ⌘Z on a freshly-opened v2 capture is safe: the undo button is
-//      disabled (nothing to undo) and the shortcut doesn't crash the
-//      renderer or wedge the editor in an error state.
+//   2. ⌘Z on a freshly-opened v2 capture is safe: the shortcut
+//      doesn't crash the renderer or wedge the editor in an error
+//      state.
 //
 // The former "v1 capture opens through `overlays:list`" scenario was
 // dropped when the v1 read/write path was retired — v2 is the only
@@ -19,9 +19,7 @@
 //   - editor-image           → the `<img>` of the capture.
 //   - editor-loading         → loading placeholder (transient).
 //   - editor-error           → error banner; assert NOT visible.
-//   - editor-undo            → toolbar undo button.
-//   - editor-tool-button-*   → Phase 1 testid family, used to confirm
-//                              the toolbar mounted.
+//   - .psl__edit-toolbar button[data-tool="arrow"] → Focus toolbar.
 
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -44,7 +42,7 @@ test("editor-v2-capture-open: v2 capture opens with format=2, no v2-not-supporte
       editorWindow.locator('[data-testid="editor-image"]')
     ).toBeVisible();
     await expect(
-      editorWindow.locator('[data-testid="editor-tool-button-arrow"]')
+      editorWindow.locator('.psl__edit-toolbar button[data-tool="arrow"]')
     ).toBeVisible();
 
     // Format attribute on the root reads "2" (the v2 read path branch
@@ -75,15 +73,6 @@ test("editor-v2-capture-open: ⌘Z on a freshly-opened v2 capture is a no-op (bu
     const captureId = await seedCapture(app, { bundleFormatVersion: 2 });
     const editorWindow = await openEditor(app, captureId);
 
-    // Toolbar mounted; undo button is in the DOM and starts disabled
-    // (fresh capture has no edit history). Note: the undo hook is
-    // owned by EditorLoaded and only mounts for `chrome === "full"`
-    // (standalone editor window) — Library Focus is chromeless, but
-    // editor:open opens a standalone window so chrome === "full" here.
-    const undoButton = editorWindow.locator('[data-testid="editor-undo"]');
-    await expect(undoButton).toBeVisible();
-    await expect(undoButton).toBeDisabled();
-
     // Fire ⌘Z anyway. The keyboard handler should be a safe no-op
     // (the undo hook's `canUndo` guard short-circuits when the stack
     // is empty). Crucially:
@@ -101,7 +90,10 @@ test("editor-v2-capture-open: ⌘Z on a freshly-opened v2 capture is a no-op (bu
     await expect(
       editorWindow.locator('[data-testid="editor-root"]')
     ).toHaveAttribute("data-bundle-format-version", "2");
-    await expect(undoButton).toBeDisabled();
+
+    const layers = await app.dispatch("layers:list", { captureId });
+    expect(layers.ok).toBe(true);
+    if (layers.ok) expect(layers.value).toHaveLength(0);
   } finally {
     await app.close();
   }
@@ -185,27 +177,10 @@ async function seedCapture(
 async function openEditor(app: LaunchedApp, captureId: string): Promise<Page> {
   const result = await app.dispatch("editor:open", { captureId });
   expect(result.ok, "editor:open should succeed").toBe(true);
-
-  // Poll for the editor window — main may take a tick to construct it.
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    for (const candidate of app.electronApp.windows()) {
-      const url = candidate.url();
-      if (url.includes("stage=edit") && url.includes(captureId)) {
-        await candidate
-          .waitForLoadState("domcontentloaded")
-          .catch(() => undefined);
-        // Wait for the toolbar to mount (proof the renderer hydrated
-        // past the `useCaptureModel` loading state into the loaded
-        // branch). The toolbar only renders in the loaded branch —
-        // loading/error branches show their own placeholder div.
-        await candidate
-          .locator('[data-testid="editor-tool-button-arrow"]')
-          .waitFor({ state: "visible", timeout: 15_000 });
-        return candidate;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  throw new Error("editor window never appeared");
+  const page = app.window;
+  await page.locator(".psl__focus").waitFor({ state: "visible", timeout: 15_000 });
+  await page
+    .locator('.psl__edit-toolbar button[data-tool="arrow"]')
+    .waitFor({ state: "visible", timeout: 15_000 });
+  return page;
 }

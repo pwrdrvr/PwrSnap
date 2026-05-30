@@ -60,6 +60,7 @@ function applyMigrations(db: Database.Database): void {
 
 function insertCapture(args: {
   id: string;
+  kind?: "image" | "video";
   bundlePath: string;
   sourceAppName: string | null;
   sha256: string;
@@ -74,7 +75,7 @@ function insertCapture(args: {
         width_px, height_px, device_pixel_ratio, byte_size,
         sha256, edits_version, deleted_at
       ) VALUES (
-        @id, 'image', '2026-05-29T18:38:12.000Z',
+        @id, @kind, '2026-05-29T18:38:12.000Z',
         NULL, @sourceAppName,
         NULL, @bundlePath, NULL, '2026-05-29T18:38:12.000Z',
         1, 0,
@@ -82,7 +83,7 @@ function insertCapture(args: {
         @sha256, 0, NULL
       )`
     )
-    .run(args);
+    .run({ kind: "image", ...args });
 }
 
 function insertEnrichment(args: {
@@ -294,5 +295,33 @@ describe("bundle filename maintenance", () => {
       .prepare("SELECT bundle_path FROM captures WHERE id = ?")
       .get(captureId) as { bundle_path: string };
     expect(row.bundle_path).toBe(actualPath);
+  });
+
+  test("skips video captures even if a bundle path is present", async () => {
+    const captureId = "vid_with_bundle_path";
+    const oldPath = join(workDir, "video-legacy-name.pwrsnap");
+    await writeBundleFixture(oldPath, captureId);
+    insertCapture({
+      id: captureId,
+      kind: "video",
+      bundlePath: oldPath,
+      sourceAppName: "QuickTime Player",
+      sha256: "facefeed".repeat(8)
+    });
+    insertEnrichment({
+      captureId,
+      suggested: "demo-recording",
+      accepted: null
+    });
+
+    await expect(renameBundleToEffectiveFilename(captureId)).resolves.toBe("skipped");
+    const result = await runBundleFilenameMaintenanceOnBoot();
+    expect(result.attempted).toBe(0);
+    expect(existsSync(oldPath)).toBe(true);
+
+    const row = mocks.db!
+      .prepare("SELECT bundle_path FROM captures WHERE id = ?")
+      .get(captureId) as { bundle_path: string };
+    expect(row.bundle_path).toBe(oldPath);
   });
 });

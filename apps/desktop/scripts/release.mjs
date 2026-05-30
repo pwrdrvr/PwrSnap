@@ -408,6 +408,16 @@ if (!signStageOnly) {
     env: releaseArch === "universal" ? { PWRSNAP_NATIVE_UNIVERSAL: "1" } : {}
   });
 
+  // 3b. Build the bundled LGPL ffmpeg binary from upstream source.
+  // The previous npm binary was GPL+nonfree; this produces a
+  // redistributable binary and verifies the configure line before
+  // anything is packaged.
+  step("build bundled LGPL ffmpeg");
+  runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build:ffmpeg"], {
+    cwd: repoRoot,
+    env: releaseArch === "universal" ? { PWRSNAP_FFMPEG_UNIVERSAL: "1" } : {}
+  });
+
   // 4. Build (electron-vite -> apps/desktop/out/).
   step("electron-vite build");
   runChecked("pnpm", ["--filter", "@pwrsnap/desktop", "build"], { cwd: repoRoot });
@@ -430,10 +440,9 @@ if (!signStageOnly) {
   //     pulls all darwin slices into `node_modules/.pnpm/`, but
   //     `pnpm deploy --prod --legacy` only stages the host arch
   //     and even then drops platform-specific optionalDependencies
-  //     entirely (the JS wrapper makes it in, the sub-packages
-  //     don't). Universal builds need both arch slices for sharp
-  //     (native binding + libvips dylib) and ffmpeg, so we
-  //     hand-copy them from the workspace pnpm store before
+  //     entirely. Universal builds need both arch slices for sharp
+  //     (native binding + libvips dylib), so we hand-copy them from
+  //     the workspace pnpm store before
   //     electron-builder runs. Without this, the produced .app
   //     crashes on first launch with "Could not load the sharp
   //     module using the darwin-arm64 runtime" (we shipped this
@@ -566,7 +575,8 @@ const nativeHelpers = [
   // PwrSnapRecorder — ScreenCaptureKit + AVFoundation recorder for
   // Fast Video Capture (issue #64). Without a valid Developer ID
   // signature, notarization rejects the bundle.
-  join(builtApp, "Contents", "Resources", "PwrSnapRecorder")
+  join(builtApp, "Contents", "Resources", "PwrSnapRecorder"),
+  join(builtApp, "Contents", "Resources", "PwrSnapFFmpeg")
 ];
 for (const helper of nativeHelpers) {
   if (!existsSync(helper)) {
@@ -625,9 +635,9 @@ function readElectronBuilderVersion() {
 
 /**
  * Workaround for `pnpm deploy` dropping platform-specific
- * optionalDependencies (sharp's libvips + native binding, ffmpeg's
- * arch-tagged binary packages). See the call site for the full
- * incident note. We resolve each missing package's expected version
+ * optionalDependencies (sharp's libvips + native binding). See the
+ * call site for the full incident note. We resolve each missing
+ * package's expected version
  * from its parent's optionalDependencies in the already-staged
  * package.json, then hand-copy the matching tree out of the
  * workspace's pnpm store and into the stage's node_modules so
@@ -647,9 +657,7 @@ function injectDarwinPlatformPackages() {
     ["@img/sharp-darwin-arm64", "sharp"],
     ["@img/sharp-darwin-x64", "sharp"],
     ["@img/sharp-libvips-darwin-arm64", "sharp"],
-    ["@img/sharp-libvips-darwin-x64", "sharp"],
-    ["@ffmpeg-installer/darwin-arm64", "@ffmpeg-installer/ffmpeg"],
-    ["@ffmpeg-installer/darwin-x64", "@ffmpeg-installer/ffmpeg"]
+    ["@img/sharp-libvips-darwin-x64", "sharp"]
   ];
 
   const parentVersions = new Map();

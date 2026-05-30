@@ -475,7 +475,7 @@ export function registerSizzleHandlers(): void {
         const bytes = await readFile(audioPath);
         return ok({
           audioBase64: bytes.toString("base64"),
-          mimeType: "audio/mpeg" as const,
+          mimeType: "audio/mp4" as const,
           durationSec
         });
       }

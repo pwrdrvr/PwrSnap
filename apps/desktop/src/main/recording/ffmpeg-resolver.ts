@@ -1,6 +1,7 @@
-// ffmpeg binary resolution. The packaged app uses
-// `@ffmpeg-installer/ffmpeg`'s prebuilt static binary; in dev the
-// same module resolves to a binary under node_modules. We additionally
+// ffmpeg binary resolution. The packaged app uses the repo-built
+// LGPL ffmpeg binary shipped under Contents/Resources/PwrSnapFFmpeg.
+// In dev, `pnpm --filter @pwrsnap/desktop build:ffmpeg` writes the
+// same binary under apps/desktop/build/ffmpeg/ffmpeg. We additionally
 // honor `PWRSNAP_FFMPEG_PATH` for CI / debug overrides.
 //
 // Kept in its own module so test code can mock the resolution
@@ -8,6 +9,8 @@
 // graph.
 
 import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+import { app } from "electron";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:ffmpeg");
@@ -21,23 +24,34 @@ export function resolveFfmpegPath(): string | null {
     cached = override;
     return cached;
   }
+
+  const candidates = [
+    join(__dirname, "..", "..", "build", "ffmpeg", "ffmpeg")
+  ];
+  if (typeof process.resourcesPath === "string") {
+    candidates.unshift(join(process.resourcesPath, "PwrSnapFFmpeg"));
+  }
   try {
-    // Lazy require — `@ffmpeg-installer/ffmpeg` exports `{ path }`
-    // pointing at a static binary it ships per platform. We accept
-    // ESM/CJS dual exports.
-    const mod = require("@ffmpeg-installer/ffmpeg") as { path: string } | undefined;
-    if (mod !== undefined && existsSync(mod.path)) {
-      cached = mod.path;
+    candidates.push(join(app.getAppPath(), "build", "ffmpeg", "ffmpeg"));
+  } catch {
+    /* app.getAppPath can be unavailable in narrow test contexts */
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      cached = candidate;
       return cached;
     }
-  } catch (cause) {
-    log.warn("ffmpeg-installer not resolvable; checking PATH", {
-      message: cause instanceof Error ? cause.message : String(cause)
-    });
   }
-  // Last-ditch: the user's system ffmpeg. We don't shell out to
-  // `which ffmpeg` at module load — the caller path is async and
-  // can pay that cost when it actually needs to encode.
+
+  const pathFfmpeg = findOnPath("ffmpeg");
+  if (pathFfmpeg !== null) {
+    log.warn("using ffmpeg from PATH; packaged builds should resolve PwrSnapFFmpeg", {
+      path: pathFfmpeg
+    });
+    cached = pathFfmpeg;
+    return cached;
+  }
+
   cached = null;
   return cached;
 }
@@ -45,4 +59,15 @@ export function resolveFfmpegPath(): string | null {
 /** Test-only: reset the memoized resolution. */
 export function __resetFfmpegResolverForTests(): void {
   cached = undefined;
+}
+
+function findOnPath(bin: string): string | null {
+  const pathEnv = process.env.PATH;
+  if (pathEnv === undefined || pathEnv.length === 0) return null;
+  for (const dir of pathEnv.split(delimiter)) {
+    if (dir.length === 0) continue;
+    const candidate = join(dir, bin);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }

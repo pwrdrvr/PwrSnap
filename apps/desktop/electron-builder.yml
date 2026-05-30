@@ -18,16 +18,6 @@ electronVersion: 41.2.1
 asar: true
 asarUnpack:
   - "**/*.node"
-  # Fast Video Capture (issue #64) needs the ffmpeg binary unpacked
-  # from asar. `@ffmpeg-installer/<platform>` ships a static ffmpeg
-  # executable; `child_process.spawn` on a path inside an asar
-  # archive fails (the OS can't exec a virtual filesystem entry),
-  # so every GIF / MP4 export would 100% fail in a packaged build
-  # without this. The wrapper package's resolver
-  # (apps/desktop/src/main/recording/ffmpeg-resolver.ts) reads
-  # `require("@ffmpeg-installer/ffmpeg").path` which points to the
-  # unpacked binary under `app.asar.unpacked/...`.
-  - "**/node_modules/@ffmpeg-installer/**"
   # Sharp's libvips runtime ships as `libvips-cpp.<ver>.dylib`
   # inside `@img/sharp-libvips-darwin-<arch>/lib/`. The `**/*.node`
   # rule above only catches sharp's tiny thin binding
@@ -103,6 +93,13 @@ extraResources:
   # apps/desktop/src/main/recording/recording-service.ts.
   - from: "build/native/recorder"
     to: "PwrSnapRecorder"
+  # FFmpeg built from upstream source by scripts/build-ffmpeg.mjs
+  # with no GPL or nonfree configure flags. Spawned by GIF/MP4
+  # export, video poster extraction, enrichment frames, and sizzle
+  # reel composition. It must be an actual filesystem executable,
+  # not an app.asar entry.
+  - from: "build/ffmpeg/ffmpeg"
+    to: "PwrSnapFFmpeg"
   # Diagnostic CLI for the Quick Look Thumbnail Extension. Ships
   # alongside production so we can reproduce a thumbnail-rendering
   # failure on a user machine without rebuilding from source.
@@ -168,7 +165,7 @@ mac:
   # @electron/universal merges them. The Swift helper is prebuilt universal;
   # Sharp and ffmpeg optional dependency directories are arch-named and each
   # final app needs both Darwin CPU payloads available at runtime.
-  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,app.asar.unpacked/node_modules/{@img/{sharp-darwin-*,sharp-libvips-darwin-*},@ffmpeg-installer/darwin-*}/**/*}"
+  x64ArchFiles: "Contents/Resources/{PwrSnapWindowList,PwrSnapFFmpeg,app.asar.unpacked/node_modules/@img/{sharp-darwin-*,sharp-libvips-darwin-*}/**/*}"
   helperBundleId: com.pwrdrvr.pwrsnap.helper
   helperRendererBundleId: com.pwrdrvr.pwrsnap.helper.Renderer
   helperGPUBundleId: com.pwrdrvr.pwrsnap.helper.GPU

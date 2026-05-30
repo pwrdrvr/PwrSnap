@@ -1,8 +1,6 @@
 // Tests for the cache-key helper in `audio-extract.ts`. The
 // extraction itself is ffmpeg-invoking and Darwin-gated alongside
-// the composer's invoking specs (the binary that ships in the
-// `@ffmpeg-installer/ffmpeg` package on Linux CI doesn't always
-// have libmp3lame). What we CAN cross-platform-test is the
+// the composer's invoking specs. What we CAN cross-platform-test is the
 // content-addressing math: making sure the cache key changes when
 // the source file's bytes change, that's what protects against
 // the "same path, new bytes → stale extraction" footgun the cache

@@ -7,7 +7,7 @@ import { buildCompositionArgs, compose, ComposeError, type SceneInput } from "..
 import { resolveFfmpegPath } from "../../recording/ffmpeg-resolver";
 
 // These tests shell out to the real ffmpeg binary (the same
-// @ffmpeg-installer copy the app ships). They're tagged with a long
+// repo-built LGPL copy the app ships). They're tagged with a long
 // timeout because hardware H.264 encode of a few seconds of 720p
 // video takes 1-3s on CI.
 //
@@ -62,7 +62,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     return out;
   }
 
-  async function makeSilentMp3(name: string, durationSec: number): Promise<string> {
+  async function makeSilentM4a(name: string, durationSec: number): Promise<string> {
     const out = join(tmpDir, name);
     const ff = spawnSync(
       FFMPEG!,
@@ -78,9 +78,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
         "-t",
         durationSec.toFixed(3),
         "-c:a",
-        "libmp3lame",
-        "-q:a",
-        "9",
+        "aac",
+        "-b:a",
+        "64k",
+        "-movflags",
+        "+faststart",
         out
       ],
       { stdio: ["ignore", "ignore", "pipe"] }
@@ -155,22 +157,22 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
       const scenes: SceneInput[] = [
         imageScene({
           imagePath: await makeImage("img1.png", "red"),
-          audioPath: await makeSilentMp3("aud1.mp3", 1.5),
+          audioPath: await makeSilentM4a("aud1.m4a", 1.5),
           durationSec: 1.5
         }),
         imageScene({
           imagePath: await makeImage("img2.png", "green"),
-          audioPath: await makeSilentMp3("aud2.mp3", 1.5),
+          audioPath: await makeSilentM4a("aud2.m4a", 1.5),
           durationSec: 1.5
         }),
         imageScene({
           imagePath: await makeImage("img3.png", "blue"),
-          audioPath: await makeSilentMp3("aud3.mp3", 1.5),
+          audioPath: await makeSilentM4a("aud3.m4a", 1.5),
           durationSec: 1.5
         }),
         imageScene({
           imagePath: await makeImage("img4.png", "yellow"),
-          audioPath: await makeSilentMp3("aud4.mp3", 1.5),
+          audioPath: await makeSilentM4a("aud4.m4a", 1.5),
           durationSec: 1.5
         })
       ];
@@ -209,7 +211,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
       scenes.push(
         imageScene({
           imagePath: await makeImage(`c${i}.png`, colors[i]!.hex),
-          audioPath: await makeSilentMp3(`s${i}.mp3`, 1.0),
+          audioPath: await makeSilentM4a(`s${i}.m4a`, 1.0),
           durationSec: 1.0
         })
       );
@@ -291,7 +293,7 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     const scenes: SceneInput[] = [
       imageScene({
         imagePath: await makeImage("abort.png", "red"),
-        audioPath: await makeSilentMp3("abort.mp3", 10),
+        audioPath: await makeSilentM4a("abort.m4a", 10),
         durationSec: 10
       })
     ];
@@ -320,11 +322,11 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
     expect(elapsed).toBeLessThan(5_000);
   }, 30_000);
 
-  it("compose cleans up the .audio-list.txt temp file on success", async () => {
+  it("compose does not create the old .audio-list.txt temp file", async () => {
     const scenes: SceneInput[] = [
       imageScene({
         imagePath: await makeImage("cleanup.png", "blue"),
-        audioPath: await makeSilentMp3("cleanup.mp3", 0.5),
+        audioPath: await makeSilentM4a("cleanup.m4a", 0.5),
         durationSec: 0.5
       })
     ];
@@ -343,7 +345,8 @@ skipIfCantInvokeFfmpeg("sizzle composer (ffmpeg-invoking, macOS-only)", () => {
 describe("buildCompositionArgs (cross-platform args contract)", () => {
   it("video codec is h264_videotoolbox (no GPL libx264 / libx265 / nonfree libfdk_aac)", () => {
     // GPL compliance + cost: libx264 must never be invoked from this
-    // path. Issue #127 tracks switching the bundled binary itself.
+    // path. The bundled ffmpeg is built without GPL/nonfree flags,
+    // so this invocation contract must stay inside built-in codecs.
     // This assertion locks the invocation contract in.
     const args = buildCompositionArgs(
       {
@@ -360,8 +363,7 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio-list.txt"
+      }
     );
     const codecIdx = args.indexOf("-c:v");
     expect(codecIdx).toBeGreaterThan(0);
@@ -404,8 +406,7 @@ describe("buildCompositionArgs (cross-platform args contract)", () => {
         width: 1920,
         height: 1080,
         fps: 30
-      },
-      "/x/audio-list.txt"
+      }
     );
     // Image inputs are bare `-i image` — anything else (especially
     // -loop or -framerate) turns the input into a multi-frame stream
@@ -463,8 +464,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     // No xfade, no inter-scene concat — just the per-scene
@@ -485,13 +485,12 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     expect(graph).not.toContain("xfade=");
     // Exactly one `concat=n=2` clause for the boundary.
-    const concatMatches = graph.match(/concat=n=2/g) ?? [];
+    const concatMatches = graph.match(/concat=n=2:v=1:a=0/g) ?? [];
     expect(concatMatches.length).toBe(1);
   });
 
@@ -503,8 +502,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     const xfadeMatches = graph.match(/xfade=/g) ?? [];
@@ -531,12 +529,11 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     expect((graph.match(/xfade=/g) ?? []).length).toBe(1);
-    expect((graph.match(/concat=n=2/g) ?? []).length).toBe(1);
+    expect((graph.match(/concat=n=2:v=1:a=0/g) ?? []).length).toBe(1);
   });
 
   it("3 scenes, [cut, crossfade, crossfade]: zero concat + two xfade", () => {
@@ -551,12 +548,11 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     expect((graph.match(/xfade=/g) ?? []).length).toBe(2);
-    expect((graph.match(/concat=n=2/g) ?? []).length).toBe(0);
+    expect((graph.match(/concat=n=2:v=1:a=0/g) ?? []).length).toBe(0);
   });
 
   it("4 scenes, all-crossfade: 3 xfade clauses with monotonically increasing offsets", () => {
@@ -572,8 +568,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     const xfadeMatches = graph.match(/xfade=/g) ?? [];
@@ -615,8 +610,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     // -ss must come BEFORE -i for fast input-side seek (ffmpeg has
     // both an output-side and input-side -ss; the latter is the only
@@ -653,8 +647,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     // The tpad filter should appear with stop_mode=clone and a
@@ -680,8 +673,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     const graph = filterGraph(args);
     expect(graph).not.toContain("tpad=");
@@ -708,8 +700,7 @@ describe("buildCompositionArgs — xfade transition chain", () => {
         width: 1280,
         height: 720,
         fps: 30
-      },
-      "/x/audio.txt"
+      }
     );
     expect(filterGraph(args)).not.toContain("tpad=");
   });

@@ -68,13 +68,14 @@ function runFfmpeg(args: string[]): Promise<void> {
 
 /**
  * Extract the audio track from a video clip for the given trim range
- * into a stand-alone mp3 in the sizzle cache directory. Content-
+ * into a stand-alone m4a in the sizzle cache directory. Content-
  * addressed by `(videoPath, startSec, endSec)` so repeat extractions
  * for the same trim are free.
  *
- * The output is mp3 (not the source codec) so the audio concat
- * demuxer in compose() can stitch image-scene voiceover mp3s and
- * video-scene native-audio files into one uniform stream.
+ * The output is AAC in an m4a container using ffmpeg's native AAC
+ * encoder. The composer decodes every scene's audio as an input and
+ * concatenates decoded PCM in the filter graph, so this no longer
+ * needs a GPL/nonfree-capable mp3 encoder.
  *
  * Returns the on-disk audio path.
  */
@@ -150,7 +151,7 @@ export async function extractVideoAudio(args: {
     startSec: args.startSec,
     durationSec: args.durationSec
   });
-  const outPath = join(dir, `${hash}.mp3`);
+  const outPath = join(dir, `${hash}.m4a`);
   if (await fileExists(outPath)) {
     log.info("native-audio cache HIT", {
       videoPath: args.videoPath,
@@ -165,9 +166,8 @@ export async function extractVideoAudio(args: {
     startSec: args.startSec,
     durationSec: args.durationSec
   });
-  // Re-encode to mp3 so the audio concat demuxer sees a uniform
-  // codec across scenes (mixing m4a + mp3 in concat demuxer is
-  // unreliable). 128k is plenty for screencapture-style audio.
+  // Native AAC keeps this path inside FFmpeg's LGPL-clean built-in
+  // codec set; do not use libmp3lame/libfdk_aac here.
   await runFfmpeg([
     "-y",
     "-hide_banner",
@@ -181,18 +181,23 @@ export async function extractVideoAudio(args: {
     args.videoPath,
     "-vn",
     "-c:a",
-    "libmp3lame",
-    "-q:a",
-    "4",
+    "aac",
+    "-b:a",
+    "128k",
+    "-movflags",
+    "+faststart",
     outPath
   ]);
   return outPath;
 }
 
 /**
- * Synthesize a silent mp3 of `durationSec` length. Used for video
+ * Synthesize a silent m4a of `durationSec` length. Used for video
  * scenes with audioSource: "muted" so the audio concat list stays
- * uniform with the image-scene + voiceover entries.
+ * render paths that need an audio input even when the user muted a
+ * scene. The composer can concatenate this with mp3 voiceovers
+ * because it works from decoded audio streams, not by stream-copying
+ * a concat-demuxer list.
  *
  * Cached by duration (rounded to 3 decimal places).
  */
@@ -200,7 +205,7 @@ export async function synthesizeSilence(durationSec: number): Promise<string> {
   const dir = silenceCacheDir();
   await mkdir(dir, { recursive: true });
   const safeDur = durationSec.toFixed(3);
-  const outPath = join(dir, `silence-${safeDur}.mp3`);
+  const outPath = join(dir, `silence-${safeDur}.m4a`);
   if (await fileExists(outPath)) return outPath;
   // anullsrc is ffmpeg's silent-audio generator. Mono 44.1kHz is
   // enough for narration-paced content (and matches OpenAI's TTS
@@ -217,9 +222,11 @@ export async function synthesizeSilence(durationSec: number): Promise<string> {
     "-t",
     safeDur,
     "-c:a",
-    "libmp3lame",
-    "-q:a",
-    "9",
+    "aac",
+    "-b:a",
+    "64k",
+    "-movflags",
+    "+faststart",
     outPath
   ]);
   return outPath;

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.0-beta.11 - 2026-05-30
+
+- Replaced the redistributed FFmpeg binary with PwrSnap's pinned custom-built
+  LGPL FFmpeg, including release-published source archives and SHA-256 sidecars.
+- Renamed `.pwrsnap` bundles with readable capture filenames based on capture
+  time, source app, effective filename, and a short content hash.
+- Made Codex filename suggestions become the effective filename by default
+  while preserving explicit user overrides.
+- Fixed New from Clipboard so pasting copied capture pixels creates a new
+  independent capture instead of returning the original source row.
+- Removed the remaining v1 image bundle read/write and migration paths now that
+  the library has moved to v2-only image bundles.
+
 ## v1.0.0-beta.10 - 2026-05-29
 
 - Added Sizzle Composer Chat, bringing the shared agent chat substrate into the

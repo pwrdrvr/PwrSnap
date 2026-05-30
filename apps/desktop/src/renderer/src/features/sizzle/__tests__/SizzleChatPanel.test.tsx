@@ -15,13 +15,27 @@ let root: Root | null = null;
 
 type Handler = (payload: unknown) => void;
 
-function installApi(): {
+function makeThread(threadId: string, name: string): unknown {
+  return {
+    threadId,
+    name,
+    createdAt: "",
+    modifiedAt: "",
+    anchorCaptureId: "sz_1",
+    archived: false,
+    pinned: false,
+    lastMessagePreview: "",
+    status: { kind: "idle" }
+  };
+}
+
+function installApi(seedThreads: unknown[] = []): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string) => {
-    if (name === "codex:sizzleChat:list") return { ok: true, value: { threads: [] } };
+    if (name === "codex:sizzleChat:list") return { ok: true, value: { threads: seedThreads } };
     if (name === "codex:sizzleChat:create") {
       return {
         ok: true,
@@ -59,12 +73,12 @@ function installApi(): {
   return { dispatch, emit };
 }
 
-async function renderPanel(): Promise<{
+async function renderPanel(seedThreads: unknown[] = []): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
 }> {
-  const { dispatch, emit } = installApi();
+  const { dispatch, emit } = installApi(seedThreads);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -94,6 +108,15 @@ describe("SizzleChatPanel", () => {
     // No threads ⇒ greeting state.
     expect(el.querySelector('[data-testid="sizzle-chat-panel"]')).not.toBeNull();
     expect(el.textContent).toContain("Reel composer");
+  });
+
+  test("auto-resumes the reel's most-recent thread instead of the greeting", async () => {
+    const { el, dispatch } = await renderPanel([makeThread("t1", "Earlier chat")]);
+    // The existing thread is auto-selected → its history is loaded and the
+    // greeting is gone (the conversation reopens on reel switch / relaunch).
+    expect(dispatch).toHaveBeenCalledWith("codex:sizzleChat:history", { threadId: "t1" });
+    expect(el.textContent).not.toContain("Describe the video you want");
+    expect(el.textContent).toContain("Earlier chat");
   });
 
   test("a thread-updated broadcast adds the thread to the strip", async () => {

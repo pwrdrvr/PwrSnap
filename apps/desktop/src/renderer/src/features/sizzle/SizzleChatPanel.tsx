@@ -90,7 +90,12 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
         setLoading(false);
         return;
       }
-      setThreads(result.value?.threads ?? []);
+      const found = result.value?.threads ?? [];
+      setThreads(found);
+      // Resume the reel's most-recent chat (threads are modified_at DESC)
+      // instead of dropping to the greeting — so switching reels (and
+      // relaunching the app) reopens the conversation for that reel.
+      if (found.length > 0) setActiveThreadId(found[0]!.threadId);
       setLoading(false);
     })();
     return () => {

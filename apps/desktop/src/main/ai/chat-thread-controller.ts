@@ -568,10 +568,18 @@ export class ChatThreadController {
   }
 
   private defaultName(): string {
-    const d = new Date(this.now());
-    const date = d.toISOString().slice(0, 10);
-    return `Chat ${date}`;
+    return `Chat ${localDateStamp(new Date(this.now()))}`;
   }
+}
+
+/** Local-timezone `YYYY-MM-DD` stamp. Deliberately NOT `toISOString()`
+ *  (which is UTC): a chat created at 10pm in New York must read as that
+ *  day, not tomorrow's UTC date. Uses the runtime's local components. */
+export function localDateStamp(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {

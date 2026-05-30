@@ -111,7 +111,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setLoading(false);
         return;
       }
-      setThreads(result.value?.threads ?? []);
+      const found = result.value?.threads ?? [];
+      setThreads(found);
+      // Resume this capture's most-recent chat (threads are modified_at
+      // DESC) instead of dropping to the greeting — so navigating away
+      // and back (and relaunching) reopens the conversation.
+      if (found.length > 0) setActiveThreadId(found[0]!.threadId);
       setLoading(false);
     })();
     return () => {

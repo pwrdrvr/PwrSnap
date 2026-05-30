@@ -47,7 +47,7 @@
     "transformation-matrix": "^3.1.0",
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
-    "zod": "^4.0.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@electron/asar": "^4.2.0",

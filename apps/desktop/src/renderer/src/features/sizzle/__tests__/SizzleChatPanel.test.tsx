@@ -119,6 +119,41 @@ describe("SizzleChatPanel", () => {
     expect(el.textContent).toContain("Earlier chat");
   });
 
+  test("starting the first chat does NOT create a duplicate thread tile", async () => {
+    // Repro of the reported bug: sending the first message both (a) gets
+    // the created thread back and optimistically prepends it AND (b)
+    // receives the controller's threadUpdated broadcast for the same
+    // thread. If the optimistic add doesn't dedup, the SAME thread shows
+    // as two tiles. create() returns thread "t1"; we also broadcast t1.
+    const { el, emit } = await renderPanel();
+
+    // The controller's create broadcast lands first (strip = [t1]).
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleChatThreadUpdated, {
+        thread: makeThread("t1", "Chat 2026-05-29")
+      });
+    });
+
+    // The user sends their first message → onSubmit creates t1 and adds it.
+    const ta = el.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!;
+      setter.call(ta, "make a reel");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Exactly one tile for the one thread.
+    expect(el.querySelectorAll(".ps-libchat-thread")).toHaveLength(1);
+  });
+
   test("a thread-updated broadcast adds the thread to the strip", async () => {
     const { el, emit } = await renderPanel();
     await act(async () => {

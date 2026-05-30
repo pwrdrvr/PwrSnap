@@ -277,7 +277,13 @@ export function SizzleChatPanel({ projectId }: SizzleChatPanelProps): ReactEleme
           return;
         }
         threadId = created.value.threadId;
-        setThreads((prev) => [created.value, ...prev]);
+        // Dedup: the controller also broadcasts threadUpdated for this new
+        // thread, which can land before this optimistic add — without the
+        // filter the same thread shows as two tiles.
+        setThreads((prev) => [
+          created.value,
+          ...prev.filter((t) => t.threadId !== created.value.threadId)
+        ]);
         setActiveThreadId(threadId);
       }
       setPendingChips([]);

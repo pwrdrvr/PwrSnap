@@ -271,13 +271,18 @@ describe("CodexAppServerClient", () => {
       model: "gpt-5.4-mini",
       ephemeral: true,
       approvalPolicy: "never",
-      baseInstructions: expect.stringContaining("Primary goals, in order:")
+      baseInstructions: expect.stringContaining("Primary goals, in order:"),
+      config: { web_search: "disabled" },
+      environments: [],
+      experimentalRawEvents: false,
+      persistExtendedHistory: false
     });
     const turnStart = transport.outbound.find((message) => message.method === "turn/start");
     expect(turnStart?.params).toMatchObject({
       model: "gpt-5.4-mini",
-      input: expect.arrayContaining([{ type: "image", url: "data:image/jpeg;base64,AQID" }])
+      input: expect.arrayContaining([{ type: "localImage", path: imagePath }])
     });
+    expect(JSON.stringify(turnStart?.params)).not.toContain("data:image/jpeg;base64");
     expect(JSON.stringify(turnStart?.params)).toContain("Source application name: PwrSnap");
     expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
   });
@@ -342,11 +347,12 @@ describe("CodexAppServerClient", () => {
     const turnStart = transport.outbound.find((message) => message.method === "turn/start");
     expect(turnStart?.params).toMatchObject({
       input: expect.arrayContaining([
-        { type: "image", url: "data:image/jpeg;base64,AQ==" },
-        { type: "image", url: "data:image/jpeg;base64,Ag==" },
-        { type: "image", url: "data:image/jpeg;base64,Aw==" }
+        { type: "localImage", path: frame1 },
+        { type: "localImage", path: frame2 },
+        { type: "localImage", path: frame3 }
       ])
     });
+    expect(JSON.stringify(turnStart?.params)).not.toContain("data:image/jpeg;base64");
     expect(JSON.stringify(turnStart?.params)).toContain(
       "Provided video frame samples: 15% at 1.500s, 50% at 5.000s, 85% at 8.500s"
     );

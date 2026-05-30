@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type {
   InitializeParams,
   InitializeResponse,
@@ -15,7 +14,8 @@ import type {
   ThreadTokenUsageUpdatedNotification,
   ThreadStartResponse,
   TurnCompletedNotification,
-  TurnStartResponse
+  TurnStartResponse,
+  UserInput
 } from "@pwrsnap/codex-app-server-protocol/v2";
 import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
@@ -115,7 +115,6 @@ export class CodexAppServerClient {
       if (request.imagePaths.length === 0) {
         throw new Error("capture enrichment requires at least one image input");
       }
-      const imageDataUrls = await Promise.all(request.imagePaths.map((path) => imagePathToDataUrl(path)));
 
       const threadResponse = (await connection.request(
         "thread/start",
@@ -124,7 +123,14 @@ export class CodexAppServerClient {
           ephemeral: true,
           approvalPolicy: "never",
           sandbox: "read-only",
-          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS
+          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
+          // This background turn only needs image understanding. Empty
+          // environments and disabled web search keep Codex from attaching
+          // coding-agent tool/context scaffolding to every enrichment.
+          config: { web_search: "disabled" },
+          environments: [],
+          experimentalRawEvents: false,
+          persistExtendedHistory: false
         },
         this.requestTimeoutMs
       )) as ThreadStartResponse;
@@ -141,10 +147,7 @@ export class CodexAppServerClient {
               text: buildCaptureEnrichmentPrompt(request.metadata),
               text_elements: []
             },
-            ...imageDataUrls.map((url) => ({
-              type: "image",
-              url
-            }))
+            ...imagePathsToLocalImageInputs(request.imagePaths)
           ],
           effort: "low",
           outputSchema: CAPTURE_ENRICHMENT_SCHEMA
@@ -410,7 +413,12 @@ function modelToOption(model: Model): CodexModelOption {
   };
 }
 
-async function imagePathToDataUrl(imagePath: string): Promise<string> {
-  const image = await readFile(imagePath);
-  return `data:image/jpeg;base64,${image.toString("base64")}`;
+function imagePathsToLocalImageInputs(imagePaths: readonly string[]): UserInput[] {
+  return imagePaths.map((path) => ({
+    // Do not inline a base64 data URL here: the Codex bridge can account
+    // that payload like fresh text/context. `localImage` lets App Server
+    // read the prepared JPEG as an image input.
+    type: "localImage",
+    path
+  }));
 }

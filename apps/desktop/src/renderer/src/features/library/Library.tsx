@@ -32,6 +32,7 @@ import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
 import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
+import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
@@ -887,16 +888,7 @@ export function Library() {
   // both; we partition here so the Trash sidebar entry swaps the
   // active universe without a second fetch.
   const liveRecords = useMemo(() => {
-    const byId = new Map<string, CaptureRecord>();
-    for (const record of records) {
-      if (record.deleted_at === null) byId.set(record.id, record);
-    }
-    for (const record of openedRecords) {
-      if (record.deleted_at === null && !byId.has(record.id)) {
-        byId.set(record.id, record);
-      }
-    }
-    return Array.from(byId.values());
+    return mergeOpenedLiveRecords(records, openedRecords);
   }, [openedRecords, records]);
   const trashRecords = useMemo(
     () => records.filter((r) => r.deleted_at !== null),
@@ -1295,12 +1287,14 @@ export function Library() {
   // buttons in Focus + Reel modes (Phase C). Null = nothing selected.
   const selectedRecord: CaptureRecord | null = useMemo(() => {
     if (selectedRecordId === null) return null;
+    const fallbackRecord = records.find((r) => r.id === selectedRecordId) ?? null;
     return (
       universeRecords.find((r) => r.id === selectedRecordId) ??
-      records.find((r) => r.id === selectedRecordId) ??
-      null
+      (fallbackRecord !== null && (isTrashView || fallbackRecord.deleted_at === null)
+        ? fallbackRecord
+        : null)
     );
-  }, [records, selectedRecordId, universeRecords]);
+  }, [isTrashView, records, selectedRecordId, universeRecords]);
 
   // Records that match the current active filter, mapped from the
   // (already-filtered) `visible` fixture list. Drives ←/→ navigation

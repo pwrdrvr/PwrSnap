@@ -584,6 +584,7 @@ export function registerSizzleHandlers(): void {
         apiKey
       });
       const timeline = planSequenceTimeline(scene, speechTiming);
+      const bytes = await readFile(tts.audioPath);
       const warnings: SizzleSequencePreviewPlan["warnings"] = [
         ...speechTiming.warnings.map((warning) => ({
           code: warning.code,
@@ -596,6 +597,8 @@ export function registerSizzleHandlers(): void {
         }))
       ];
       return ok({
+        audioBase64: bytes.toString("base64"),
+        mimeType: "audio/mpeg" as const,
         durationSec: timeline.durationSec,
         timingQuality: speechTiming.quality,
         warnings,

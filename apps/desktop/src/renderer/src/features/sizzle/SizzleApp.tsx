@@ -157,6 +157,27 @@ function fallbackSequenceBeats(scene: SizzleScene): SizzleSequencePreviewBeat[] 
   });
 }
 
+function sequencePreviewPlanKey(scene: SizzleScene): string {
+  return JSON.stringify({
+    scriptLine: scene.scriptLine,
+    durationOverrideSec: scene.durationOverrideSec,
+    transition: scene.transition,
+    beats: normalizeSizzleSequenceBeatContinuity(scene.beats ?? []).map((beat) => ({
+      id: beat.id,
+      captureId: beat.captureId,
+      timing: beat.timing,
+      mediaTrim: beat.mediaTrim,
+      transition: beat.transition,
+      videoFit: beat.videoFit
+    }))
+  });
+}
+
+type CachedSequencePreviewPlan = {
+  key: string;
+  plan: SizzleSequencePreviewPlan;
+};
+
 function SequenceTimelinePreview(props: {
   scene: SizzleScene;
   captureMap: Map<string, CaptureRecord>;
@@ -911,7 +932,7 @@ function Editor(props: EditorProps): ReactElement {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewTimeSec, setPreviewTimeSec] = useState(0);
   const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
-    Record<string, SizzleSequencePreviewPlan>
+    Record<string, CachedSequencePreviewPlan>
   >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
@@ -947,9 +968,21 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewLoadingSceneId(null);
       return;
     }
-    if (previewLoadedSceneId === sceneId && audioRef.current !== null && audioRef.current.src.length > 0) {
+    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    const cachedSequencePlan =
+      scene?.kind === "sequence"
+        ? sequencePreviewPlans[sceneId]?.key === sequencePreviewPlanKey(scene)
+          ? sequencePreviewPlans[sceneId]?.plan
+          : undefined
+        : undefined;
+    if (
+      previewLoadedSceneId === sceneId &&
+      (scene?.kind !== "sequence" || cachedSequencePlan !== undefined) &&
+      audioRef.current !== null &&
+      audioRef.current.src.length > 0
+    ) {
       const el = audioRef.current;
-      const durationSec = sequencePreviewPlans[sceneId]?.durationSec ?? previewDurations[sceneId] ?? el.duration;
+      const durationSec = cachedSequencePlan?.durationSec ?? previewDurations[sceneId] ?? el.duration;
       if (Number.isFinite(durationSec) && el.currentTime >= durationSec - 0.05) {
         el.currentTime = 0;
         setPreviewTimeSec(0);
@@ -971,17 +1004,11 @@ function Editor(props: EditorProps): ReactElement {
     // screen, not what was last flushed to disk.
     await onFlushPending();
     if (!isPreviewCurrent(sceneId, gen)) return;
-    const result = await dispatch("sizzle:previewSceneAudio", {
-      projectId: project.id,
-      sceneId
-    });
-    if (!isPreviewCurrent(sceneId, gen)) return;
-    if (!result.ok) {
-      setPreviewLoadingSceneId(null);
-      setPreviewError(result.error.message);
-      return;
-    }
-    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    let previewAudio: {
+      audioBase64: string;
+      mimeType: "audio/mpeg" | "audio/mp4";
+      durationSec: number;
+    };
     if (scene?.kind === "sequence") {
       const planResult = await dispatch("sizzle:previewSequenceScenePlan", {
         projectId: project.id,
@@ -995,15 +1022,31 @@ function Editor(props: EditorProps): ReactElement {
       }
       setSequencePreviewPlans((prev) => ({
         ...prev,
-        [sceneId]: planResult.value
+        [sceneId]: {
+          key: sequencePreviewPlanKey(scene),
+          plan: planResult.value
+        }
       }));
+      previewAudio = planResult.value;
+    } else {
+      const result = await dispatch("sizzle:previewSceneAudio", {
+        projectId: project.id,
+        sceneId
+      });
+      if (!isPreviewCurrent(sceneId, gen)) return;
+      if (!result.ok) {
+        setPreviewLoadingSceneId(null);
+        setPreviewError(result.error.message);
+        return;
+      }
+      previewAudio = result.value;
     }
     // Cache the measured audio duration so the editor can surface
     // an inline "voiceover is X.Xs vs Y.Ys trim" hint on the video
     // scene's row without forcing the user to render to find out.
     setPreviewDurations((prev) => ({
       ...prev,
-      [sceneId]: result.value.durationSec
+      [sceneId]: previewAudio.durationSec
     }));
     const el = audioRef.current;
     if (el === null) {
@@ -1013,10 +1056,10 @@ function Editor(props: EditorProps): ReactElement {
     // Decode the base64 into a Blob, hand the audio element an
     // object URL, and revoke the previous one. This keeps a single
     // buffer alive at a time instead of accumulating data URLs.
-    const binary = atob(result.value.audioBase64);
+    const binary = atob(previewAudio.audioBase64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: result.value.mimeType });
+    const blob = new Blob([bytes], { type: previewAudio.mimeType });
     revokeAudioObjectUrl();
     const objectUrl = URL.createObjectURL(blob);
     audioObjectUrlRef.current = objectUrl;
@@ -1062,8 +1105,14 @@ function Editor(props: EditorProps): ReactElement {
   }, [project.scenes, previewingSceneId, previewLoadedSceneId]);
 
   const seekPreview = (sceneId: string, timeSec: number): void => {
+    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    const cachedPlan =
+      scene?.kind === "sequence" &&
+      sequencePreviewPlans[sceneId]?.key === sequencePreviewPlanKey(scene)
+        ? sequencePreviewPlans[sceneId]?.plan
+        : undefined;
     const durationSec =
-      sequencePreviewPlans[sceneId]?.durationSec ??
+      cachedPlan?.durationSec ??
       previewDurations[sceneId] ??
       0;
     const clamped = clampTime(timeSec, durationSec);
@@ -1309,6 +1358,13 @@ function Editor(props: EditorProps): ReactElement {
                 : effectiveAudio === "native"
                   ? "Preview native video audio"
                   : "Preview voiceover";
+            const sequencePreviewEntry =
+              scene.kind === "sequence" ? sequencePreviewPlans[scene.id] : undefined;
+            const sequencePreviewPlan =
+              scene.kind === "sequence" &&
+              sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
+                ? sequencePreviewEntry.plan
+                : undefined;
 
             const elements: ReactElement[] = [];
 
@@ -1616,7 +1672,7 @@ function Editor(props: EditorProps): ReactElement {
                       <SequenceTimelinePreview
                         scene={scene}
                         captureMap={captureMap}
-                        plan={sequencePreviewPlans[scene.id]}
+                        plan={sequencePreviewPlan}
                         currentTimeSec={
                           previewingSceneId === scene.id || previewLoadedSceneId === scene.id
                             ? previewTimeSec

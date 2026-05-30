@@ -88,6 +88,8 @@ function installApi(projects: SizzleProject[]): {
       return {
         ok: true,
         value: {
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
           durationSec: 4,
           timingQuality: "approximate",
           warnings: [],
@@ -171,6 +173,15 @@ function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   )!.set!;
   setter.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function typeIntoInput(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value"
+  )!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function projectRowNames(list: Element | null): string[] {
@@ -318,8 +329,59 @@ describe("SizzleApp sequence authoring", () => {
       projectId: "sz_1",
       sceneId: "sc_a"
     });
+    expect(dispatch).not.toHaveBeenCalledWith("sizzle:previewSceneAudio", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
     expect(el.textContent).toContain("approx timing");
     expect(el.textContent).toContain("4s");
+  });
+
+  test("invalidates a resolved sequence timeline when beat timing changes", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.textContent).toContain("approx timing");
+
+    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
+    if (phrase === null) throw new Error("sequence phrase input not found");
+    await act(async () => {
+      typeIntoInput(phrase, "changed phrase");
+    });
+
+    expect(el.textContent).toContain("unresolved");
+    expect(el.textContent).not.toContain("approx timing");
   });
 });
 

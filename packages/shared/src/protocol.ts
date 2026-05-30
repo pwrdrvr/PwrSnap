@@ -768,6 +768,8 @@ export type SizzleSequencePreviewBeat = {
 };
 
 export type SizzleSequencePreviewPlan = {
+  audioBase64: string;
+  mimeType: "audio/mpeg";
   durationSec: number;
   timingQuality: SizzleSpeechTimingQuality;
   warnings: SizzleSequencePreviewWarning[];
@@ -2593,7 +2595,7 @@ export type Commands = {
     req: { projectId: string; sceneId: string };
     res: { audioBase64: string; mimeType: "audio/mpeg" | "audio/mp4"; durationSec: number };
   };
-  /** Resolve a sequence scene's narration timing into visual beat windows
+  /** Resolve a sequence scene's narration audio + visual beat windows
    *  for the editor timeline. This is intentionally lighter than render:
    *  it synthesizes/loads narration timing, resolves phrase anchors, and
    *  returns beat windows plus warnings, but it does not compose video. */

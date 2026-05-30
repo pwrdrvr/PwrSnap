@@ -3,6 +3,7 @@ import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
@@ -247,6 +248,7 @@ export function FloatOver({
       .map((tag) => ({ id: tag.id!, label: tag.label })) ?? [];
   const thinking = aiStatus === "queued" || aiStatus === "running";
   const aiFailed = aiStatus === "failed";
+  const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
   // Derived "has unaccepted drafts" — replaces the one-shot `aiAccepted`
   // flag for the Use-button visibility. Necessary because main-side
   // auto-accept lands acceptedTitle/acceptedDescription without the
@@ -728,7 +730,16 @@ export function FloatOver({
             action={
               !thinking && !aiFailed ? (
                 suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
-                  <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+                  <button
+                    className="fo__ai-accept"
+                    onClick={() => {
+                      if (aiConsentAccepted) {
+                        onEnableAi?.();
+                        return;
+                      }
+                      setAiConsentDialogOpen(true);
+                    }}
+                  >
                     Enable
                   </button>
                 ) : hasUnacceptedDrafts ? (
@@ -775,6 +786,16 @@ export function FloatOver({
           ) : null}
         </div>
       )}
+
+      {aiConsentDialogOpen ? (
+        <AiConsentDialog
+          onCancel={() => setAiConsentDialogOpen(false)}
+          onAccept={() => {
+            setAiConsentDialogOpen(false);
+            onEnableAi?.();
+          }}
+        />
+      ) : null}
 
       {cfg.showFooter && (
         <div className="fo__foot">

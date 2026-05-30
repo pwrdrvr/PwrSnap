@@ -1,0 +1,88 @@
+.ps-ai-consent__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: var(--bg-overlay);
+}
+
+.ps-ai-consent {
+  width: min(420px, 100%);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+  padding: 18px;
+  color: var(--text-primary);
+}
+
+.ps-ai-consent__eyebrow {
+  color: var(--accent-bright);
+  font: 700 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.ps-ai-consent__title {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font: 750 18px/1.15 var(--font-display);
+}
+
+.ps-ai-consent__copy {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font: 500 12px/1.45 var(--font-sans);
+}
+
+.ps-ai-consent__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ps-ai-consent__btn {
+  height: 30px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-panel-elevated);
+  color: var(--text-primary);
+  padding: 0 12px;
+  font: 650 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.ps-ai-consent__btn:hover {
+  border-color: var(--accent-border);
+}
+
+.ps-ai-consent__btn:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+.ps-ai-consent__btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--button-text-on-accent);
+}
+
+.ps-ai-consent__btn.is-primary:hover {
+  background: var(--accent-strong);
+}
+
+body[data-stage="float-over"] .ps-ai-consent__backdrop {
+  position: relative;
+  inset: auto;
+  display: block;
+  padding: 0;
+  background: transparent;
+}
+
+body[data-stage="float-over"] .ps-ai-consent {
+  width: 100%;
+  padding: 12px;
+}

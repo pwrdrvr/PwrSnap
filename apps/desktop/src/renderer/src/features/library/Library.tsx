@@ -44,6 +44,7 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
+import { AiConsentDialog } from "../shared/AiConsentDialog";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
@@ -427,6 +428,7 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
   const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
   const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
+  const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
   const userTouchedAiRef = useRef<boolean>(false);
 
   const applyAiSettings = useCallback((settings: Settings): void => {
@@ -503,12 +505,9 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
     });
   }, []);
 
-  const toggleAiEnabled = useCallback((): void => {
-    const next = !aiEnabled;
+  const writeAiEnabled = useCallback((next: boolean, consentAcceptedAt: string | null): void => {
     const previousEnabled = aiEnabled;
     const previousConsentAcceptedAt = aiConsentAcceptedAt;
-    const consentAcceptedAt =
-      next && aiConsentAcceptedAt === null ? new Date().toISOString() : aiConsentAcceptedAt;
 
     userTouchedAiRef.current = true;
     setAiToggleBusy(true);
@@ -529,6 +528,24 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       setAiConsentAcceptedAtState(previousConsentAcceptedAt);
     });
   }, [aiConsentAcceptedAt, aiEnabled, applyAiSettings]);
+
+  const toggleAiEnabled = useCallback((): void => {
+    if (aiEnabled) {
+      writeAiEnabled(false, aiConsentAcceptedAt);
+      return;
+    }
+    userTouchedAiRef.current = true;
+    if (aiConsentAcceptedAt === null) {
+      setAiConsentDialogOpen(true);
+      return;
+    }
+    writeAiEnabled(true, aiConsentAcceptedAt);
+  }, [aiConsentAcceptedAt, aiEnabled, writeAiEnabled]);
+
+  const acceptAiConsent = useCallback((): void => {
+    setAiConsentDialogOpen(false);
+    writeAiEnabled(true, new Date().toISOString());
+  }, [writeAiEnabled]);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
@@ -2564,6 +2581,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </span>
         </div>
       </footer>
+      {aiConsentDialogOpen ? (
+        <AiConsentDialog
+          onCancel={() => setAiConsentDialogOpen(false)}
+          onAccept={acceptAiConsent}
+        />
+      ) : null}
     </div>
   );
 }

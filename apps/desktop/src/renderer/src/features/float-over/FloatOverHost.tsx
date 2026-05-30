@@ -370,10 +370,12 @@ export function FloatOverHost(): React.ReactElement {
           });
         }}
         onEnableAi={() => {
+          const consentAcceptedAt =
+            settings?.ai.consentAcceptedAt ?? new Date().toISOString();
           void dispatch("settings:write", {
             ai: {
               enabled: true,
-              consentAcceptedAt: new Date().toISOString()
+              consentAcceptedAt
             }
           }).then((result) => {
             if (!result.ok) return;

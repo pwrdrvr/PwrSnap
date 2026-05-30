@@ -1,32 +1,17 @@
-// E2E coverage for the v2-editor refresh Phase 2 dual-format read path
-// (plan task #15). Proves that `useCaptureModel` branches correctly on
-// `record.bundle_format_version` so:
+// E2E coverage for the v2 editor read path. Proves that
+// `useCaptureModel` opens a v2 capture through `layers:list`:
 //
-//   1. v1 captures still open through `overlays:list` (Phase 1 byte-
-//      equivalent rendering — image mounts, format attribute reads "1",
-//      no error banner).
-//   2. v2 captures (seeded with `bundle_format_version: 2`) open through
-//      `layers:list` without the legacy "v2 not supported" refusal. The
-//      editor mounts the canvas + image + toolbar identically to v1; the
-//      only externally observable difference is the
-//      `data-bundle-format-version="2"` attribute on `.editor-root`.
-//   3. ⌘Z on a freshly-opened v2 capture is safe: the undo button is
+//   1. v2 captures (seeded with `bundle_format_version: 2`) open through
+//      `layers:list`. The editor mounts the canvas + image + toolbar;
+//      `.editor-root` carries `data-bundle-format-version="2"`.
+//   2. ⌘Z on a freshly-opened v2 capture is safe: the undo button is
 //      disabled (nothing to undo) and the shortcut doesn't crash the
 //      renderer or wedge the editor in an error state.
 //
-// What's NOT covered (and why):
-//
-//   • The rapid v1↔v2 switch cancel-safety race. The window of
-//     interest is sub-100ms (single `library:byId` + single
-//     `overlays:list`/`layers:list` round trip), and there's no
-//     deterministic way to wedge the IPC ordering in a launched
-//     Electron process from the test side. The race is already
-//     covered by the unit suite — see
-//     `apps/desktop/src/renderer/src/features/editor/__tests__/useCaptureModel.test.ts`
-//     tests #6 and #7, which use a deferred dispatch double to drive
-//     fast/slow resolution orderings deterministically. Scenario marked
-//     `test.fixme` below as a cross-reference rather than skipped, so
-//     it shows up on test reports.
+// The former "v1 capture opens through `overlays:list`" scenario was
+// dropped when the v1 read/write path was retired — v2 is the only
+// bundle format and the renderer no longer dispatches any `overlays:*`
+// verb.
 //
 // Selectors used (all data-testid; additive only):
 //   - editor-root            → `.editor-root` wrapper; carries
@@ -48,39 +33,6 @@ import { launchPwrSnap, type LaunchedApp } from "./fixtures/electron-app";
 // the warm pnpm-store cache. 90s mirrors editor-tool-styles.spec.ts.
 test.setTimeout(90_000);
 
-test("editor-v2-capture-open: v1 capture opens with format=1 and overlays IPC", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const captureId = await seedCapture(app, { bundleFormatVersion: 1 });
-    const editorWindow = await openEditor(app, captureId);
-
-    // The editor mounted — image + toolbar visible.
-    await expect(
-      editorWindow.locator('[data-testid="editor-image"]')
-    ).toBeVisible();
-    await expect(
-      editorWindow.locator('[data-testid="editor-tool-button-arrow"]')
-    ).toBeVisible();
-
-    // Format attribute on the root reads "1" (the v1 read path branch).
-    await expect(
-      editorWindow.locator('[data-testid="editor-root"]')
-    ).toHaveAttribute("data-bundle-format-version", "1");
-
-    // No error banner.
-    await expect(
-      editorWindow.locator('[data-testid="editor-error"]')
-    ).toHaveCount(0);
-
-    // Sanity: the `overlays:list` IPC succeeds against this capture.
-    const listResult = await app.dispatch("overlays:list", { captureId });
-    expect(listResult.ok).toBe(true);
-    if (listResult.ok) expect(listResult.value).toHaveLength(0);
-  } finally {
-    await app.close();
-  }
-});
-
 test("editor-v2-capture-open: v2 capture opens with format=2, no v2-not-supported error", async () => {
   const app = await launchPwrSnap();
   try {
@@ -101,42 +53,17 @@ test("editor-v2-capture-open: v2 capture opens with format=2, no v2-not-supporte
       editorWindow.locator('[data-testid="editor-root"]')
     ).toHaveAttribute("data-bundle-format-version", "2");
 
-    // No error banner — the editor did NOT refuse the v2 capture.
-    // This is the key contract the dual-format hook ships: Phase 1 had
-    // a hardcoded `overlays:list` that would have surfaced a
-    // "v2_capture_use_layers_ipc" Result.err on v2 captures; Phase 2
-    // must route to `layers:list` instead and show the editor.
+    // No error banner — the editor did NOT refuse the v2 capture. The
+    // editor routes to `layers:list` and shows the canvas.
     await expect(
       editorWindow.locator('[data-testid="editor-error"]')
     ).toHaveCount(0);
 
-    // Sanity check the IPC contract directly:
-    //   - layers:list must succeed (returns [] — fresh capture).
-    //   - overlays:list returns success but the bus refuses any write
-    //     to a v2 capture; we only assert the read path here since
-    //     that's what the editor exercises.
+    // Sanity check the IPC contract directly: layers:list must succeed
+    // (returns [] — fresh capture).
     const layersResult = await app.dispatch("layers:list", { captureId });
     expect(layersResult.ok).toBe(true);
     if (layersResult.ok) expect(layersResult.value).toHaveLength(0);
-
-    // Belt-and-braces: confirm v2 captures correctly refuse the v1
-    // overlays:upsert verb. This proves the format gating wired
-    // through to the bus — if it didn't, a renderer regression that
-    // accidentally dispatched overlays:upsert on a v2 capture would
-    // silently corrupt the bundle.
-    const refusal = await app.dispatch("overlays:upsert", {
-      captureId,
-      overlay: {
-        kind: "arrow",
-        from: { x: 0.1, y: 0.1 },
-        to: { x: 0.5, y: 0.5 },
-        color: "auto"
-      }
-    });
-    expect(refusal.ok).toBe(false);
-    if (!refusal.ok) {
-      expect(refusal.error.code).toBe("v2_capture_use_layers_ipc");
-    }
   } finally {
     await app.close();
   }
@@ -180,27 +107,10 @@ test("editor-v2-capture-open: ⌘Z on a freshly-opened v2 capture is a no-op (bu
   }
 });
 
-// The rapid-switch cancel-safety race is impossible to drive
-// deterministically through a launched Electron process — both
-// `library:byId` and `overlays:list`/`layers:list` complete inside
-// a single main-process tick, so there's no window for a follow-on
-// `captureId` change to lose the race. The unit suite covers this
-// with a deferred-dispatch double:
-//   apps/desktop/src/renderer/src/features/editor/__tests__/useCaptureModel.test.ts
-//   #6 "cancel-safety: capture-change drops stale resolution"
-//   #7 "slow branch resolves SECOND: fast cap_2 stays, slow cap_1 ignored"
-// Marked fixme rather than skipped so the gap is visible in reports.
-test.fixme(
-  "editor-v2-capture-open: rapid v1↔v2 switch cancel-safety (unit-tested)",
-  () => {
-    // intentionally empty — see comment above.
-  }
-);
-
 // ---- Shared helpers (mirror editor-tool-styles.spec.ts pattern) -----
 
 type SeedOptions = {
-  bundleFormatVersion: 1 | 2;
+  bundleFormatVersion: 2;
 };
 
 async function seedCapture(

@@ -755,7 +755,7 @@ export function hardDeleteCapture(id: string): void {
     if (row.deleted_at === null) {
       bumpAppStat(row.source_app_bundle_id, -1);
     }
-    // ON DELETE CASCADE removes the render_cache + overlays rows.
+    // ON DELETE CASCADE removes the render_cache + layers rows.
     db.prepare("DELETE FROM captures WHERE id = ?").run(id);
   })();
 }

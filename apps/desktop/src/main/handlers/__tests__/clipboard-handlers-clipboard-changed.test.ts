@@ -112,7 +112,6 @@ beforeEach(() => {
 afterEach(() => {
   clipboardEvents.off("changed", changedSpy);
   const db = getDb();
-  db.exec(`DELETE FROM overlays`);
   db.exec(`DELETE FROM layers`);
   db.exec(`DELETE FROM captures`);
 });

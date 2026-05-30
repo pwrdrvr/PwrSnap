@@ -28,14 +28,13 @@ import {
   vi,
   type MockInstance
 } from "vitest";
-import type { OverlayRow } from "@pwrsnap/shared";
+import type { BundleLayerNode, OverlayRow } from "@pwrsnap/shared";
 
-const dispatchMock = vi.fn();
-vi.mock("../../../lib/pwrsnap", () => ({
-  dispatch: (...args: unknown[]) => dispatchMock(...args)
-}));
-
-import { useUndoRedo, type UseUndoRedoResult } from "../useUndoRedo";
+import {
+  useUndoRedo,
+  type UndoRedoDispatchEdit,
+  type UseUndoRedoResult
+} from "../useUndoRedo";
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -45,8 +44,13 @@ beforeAll(() => {
 let nowSpy: MockInstance<() => number>;
 let virtualNow = 0;
 
+// Default v2 dispatchEdit spy — every undo/redo op flows through it.
+// Tests assert against `dispatchEditMock.mock.calls`. Content-check
+// tests can install their own dispatchEdit via the Probe.
+const dispatchEditMock = vi.fn<UndoRedoDispatchEdit>();
+
 beforeEach(() => {
-  dispatchMock.mockReset();
+  dispatchEditMock.mockReset();
   virtualNow = 0;
   // Stable virtual clock so the tests can step time deterministically.
   // The hook reads `performance.now()` for grace-window comparisons;
@@ -54,15 +58,21 @@ beforeEach(() => {
   // timing-sensitive coalescing tests flaky.
   nowSpy = vi.spyOn(performance, "now").mockImplementation(() => virtualNow);
   let n = 0;
-  dispatchMock.mockImplementation(async (name: string) => {
+  dispatchEditMock.mockImplementation(async (op) => {
     n += 1;
-    if (name === "overlays:upsert") {
-      return { ok: true, value: makeRow(`fresh-${n}`) };
+    if (op.kind === "upsert") {
+      return { ok: true, value: { kind: "upsert", artifact: { format: 2, node: op.node } } };
     }
-    if (name === "overlays:delete") {
-      return { ok: true, value: undefined };
+    if (op.kind === "delete") {
+      return { ok: true, value: { kind: "delete" } };
     }
-    return { ok: false, error: { kind: "validation", code: "unknown", message: name } };
+    if (op.kind === "updateGeometry" || op.kind === "updateOverlay") {
+      return {
+        ok: true,
+        value: { kind: "update", artifact: { format: 2, node: makeNode(`fresh-${n}`) } }
+      };
+    }
+    return { ok: false, error: { kind: "validation", code: "unknown", message: op.kind } };
   });
 });
 
@@ -90,18 +100,35 @@ function makeRow(id: string): OverlayRow {
   };
 }
 
+function makeNode(id: string, zIndex = 0): BundleLayerNode {
+  return {
+    id,
+    parent_id: null,
+    kind: "vector",
+    shape: { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, color: "auto" },
+    name: "Arrow",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: zIndex,
+    source: "user",
+    ai_run_id: null,
+    applied_at: "2026-05-20T00:00:00.000Z",
+    rejected_at: null,
+    superseded_by: null,
+    created_at: "2026-05-20T00:00:00.000Z"
+  };
+}
+
 type ProbeProps = {
   readonly captureId: string;
   readonly onSnapshot: (api: UseUndoRedoResult) => void;
-  /** Optional bridge for content-check tests that need to observe
-   *  the format-aware dispatcher's calls. The geometry / style
-   *  branches of applyInverse early-return when this is null, so a
-   *  test that wants to verify "one dispatch per item" on a
-   *  multi-drag undo MUST provide this. The bus-level dispatchMock
-   *  only covers the v1 fallback path used by create/delete. */
-  readonly dispatchEdit?: (
-    op: Parameters<NonNullable<Parameters<typeof useUndoRedo>[0]["dispatchEdit"]>>[0]
-  ) => ReturnType<NonNullable<Parameters<typeof useUndoRedo>[0]["dispatchEdit"]>>;
+  /** Optional override for content-check tests that need to observe
+   *  the dispatcher's calls directly. Defaults to the module-level
+   *  `dispatchEditMock`. */
+  readonly dispatchEdit?: UndoRedoDispatchEdit;
 };
 
 function Probe(props: ProbeProps): null {
@@ -109,7 +136,7 @@ function Probe(props: ProbeProps): null {
   const api = useUndoRedo({
     captureId: props.captureId,
     applyingRef: internal,
-    ...(props.dispatchEdit !== undefined ? { dispatchEdit: props.dispatchEdit } : {})
+    dispatchEdit: props.dispatchEdit ?? dispatchEditMock
   });
   useEffect(() => {
     props.onSnapshot(api);
@@ -516,6 +543,8 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
 
     const rowA = makeRow("blur-row");
     const rowB = makeRow("rect-row");
+    const nodeA = makeNode("blur-row");
+    const nodeB = makeNode("rect-row");
 
     let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
     act(() => {
@@ -523,6 +552,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     });
     act(() => {
       api!.recordDelete(rowA, {
+        node: nodeA,
         opKind: "delete",
         layerId: "kbd-multi-delete",
         // "append" mirrors what Editor.tsx's multi-delete handler
@@ -534,6 +564,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       });
       advanceTime(5);
       api!.recordDelete(rowB, {
+        node: nodeB,
         opKind: "delete",
         layerId: "kbd-multi-delete",
         mergeMode: "append"
@@ -543,42 +574,25 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       api!.endInteraction(token);
     });
 
-    // Reset the dispatch mock so we count ONLY the undo-fired calls.
-    // The fallback path in applyInverse (when dispatchEditRef is
-    // null — which it is in this harness) dispatches
-    // `overlays:upsert` directly through the bus mock.
-    dispatchMock.mockReset();
-    const upsertOverlays: unknown[] = [];
-    dispatchMock.mockImplementation(
-      async (name: string, args: { overlay?: unknown }) => {
-        if (name === "overlays:upsert") {
-          upsertOverlays.push(args.overlay);
-          return { ok: true, value: makeRow("restored") };
-        }
-        return {
-          ok: false,
-          error: { kind: "validation", code: "unknown", message: name }
-        };
-      }
-    );
+    // Count ONLY the undo-fired upsert ops. undo of delete dispatches
+    // `{ kind: "upsert", node }` per recorded item through dispatchEdit.
+    dispatchEditMock.mockClear();
 
     // Single Cmd+Z — must dispatch one upsert per deleted row.
     await act(async () => {
       await api!.undo();
     });
 
-    expect(upsertOverlays).toHaveLength(2);
-    // Order: the bracket's deletes were recorded A then B, so the
-    // inverse should restore in the SAME order (or any deterministic
-    // order — both rows present is what we care about).
-    const restoredIds = new Set(
-      upsertOverlays.map((o) => (o as { kind: string }).kind)
-    );
-    // Both rows were arrow-kind by makeRow's default — verify the
-    // ARRAY length above; data shape is identical so an id-based
-    // check would be redundant. The key assertion is the COUNT.
-    expect(restoredIds.size).toBe(1);
-    expect(restoredIds.has("arrow")).toBe(true);
+    const upsertNodes = dispatchEditMock.mock.calls
+      .map((c) => c[0])
+      .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
+      .map((op) => op.node);
+    expect(upsertNodes).toHaveLength(2);
+    // Both deleted nodes' inverses go out — that's the load-bearing
+    // assertion (the user-reported "only 1 of 2 came back" bug).
+    const restoredIds = new Set(upsertNodes.map((n) => n.id));
+    expect(restoredIds.has("blur-row")).toBe(true);
+    expect(restoredIds.has("rect-row")).toBe(true);
     // Stack is now empty.
     expect(api!.canUndo).toBe(false);
   });
@@ -608,10 +622,13 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       })
     );
 
-    // Two rows at DISTINCT z_indexes. makeRow() defaults z_index: 0,
-    // so we override for one of them.
+    // Two rows at DISTINCT z_indexes. The node carries the z_index
+    // (layers:upsert stores node.z_index verbatim when bumpZIndexToMax
+    // isn't set), so the inverse restores each at its original depth.
     const rowBack: OverlayRow = { ...makeRow("rect-back"), z_index: 0 };
     const rowTop: OverlayRow = { ...makeRow("arrow-top"), z_index: 5000 };
+    const nodeBack = makeNode("rect-back", 0);
+    const nodeTop = makeNode("arrow-top", 5000);
 
     let token: ReturnType<UseUndoRedoResult["beginInteraction"]>;
     act(() => {
@@ -619,12 +636,14 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     });
     act(() => {
       api!.recordDelete(rowBack, {
+        node: nodeBack,
         opKind: "delete",
         layerId: "kbd-multi-delete",
         mergeMode: "append"
       });
       advanceTime(5);
       api!.recordDelete(rowTop, {
+        node: nodeTop,
         opKind: "delete",
         layerId: "kbd-multi-delete",
         mergeMode: "append"
@@ -634,37 +653,21 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       api!.endInteraction(token);
     });
 
-    // Capture the upserts WITH their zIndex field.
-    dispatchMock.mockReset();
-    const upsertCalls: Array<{ overlay: unknown; zIndex?: number }> = [];
-    dispatchMock.mockImplementation(
-      async (
-        name: string,
-        args: { overlay?: unknown; zIndex?: number }
-      ) => {
-        if (name === "overlays:upsert") {
-          upsertCalls.push({
-            overlay: args.overlay,
-            ...(args.zIndex !== undefined ? { zIndex: args.zIndex } : {})
-          });
-          return { ok: true, value: makeRow("restored") };
-        }
-        return {
-          ok: false,
-          error: { kind: "validation", code: "unknown", message: name }
-        };
-      }
-    );
+    dispatchEditMock.mockClear();
 
     await act(async () => {
       await api!.undo();
     });
 
-    // Two restores, EACH with the original row's z_index forwarded.
-    expect(upsertCalls).toHaveLength(2);
-    const sortedZIndexes = upsertCalls
-      .map((c) => c.zIndex)
-      .sort((a, b) => (a ?? 0) - (b ?? 0));
+    // Two restores, EACH carrying its original node z_index.
+    const upsertNodes = dispatchEditMock.mock.calls
+      .map((c) => c[0])
+      .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert")
+      .map((op) => op.node);
+    expect(upsertNodes).toHaveLength(2);
+    const sortedZIndexes = upsertNodes
+      .map((n) => n.z_index)
+      .sort((a, b) => a - b);
     expect(sortedZIndexes).toEqual([0, 5000]);
   });
 
@@ -690,12 +693,14 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     });
     act(() => {
       api!.recordDelete(makeRow("blur-row"), {
+        node: makeNode("blur-row"),
         opKind: "delete",
         layerId: "kbd-multi-delete"
         // mergeMode intentionally OMITTED → defaults to "replace"
       });
       advanceTime(5);
       api!.recordDelete(makeRow("rect-row"), {
+        node: makeNode("rect-row"),
         opKind: "delete",
         layerId: "kbd-multi-delete"
       });
@@ -704,20 +709,7 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
       api!.endInteraction(token);
     });
 
-    dispatchMock.mockReset();
-    const upsertOverlays: unknown[] = [];
-    dispatchMock.mockImplementation(
-      async (name: string, args: { overlay?: unknown }) => {
-        if (name === "overlays:upsert") {
-          upsertOverlays.push(args.overlay);
-          return { ok: true, value: makeRow("restored") };
-        }
-        return {
-          ok: false,
-          error: { kind: "validation", code: "unknown", message: name }
-        };
-      }
-    );
+    dispatchEditMock.mockClear();
 
     await act(async () => {
       await api!.undo();
@@ -726,7 +718,10 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     // Default replace mode → only the LAST recorded delete makes it
     // into the entry's items[]. This is the bug class the flag
     // exists to opt out of for different-layer bursts.
-    expect(upsertOverlays).toHaveLength(1);
+    const upsertNodes = dispatchEditMock.mock.calls
+      .map((c) => c[0])
+      .filter((op): op is Extract<typeof op, { kind: "upsert" }> => op.kind === "upsert");
+    expect(upsertNodes).toHaveLength(1);
   });
 
   test("multi-CREATE undo dispatches the inverse (delete) for EACH created row", async () => {
@@ -777,30 +772,20 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
     // Stack collapses to ONE entry covering all three pastes.
     expect(api!.canUndo).toBe(true);
 
-    // Observe undo: should fire `overlays:delete` for EACH of the
-    // three pasted ids — undo of create = delete (and the v1
-    // fallback path inside applyInverse for create-undo dispatches
-    // through the bus mock).
-    dispatchMock.mockReset();
-    const deletedIds: string[] = [];
-    dispatchMock.mockImplementation(
-      async (name: string, args: { id?: string }) => {
-        if (name === "overlays:delete") {
-          if (typeof args.id === "string") deletedIds.push(args.id);
-          return { ok: true, value: undefined };
-        }
-        return {
-          ok: false,
-          error: { kind: "validation", code: "unknown", message: name }
-        };
-      }
-    );
+    // Observe undo: should fire a delete op for EACH of the three
+    // pasted ids — undo of create = delete, routed through
+    // dispatchEdit.
+    dispatchEditMock.mockClear();
 
     await act(async () => {
       await api!.undo();
     });
 
     // All three pasted ids should have been delete-dispatched.
+    const deletedIds = dispatchEditMock.mock.calls
+      .map((c) => c[0])
+      .filter((op): op is Extract<typeof op, { kind: "delete" }> => op.kind === "delete")
+      .map((op) => op.id);
     expect(deletedIds).toHaveLength(3);
     expect(new Set(deletedIds)).toEqual(
       new Set(["paste-1", "paste-2", "paste-3"])
@@ -934,8 +919,8 @@ describe("useUndoRedo coalescing (plan Alt 5)", () => {
             value: {
               kind: "update",
               artifact: {
-                format: 1,
-                row: makeRow(`post-${dispatchEditCalls.length}`)
+                format: 2,
+                node: makeNode(`post-${dispatchEditCalls.length}`)
               }
             }
           };

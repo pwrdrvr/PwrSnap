@@ -1,21 +1,21 @@
-// `useCaptureModel` — single data-access hook for the editor that
-// branches the renderer on `record.bundle_format_version`. Returns a
-// discriminated union: loading, error, loaded-v1 (overlays), or
-// loaded-v2 (layers). The rendering code path can consume either
-// format-specific data (`overlays` / `layers`) OR the synthesized
-// uniform `LayerView` shape — whichever the call site finds clearer.
+// `useCaptureModel` — single data-access hook for the editor. v2 is
+// the only bundle format, so a loaded capture is always v2 (layer
+// tree). Returns a discriminated union: loading, error, or loaded
+// (v2 layers). The rendering code path can consume the format-specific
+// `layers` OR the synthesized uniform `LayerView` shape (`layersView`)
+// — whichever the call site finds clearer.
 //
-// Replaces the inline `library:byId` + `overlays:list` fetch loop that
+// Replaces the inline `library:byId` + `layers:list` fetch loop that
 // `Editor.tsx` currently maintains directly. The hook owns:
 //
 //   - the cancel-safety dance (single `cancelled` flag across both
 //     dispatches and any subsequent re-fetch from event broadcasts),
-//   - the format branch (`format: 1` → `overlays:list`,
-//     `format >= 2` → `layers:list`),
-//   - the overlay-to-LayerView shim (inlined here, not a separate
+//   - the `layers:list` fetch (a record with
+//     `bundle_format_version < 2` is treated as an error — there are
+//     no v1 captures left to read),
+//   - the layer-node-to-LayerView shim (inlined here, not a separate
 //     file, per code-simplicity-reviewer in the plan),
-//   - the format-typed `dispatchEdit` so callers can write without
-//     restating the format branch.
+//   - the `dispatchEdit` so callers can write layer ops.
 //
 // Plan reference:
 // docs/plans/2026-05-23-001-feat-v2-editor-plan.md Phase 2.
@@ -37,28 +37,25 @@ import { findRootGroupId, overlayToBundleLayerNode } from "./overlayToLayer";
 // ---- Geometry / patch op types -------------------------------------
 //
 // Phase 3.5 — transform handles + selected-layer style editing. The
-// editor needs two new dispatchEdit verbs on top of the existing
-// upsert / delete / replace / crop set:
+// editor needs two dispatchEdit verbs on top of the upsert / delete /
+// crop set:
 //
-//   • updateGeometry — drag the selected overlay's handles. Merges a
-//     kind-specific positional/size patch into the overlay's
-//     data.{from,to,rect,point}. v1 → overlays:upsert (insert-only
-//     surface, but with the same row id the dispatcher re-uses to
-//     replace via INSERT … ON CONFLICT semantics on the main side).
-//     v2 → for vector kinds, merge into shape.data.* via layers:upsert
-//     (same id round-trip); for blur effects, update clip_rect via
+//   • updateGeometry — drag the selected layer's handles. For vector
+//     kinds, merge a kind-specific positional/size patch into
+//     shape.{from,to,rect,point} via layers:upsert (delete-plus-insert
+//     under a fresh id); for blur effects, update clip_rect via
 //     layers:upsert.
 //
 //   • updateOverlay — generic style patch dispatched by the selected-
-//     layer style editor (popover writes through this when an overlay
-//     is selected). Same dispatch shape as updateGeometry — fetch row
-//     → merge patch into data.* → upsert with the original id.
+//     layer style editor (popover writes through this when a layer is
+//     selected). Same dispatch shape as updateGeometry — fetch the
+//     layer → merge patch → re-upsert.
 //
 // Both ops require the layer to ALREADY EXIST. The dispatcher first
-// reads the current overlay/layer from the in-memory state (no IPC
-// round-trip — the model has it cached), merges the patch, and
-// re-dispatches the upsert. The events:overlays:changed broadcast
-// triggers refetch and the renderer paints the new state.
+// reads the current layer from the in-memory state (no IPC round-trip
+// — the model has it cached), merges the patch, and re-dispatches the
+// upsert. The events:overlays:changed broadcast triggers refetch and
+// the renderer paints the new state.
 
 /** Normalized [0,1]² point. Same shape as the on-disk Overlay's
  *  `from`/`to`/`point` fields. */
@@ -167,64 +164,19 @@ export type LayerView =
  *  dispatching, so callers don't need to know the canvas dims. */
 export type CropRect = { x: number; y: number; w: number; h: number };
 
-/** Result of an `upsert` op that emits a fresh row/layer id (v1
- *  overlays:upsert returns the inserted row; v2 layers:upsert returns
- *  the inserted node). Surfaced so callers (notably useUndoRedo) can
- *  capture the artifact for replay on redo and inverse-delete on undo. */
-export type EditUpsertArtifact =
-  | { format: 1; row: OverlayRow }
-  | { format: 2; node: BundleLayerNode };
+/** Result of an `upsert` op that emits a fresh layer id (layers:upsert
+ *  returns the inserted node). Surfaced so callers (notably
+ *  useUndoRedo) can capture the artifact for replay on redo and
+ *  inverse-delete on undo. */
+export type EditUpsertArtifact = { format: 2; node: BundleLayerNode };
 
 /** Result of a `crop` op — the PREVIOUS canvas dims so the caller can
- *  stash them for undo. v1 records the previous source dims of the
- *  capture (which don't actually change, but we surface them so the
- *  undo plumbing has a uniform shape). v2 surfaces the previous
- *  width_px / height_px from the captures row. */
+ *  stash them for undo. Surfaces the previous width_px / height_px
+ *  from the captures row. */
 export type EditCropArtifact = {
   previousWidthPx: number;
   previousHeightPx: number;
 };
-
-export type OverlayEditOp =
-  /** v1 upsert. `preserveZIndex` (optional, default false) controls
-   *  the new row's z_index. When true, the dispatcher forwards
-   *  `row.z_index` to the IPC's `zIndex` field so the repo stores it
-   *  verbatim (used by undo restore + redo of create — both need the
-   *  layer to come back at its ORIGINAL stacking position). When
-   *  omitted, the dispatcher omits `zIndex` and the repo auto-bumps
-   *  to MAX(existing) + GAP (used by fresh-draw commits). v2 mirror
-   *  is `bumpZIndexToMax` on LayerEditOp.upsert — same discipline
-   *  with opposite default polarity (v2 has the z_index INSIDE the
-   *  layer node so the natural default is "preserve"; v1 has it
-   *  separate so the natural default is "let the repo pick"). */
-  | { kind: "upsert"; row: OverlayRow; preserveZIndex?: boolean }
-  | { kind: "delete"; id: string }
-  | { kind: "replace"; rows: OverlayRow[] }
-  /** v1 crop: writes a normalized CropOverlay through overlays:upsert.
-   *  v1 doesn't physically crop the source — the rect is stored for
-   *  downstream consumers (export, baked composite) that may honor it
-   *  in a future slice. */
-  | { kind: "crop"; rect: CropRect }
-  /** Phase 3.5 — drag the selected overlay's transform handles. The
-   *  dispatcher reads the current row from the cached state, merges
-   *  the geometry patch into `data.*` (kind-aware), and re-upserts
-   *  through overlays:upsert with the SAME id so the row is replaced
-   *  rather than duplicated. Refuses when `layerId` doesn't resolve
-   *  (likely a stale selection after a delete-broadcast race). */
-  | { kind: "updateGeometry"; layerId: string; geometry: GeometryUpdate }
-  /** Phase 3.5 — generic style/data patch for the selected overlay.
-   *  Used by the popover when an overlay is selected (the popover
-   *  edits the SELECTED overlay's style, not the active tool's
-   *  defaults). Same dispatch shape as updateGeometry — fetch row,
-   *  shallow-merge `patch` into `data.*`, re-upsert with the original
-   *  id. */
-  | { kind: "updateOverlay"; layerId: string; patch: OverlayPatch }
-  /** Z-order change. Maps directly to `overlays:reorder` — a single-
-   *  row atomic UPDATE on `z_index` that preserves the row id
-   *  (unlike updateGeometry / updateOverlay which are delete-plus-
-   *  insert). Same semantics as the v2 reorder; the renderer's z-
-   *  order algorithm ships one code path across both formats. */
-  | { kind: "reorder"; layerId: string; zIndex: number };
 
 export type LayerEditOp =
   /** v2 upsert. `bumpZIndexToMax` (optional, default false) signals
@@ -293,26 +245,10 @@ export type EditOpResult =
   | { kind: "delete" }
   | { kind: "crop"; artifact: EditCropArtifact }
   | { kind: "update"; artifact: EditUpsertArtifact }
-  /** Z-order change. Ids don't change in v2 (layers:reorder is a true
+  /** Z-order change. Ids don't change (layers:reorder is a true
    *  in-place UPDATE on `z_index`), so the artifact is empty — callers
-   *  keep their existing selection ids. v1 returns a typed validation
-   *  error from this op because the v1 IPC surface is insert-only and
-   *  delete-plus-insert would churn ids on every reorder. */
+   *  keep their existing selection ids. */
   | { kind: "reorder" };
-
-export type CaptureModelV1 = {
-  kind: "loaded";
-  format: 1;
-  captureId: string;
-  record: CaptureRecord;
-  overlays: OverlayRow[];
-  /** Synthesized format-agnostic view. The renderer can consume this
-   *  without caring about v1 vs v2. */
-  layers: LayerView[];
-  dispatchEdit: (
-    op: OverlayEditOp
-  ) => Promise<Result<EditOpResult, PwrSnapError>>;
-};
 
 export type CaptureModelV2 = {
   kind: "loaded";
@@ -320,7 +256,7 @@ export type CaptureModelV2 = {
   captureId: string;
   record: CaptureRecord;
   layers: BundleLayerNode[];
-  /** Same uniform view shape as v1. v2 layer nodes are already
+  /** Uniform view shape. v2 layer nodes are already
    *  LayerView-compatible natively; the shim just projects them. */
   layersView: LayerView[];
   dispatchEdit: (
@@ -331,7 +267,6 @@ export type CaptureModelV2 = {
 export type CaptureModel =
   | CaptureModelLoading
   | CaptureModelError
-  | CaptureModelV1
   | CaptureModelV2;
 
 // ---- Internal state shape ------------------------------------------
@@ -339,13 +274,13 @@ export type CaptureModel =
 type FetchedState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "v1"; record: CaptureRecord; overlays: OverlayRow[] }
   | { kind: "v2"; record: CaptureRecord; layers: BundleLayerNode[] };
 
-// ---- Shims (v1 overlays → LayerView; v2 layers → LayerView) --------
+// ---- Shims (v2 layer node → LayerView) -----------------------------
 //
-// Inlined per the plan's code-simplicity decision. Deleted in Phase 8
-// when overlays go away entirely.
+// Inlined per the plan's code-simplicity decision. The vector-layer
+// case projects the v2 VectorLayer's carried Overlay `shape` through
+// `overlayToLayerView`.
 
 function overlayToLayerView(
   row: OverlayRow,
@@ -847,9 +782,10 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // of arrival order.
   const refetchSeqRef = useRef(0);
 
-  // refetch is recreated when captureId changes. Each invocation
-  // re-discovers the bundle_format_version, so a Phase 3 doctor run
-  // that flips a capture from v1 → v2 is picked up automatically.
+  // refetch is recreated when captureId changes. v2 is the only
+  // bundle format — a record with `bundle_format_version < 2` is a
+  // corrupt/unrenderable row, surfaced as an error (there are no v1
+  // captures left to read).
   const refetch = useCallback(
     async (isCancelled: () => boolean): Promise<void> => {
       refetchSeqRef.current += 1;
@@ -869,34 +805,20 @@ export function useCaptureModel(captureId: string): CaptureModel {
         return;
       }
       const record = recordResult.value;
-      // Plan: use `>= 2` (kieran-typescript), not strict equality.
-      // Anything below 1 is invalid; we treat it as an error to avoid
-      // silent v1 fallback on a corrupt row.
-      if (record.bundle_format_version < 1) {
+      if (record.bundle_format_version < 2) {
         setState({
           kind: "error",
-          message: `invalid bundle_format_version: ${record.bundle_format_version}`
+          message: `unrenderable bundle_format_version: ${record.bundle_format_version}`
         });
         return;
       }
-      if (record.bundle_format_version >= 2) {
-        const layersResult = await dispatch("layers:list", { captureId });
-        if (isCancelled() || isStale()) return;
-        const layers =
-          layersResult.ok && Array.isArray(layersResult.value)
-            ? layersResult.value
-            : [];
-        setState({ kind: "v2", record, layers });
-        return;
-      }
-      // v1
-      const overlaysResult = await dispatch("overlays:list", { captureId });
+      const layersResult = await dispatch("layers:list", { captureId });
       if (isCancelled() || isStale()) return;
-      const overlays =
-        overlaysResult.ok && Array.isArray(overlaysResult.value)
-          ? overlaysResult.value
+      const layers =
+        layersResult.ok && Array.isArray(layersResult.value)
+          ? layersResult.value
           : [];
-      setState({ kind: "v1", record, overlays });
+      setState({ kind: "v2", record, layers });
     },
     [captureId]
   );
@@ -929,9 +851,8 @@ export function useCaptureModel(captureId: string): CaptureModel {
     };
   }, [captureId, refetch]);
 
-  // Re-fetch the record on captures:changed (covers bundle_format_version
-  // flips post-Phase-3 doctor — the capture's IPC family may change
-  // without an overlays/layers broadcast).
+  // Re-fetch the record on captures:changed (covers canvas-dimension
+  // and edits_version changes that don't emit a layers broadcast).
   useEffect(() => {
     let cancelled = false;
     const unsubscribe = subscribe("events:captures:changed", (payload) => {
@@ -954,227 +875,19 @@ export function useCaptureModel(captureId: string): CaptureModel {
   // strand a recorded-but-not-yet-replayed undo entry pointing at a
   // stale function.
   const recordRef = useRef<CaptureRecord | null>(null);
-  if (state.kind === "v1" || state.kind === "v2") {
+  if (state.kind === "v2") {
     recordRef.current = state.record;
   }
 
-  // Phase 3.5 — always-fresh refs to the loaded overlays/layers so the
-  // updateGeometry / updateOverlay dispatchers can read the CURRENT row
-  // shape without an IPC round-trip (the model already has it cached).
-  // Same rationale as `recordRef` above — we want the dispatchEdit
-  // reference identity to stay stable across refetches.
-  const overlaysRef = useRef<OverlayRow[]>([]);
+  // Phase 3.5 — always-fresh ref to the loaded layers so the
+  // updateGeometry / updateOverlay dispatchers can read the CURRENT
+  // layer shape without an IPC round-trip (the model already has it
+  // cached). Same rationale as `recordRef` above — we want the
+  // dispatchEdit reference identity to stay stable across refetches.
   const layersRef = useRef<BundleLayerNode[]>([]);
-  if (state.kind === "v1") {
-    overlaysRef.current = state.overlays;
-  }
   if (state.kind === "v2") {
     layersRef.current = state.layers;
   }
-
-  // v1 edit dispatcher.
-  const dispatchEditV1 = useCallback(
-    async (op: OverlayEditOp): Promise<Result<EditOpResult, PwrSnapError>> => {
-      switch (op.kind) {
-        case "upsert": {
-          const result = await dispatch("overlays:upsert", {
-            captureId,
-            overlay: op.row.data,
-            // Thread `row.z_index` through to the repo when the caller
-            // asks for preservation (undo restore / redo of create).
-            // Fresh-draw callers leave `preserveZIndex` off; the IPC
-            // omits zIndex; the repo auto-bumps. See the doc-block on
-            // OverlayEditOp.upsert for the contract.
-            ...(op.preserveZIndex === true ? { zIndex: op.row.z_index } : {})
-          });
-          if (!result.ok) return err(result.error);
-          return {
-            ok: true,
-            value: {
-              kind: "upsert",
-              artifact: { format: 1, row: result.value }
-            }
-          };
-        }
-        case "delete": {
-          const result = await dispatch("overlays:delete", { id: op.id });
-          if (!result.ok) return err(result.error);
-          return { ok: true, value: { kind: "delete" } };
-        }
-        case "replace": {
-          // overlays:replace isn't in the bus today. Fall back to
-          // per-row upserts so Phase 2 callers have a path; Phase 7
-          // will wire a real replace verb if needed. The artifact we
-          // surface is the LAST inserted row — single-shot undo will
-          // only revert that one. Multi-row replace is Phase 7.
-          let last: OverlayRow | null = null;
-          for (const row of op.rows) {
-            const result = await dispatch("overlays:upsert", {
-              captureId,
-              overlay: row.data
-            });
-            if (!result.ok) return err(result.error);
-            last = result.value;
-          }
-          if (last === null) {
-            return err({
-              kind: "validation",
-              code: "empty_replace",
-              message: "replace op called with empty rows array"
-            });
-          }
-          return {
-            ok: true,
-            value: { kind: "upsert", artifact: { format: 1, row: last } }
-          };
-        }
-        case "crop": {
-          // v1 crop is stored as a normal CropOverlay through
-          // overlays:upsert. CropTool already normalizes the rect to
-          // [0,1]² before dispatching, so we forward as-is.
-          const result = await dispatch("overlays:upsert", {
-            captureId,
-            overlay: { kind: "crop", rect: op.rect }
-          });
-          if (!result.ok) return err(result.error);
-          const record = recordRef.current;
-          return {
-            ok: true,
-            value: {
-              kind: "crop",
-              artifact: {
-                previousWidthPx: record?.width_px ?? 0,
-                previousHeightPx: record?.height_px ?? 0
-              }
-            }
-          };
-        }
-        case "updateGeometry": {
-          // Phase 3.5 — fetch the current row, merge the geometry patch
-          // into data.*, then DELETE the original + INSERT the merged
-          // overlay. The overlays IPC surface is INSERT-only (no UPDATE
-          // verb; see overlays-handlers.ts), so the visible "edit-in-
-          // place" semantic is implemented as a soft-delete-plus-insert
-          // pair. The new row has a fresh id; the caller updates its
-          // selection model from the artifact. Returns the new row in
-          // the artifact (`format: 1`); the inverse for undo is captured
-          // by the caller stashing the PREVIOUS row separately.
-          const current = overlaysRef.current.find(
-            (r) => r.id === op.layerId
-          );
-          if (current === undefined) {
-            return err({
-              kind: "validation",
-              code: "layer_not_found",
-              message: `updateGeometry: no overlay with id ${op.layerId}`
-            });
-          }
-          const merged = applyGeometryToOverlay(current.data, op.geometry);
-          if (merged === null) {
-            return err({
-              kind: "validation",
-              code: "geometry_kind_mismatch",
-              message: `updateGeometry: cannot apply ${op.geometry.kind} geometry to overlay kind ${current.data.kind}`
-            });
-          }
-          // Delete first, then insert. If the insert fails, the delete
-          // already landed — the caller sees a missing overlay and the
-          // user can redraw. Failing the other order (insert + delete)
-          // would leave duplicate overlays on the canvas on partial
-          // failure, which is worse.
-          //
-          // CRITICAL — pass `current.z_index` so the new row preserves
-          // the user's stacking position. Without this the repo auto-
-          // bumps to MAX + GAP on every drag-drop, undoing any
-          // Send-to-Back / Send-Backward the user previously applied.
-          // User repro: "I right-clicked the rotated red rectangle and
-          // chose Send to Back. I dragged it. It jumped in front of the
-          // arrows." See protocol.ts `overlays:upsert` doc-block for
-          // the IPC contract.
-          const delResult = await dispatch("overlays:delete", {
-            id: op.layerId
-          });
-          if (!delResult.ok) return err(delResult.error);
-          const insResult = await dispatch("overlays:upsert", {
-            captureId,
-            overlay: merged,
-            zIndex: current.z_index
-          });
-          if (!insResult.ok) return err(insResult.error);
-          return {
-            ok: true,
-            value: {
-              kind: "update",
-              artifact: { format: 1, row: insResult.value }
-            }
-          };
-        }
-        case "updateOverlay": {
-          // Phase 3.5 — generic style patch on the selected overlay.
-          // Same delete-plus-insert pattern as updateGeometry above.
-          const current = overlaysRef.current.find(
-            (r) => r.id === op.layerId
-          );
-          if (current === undefined) {
-            return err({
-              kind: "validation",
-              code: "layer_not_found",
-              message: `updateOverlay: no overlay with id ${op.layerId}`
-            });
-          }
-          const merged = applyPatchToOverlay(current.data, op.patch);
-          if (merged === null) {
-            return err({
-              kind: "validation",
-              code: "patch_kind_mismatch",
-              message: `updateOverlay: patch kind does not match overlay kind ${current.data.kind}`
-            });
-          }
-          const delResult = await dispatch("overlays:delete", {
-            id: op.layerId
-          });
-          if (!delResult.ok) return err(delResult.error);
-          // Pass current.z_index for the same reason as updateGeometry
-          // above — style edits shouldn't reshuffle stacking order.
-          const insResult = await dispatch("overlays:upsert", {
-            captureId,
-            overlay: merged,
-            zIndex: current.z_index
-          });
-          if (!insResult.ok) return err(insResult.error);
-          return {
-            ok: true,
-            value: {
-              kind: "update",
-              artifact: { format: 1, row: insResult.value }
-            }
-          };
-        }
-        case "reorder": {
-          // Single-row z_index UPDATE via the dedicated overlays:reorder
-          // IPC. Same shape + semantics as layers:reorder for v2 —
-          // row id preserved (no delete-plus-insert churn) so the
-          // caller's selection stays valid as-is.
-          const result = await dispatch("overlays:reorder", {
-            id: op.layerId,
-            zIndex: op.zIndex
-          });
-          if (!result.ok) return err(result.error);
-          return { ok: true, value: { kind: "reorder" } };
-        }
-        default: {
-          const _exhaustive: never = op;
-          void _exhaustive;
-          return err({
-            kind: "validation",
-            code: "unknown_edit_op",
-            message: "unknown overlay edit op kind"
-          });
-        }
-      }
-    },
-    [captureId]
-  );
 
   // v2 edit dispatcher. `layers:upsertBatch` isn't in the bus yet
   // (Phase 7 expands the surface per the plan); return a typed
@@ -1605,26 +1318,6 @@ export function useCaptureModel(captureId: string): CaptureModel {
     if (state.kind === "error") {
       return { kind: "error", captureId, message: state.message };
     }
-    if (state.kind === "v1") {
-      const layers: LayerView[] = [];
-      for (const row of state.overlays) {
-        const view = overlayToLayerView(
-          row,
-          state.record.width_px,
-          state.record.height_px
-        );
-        if (view !== null) layers.push(view);
-      }
-      return {
-        kind: "loaded",
-        format: 1,
-        captureId,
-        record: state.record,
-        overlays: state.overlays,
-        layers,
-        dispatchEdit: dispatchEditV1
-      };
-    }
     // v2
     const layersView: LayerView[] = state.layers.map(layerNodeToLayerView);
     return {
@@ -1636,5 +1329,5 @@ export function useCaptureModel(captureId: string): CaptureModel {
       layersView,
       dispatchEdit: dispatchEditV2
     };
-  }, [state, captureId, dispatchEditV1, dispatchEditV2]);
+  }, [state, captureId, dispatchEditV2]);
 }

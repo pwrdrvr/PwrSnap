@@ -1020,7 +1020,7 @@ function flattenTreeInZOrder(layers: readonly BundleLayerNode[]): BundleLayerNod
  *           orphans.md`. */
 const BAKE_PIPELINE_VERSION = "6";
 
-function computeTreeRenderHash(input: {
+export function computeTreeRenderHash(input: {
   layers: readonly BundleLayerNode[];
   canvasWidthPx: number;
   canvasHeightPx: number;

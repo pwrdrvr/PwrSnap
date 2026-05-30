@@ -95,32 +95,6 @@ export const EVENT_CHANNELS = {
    */
   popoverRemeasure: "events:popover:remeasure",
   /**
-   * Main → renderer one-shot legacy-bundle migration progress. Fired by
-   * `runLegacyBundleMigration` once when the run starts (with total),
-   * then throttled per N rows, then once at completion. Drives the
-   * library window's "Upgrading library…" banner. Payload type:
-   * `LegacyBundleMigrationProgress` (see protocol.ts).
-   *
-   * A run with `total === 0` (no rows needed migration) is silently
-   * skipped — no events fire, no banner shows.
-   */
-  legacyBundleMigrationProgress: "events:legacy-bundle-migration:progress",
-  /**
-   * Main → renderer v1 → v2 bundle doctor progress. Fired by both the
-   * boot-time `reconcileV1ToV2OnBoot` sweep AND the per-capture lazy
-   * `v1ToV2:upgrade` handler. Editor toolbar subscribes for the
-   * "Upgrading…" banner during a per-capture run; library banner
-   * subscribes for the boot-time global progress. Payload type:
-   * `V1ToV2DoctorProgress` (see protocol.ts).
-   *
-   * `captureId === null` → boot-time global event.
-   * `captureId !== null` → per-capture lazy event.
-   *
-   * Renderers that mount mid-flight call `v1ToV2:status` once for
-   * the cached snapshot, then subscribe here for updates.
-   */
-  v1ToV2DoctorProgress: "events:v1-to-v2-doctor:progress",
-  /**
    * Main → renderer storage accounting progress. Full scans are
    * singleton and async; this event lets detailed storage UI update
    * from cached/partial snapshots while the command that requested the

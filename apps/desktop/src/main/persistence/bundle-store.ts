@@ -28,18 +28,12 @@ import yauzl from "yauzl";
 import yazl from "yazl";
 
 import {
-  BUNDLE_ENTRY_ALLOWLIST,
-  BUNDLE_ENTRY_REQUIRED,
   BundleDocumentV2,
-  BundleManifestV1,
   BundleManifestV2,
-  BundleOverlaysV1,
-  isBundleEntryName,
-  validateBundleZipEntryNamesV2,
-  type BundleEntryName
+  validateBundleZipEntryNamesV2
 } from "@pwrsnap/shared";
 
-import type { CaptureRecord, OverlayRow } from "@pwrsnap/shared";
+import type { CaptureRecord } from "@pwrsnap/shared";
 
 import { writeFile } from "node:fs/promises";
 
@@ -48,7 +42,6 @@ import {
   isCompositeThumbnailWorkerAvailable,
   runCompositeThumbnailWorker
 } from "../workers/composite-thumbnail-worker-client";
-import { compose } from "../render/compose";
 import {
   findCaptureBySha256,
   getCaptureById,
@@ -56,63 +49,9 @@ import {
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
-import { listLiveOverlays } from "./overlays-repo";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:bundle-store");
-
-/**
- * Validate a ZIP central directory against the four-entry allowlist.
- * Pure function — used by the doctor reconcile pass and the bundle
- * reader before extracting any entry. Returns a structured result so
- * the caller can surface specifics ("bundle X has unknown entry Y")
- * without exposing untrusted attacker-controlled strings into log /
- * UI surfaces unfiltered.
- */
-export type BundleEntryValidation =
-  | { ok: true }
-  | {
-      ok: false;
-      badEntries: readonly string[];
-      missingEntries: readonly BundleEntryName[];
-      duplicateEntries: readonly string[];
-    };
-
-export function validateBundleZipEntryNames(names: readonly string[]): BundleEntryValidation {
-  const badEntries: string[] = [];
-  const seen = new Set<string>();
-  const duplicates: string[] = [];
-
-  for (const name of names) {
-    if (!isBundleEntryName(name)) {
-      badEntries.push(name);
-      continue;
-    }
-    if (seen.has(name)) {
-      duplicates.push(name);
-      continue;
-    }
-    seen.add(name);
-  }
-
-  // Only check the REQUIRED subset for missingness. `composite.png` is
-  // allowed but optional — bundles with `manifest.composite_is_source`
-  // true omit it intentionally (composite would equal source.png byte-
-  // for-byte; storing both was pure duplication). The manifest's flag
-  // is the source of truth for "is the composite present?"; the
-  // central-directory validator just enforces the floor.
-  const missing = BUNDLE_ENTRY_REQUIRED.filter((entry) => !seen.has(entry));
-
-  if (badEntries.length === 0 && duplicates.length === 0 && missing.length === 0) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    badEntries,
-    missingEntries: missing,
-    duplicateEntries: duplicates
-  };
-}
 
 /**
  * Refuse to read or extract a bundle file whose on-disk shape would
@@ -121,7 +60,7 @@ export function validateBundleZipEntryNames(names: readonly string[]): BundleEnt
  * `.pwrsnap/` package directory), or a missing file (race during a
  * doctor walk). Throws — callers catch and quarantine or skip.
  *
- * Distinct from the ZIP entry allowlist (`validateBundleZipEntryNames`):
+ * Distinct from the ZIP entry allowlist (`validateBundleZipEntryNamesV2`):
  * this gate runs against the bundle file ITSELF before yauzl ever
  * opens it.
  */
@@ -218,39 +157,6 @@ export async function atomicWriteBundle(destPath: string, contents: Buffer): Pro
 // yazl/yauzl pack + unpack surface.
 // ---------------------------------------------------------------------------
 
-export type PackBundleArgs = {
-  manifest: BundleManifestV1;
-  overlays: BundleOverlaysV1;
-  /**
-   * Source PNG bytes — written to the ZIP as `source.png` in STORE
-   * mode (no DEFLATE recompression; PNG is already DEFLATE'd
-   * internally and a second pass costs CPU for negligible size win).
-   */
-  sourcePng: Buffer;
-  /**
-   * Low-resolution composite thumbnail (max 1024px long edge,
-   * JPEG quality 90) written as `composite_thumbnail.jpg`. Generated
-   * by `buildCompositeThumbnail(compositePng)`, which now always
-   * returns a Buffer (it used to return null for tiny captures but
-   * that left v2 bundles with no Finder/Quick-Look thumbnail — see
-   * the function's comment for the full why).
-   *
-   * Optional in the type signature because some migration code paths
-   * (legacy bundle rewrites that don't have the composite bytes
-   * handy) intentionally omit it. New packers always pass the
-   * always-Buffer result of `buildCompositeThumbnail` directly.
-   *
-   * Replaces the legacy `composite.png` entry, which was always
-   * full-resolution and frequently byte-equivalent to `source.png`.
-   * Readers that need the composite at full resolution reconstruct it
-   * via `compose()` from source + overlays (which is what every
-   * renderer in the codebase already does); the in-bundle thumbnail
-   * exists strictly to short-circuit the macOS Thumbnail Extension
-   * (and Quick Look) without paying compose cost.
-   */
-  thumbnailJpg?: Buffer | null;
-};
-
 // The sharp pipeline + size/quality constants live in the
 // dependency-thin `../image/composite-thumbnail` module so the
 // worker_thread can import them without dragging in `electron`/`db`.
@@ -291,50 +197,6 @@ export async function buildCompositeThumbnail(
     return await runCompositeThumbnailWorker(compositePng);
   }
   return await buildCompositeThumbnailInProcess(compositePng);
-}
-
-/**
- * Pack a `.pwrsnap` bundle into an in-memory Buffer. Pure function —
- * does not touch the filesystem. Caller wraps this with
- * `atomicWriteBundle` to land it on disk crash-safely.
- *
- * Manifest + overlays are validated through their zod schemas before
- * serialization. `source.png` uses STORE; JSON entries use DEFLATE;
- * `composite_thumbnail.jpg` uses STORE (already JPEG-compressed).
- *
- * Legacy `composite.png` is NOT written — readers reconstruct the
- * composite from source + overlays via compose() when they need it
- * full-res, and the Thumbnail Extension reads `composite_thumbnail.jpg`
- * for previews.
- */
-export async function packBundle(args: PackBundleArgs): Promise<Buffer> {
-  const validatedManifest = BundleManifestV1.parse(args.manifest);
-  const validatedOverlays = BundleOverlaysV1.parse(args.overlays);
-
-  const manifestBuf = Buffer.from(JSON.stringify(validatedManifest));
-  const overlaysBuf = Buffer.from(JSON.stringify(validatedOverlays));
-
-  return new Promise<Buffer>((resolve, reject) => {
-    const zip = new yazl.ZipFile();
-    zip.addBuffer(manifestBuf, "manifest.json");
-    zip.addBuffer(overlaysBuf, "overlays.json");
-    zip.addBuffer(args.sourcePng, "source.png", { compress: false });
-    if (args.thumbnailJpg !== null && args.thumbnailJpg !== undefined) {
-      zip.addBuffer(args.thumbnailJpg, "composite_thumbnail.jpg", {
-        compress: false
-      });
-    }
-
-    // Attach listeners BEFORE `zip.end()` — yazl's outputStream
-    // transitions to flowing mode as soon as a data listener is
-    // present; if `end()` ran first the chunks could be missed.
-    const chunks: Buffer[] = [];
-    zip.outputStream.on("data", (chunk: Buffer) => chunks.push(chunk));
-    zip.outputStream.on("end", () => resolve(Buffer.concat(chunks)));
-    zip.outputStream.on("error", reject);
-
-    zip.end();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -437,25 +299,16 @@ export async function packBundleV2(args: PackBundleV2Args): Promise<Buffer> {
  * any byte is extracted.
  */
 /**
- * Internal handle discriminated by bundle_format_version. Most callers
- * consume the higher-level `readBundleView` adapter instead — the
- * version discriminant leaks fewer files this way. Only `composeV2` vs
- * `compose` (separate compositors) and the future v1→v2 migration need
- * the discriminant directly.
+ * Internal handle for an opened, validated v2 bundle. Most callers
+ * consume the higher-level `readBundleView` adapter instead. v2 is the
+ * only bundle format — a v1 bundle on disk fails to parse here.
  */
-type BundleReadHandleV1 = {
-  version: 1;
-  manifest: BundleManifestV1;
-  entries: Map<BundleEntryName, yauzl.Entry>;
-  zipFile: yauzl.ZipFile;
-};
-type BundleReadHandleV2 = {
+type BundleReadHandle = {
   version: 2;
   manifest: BundleManifestV2;
   entries: Map<string, yauzl.Entry>;
   zipFile: yauzl.ZipFile;
 };
-type BundleReadHandle = BundleReadHandleV1 | BundleReadHandleV2;
 
 async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHandle> {
   await assertSafeBundleFile(bundlePath);
@@ -487,9 +340,9 @@ async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHand
       });
 
       zipFile.on("end", () => {
-        // Step 1: manifest.json is the one universal entry across v1
-        // and v2. Read it FIRST to learn the format version. If it's
-        // missing or duplicated, fail closed.
+        // manifest.json is the one universal entry. Read it FIRST to
+        // learn the format version. If it's missing or duplicated, fail
+        // closed.
         const manifestEntry = entriesByName.get("manifest.json");
         const manifestDup = duplicateNames.includes("manifest.json");
         if (manifestEntry === undefined || manifestDup) {
@@ -515,43 +368,16 @@ async function openAndValidateBundle(bundlePath: string): Promise<BundleReadHand
             }
 
             // Read just the format version (without zod-parsing the
-            // full manifest yet — we do that per-version below so the
-            // zod errors are version-appropriate).
+            // full manifest yet — we do that below so the zod errors
+            // are version-appropriate). v2 is the only supported
+            // format; v1 bundles fall through to the "unknown version"
+            // reject below.
             const formatVersion =
               parsedManifest !== null &&
               typeof parsedManifest === "object" &&
               "bundle_format_version" in parsedManifest
                 ? (parsedManifest as { bundle_format_version: unknown }).bundle_format_version
                 : undefined;
-
-            if (formatVersion === 1) {
-              const v1Validation = validateBundleZipEntryNames(allNames);
-              if (!v1Validation.ok) {
-                zipFile.close();
-                return reject(
-                  new Error(
-                    `bundle-store: bundle ${bundlePath} failed v1 central-directory validation`
-                  )
-                );
-              }
-              const v1Entries = new Map<BundleEntryName, yauzl.Entry>();
-              for (const name of BUNDLE_ENTRY_ALLOWLIST) {
-                const entry = entriesByName.get(name);
-                if (entry !== undefined) v1Entries.set(name, entry);
-              }
-              let manifest: BundleManifestV1;
-              try {
-                manifest = BundleManifestV1.parse(parsedManifest);
-              } catch {
-                zipFile.close();
-                return reject(
-                  new Error(
-                    `bundle-store: bundle ${bundlePath} v1 manifest failed schema validation`
-                  )
-                );
-              }
-              return resolve({ version: 1, manifest, entries: v1Entries, zipFile });
-            }
 
             if (formatVersion === 2) {
               const v2Validation = validateBundleZipEntryNamesV2(allNames);
@@ -642,15 +468,6 @@ export type BundleView = {
 export async function readBundleView(bundlePath: string): Promise<BundleView> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version === 1) {
-      return {
-        version: 1,
-        capture_id: handle.manifest.capture_id,
-        canvas: handle.manifest.source_dimensions,
-        paired_png_filename: handle.manifest.paired_png_filename,
-        bundle_modified_at: handle.manifest.bundle_modified_at
-      };
-    }
     return {
       version: 2,
       capture_id: handle.manifest.capture_id,
@@ -664,14 +481,13 @@ export async function readBundleView(bundlePath: string): Promise<BundleView> {
 }
 
 /**
- * Read and zod-parse the bundle's `manifest.json`. Returns a
- * discriminated union — callers that need version-specific fields
- * branch on `bundle_format_version`. Most callers should use
- * `readBundleView` instead.
+ * Read and zod-parse the bundle's `manifest.json`. v2 is the only
+ * supported format — a v1 file fails to parse in `openAndValidateBundle`.
+ * Most callers should use `readBundleView` instead.
  */
 export async function readBundleManifest(
   bundlePath: string
-): Promise<BundleManifestV1 | BundleManifestV2> {
+): Promise<BundleManifestV2> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
     return handle.manifest;
@@ -681,42 +497,11 @@ export async function readBundleManifest(
 }
 
 /**
- * Read and zod-parse the bundle's `overlays.json` (v1 only). Errors
- * cleanly when called on a v2 bundle — callers should use
- * `readBundleDocument` for v2 captures.
- */
-export async function readBundleOverlays(bundlePath: string): Promise<BundleOverlaysV1> {
-  const handle = await openAndValidateBundle(bundlePath);
-  try {
-    if (handle.version !== 1) {
-      throw new Error(
-        `bundle-store: readBundleOverlays called on a v${handle.version} bundle; use readBundleDocument instead`
-      );
-    }
-    const overlaysEntry = handle.entries.get("overlays.json");
-    if (overlaysEntry === undefined) {
-      throw new Error("bundle-store: validated v1 bundle missing overlays.json (impossible)");
-    }
-    const buf = await readEntryToBuffer(handle.zipFile, overlaysEntry);
-    const json = JSON.parse(buf.toString("utf8"));
-    return BundleOverlaysV1.parse(json);
-  } finally {
-    handle.zipFile.close();
-  }
-}
-
-/**
- * Read and zod-parse the bundle's `document.json` (v2 only). Errors
- * cleanly when called on a v1 bundle.
+ * Read and zod-parse the bundle's `document.json`.
  */
 export async function readBundleDocument(bundlePath: string): Promise<BundleDocumentV2> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version !== 2) {
-      throw new Error(
-        `bundle-store: readBundleDocument called on a v${handle.version} bundle; use readBundleOverlays for v1`
-      );
-    }
     const documentEntry = handle.entries.get("document.json");
     if (documentEntry === undefined) {
       throw new Error("bundle-store: validated v2 bundle missing document.json (impossible)");
@@ -747,11 +532,6 @@ export async function readSourceFromBundle(
 ): Promise<Buffer> {
   const handle = await openAndValidateBundle(bundlePath);
   try {
-    if (handle.version !== 2) {
-      throw new Error(
-        `bundle-store: readSourceFromBundle called on a v${handle.version} bundle (sources/ entries are v2-only)`
-      );
-    }
     const entry = handle.entries.get(`sources/${sha}.png`);
     if (entry === undefined) {
       // Generic message — does not echo the requested sha, which is
@@ -774,82 +554,6 @@ export async function readSourceFromBundle(
   } finally {
     handle.zipFile.close();
   }
-}
-
-/**
- * Extract one v1 entry from a validated bundle as a Buffer. v1-only —
- * v2 sources go through `readSourceFromBundle` for content-integrity
- * verification; other v2 entries (layers/*, composite.png) get their
- * own entrypoint when first consumed.
- */
-export async function readBundleEntry(
-  bundlePath: string,
-  entryName: BundleEntryName
-): Promise<Buffer> {
-  const handle = await openAndValidateBundle(bundlePath);
-  try {
-    if (handle.version !== 1) {
-      throw new Error(
-        `bundle-store: readBundleEntry called on a v${handle.version} bundle (v1-only entrypoint)`
-      );
-    }
-    const entry = handle.entries.get(entryName);
-    if (entry === undefined) {
-      throw new Error(`bundle-store: validated bundle missing ${entryName} (impossible)`);
-    }
-    return await readEntryToBuffer(handle.zipFile, entry);
-  } finally {
-    handle.zipFile.close();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// High-level write seam — bundle pair I/O.
-// ---------------------------------------------------------------------------
-
-export type WriteBundleResult = {
-  bundlePath: string;
-};
-
-/**
- * Pack and atomically write the `<id>.pwrsnap` bundle into `outputDir`.
- * The bundle IS the system of record — no paired sibling files written.
- * macOS Finder shows the generic Document icon until the Thumbnail
- * Extension ships; in-app paths read the bundle directly via
- * `effectiveSrcPathFor`/`readSourceFromBundle`.
- *
- * Uses the atomic-rename pattern (temp file in same dir, fsync before
- * rename, fsync dir after). 0o600 on the temp file; no world-readable
- * window.
- *
- * `outputDir` is created if missing — first capture path triggers
- * the macOS TCC prompt for `~/Documents/` access here.
- *
- * Pre-refactor this function (`writeBundlePair`) also wrote a paired
- * `<id>.png` flat composite next to the bundle for Finder visibility.
- * That sibling was never read by any in-app surface — it was pure
- * write-side duplication — and has been removed.
- */
-export async function writeBundle(args: {
-  outputDir: string;
-  filenameStem: string;
-  manifest: BundleManifestV1;
-  overlays: BundleOverlaysV1;
-  sourcePng: Buffer;
-  thumbnailJpg: Buffer | null;
-}): Promise<WriteBundleResult> {
-  const bundlePath = join(args.outputDir, `${args.filenameStem}.pwrsnap`);
-
-  const bundleBuf = await packBundle({
-    manifest: args.manifest,
-    overlays: args.overlays,
-    sourcePng: args.sourcePng,
-    thumbnailJpg: args.thumbnailJpg
-  });
-
-  await atomicWriteBundle(bundlePath, bundleBuf);
-
-  return { bundlePath };
 }
 
 // ---------------------------------------------------------------------------
@@ -877,10 +581,8 @@ export type PersistCaptureFromTempResult = {
 };
 
 // ---------------------------------------------------------------------------
-// Re-pack debounce — replaces the bundle when overlays change.
+// Re-pack debounce — replaces the bundle when the layer tree changes.
 // ---------------------------------------------------------------------------
-
-const REPACK_DEBOUNCE_MS = 1_000;
 
 // Pending timers keyed by capture id. Setting a new timer for the
 // same capture clears the previous — debounce by latest edit, not
@@ -893,17 +595,16 @@ const repackTimers = new Map<string, NodeJS.Timeout>();
 const repackInFlight = new Map<string, Promise<void>>();
 
 /**
- * Debounced re-pack request. Called after every edit (overlay insert
- * / reject for v1, layer upsert / delete for v2) — the existing
- * `captures.edits_version` bump is the convergence trigger.
- * Multiple rapid edits coalesce into one re-pack run.
+ * Debounced re-pack request. Called after every edit (layer upsert /
+ * delete) — the existing `captures.edits_version` bump is the
+ * convergence trigger. Multiple rapid edits coalesce into one re-pack
+ * run.
  *
- * Debounce window is version-aware: v1 captures use 1s (small bundle,
- * fast re-pack); v2 captures use 5s (larger bundle, ~1.5-3s pack cost
- * for tree-walking compositor, hence longer pause to coalesce). When
- * the bundle lives under iCloud Drive (`~/Library/Mobile Documents`),
- * defer to 30s idle so a 100MB bundle re-uploads on natural pauses
- * rather than every keystroke.
+ * Debounce window is 5s (the v2 bundle is larger, ~1.5-3s pack cost
+ * for the tree-walking compositor, hence the longer pause to
+ * coalesce). When the bundle lives under iCloud Drive
+ * (`~/Library/Mobile Documents`), defer to 30s idle so a 100MB bundle
+ * re-uploads on natural pauses rather than every keystroke.
  *
  * The DB stays the live read path during the debounce window. A
  * crash during the window reruns the pack on next boot via the
@@ -919,8 +620,9 @@ export function scheduleRepack(captureId: string): void {
     repackTimers.delete(captureId);
     const record = getCaptureById(captureId);
     if (record === null) return;
-    const runner = record.bundle_format_version >= 2 ? runRepackV2 : runRepack;
-    void runner(captureId).catch((err: unknown) => {
+    // v2 is the only bundle format — every live capture re-packs via
+    // the tree-walking compositor.
+    void runRepackV2(captureId).catch((err: unknown) => {
       log.error("bundle-store: repack failed", {
         captureId,
         message: err instanceof Error ? err.message : String(err)
@@ -935,7 +637,7 @@ const REPACK_DEBOUNCE_MS_ICLOUD = 30_000;
 
 function computeRepackDelayMs(captureId: string): number {
   const record = getCaptureById(captureId);
-  if (record === null) return REPACK_DEBOUNCE_MS;
+  if (record === null) return REPACK_DEBOUNCE_MS_V2;
   // iCloud-aware: a bundle sitting under ~/Library/Mobile Documents/
   // (Apple's iCloud Drive backing dir) triggers a full re-upload on
   // every re-pack. Defer to 30s idle so drawing 10 arrows in
@@ -943,8 +645,7 @@ function computeRepackDelayMs(captureId: string): number {
   if (record.bundle_path !== null && record.bundle_path.includes("/Mobile Documents/")) {
     return REPACK_DEBOUNCE_MS_ICLOUD;
   }
-  if (record.bundle_format_version >= 2) return REPACK_DEBOUNCE_MS_V2;
-  return REPACK_DEBOUNCE_MS;
+  return REPACK_DEBOUNCE_MS_V2;
 }
 
 /**
@@ -957,129 +658,6 @@ export async function awaitInFlightRepack(captureId: string): Promise<void> {
   if (promise !== undefined) {
     await promise;
   }
-}
-
-async function runRepack(captureId: string): Promise<void> {
-  const existing = repackInFlight.get(captureId);
-  if (existing !== undefined) {
-    // Coalesce: a repack is already running for this capture. Wait
-    // for it to finish, then start a fresh one (latest state will
-    // be picked up because we re-read the DB inside the run).
-    await existing;
-  }
-
-  const promise = (async () => {
-    const record = getCaptureById(captureId);
-    if (record === null) {
-      log.warn("bundle-store: repack target missing", { captureId });
-      return;
-    }
-    if (record.bundle_path === null) {
-      // Pre-bundle (legacy) capture or row never finished writing.
-      // Either case, we can't repack — skip silently. The legacy
-      // migration (Phase 1) wraps these into bundles; once that's
-      // done, this branch becomes unreachable.
-      log.warn("bundle-store: repack skipped; no bundle path on row", { captureId });
-      return;
-    }
-
-    const sourcePath = getCacheSourcePath(captureId);
-
-    // compose() reads applied overlays via listLiveOverlays internally;
-    // it produces the source-width composite as a cache file we can
-    // read back. width = source width = no resize.
-    const composeResult = await compose({
-      captureId,
-      srcPath: sourcePath,
-      imageWidthPx: record.width_px,
-      imageHeightPx: record.height_px,
-      width: record.width_px,
-      format: "png"
-    });
-
-    const compositePng = await readFile(composeResult.cachePath);
-    const sourcePng = await readFile(sourcePath);
-
-    const liveOverlays = listLiveOverlays(captureId);
-    const overlaysJson = bundleOverlaysFromRows(record, liveOverlays);
-
-    const now = new Date().toISOString();
-    const manifest: BundleManifestV1 = {
-      bundle_format_version: 1,
-      capture_id: captureId,
-      source_sha256: record.sha256,
-      source_dimensions: { width_px: record.width_px, height_px: record.height_px },
-      paired_png_filename: `${captureId}.png`,
-      created_at: record.captured_at,
-      bundle_modified_at: now
-    };
-
-    const thumbnailJpg = await buildCompositeThumbnail(compositePng);
-
-    const bundleBuf = await packBundle({
-      manifest,
-      overlays: overlaysJson,
-      sourcePng,
-      thumbnailJpg
-    });
-
-    // Bundle is the system of record. Atomic-rename pattern handles
-    // crash safety; the doctor reconciles `bundle_edits_version`
-    // against `edits_version` on next boot if we crash before the
-    // DB update below.
-    await atomicWriteBundle(record.bundle_path, bundleBuf);
-
-    updateCaptureBundleAfterRepack(captureId, {
-      bundle_modified_at: now,
-      bundle_edits_version: record.edits_version
-    });
-
-    log.info("bundle-store: repacked", {
-      captureId,
-      overlaysCount: liveOverlays.length,
-      bundleBytes: bundleBuf.length
-    });
-  })();
-
-  repackInFlight.set(captureId, promise);
-  try {
-    await promise;
-  } finally {
-    repackInFlight.delete(captureId);
-  }
-}
-
-function bundleOverlaysFromRows(
-  record: CaptureRecord,
-  rows: readonly OverlayRow[]
-): BundleOverlaysV1 {
-  return {
-    overlays_format_version: 1,
-    // Wire-format JSON field name for v1 bundles stays `overlays_version`
-    // — that's the on-disk shape of overlays.json inside .pwrsnap v1.
-    // The DB column it mirrors was renamed to `edits_version` in
-    // migration 0004.
-    overlays_version: record.edits_version,
-    overlays: rows.map((row) => ({
-      id: row.id,
-      // listLiveOverlays returns rows whose `data` is an Overlay
-      // (already zod-parsed at the repo boundary). The shared
-      // BundleOverlayRecord schema re-validates on pack/unpack so
-      // any drift surfaces loudly.
-      data: row.data,
-      schema_version: row.schema_version,
-      source: row.source,
-      z_index: row.z_index,
-      created_at: row.created_at,
-      applied_at: row.applied_at,
-      rejected_at: row.rejected_at,
-      superseded_by: row.superseded_by,
-      ai_run_id: row.ai_run_id
-    })),
-    tags: [],
-    description: null,
-    ai_runs: []
-  };
 }
 
 function basename(p: string): string {

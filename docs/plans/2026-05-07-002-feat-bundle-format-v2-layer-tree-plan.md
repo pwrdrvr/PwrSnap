@@ -10,6 +10,19 @@ origin: docs/brainstorms/2026-05-07-bundle-format-v2-requirements.md
 
 ## Shipping Status — v2 is the default
 
+**UPDATE 2026-05-28 — v1 fully removed.** The library converged to v2
+(eager boot sweep, PR #153), then the entire v1 path was deleted: the
+v1→v2 doctor, the v1 linear compositor, `overlays-repo`, the
+`overlays:*` IPC verbs, the renderer v1 model arm + doctor banners,
+`legacy-bundle-migration`, the v1 bundle read handle, the v1 zod
+schemas (`bundle-manifest-schema.ts`), and the `overlays` SQLite table
+(migration `0020`). `coordinator.ts` is v2-only and throws on non-v2;
+`compose.ts` survives only as the v2 SVG-helper holder. The
+bullets below are **historical** — `feature-flags.ts`, the
+`PWRSNAP_BUNDLE_V2` env var, and the dual-format read path they
+describe no longer exist. See AGENTS.md §"Bundle format v2 — the only
+bundle format" for current state.
+
 **As of 2026-05-24** v2 is the default for new captures. The flip
 happened as v2-editor §Phase 6 (moved up before Phases 4-5 so the
 v2-only feature work — smart blur, multi-image — would ship against

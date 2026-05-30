@@ -145,7 +145,8 @@ class FakeTransport implements JsonRpcTransport {
 
     if (
       envelope.method === "thread/archive" ||
-      envelope.method === "turn/interrupt"
+      envelope.method === "turn/interrupt" ||
+      envelope.method === "thread/metadata/update"
     ) {
       this.emit({ id, result: {} });
     }
@@ -268,6 +269,9 @@ describe("CodexThreadClient", () => {
       approvalPolicy: "never",
       sandbox: "read-only",
       baseInstructions: "Be a helpful PwrSnap chat assistant.",
+      cwd: "/tmp/pwrsnap-chat",
+      runtimeWorkspaceRoots: ["/tmp/pwrsnap-chat"],
+      serviceName: "pwrsnap",
       dynamicTools
     });
 
@@ -276,7 +280,28 @@ describe("CodexThreadClient", () => {
       approvalPolicy: "never",
       sandbox: "read-only",
       baseInstructions: "Be a helpful PwrSnap chat assistant.",
+      cwd: "/tmp/pwrsnap-chat",
+      runtimeWorkspaceRoots: ["/tmp/pwrsnap-chat"],
+      serviceName: "pwrsnap",
       dynamicTools
+    });
+  });
+
+  it("can clear Git metadata from a started thread", async () => {
+    const transport = new FakeTransport();
+    const client = new CodexThreadClient({
+      command: "/bin/codex",
+      transportFactory: () => transport
+    });
+
+    await client.clearThreadGitInfo("thread-1");
+
+    const metadataUpdate = transport.outbound.find(
+      (envelope) => envelope.method === "thread/metadata/update"
+    );
+    expect(metadataUpdate?.params).toEqual({
+      threadId: "thread-1",
+      gitInfo: { sha: null, branch: null, originUrl: null }
     });
   });
 });

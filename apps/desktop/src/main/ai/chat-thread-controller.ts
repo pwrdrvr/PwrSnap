@@ -185,18 +185,34 @@ export class ChatThreadController {
     const anchorCaptureId = opts.anchorCaptureId ?? null;
     const settings = await this.deps.readSettings();
     const baseInstructions = this.deps.buildSystemPrompt({ settings, anchorCaptureId });
-    const started = await this.deps.client.startThread({
-      ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
-      ...(this.deps.sandbox !== undefined ? { sandbox: this.deps.sandbox } : {}),
-      baseInstructions,
-      ...(this.deps.catalog !== undefined ? { dynamicTools: this.deps.catalog } : {}),
-      ...(this.deps.threadConfig !== undefined ? { config: this.deps.threadConfig } : {}),
-      ...(this.deps.threadEnvironments !== undefined
-        ? { environments: this.deps.threadEnvironments }
-        : {})
-    });
     const displayName =
       opts.name && opts.name.trim().length > 0 ? opts.name.trim() : this.defaultName();
+    const preparedDir = await this.deps.store.prepareThreadDir(displayName);
+    let started: { threadId: string };
+    try {
+      started = await this.deps.client.startThread({
+        ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
+        ...(this.deps.sandbox !== undefined ? { sandbox: this.deps.sandbox } : {}),
+        baseInstructions,
+        cwd: preparedDir.path,
+        runtimeWorkspaceRoots: [preparedDir.path],
+        serviceName: "pwrsnap",
+        ...(this.deps.catalog !== undefined ? { dynamicTools: this.deps.catalog } : {}),
+        ...(this.deps.threadConfig !== undefined ? { config: this.deps.threadConfig } : {}),
+        ...(this.deps.threadEnvironments !== undefined
+          ? { environments: this.deps.threadEnvironments }
+          : {})
+      });
+    } catch (cause) {
+      await this.deps.store.discardPreparedThreadDir(preparedDir).catch(() => undefined);
+      throw cause;
+    }
+    await this.deps.client.clearThreadGitInfo(started.threadId).catch((cause) => {
+      log.warn("chat thread git metadata clear failed", {
+        threadId: started.threadId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
     // Glue the thread to the capture it was started from (plan: chats
     // are scoped to an asset — the thread list shows only this capture's
     // threads, so "what is this thread about" is never ambiguous). Null
@@ -206,7 +222,8 @@ export class ChatThreadController {
     const sidecar = await this.deps.store.create({
       threadId: started.threadId,
       name: displayName,
-      anchorCaptureId
+      anchorCaptureId,
+      preparedDir
     });
     const view = this.toView(sidecar);
     this.deps.broadcast(this.deps.channels.threadUpdated, { thread: view });

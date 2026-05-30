@@ -156,7 +156,13 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     return r.value.projects.find((p) => p.id === projectId) ?? null;
   };
 
-  /** Read the project, transform its scenes, persist, return the view. */
+  // Read the project, transform its scenes, persist, return the view.
+  //
+  // Read-modify-write across two bus calls (list → update). Within a turn
+  // the agent's tool calls are sequential, so each sees the prior write.
+  // Two chat threads on the SAME reel mutating concurrently could still
+  // race (last writer wins) — acceptable: one chat per reel is the norm,
+  // and a lost scene-list update is recoverable by re-asking.
   const mutateScenes = async (
     threadId: string,
     transform: (scenes: SizzleScene[], project: SizzleProject) => SizzleScene[] | { error: string }
@@ -167,9 +173,15 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     }
     const next = transform(project.scenes, project);
     if (!Array.isArray(next)) return { ok: false, error: next.error };
-    const r = await runVerb("sizzle:update", { id: project.id, patch: { scenes: next } });
-    if (!r.ok) return r;
-    return { ok: true, data: projectView({ ...project, scenes: next }) };
+    // Return the PERSISTED project (the store sanitizes scenes on write),
+    // not the locally-computed one, so the agent sees the real result.
+    const r = await bus.dispatch(
+      "sizzle:update",
+      { id: project.id, patch: { scenes: next } },
+      { principal: "mcp" }
+    );
+    if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
+    return { ok: true, data: projectView(r.value) };
   };
 
   const tools = [
@@ -232,8 +244,9 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     defineTool({
       namespace: "pwrsnap_sizzle",
       name: "scenes_set",
-      description: "Replace the reel's entire scene list. Use when drafting a fresh reel from scratch.",
-      argsSchema: z.object({ scenes: z.array(sceneInputSchema) }),
+      description:
+        "Replace the reel's entire scene list (must be non-empty — use scenes_remove to delete scenes). Use when drafting a fresh reel from scratch.",
+      argsSchema: z.object({ scenes: z.array(sceneInputSchema).min(1) }),
       annotations: { destructiveHint: true },
       dispatch: async (args, ctx) =>
         mutateScenes(ctx.threadId, () => args.scenes.map(toScene))

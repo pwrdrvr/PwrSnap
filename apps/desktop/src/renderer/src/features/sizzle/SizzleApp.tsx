@@ -72,8 +72,9 @@ export function SizzleApp(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
   // Chat lives in a right sidebar alongside the editor (not a full-pane
-  // swap) so the scene list stays visible + updates live as the agent edits.
-  const [showChat, setShowChat] = useState(false);
+  // swap) so the scene list stays visible + updates live as the agent
+  // edits. Shown by default — chat is the primary way to compose a reel.
+  const [showChat, setShowChat] = useState(true);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,

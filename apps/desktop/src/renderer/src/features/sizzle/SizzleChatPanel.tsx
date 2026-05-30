@@ -20,7 +20,7 @@ import { dispatch, subscribe } from "../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../shared/chat/Composer";
 import { ChatApprovalModal } from "../shared/chat/ChatApprovalModal";
-import "../library/chat/LibraryChatPanel.css";
+import "../shared/chat/chat-panel.css";
 
 export interface SizzleChatPanelProps {
   /** The Sizzle project this chat composes — passed as the thread anchor

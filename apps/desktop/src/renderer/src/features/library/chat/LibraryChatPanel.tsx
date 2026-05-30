@@ -21,7 +21,7 @@ import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
-import "./LibraryChatPanel.css";
+import "../../shared/chat/chat-panel.css";
 
 export interface LibraryChatPanelProps {
   /** The capture the user is currently viewing, passed as the thread

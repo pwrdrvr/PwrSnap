@@ -117,11 +117,19 @@ export function registerSizzleChatHandlers(params?: {
   };
 
   bus.register("codex:sizzleChat:list", async (req) => {
+    // Sizzle threads are ALWAYS project-scoped. The substrate's
+    // chat_threads table is shared with the Library surface, so an
+    // unscoped list would mix in Library (or null-anchor) threads. A
+    // Sizzle thread always carries a project id in its anchor, so a
+    // missing/empty anchor can only mean "nothing for this surface".
+    if (typeof req.anchorCaptureId !== "string" || req.anchorCaptureId.length === 0) {
+      return ok({ threads: [] });
+    }
     try {
       const c = await getController();
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        anchorCaptureId: req.anchorCaptureId
       });
       return ok({ threads });
     } catch (cause) {
@@ -224,4 +232,22 @@ function codexUnreachable(cause: unknown): Result<never, PwrSnapError> {
     message: `Sizzle chat is unavailable: ${message}`,
     cause
   });
+}
+
+function chatsDirPath(): string {
+  return join(app.getPath("documents"), "PwrSnap", "Chats");
+}
+
+/**
+ * Delete every chat thread (index row + on-disk dir) anchored to a Sizzle
+ * project. Called from the sizzle:delete cascade so deleting a reel leaves
+ * no orphan chat dir (locked decision #6). Best-effort + idempotent; uses
+ * a throwaway store over the shared DB (no controller / codex needed).
+ */
+export async function cleanupProjectChats(projectId: string): Promise<void> {
+  const store = new ChatThreadStore({ chatsDir: chatsDirPath() });
+  const threads = await store.list({ includeArchived: true, anchorCaptureId: projectId });
+  for (const t of threads) {
+    await store.delete(t.threadId);
+  }
 }

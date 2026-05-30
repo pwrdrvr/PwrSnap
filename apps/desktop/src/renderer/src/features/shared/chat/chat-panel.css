@@ -54,8 +54,12 @@
 .ps-libchat-thread-shell {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  flex: 0 0 auto;
+  gap: 2px;
   height: 24px;
+  min-width: 152px;
+  max-width: 220px;
+  padding-right: 3px;
   border: 1px solid var(--border-default);
   border-radius: 999px;
   background: transparent;
@@ -66,10 +70,11 @@
 .ps-libchat-thread {
   display: inline-flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: 6px;
   height: 22px;
   min-width: 0;
-  padding: 0 2px 0 10px;
+  padding: 0 6px 0 12px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -81,10 +86,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 22px;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
   font: 600 10px/1 var(--font-sans);
@@ -94,7 +101,7 @@
   color: var(--text-primary);
   background: var(--bg-panel-hover);
 }
-.ps-libchat-thread-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.ps-libchat-thread-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ps-libchat-dot {
   width: 6px;
   height: 6px;

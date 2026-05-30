@@ -59,6 +59,18 @@ describe("prepareEnrichmentImage", () => {
     expect(metadata.height).toBe(256);
     expect(metadata.exif).toBeUndefined();
     expect(prepared.byteSize).toBe((await stat(prepared.path)).size);
+    expect(prepared).toMatchObject({
+      sourceWidth: 2000,
+      sourceHeight: 1000,
+      sourceMimeType: "image/png",
+      sentMimeType: "image/jpeg",
+      format: "jpeg",
+      encoder: "sharp mozjpeg",
+      quality: 75,
+      maxEdgePx: 512,
+      maxBytes: 1_000_000,
+      scaleRatio: 0.256
+    });
 
     await prepared.cleanup();
     await expect(access(prepared.path)).rejects.toThrow();
@@ -84,6 +96,7 @@ describe("prepareEnrichmentImage", () => {
 
     expect(prepared.width).toBe(320);
     expect(prepared.height).toBe(200);
+    expect(prepared.scaleRatio).toBe(1);
     await prepared.cleanup();
   });
 

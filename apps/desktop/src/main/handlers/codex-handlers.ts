@@ -6,6 +6,7 @@ import {
   AcceptTitleRequestSchema,
   AcceptTagRequestSchema,
   EVENT_CHANNELS,
+  DEFAULT_CODEX_CAPTION_MODEL,
   RejectTagRequestSchema,
   err,
   ok
@@ -22,6 +23,7 @@ import type {
   SettingsPatch
 } from "@pwrsnap/shared";
 import { CodexAppServerClient } from "../ai/codex-client";
+import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
   prepareEnrichmentImage,
@@ -40,6 +42,16 @@ import {
   getAiRun,
   markAiRunRunning
 } from "../persistence/ai-runs-repo";
+import {
+  getAiRunUsageDetail,
+  getAiUsageSummary,
+  listAiRunUsageRowsMissingPrice,
+  listAiUsageRuns,
+  replaceAiRunMediaInputs,
+  saveAiRunUsage,
+  updateAiRunUsageCost,
+  type SaveAiRunMediaInput
+} from "../persistence/ai-usage-repo";
 import { getCaptureById } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath } from "../persistence/source-store";
 import {
@@ -99,6 +111,49 @@ function preparedMediaShape(
   };
 }
 
+function preparedMediaInputs(
+  prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames
+): SaveAiRunMediaInput[] {
+  if ("frames" in prepared) {
+    return prepared.frames.map((frame, index) => ({
+      ...preparedImageAccountingBase(frame, index),
+      role: "video-frame",
+      transform: "video-frame",
+      videoPositionPct: frame.positionPct,
+      videoTimestampSec: frame.timestampSec
+    }));
+  }
+  return [
+    {
+      ...preparedImageAccountingBase(prepared, 0),
+      role: "capture",
+      transform: "prepared-jpeg"
+    }
+  ];
+}
+
+function preparedImageAccountingBase(
+  image: PreparedEnrichmentImage,
+  ordinal: number
+): Omit<SaveAiRunMediaInput, "role" | "transform"> {
+  return {
+    ordinal,
+    sourceMimeType: image.sourceMimeType,
+    sentMimeType: image.sentMimeType,
+    format: image.format,
+    encoder: image.encoder,
+    quality: image.quality,
+    sourceWidthPx: image.sourceWidth,
+    sourceHeightPx: image.sourceHeight,
+    sentWidthPx: image.width,
+    sentHeightPx: image.height,
+    sentByteSize: image.byteSize,
+    maxEdgePx: image.maxEdgePx,
+    maxBytes: image.maxBytes,
+    scaleRatio: image.scaleRatio
+  };
+}
+
 function broadcastAiBudgetUpdated(payload: AiEnrichmentBudgetStatus): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
@@ -108,6 +163,49 @@ function broadcastAiBudgetUpdated(payload: AiEnrichmentBudgetStatus): void {
 
 function validationError(code: string, message: string): Result<never, PwrSnapError> {
   return err({ kind: "validation", code, message });
+}
+
+function isUsageSummaryWindow(value: unknown): value is "24h" | "7d" | "30d" {
+  return value === "24h" || value === "7d" || value === "30d";
+}
+
+function parseUsageRunsPage(req: {
+  limit?: number;
+  offset?: number;
+}): Result<{ limit: number; offset: number }, PwrSnapError> {
+  const limit = req.limit ?? 25;
+  const offset = req.offset ?? 0;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return validationError("invalid_request", "usage run limit must be an integer from 1 to 100");
+  }
+  if (!Number.isInteger(offset) || offset < 0) {
+    return validationError("invalid_request", "usage run offset must be a non-negative integer");
+  }
+  return ok({ limit, offset });
+}
+
+function parseCodexModelsRequest(req: {
+  includeHidden?: boolean;
+}): Result<{ includeHidden: boolean }, PwrSnapError> {
+  const includeHidden = req.includeHidden ?? false;
+  if (typeof includeHidden !== "boolean") {
+    return validationError("invalid_request", "includeHidden must be a boolean");
+  }
+  return ok({ includeHidden });
+}
+
+function refreshKnownAiUsagePrices(): void {
+  for (const row of listAiRunUsageRowsMissingPrice()) {
+    const cost = estimateAiUsageCost({
+      model: row.model,
+      provider: row.modelProvider,
+      serviceTier: row.serviceTier,
+      tokens: row.tokens
+    });
+    if (cost.status === "available") {
+      updateAiRunUsageCost(row.aiRunId, cost);
+    }
+  }
 }
 
 async function defaultSettingsReader(): Promise<Settings> {
@@ -303,6 +401,8 @@ export function registerCodexHandlers(params?: {
     const run = createAiRun({
       captureId: capture.id,
       codexCommand,
+      triggerSource,
+      selectedModel: settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL,
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -340,6 +440,7 @@ export function registerCodexHandlers(params?: {
       },
       command: codexCommand,
       settingsReader,
+      selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -467,6 +568,63 @@ export function registerCodexHandlers(params?: {
     return ok(budget.status(settings));
   });
 
+  bus.register("codex:models", async (req) => {
+    const parsed = parseCodexModelsRequest(req);
+    if (!parsed.ok) return parsed;
+    let settings: Settings;
+    try {
+      settings = await settingsReader();
+    } catch (error) {
+      return err({
+        kind: "settings",
+        code: "read_failed",
+        message: error instanceof Error ? error.message : String(error),
+        cause: error
+      });
+    }
+    const client = clientFactory(codexCommandForSettings(settings));
+    try {
+      const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      return ok({ models, selectedModel: settings.codex.captionModel });
+    } catch (error) {
+      return err({
+        kind: "unknown",
+        code: "codex_models_failed",
+        message: error instanceof Error ? error.message : String(error),
+        cause: error
+      });
+    } finally {
+      await client.close().catch((error: unknown) => {
+        log.warn("codex client close failed after model list", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+  });
+
+  bus.register("codex:usageSummary", async (req) => {
+    if (!isUsageSummaryWindow(req.window)) {
+      return validationError("invalid_request", "usage summary window must be 24h, 7d, or 30d");
+    }
+    refreshKnownAiUsagePrices();
+    return ok(getAiUsageSummary(req.window));
+  });
+
+  bus.register("codex:usageRuns", async (req) => {
+    const parsed = parseUsageRunsPage(req);
+    if (!parsed.ok) return parsed;
+    refreshKnownAiUsagePrices();
+    return ok(listAiUsageRuns(parsed.value));
+  });
+
+  bus.register("codex:usageRunDetail", async (req) => {
+    if (typeof req.runId !== "string" || req.runId.trim() === "") {
+      return validationError("invalid_request", "runId is required");
+    }
+    refreshKnownAiUsagePrices();
+    return ok(getAiRunUsageDetail(req.runId));
+  });
+
   bus.register("codex:cancel", async (req) => {
     activeRuns.get(req.runId)?.abort();
     activeRuns.delete(req.runId);
@@ -518,6 +676,7 @@ async function runCaptureEnrichment(params: {
    * the float-over checkbox visibly promises.
    */
   settingsReader: SettingsReader;
+  selectedModel: string;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -561,6 +720,8 @@ async function runCaptureEnrichment(params: {
       }
       prepared = await prepareEnrichmentVideoFrames(sourcePath, {
         durationSec: metadata.videoDurationSec,
+        sourceWidthPx: metadata.widthPx,
+        sourceHeightPx: metadata.heightPx,
         abortSignal: abortController.signal
       });
       metadata.videoFrameSamples = prepared.frames.map(({ positionPct, timestampSec }) => ({
@@ -574,6 +735,8 @@ async function runCaptureEnrichment(params: {
       });
       imagePaths = [prepared.path];
     }
+
+    replaceAiRunMediaInputs(params.runId, preparedMediaInputs(prepared));
 
     log.info("capture enrichment turn starting", {
       runId: params.runId,
@@ -592,6 +755,7 @@ async function runCaptureEnrichment(params: {
     const response = await client.enrichCapture({
       imagePaths,
       metadata,
+      model: params.selectedModel,
       abortSignal: abortController.signal
     });
 
@@ -620,6 +784,30 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
+    const tokens =
+      response.tokenUsage == null
+        ? null
+        : {
+            ...response.tokenUsage.last,
+            modelContextWindow: response.tokenUsage.modelContextWindow
+          };
+    saveAiRunUsage({
+      aiRunId: params.runId,
+      threadId: response.threadId,
+      turnId: response.turnId,
+      model: response.model ?? null,
+      modelProvider: response.modelProvider ?? null,
+      serviceTier: response.serviceTier ?? null,
+      usageStatus: tokens === null ? "unavailable" : "available",
+      usageUnavailableReason: tokens === null ? "Codex did not report token usage" : null,
+      tokens,
+      cost: estimateAiUsageCost({
+        model: response.model ?? null,
+        provider: response.modelProvider ?? null,
+        serviceTier: response.serviceTier ?? null,
+        tokens
+      })
+    });
     await tryRenameCaptureAssetToEffectiveFilename(captureId);
     const completed = completeAiRun(params.runId, response.result, latencyMs);
     broadcastAiRunUpdated({
@@ -644,6 +832,21 @@ async function runCaptureEnrichment(params: {
   } catch (error) {
     const latencyMs = Math.round(performance.now() - startedAt);
     const isAbort = error instanceof DOMException && error.name === "AbortError";
+    try {
+      saveAiRunUsage({
+        aiRunId: params.runId,
+        usageStatus: "unavailable",
+        usageUnavailableReason: isAbort
+          ? "AI run was cancelled before Codex reported token usage"
+          : "Codex did not report token usage before the run failed",
+        cost: { status: "unavailable", reason: "usage unavailable" }
+      });
+    } catch (usageError) {
+      log.warn("AI usage accounting skipped after run failure", {
+        runId: params.runId,
+        message: usageError instanceof Error ? usageError.message : String(usageError)
+      });
+    }
     const run = isAbort
       ? cancelAiRun(params.runId)
       : failAiRun(

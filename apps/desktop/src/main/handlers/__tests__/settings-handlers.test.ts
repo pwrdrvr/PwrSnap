@@ -200,14 +200,21 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_codex_mode");
   });
 
-  test("settings:write rejects an unknown codex.captionModel", async () => {
-    // The renderer dropdown can only ever pick from CODEX_CAPTION_MODELS,
-    // but a buggy renderer (or a future HTTP-RPC / MCP caller) could ship
-    // a stale model name — the bus-edge validator must reject so we never
-    // persist a value the spawn-Codex path can't honor.
+  test("settings:write accepts newer Codex model ids", async () => {
     const result = await bus.dispatch(
       "settings:write",
-      { codex: { captionModel: "gpt-1-mini" } } as unknown as Record<string, never>,
+      { codex: { captionModel: "gpt-5.5" } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.codex.captionModel).toBe("gpt-5.5");
+  });
+
+  test("settings:write rejects an invalid codex.captionModel shape", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      { codex: { captionModel: "" } } as unknown as Record<string, never>,
       { principal: "ipc" }
     );
     expect(result.ok).toBe(false);

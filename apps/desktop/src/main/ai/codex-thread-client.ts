@@ -42,16 +42,15 @@ export type CodexStartThreadOptions = {
   serviceName?: string;
   personality?: string;
   /** Per-thread Codex config overlay (the `-c key=value` mechanism).
-   *  We use it to set `web_search = "disabled"` (default is "cached" =
-   *  ON) so the agent doesn't advertise/use web search. */
+   *  PwrSnap chat/enrichment threads use this to disable Codex prompt/tool
+   *  scaffolding that belongs to coding-agent threads. */
   config?: Record<string, unknown>;
   /** Thread environments. **Empty array disables exec-environment
    *  access**, which (per codex-rs core/src/tools/spec_plan.rs — the
    *  shell/exec + apply_patch specs are gated on
    *  `tool_environment_mode().has_environment()`) drops Codex's built-in
    *  shell / unified_exec / apply_patch tools. Our dynamic tools are
-   *  added BEFORE that gate, so they survive. This is how we keep the
-   *  agent an image assistant, not a coding agent. */
+   *  added BEFORE that gate, so they survive. */
   environments?: unknown[];
 };
 

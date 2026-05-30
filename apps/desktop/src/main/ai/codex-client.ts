@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type {
   InitializeParams,
   InitializeResponse,
@@ -9,14 +8,20 @@ import type {
 import type {
   DynamicToolCallResponse,
   ItemCompletedNotification,
+  Model,
+  ModelListResponse,
+  ThreadTokenUsage,
+  ThreadTokenUsageUpdatedNotification,
   ThreadStartResponse,
   TurnCompletedNotification,
-  TurnStartResponse
+  TurnStartResponse,
+  UserInput
 } from "@pwrsnap/codex-app-server-protocol/v2";
-import type { EnrichmentResult } from "@pwrsnap/shared";
+import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { getMainLogger } from "../log";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "./codex-thread-config";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
@@ -32,6 +37,7 @@ export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
 export type CodexCaptureEnrichmentRequest = {
   imagePaths: readonly string[];
   metadata: CaptureEnrichmentPromptMetadata;
+  model?: string | null;
   abortSignal?: AbortSignal;
 };
 
@@ -40,6 +46,10 @@ export type CodexCaptureEnrichmentResponse = {
   threadId: string;
   turnId: string;
   userAgent: string;
+  model: string;
+  modelProvider: string;
+  serviceTier: string | null;
+  tokenUsage: ThreadTokenUsage | null;
 };
 
 export type CodexAppServerClientOptions = {
@@ -53,7 +63,8 @@ type PendingTurn = {
   threadId: string;
   turnId: string;
   agentMessages: string[];
-  resolve: (value: string) => void;
+  tokenUsage: ThreadTokenUsage | null;
+  resolve: (value: { rawText: string; tokenUsage: ThreadTokenUsage | null }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -105,15 +116,22 @@ export class CodexAppServerClient {
       if (request.imagePaths.length === 0) {
         throw new Error("capture enrichment requires at least one image input");
       }
-      const imageDataUrls = await Promise.all(request.imagePaths.map((path) => imagePathToDataUrl(path)));
 
       const threadResponse = (await connection.request(
         "thread/start",
         {
+          model: request.model ?? null,
           ephemeral: true,
           approvalPolicy: "never",
           sandbox: "read-only",
-          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS
+          baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
+          // This background turn only needs image understanding. Empty
+          // environments remove env-gated coding tools; the config overlay
+          // disables Codex prompt/tool scaffolding unrelated to enrichment.
+          config: PWRSNAP_CODEX_THREAD_CONFIG,
+          environments: [],
+          experimentalRawEvents: false,
+          persistExtendedHistory: false
         },
         this.requestTimeoutMs
       )) as ThreadStartResponse;
@@ -123,16 +141,14 @@ export class CodexAppServerClient {
         "turn/start",
         {
           threadId,
+          model: request.model ?? null,
           input: [
             {
               type: "text",
               text: buildCaptureEnrichmentPrompt(request.metadata),
               text_elements: []
             },
-            ...imageDataUrls.map((url) => ({
-              type: "image",
-              url
-            }))
+            ...imagePathsToLocalImageInputs(request.imagePaths)
           ],
           effort: "low",
           outputSchema: CAPTURE_ENRICHMENT_SCHEMA
@@ -145,13 +161,17 @@ export class CodexAppServerClient {
         throw new DOMException("capture enrichment aborted", "AbortError");
       }
 
-      const rawText = await this.waitForTurn(threadId, turnId);
+      const { rawText, tokenUsage } = await this.waitForTurn(threadId, turnId);
       const result = parseCaptureEnrichmentResponse(rawText);
       return {
         result,
         threadId,
         turnId,
-        userAgent: initialized.userAgent
+        userAgent: initialized.userAgent,
+        model: threadResponse.model,
+        modelProvider: threadResponse.modelProvider,
+        serviceTier: threadResponse.serviceTier,
+        tokenUsage
       };
     } finally {
       request.abortSignal?.removeEventListener("abort", abortHandler);
@@ -175,6 +195,23 @@ export class CodexAppServerClient {
     if (connection) {
       await connection.close();
     }
+  }
+
+  async listModels(input: { includeHidden?: boolean } = {}): Promise<CodexModelOption[]> {
+    const connection = await this.getConnection();
+    await this.initialize();
+    const models: CodexModelOption[] = [];
+    let cursor: string | null = null;
+    do {
+      const response = (await connection.request(
+        "model/list",
+        { cursor, limit: 100, includeHidden: input.includeHidden ?? false },
+        this.requestTimeoutMs
+      )) as ModelListResponse;
+      models.push(...response.data.map(modelToOption));
+      cursor = response.nextCursor;
+    } while (cursor !== null);
+    return models;
   }
 
   private async initialize(): Promise<InitializeResponse> {
@@ -230,12 +267,16 @@ export class CodexAppServerClient {
     return connection;
   }
 
-  private waitForTurn(threadId: string, turnId: string): Promise<string> {
+  private waitForTurn(
+    threadId: string,
+    turnId: string
+  ): Promise<{ rawText: string; tokenUsage: ThreadTokenUsage | null }> {
     if (this.pendingTurn) {
       throw new Error("codex capture enrichment already has an active turn");
     }
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<{ rawText: string; tokenUsage: ThreadTokenUsage | null }>(
+      (resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingTurn = null;
         reject(new Error("codex capture enrichment timed out"));
@@ -244,11 +285,13 @@ export class CodexAppServerClient {
         threadId,
         turnId,
         agentMessages: [],
+        tokenUsage: null,
         resolve,
         reject,
         timer
       };
-    });
+      }
+    );
   }
 
   private handleNotification(method: string, params: unknown): void {
@@ -258,6 +301,10 @@ export class CodexAppServerClient {
     }
     if (method === "rawResponseItem/completed") {
       this.handleRawResponseItemCompleted(params as ServerNotification["params"]);
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      this.handleThreadTokenUsageUpdated(params as ThreadTokenUsageUpdatedNotification);
       return;
     }
     if (method === "turn/completed") {
@@ -320,7 +367,17 @@ export class CodexAppServerClient {
       pending.reject(new Error("codex capture enrichment returned no assistant message"));
       return;
     }
-    pending.resolve(rawText);
+    pending.resolve({ rawText, tokenUsage: pending.tokenUsage });
+  }
+
+  private handleThreadTokenUsageUpdated(
+    params: ThreadTokenUsageUpdatedNotification
+  ): void {
+    const pending = this.pendingTurn;
+    if (!pending || params.threadId !== pending.threadId || params.turnId !== pending.turnId) {
+      return;
+    }
+    pending.tokenUsage = params.tokenUsage;
   }
 
   private async handleServerRequest(method: string, params: unknown): Promise<unknown> {
@@ -344,7 +401,25 @@ export class CodexAppServerClient {
   }
 }
 
-async function imagePathToDataUrl(imagePath: string): Promise<string> {
-  const image = await readFile(imagePath);
-  return `data:image/jpeg;base64,${image.toString("base64")}`;
+function modelToOption(model: Model): CodexModelOption {
+  return {
+    id: model.id,
+    model: model.model,
+    displayName: model.displayName,
+    description: model.description,
+    hidden: model.hidden,
+    inputModalities: model.inputModalities,
+    defaultServiceTier: model.defaultServiceTier,
+    isDefault: model.isDefault
+  };
+}
+
+function imagePathsToLocalImageInputs(imagePaths: readonly string[]): UserInput[] {
+  return imagePaths.map((path) => ({
+    // Do not inline a base64 data URL here: the Codex bridge can account
+    // that payload like fresh text/context. `localImage` lets App Server
+    // read the prepared JPEG as an image input.
+    type: "localImage",
+    path
+  }));
 }

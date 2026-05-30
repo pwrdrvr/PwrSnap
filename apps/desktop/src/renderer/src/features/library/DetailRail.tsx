@@ -31,6 +31,7 @@ import {
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
 import type {
   AiEnrichmentBudgetStatus,
+  AiRunUsageDetail,
   CaptureEnrichment,
   CaptureRecord,
   LibrarySidebarTab,
@@ -843,6 +844,24 @@ function DetailTab({
   const acceptedFilenameStem = enrichment?.acceptedFilenameStem ?? "";
   const suggestedFilenameStem = enrichment?.suggestedFilenameStem ?? "";
   const effectiveFilenameStem = acceptedFilenameStem || suggestedFilenameStem;
+  const [usageDetail, setUsageDetail] = useState<AiRunUsageDetail | null>(null);
+
+  useEffect(() => {
+    const runId = enrichment?.latestRunId ?? null;
+    if (runId === null) {
+      setUsageDetail(null);
+      return;
+    }
+    let cancelled = false;
+    void dispatch("codex:usageRunDetail", { runId }).then((result) => {
+      if (!cancelled) {
+        setUsageDetail(result.ok && isAiRunUsageDetail(result.value) ? result.value : null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enrichment?.latestRunId, enrichment?.status]);
 
   const [titleValue, titleOrigin, setTitleEdit, commitTitle] = useFieldEditor({
     captureId: record.id,
@@ -1101,6 +1120,8 @@ function DetailTab({
         }
       />
 
+      {usageDetail !== null ? <AiRunUsageStrip detail={usageDetail} /> : null}
+
       <div className="psl__detail-fields">
         <label className="psl__field">
           <span className="psl__field-label">
@@ -1213,6 +1234,69 @@ function DetailTab({
       />
     </>
   );
+}
+
+function isAiRunUsageDetail(value: unknown): value is AiRunUsageDetail {
+  return typeof value === "object" && value !== null && "cost" in value && "mediaInputs" in value;
+}
+
+function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement {
+  const cost =
+    detail.cost.status === "available"
+      ? formatCostMicros(detail.cost.totalCostMicros)
+      : "Price unavailable";
+  const tokens =
+    detail.tokens === null
+      ? "Usage unavailable"
+      : formatUsageTokenBreakdown(detail.tokens);
+  const media = detail.mediaInputs[0] ?? null;
+  const mediaText =
+    media === null
+      ? "Media unavailable"
+      : detail.mediaInputs.length === 1
+        ? `${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()} · ${formatBytes(media.sentByteSize)}${media.quality === null ? "" : ` · q${media.quality}`}`
+        : `${detail.mediaInputs.length} frames · ${media.sentWidthPx}×${media.sentHeightPx} ${media.format.toUpperCase()}`;
+
+  return (
+    <div className="psl__ai-usage" aria-label="AI usage">
+      <div className="psl__ai-usage-row">
+        <span>{detail.model ?? "model unavailable"}</span>
+        <b>{cost}</b>
+      </div>
+      <div className="psl__ai-usage-row is-muted">
+        <span>{tokens}</span>
+        <span>{mediaText}</span>
+      </div>
+    </div>
+  );
+}
+
+function formatCostMicros(micros: number): string {
+  const dollars = micros / 1_000_000;
+  if (dollars > 0 && dollars < 0.01) return "<$0.01";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: dollars < 10 ? 2 : 0,
+    maximumFractionDigits: dollars < 10 ? 2 : 0
+  }).format(dollars);
+}
+
+function formatTokenCount(tokens: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(tokens);
+}
+
+function formatUsageTokenBreakdown(tokens: {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+}): string {
+  const uncachedInput = Math.max(0, tokens.inputTokens - tokens.cachedInputTokens);
+  const output = tokens.reasoningOutputTokens > 0
+    ? `${formatTokenCount(tokens.outputTokens)} out (${formatTokenCount(tokens.reasoningOutputTokens)} reasoning)`
+    : `${formatTokenCount(tokens.outputTokens)} out`;
+  return `${formatTokenCount(uncachedInput)} uncached in · ${formatTokenCount(tokens.cachedInputTokens)} cached · ${output}`;
 }
 
 type TagEditorProps = {

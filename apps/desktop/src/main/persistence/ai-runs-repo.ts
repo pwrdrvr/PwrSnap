@@ -1,11 +1,14 @@
 import { nanoid } from "nanoid";
-import type { AiRunSnapshot, AiRunStatus } from "@pwrsnap/shared";
+import type { AiEnrichmentTriggerSource, AiRunSnapshot, AiRunStatus } from "@pwrsnap/shared";
 import { getDb } from "./db";
 
 type AiRunRow = {
   id: string;
   capture_id: string;
   kind: "enrich";
+  task: string;
+  trigger_source: AiEnrichmentTriggerSource;
+  selected_model: string | null;
   status: AiRunStatus;
   codex_command: string | null;
   codex_version: string | null;
@@ -27,6 +30,9 @@ export type CreateAiRunInput = {
   codexProtocolVersion?: string | null;
   promptVersion?: number | undefined;
   request?: Record<string, unknown> | null;
+  task?: string | undefined;
+  triggerSource?: AiEnrichmentTriggerSource | undefined;
+  selectedModel?: string | null | undefined;
 };
 
 function rowToSnapshot(row: AiRunRow): AiRunSnapshot {
@@ -34,6 +40,9 @@ function rowToSnapshot(row: AiRunRow): AiRunSnapshot {
     id: row.id,
     captureId: row.capture_id,
     kind: row.kind,
+    task: row.task,
+    triggerSource: row.trigger_source,
+    selectedModel: row.selected_model,
     status: row.status,
     error: row.error,
     latencyMs: row.latency_ms,
@@ -49,16 +58,21 @@ export function createAiRun(input: CreateAiRunInput): AiRunSnapshot {
   db.prepare(
     `INSERT INTO ai_runs (
       id, capture_id, kind, status,
+      task, trigger_source, selected_model,
       codex_command, codex_version, codex_protocol_version,
       prompt_version, request_json
     ) VALUES (
       @id, @captureId, 'enrich', 'queued',
+      @task, @triggerSource, @selectedModel,
       @codexCommand, @codexVersion, @codexProtocolVersion,
       @promptVersion, @requestJson
     )`
   ).run({
     id,
     captureId: input.captureId,
+    task: input.task ?? "enrich",
+    triggerSource: input.triggerSource ?? "unknown",
+    selectedModel: input.selectedModel ?? null,
     codexCommand: input.codexCommand ?? null,
     codexVersion: input.codexVersion ?? null,
     codexProtocolVersion: input.codexProtocolVersion ?? null,

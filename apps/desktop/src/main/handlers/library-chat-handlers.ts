@@ -24,6 +24,7 @@ import type {
 import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
 import { CodexThreadClient } from "../ai/codex-thread-client";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
@@ -37,10 +38,9 @@ import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
 
 const log = getMainLogger("pwrsnap:library-chat-handlers");
 
-// PwrSnap's chat is an IMAGE assistant, not a coding agent — but Codex
-// registers its built-in coding tools by default and the agent will
-// otherwise advertise + use them ("I can edit files, run shell, apply
-// patches, search the web"). Two source-verified levers (codex-rs):
+// PwrSnap's chat is an IMAGE assistant, not a coding agent. Codex has several
+// separate prompt/tool sources, so we send both an empty environment list and a
+// restrictive config overlay:
 //
 //   • EMPTY `environments` disables exec-environment access. The shell /
 //     unified_exec + apply_patch tool specs are gated on
@@ -48,16 +48,15 @@ const log = getMainLogger("pwrsnap:library-chat-handlers");
 //     and `from_count(0) == None == !has_environment` — so an empty list
 //     drops all three. Our DYNAMIC tools are added before that gate, so
 //     they survive.
-//   • `web_search = "disabled"` (the default is "cached" = ON; the key
-//     is a top-level WebSearchMode, NOT `tools.web_search`).
+//   • The config overlay disables web search plus Codex's permissions, apps,
+//     skills, plugins, tool-suggest, hosted image-generation, goals, and
+//     environment-context scaffolding.
 //
 // The system prompt also forbids claiming/using any coding capability,
 // as a backstop. (`baseInstructions` already fully REPLACES Codex's
 // default coding-agent prompt — the Responses `instructions` field is
 // `base_instructions.text` verbatim.)
-const LIBRARY_CHAT_THREAD_CONFIG: Record<string, unknown> = {
-  web_search: "disabled"
-};
+const LIBRARY_CHAT_THREAD_CONFIG = PWRSNAP_CODEX_THREAD_CONFIG;
 
 /** The Library surface's broadcast channels (the controller is surface-
  *  parameterized — see `ChatChannelSet`). */

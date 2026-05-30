@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonRpcTransport } from "../../codex-app-server/json-rpc";
 import { CodexAppServerClient } from "../codex-client";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "../codex-thread-config";
 import { afterEach, describe, expect, it } from "vitest";
 
 type Envelope = {
@@ -59,6 +60,7 @@ class FakeTransport implements JsonRpcTransport {
     }
 
     if (envelope.method === "thread/start") {
+      const params = envelope.params as { model?: string | null };
       this.emit({
         id,
         result: {
@@ -81,7 +83,7 @@ class FakeTransport implements JsonRpcTransport {
             name: null,
             turns: []
           },
-          model: "gpt-test",
+          model: params.model ?? "gpt-test",
           modelProvider: "openai",
           serviceTier: null,
           cwd: "/tmp",
@@ -90,6 +92,36 @@ class FakeTransport implements JsonRpcTransport {
           approvalsReviewer: "auto",
           sandbox: { mode: "read-only" },
           reasoningEffort: "low"
+        }
+      });
+      return;
+    }
+
+    if (envelope.method === "model/list") {
+      this.emit({
+        id,
+        result: {
+          data: [
+            {
+              id: "gpt-5.5",
+              model: "gpt-5.5",
+              upgrade: null,
+              upgradeInfo: null,
+              availabilityNux: null,
+              displayName: "GPT-5.5",
+              description: "Frontier model",
+              hidden: false,
+              supportedReasoningEfforts: [],
+              defaultReasoningEffort: "medium",
+              inputModalities: ["text", "image"],
+              supportsPersonality: false,
+              additionalSpeedTiers: [],
+              serviceTiers: [],
+              defaultServiceTier: null,
+              isDefault: true
+            }
+          ],
+          nextCursor: null
         }
       });
       return;
@@ -111,6 +143,30 @@ class FakeTransport implements JsonRpcTransport {
         }
       });
       setTimeout(() => {
+        this.emit({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            tokenUsage: {
+              total: {
+                totalTokens: 1200,
+                inputTokens: 900,
+                cachedInputTokens: 100,
+                outputTokens: 300,
+                reasoningOutputTokens: 25
+              },
+              last: {
+                totalTokens: 1200,
+                inputTokens: 900,
+                cachedInputTokens: 100,
+                outputTokens: 300,
+                reasoningOutputTokens: 25
+              },
+              modelContextWindow: 400000
+            }
+          }
+        });
         this.emit({
           method: "item/completed",
           params: {
@@ -177,6 +233,7 @@ describe("CodexAppServerClient", () => {
 
     const response = await client.enrichCapture({
       imagePaths: [imagePath],
+      model: "gpt-5.4-mini",
       metadata: {
         sourceAppName: "PwrSnap",
         sourceAppBundleId: "com.pwrdrvr.pwrsnap",
@@ -193,6 +250,18 @@ describe("CodexAppServerClient", () => {
       description: "A screenshot with visible text.",
       tags: [{ label: "text", confidence: 0.8 }]
     });
+    expect(response).toMatchObject({
+      model: "gpt-5.4-mini",
+      modelProvider: "openai",
+      serviceTier: null,
+      tokenUsage: {
+        last: {
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300
+        }
+      }
+    });
     expect(transport.outbound.map((message) => message.method)).toEqual([
       "initialize",
       "thread/start",
@@ -200,16 +269,46 @@ describe("CodexAppServerClient", () => {
       "thread/archive"
     ]);
     expect(transport.outbound.find((message) => message.method === "thread/start")?.params).toMatchObject({
+      model: "gpt-5.4-mini",
       ephemeral: true,
       approvalPolicy: "never",
-      baseInstructions: expect.stringContaining("Primary goals, in order:")
+      baseInstructions: expect.stringContaining("Primary goals, in order:"),
+      config: PWRSNAP_CODEX_THREAD_CONFIG,
+      environments: [],
+      experimentalRawEvents: false,
+      persistExtendedHistory: false
     });
     const turnStart = transport.outbound.find((message) => message.method === "turn/start");
     expect(turnStart?.params).toMatchObject({
-      input: expect.arrayContaining([{ type: "image", url: "data:image/jpeg;base64,AQID" }])
+      model: "gpt-5.4-mini",
+      input: expect.arrayContaining([{ type: "localImage", path: imagePath }])
     });
+    expect(JSON.stringify(turnStart?.params)).not.toContain("data:image/jpeg;base64");
     expect(JSON.stringify(turnStart?.params)).toContain("Source application name: PwrSnap");
     expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
+  });
+
+  it("lists available Codex models", async () => {
+    const transport = new FakeTransport();
+    const client = new CodexAppServerClient({
+      command: "/bin/codex",
+      transportFactory: () => transport
+    });
+
+    const models = await client.listModels();
+
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        inputModalities: ["text", "image"]
+      })
+    ]);
+    expect(transport.outbound.map((message) => message.method)).toEqual([
+      "initialize",
+      "model/list"
+    ]);
   });
 
   it("sends each sampled video frame as a separate image input", async () => {
@@ -249,11 +348,12 @@ describe("CodexAppServerClient", () => {
     const turnStart = transport.outbound.find((message) => message.method === "turn/start");
     expect(turnStart?.params).toMatchObject({
       input: expect.arrayContaining([
-        { type: "image", url: "data:image/jpeg;base64,AQ==" },
-        { type: "image", url: "data:image/jpeg;base64,Ag==" },
-        { type: "image", url: "data:image/jpeg;base64,Aw==" }
+        { type: "localImage", path: frame1 },
+        { type: "localImage", path: frame2 },
+        { type: "localImage", path: frame3 }
       ])
     });
+    expect(JSON.stringify(turnStart?.params)).not.toContain("data:image/jpeg;base64");
     expect(JSON.stringify(turnStart?.params)).toContain(
       "Provided video frame samples: 15% at 1.500s, 50% at 5.000s, 85% at 8.500s"
     );

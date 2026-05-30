@@ -11,9 +11,19 @@ export const DEFAULT_ENRICHMENT_IMAGE_MAX_BYTES = 1_000_000;
 
 export type PreparedEnrichmentImage = {
   path: string;
+  sourceWidth: number | null;
+  sourceHeight: number | null;
+  sourceMimeType: string | null;
   width: number;
   height: number;
   byteSize: number;
+  sentMimeType: "image/jpeg";
+  format: "jpeg";
+  encoder: string;
+  quality: number;
+  maxEdgePx: number;
+  maxBytes: number;
+  scaleRatio: number | null;
   cleanup: () => Promise<void>;
 };
 
@@ -31,6 +41,8 @@ export type PrepareEnrichmentImageOptions = {
   maxEdgePx?: number;
   quality?: number;
   maxBytes?: number;
+  sourceWidthPx?: number;
+  sourceHeightPx?: number;
   tempRoot?: string;
   abortSignal?: AbortSignal;
 };
@@ -58,8 +70,8 @@ export async function prepareEnrichmentImage(
   try {
     const image = sharp(sourcePath, { limitInputPixels: 80_000_000 }).rotate();
     const metadata = await image.metadata();
-    const width = metadata.width ?? maxEdgePx;
-    const height = metadata.height ?? maxEdgePx;
+    const width = metadata.width ?? options.sourceWidthPx ?? maxEdgePx;
+    const height = metadata.height ?? options.sourceHeightPx ?? maxEdgePx;
     const longestEdge = Math.max(width, height);
     const resize =
       longestEdge > maxEdgePx
@@ -87,9 +99,19 @@ export async function prepareEnrichmentImage(
 
     return {
       path: outputPath,
+      sourceWidth: metadata.width ?? options.sourceWidthPx ?? null,
+      sourceHeight: metadata.height ?? options.sourceHeightPx ?? null,
+      sourceMimeType: metadata.format ? `image/${metadata.format}` : null,
       width: outputMetadata.width ?? 0,
       height: outputMetadata.height ?? 0,
       byteSize: outputStat.size,
+      sentMimeType: "image/jpeg",
+      format: "jpeg",
+      encoder: "sharp mozjpeg",
+      quality,
+      maxEdgePx,
+      maxBytes,
+      scaleRatio: scaleRatio(width, height, outputMetadata.width ?? 0, outputMetadata.height ?? 0),
       cleanup: async () => {
         await rm(workDir, { force: true, recursive: true });
       }
@@ -152,9 +174,27 @@ export async function prepareEnrichmentVideoFrames(
       frames.push({
         ...sample,
         path: outputPath,
+        sourceWidth: options.sourceWidthPx ?? null,
+        sourceHeight: options.sourceHeightPx ?? null,
+        sourceMimeType: null,
         width: outputMetadata.width ?? 0,
         height: outputMetadata.height ?? 0,
         byteSize: outputStat.size,
+        sentMimeType: "image/jpeg",
+        format: "jpeg",
+        encoder: "ffmpeg mjpeg",
+        quality,
+        maxEdgePx,
+        maxBytes,
+        scaleRatio:
+          options.sourceWidthPx === undefined || options.sourceHeightPx === undefined
+            ? null
+            : scaleRatio(
+                options.sourceWidthPx,
+                options.sourceHeightPx,
+                outputMetadata.width ?? 0,
+                outputMetadata.height ?? 0
+              ),
         cleanup: async () => {
           await rm(workDir, { force: true, recursive: true });
         }
@@ -201,6 +241,18 @@ async function extractVideoFrame(
 function qualityToFfmpegQscale(quality: number): number {
   const clamped = Math.max(1, Math.min(100, quality));
   return Math.max(2, Math.min(31, Math.round(31 - (clamped / 100) * 29)));
+}
+
+function scaleRatio(
+  sourceWidth: number,
+  sourceHeight: number,
+  sentWidth: number,
+  sentHeight: number
+): number | null {
+  const sourceLongest = Math.max(sourceWidth, sourceHeight);
+  const sentLongest = Math.max(sentWidth, sentHeight);
+  if (sourceLongest <= 0 || sentLongest <= 0) return null;
+  return Number((sentLongest / sourceLongest).toFixed(6));
 }
 
 function runFfmpeg(ffmpeg: string, args: string[], abortSignal?: AbortSignal): Promise<void> {

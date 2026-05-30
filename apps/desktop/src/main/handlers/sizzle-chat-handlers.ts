@@ -18,6 +18,7 @@ import type {
 import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
 import { CodexThreadClient } from "../ai/codex-thread-client";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
@@ -44,9 +45,10 @@ const SIZZLE_CHAT_CHANNELS: ChatChannelSet = {
 };
 
 // Tool-only agent (like Library): drop Codex's env-gated shell / exec /
-// apply_patch tools and disable web search. Rendering is a tool, not a
-// shell call, so the agent needs no exec environment.
-const SIZZLE_CHAT_THREAD_CONFIG: Record<string, unknown> = { web_search: "disabled" };
+// apply_patch tools and disable Codex prompt/tool scaffolding unrelated to
+// PwrSnap's render dynamic tool. Rendering is a tool, not a shell call, so
+// the agent needs no exec environment.
+const SIZZLE_CHAT_THREAD_CONFIG = PWRSNAP_CODEX_THREAD_CONFIG;
 const SIZZLE_CHAT_THREAD_ENVIRONMENTS: unknown[] = [];
 
 export type SizzleChatSettingsReader = () => Promise<Settings>;

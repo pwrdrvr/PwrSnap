@@ -1,7 +1,13 @@
 // Pure-function unit tests for the AI Providers page helpers.
 
 import { describe, expect, test, vi } from "vitest";
-import { formatLastSetAt, formatNextTokenAt } from "../AIProvidersPage";
+import {
+  formatCostMicros,
+  formatLastSetAt,
+  formatNextTokenAt,
+  formatTokenCount,
+  formatUsageTokenBreakdown
+} from "../AIProvidersPage";
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {
@@ -24,6 +30,13 @@ describe("formatLastSetAt", () => {
     expect(formatLastSetAt("2026-05-12T11:00:00.000Z")).toBe("1 hour ago");
     expect(formatLastSetAt("2026-05-12T09:00:00.000Z")).toBe("3 hours ago");
     expect(formatLastSetAt("2026-05-10T12:00:00.000Z")).toBe("2 days ago");
+    vi.useRealTimers();
+  });
+
+  test("treats SQLite UTC timestamps as UTC instead of local time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-30T17:30:00.000Z"));
+    expect(formatLastSetAt("2026-05-30 17:23:08")).toBe("6 mins ago");
     vi.useRealTimers();
   });
 
@@ -57,5 +70,39 @@ describe("formatNextTokenAt", () => {
     expect(formatNextTokenAt("2026-05-12T11:59:00.000Z")).toBe("now");
     expect(formatNextTokenAt("not-an-iso-date")).toBe("not-an-iso-date");
     vi.useRealTimers();
+  });
+});
+
+describe("usage formatting helpers", () => {
+  test("formats micro-dollar estimates without hiding sub-cent usage", () => {
+    expect(formatCostMicros(null)).toBe("—");
+    expect(formatCostMicros(0)).toBe("$0.00");
+    expect(formatCostMicros(1_958)).toBe("<$0.01");
+    expect(formatCostMicros(1_250_000)).toBe("$1.25");
+  });
+
+  test("formats token counts with grouping", () => {
+    expect(formatTokenCount(null)).toBe("—");
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(1234567)).toBe("1,234,567");
+  });
+
+  test("formats usage tokens by uncached input, cached input, and output", () => {
+    expect(
+      formatUsageTokenBreakdown({
+        inputTokens: 21_981,
+        cachedInputTokens: 2_432,
+        outputTokens: 174,
+        reasoningOutputTokens: 0
+      })
+    ).toBe("19,549 uncached in · 2,432 cached · 174 out");
+    expect(
+      formatUsageTokenBreakdown({
+        inputTokens: 1_000,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningOutputTokens: 25
+      })
+    ).toBe("900 uncached in · 100 cached · 300 out (25 reasoning)");
   });
 });

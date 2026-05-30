@@ -5,7 +5,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   AiEnrichmentBudgetStatus,
-  CodexCaptionModel,
+  AiUsageRunsPage,
+  AiUsageSummary,
+  CodexModelList,
+  CodexModelOption,
   CodexTestResult,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
@@ -32,6 +35,50 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "pinned", label: "Specified Path" }
 ];
 
+function modelOptionsForSelect(
+  models: readonly CodexModelOption[],
+  selectedModel: string
+): CodexModelOption[] {
+  const imageModels = models.filter(
+    (model) =>
+      !model.hidden &&
+      model.inputModalities.includes("text") &&
+      model.inputModalities.includes("image")
+  );
+  const options = imageModels.length > 0
+    ? imageModels
+    : CODEX_CAPTION_MODELS.map((id) => ({
+        id,
+        model: id,
+        displayName: id,
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
+      }));
+  if (options.some((model) => model.id === selectedModel)) return options;
+  return [
+    {
+      id: selectedModel,
+      model: selectedModel,
+      displayName: selectedModel,
+      description: "",
+      hidden: false,
+      inputModalities: ["text", "image"],
+      defaultServiceTier: null,
+      isDefault: false
+    },
+    ...options
+  ];
+}
+
+function modelLabel(model: CodexModelOption): string {
+  return model.displayName === model.id || model.displayName.length === 0
+    ? model.id
+    : `${model.displayName} (${model.id})`;
+}
+
 export function AIProvidersPage(): ReactElement {
   const {
     settings,
@@ -49,10 +96,34 @@ export function AIProvidersPage(): ReactElement {
   const [codexTest, setCodexTest] = useState<CodexTestResult | null>(null);
   const [codexTesting, setCodexTesting] = useState<boolean>(false);
   const [budgetStatus, setBudgetStatus] = useState<AiEnrichmentBudgetStatus | null>(null);
+  const [usageSummary, setUsageSummary] = useState<AiUsageSummary | null>(null);
+  const [usageRuns, setUsageRuns] = useState<AiUsageRunsPage | null>(null);
+  const [usageLoading, setUsageLoading] = useState<boolean>(true);
+  const [codexModels, setCodexModels] = useState<CodexModelList | null>(null);
+  const [codexModelsLoading, setCodexModelsLoading] = useState<boolean>(true);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
     if (result.ok) setBudgetStatus(result.value);
+  }, []);
+
+  const refreshUsage = useCallback(async (): Promise<void> => {
+    const [summaryResult, runsResult] = await Promise.all([
+      dispatch("codex:usageSummary", { window: "30d" }),
+      dispatch("codex:usageRuns", { limit: 5, offset: 0 })
+    ]);
+    if (summaryResult.ok) setUsageSummary(summaryResult.value);
+    if (runsResult.ok) setUsageRuns(runsResult.value);
+    setUsageLoading(false);
+  }, []);
+
+  const refreshCodexModels = useCallback(async (): Promise<void> => {
+    setCodexModelsLoading(true);
+    const result = await dispatch("codex:models", {});
+    if (result.ok) {
+      setCodexModels(result.value);
+    }
+    setCodexModelsLoading(false);
   }, []);
 
   // Cache-friendly first fetch on mount; only force=true when the user
@@ -66,11 +137,12 @@ export function AIProvidersPage(): ReactElement {
       if (cancelled) return;
       setSnapshot(snap);
       setSnapshotLoading(false);
+      void refreshCodexModels();
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshCodex]);
+  }, [refreshCodex, refreshCodexModels]);
 
   useEffect(() => {
     void refreshBudgetStatus();
@@ -82,18 +154,28 @@ export function AIProvidersPage(): ReactElement {
     };
   }, [refreshBudgetStatus]);
 
+  useEffect(() => {
+    void refreshUsage();
+    const unsubscribe = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+      void refreshUsage();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshUsage]);
+
   const onRefresh = async (): Promise<void> => {
     setSnapshotLoading(true);
-    const snap = await refreshCodex(true);
+    setCodexModelsLoading(true);
+    const [snap] = await Promise.all([refreshCodex(true), refreshCodexModels()]);
     setSnapshot(snap);
     setSnapshotLoading(false);
   };
 
-  const captionModel: CodexCaptionModel = isCodexCaptionModel(
-    settings?.codex.captionModel
-  )
+  const captionModel = isCodexCaptionModel(settings?.codex.captionModel)
     ? settings.codex.captionModel
     : DEFAULT_CODEX_CAPTION_MODEL;
+  const captionModelOptions = modelOptionsForSelect(codexModels?.models ?? [], captionModel);
 
   return (
     <>
@@ -115,22 +197,25 @@ export function AIProvidersPage(): ReactElement {
           sub="Codex caption shown in Library detail + Float-Over"
           provider="Codex"
         >
-          <select
-            className="pss__select"
-            value={captionModel}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (!isCodexCaptionModel(next)) return;
-              void patch({ codex: { captionModel: next } });
-            }}
-            aria-label="Capture caption model"
-          >
-            {CODEX_CAPTION_MODELS.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
+          <div className="pss__model-picker">
+            <select
+              className="pss__select"
+              value={captionModel}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (!isCodexCaptionModel(next)) return;
+                void patch({ codex: { captionModel: next } });
+              }}
+              aria-label="Capture caption model"
+            >
+              {captionModelOptions.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {modelLabel(model)}
+                </option>
+              ))}
+            </select>
+            {codexModelsLoading ? <span className="pss__model-loading">loading models</span> : null}
+          </div>
         </JobRoutingRow>
         <JobRoutingRow
           name="OCR — extract text from screenshots"
@@ -195,6 +280,36 @@ export function AIProvidersPage(): ReactElement {
               </button>
             </div>
           </div>
+        </Row>
+      </Card>
+
+      <Card
+        eyebrow="USAGE"
+        title="AI usage"
+        headerAction={
+          <button
+            className="pss__top-btn"
+            type="button"
+            disabled={usageLoading}
+            onClick={() => {
+              setUsageLoading(true);
+              void refreshUsage();
+            }}
+          >
+            {usageLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        }
+      >
+        <Row
+          label="PwrSnap usage"
+          sub="Observed Codex runs from this app. Cost is an OpenAI public list-price equivalent, not an account invoice."
+          tag="30 days"
+        >
+          <AiUsagePanel
+            summary={usageSummary}
+            runs={usageRuns}
+            loading={usageLoading}
+          />
         </Row>
       </Card>
 
@@ -387,6 +502,121 @@ type CodexCandidatesProps = {
   loading: boolean;
   onPin: (path: string) => void;
 };
+
+type AiUsagePanelProps = {
+  summary: AiUsageSummary | null;
+  runs: AiUsageRunsPage | null;
+  loading: boolean;
+};
+
+function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactElement {
+  if (summary === null || runs === null) {
+    return (
+      <div className="pss__usage">
+        <div className="pss__usage-empty">
+          {loading ? "Loading usage accounting." : "No usage accounting recorded yet."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pss__usage">
+      <div className="pss__usage-metrics">
+        <UsageMetric
+          label="List-price"
+          value={formatCostMicros(summary.estimatedTotalCostMicros)}
+          sub={`${summary.runCount} runs`}
+        />
+        <UsageMetric
+          label="Input"
+          value={formatTokenCount(summary.inputTokens)}
+          sub={`${formatTokenCount(uncachedInputTokens(summary.inputTokens, summary.cachedInputTokens))} uncached · ${formatTokenCount(summary.cachedInputTokens)} cached`}
+        />
+        <UsageMetric
+          label="Output"
+          value={formatTokenCount(summary.outputTokens)}
+          sub={`${formatTokenCount(summary.reasoningOutputTokens)} reasoning`}
+        />
+      </div>
+      {summary.usageUnavailableCount > 0 || summary.priceUnavailableCount > 0 ? (
+        <div className="pss__usage-note">
+          {summary.usageUnavailableCount > 0
+            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing Codex usage. `
+            : ""}
+          {summary.priceUnavailableCount > 0
+            ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} missing price data.`
+            : ""}
+        </div>
+      ) : null}
+      <div className="pss__usage-runs">
+        {runs.items.length === 0 ? (
+          <div className="pss__usage-empty">No recent AI runs.</div>
+        ) : (
+          runs.items.map((item) => (
+            <div className="pss__usage-run" key={item.run.id}>
+              <div className="pss__usage-run-main">
+                <span className="pss__usage-run-title">
+                  {usageTaskLabel(item.run.task, item.run.triggerSource)}
+                </span>
+                <span className="pss__usage-run-sub">
+                  {item.model ?? "model unavailable"} · {formatLastSetAt(item.run.completedAt ?? item.run.createdAt)}
+                </span>
+              </div>
+              <div className="pss__usage-run-right">
+                <span className="pss__usage-run-cost">
+                  {item.priceStatus === "available" && item.estimatedTotalCostMicros !== null
+                    ? formatCostMicros(item.estimatedTotalCostMicros)
+                    : "Price unavailable"}
+                </span>
+                <span className="pss__usage-run-tokens">
+                  {item.usageStatus === "available" && item.totalTokens !== null
+                    ? formatUsageTokenBreakdown({
+                        inputTokens: item.inputTokens,
+                        cachedInputTokens: item.cachedInputTokens,
+                        outputTokens: item.outputTokens,
+                        reasoningOutputTokens: item.reasoningOutputTokens
+                      })
+                    : "Usage unavailable"}
+                </span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UsageMetric({
+  label,
+  value,
+  sub
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}): ReactElement {
+  return (
+    <div className="pss__usage-metric">
+      <span className="pss__usage-metric-label">{label}</span>
+      <span className="pss__usage-metric-value">{value}</span>
+      <span className="pss__usage-metric-sub">{sub}</span>
+    </div>
+  );
+}
+
+function usageTaskLabel(task: string, triggerSource: string): string {
+  if (triggerSource === "auto-enrichment") return "Auto enrichment";
+  if (triggerSource === "library-regenerate") return "Library regenerate";
+  if (triggerSource === "popover-regenerate") return "Float-over regenerate";
+  if (triggerSource === "annotate") return "Annotate";
+  if (triggerSource === "describe") return "Describe";
+  if (triggerSource === "tag") return "Tag";
+  if (triggerSource === "filename") return "Filename";
+  if (triggerSource === "sensitive-scan") return "Sensitive scan";
+  return task === "enrich" ? "Capture enrichment" : task;
+}
 
 function CodexCandidates({
   snapshot,
@@ -694,7 +924,7 @@ function JobRoutingRow({
 
 export function formatLastSetAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "—";
-  const then = Date.parse(iso);
+  const then = parseTimestampMs(iso);
   if (Number.isNaN(then)) return iso;
   const now = Date.now();
   const deltaMs = Math.max(0, now - then);
@@ -707,6 +937,43 @@ export function formatLastSetAt(iso: string | null): string {
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
   return new Date(then).toISOString().slice(0, 10);
+}
+
+export function formatCostMicros(micros: number | null): string {
+  if (micros === null) return "—";
+  const dollars = micros / 1_000_000;
+  if (dollars > 0 && dollars < 0.01) return "<$0.01";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: dollars < 10 ? 2 : 0,
+    maximumFractionDigits: dollars < 10 ? 2 : 0
+  }).format(dollars);
+}
+
+export function formatTokenCount(tokens: number | null): string {
+  if (tokens === null) return "—";
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(tokens);
+}
+
+export function formatUsageTokenBreakdown(tokens: {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+}): string {
+  const inputTokens = tokens.inputTokens ?? 0;
+  const cachedInputTokens = tokens.cachedInputTokens ?? 0;
+  const outputTokens = tokens.outputTokens ?? 0;
+  const reasoningOutputTokens = tokens.reasoningOutputTokens ?? 0;
+  const output = reasoningOutputTokens > 0
+    ? `${formatTokenCount(outputTokens)} out (${formatTokenCount(reasoningOutputTokens)} reasoning)`
+    : `${formatTokenCount(outputTokens)} out`;
+  return `${formatTokenCount(uncachedInputTokens(inputTokens, cachedInputTokens))} uncached in · ${formatTokenCount(cachedInputTokens)} cached · ${output}`;
+}
+
+function uncachedInputTokens(inputTokens: number | null, cachedInputTokens: number | null): number {
+  return Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0));
 }
 
 function codexAuthBadgeLabel(
@@ -752,7 +1019,7 @@ function codexAuthSubLine(
 
 export function formatNextTokenAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "soon";
-  const then = Date.parse(iso);
+  const then = parseTimestampMs(iso);
   if (Number.isNaN(then)) return iso;
   const deltaMs = then - Date.now();
   if (deltaMs <= 0) return "now";
@@ -762,6 +1029,13 @@ export function formatNextTokenAt(iso: string | null): string {
   if (min < 60) return `in ${min} min${min === 1 ? "" : "s"}`;
   const hr = Math.ceil(min / 60);
   return `in ${hr} hour${hr === 1 ? "" : "s"}`;
+}
+
+function parseTimestampMs(value: string): number {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+    return Date.parse(`${value.replace(" ", "T")}Z`);
+  }
+  return Date.parse(value);
 }
 
 export function codexTestBadgeLabel(

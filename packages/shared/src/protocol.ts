@@ -923,22 +923,37 @@ export type CodexTestResult = {
   errorMessage?: string;
 };
 
-/** Codex CLI models PwrSnap will spawn for the capture-enrichment turn.
- *  Sourced from https://developers.openai.com/codex/models — kept as a
- *  literal union so the validator, the renderer dropdown, and the
- *  Settings type all draw from one list. Mini-tier only today because
- *  captioning fires on every capture; expand when there's a reason to
- *  spend a larger model's tokens on a screenshot description. */
+/** Fallback Codex CLI models PwrSnap can show before `model/list` returns.
+ *  The actual model picker is populated from the user's installed Codex
+ *  App Server so newly-available models don't require an app release. */
 export const CODEX_CAPTION_MODELS = ["gpt-5.4-mini"] as const;
-export type CodexCaptionModel = (typeof CODEX_CAPTION_MODELS)[number];
+export type CodexCaptionModel = string;
 export const DEFAULT_CODEX_CAPTION_MODEL: CodexCaptionModel = "gpt-5.4-mini";
 
 export function isCodexCaptionModel(value: unknown): value is CodexCaptionModel {
   return (
     typeof value === "string" &&
-    (CODEX_CAPTION_MODELS as readonly string[]).includes(value)
+    value.trim().length > 0 &&
+    value.length <= 120 &&
+    /^[A-Za-z0-9._:-]+$/.test(value)
   );
 }
+
+export type CodexModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  inputModalities: Array<"text" | "image">;
+  defaultServiceTier: string | null;
+  isDefault: boolean;
+};
+
+export type CodexModelList = {
+  models: CodexModelOption[];
+  selectedModel: CodexCaptionModel;
+};
 
 export type AiEnrichmentTriggerSource =
   | "auto-enrichment"
@@ -1531,12 +1546,159 @@ export type AiRunSnapshot = {
   id: string;
   captureId: string;
   kind: "enrich";
+  task: string;
+  triggerSource: AiEnrichmentTriggerSource;
+  selectedModel: string | null;
   status: AiRunStatus;
   error: string | null;
   latencyMs: number | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+};
+
+export type AiUsageStatus = "available" | "unavailable";
+export type AiUsagePriceStatus = "available" | "unavailable";
+
+export type AiUsageTokenBreakdown = {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  modelContextWindow: number | null;
+};
+
+export type AiUsageRateSnapshot = {
+  model: string;
+  serviceTier: string | null;
+  contextClass: string | null;
+  inputUsdPerMillion: number;
+  cachedInputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+};
+
+export type AiUsageCostEstimate =
+  | {
+      status: "available";
+      currency: "USD";
+      catalogVersion: string;
+      pricingSourceUrl: string;
+      pricedAt: string;
+      rateSnapshot: AiUsageRateSnapshot;
+      uncachedInputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      uncachedInputCostMicros: number;
+      cachedInputCostMicros: number;
+      outputCostMicros: number;
+      totalCostMicros: number;
+    }
+  | {
+      status: "unavailable";
+      reason: string;
+    };
+
+export type AiRunMediaTransform =
+  | "prepared-jpeg"
+  | "bare-image"
+  | "video-frame"
+  | "rendered-composite"
+  | "unknown";
+
+export type AiRunMediaInput = {
+  id: string;
+  aiRunId: string;
+  ordinal: number;
+  role: string;
+  transform: AiRunMediaTransform;
+  sourceMimeType: string | null;
+  sentMimeType: string;
+  format: string;
+  encoder: string | null;
+  quality: number | null;
+  sourceWidthPx: number | null;
+  sourceHeightPx: number | null;
+  sentWidthPx: number;
+  sentHeightPx: number;
+  sentByteSize: number;
+  maxEdgePx: number | null;
+  maxBytes: number | null;
+  scaleRatio: number | null;
+  videoPositionPct: number | null;
+  videoTimestampSec: number | null;
+  createdAt: string;
+};
+
+export type AiRunUsageDetail = {
+  run: AiRunSnapshot;
+  threadId: string | null;
+  turnId: string | null;
+  model: string | null;
+  modelProvider: string | null;
+  serviceTier: string | null;
+  usageStatus: AiUsageStatus;
+  usageUnavailableReason: string | null;
+  tokens: AiUsageTokenBreakdown | null;
+  cost: AiUsageCostEstimate;
+  mediaInputs: AiRunMediaInput[];
+};
+
+export type AiUsageSummaryWindow = "24h" | "7d" | "30d";
+
+export type AiUsageSummaryBucket = {
+  task: string;
+  triggerSource: AiEnrichmentTriggerSource;
+  model: string | null;
+  runCount: number;
+  usageUnavailableCount: number;
+  priceUnavailableCount: number;
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  estimatedTotalCostMicros: number;
+};
+
+export type AiUsageSummary = {
+  window: AiUsageSummaryWindow;
+  since: string;
+  generatedAt: string;
+  runCount: number;
+  usageUnavailableCount: number;
+  priceUnavailableCount: number;
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  estimatedTotalCostMicros: number;
+  currency: "USD";
+  buckets: AiUsageSummaryBucket[];
+};
+
+export type AiUsageRunListItem = {
+  run: AiRunSnapshot;
+  model: string | null;
+  modelProvider: string | null;
+  serviceTier: string | null;
+  usageStatus: AiUsageStatus;
+  usageUnavailableReason: string | null;
+  priceStatus: AiUsagePriceStatus;
+  priceUnavailableReason: string | null;
+  totalTokens: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  estimatedTotalCostMicros: number | null;
+  currency: "USD" | null;
+};
+
+export type AiUsageRunsPage = {
+  items: AiUsageRunListItem[];
+  nextOffset: number | null;
 };
 
 export type CaptureEnrichmentSummary = {
@@ -2208,6 +2370,22 @@ export type Commands = {
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
   "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
+  "codex:models": {
+    req: { includeHidden?: boolean };
+    res: CodexModelList;
+  };
+  "codex:usageSummary": {
+    req: { window: AiUsageSummaryWindow };
+    res: AiUsageSummary;
+  };
+  "codex:usageRuns": {
+    req: { limit?: number; offset?: number };
+    res: AiUsageRunsPage;
+  };
+  "codex:usageRunDetail": {
+    req: { runId: string };
+    res: AiRunUsageDetail | null;
+  };
   "codex:annotate": {
     req: { captureId: string; triggerSource?: AiEnrichmentTriggerSource };
     res: { runId: string };

@@ -2106,6 +2106,37 @@
 
 .psl__detail-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 
+.psl__ai-usage {
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.psl__ai-usage-row {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font: 600 11px/1.3 var(--font-sans);
+  color: var(--text-secondary);
+}
+.psl__ai-usage-row b {
+  color: var(--text-primary);
+}
+.psl__ai-usage-row.is-muted {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.psl__ai-usage-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .psl__ai-card {
   padding: 11px 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);

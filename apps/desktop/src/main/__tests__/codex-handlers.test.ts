@@ -90,6 +90,10 @@ function unregisterCodexHandlers(): void {
     "codex:rejectTag",
     "codex:runStatus",
     "codex:budgetStatus",
+    "codex:models",
+    "codex:usageSummary",
+    "codex:usageRuns",
+    "codex:usageRunDetail",
     "codex:cancel",
     "codex:annotate",
     "codex:describe",
@@ -113,11 +117,59 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 class FakeCodexClient {
-  async enrichCapture(): Promise<{ result: EnrichmentResult; threadId: string; turnId: string; userAgent: string }> {
+  lastRequest: { model?: string | null } | null = null;
+
+  async enrichCapture(request: { model?: string | null }): Promise<{
+    result: EnrichmentResult;
+    threadId: string;
+    turnId: string;
+    userAgent: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+    tokenUsage: {
+      total: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      last: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      modelContextWindow: number | null;
+    };
+  }> {
+    this.lastRequest = request;
     return {
       threadId: "thread-1",
       turnId: "turn-1",
       userAgent: "codex-test",
+      model: request.model ?? "gpt-5.4-mini",
+      modelProvider: "openai",
+      serviceTier: null,
+      tokenUsage: {
+        total: {
+          totalTokens: 1200,
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningOutputTokens: 25
+        },
+        last: {
+          totalTokens: 1200,
+          inputTokens: 900,
+          cachedInputTokens: 100,
+          outputTokens: 300,
+          reasoningOutputTokens: 25
+        },
+        modelContextWindow: 400_000
+      },
       result: {
         ocrText: "Visible text",
         title: "",
@@ -129,6 +181,30 @@ class FakeCodexClient {
 
   async close(): Promise<void> {
     return;
+  }
+
+  async listModels(): Promise<Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    inputModalities: Array<"text" | "image">;
+    defaultServiceTier: string | null;
+    isDefault: boolean;
+  }>> {
+    return [
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "Frontier model",
+        hidden: false,
+        inputModalities: ["text", "image"],
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
   }
 }
 
@@ -186,6 +262,7 @@ describe("Codex handlers", () => {
     testDb.exec(migration("0009_legacy_bundle_migration_attempts.sql"));
     testDb.exec(migration("0010_ai_enrichment_title.sql"));
     testDb.exec(migration("0011_ai_enrichment_filename.sql"));
+    testDb.exec(migration("0022_ai_usage_accounting.sql"));
     await seedCapture();
   });
 
@@ -247,6 +324,110 @@ describe("Codex handlers", () => {
     expect(
       (completedEvent?.payload as { enrichment?: { status?: string } | null }).enrichment?.status
     ).toBe("completed");
+  });
+
+  test("usage commands expose token, cost, and media accounting", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.5"
+          },
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            budgetSafetyDisabledAt: null,
+            autoAcceptSuggestions: false
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
+
+    const detail = await bus.dispatch(
+      "codex:usageRunDetail",
+      { runId: started.value.runId },
+      { principal: "ipc" }
+    );
+    expect(detail.ok).toBe(true);
+    if (!detail.ok) return;
+    expect(detail.value?.tokens?.cachedInputTokens).toBe(100);
+    expect(detail.value?.mediaInputs[0]).toMatchObject({
+      transform: "prepared-jpeg",
+      sentMimeType: "image/jpeg",
+      sentWidthPx: 640,
+      sentHeightPx: 360,
+      quality: 75
+    });
+    expect(detail.value?.cost.status).toBe("available");
+    if (detail.value?.cost.status === "available") {
+      expect(detail.value.cost.rateSnapshot.model).toBe("gpt-5.5");
+      expect(detail.value.cost.totalCostMicros).toBe(13_050);
+    }
+
+    const summary = await bus.dispatch(
+      "codex:usageSummary",
+      { window: "24h" },
+      { principal: "ipc" }
+    );
+    expect(summary.ok).toBe(true);
+    if (summary.ok) {
+      expect(summary.value.runCount).toBe(1);
+      expect(summary.value.totalTokens).toBe(1200);
+      expect(summary.value.estimatedTotalCostMicros).toBe(13_050);
+    }
+
+    const page = await bus.dispatch(
+      "codex:usageRuns",
+      { limit: 10, offset: 0 },
+      { principal: "ipc" }
+    );
+    expect(page.ok).toBe(true);
+    if (page.ok) {
+      expect(page.value.items[0]).toMatchObject({
+        model: "gpt-5.5",
+        usageStatus: "available",
+        estimatedTotalCostMicros: 13_050
+      });
+    }
+  });
+
+  test("codex:models returns Codex App Server model options", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.5"
+          }
+        })
+    });
+
+    const result = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.selectedModel).toBe("gpt-5.5");
+    expect(result.value.models).toEqual([
+      expect.objectContaining({
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        inputModalities: ["text", "image"]
+      })
+    ]);
   });
 
   test("codex:enrich refuses to run without consent", async () => {

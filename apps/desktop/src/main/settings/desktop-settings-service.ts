@@ -470,8 +470,9 @@ function parseV1(raw: unknown): Settings | null {
       pinnedPath: pickString(codex.pinnedPath, defaults.codex.pinnedPath),
       profile: pickString(codex.profile, defaults.codex.profile),
       // `captionModel` landed after v1 shipped; older files won't have
-      // it and a stale write may name a model we no longer support.
-      // Fall through to the default in both cases.
+      // it. Codex model availability is account/build dependent, so keep
+      // valid model-id strings instead of pinning this parser to a stale
+      // hardcoded allowlist.
       captionModel: isCodexCaptionModel(codex.captionModel)
         ? codex.captionModel
         : defaults.codex.captionModel

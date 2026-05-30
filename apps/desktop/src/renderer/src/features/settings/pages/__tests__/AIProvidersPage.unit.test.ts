@@ -1,13 +1,79 @@
 // Pure-function unit tests for the AI Providers page helpers.
 
-import { describe, expect, test, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
   formatTokenCount,
-  formatUsageTokenBreakdown
+  formatUsageTokenBreakdown,
+  SecretKeyControl
 } from "../AIProvidersPage";
+
+beforeAll(() => {
+  (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
+    true;
+});
+
+let container: HTMLDivElement | null = null;
+let root: Root | null = null;
+
+afterEach(async () => {
+  await act(async () => {
+    root?.unmount();
+  });
+  container?.remove();
+  container = null;
+  root = null;
+});
+
+async function renderSecretKeyControl(configured: boolean): Promise<{
+  input: HTMLInputElement;
+  primaryButton: HTMLButtonElement;
+}> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(
+      createElement(SecretKeyControl, {
+        status: {
+          configured,
+          lastSetAt: configured ? "2026-05-12T12:00:00.000Z" : null
+        },
+        placeholder: "sk-...",
+        onReplace: async () => undefined,
+        onClear: async () => undefined
+      })
+    );
+  });
+  const input = container.querySelector("input");
+  const primaryButton = container.querySelector("button");
+  if (input === null || primaryButton === null) {
+    throw new Error("SecretKeyControl did not render its input and primary button");
+  }
+  return { input, primaryButton };
+}
+
+function focusInput(input: HTMLInputElement): void {
+  act(() => {
+    input.dispatchEvent(new FocusEvent("focusin", { bubbles: true, cancelable: true }));
+  });
+}
+
+function typeIntoInput(input: HTMLInputElement, value: string): void {
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+  });
+}
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {
@@ -104,5 +170,31 @@ describe("usage formatting helpers", () => {
         reasoningOutputTokens: 25
       })
     ).toBe("900 uncached in · 100 cached · 300 out (25 reasoning)");
+  });
+});
+
+describe("SecretKeyControl", () => {
+  test("keeps Replace disabled until the user types a replacement key", async () => {
+    const { input, primaryButton } = await renderSecretKeyControl(true);
+
+    expect(primaryButton.textContent).toBe("Replace");
+    expect(primaryButton.disabled).toBe(true);
+
+    focusInput(input);
+    expect(primaryButton.disabled).toBe(true);
+
+    typeIntoInput(input, "sk-new");
+    expect(primaryButton.disabled).toBe(false);
+  });
+
+  test("keeps Set disabled until the user types a new key", async () => {
+    const { input, primaryButton } = await renderSecretKeyControl(false);
+
+    expect(primaryButton.textContent).toBe("Set");
+    expect(primaryButton.disabled).toBe(true);
+
+    focusInput(input);
+    typeIntoInput(input, "xai-new");
+    expect(primaryButton.disabled).toBe(false);
   });
 });

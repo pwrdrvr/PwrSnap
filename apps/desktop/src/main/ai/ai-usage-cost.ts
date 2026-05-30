@@ -2,7 +2,6 @@ import type { AiUsageCostEstimate, AiUsageTokenBreakdown } from "@pwrsnap/shared
 import {
   AI_PRICING_CATALOG_VERSION,
   AI_PRICING_EFFECTIVE_DATE,
-  AI_PRICING_SOURCE_URL,
   entryToRateSnapshot,
   findPricingEntry
 } from "./pricing-catalog";
@@ -48,7 +47,7 @@ export function estimateAiUsageCost(input: {
     status: "available",
     currency: "USD",
     catalogVersion: AI_PRICING_CATALOG_VERSION,
-    pricingSourceUrl: AI_PRICING_SOURCE_URL,
+    pricingSourceUrl: entry.pricingSourceUrl,
     pricedAt: new Date(`${AI_PRICING_EFFECTIVE_DATE}T00:00:00.000Z`).toISOString(),
     rateSnapshot: entryToRateSnapshot(entry),
     uncachedInputTokens,

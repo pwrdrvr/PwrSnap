@@ -65,6 +65,14 @@ type AiRunUsageRow = {
 
 type AiRunUsageListRow = AiRunJoinedRow & Partial<AiRunUsageRow>;
 
+export type AiRunUsagePriceRepairRow = {
+  aiRunId: string;
+  model: string | null;
+  modelProvider: string | null;
+  serviceTier: string | null;
+  tokens: AiUsageTokenBreakdown | null;
+};
+
 type AiRunMediaInputRow = {
   id: string;
   ai_run_id: string;
@@ -293,6 +301,67 @@ export function saveAiRunUsage(input: SaveAiRunUsageInput): void {
       outputTokens: tokens?.outputTokens ?? null,
       reasoningOutputTokens: tokens?.reasoningOutputTokens ?? null,
       modelContextWindow: tokens?.modelContextWindow ?? null,
+      priceStatus: cost.status,
+      priceUnavailableReason: cost.status === "unavailable" ? cost.reason : null,
+      currency: cost.status === "available" ? cost.currency : null,
+      catalogVersion: cost.status === "available" ? cost.catalogVersion : null,
+      pricingSourceUrl: cost.status === "available" ? cost.pricingSourceUrl : null,
+      pricedAt: cost.status === "available" ? cost.pricedAt : null,
+      rateSnapshotJson:
+        cost.status === "available" ? JSON.stringify(cost.rateSnapshot) : null,
+      uncachedInputTokens: cost.status === "available" ? cost.uncachedInputTokens : null,
+      estimatedUncachedInputCostMicros:
+        cost.status === "available" ? cost.uncachedInputCostMicros : null,
+      estimatedCachedInputCostMicros:
+        cost.status === "available" ? cost.cachedInputCostMicros : null,
+      estimatedOutputCostMicros: cost.status === "available" ? cost.outputCostMicros : null,
+      estimatedTotalCostMicros: cost.status === "available" ? cost.totalCostMicros : null
+    });
+}
+
+export function listAiRunUsageRowsMissingPrice(): AiRunUsagePriceRepairRow[] {
+  return getDb()
+    .prepare(
+      `SELECT *
+       FROM ai_run_usage
+       WHERE usage_status = 'available'
+         AND price_status = 'unavailable'
+         AND model IS NOT NULL`
+    )
+    .all()
+    .map((row) => {
+      const usage = row as AiRunUsageRow;
+      return {
+        aiRunId: usage.ai_run_id,
+        model: usage.model,
+        modelProvider: usage.model_provider,
+        serviceTier: usage.service_tier,
+        tokens: rowToTokens(usage)
+      };
+    });
+}
+
+export function updateAiRunUsageCost(aiRunId: string, cost: AiUsageCostEstimate): void {
+  getDb()
+    .prepare(
+      `UPDATE ai_run_usage
+       SET price_status = @priceStatus,
+           price_unavailable_reason = @priceUnavailableReason,
+           currency = @currency,
+           catalog_version = @catalogVersion,
+           pricing_source_url = @pricingSourceUrl,
+           priced_at = @pricedAt,
+           rate_snapshot_json = @rateSnapshotJson,
+           uncached_input_tokens = @uncachedInputTokens,
+           estimated_uncached_input_cost_micros = @estimatedUncachedInputCostMicros,
+           estimated_cached_input_cost_micros = @estimatedCachedInputCostMicros,
+           estimated_output_cost_micros = @estimatedOutputCostMicros,
+           estimated_total_cost_micros = @estimatedTotalCostMicros,
+           updated_at = datetime('now')
+       WHERE ai_run_id = @aiRunId`
+    )
+    .run({
+      aiRunId,
       priceStatus: cost.status,
       priceUnavailableReason: cost.status === "unavailable" ? cost.reason : null,
       currency: cost.status === "available" ? cost.currency : null,

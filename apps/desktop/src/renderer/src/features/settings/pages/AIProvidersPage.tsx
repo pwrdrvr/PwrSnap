@@ -7,7 +7,8 @@ import type {
   AiEnrichmentBudgetStatus,
   AiUsageRunsPage,
   AiUsageSummary,
-  CodexCaptionModel,
+  CodexModelList,
+  CodexModelOption,
   CodexTestResult,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
@@ -34,6 +35,50 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "pinned", label: "Specified Path" }
 ];
 
+function modelOptionsForSelect(
+  models: readonly CodexModelOption[],
+  selectedModel: string
+): CodexModelOption[] {
+  const imageModels = models.filter(
+    (model) =>
+      !model.hidden &&
+      model.inputModalities.includes("text") &&
+      model.inputModalities.includes("image")
+  );
+  const options = imageModels.length > 0
+    ? imageModels
+    : CODEX_CAPTION_MODELS.map((id) => ({
+        id,
+        model: id,
+        displayName: id,
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"] as Array<"text" | "image">,
+        defaultServiceTier: null,
+        isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
+      }));
+  if (options.some((model) => model.id === selectedModel)) return options;
+  return [
+    {
+      id: selectedModel,
+      model: selectedModel,
+      displayName: selectedModel,
+      description: "",
+      hidden: false,
+      inputModalities: ["text", "image"],
+      defaultServiceTier: null,
+      isDefault: false
+    },
+    ...options
+  ];
+}
+
+function modelLabel(model: CodexModelOption): string {
+  return model.displayName === model.id || model.displayName.length === 0
+    ? model.id
+    : `${model.displayName} (${model.id})`;
+}
+
 export function AIProvidersPage(): ReactElement {
   const {
     settings,
@@ -54,6 +99,8 @@ export function AIProvidersPage(): ReactElement {
   const [usageSummary, setUsageSummary] = useState<AiUsageSummary | null>(null);
   const [usageRuns, setUsageRuns] = useState<AiUsageRunsPage | null>(null);
   const [usageLoading, setUsageLoading] = useState<boolean>(true);
+  const [codexModels, setCodexModels] = useState<CodexModelList | null>(null);
+  const [codexModelsLoading, setCodexModelsLoading] = useState<boolean>(true);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
@@ -70,6 +117,15 @@ export function AIProvidersPage(): ReactElement {
     setUsageLoading(false);
   }, []);
 
+  const refreshCodexModels = useCallback(async (): Promise<void> => {
+    setCodexModelsLoading(true);
+    const result = await dispatch("codex:models", {});
+    if (result.ok) {
+      setCodexModels(result.value);
+    }
+    setCodexModelsLoading(false);
+  }, []);
+
   // Cache-friendly first fetch on mount; only force=true when the user
   // clicks Refresh. `refreshCodex` is a stable `useCallback` from
   // `useSettings` with an empty dep list, so this effect runs exactly
@@ -81,11 +137,12 @@ export function AIProvidersPage(): ReactElement {
       if (cancelled) return;
       setSnapshot(snap);
       setSnapshotLoading(false);
+      void refreshCodexModels();
     })();
     return () => {
       cancelled = true;
     };
-  }, [refreshCodex]);
+  }, [refreshCodex, refreshCodexModels]);
 
   useEffect(() => {
     void refreshBudgetStatus();
@@ -109,16 +166,16 @@ export function AIProvidersPage(): ReactElement {
 
   const onRefresh = async (): Promise<void> => {
     setSnapshotLoading(true);
-    const snap = await refreshCodex(true);
+    setCodexModelsLoading(true);
+    const [snap] = await Promise.all([refreshCodex(true), refreshCodexModels()]);
     setSnapshot(snap);
     setSnapshotLoading(false);
   };
 
-  const captionModel: CodexCaptionModel = isCodexCaptionModel(
-    settings?.codex.captionModel
-  )
+  const captionModel = isCodexCaptionModel(settings?.codex.captionModel)
     ? settings.codex.captionModel
     : DEFAULT_CODEX_CAPTION_MODEL;
+  const captionModelOptions = modelOptionsForSelect(codexModels?.models ?? [], captionModel);
 
   return (
     <>
@@ -140,22 +197,25 @@ export function AIProvidersPage(): ReactElement {
           sub="Codex caption shown in Library detail + Float-Over"
           provider="Codex"
         >
-          <select
-            className="pss__select"
-            value={captionModel}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (!isCodexCaptionModel(next)) return;
-              void patch({ codex: { captionModel: next } });
-            }}
-            aria-label="Capture caption model"
-          >
-            {CODEX_CAPTION_MODELS.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
+          <div className="pss__model-picker">
+            <select
+              className="pss__select"
+              value={captionModel}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (!isCodexCaptionModel(next)) return;
+                void patch({ codex: { captionModel: next } });
+              }}
+              aria-label="Capture caption model"
+            >
+              {captionModelOptions.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {modelLabel(model)}
+                </option>
+              ))}
+            </select>
+            {codexModelsLoading ? <span className="pss__model-loading">loading models</span> : null}
+          </div>
         </JobRoutingRow>
         <JobRoutingRow
           name="OCR — extract text from screenshots"

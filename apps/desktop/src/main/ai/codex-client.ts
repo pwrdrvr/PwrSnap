@@ -9,13 +9,15 @@ import type {
 import type {
   DynamicToolCallResponse,
   ItemCompletedNotification,
+  Model,
+  ModelListResponse,
   ThreadTokenUsage,
   ThreadTokenUsageUpdatedNotification,
   ThreadStartResponse,
   TurnCompletedNotification,
   TurnStartResponse
 } from "@pwrsnap/codex-app-server-protocol/v2";
-import type { EnrichmentResult } from "@pwrsnap/shared";
+import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { getMainLogger } from "../log";
@@ -34,6 +36,7 @@ export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
 export type CodexCaptureEnrichmentRequest = {
   imagePaths: readonly string[];
   metadata: CaptureEnrichmentPromptMetadata;
+  model?: string | null;
   abortSignal?: AbortSignal;
 };
 
@@ -117,6 +120,7 @@ export class CodexAppServerClient {
       const threadResponse = (await connection.request(
         "thread/start",
         {
+          model: request.model ?? null,
           ephemeral: true,
           approvalPolicy: "never",
           sandbox: "read-only",
@@ -130,6 +134,7 @@ export class CodexAppServerClient {
         "turn/start",
         {
           threadId,
+          model: request.model ?? null,
           input: [
             {
               type: "text",
@@ -186,6 +191,23 @@ export class CodexAppServerClient {
     if (connection) {
       await connection.close();
     }
+  }
+
+  async listModels(input: { includeHidden?: boolean } = {}): Promise<CodexModelOption[]> {
+    const connection = await this.getConnection();
+    await this.initialize();
+    const models: CodexModelOption[] = [];
+    let cursor: string | null = null;
+    do {
+      const response = (await connection.request(
+        "model/list",
+        { cursor, limit: 100, includeHidden: input.includeHidden ?? false },
+        this.requestTimeoutMs
+      )) as ModelListResponse;
+      models.push(...response.data.map(modelToOption));
+      cursor = response.nextCursor;
+    } while (cursor !== null);
+    return models;
   }
 
   private async initialize(): Promise<InitializeResponse> {
@@ -373,6 +395,19 @@ export class CodexAppServerClient {
     }
     return {};
   }
+}
+
+function modelToOption(model: Model): CodexModelOption {
+  return {
+    id: model.id,
+    model: model.model,
+    displayName: model.displayName,
+    description: model.description,
+    hidden: model.hidden,
+    inputModalities: model.inputModalities,
+    defaultServiceTier: model.defaultServiceTier,
+    isDefault: model.isDefault
+  };
 }
 
 async function imagePathToDataUrl(imagePath: string): Promise<string> {

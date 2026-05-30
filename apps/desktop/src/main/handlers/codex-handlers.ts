@@ -45,9 +45,11 @@ import {
 import {
   getAiRunUsageDetail,
   getAiUsageSummary,
+  listAiRunUsageRowsMissingPrice,
   listAiUsageRuns,
   replaceAiRunMediaInputs,
   saveAiRunUsage,
+  updateAiRunUsageCost,
   type SaveAiRunMediaInput
 } from "../persistence/ai-usage-repo";
 import { getCaptureById } from "../persistence/captures-repo";
@@ -180,6 +182,30 @@ function parseUsageRunsPage(req: {
     return validationError("invalid_request", "usage run offset must be a non-negative integer");
   }
   return ok({ limit, offset });
+}
+
+function parseCodexModelsRequest(req: {
+  includeHidden?: boolean;
+}): Result<{ includeHidden: boolean }, PwrSnapError> {
+  const includeHidden = req.includeHidden ?? false;
+  if (typeof includeHidden !== "boolean") {
+    return validationError("invalid_request", "includeHidden must be a boolean");
+  }
+  return ok({ includeHidden });
+}
+
+function refreshKnownAiUsagePrices(): void {
+  for (const row of listAiRunUsageRowsMissingPrice()) {
+    const cost = estimateAiUsageCost({
+      model: row.model,
+      provider: row.modelProvider,
+      serviceTier: row.serviceTier,
+      tokens: row.tokens
+    });
+    if (cost.status === "available") {
+      updateAiRunUsageCost(row.aiRunId, cost);
+    }
+  }
 }
 
 async function defaultSettingsReader(): Promise<Settings> {
@@ -376,7 +402,7 @@ export function registerCodexHandlers(params?: {
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: settings.codex.captionModel ?? DEFAULT_CODEX_CAPTION_MODEL,
+      selectedModel: settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL,
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -414,6 +440,7 @@ export function registerCodexHandlers(params?: {
       },
       command: codexCommand,
       settingsReader,
+      selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -541,16 +568,52 @@ export function registerCodexHandlers(params?: {
     return ok(budget.status(settings));
   });
 
+  bus.register("codex:models", async (req) => {
+    const parsed = parseCodexModelsRequest(req);
+    if (!parsed.ok) return parsed;
+    let settings: Settings;
+    try {
+      settings = await settingsReader();
+    } catch (error) {
+      return err({
+        kind: "settings",
+        code: "read_failed",
+        message: error instanceof Error ? error.message : String(error),
+        cause: error
+      });
+    }
+    const client = clientFactory(codexCommandForSettings(settings));
+    try {
+      const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
+      return ok({ models, selectedModel: settings.codex.captionModel });
+    } catch (error) {
+      return err({
+        kind: "unknown",
+        code: "codex_models_failed",
+        message: error instanceof Error ? error.message : String(error),
+        cause: error
+      });
+    } finally {
+      await client.close().catch((error: unknown) => {
+        log.warn("codex client close failed after model list", {
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
+  });
+
   bus.register("codex:usageSummary", async (req) => {
     if (!isUsageSummaryWindow(req.window)) {
       return validationError("invalid_request", "usage summary window must be 24h, 7d, or 30d");
     }
+    refreshKnownAiUsagePrices();
     return ok(getAiUsageSummary(req.window));
   });
 
   bus.register("codex:usageRuns", async (req) => {
     const parsed = parseUsageRunsPage(req);
     if (!parsed.ok) return parsed;
+    refreshKnownAiUsagePrices();
     return ok(listAiUsageRuns(parsed.value));
   });
 
@@ -558,6 +621,7 @@ export function registerCodexHandlers(params?: {
     if (typeof req.runId !== "string" || req.runId.trim() === "") {
       return validationError("invalid_request", "runId is required");
     }
+    refreshKnownAiUsagePrices();
     return ok(getAiRunUsageDetail(req.runId));
   });
 
@@ -612,6 +676,7 @@ async function runCaptureEnrichment(params: {
    * the float-over checkbox visibly promises.
    */
   settingsReader: SettingsReader;
+  selectedModel: string;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -690,6 +755,7 @@ async function runCaptureEnrichment(params: {
     const response = await client.enrichCapture({
       imagePaths,
       metadata,
+      model: params.selectedModel,
       abortSignal: abortController.signal
     });
 

@@ -90,6 +90,7 @@ function unregisterCodexHandlers(): void {
     "codex:rejectTag",
     "codex:runStatus",
     "codex:budgetStatus",
+    "codex:models",
     "codex:usageSummary",
     "codex:usageRuns",
     "codex:usageRunDetail",
@@ -116,7 +117,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 class FakeCodexClient {
-  async enrichCapture(): Promise<{
+  lastRequest: { model?: string | null } | null = null;
+
+  async enrichCapture(request: { model?: string | null }): Promise<{
     result: EnrichmentResult;
     threadId: string;
     turnId: string;
@@ -142,11 +145,12 @@ class FakeCodexClient {
       modelContextWindow: number | null;
     };
   }> {
+    this.lastRequest = request;
     return {
       threadId: "thread-1",
       turnId: "turn-1",
       userAgent: "codex-test",
-      model: "gpt-5.4-mini",
+      model: request.model ?? "gpt-5.4-mini",
       modelProvider: "openai",
       serviceTier: null,
       tokenUsage: {
@@ -177,6 +181,30 @@ class FakeCodexClient {
 
   async close(): Promise<void> {
     return;
+  }
+
+  async listModels(): Promise<Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    inputModalities: Array<"text" | "image">;
+    defaultServiceTier: string | null;
+    isDefault: boolean;
+  }>> {
+    return [
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        description: "Frontier model",
+        hidden: false,
+        inputModalities: ["text", "image"],
+        defaultServiceTier: null,
+        isDefault: true
+      }
+    ];
   }
 }
 
@@ -299,10 +327,15 @@ describe("Codex handlers", () => {
   });
 
   test("usage commands expose token, cost, and media accounting", async () => {
+    const fakeClient = new FakeCodexClient();
     registerCodexHandlers({
-      clientFactory: () => new FakeCodexClient() as never,
+      clientFactory: () => fakeClient as never,
       settingsReader: async () =>
         testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.5"
+          },
           ai: {
             ...defaultSettings().ai,
             enabled: true,
@@ -321,6 +354,7 @@ describe("Codex handlers", () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
 
     const detail = await bus.dispatch(
       "codex:usageRunDetail",
@@ -339,7 +373,8 @@ describe("Codex handlers", () => {
     });
     expect(detail.value?.cost.status).toBe("available");
     if (detail.value?.cost.status === "available") {
-      expect(detail.value.cost.totalCostMicros).toBe(1958);
+      expect(detail.value.cost.rateSnapshot.model).toBe("gpt-5.5");
+      expect(detail.value.cost.totalCostMicros).toBe(13_050);
     }
 
     const summary = await bus.dispatch(
@@ -351,7 +386,7 @@ describe("Codex handlers", () => {
     if (summary.ok) {
       expect(summary.value.runCount).toBe(1);
       expect(summary.value.totalTokens).toBe(1200);
-      expect(summary.value.estimatedTotalCostMicros).toBe(1958);
+      expect(summary.value.estimatedTotalCostMicros).toBe(13_050);
     }
 
     const page = await bus.dispatch(
@@ -362,11 +397,37 @@ describe("Codex handlers", () => {
     expect(page.ok).toBe(true);
     if (page.ok) {
       expect(page.value.items[0]).toMatchObject({
-        model: "gpt-5.4-mini",
+        model: "gpt-5.5",
         usageStatus: "available",
-        estimatedTotalCostMicros: 1958
+        estimatedTotalCostMicros: 13_050
       });
     }
+  });
+
+  test("codex:models returns Codex App Server model options", async () => {
+    registerCodexHandlers({
+      clientFactory: () => new FakeCodexClient() as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.5"
+          }
+        })
+    });
+
+    const result = await bus.dispatch("codex:models", {}, { principal: "ipc" });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.selectedModel).toBe("gpt-5.5");
+    expect(result.value.models).toEqual([
+      expect.objectContaining({
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        inputModalities: ["text", "image"]
+      })
+    ]);
   });
 
   test("codex:enrich refuses to run without consent", async () => {

@@ -2,8 +2,7 @@ import type { AiUsageRateSnapshot } from "@pwrsnap/shared";
 
 export const AI_PRICING_CATALOG_VERSION = "2026-05-30-openai-public";
 export const AI_PRICING_EFFECTIVE_DATE = "2026-05-30";
-export const AI_PRICING_SOURCE_URL =
-  "https://developers.openai.com/api/docs/models/gpt-5.4-mini";
+export const AI_PRICING_SOURCE_URL = "https://developers.openai.com/api/docs/models";
 
 export type AiPricingCatalogEntry = {
   model: string;
@@ -13,9 +12,30 @@ export type AiPricingCatalogEntry = {
   inputUsdPerMillion: number;
   cachedInputUsdPerMillion: number;
   outputUsdPerMillion: number;
+  pricingSourceUrl: string;
 };
 
 export const AI_PRICING_CATALOG: readonly AiPricingCatalogEntry[] = [
+  {
+    model: "gpt-5.5",
+    provider: "openai",
+    serviceTier: null,
+    contextClass: "standard",
+    inputUsdPerMillion: 5,
+    cachedInputUsdPerMillion: 0.5,
+    outputUsdPerMillion: 30,
+    pricingSourceUrl: "https://developers.openai.com/api/docs/models/gpt-5.5"
+  },
+  {
+    model: "gpt-5.4",
+    provider: "openai",
+    serviceTier: null,
+    contextClass: "standard",
+    inputUsdPerMillion: 2.5,
+    cachedInputUsdPerMillion: 0.25,
+    outputUsdPerMillion: 15,
+    pricingSourceUrl: "https://developers.openai.com/api/docs/models/gpt-5.4"
+  },
   {
     model: "gpt-5.4-mini",
     provider: "openai",
@@ -23,7 +43,8 @@ export const AI_PRICING_CATALOG: readonly AiPricingCatalogEntry[] = [
     contextClass: "standard",
     inputUsdPerMillion: 0.75,
     cachedInputUsdPerMillion: 0.075,
-    outputUsdPerMillion: 4.5
+    outputUsdPerMillion: 4.5,
+    pricingSourceUrl: "https://developers.openai.com/api/docs/models/gpt-5.4-mini"
   }
 ] as const;
 

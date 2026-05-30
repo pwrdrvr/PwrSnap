@@ -54,6 +54,36 @@ describe("estimateAiUsageCost", () => {
     }
   });
 
+  test("prices gpt-5.5 usage when Codex reports the frontier default", () => {
+    const estimate = estimateAiUsageCost({
+      model: "gpt-5.5",
+      provider: "openai",
+      serviceTier: null,
+      tokens: {
+        totalTokens: 22_155,
+        inputTokens: 21_981,
+        cachedInputTokens: 2_432,
+        outputTokens: 174,
+        reasoningOutputTokens: 0,
+        modelContextWindow: 1_050_000
+      }
+    });
+
+    expect(estimate.status).toBe("available");
+    if (estimate.status === "available") {
+      expect(estimate.pricingSourceUrl).toBe(
+        "https://developers.openai.com/api/docs/models/gpt-5.5"
+      );
+      expect(estimate.uncachedInputTokens).toBe(19_549);
+      expect(estimate.cachedInputTokens).toBe(2_432);
+      expect(estimate.outputTokens).toBe(174);
+      expect(estimate.uncachedInputCostMicros).toBe(97_745);
+      expect(estimate.cachedInputCostMicros).toBe(1_216);
+      expect(estimate.outputCostMicros).toBe(5_220);
+      expect(estimate.totalCostMicros).toBe(104_181);
+    }
+  });
+
   test("reports unavailable when usage or model pricing is missing", () => {
     expect(
       estimateAiUsageCost({

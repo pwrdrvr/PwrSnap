@@ -217,12 +217,10 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
   });
 
-  test("v1 shape with an unknown `codex.captionModel` falls through to the default", async () => {
-    // Forward-compatibility: when a future release retires a model
-    // from CODEX_CAPTION_MODELS, existing on-disk settings will name a
-    // model we no longer accept. parseV1 must self-heal by falling
-    // through to the current default — never crash, never honor a
-    // stale value the spawn-Codex path can't handle.
+  test("v1 shape with a newer `codex.captionModel` preserves the model id", async () => {
+    // Codex model availability is dynamic by account/build. A model id
+    // that was unknown to this app version can still be valid for the
+    // installed Codex App Server, so parseV1 preserves valid id strings.
     const filePath = join(workDir, "settings.json");
     writeFileSync(
       filePath,
@@ -232,14 +230,14 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
           mode: "auto",
           pinnedPath: "",
           profile: "",
-          captionModel: "gpt-retired-mini"
+          captionModel: "gpt-5.5"
         }
       }),
       "utf8"
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.codex.captionModel).toBe("gpt-5.4-mini");
+    expect(settings.codex.captionModel).toBe("gpt-5.5");
   });
 });
 

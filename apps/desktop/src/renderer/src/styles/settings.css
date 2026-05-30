@@ -551,6 +551,19 @@
 .pss__select:hover { border-color: var(--accent-border); }
 .pss__select svg { color: var(--text-muted); margin-left: auto; }
 
+.pss__model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pss__model-loading {
+  color: var(--text-muted);
+  font: 500 11px/1 var(--font-mono);
+  align-self: center;
+}
+
 /* toggle switch */
 .pss__switch {
   position: relative;

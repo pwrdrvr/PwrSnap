@@ -28,6 +28,7 @@ export const EVENT_CHANNELS = {
   overlaysChanged: "events:overlays:changed",
   uploadProgress: "events:upload:progress",
   aiRunUpdated: "events:ai-run:updated",
+  aiUsageUpdated: "events:ai-usage:updated",
   aiBudgetUpdated: "events:ai-budget:updated",
   renderProgress: "events:render:progress",
   /**
@@ -365,7 +366,12 @@ export type PerfMarkPayload =
 // subscribers, schema growth over time).
 // ---------------------------------------------------------------------
 
-import type { DraftCart, SizzleProject, SizzleRenderProgressEvent } from "./protocol";
+import type {
+  AiUsageThreadSurface,
+  DraftCart,
+  SizzleProject,
+  SizzleRenderProgressEvent
+} from "./protocol";
 import type {
   ChatApprovalRequest,
   ChatMessage,
@@ -408,7 +414,18 @@ export type LibraryChatTurnInterruptedEvent = {
   reason: "codex_disconnected" | "user_interrupted" | "app_quitting";
 };
 
+/** `events:ai-usage:updated` payload. Signal-only event emitted after
+ *  usage accounting changes, so Settings can refresh the aggregate
+ *  usage view without waiting for a manual Refresh click. */
+export type AiUsageUpdatedEvent = {
+  subjectKind: "thread";
+  threadId: string;
+  threadSurface: AiUsageThreadSurface;
+  turnId: string;
+};
+
 export type EventPayloads = {
+  [EVENT_CHANNELS.aiUsageUpdated]: AiUsageUpdatedEvent;
   [EVENT_CHANNELS.sizzleProjectsChanged]: { projects: SizzleProject[] };
   [EVENT_CHANNELS.sizzleRenderProgress]: SizzleRenderProgressEvent;
   [EVENT_CHANNELS.cartChanged]: { cart: DraftCart };

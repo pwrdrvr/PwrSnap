@@ -156,11 +156,15 @@ export function AIProvidersPage(): ReactElement {
 
   useEffect(() => {
     void refreshUsage();
-    const unsubscribe = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+    const unsubscribeRun = subscribe(EVENT_CHANNELS.aiRunUpdated, () => {
+      void refreshUsage();
+    });
+    const unsubscribeUsage = subscribe(EVENT_CHANNELS.aiUsageUpdated, () => {
       void refreshUsage();
     });
     return () => {
-      unsubscribe();
+      unsubscribeRun();
+      unsubscribeUsage();
     };
   }, [refreshUsage]);
 
@@ -557,10 +561,10 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
             <div className="pss__usage-run" key={item.run.id}>
               <div className="pss__usage-run-main">
                 <span className="pss__usage-run-title">
-                  {usageTaskLabel(item.run.task, item.run.triggerSource)}
+                  {usageActivityTitle(item)}
                 </span>
                 <span className="pss__usage-run-sub">
-                  {item.model ?? "model unavailable"} · {formatLastSetAt(item.run.completedAt ?? item.run.createdAt)}
+                  {usageActivitySub(item)}
                 </span>
               </div>
               <div className="pss__usage-run-right">
@@ -606,10 +610,32 @@ function UsageMetric({
   );
 }
 
+function usageActivityTitle(item: AiUsageRunsPage["items"][number]): string {
+  if (item.subjectKind === "thread") {
+    return item.threadSurface === "sizzle-chat" ? "Sizzle chat" : "Library chat";
+  }
+  return usageTaskLabel(item.run.task, item.run.triggerSource);
+}
+
+function usageActivitySub(item: AiUsageRunsPage["items"][number]): string {
+  const model = item.model ?? "model unavailable";
+  const when = formatLastSetAt(item.run.completedAt ?? item.run.createdAt);
+  if (item.subjectKind === "thread") {
+    const name = item.threadName ?? "Untitled thread";
+    const turns = item.turnCount === null
+      ? "turns unavailable"
+      : `${formatTokenCount(item.turnCount)} turn${item.turnCount === 1 ? "" : "s"}`;
+    return `${name} · ${turns} · ${model} · ${when}`;
+  }
+  return `${model} · ${when}`;
+}
+
 function usageTaskLabel(task: string, triggerSource: string): string {
   if (triggerSource === "auto-enrichment") return "Auto enrichment";
   if (triggerSource === "library-regenerate") return "Library regenerate";
   if (triggerSource === "popover-regenerate") return "Float-over regenerate";
+  if (triggerSource === "library-chat") return "Library chat";
+  if (triggerSource === "sizzle-chat") return "Sizzle chat";
   if (triggerSource === "annotate") return "Annotate";
   if (triggerSource === "describe") return "Describe";
   if (triggerSource === "tag") return "Tag";
@@ -931,12 +957,12 @@ export function formatLastSetAt(iso: string | null): string {
 export function formatCostMicros(micros: number | null): string {
   if (micros === null) return "—";
   const dollars = micros / 1_000_000;
-  if (dollars > 0 && dollars < 0.01) return "<$0.01";
+  if (dollars > 0 && dollars < 0.001) return "<$0.001";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: dollars < 10 ? 2 : 0,
-    maximumFractionDigits: dollars < 10 ? 2 : 0
+    minimumFractionDigits: dollars > 0 && dollars < 0.1 ? 3 : dollars < 10 ? 2 : 0,
+    maximumFractionDigits: dollars > 0 && dollars < 0.1 ? 3 : dollars < 10 ? 2 : 0
   }).format(dollars);
 }
 

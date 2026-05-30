@@ -170,6 +170,7 @@ export function registerLibraryChatHandlers(params?: {
       broadcast,
       buildSystemPrompt: buildLibrarySystemPrompt,
       channels: LIBRARY_CHAT_CHANNELS,
+      usageSurface: "library-chat",
       buildTurnContext: buildCurrentCaptureContext,
       toolLabels: LIBRARY_TOOL_LABELS,
       catalog: buildLibraryToolCatalog(),

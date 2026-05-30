@@ -38,11 +38,14 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec,
+  ThreadTokenUsage,
   UserInput
 } from "@pwrsnap/codex-app-server-protocol/v2";
 import type { CodexThreadClient } from "./codex-thread-client";
 import type { ChatThreadStore } from "./chat-thread-store";
 import { getMainLogger } from "../log";
+import { estimateAiUsageCost } from "./ai-usage-cost";
+import { saveAiThreadUsage } from "../persistence/ai-usage-repo";
 
 const log = getMainLogger("pwrsnap:chat-thread-controller");
 
@@ -93,6 +96,8 @@ export type ChatThreadControllerDeps = {
   buildSystemPrompt: ChatSystemPromptBuilder;
   /** The surface's broadcast channels (Library vs Sizzle). */
   channels: ChatChannelSet;
+  /** Usage-accounting surface. Omit in tests that don't touch accounting. */
+  usageSurface?: "library-chat" | "sizzle-chat";
   /** Per-turn runtime context (L3), framed as system-generated and sent
    *  as a leading turn item — never folded into the user's message. For
    *  Library this is the `<current_capture>` block; for Sizzle the active
@@ -128,6 +133,13 @@ type TurnState = {
   buffer: string;
   /** Frozen at turn start — a mid-turn Settings change can't retro-apply. */
   settingsSnapshot: Settings;
+  tokenUsage: ThreadTokenUsage | null;
+};
+
+type ThreadModelState = {
+  model: string | null;
+  modelProvider: string | null;
+  serviceTier: string | null;
 };
 
 /** A pending approval awaiting the user's decision. */
@@ -150,6 +162,7 @@ export class ChatThreadController {
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   /** Per-thread recent turn timestamps for rate limiting. */
   private readonly turnTimestamps = new Map<string, number[]>();
+  private readonly threadModels = new Map<string, ThreadModelState>();
   private wired = false;
 
   constructor(deps: ChatThreadControllerDeps) {
@@ -164,6 +177,16 @@ export class ChatThreadController {
     client.onAgentMessageDelta((event) => this.onDelta(event.threadId, event.turnId, event.delta));
     client.onTurnCompleted((event) => {
       void this.onTurnCompleted(event.threadId, event.turnId, event.status);
+    });
+    client.onTokenUsageUpdated((event) => {
+      this.onTokenUsage(event.threadId, event.turnId, event.tokenUsage);
+    });
+    client.onThreadSettingsUpdated((event) => {
+      this.threadModels.set(event.threadId, {
+        model: event.model,
+        modelProvider: event.modelProvider,
+        serviceTier: event.serviceTier
+      });
     });
     client.onToolCall((params) => this.onToolCall(params));
     client.onApprovalRequest((method, params) => this.onApprovalRequest(method, params));
@@ -185,7 +208,12 @@ export class ChatThreadController {
     const displayName =
       opts.name && opts.name.trim().length > 0 ? opts.name.trim() : this.defaultName();
     const preparedDir = await this.deps.store.prepareThreadDir(displayName);
-    let started: { threadId: string };
+    let started: {
+      threadId: string;
+      model: string;
+      modelProvider: string;
+      serviceTier: string | null;
+    };
     try {
       started = await this.deps.client.startThread({
         ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
@@ -209,6 +237,11 @@ export class ChatThreadController {
         threadId: started.threadId,
         message: cause instanceof Error ? cause.message : String(cause)
       });
+    });
+    this.threadModels.set(started.threadId, {
+      model: started.model,
+      modelProvider: started.modelProvider,
+      serviceTier: started.serviceTier
     });
     // Glue the thread to the capture it was started from (plan: chats
     // are scoped to an asset — the thread list shows only this capture's
@@ -344,7 +377,8 @@ export class ChatThreadController {
       turnId,
       assistantMessageId,
       buffer: "",
-      settingsSnapshot
+      settingsSnapshot,
+      tokenUsage: null
     });
     this.recordTurn(threadId);
     await this.broadcastThreadStatus(threadId, { kind: "streaming", turnId });
@@ -403,6 +437,12 @@ export class ChatThreadController {
     const turn = this.turns.get(threadId);
     if (turn === undefined || turn.turnId !== turnId) return;
     await this.finalizeAssistant(threadId, mapTurnStatus(status));
+  }
+
+  private onTokenUsage(threadId: string, turnId: string, tokenUsage: ThreadTokenUsage): void {
+    const turn = this.turns.get(threadId);
+    if (turn === undefined || turn.turnId !== turnId) return;
+    turn.tokenUsage = tokenUsage;
   }
 
   private async onToolCall(params: DynamicToolCallParams): Promise<DynamicToolCallResponse> {
@@ -504,8 +544,58 @@ export class ChatThreadController {
       status,
       createdAt: new Date(this.now()).toISOString()
     };
+    this.recordUsage(threadId, turn).catch((cause) => {
+      log.warn("chat usage accounting failed", {
+        threadId,
+        turnId: turn.turnId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
     await this.commitMessage(threadId, message);
     await this.broadcastThreadStatus(threadId, { kind: "idle" });
+  }
+
+  private async recordUsage(threadId: string, turn: TurnState): Promise<void> {
+    if (this.deps.usageSurface === undefined) return;
+    const sidecar = await this.deps.store.get(threadId);
+    if (sidecar === null) return;
+    const model = this.threadModels.get(threadId) ?? {
+      model: null,
+      modelProvider: null,
+      serviceTier: null
+    };
+    const tokens =
+      turn.tokenUsage === null
+        ? null
+        : {
+            ...turn.tokenUsage.last,
+            modelContextWindow: turn.tokenUsage.modelContextWindow
+          };
+    saveAiThreadUsage({
+      threadId,
+      surface: this.deps.usageSurface,
+      anchorId: sidecar.anchorCaptureId,
+      name: sidecar.name,
+      turnId: turn.turnId,
+      model: model.model,
+      modelProvider: model.modelProvider,
+      serviceTier: model.serviceTier,
+      usageStatus: tokens === null ? "unavailable" : "available",
+      usageUnavailableReason: tokens === null ? "Codex did not report token usage" : null,
+      tokens,
+      cost: estimateAiUsageCost({
+        model: model.model,
+        provider: model.modelProvider,
+        serviceTier: model.serviceTier,
+        tokens
+      })
+    });
+    this.deps.broadcast(EVENT_CHANNELS.aiUsageUpdated, {
+      subjectKind: "thread",
+      threadId,
+      threadSurface: this.deps.usageSurface,
+      turnId: turn.turnId
+    });
   }
 
   private async commitMessage(threadId: string, message: ChatMessage): Promise<void> {

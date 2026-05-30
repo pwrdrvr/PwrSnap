@@ -9,9 +9,13 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec,
+  ModelReroutedNotification,
   SandboxMode,
   ThreadStartParams,
   ThreadStartResponse,
+  ThreadSettingsUpdatedNotification,
+  ThreadTokenUsage,
+  ThreadTokenUsageUpdatedNotification,
   TurnCompletedNotification,
   TurnStartParams,
   TurnStartResponse,
@@ -73,6 +77,19 @@ export type CodexTurnCompletedEvent = {
   status: string;
 };
 
+export type CodexThreadTokenUsageEvent = {
+  threadId: string;
+  turnId: string;
+  tokenUsage: ThreadTokenUsage;
+};
+
+export type CodexThreadSettingsEvent = {
+  threadId: string;
+  model: string;
+  modelProvider: string;
+  serviceTier: string | null;
+};
+
 export type CodexToolCallHandler = (
   params: DynamicToolCallParams
 ) => Promise<DynamicToolCallResponse>;
@@ -120,6 +137,8 @@ export class CodexThreadClient {
     (event: CodexAgentMessageDeltaEvent) => void
   >();
   private readonly turnCompletedListeners = new Set<(event: CodexTurnCompletedEvent) => void>();
+  private readonly tokenUsageListeners = new Set<(event: CodexThreadTokenUsageEvent) => void>();
+  private readonly threadSettingsListeners = new Set<(event: CodexThreadSettingsEvent) => void>();
   private toolCallHandler: CodexToolCallHandler | null = null;
   private approvalRequestHandler: CodexApprovalRequestHandler | null = null;
 
@@ -130,7 +149,12 @@ export class CodexThreadClient {
       options.transportFactory ?? ((command) => new StdioJsonRpcTransport({ command }));
   }
 
-  async startThread(opts: CodexStartThreadOptions = {}): Promise<{ threadId: string }> {
+  async startThread(opts: CodexStartThreadOptions = {}): Promise<{
+    threadId: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+  }> {
     const connection = await this.getConnection();
     await this.initialize();
 
@@ -181,7 +205,12 @@ export class CodexThreadClient {
     )) as ThreadStartResponse;
     const threadId = response.thread.id;
     codexThreadClientLog.debug("thread started", { threadId });
-    return { threadId };
+    return {
+      threadId,
+      model: response.model,
+      modelProvider: response.modelProvider,
+      serviceTier: response.serviceTier
+    };
   }
 
   async clearThreadGitInfo(threadId: string): Promise<void> {
@@ -249,6 +278,20 @@ export class CodexThreadClient {
     this.turnCompletedListeners.add(cb);
     return () => {
       this.turnCompletedListeners.delete(cb);
+    };
+  }
+
+  onTokenUsageUpdated(cb: (event: CodexThreadTokenUsageEvent) => void): Unsubscribe {
+    this.tokenUsageListeners.add(cb);
+    return () => {
+      this.tokenUsageListeners.delete(cb);
+    };
+  }
+
+  onThreadSettingsUpdated(cb: (event: CodexThreadSettingsEvent) => void): Unsubscribe {
+    this.threadSettingsListeners.add(cb);
+    return () => {
+      this.threadSettingsListeners.delete(cb);
     };
   }
 
@@ -343,6 +386,44 @@ export class CodexThreadClient {
       for (const listener of this.turnCompletedListeners) {
         listener(event);
       }
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const notification = params as ThreadTokenUsageUpdatedNotification;
+      const event: CodexThreadTokenUsageEvent = {
+        threadId: notification.threadId,
+        turnId: notification.turnId,
+        tokenUsage: notification.tokenUsage
+      };
+      for (const listener of this.tokenUsageListeners) {
+        listener(event);
+      }
+      return;
+    }
+    if (method === "thread/settings/updated") {
+      const notification = params as ThreadSettingsUpdatedNotification;
+      this.emitThreadSettings({
+        threadId: notification.threadId,
+        model: notification.threadSettings.model,
+        modelProvider: notification.threadSettings.modelProvider,
+        serviceTier: notification.threadSettings.serviceTier
+      });
+      return;
+    }
+    if (method === "model/rerouted") {
+      const notification = params as ModelReroutedNotification;
+      this.emitThreadSettings({
+        threadId: notification.threadId,
+        model: notification.toModel,
+        modelProvider: "openai",
+        serviceTier: null
+      });
+    }
+  }
+
+  private emitThreadSettings(event: CodexThreadSettingsEvent): void {
+    for (const listener of this.threadSettingsListeners) {
+      listener(event);
     }
   }
 

@@ -143,7 +143,10 @@ describe("usage formatting helpers", () => {
   test("formats micro-dollar estimates without hiding sub-cent usage", () => {
     expect(formatCostMicros(null)).toBe("—");
     expect(formatCostMicros(0)).toBe("$0.00");
-    expect(formatCostMicros(1_958)).toBe("<$0.01");
+    expect(formatCostMicros(500)).toBe("<$0.001");
+    expect(formatCostMicros(1_958)).toBe("$0.002");
+    expect(formatCostMicros(99_400)).toBe("$0.099");
+    expect(formatCostMicros(100_000)).toBe("$0.10");
     expect(formatCostMicros(1_250_000)).toBe("$1.25");
   });
 

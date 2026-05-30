@@ -21,6 +21,7 @@ class FakeTransport implements JsonRpcTransport {
   readonly outbound: Envelope[] = [];
   private messageHandler: (message: string) => void = () => undefined;
   private closeHandler: (error?: Error) => void = () => undefined;
+  private turnSeq = 0;
 
   async connect(): Promise<void> {
     return;
@@ -68,7 +69,7 @@ class FakeTransport implements JsonRpcTransport {
             id: "thread-1",
             forkedFromId: null,
             preview: "",
-            ephemeral: true,
+            ephemeral: false,
             modelProvider: "openai",
             createdAt: 0,
             updatedAt: 0,
@@ -128,11 +129,13 @@ class FakeTransport implements JsonRpcTransport {
     }
 
     if (envelope.method === "turn/start") {
+      this.turnSeq += 1;
+      const turnId = `turn-${this.turnSeq}`;
       this.emit({
         id,
         result: {
           turn: {
-            id: "turn-1",
+            id: turnId,
             items: [],
             status: "inProgress",
             error: null,
@@ -147,7 +150,7 @@ class FakeTransport implements JsonRpcTransport {
           method: "thread/tokenUsage/updated",
           params: {
             threadId: "thread-1",
-            turnId: "turn-1",
+            turnId,
             tokenUsage: {
               total: {
                 totalTokens: 1200,
@@ -171,7 +174,7 @@ class FakeTransport implements JsonRpcTransport {
           method: "item/completed",
           params: {
             threadId: "thread-1",
-            turnId: "turn-1",
+            turnId,
             item: {
               type: "agentMessage",
               id: "message-1",
@@ -190,7 +193,7 @@ class FakeTransport implements JsonRpcTransport {
           params: {
             threadId: "thread-1",
             turn: {
-              id: "turn-1",
+              id: turnId,
               items: [],
               status: "completed",
               error: null,
@@ -200,6 +203,34 @@ class FakeTransport implements JsonRpcTransport {
             }
           }
         });
+      });
+      return;
+    }
+
+    if (envelope.method === "thread/rollback") {
+      this.emit({
+        id,
+        result: {
+          thread: {
+            id: "thread-1",
+            forkedFromId: null,
+            preview: "",
+            ephemeral: false,
+            modelProvider: "openai",
+            createdAt: 0,
+            updatedAt: 0,
+            status: "running",
+            path: "/tmp/thread.jsonl",
+            cwd: "/tmp",
+            cliVersion: "test",
+            source: "codex_app_server",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: []
+          }
+        }
       });
       return;
     }
@@ -219,7 +250,7 @@ describe("CodexAppServerClient", () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
   });
 
-  it("starts an ephemeral image turn and parses structured output", async () => {
+  it("starts a persistent image turn, rolls it back, and parses structured output", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
     tempRoots.push(tempRoot);
     const imagePath = join(tempRoot, "capture.jpg");
@@ -266,11 +297,11 @@ describe("CodexAppServerClient", () => {
       "initialize",
       "thread/start",
       "turn/start",
-      "thread/archive"
+      "thread/rollback"
     ]);
     expect(transport.outbound.find((message) => message.method === "thread/start")?.params).toMatchObject({
       model: "gpt-5.4-mini",
-      ephemeral: true,
+      ephemeral: false,
       approvalPolicy: "never",
       baseInstructions: expect.stringContaining("Primary goals, in order:"),
       config: PWRSNAP_CODEX_THREAD_CONFIG,
@@ -286,6 +317,47 @@ describe("CodexAppServerClient", () => {
     expect(JSON.stringify(turnStart?.params)).not.toContain("data:image/jpeg;base64");
     expect(JSON.stringify(turnStart?.params)).toContain("Source application name: PwrSnap");
     expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
+  });
+
+  it("reuses the persistent enrichment thread across turns", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
+    tempRoots.push(tempRoot);
+    const firstPath = join(tempRoot, "capture-1.jpg");
+    const secondPath = join(tempRoot, "capture-2.jpg");
+    await writeFile(firstPath, Buffer.from([1]));
+    await writeFile(secondPath, Buffer.from([2]));
+    const transport = new FakeTransport();
+    const client = new CodexAppServerClient({
+      command: "/bin/codex",
+      transportFactory: () => transport,
+      turnTimeoutMs: 1000
+    });
+    const metadata = {
+      sourceAppName: "PwrSnap",
+      sourceAppBundleId: "com.pwrdrvr.pwrsnap",
+      captureKind: "image" as const,
+      widthPx: 2880,
+      heightPx: 1920,
+      capturedAt: "2026-05-18T13:30:00.000Z"
+    };
+
+    await client.enrichCapture({ imagePaths: [firstPath], model: "gpt-5.4-mini", metadata });
+    await client.enrichCapture({ imagePaths: [secondPath], model: "gpt-5.4-mini", metadata });
+
+    expect(transport.outbound.map((message) => message.method)).toEqual([
+      "initialize",
+      "thread/start",
+      "turn/start",
+      "thread/rollback",
+      "turn/start",
+      "thread/rollback"
+    ]);
+    expect(
+      transport.outbound.filter((message) => message.method === "turn/start").map((message) => message.params)
+    ).toEqual([
+      expect.objectContaining({ threadId: "thread-1" }),
+      expect.objectContaining({ threadId: "thread-1" })
+    ]);
   });
 
   it("lists available Codex models", async () => {

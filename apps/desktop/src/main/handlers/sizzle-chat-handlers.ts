@@ -105,6 +105,7 @@ export function registerSizzleChatHandlers(params?: {
       broadcast,
       buildSystemPrompt: buildSizzleSystemPrompt,
       channels: SIZZLE_CHAT_CHANNELS,
+      usageSurface: "sizzle-chat",
       buildTurnContext: buildSizzleTurnContext,
       toolLabels: SIZZLE_TOOL_LABELS,
       catalog: tools.catalog,

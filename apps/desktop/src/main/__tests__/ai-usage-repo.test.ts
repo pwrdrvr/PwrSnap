@@ -14,6 +14,7 @@ const {
   getAiUsageSummary,
   listAiUsageRuns,
   replaceAiRunMediaInputs,
+  saveAiThreadUsage,
   saveAiRunUsage
 } = await import("../persistence/ai-usage-repo");
 
@@ -39,6 +40,20 @@ function seedCapture(id = "cap_1"): void {
     .run({ id, sha: `sha_${id}` });
 }
 
+function seedChatThread(id = "thread_1", name = "Library chat"): void {
+  testDb
+    .prepare(
+      `INSERT INTO chat_threads (
+        thread_id, dir_name, name, anchor_capture_id, archived, pinned,
+        focus_history, created_at, modified_at, schema_version
+      ) VALUES (
+        @id, @id, @name, NULL, 0, 0, '[]',
+        '2026-05-12T12:00:00.000Z', '2026-05-12T12:00:00.000Z', 1
+      )`
+    )
+    .run({ id, name });
+}
+
 function applyMigrations(): void {
   testDb.exec(migration("0001_init.sql"));
   testDb.exec(migration("0006_ai_enrichment.sql"));
@@ -49,7 +64,9 @@ function applyMigrations(): void {
   testDb.exec(migration("0009_legacy_bundle_migration_attempts.sql"));
   testDb.exec(migration("0010_ai_enrichment_title.sql"));
   testDb.exec(migration("0011_ai_enrichment_filename.sql"));
+  testDb.exec(migration("0019_chat_threads.sql"));
   testDb.exec(migration("0022_ai_usage_accounting.sql"));
+  testDb.exec(migration("0023_ai_thread_usage.sql"));
 }
 
 describe("AI usage repository", () => {
@@ -224,6 +241,80 @@ describe("AI usage repository", () => {
         triggerSource: "auto-enrichment",
         model: "gpt-5.4-mini",
         runCount: 1
+      })
+    ]);
+  });
+
+  test("rolls chat usage up to one recent row per thread", () => {
+    seedChatThread("thread_1", "Ask about captures");
+    const turnCost = {
+      status: "available" as const,
+      currency: "USD" as const,
+      catalogVersion: "2026-05-30",
+      pricingSourceUrl: "https://developers.openai.com/api/docs/pricing",
+      pricedAt: "2026-05-30T00:00:00.000Z",
+      rateSnapshot: {
+        model: "gpt-5.4-mini",
+        serviceTier: null,
+        contextClass: "standard",
+        inputUsdPerMillion: 0.75,
+        cachedInputUsdPerMillion: 0.075,
+        outputUsdPerMillion: 4.5
+      },
+      uncachedInputTokens: 900,
+      cachedInputTokens: 100,
+      outputTokens: 100,
+      uncachedInputCostMicros: 675,
+      cachedInputCostMicros: 8,
+      outputCostMicros: 450,
+      totalCostMicros: 1133
+    };
+
+    for (const turnId of ["turn_1", "turn_2"]) {
+      saveAiThreadUsage({
+        threadId: "thread_1",
+        surface: "library-chat",
+        name: "Ask about captures",
+        turnId,
+        model: "gpt-5.4-mini",
+        modelProvider: "openai",
+        usageStatus: "available",
+        tokens: {
+          totalTokens: 1100,
+          inputTokens: 1000,
+          cachedInputTokens: 100,
+          outputTokens: 100,
+          reasoningOutputTokens: 10,
+          modelContextWindow: null
+        },
+        cost: turnCost
+      });
+    }
+
+    const listed = listAiUsageRuns({ limit: 10 });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]).toEqual(
+      expect.objectContaining({
+        subjectKind: "thread",
+        threadId: "thread_1",
+        threadName: "Ask about captures",
+        threadSurface: "library-chat",
+        turnCount: 2,
+        inputTokens: 2000,
+        cachedInputTokens: 200,
+        outputTokens: 200,
+        estimatedTotalCostMicros: 2266
+      })
+    );
+
+    const summary = getAiUsageSummary("24h");
+    expect(summary.buckets).toEqual([
+      expect.objectContaining({
+        task: "library-chat",
+        triggerSource: "library-chat",
+        model: "gpt-5.4-mini",
+        runCount: 2,
+        estimatedTotalCostMicros: 2266
       })
     ]);
   });

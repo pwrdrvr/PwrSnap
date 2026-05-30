@@ -1273,12 +1273,12 @@ function AiRunUsageStrip({ detail }: { detail: AiRunUsageDetail }): ReactElement
 
 function formatCostMicros(micros: number): string {
   const dollars = micros / 1_000_000;
-  if (dollars > 0 && dollars < 0.01) return "<$0.01";
+  if (dollars > 0 && dollars < 0.001) return "<$0.001";
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    minimumFractionDigits: dollars < 10 ? 2 : 0,
-    maximumFractionDigits: dollars < 10 ? 2 : 0
+    minimumFractionDigits: dollars > 0 && dollars < 0.1 ? 3 : dollars < 10 ? 2 : 0,
+    maximumFractionDigits: dollars > 0 && dollars < 0.1 ? 3 : dollars < 10 ? 2 : 0
   }).format(dollars);
 }
 

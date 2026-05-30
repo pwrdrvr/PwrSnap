@@ -201,6 +201,31 @@ describe("video filename maintenance", () => {
     expect(existsSync(expected)).toBe(true);
   });
 
+  test("does not hash videos that already use the expected filename", async () => {
+    const captureId = "vid_already_named";
+    const bytes = Buffer.from("fake-already-named-video");
+    const storedSha = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+    const currentPath = join(
+      workDir,
+      `2026-05-29T18-38-12_safari_demo_${storedSha.slice(0, 8)}.mp4`
+    );
+    await writeFile(currentPath, bytes);
+    insertVideoCapture({
+      id: captureId,
+      sourcePath: currentPath,
+      sourceAppName: "Safari",
+      sha256: storedSha
+    });
+    insertEnrichment({
+      captureId,
+      suggested: "demo",
+      accepted: null
+    });
+
+    await expect(renameVideoSourceToEffectiveFilename(captureId)).resolves.toBe("skipped");
+    expect(existsSync(currentPath)).toBe(true);
+  });
+
   test("repairs a stale DB path by matching source sha256", async () => {
     const captureId = "vid_repair";
     const bytes = Buffer.from("fake-video-repair");

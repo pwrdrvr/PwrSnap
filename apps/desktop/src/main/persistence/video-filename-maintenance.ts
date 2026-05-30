@@ -155,7 +155,7 @@ async function resolveCurrentVideoSourcePath(
 ): Promise<string | null> {
   if (row.legacy_src_path === null) return null;
   if (existsSync(row.legacy_src_path)) {
-    await assertVideoSourceMatchesCapture(row.legacy_src_path, row.sha256);
+    await assertRegularFile(row.legacy_src_path);
     return row.legacy_src_path;
   }
 
@@ -170,6 +170,13 @@ async function resolveCurrentVideoSourcePath(
     return repaired;
   }
   return null;
+}
+
+async function assertRegularFile(path: string): Promise<void> {
+  const stat = await lstat(path);
+  if (!stat.isFile()) {
+    throw new Error(`video source path is not a regular file: ${path}`);
+  }
 }
 
 async function resolveAvailableTargetPath(
@@ -213,10 +220,7 @@ async function findVideoSourceBySha256(dir: string, sha256: string): Promise<str
 }
 
 async function assertVideoSourceMatchesCapture(path: string, sha256: string): Promise<void> {
-  const stat = await lstat(path);
-  if (!stat.isFile()) {
-    throw new Error(`video source path is not a regular file: ${path}`);
-  }
+  await assertRegularFile(path);
   const actual = await fileSha256(path);
   if (actual !== sha256) {
     throw new Error(`video source sha256 mismatch at ${path}`);

@@ -861,7 +861,7 @@ function DetailTab({
     return () => {
       cancelled = true;
     };
-  }, [enrichment?.latestRunId]);
+  }, [enrichment?.latestRunId, enrichment?.status]);
 
   const [titleValue, titleOrigin, setTitleEdit, commitTitle] = useFieldEditor({
     captureId: record.id,

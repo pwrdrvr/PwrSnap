@@ -61,33 +61,8 @@ function enrichment(patch: Partial<CaptureEnrichment> = {}): CaptureEnrichment {
   };
 }
 
-function installFakeApi(initial: CaptureEnrichment): {
-  dispatch: ReturnType<typeof vi.fn>;
-  pushEvent: (channel: string, payload: unknown) => void;
-} {
-  const handlers = new Map<string, Set<(payload: unknown) => void>>();
-  const budgetStatus: AiEnrichmentBudgetStatus = {
-    mode: "available",
-    tokensAvailable: 5,
-    capacity: 5,
-    refillIntervalMs: 30_000,
-    nextTokenAt: null,
-    limitedAttemptsLastHour: 0,
-    disableThreshold: 3,
-    disabledAt: null
-  };
-  const accepted = enrichment({
-    suggestedTitle: initial.suggestedTitle,
-    acceptedTitle: initial.suggestedTitle,
-    titleAcceptedAt: "2026-05-15T18:25:00.000Z",
-    suggestedDescription: initial.suggestedDescription,
-    acceptedDescription: initial.suggestedDescription,
-    descriptionAcceptedAt: "2026-05-15T18:25:00.000Z",
-    suggestedFilenameStem: initial.suggestedFilenameStem,
-    acceptedFilenameStem: initial.suggestedFilenameStem,
-    filenameAcceptedAt: "2026-05-15T18:25:00.000Z"
-  });
-  const usageDetail: AiRunUsageDetail = {
+function aiUsageDetail(patch: Partial<AiRunUsageDetail> = {}): AiRunUsageDetail {
+  const detail: AiRunUsageDetail = {
     run: {
       id: "run_1",
       captureId: "cap_1",
@@ -165,9 +140,45 @@ function installFakeApi(initial: CaptureEnrichment): {
       }
     ]
   };
+  return { ...detail, ...patch };
+}
+
+function installFakeApi(
+  initial: CaptureEnrichment,
+  options?: {
+    usageDetail?: () => AiRunUsageDetail;
+  }
+): {
+  dispatch: ReturnType<typeof vi.fn>;
+  pushEvent: (channel: string, payload: unknown) => void;
+} {
+  const handlers = new Map<string, Set<(payload: unknown) => void>>();
+  const budgetStatus: AiEnrichmentBudgetStatus = {
+    mode: "available",
+    tokensAvailable: 5,
+    capacity: 5,
+    refillIntervalMs: 30_000,
+    nextTokenAt: null,
+    limitedAttemptsLastHour: 0,
+    disableThreshold: 3,
+    disabledAt: null
+  };
+  const accepted = enrichment({
+    suggestedTitle: initial.suggestedTitle,
+    acceptedTitle: initial.suggestedTitle,
+    titleAcceptedAt: "2026-05-15T18:25:00.000Z",
+    suggestedDescription: initial.suggestedDescription,
+    acceptedDescription: initial.suggestedDescription,
+    descriptionAcceptedAt: "2026-05-15T18:25:00.000Z",
+    suggestedFilenameStem: initial.suggestedFilenameStem,
+    acceptedFilenameStem: initial.suggestedFilenameStem,
+    filenameAcceptedAt: "2026-05-15T18:25:00.000Z"
+  });
+  const defaultUsageDetail = aiUsageDetail();
+  const getUsageDetail = options?.usageDetail ?? (() => defaultUsageDetail);
   const dispatch = vi.fn(async (name: string) => {
     if (name === "codex:enrichment") return { ok: true, value: initial };
-    if (name === "codex:usageRunDetail") return { ok: true, value: usageDetail };
+    if (name === "codex:usageRunDetail") return { ok: true, value: getUsageDetail() };
     if (name === "codex:acceptDescription") return { ok: true, value: accepted };
     if (name === "codex:acceptTitle") return { ok: true, value: accepted };
     if (name === "codex:acceptFilenameStem") return { ok: true, value: accepted };
@@ -206,12 +217,17 @@ function installFakeApi(initial: CaptureEnrichment): {
   };
 }
 
-async function renderDetailRail(initial: CaptureEnrichment): Promise<{
+async function renderDetailRail(
+  initial: CaptureEnrichment,
+  options?: {
+    usageDetail?: () => AiRunUsageDetail;
+  }
+): Promise<{
   el: HTMLDivElement;
   dispatch: ReturnType<typeof vi.fn>;
   pushEvent: (channel: string, payload: unknown) => void;
 }> {
-  const { dispatch, pushEvent } = installFakeApi(initial);
+  const { dispatch, pushEvent } = installFakeApi(initial, options);
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -602,6 +618,42 @@ describe("DetailRail", () => {
     expect(usage?.textContent).toContain("1,200 tokens");
     expect(usage?.textContent).toContain("1024×742 JPEG");
     expect(usage?.textContent).toContain("q75");
+  });
+
+  test("refreshes latest AI run usage when the same run completes", async () => {
+    let currentUsage = aiUsageDetail({
+      run: { ...aiUsageDetail().run, status: "running", completedAt: null },
+      usageStatus: "unavailable",
+      usageUnavailableReason: "usage has not been recorded for this run",
+      tokens: null,
+      cost: { status: "unavailable", reason: "usage unavailable" },
+      mediaInputs: []
+    });
+    const { el, dispatch, pushEvent } = await renderDetailRail(
+      enrichment({ status: "running" }),
+      { usageDetail: () => currentUsage }
+    );
+
+    const usage = el.querySelector(".psl__ai-usage");
+    expect(usage?.textContent).toContain("Usage unavailable");
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
+    ).toHaveLength(1);
+
+    currentUsage = aiUsageDetail();
+    await act(async () => {
+      pushEvent(EVENT_CHANNELS.aiRunUpdated, {
+        run: currentUsage.run,
+        enrichment: enrichment({ status: "completed" })
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(el.querySelector(".psl__ai-usage")?.textContent).toContain("1,200 tokens");
+    expect(
+      dispatch.mock.calls.filter(([name]) => name === "codex:usageRunDetail")
+    ).toHaveLength(2);
   });
 
   test("Bulk Use draft overrides title and description manual values but leaves filename edits alone", async () => {

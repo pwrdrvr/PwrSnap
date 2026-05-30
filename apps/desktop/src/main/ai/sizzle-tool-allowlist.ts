@@ -21,7 +21,8 @@ import {
   type Req,
   type SizzleProject,
   type SizzleScene,
-  type SizzleTransition
+  type SizzleTransition,
+  normalizeSizzleSequenceBeatContinuity
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
@@ -77,8 +78,9 @@ type SceneInput = z.infer<typeof sceneInputSchema>;
 const beatTimingInputSchema = z.union([
   z.object({
     kind: z.literal("offset"),
-    startSec: z.number().min(0),
+    startSec: z.number().min(0).describe("Seconds from sequence narration start. The first beat must start at 0."),
     endSec: z.number().min(0).nullable().optional()
+      .describe("Only valid on the final beat. For non-final beats omit/null; they continue until the next beat anchor.")
   }),
   z.object({
     kind: z.literal("phrase"),
@@ -86,6 +88,7 @@ const beatTimingInputSchema = z.union([
     occurrence: z.number().int().positive().nullable().optional(),
     offsetSec: z.number().optional(),
     durationSec: z.number().positive().nullable().optional()
+      .describe("Only valid on the final beat. For non-final beats omit/null; they continue until the next beat anchor.")
   })
 ]);
 
@@ -131,13 +134,14 @@ function toScene(input: SceneInput): SizzleScene {
 
 function toSequenceScene(input: SequenceSceneInput): SizzleScene {
   const firstBeat = input.beats[0]!;
+  const beats = normalizeSizzleSequenceBeatContinuity(input.beats.map(toSequenceBeat));
   return {
     id: `sc_${nanoid(10)}`,
     kind: "sequence",
     captureId: firstBeat.captureId,
     scriptLine: input.narration,
     narration: input.narration,
-    beats: input.beats.map(toSequenceBeat),
+    beats,
     durationOverrideSec:
       typeof input.durationOverrideSec === "number" && input.durationOverrideSec > 0
         ? input.durationOverrideSec
@@ -366,7 +370,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "sequence_scene_append",
       description:
-        "Append one sequence scene: one continuous narration block with multiple timed visual beats. Prefer this for workflows, quick UI progressions, and app demos where one sentence spans several captures.",
+        "Append one sequence scene: one continuous narration block with multiple visual beats. Prefer this for workflows, quick UI progressions, and app demos where one sentence spans several captures. Timing rule: beat starts are anchors into the same narration. The first beat starts at offset 0. Every non-final beat automatically continues until the next beat's offset/phrase anchor; do not set fixed endSec/durationSec except on the final beat.",
       argsSchema: z.object({ scene: sequenceSceneInputSchema }),
       dispatch: async (args, ctx) =>
         mutateScenes(ctx.threadId, (scenes) => [...scenes, toSequenceScene(args.scene)])
@@ -448,7 +452,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "sequence_beat_update",
       description:
-        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats.",
+        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats. Timing rule: the first beat starts at offset 0. Non-final beats must have automatic end timing; if you anchor a later beat by offset or phrase, the previous beat continues until that anchor.",
       argsSchema: z.object({
         sceneId: z.string().min(1),
         beatId: z.string().min(1),
@@ -466,7 +470,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
             if (s.id !== args.sceneId) return s;
             foundScene = true;
             if (s.kind !== "sequence" || s.beats === undefined) return s;
-            const beats = s.beats.map((beat) => {
+            const beats = normalizeSizzleSequenceBeatContinuity(s.beats.map((beat) => {
               if (beat.id !== args.beatId) return beat;
               foundBeat = true;
               return {
@@ -477,7 +481,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
                 ...(args.videoFit !== undefined ? { videoFit: args.videoFit } : {}),
                 ...(args.mediaTrim !== undefined ? { mediaTrim: args.mediaTrim } : {})
               };
-            });
+            }));
             return { ...s, beats };
           });
           if (!foundScene) return { error: `Scene ${args.sceneId} not found.` };

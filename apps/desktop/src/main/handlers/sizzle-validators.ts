@@ -28,6 +28,7 @@ import {
   SIZZLE_TRANSITIONS,
   SIZZLE_VIDEO_FIT_POLICIES,
   SIZZLE_VOICES,
+  normalizeSizzleSequenceBeatContinuity,
   normalizeSizzleTransition,
   type SizzleAudioSource,
   type SizzleBeatTiming,
@@ -539,7 +540,7 @@ function validateSequenceBeats(
       videoFit
     });
   }
-  return { ok: true, value: out };
+  return { ok: true, value: normalizeSizzleSequenceBeatContinuity(out) };
 }
 
 function validateScene(

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
 import {
+  normalizeSizzleSequenceBeatContinuity,
   normalizeSizzleTransition,
   type SizzleAudioSource,
   type SizzleBeatTiming,
@@ -273,17 +274,19 @@ function sanitizeSequenceBeats(
             } satisfies SizzleSequenceBeat
           ]
         : [];
-  return source.map((beat) => ({
-    id: beat.id || `bt_${randomUUID().slice(0, 10)}`,
-    captureId: beat.captureId || fallbackCaptureId,
-    timing: sanitizeBeatTiming(beat.timing),
-    mediaTrim: sanitizeMediaTrim(beat.mediaTrim),
-    transition: normalizeSizzleTransition(beat.transition, {
-      type: "cut",
-      durationSec: 0
-    }),
-    videoFit: sanitizeVideoFit(beat.videoFit)
-  }));
+  return normalizeSizzleSequenceBeatContinuity(
+    source.map((beat) => ({
+      id: beat.id || `bt_${randomUUID().slice(0, 10)}`,
+      captureId: beat.captureId || fallbackCaptureId,
+      timing: sanitizeBeatTiming(beat.timing),
+      mediaTrim: sanitizeMediaTrim(beat.mediaTrim),
+      transition: normalizeSizzleTransition(beat.transition, {
+        type: "cut",
+        durationSec: 0
+      }),
+      videoFit: sanitizeVideoFit(beat.videoFit)
+    }))
+  );
 }
 
 function sanitizeBeatTiming(timing: SizzleBeatTiming | undefined): SizzleBeatTiming {

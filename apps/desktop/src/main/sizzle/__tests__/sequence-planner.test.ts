@@ -146,8 +146,16 @@ describe("planSequenceScene", () => {
     const scene = sequenceScene({
       beats: [
         {
-          id: "bt_settings",
+          id: "bt_intro",
           captureId: "cap_1",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_settings",
+          captureId: "cap_2",
           timing: { kind: "phrase", phrase: "wizard then", occurrence: 1, offsetSec: 0, durationSec: 0.5 },
           mediaTrim: null,
           transition: "cut",
@@ -157,15 +165,66 @@ describe("planSequenceScene", () => {
     });
     const plan = planSequenceScene({
       scene,
-      capturesById: new Map([["cap_1", capture("cap_1", "image")]]),
-      imagePathByCaptureId: new Map([["cap_1", "/tmp/cap_1.png"]]),
+      capturesById: new Map([
+        ["cap_1", capture("cap_1", "image")],
+        ["cap_2", capture("cap_2", "image")]
+      ]),
+      imagePathByCaptureId: new Map([
+        ["cap_1", "/tmp/cap_1.png"],
+        ["cap_2", "/tmp/cap_2.png"]
+      ]),
       narrationAudioPath: "/tmp/narration.mp3",
       speechTiming: timing("Open the wizard then approve pairing", 3)
     });
 
     expect(plan.diagnostics).toEqual([]);
-    expect(plan.beatPlans[0]!.startSec).toBeGreaterThan(0);
-    expect(plan.beatPlans[0]!.endSec - plan.beatPlans[0]!.startSec).toBeCloseTo(0.5, 3);
+    expect(plan.beatPlans[1]!.startSec).toBeGreaterThan(0);
+    expect(plan.beatPlans[1]!.endSec - plan.beatPlans[1]!.startSec).toBeCloseTo(0.5, 3);
+  });
+
+  it("keeps narration continuous when a phrase anchor follows a stale fixed end", () => {
+    const scene = sequenceScene({
+      scriptLine: "Start with the editor, then zoom out to the capture library.",
+      narration: "Start with the editor, then zoom out to the capture library.",
+      beats: [
+        {
+          id: "bt_editor",
+          captureId: "cap_1",
+          timing: { kind: "offset", startSec: 0, endSec: 1 },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_library",
+          captureId: "cap_2",
+          timing: { kind: "phrase", phrase: "zoom out", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const plan = planSequenceScene({
+      scene,
+      capturesById: new Map([
+        ["cap_1", capture("cap_1", "image")],
+        ["cap_2", capture("cap_2", "image")]
+      ]),
+      imagePathByCaptureId: new Map([
+        ["cap_1", "/tmp/cap_1.png"],
+        ["cap_2", "/tmp/cap_2.png"]
+      ]),
+      narrationAudioPath: "/tmp/narration.mp3",
+      speechTiming: timing(scene.scriptLine, 9)
+    });
+
+    expect(plan.beatPlans[0]!.endSec).toBe(plan.beatPlans[1]!.startSec);
+    expect(plan.beatPlans[0]!.endSec).toBeGreaterThan(1);
+    expect(plan.sceneInputs[0]!.audioDurationSec).toBeCloseTo(
+      plan.beatPlans[1]!.startSec,
+      3
+    );
   });
 
   it("chooses loop for a short video smart-fit beat", () => {

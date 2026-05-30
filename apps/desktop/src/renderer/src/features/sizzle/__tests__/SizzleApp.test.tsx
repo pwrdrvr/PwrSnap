@@ -228,7 +228,7 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("Sequence · one narration block");
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
-    expect(el.textContent).toContain("Use offset seconds or phrase anchors");
+    expect(el.textContent).toContain("non-final beats end automatically");
   });
 });
 

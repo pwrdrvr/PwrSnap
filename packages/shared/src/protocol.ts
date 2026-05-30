@@ -682,6 +682,34 @@ export type SizzleSequenceBeat = {
   videoFit: SizzleVideoFitPolicy;
 };
 
+/**
+ * Sequence beats are start anchors, not independent audio clips.
+ * A non-final beat must run until the next beat's anchor; otherwise the
+ * composer would cut a hole out of the continuous narration. The first
+ * beat is pinned to the beginning because there is no earlier visual to
+ * cover narration before it.
+ */
+export function normalizeSizzleSequenceBeatContinuity(
+  beats: SizzleSequenceBeat[]
+): SizzleSequenceBeat[] {
+  return beats.map((beat, index) => {
+    let timing = beat.timing;
+    if (index === 0 && timing.kind === "phrase") {
+      timing = { kind: "offset", startSec: 0, endSec: null };
+    } else if (index === 0 && timing.kind === "offset" && timing.startSec !== 0) {
+      timing = { ...timing, startSec: 0 };
+    }
+    if (index < beats.length - 1) {
+      if (timing.kind === "offset" && timing.endSec !== null) {
+        timing = { ...timing, endSec: null };
+      } else if (timing.kind === "phrase" && timing.durationSec !== null) {
+        timing = { ...timing, durationSec: null };
+      }
+    }
+    return timing === beat.timing ? beat : { ...beat, timing };
+  });
+}
+
 export type SizzleSpeechTimingQuality = "precise" | "approximate";
 
 export type SizzleSpeechTimingWarningCode =

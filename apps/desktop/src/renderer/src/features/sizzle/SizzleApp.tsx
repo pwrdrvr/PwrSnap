@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   type CaptureRecord,
   type SizzleBeatTiming,
@@ -443,12 +444,12 @@ export function SizzleApp(): ReactElement {
         const beat: SizzleSequenceBeat = {
           id: `bt_${Date.now().toString(36)}`,
           captureId,
-          timing: { kind: "offset", startSec, endSec: startSec + 1 },
+          timing: { kind: "offset", startSec, endSec: null },
           mediaTrim,
           transition: "cut",
           videoFit: "smart-fit"
         };
-        return { ...scene, beats: [...beats, beat] };
+        return { ...scene, beats: normalizeSizzleSequenceBeatContinuity([...beats, beat]) };
       });
       await onUpdate(active.id, { scenes: nextScenes });
       setPicker(null);
@@ -860,9 +861,9 @@ function Editor(props: EditorProps): ReactElement {
         if (s.id !== sceneId || s.kind !== "sequence" || s.beats === undefined) return s;
         return {
           ...s,
-          beats: s.beats.map((beat) =>
+          beats: normalizeSizzleSequenceBeatContinuity(s.beats.map((beat) =>
             beat.id === beatId ? { ...beat, ...patch } : beat
-          )
+          ))
         };
       })
     );
@@ -879,7 +880,7 @@ function Editor(props: EditorProps): ReactElement {
   const beatFromScene = (scene: SizzleScene, startSec: number): SizzleSequenceBeat => ({
     id: `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     captureId: scene.captureId,
-    timing: { kind: "offset", startSec, endSec: startSec + 1 },
+    timing: { kind: "offset", startSec, endSec: null },
     mediaTrim: scene.mediaTrim,
     transition: "cut",
     videoFit: "smart-fit"
@@ -895,7 +896,7 @@ function Editor(props: EditorProps): ReactElement {
           narration: scene.scriptLine,
           scriptLine: scene.scriptLine,
           audioSource: "voiceover",
-          beats: [beatFromScene(scene, 0)]
+          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene, 0)])
         };
       })
     );
@@ -917,7 +918,7 @@ function Editor(props: EditorProps): ReactElement {
       ...scene,
       scriptLine: narration,
       narration,
-      beats: [...beats, beat]
+      beats: normalizeSizzleSequenceBeatContinuity([...beats, beat])
     };
     next.splice(idx + 1, 1);
     onScenes(next);
@@ -931,7 +932,7 @@ function Editor(props: EditorProps): ReactElement {
         if (target < 0 || target >= scene.beats.length) return scene;
         const beats = [...scene.beats];
         [beats[beatIdx], beats[target]] = [beats[target]!, beats[beatIdx]!];
-        return { ...scene, beats };
+        return { ...scene, beats: normalizeSizzleSequenceBeatContinuity(beats) };
       })
     );
   };
@@ -941,7 +942,12 @@ function Editor(props: EditorProps): ReactElement {
       project.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence" || scene.beats === undefined) return scene;
         if (scene.beats.length <= 1) return scene;
-        return { ...scene, beats: scene.beats.filter((beat) => beat.id !== beatId) };
+        return {
+          ...scene,
+          beats: normalizeSizzleSequenceBeatContinuity(
+            scene.beats.filter((beat) => beat.id !== beatId)
+          )
+        };
       })
     );
   };
@@ -1161,6 +1167,8 @@ function Editor(props: EditorProps): ReactElement {
                               ? cacheUrl(beat.captureId, 160, "webp", beatCapture.edits_version)
                               : cacheUrl(beat.captureId, 160, "webp");
                           const timingKind = beat.timing.kind;
+                          const isFirstBeat = beatIdx === 0;
+                          const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
                           return (
                             <div className="szl__sequence-beat" key={beat.id}>
                               <span className="szl__sequence-beat-num">{beatIdx + 1}</span>
@@ -1180,6 +1188,7 @@ function Editor(props: EditorProps): ReactElement {
                               </span>
                               <select
                                 value={timingKind}
+                                disabled={isFirstBeat}
                                 onChange={(e) => {
                                   const kind = e.target.value as SizzleBeatTiming["kind"];
                                   editSequenceBeat(scene.id, beat.id, {
@@ -1189,6 +1198,7 @@ function Editor(props: EditorProps): ReactElement {
                                         : { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
                                   });
                                 }}
+                                title={isFirstBeat ? "The first beat always starts at 0" : "Beat start timing"}
                               >
                                 <option value="offset">Offset</option>
                                 <option value="phrase">Phrase</option>
@@ -1203,6 +1213,7 @@ function Editor(props: EditorProps): ReactElement {
                                       min={0}
                                       step={0.1}
                                       value={beat.timing.startSec}
+                                      disabled={isFirstBeat}
                                       onChange={(e) => {
                                         const v = Number(e.target.value);
                                         if (!Number.isFinite(v)) return;
@@ -1214,7 +1225,7 @@ function Editor(props: EditorProps): ReactElement {
                                           }
                                         });
                                       }}
-                                      title="Beat start seconds"
+                                      title={isFirstBeat ? "The first beat always starts at 0" : "Beat start seconds"}
                                     />
                                   </label>
                                   <label className="szl__sequence-time-field">
@@ -1225,8 +1236,10 @@ function Editor(props: EditorProps): ReactElement {
                                       min={0}
                                       step={0.1}
                                       placeholder="auto"
-                                      value={beat.timing.endSec ?? ""}
+                                      value={isFinalBeat ? beat.timing.endSec ?? "" : ""}
+                                      disabled={!isFinalBeat}
                                       onChange={(e) => {
+                                        if (!isFinalBeat) return;
                                         const raw = e.target.value.trim();
                                         const v = raw === "" ? null : Number(raw);
                                         if (v !== null && !Number.isFinite(v)) return;
@@ -1238,7 +1251,7 @@ function Editor(props: EditorProps): ReactElement {
                                           }
                                         });
                                       }}
-                                      title="Beat end seconds"
+                                      title={isFinalBeat ? "Optional final beat end seconds" : "Non-final beats end automatically at the next beat anchor"}
                                     />
                                   </label>
                                 </>
@@ -1345,7 +1358,7 @@ function Editor(props: EditorProps): ReactElement {
                         })}
                       </div>
                       <div className="szl__scene-hint">
-                        Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Use offset seconds or phrase anchors to control when each asset starts.
+                        Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
                       </div>
                       <div className="szl__scene-row">
                         <span className="szl__scene-app">sequence</span>

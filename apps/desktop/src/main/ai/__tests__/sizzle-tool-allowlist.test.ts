@@ -166,13 +166,13 @@ describe("buildSizzleToolAllowlist", () => {
           beats: [
             {
               captureId: "cap_settings",
-              timing: { kind: "phrase", phrase: "Settings", occurrence: 1 },
+              timing: { kind: "offset", startSec: 0, endSec: 1 },
               transition: "cut",
               videoFit: "smart-fit"
             },
             {
               captureId: "cap_telegram",
-              timing: { kind: "offset", startSec: 1.2, endSec: 2 },
+              timing: { kind: "phrase", phrase: "Telegram", occurrence: 1 },
               transition: { type: "push-left", durationSec: 0.18 },
               videoFit: "loop"
             }
@@ -188,6 +188,7 @@ describe("buildSizzleToolAllowlist", () => {
     expect(scenes[0]!.kind).toBe("sequence");
     expect(scenes[0]!.scriptLine).toBe("Open Settings, then enable Telegram.");
     expect(scenes[0]!.beats).toHaveLength(2);
+    expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(scenes[0]!.beats![1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
     expect(scenes[0]!.beats![1]!.videoFit).toBe("loop");
   });
@@ -233,7 +234,7 @@ describe("buildSizzleToolAllowlist", () => {
     const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
     const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
     const beats = scenes[0]!.beats!;
-    expect(beats[0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: 1 });
+    expect(beats[0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(beats[1]!.timing).toEqual({
       kind: "phrase",
       phrase: "Telegram",

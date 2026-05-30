@@ -6,6 +6,7 @@ import type {
   SizzleTransition
 } from "@pwrsnap/shared";
 import {
+  normalizeSizzleSequenceBeatContinuity,
   sizzleTransitionDurationSec,
   sizzleTransitionType
 } from "@pwrsnap/shared";
@@ -48,8 +49,9 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
     req.scene.durationOverrideSec !== null && req.scene.durationOverrideSec > 0
       ? req.scene.durationOverrideSec
       : req.speechTiming.durationSec;
+  const beats = normalizeSizzleSequenceBeatContinuity(req.scene.beats);
   const windows = resolveBeatWindows(
-    req.scene.beats,
+    beats,
     req.speechTiming,
     timelineDurationSec,
     diagnostics
@@ -57,7 +59,7 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
   const sceneInputs: SceneInput[] = [];
   const beatPlans: SequenceRenderPlan["beatPlans"] = [];
 
-  req.scene.beats.forEach((beat, index) => {
+  beats.forEach((beat, index) => {
     const capture = req.capturesById.get(beat.captureId);
     if (capture === undefined) {
       throw new SequencePlannerError(

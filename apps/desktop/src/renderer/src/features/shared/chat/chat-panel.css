@@ -57,7 +57,6 @@
   flex: 0 0 auto;
   gap: 2px;
   height: 24px;
-  min-width: 152px;
   max-width: 220px;
   padding-right: 3px;
   border: 1px solid var(--border-default);
@@ -70,7 +69,7 @@
 .ps-libchat-thread {
   display: inline-flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   gap: 6px;
   height: 22px;
   min-width: 0;

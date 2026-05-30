@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { getMainLogger } from "../log";
 import { buildCaptureBundleFilenameStem, bundleStemFromPath } from "./bundle-filename";
 import { getDb } from "./db";
-import { readBundleManifest } from "./bundle-store";
+import { readBundleManifest, runExclusiveBundleFileOperation } from "./bundle-store";
 import { updateCaptureBundlePath } from "./captures-repo";
 
 const log = getMainLogger("pwrsnap:bundle-filename-maintenance");
@@ -107,6 +107,16 @@ function getFilenameRow(captureId: string): FilenameRow | null {
 }
 
 async function renameBundleRow(
+  row: FilenameRow
+): Promise<"renamed" | "repaired" | "skipped"> {
+  return runExclusiveBundleFileOperation(row.id, async () => {
+    const currentRow = getFilenameRow(row.id);
+    if (currentRow === null) return "skipped";
+    return renameBundleRowLocked(currentRow);
+  });
+}
+
+async function renameBundleRowLocked(
   row: FilenameRow
 ): Promise<"renamed" | "repaired" | "skipped"> {
   if (row.bundle_path === null) return "skipped";

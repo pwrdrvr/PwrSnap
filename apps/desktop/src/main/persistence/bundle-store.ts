@@ -889,9 +889,38 @@ const REPACK_DEBOUNCE_MS = 1_000;
 const repackTimers = new Map<string, NodeJS.Timeout>();
 
 // In-flight repack promises so concurrent doctor walks (Phase 2)
-// can cooperate via a shared mutex instead of racing on the same
-// capture's bundle file.
+// can cooperate instead of racing on the same capture's bundle file.
 const repackInFlight = new Map<string, Promise<void>>();
+
+// Per-capture bundle-file operation queue. Repacking rewrites the
+// bundle at its current path, while filename maintenance moves that
+// same file and updates captures.bundle_path. They must not overlap.
+const bundleFileOperations = new Map<string, Promise<void>>();
+
+export async function runExclusiveBundleFileOperation<T>(
+  captureId: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = bundleFileOperations.get(captureId);
+  const current = (async (): Promise<T> => {
+    if (previous !== undefined) {
+      await previous.catch(() => undefined);
+    }
+    return operation();
+  })();
+  const currentDone = current.then(
+    () => undefined,
+    () => undefined
+  );
+  bundleFileOperations.set(captureId, currentDone);
+  try {
+    return await current;
+  } finally {
+    if (bundleFileOperations.get(captureId) === currentDone) {
+      bundleFileOperations.delete(captureId);
+    }
+  }
+}
 
 /**
  * Debounced re-pack request. Called after every edit (overlay insert
@@ -958,6 +987,10 @@ export async function awaitInFlightRepack(captureId: string): Promise<void> {
   if (promise !== undefined) {
     await promise;
   }
+  const bundleOperation = bundleFileOperations.get(captureId);
+  if (bundleOperation !== undefined) {
+    await bundleOperation;
+  }
 }
 
 async function runRepack(captureId: string): Promise<void> {
@@ -969,7 +1002,7 @@ async function runRepack(captureId: string): Promise<void> {
     await existing;
   }
 
-  const promise = (async () => {
+  const promise = runExclusiveBundleFileOperation(captureId, async () => {
     const record = getCaptureById(captureId);
     if (record === null) {
       log.warn("bundle-store: repack target missing", { captureId });
@@ -1041,7 +1074,7 @@ async function runRepack(captureId: string): Promise<void> {
       overlaysCount: liveOverlays.length,
       bundleBytes: bundleBuf.length
     });
-  })();
+  });
 
   repackInFlight.set(captureId, promise);
   try {
@@ -1291,7 +1324,7 @@ async function runRepackV2(captureId: string): Promise<void> {
   const { listLayerTree } = await import("./layers-repo");
   const { composeV2 } = await import("../render/compose-tree");
 
-  const promise = (async () => {
+  const promise = runExclusiveBundleFileOperation(captureId, async () => {
     const record = getCaptureById(captureId);
     if (record === null) {
       log.warn("bundle-store: v2 repack target missing", { captureId });
@@ -1377,7 +1410,7 @@ async function runRepackV2(captureId: string): Promise<void> {
       layerCount: layers.length,
       bundleBytes: bundleBuf.length
     });
-  })();
+  });
 
   repackInFlight.set(captureId, promise);
   try {

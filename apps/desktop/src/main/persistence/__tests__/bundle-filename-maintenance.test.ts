@@ -28,7 +28,7 @@ vi.mock("../../log", () => ({
 }));
 
 const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
-const { packBundle } = await import("../bundle-store");
+const { packBundle, runExclusiveBundleFileOperation } = await import("../bundle-store");
 const {
   expectedBundleStemForCapture,
   renameBundleToEffectiveFilename,
@@ -207,6 +207,66 @@ describe("bundle filename maintenance", () => {
     expect(
       existsSync(join(workDir, "2026-05-29T18-38-12_terminal_user-override_deadbeef.pwrsnap"))
     ).toBe(true);
+  });
+
+  test("waits for in-flight bundle file operations before renaming", async () => {
+    const captureId = "cap_repack_race";
+    const oldPath = join(workDir, "nanoid-trash.pwrsnap");
+    await writeBundleFixture(oldPath, captureId);
+    insertCapture({
+      id: captureId,
+      bundlePath: oldPath,
+      sourceAppName: "Safari",
+      sha256: "a1b2c3d4".repeat(8)
+    });
+    insertEnrichment({
+      captureId,
+      suggested: "checkout-flow",
+      accepted: null
+    });
+
+    let releaseOperation!: () => void;
+    const operationReleased = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    const inFlightOperation = runExclusiveBundleFileOperation(captureId, async () => {
+      await operationReleased;
+    });
+
+    const renamePromise = renameBundleToEffectiveFilename(captureId);
+    let renameSettled = false;
+    void renamePromise.then(() => {
+      renameSettled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(renameSettled).toBe(false);
+    expect(existsSync(oldPath)).toBe(true);
+    expect(
+      (
+        mocks.db!
+          .prepare("SELECT bundle_path FROM captures WHERE id = ?")
+          .get(captureId) as { bundle_path: string }
+      ).bundle_path
+    ).toBe(oldPath);
+
+    releaseOperation();
+    await inFlightOperation;
+    await expect(renamePromise).resolves.toBe("renamed");
+
+    const expected = join(
+      workDir,
+      "2026-05-29T18-38-12_safari_checkout-flow_a1b2c3d4.pwrsnap"
+    );
+    expect(existsSync(oldPath)).toBe(false);
+    expect(existsSync(expected)).toBe(true);
+    expect(
+      (
+        mocks.db!
+          .prepare("SELECT bundle_path FROM captures WHERE id = ?")
+          .get(captureId) as { bundle_path: string }
+      ).bundle_path
+    ).toBe(expected);
   });
 
   test("repairs a stale DB path when the bundle already has the expected name", async () => {

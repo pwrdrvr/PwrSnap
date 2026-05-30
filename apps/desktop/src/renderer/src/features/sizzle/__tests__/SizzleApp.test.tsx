@@ -129,6 +129,19 @@ function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function projectRowNames(list: Element | null): string[] {
+  return Array.from(list?.querySelectorAll(".szl__row-name") ?? []).map(
+    (el) => el.textContent ?? ""
+  );
+}
+
+function clickProjectRow(list: Element | null, name: string): void {
+  const button = Array.from(list?.querySelectorAll<HTMLButtonElement>(".szl__row") ?? [])
+    .find((row) => row.textContent?.includes(name) === true);
+  if (button === undefined) throw new Error(`project row not found: ${name}`);
+  button.click();
+}
+
 afterEach(async () => {
   await act(async () => {
     root?.unmount();
@@ -244,5 +257,23 @@ describe("SizzleApp project rail", () => {
     expect(projectList?.querySelectorAll(".szl__row")).toHaveLength(100);
     expect(recents?.textContent).toContain("Reel 105");
     expect(recents?.querySelector(".szl__row.is-active")?.textContent).toContain("Reel 105");
+  });
+
+  test("clicking an existing recent project does not reorder Recents", async () => {
+    const { el } = await renderApp(projects(3));
+    const recents = el.querySelector('[data-testid="sizzle-recents-list"]');
+    const projectList = el.querySelector('[data-testid="sizzle-projects-list"]');
+    expect(projectRowNames(recents)).toEqual(["Reel 1"]);
+
+    await act(async () => {
+      clickProjectRow(projectList, "Reel 2");
+    });
+    expect(projectRowNames(recents)).toEqual(["Reel 2", "Reel 1"]);
+
+    await act(async () => {
+      clickProjectRow(recents, "Reel 1");
+    });
+    expect(projectRowNames(recents)).toEqual(["Reel 2", "Reel 1"]);
+    expect(recents?.querySelector(".szl__row.is-active")?.textContent).toContain("Reel 1");
   });
 });

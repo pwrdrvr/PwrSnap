@@ -73,6 +73,11 @@ function isDifferentProjectDate(a: string, b: string): boolean {
   return Math.abs(right.getTime() - left.getTime()) > 1000;
 }
 
+function admitRecentProject(prev: string[], id: string): string[] {
+  if (prev.includes(id)) return prev;
+  return [id, ...prev].slice(0, RECENT_PROJECT_LIMIT);
+}
+
 function mergeProjectPatch(
   p: SizzleProject,
   patch: Partial<Omit<SizzleProject, "id" | "createdAt">>
@@ -98,13 +103,16 @@ export function SizzleApp(): ReactElement {
   // Seed from the hash so a window opened to a specific reel lands on it,
   // not on projects[0]. reloadProjects only defaults to projects[0] when
   // activeId is still null, so this never gets clobbered.
-  const [activeId, setActiveId] = useState<string | null>(readInitialProjectId);
+  const [activeId, setActiveId] = useState<string | null>(() => readInitialProjectId());
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [picker, setPicker] = useState(false);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
-  const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
+  const [recentProjectIds, setRecentProjectIds] = useState<string[]>(() => {
+    const initial = readInitialProjectId();
+    return initial === null ? [] : [initial];
+  });
   // Chat lives in a right sidebar alongside the editor (not a full-pane
   // swap) so the scene list stays visible + updates live as the agent
   // edits. Shown by default — chat is the primary way to compose a reel.
@@ -117,11 +125,7 @@ export function SizzleApp(): ReactElement {
 
   const projectRail = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
-    const recentIds = [
-      ...(activeId !== null ? [activeId] : []),
-      ...recentProjectIds.filter((id) => id !== activeId)
-    ];
-    const recents = recentIds
+    const recents = recentProjectIds
       .map((id) => byId.get(id) ?? null)
       .filter((p): p is SizzleProject => p !== null)
       .slice(0, RECENT_PROJECT_LIMIT);
@@ -132,16 +136,21 @@ export function SizzleApp(): ReactElement {
     return { recents, list, totalProjectCount: projects.length };
   }, [activeId, projects, recentProjectIds]);
 
+  const selectProject = useCallback((id: string): void => {
+    setActiveId(id);
+    setRecentProjectIds((prev) => admitRecentProject(prev, id));
+  }, []);
+
   const reloadProjects = useCallback(async () => {
     const r = await dispatch("sizzle:list", {});
     if (r.ok) {
       setProjects(r.value.projects);
       setLoading(false);
       if (activeId === null && r.value.projects.length > 0) {
-        setActiveId(r.value.projects[0]!.id);
+        selectProject(r.value.projects[0]!.id);
       }
     }
-  }, [activeId]);
+  }, [activeId, selectProject]);
 
   useEffect(() => {
     void reloadProjects();
@@ -177,10 +186,10 @@ export function SizzleApp(): ReactElement {
     const r = await dispatch("sizzle:create", { name: "Untitled Sizzle" });
     if (r.ok) {
       setProjects((prev) => [r.value, ...prev]);
-      setActiveId(r.value.id);
+      selectProject(r.value.id);
       setFocusTitleForId(r.value.id);
     }
-  }, []);
+  }, [selectProject]);
 
   // Per-project debounce timers + pending-patch coalescing. Multiple
   // edits to the same project within DEBOUNCE_MS get merged into one
@@ -287,13 +296,6 @@ export function SizzleApp(): ReactElement {
     });
   }, []);
 
-  useEffect(() => {
-    if (activeId === null) return;
-    setRecentProjectIds((prev) =>
-      [activeId, ...prev.filter((id) => id !== activeId)].slice(0, RECENT_PROJECT_LIMIT)
-    );
-  }, [activeId]);
-
   // Navigate when the user clicks a Sizzle Reel in the Library while this
   // composer window is already open (a new window instead gets the target
   // via the hash — see readInitialProjectId). Without this the click
@@ -303,25 +305,28 @@ export function SizzleApp(): ReactElement {
       if (typeof payload !== "object" || payload === null) return;
       const projectId = (payload as { projectId?: unknown }).projectId;
       if (typeof projectId === "string" && projectId.length > 0) {
-        setActiveId(projectId);
+        selectProject(projectId);
       }
     });
-  }, []);
+  }, [selectProject]);
 
   const onDelete = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this sizzle reel?")) return;
       const r = await dispatch("sizzle:delete", { id });
       if (r.ok) {
-        setProjects((prev) => {
-          const next = prev.filter((p) => p.id !== id);
-          if (activeId === id) setActiveId(next[0]?.id ?? null);
-          return next;
-        });
+        const fallbackId = projects.find((p) => p.id !== id)?.id ?? null;
+        setProjects((prev) => prev.filter((p) => p.id !== id));
         setRecentProjectIds((prev) => prev.filter((recentId) => recentId !== id));
+        if (activeId === id) {
+          setActiveId(fallbackId);
+          if (fallbackId !== null) {
+            setRecentProjectIds((prev) => admitRecentProject(prev, fallbackId));
+          }
+        }
       }
     },
-    [activeId]
+    [activeId, projects]
   );
 
   const onRender = useCallback(async () => {
@@ -448,7 +453,7 @@ export function SizzleApp(): ReactElement {
                   key={p.id}
                   project={p}
                   active={activeId === p.id}
-                  onSelect={() => setActiveId(p.id)}
+                  onSelect={() => selectProject(p.id)}
                 />
               ))
             )}
@@ -475,7 +480,7 @@ export function SizzleApp(): ReactElement {
                   key={p.id}
                   project={p}
                   active={activeId === p.id}
-                  onSelect={() => setActiveId(p.id)}
+                  onSelect={() => selectProject(p.id)}
                 />
               ))
             )}

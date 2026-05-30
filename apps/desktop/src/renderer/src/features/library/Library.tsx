@@ -348,6 +348,14 @@ type PendingOpenCapture = {
   readonly scrollTop: number;
 };
 
+function capturesChangedIds(payload: unknown): string[] | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const raw = (payload as { changedIds?: unknown }).changedIds;
+  if (!Array.isArray(raw)) return null;
+  const ids = raw.filter((id): id is string => typeof id === "string");
+  return ids.length === 0 ? null : ids;
+}
+
 function sameActiveFilter(a: ActiveLibraryFilter, b: ActiveLibraryFilter): boolean {
   if (a.kind !== b.kind) return false;
   return a.kind !== "sourceApp" || b.kind !== "sourceApp" || a.appId === b.appId;
@@ -422,6 +430,10 @@ export function Library() {
     {}
   );
   const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
+  const openedRecordsRef = useRef(openedRecords);
+  useEffect(() => {
+    openedRecordsRef.current = openedRecords;
+  }, [openedRecords]);
   const sourceAppRowsRef = useRef(sourceAppRows);
   useEffect(() => {
     sourceAppRowsRef.current = sourceAppRows;
@@ -748,6 +760,15 @@ export function Library() {
       projects: key === "projects"
     });
   };
+  const ensureRecordTypeVisible = useCallback((record: CaptureRecord): void => {
+    if (record.kind === "image") {
+      setVisibleTypes((prev) => (prev.images ? prev : { ...prev, images: true }));
+      return;
+    }
+    if (record.kind === "video") {
+      setVisibleTypes((prev) => (prev.videos ? prev : { ...prev, videos: true }));
+    }
+  }, []);
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
   const selectedRecordId = view.selectedRecordId;
 
@@ -760,6 +781,10 @@ export function Library() {
     totalLive,
     appStats
   } = useLibrary();
+  const recordsRef = useRef(records);
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
   const storage = useStorageSnapshot();
   const storageLabel =
     storage.snapshot !== null
@@ -894,6 +919,69 @@ export function Library() {
     () => records.filter((r) => r.deleted_at !== null),
     [records]
   );
+
+  const revalidateOpenedRecords = useCallback((changedIds: readonly string[] | null) => {
+    const opened = openedRecordsRef.current;
+    if (opened.length === 0) return;
+    const changedSet = changedIds === null ? null : new Set(changedIds);
+    const ids = opened
+      .filter((record) => changedSet === null || changedSet.has(record.id))
+      .map((record) => record.id);
+    if (ids.length === 0) return;
+
+    void (async () => {
+      const refreshed = await Promise.all(
+        ids.map(async (id) => {
+          const result: Result<Res<"library:byId">, PwrSnapError> = await dispatch(
+            "library:byId",
+            { id }
+          );
+          return { id, result };
+        })
+      );
+      const idSet = new Set(ids);
+      const failedIds = new Set<string>();
+      const liveById = new Map<string, CaptureRecord>();
+      for (const { id, result } of refreshed) {
+        if (!result.ok) {
+          failedIds.add(id);
+          continue;
+        }
+        if (result.value === null || result.value.deleted_at !== null) {
+          continue;
+        }
+        liveById.set(result.value.id, result.value);
+      }
+      setOpenedRecords((prev) => {
+        let changed = false;
+        const next: CaptureRecord[] = [];
+        for (const record of prev) {
+          if (!idSet.has(record.id)) {
+            next.push(record);
+            continue;
+          }
+          if (failedIds.has(record.id)) {
+            next.push(record);
+            continue;
+          }
+          const replacement = liveById.get(record.id);
+          if (replacement === undefined) {
+            changed = true;
+            continue;
+          }
+          next.push(replacement);
+          if (replacement !== record) changed = true;
+        }
+        return changed ? next : prev;
+      });
+    })();
+  }, []);
+
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.capturesChanged, (payload) => {
+      revalidateOpenedRecords(capturesChangedIds(payload));
+    });
+  }, [revalidateOpenedRecords]);
 
   const isTodayView = activeFilter.kind === "today";
   const isTrashView = activeFilter.kind === "trash";
@@ -1612,6 +1700,13 @@ export function Library() {
       const id = (payload as { captureId?: unknown }).captureId;
       if (typeof id !== "string") return;
       const allFilter: ActiveLibraryFilter = { kind: "all" };
+      const knownRecord =
+        recordsRef.current.find((record) => record.id === id) ??
+        openedRecordsRef.current.find((record) => record.id === id) ??
+        null;
+      if (knownRecord !== null && knownRecord.deleted_at === null) {
+        ensureRecordTypeVisible(knownRecord);
+      }
       setPendingOpen({
         captureId: id,
         from: currentHistoryLocation(),
@@ -1628,14 +1723,14 @@ export function Library() {
         );
         if (!result.ok || result.value === null || result.value.deleted_at !== null) return;
         const record = result.value;
-        setOpenedRecords((prev) =>
-          prev.some((existing) => existing.id === record.id)
-            ? prev
-            : [record, ...prev]
-        );
+        ensureRecordTypeVisible(record);
+        setOpenedRecords((prev) => [
+          record,
+          ...prev.filter((existing) => existing.id !== record.id)
+        ]);
       })();
     });
-  }, [currentHistoryLocation]);
+  }, [currentHistoryLocation, ensureRecordTypeVisible]);
   useEffect(() => {
     if (pendingOpen === null) return;
     const record = liveRecords.find((r) => r.id === pendingOpen.captureId);

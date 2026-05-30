@@ -2000,6 +2000,13 @@ export type Commands = {
    *  reordering (1000-step increments) so most reorders touch only
    *  the moving layer. */
   "layers:reorder": { req: { id: string; zIndex: number }; res: void };
+  /** Atomic bulk z-order update. Used by agent tools that rewrite an
+   *  ordered layer list instead of issuing several independent
+   *  reorder calls. */
+  "layers:reorderMany": {
+    req: { orders: { id: string; zIndex: number }[] };
+    res: void;
+  };
   /** Soft-delete a layer. Cascades rejected_at transitively to every
    *  descendant in one transaction — leaving orphaned-but-live
    *  children would render undefined behavior. */

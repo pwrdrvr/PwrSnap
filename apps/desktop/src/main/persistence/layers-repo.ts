@@ -611,6 +611,31 @@ export function setLayerZIndex(id: string, zIndex: number): void {
   tx();
 }
 
+export function setLayerZIndexes(
+  orders: readonly { id: string; zIndex: number }[]
+): string[] {
+  const db = getDb();
+  const captureIds = new Set<string>();
+  const tx = db.transaction(() => {
+    for (const order of orders) {
+      const row = db
+        .prepare<[string], { capture_id: string }>(
+          `SELECT capture_id FROM layers WHERE id = ? AND rejected_at IS NULL`
+        )
+        .get(order.id);
+      if (row === undefined) continue;
+      db.prepare<[number, string]>(`UPDATE layers SET z_index = ? WHERE id = ?`).run(
+        order.zIndex,
+        order.id
+      );
+      captureIds.add(row.capture_id);
+    }
+    for (const captureId of captureIds) bumpEditsVersion(captureId);
+  });
+  tx();
+  return [...captureIds];
+}
+
 /**
  * Soft-delete a layer + transitively cascade rejected_at to every
  * descendant in one transaction. Without the transitive cascade,

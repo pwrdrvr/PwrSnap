@@ -62,9 +62,11 @@ describe("library tool allowlist", () => {
         "draw_parallelogram",
         "redact",
         "blur",
+        "crop",
         "update_layer",
         "delete_layer",
         "reorder_layer",
+        "reorder_layers",
         "add_tag",
         "remove_tag"
       ])

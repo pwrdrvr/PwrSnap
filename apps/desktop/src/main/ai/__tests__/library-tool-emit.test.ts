@@ -42,6 +42,12 @@ function lastUpdatedLayer(): Record<string, unknown> {
   return (call[1] as { layer: Record<string, unknown> }).layer;
 }
 
+function lastCall(name: string): unknown[] {
+  const call = [...dispatch.mock.calls].reverse().find((c) => c[0] === name);
+  if (call === undefined) throw new Error(`${name} was not dispatched`);
+  return call;
+}
+
 beforeEach(() => {
   dispatch.mockReset();
   dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
@@ -121,6 +127,52 @@ describe("draw shape tools emit a valid v2 ShapeOverlay layer", () => {
       expect(BundleLayerNode.safeParse(layer).success).toBe(true);
     });
   }
+});
+
+describe("draw_highlight emits the full highlight style surface", () => {
+  it("passes blend and rotation through to the vector shape", async () => {
+    const res = await toolByName("draw_highlight").dispatch(
+      {
+        capture_id: "cap1",
+        rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.2 },
+        color: "#facc15",
+        opacity: 0.45,
+        blend: "overlay",
+        rotation: 0.25
+      },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(true);
+    const layer = lastUpsertedLayer();
+    expect(layer.kind).toBe("vector");
+    expect(layer.shape).toMatchObject({
+      kind: "highlight",
+      blend: "overlay",
+      rotation: 0.25
+    });
+    expect(BundleLayerNode.safeParse(layer).success).toBe(true);
+  });
+});
+
+describe("blur tool exposes explicit effect modes", () => {
+  it("mode=redact creates an opaque redaction effect", async () => {
+    const res = await toolByName("blur").dispatch(
+      {
+        capture_id: "cap1",
+        rect: { x: 0.1, y: 0.1, w: 0.2, h: 0.1 },
+        mode: "redact"
+      },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(true);
+    const layer = lastUpsertedLayer();
+    expect(layer.kind).toBe("effect");
+    expect((layer.effect as { type: string; style: string; radius_px: number }).style).toBe("redact");
+    expect((layer.effect as { type: string; style: string; radius_px: number }).radius_px).toBe(1);
+    expect(BundleLayerNode.safeParse(layer).success).toBe(true);
+  });
 });
 
 describe("update_layer edits existing layers in place", () => {
@@ -221,6 +273,145 @@ describe("update_layer edits existing layers in place", () => {
     if (res.ok) throw new Error("expected redaction downgrade to be refused");
     expect(res.error).toContain("redaction");
     expect(dispatch.mock.calls.some((call) => call[0] === "layers:update")).toBe(false);
+  });
+
+  it("updates highlight blend and rotation in place", async () => {
+    const now = new Date().toISOString();
+    const existing = {
+      id: "highlight_layer1",
+      parent_id: null,
+      kind: "vector",
+      name: "AI highlight",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1000,
+      source: "codex",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now,
+      shape: {
+        kind: "highlight",
+        rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.2 }
+      }
+    };
+    dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
+      if (name === "layers:list") return { ok: true, value: [existing] };
+      if (name === "layers:update") return { ok: true, value: req.layer };
+      return { ok: true, value: {} };
+    });
+
+    const res = await toolByName("update_layer").dispatch(
+      {
+        capture_id: "cap1",
+        layer_id: "highlight_layer1",
+        blend: "screen",
+        rotation: 0.5
+      },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(true);
+    const updated = lastUpdatedLayer();
+    expect(updated.shape).toMatchObject({ kind: "highlight", blend: "screen", rotation: 0.5 });
+    expect(BundleLayerNode.safeParse(updated).success).toBe(true);
+  });
+});
+
+describe("reorder_layers emits one bulk z-order command", () => {
+  it("maps bottom-to-top ids to gap-based z_index values", async () => {
+    const res = await toolByName("reorder_layers").dispatch(
+      { ordered_layer_ids: ["bottom", "middle", "top"] },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(true);
+    const call = lastCall("layers:reorderMany");
+    expect(call[1]).toEqual({
+      orders: [
+        { id: "bottom", zIndex: 0 },
+        { id: "middle", zIndex: 1000 },
+        { id: "top", zIndex: 2000 }
+      ]
+    });
+  });
+});
+
+describe("crop tool applies viewport crop layer transforms", () => {
+  it("translates raster layers and shrinks the canvas", async () => {
+    const now = new Date().toISOString();
+    const root = {
+      id: "root_layer_0001",
+      parent_id: null,
+      kind: "group",
+      collapsed: false,
+      name: "Root",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now
+    };
+    const raster = {
+      id: "raster_layer_01",
+      parent_id: root.id,
+      kind: "raster",
+      name: "Source",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 0,
+      source: "user",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now,
+      source_ref: { kind: "bundle", path: "sources/source.png" },
+      natural_width_px: 1000,
+      natural_height_px: 800
+    };
+    dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
+      if (name === "library:byId") {
+        return { ok: true, value: { id: req.id, kind: "image", width_px: 1000, height_px: 800 } };
+      }
+      if (name === "layers:list") return { ok: true, value: [root, raster] };
+      if (name === "layers:update") return { ok: true, value: req.layer };
+      if (name === "layers:upsert") return { ok: true, value: req.layer };
+      if (name === "bundle:updateCanvasDimensions") return { ok: true, value: {} };
+      return { ok: true, value: {} };
+    });
+
+    const res = await toolByName("crop").dispatch(
+      { capture_id: "cap1", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 } },
+      { threadId: "t1" }
+    );
+
+    expect(res.ok).toBe(true);
+    const rasterUpdate = dispatch.mock.calls.find(
+      (call) => call[0] === "layers:update" && ((call[1] as { layer: { id: string } }).layer.id === "raster_layer_01")
+    );
+    expect((rasterUpdate?.[1] as { layer: { transform: number[] } }).layer.transform).toEqual([
+      1, 0, 0, 1, -100, -160
+    ]);
+    expect(lastCall("bundle:updateCanvasDimensions")[1]).toMatchObject({
+      captureId: "cap1",
+      widthPx: 500,
+      heightPx: 400
+    });
   });
 });
 

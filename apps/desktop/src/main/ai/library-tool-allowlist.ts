@@ -41,6 +41,9 @@ import {
 import {
   ArrowEndStyle,
   ArrowStemStyle,
+  BlurStyle,
+  HighlightBlendModeSchema,
+  Overlay,
   OverlayThickness,
   ShapeKind
 } from "@pwrsnap/shared/overlay";
@@ -358,7 +361,10 @@ const listLayerCapabilities = defineTool({
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"
       },
       update_tool:
-        "update_layer edits an existing layer in place. Use it for style-only changes like thickness=large/x-large, color, arrow endpoints, text body/weight, shape rect/fill, or blur radius.",
+        "update_layer edits an existing layer in place. Use it for style-only changes like thickness=large/x-large, color, blend, rotation, arrow endpoints, text body/weight, shape rect/fill, or blur mode/radius.",
+      crop: "crop trims the current canvas to a normalized rect while translating existing layers so the crop behaves like the editor's viewport crop.",
+      z_order:
+        "reorder_layers rewrites z-order in one bulk call. ordered_layer_ids is bottom-to-top.",
       thickness:
         "arrow and shape tools accept thickness auto|small|medium|large|x-large or a normalized numeric stroke fraction",
       stoplight_colors: {
@@ -396,6 +402,8 @@ const overlayThickness = OverlayThickness;
 const arrowEndStyle = ArrowEndStyle;
 const arrowStemStyle = ArrowStemStyle;
 const shapeKind = ShapeKind;
+const blurStyle = BlurStyle;
+const highlightBlendMode = HighlightBlendModeSchema;
 const normPoint = z.object({ x: z.number().finite(), y: z.number().finite() });
 const normRect = z.object({
   x: z.number().finite(),
@@ -403,6 +411,10 @@ const normRect = z.object({
   w: z.number().finite().positive(),
   h: z.number().finite().positive()
 });
+const cropRect = normRect.refine(
+  (rect) => rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= 1 && rect.y + rect.h <= 1,
+  "crop rect must stay inside the current canvas"
+);
 
 type BundleLayerNodeValue = z.infer<typeof BundleLayerNode>;
 
@@ -454,7 +466,12 @@ function canvasRectFromNormalized(
 async function upsertEffectRect(
   captureId: string,
   rect: { x: number; y: number; w: number; h: number },
-  effect: { type: "blur"; radius_px: number; style: "redact" | "pixelate" | "gaussian" },
+  effect: {
+    type: "blur";
+    radius_px: number;
+    style: "redact" | "pixelate" | "gaussian";
+    rotation?: number | undefined;
+  },
   name: string
 ): Promise<ToolDispatchResult> {
   const dims = await getCaptureDims(captureId);
@@ -513,7 +530,7 @@ const drawText = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_text",
   description:
-    "Place a text label. `at` is a NORMALIZED anchor point [0,1] — keep labels fully on-canvas so they're readable. `color` is #rrggbb (omit = auto). `size` small|medium|large, `weight` regular|bold.",
+    "Place a text label. `at` is a NORMALIZED anchor point [0,1] — keep labels fully on-canvas so they're readable. `color` is #rrggbb (omit = auto). `size` small|medium|large, `weight` regular|bold. `rotation` is radians clockwise around the anchor.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
@@ -521,7 +538,8 @@ const drawText = defineTool({
     body: z.string().min(1).max(2000),
     color: hexColor.optional(),
     size: z.enum(["small", "medium", "large"]).optional(),
-    weight: z.enum(["regular", "bold"]).optional()
+    weight: z.enum(["regular", "bold"]).optional(),
+    rotation: z.number().finite().optional()
   }),
   dispatch: async (args) =>
     upsertVector(
@@ -532,7 +550,8 @@ const drawText = defineTool({
         body: args.body,
         color: args.color ?? "auto",
         size: args.size ?? "medium",
-        ...(args.weight !== undefined ? { weight: args.weight } : {})
+        ...(args.weight !== undefined ? { weight: args.weight } : {}),
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
       "AI text"
     )
@@ -542,13 +561,15 @@ const drawHighlight = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_highlight",
   description:
-    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default).",
+    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default). `blend` multiply|screen|overlay. `rotation` is radians clockwise around the rect center.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
     color: hexColor.optional(),
-    opacity: z.number().min(0).max(1).optional()
+    opacity: z.number().min(0).max(1).optional(),
+    blend: highlightBlendMode.optional(),
+    rotation: z.number().finite().optional()
   }),
   dispatch: async (args) =>
     upsertVector(
@@ -557,7 +578,9 @@ const drawHighlight = defineTool({
         kind: "highlight",
         rect: args.rect,
         ...(args.color !== undefined ? { color: args.color } : {}),
-        ...(args.opacity !== undefined ? { opacity: args.opacity } : {})
+        ...(args.opacity !== undefined ? { opacity: args.opacity } : {}),
+        ...(args.blend !== undefined ? { blend: args.blend } : {}),
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
       "AI highlight"
     )
@@ -704,25 +727,227 @@ const blur = defineTool({
   namespace: "pwrsnap_library",
   name: "blur",
   description:
-    "Soften a rectangular region — REVERSIBLE (deconvolution can recover it). Use ONLY for non-secret content like a face or a logo; for secrets use `redact` (opaque blackout). `rect` is NORMALIZED [0,1] {x,y,w,h}. `pixelate` true = chunky mosaic, false/omit = gaussian smear. `radius_px` controls strength (default 16).",
+    "Apply a rectangular effect. `mode` gaussian|pixelate|redact; gaussian/pixelate are REVERSIBLE and only for non-secret content, redact is opaque blackout for secrets. Prefer the dedicated `redact` tool for secrets. `rect` is NORMALIZED [0,1] {x,y,w,h}. `pixelate` is a legacy alias for mode. `radius_px` controls gaussian/pixelate strength (default 16). `rotation` is radians clockwise around the rect center.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
+    mode: blurStyle.optional(),
     pixelate: z.boolean().optional(),
-    radius_px: z.number().positive().max(200).optional()
+    radius_px: z.number().positive().max(200).optional(),
+    rotation: z.number().finite().optional()
   }),
-  dispatch: async (args) =>
-    upsertEffectRect(
+  dispatch: async (args) => {
+    const mode = args.mode ?? (args.pixelate === true ? "pixelate" : "gaussian");
+    return upsertEffectRect(
       args.capture_id,
       args.rect,
       {
         type: "blur",
-        radius_px: args.radius_px ?? 16,
-        style: args.pixelate === true ? "pixelate" : "gaussian"
+        radius_px: mode === "redact" ? 1 : (args.radius_px ?? 16),
+        style: mode,
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
-      "AI blur"
-    )
+      mode === "redact" ? "AI redaction" : "AI blur"
+    );
+  }
+});
+
+function inverseTransformOverlayByCrop(
+  overlay: z.infer<typeof Overlay>,
+  rect: { x: number; y: number; w: number; h: number }
+): z.infer<typeof Overlay> | null {
+  if (rect.w <= 0 || rect.h <= 0) return null;
+  const tx = (n: number): number => (n - rect.x) / rect.w;
+  const ty = (n: number): number => (n - rect.y) / rect.h;
+  const sx = (n: number): number => n / rect.w;
+  const sy = (n: number): number => n / rect.h;
+  switch (overlay.kind) {
+    case "arrow":
+      return {
+        ...overlay,
+        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
+        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
+      };
+    case "shape":
+    case "highlight":
+    case "blur":
+      return {
+        ...overlay,
+        rect: {
+          x: tx(overlay.rect.x),
+          y: ty(overlay.rect.y),
+          w: sx(overlay.rect.w),
+          h: sy(overlay.rect.h)
+        }
+      };
+    case "text":
+    case "step":
+      return { ...overlay, point: { x: tx(overlay.point.x), y: ty(overlay.point.y) } };
+    case "crop":
+      return null;
+  }
+}
+
+const cropTool = defineTool({
+  namespace: "pwrsnap_library",
+  name: "crop",
+  description:
+    "Crop the current canvas to a normalized rect inside [0,1]. This is a viewport crop, not destructive: the source raster and existing layers are translated/re-normalized so undo/reset can restore them. Use render_composite first when choosing visual bounds.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: cropRect
+  }),
+  dispatch: async (args) => {
+    const dims = await getCaptureDims(args.capture_id);
+    if (!dims.ok) return { ok: false, error: dims.error };
+    const newWidthPx = Math.max(1, Math.round(args.rect.w * dims.widthPx));
+    const newHeightPx = Math.max(1, Math.round(args.rect.h * dims.heightPx));
+    if (newWidthPx < 32 || newHeightPx < 32) {
+      return {
+        ok: false,
+        error: `crop would shrink the canvas below 32px: ${newWidthPx}x${newHeightPx}`
+      };
+    }
+
+    const listed = await bus.dispatch("layers:list", { captureId: args.capture_id }, { principal: "mcp" });
+    if (!listed.ok) {
+      return { ok: false, error: `${listed.error.kind}/${listed.error.code}: ${listed.error.message}` };
+    }
+
+    const offsetXPx = args.rect.x * dims.widthPx;
+    const offsetYPx = args.rect.y * dims.heightPx;
+    const root = listed.value.find((layer) => layer.kind === "group" && layer.parent_id === null);
+
+    for (const layer of listed.value) {
+      if (layer.kind === "vector") {
+        const transformed = inverseTransformOverlayByCrop(layer.shape, args.rect);
+        if (transformed === null) {
+          // eslint-disable-next-line no-await-in-loop
+          const deleted = await bus.dispatch("layers:delete", { id: layer.id }, { principal: "mcp" });
+          if (!deleted.ok) {
+            return { ok: false, error: `${deleted.error.kind}/${deleted.error.code}: ${deleted.error.message}` };
+          }
+          continue;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const updated = await bus.dispatch(
+          "layers:update",
+          { captureId: args.capture_id, layer: { ...layer, shape: transformed } },
+          { principal: "mcp" }
+        );
+        if (!updated.ok) {
+          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
+        }
+      } else if (layer.kind === "raster" && (offsetXPx !== 0 || offsetYPx !== 0)) {
+        const transform: [number, number, number, number, number, number] = [
+          layer.transform[0],
+          layer.transform[1],
+          layer.transform[2],
+          layer.transform[3],
+          layer.transform[4] - offsetXPx,
+          layer.transform[5] - offsetYPx
+        ];
+        // eslint-disable-next-line no-await-in-loop
+        const updated = await bus.dispatch(
+          "layers:update",
+          { captureId: args.capture_id, layer: { ...layer, transform } },
+          { principal: "mcp" }
+        );
+        if (!updated.ok) {
+          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
+        }
+      } else if (layer.kind === "effect" && layer.clip_rect !== null && (offsetXPx !== 0 || offsetYPx !== 0)) {
+        // eslint-disable-next-line no-await-in-loop
+        const updated = await bus.dispatch(
+          "layers:update",
+          {
+            captureId: args.capture_id,
+            layer: {
+              ...layer,
+              clip_rect: {
+                ...layer.clip_rect,
+                x: layer.clip_rect.x - offsetXPx,
+                y: layer.clip_rect.y - offsetYPx
+              }
+            }
+          },
+          { principal: "mcp" }
+        );
+        if (!updated.ok) {
+          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
+        }
+      }
+    }
+
+    if (root !== undefined) {
+      const cropLayer = {
+        ...commonLayerProps("AI crop"),
+        parent_id: root.id,
+        kind: "vector" as const,
+        shape: { kind: "crop" as const, rect: args.rect }
+      };
+      const parsed = BundleLayerNode.safeParse(cropLayer);
+      if (!parsed.success) {
+        return { ok: false, error: `built an invalid crop layer: ${parsed.error.message}` };
+      }
+      const inserted = await bus.dispatch(
+        "layers:upsert",
+        { captureId: args.capture_id, layer: parsed.data, bumpZIndexToMax: true },
+        { principal: "mcp" }
+      );
+      if (!inserted.ok) {
+        return { ok: false, error: `${inserted.error.kind}/${inserted.error.code}: ${inserted.error.message}` };
+      }
+    }
+
+    const resized = await bus.dispatch(
+      "bundle:updateCanvasDimensions",
+      { captureId: args.capture_id, widthPx: newWidthPx, heightPx: newHeightPx },
+      { principal: "mcp" }
+    );
+    if (!resized.ok) {
+      return { ok: false, error: `${resized.error.kind}/${resized.error.code}: ${resized.error.message}` };
+    }
+    return {
+      ok: true,
+      data: {
+        capture_id: args.capture_id,
+        rect: args.rect,
+        width_px: newWidthPx,
+        height_px: newHeightPx
+      }
+    };
+  }
+});
+
+const reorderLayers = defineTool({
+  namespace: "pwrsnap_library",
+  name: "reorder_layers",
+  description:
+    "Bulk rewrite z-order for a set of layers. `ordered_layer_ids` is bottom-to-top: first paints behind, last paints on top. Use list_layers first and include every layer whose relative order you want to control.",
+  annotations: { idempotentHint: true },
+  argsSchema: z.object({
+    ordered_layer_ids: z.array(z.string()).min(1).max(4096),
+    start_z_index: z.number().int().optional(),
+    gap: z.number().int().positive().max(1_000_000).optional()
+  }),
+  dispatch: async (args) => {
+    const seen = new Set<string>();
+    for (const id of args.ordered_layer_ids) {
+      if (seen.has(id)) return { ok: false, error: `duplicate layer id: ${id}` };
+      seen.add(id);
+    }
+    const start = args.start_z_index ?? 0;
+    const gap = args.gap ?? 1000;
+    return runVerb("layers:reorderMany", {
+      orders: args.ordered_layer_ids.map((id, index) => ({
+        id,
+        zIndex: start + index * gap
+      }))
+    });
+  }
 });
 
 const updateLayerArgsSchema = z.object({
@@ -743,9 +968,11 @@ const updateLayerArgsSchema = z.object({
   filled: z.boolean().optional(),
   rotation: z.number().finite().optional(),
   skew_deg: z.number().finite().optional(),
+  blend: highlightBlendMode.optional(),
   opacity: z.number().min(0).max(1).optional(),
   size: z.enum(["small", "medium", "large"]).optional(),
   weight: z.enum(["regular", "bold"]).optional(),
+  mode: blurStyle.optional(),
   radius_px: z.number().positive().max(200).optional(),
   pixelate: z.boolean().optional()
 });
@@ -782,6 +1009,7 @@ async function applyAgentLayerPatch(
     "body",
     "shape",
     "filled",
+    "blend",
     "opacity",
     "size",
     "weight",
@@ -801,8 +1029,10 @@ async function applyAgentLayerPatch(
     "double_ended",
     "shape",
     "filled",
+    "blend",
     "opacity",
     "skew_deg",
+    "mode",
     "radius_px",
     "pixelate"
   ]);
@@ -818,6 +1048,8 @@ async function applyAgentLayerPatch(
     "opacity",
     "size",
     "weight",
+    "blend",
+    "mode",
     "radius_px",
     "pixelate"
   ]);
@@ -836,6 +1068,7 @@ async function applyAgentLayerPatch(
     "size",
     "weight",
     "skew_deg",
+    "mode",
     "radius_px",
     "pixelate"
   ]);
@@ -883,6 +1116,7 @@ async function applyAgentLayerPatch(
         if (args.rect !== undefined) shape.rect = args.rect;
         if (args.color !== undefined) shape.color = args.color;
         if (args.opacity !== undefined) shape.opacity = args.opacity;
+        if (args.blend !== undefined) shape.blend = args.blend;
         if (args.rotation !== undefined) shape.rotation = args.rotation;
         break;
       default:
@@ -912,7 +1146,8 @@ async function applyAgentLayerPatch(
       "opacity",
       "size",
       "weight",
-      "skew_deg"
+      "skew_deg",
+      "blend"
     ])
   ) {
     return { ok: false, error: "patch fields do not apply to an effect layer" };
@@ -937,15 +1172,16 @@ async function applyAgentLayerPatch(
   const effect = { ...layer.effect };
   if (args.radius_px !== undefined) effect.radius_px = args.radius_px;
   if (args.rotation !== undefined) effect.rotation = args.rotation;
-  if (args.pixelate !== undefined) {
-    if (effect.style === "redact") {
+  const modeUpdate = args.mode ?? (args.pixelate !== undefined ? (args.pixelate ? "pixelate" : "gaussian") : undefined);
+  if (modeUpdate !== undefined) {
+    if (effect.style === "redact" && modeUpdate !== "redact") {
       return {
         ok: false,
         error:
           "cannot change a redaction layer to blur/pixelate; redactions must stay opaque"
       };
     }
-    effect.style = args.pixelate ? "pixelate" : "gaussian";
+    effect.style = modeUpdate;
   }
   return { ok: true, data: { ...layer, clip_rect: clipRect, effect } };
 }
@@ -954,7 +1190,7 @@ const updateLayerTool = defineTool({
   namespace: "pwrsnap_library",
   name: "update_layer",
   description:
-    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), color changes, moving endpoints/rects, text edits, and blur strength. Do NOT delete and redraw just to change style.",
+    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
   annotations: { idempotentHint: true },
   argsSchema: updateLayerArgsSchema,
   dispatch: async (args) => {
@@ -1040,9 +1276,11 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   drawParallelogram,
   redact,
   blur,
+  cropTool,
   updateLayerTool,
   deleteLayer,
   reorderLayer,
+  reorderLayers,
   addTag,
   removeTag
 ] as ToolSpec<unknown>[];

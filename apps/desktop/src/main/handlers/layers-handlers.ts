@@ -21,6 +21,7 @@ import {
   rejectLayer,
   reparent,
   setLayerZIndex,
+  setLayerZIndexes,
   listLayerTree,
   updateLayer
 } from "../persistence/layers-repo";
@@ -198,6 +199,40 @@ export function registerLayersHandlers(): void {
     if (row !== null) {
       broadcastLayersChanged(row);
       scheduleRepack(row);
+    }
+    return ok(undefined);
+  });
+
+  bus.register("layers:reorderMany", async (req) => {
+    if (!Array.isArray(req.orders) || req.orders.length === 0) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: "layers:reorderMany rejected: orders must be a non-empty array"
+      });
+    }
+    const seen = new Set<string>();
+    for (const order of req.orders) {
+      if (seen.has(order.id)) {
+        return err({
+          kind: "validation",
+          code: "schema_mismatch",
+          message: `layers:reorderMany rejected: duplicate layer id ${order.id}`
+        });
+      }
+      seen.add(order.id);
+      if (!Number.isFinite(order.zIndex)) {
+        return err({
+          kind: "validation",
+          code: "schema_mismatch",
+          message: `layers:reorderMany rejected: zIndex must be finite, got ${String(order.zIndex)}`
+        });
+      }
+    }
+    const captureIds = setLayerZIndexes(req.orders);
+    for (const captureId of captureIds) {
+      broadcastLayersChanged(captureId);
+      scheduleRepack(captureId);
     }
     return ok(undefined);
   });

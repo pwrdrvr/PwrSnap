@@ -52,15 +52,28 @@ class FakeClient {
   /** The opts of the most recent startThread — lets tests assert the
    *  Codex config overlay + empty environments (built-in tool
    *  suppression) are forwarded. */
-  lastStartThreadOpts: { config?: Record<string, unknown>; environments?: unknown[] } | null = null;
+  lastStartThreadOpts: {
+    config?: Record<string, unknown>;
+    environments?: unknown[];
+    cwd?: string;
+    runtimeWorkspaceRoots?: string[];
+    serviceName?: string;
+  } | null = null;
+  clearedGitThreadIds: string[] = [];
 
   async startThread(opts?: {
     config?: Record<string, unknown>;
     environments?: unknown[];
+    cwd?: string;
+    runtimeWorkspaceRoots?: string[];
+    serviceName?: string;
   }): Promise<{ threadId: string }> {
     this.lastStartThreadOpts = opts ?? null;
     this.threadSeq += 1;
     return { threadId: `thread-${this.threadSeq}` };
+  }
+  async clearThreadGitInfo(threadId: string): Promise<void> {
+    this.clearedGitThreadIds.push(threadId);
   }
   async startTurn(opts: { input: Array<{ text: string }> }): Promise<{ turnId: string }> {
     this.lastTurnInput = opts.input;
@@ -295,6 +308,20 @@ describe("ChatThreadController thread config (built-in tool suppression)", () =>
     // Codex's env-gated shell / exec / apply_patch tools).
     expect(client.lastStartThreadOpts?.config).toEqual(cfg);
     expect(client.lastStartThreadOpts?.environments).toEqual([]);
+  });
+
+  it("starts Codex threads inside their PwrSnap chat dir and clears Git metadata", async () => {
+    const { client, controller } = build();
+    const view = await controller.createThread({ name: "Sizzle Thread" });
+
+    expect(client.lastStartThreadOpts?.cwd).toMatch(
+      /\/Chats\/\d{4}-\d{2}-\d{2}-\d{3}-sizzle-thread$/
+    );
+    expect(client.lastStartThreadOpts?.runtimeWorkspaceRoots).toEqual([
+      client.lastStartThreadOpts?.cwd
+    ]);
+    expect(client.lastStartThreadOpts?.serviceName).toBe("pwrsnap");
+    expect(client.clearedGitThreadIds).toEqual([view.threadId]);
   });
 });
 

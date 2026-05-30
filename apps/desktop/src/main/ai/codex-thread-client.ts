@@ -38,6 +38,8 @@ export type CodexStartThreadOptions = {
   baseInstructions?: string;
   dynamicTools?: DynamicToolSpec[];
   cwd?: string;
+  runtimeWorkspaceRoots?: string[];
+  serviceName?: string;
   personality?: string;
   /** Per-thread Codex config overlay (the `-c key=value` mechanism).
    *  We use it to set `web_search = "disabled"` (default is "cached" =
@@ -145,6 +147,12 @@ export class CodexThreadClient {
     if (opts.cwd !== undefined) {
       params.cwd = opts.cwd;
     }
+    if (opts.runtimeWorkspaceRoots !== undefined) {
+      params.runtimeWorkspaceRoots = opts.runtimeWorkspaceRoots;
+    }
+    if (opts.serviceName !== undefined) {
+      params.serviceName = opts.serviceName;
+    }
     if (opts.approvalPolicy !== undefined) {
       params.approvalPolicy = opts.approvalPolicy as AskForApproval;
     }
@@ -175,6 +183,19 @@ export class CodexThreadClient {
     const threadId = response.thread.id;
     codexThreadClientLog.debug("thread started", { threadId });
     return { threadId };
+  }
+
+  async clearThreadGitInfo(threadId: string): Promise<void> {
+    const connection = await this.getConnection();
+    await this.initialize();
+    await connection.request(
+      "thread/metadata/update",
+      {
+        threadId,
+        gitInfo: { sha: null, branch: null, originUrl: null }
+      },
+      this.requestTimeoutMs
+    );
   }
 
   async startTurn(opts: CodexStartTurnOptions): Promise<{ turnId: string }> {

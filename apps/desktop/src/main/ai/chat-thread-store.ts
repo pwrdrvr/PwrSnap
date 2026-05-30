@@ -64,6 +64,11 @@ export type ChatThreadStoreConfig = {
   logger?: Logger;
 };
 
+export type PreparedChatThreadDir = {
+  dirName: string;
+  path: string;
+};
+
 /** Shape of one `chat_threads` row as read back from SQLite. */
 type ChatThreadRow = {
   thread_id: string;
@@ -126,14 +131,11 @@ export class ChatThreadStore {
     threadId: string;
     name: string;
     anchorCaptureId?: string | null;
+    preparedDir?: PreparedChatThreadDir;
   }): Promise<ChatThreadSidecar> {
     this.ensureImported();
-    await this.ensureMetadataNeverIndex();
+    const preparedDir = opts.preparedDir ?? (await this.prepareThreadDir(opts.name));
     const now = new Date().toISOString();
-    const dirName = await this.mintThreadDir(opts.name, now);
-    // The thread dir holds the journal + attachments; create the
-    // attachments dir now so both exist on disk immediately.
-    await mkdir(join(this.chatsDir, dirName, ATTACHMENTS_DIR), { recursive: true });
     const anchorCaptureId = opts.anchorCaptureId ?? null;
     this.db()
       .prepare(
@@ -141,8 +143,30 @@ export class ChatThreadStore {
            (thread_id, dir_name, name, anchor_capture_id, archived, pinned, focus_history, created_at, modified_at, schema_version)
          VALUES (?, ?, ?, ?, 0, 0, '[]', ?, ?, 1)`
       )
-      .run(opts.threadId, dirName, opts.name, anchorCaptureId, now, now);
+      .run(opts.threadId, preparedDir.dirName, opts.name, anchorCaptureId, now, now);
     return rowToSidecar(this.selectRowOrThrow(opts.threadId));
+  }
+
+  /**
+   * Create the on-disk chat dir before Codex `thread/start`, so callers can
+   * pass the final thread workspace as Codex's cwd instead of inheriting the
+   * Electron/dev process cwd.
+   */
+  async prepareThreadDir(name: string): Promise<PreparedChatThreadDir> {
+    this.ensureImported();
+    await this.ensureMetadataNeverIndex();
+    const dirName = await this.mintThreadDir(name, new Date().toISOString());
+    const path = join(this.chatsDir, dirName);
+    await mkdir(join(path, ATTACHMENTS_DIR), { recursive: true });
+    return { dirName, path };
+  }
+
+  /**
+   * Best-effort cleanup for a prepared dir whose Codex thread failed to
+   * start. Once a row exists, use delete(threadId) instead.
+   */
+  async discardPreparedThreadDir(preparedDir: PreparedChatThreadDir): Promise<void> {
+    await rm(preparedDir.path, { recursive: true, force: true });
   }
 
   /**

@@ -114,6 +114,22 @@ function installHostApi(): {
   window.pwrsnapApi = {
     dispatch: vi.fn(async (name: string) => {
       if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+      if (name === "settings:refreshCodexDiscovery") {
+        return {
+          ok: true,
+          value: {
+            candidates: [{ path: "codex", source: "path", version: "1.0.0", available: true }],
+            resolvedPath: "codex",
+            auth: {
+              status: "authenticated",
+              testedAt: "2026-05-19T12:00:00.000Z",
+              durationMs: 12,
+              detail: "Logged in using ChatGPT"
+            },
+            refreshedAt: "2026-05-19T12:00:00.000Z"
+          }
+        };
+      }
       return { ok: true, value: undefined };
     }),
     on: (channel: string, handler: EventHandler) => {
@@ -277,6 +293,68 @@ describe("FloatOverHost", () => {
 });
 
 describe("FloatOver Codex suggestions", () => {
+  test("shows Configure AI instead of Enable when no Codex binary is available", async () => {
+    const onConfigureAi = vi.fn();
+    const onEnableAi = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      codexAvailable: false,
+      aiEnabled: false,
+      aiConsentAccepted: false,
+      onConfigureAi,
+      onEnableAi
+    });
+
+    const configure = Array.from(el.querySelectorAll("button")).find(
+      (button) => button.textContent === "Configure AI"
+    );
+    expect(configure).toBeDefined();
+    expect(el.textContent).not.toContain("Let Codex read new snaps?");
+
+    await act(async () => {
+      configure?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onConfigureAi).toHaveBeenCalledTimes(1);
+    expect(onEnableAi).not.toHaveBeenCalled();
+  });
+
+  test("first-time Enable shows consent copy before enabling Codex", async () => {
+    const onEnableAi = vi.fn();
+    const el = await renderFloatOver({
+      src: "data:image/png;base64,",
+      startCountdown: false,
+      aiEnabled: false,
+      aiConsentAccepted: false,
+      onEnableAi
+    });
+
+    const enable = Array.from(el.querySelectorAll("button")).find(
+      (button) => button.textContent === "Enable"
+    );
+    expect(enable).toBeDefined();
+
+    await act(async () => {
+      enable?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onEnableAi).not.toHaveBeenCalled();
+    expect(el.textContent).toContain("Let Codex read new snaps?");
+    expect(el.textContent).toContain("downsampled copy");
+
+    const accept = Array.from(el.querySelectorAll("button")).find(
+      (button) => button.textContent === "Enable Codex"
+    );
+    expect(accept).toBeDefined();
+
+    await act(async () => {
+      accept?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onEnableAi).toHaveBeenCalledTimes(1);
+  });
+
   test("previews Codex suggested description in the description field", async () => {
     const onAcceptDescription = vi.fn();
     const el = await renderFloatOver({

@@ -3,6 +3,7 @@ import type { CaptureEnrichment } from "@pwrsnap/shared";
 import { PwrSnapMark } from "../shared/BrandMark";
 import { CopyButton, presetMetrics, type CopyPreset } from "../shared/CopyButton";
 import { CodexStatusPill } from "../shared/CodexStatusPill";
+import { AiConsentDialog } from "../shared/AiConsentDialog";
 import { useFieldEditor } from "../shared/useFieldEditor";
 import { HoverAutoplayVideo } from "../shared/HoverAutoplayVideo";
 import type { PresetMetricMap } from "../shared/usePresetRenderMetrics";
@@ -171,10 +172,12 @@ export function FloatOver({
   initialDescription = "",
   initialTags = [],
   enrichment,
+  codexAvailable = true,
   aiEnabled = false,
   aiConsentAccepted = false,
   autoAcceptSuggestions = false,
   onEnableAi,
+  onConfigureAi,
   onSetAutoAccept,
   onAcceptTitle,
   onAcceptDescription,
@@ -216,6 +219,7 @@ export function FloatOver({
   initialDescription?: string;
   initialTags?: string[];
   enrichment?: CaptureEnrichment | null;
+  codexAvailable?: boolean;
   aiEnabled?: boolean;
   aiConsentAccepted?: boolean;
   /** Mirrors `settings.ai.autoAcceptSuggestions`. When true, the
@@ -224,6 +228,7 @@ export function FloatOver({
    *  moment the enrichment completes. */
   autoAcceptSuggestions?: boolean;
   onEnableAi?: () => void;
+  onConfigureAi?: () => void;
   /** Persist a flip of the auto-accept toggle. Wired to a
    *  `settings:write` dispatch in the host so the change survives
    *  the toast closing and applies to subsequent captures. */
@@ -247,6 +252,7 @@ export function FloatOver({
       .map((tag) => ({ id: tag.id!, label: tag.label })) ?? [];
   const thinking = aiStatus === "queued" || aiStatus === "running";
   const aiFailed = aiStatus === "failed";
+  const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
   // Derived "has unaccepted drafts" — replaces the one-shot `aiAccepted`
   // flag for the Use-button visibility. Necessary because main-side
   // auto-accept lands acceptedTitle/acceptedDescription without the
@@ -727,8 +733,21 @@ export function FloatOver({
             needsConsent={aiNeedsConsent}
             action={
               !thinking && !aiFailed ? (
-                suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
-                  <button className="fo__ai-accept" onClick={() => onEnableAi?.()}>
+                suggestedTitle.length === 0 && suggestedDescription.length === 0 && !codexAvailable ? (
+                  <button className="fo__ai-accept" onClick={() => onConfigureAi?.()}>
+                    Configure AI
+                  </button>
+                ) : suggestedTitle.length === 0 && suggestedDescription.length === 0 && aiNeedsConsent ? (
+                  <button
+                    className="fo__ai-accept"
+                    onClick={() => {
+                      if (aiConsentAccepted) {
+                        onEnableAi?.();
+                        return;
+                      }
+                      setAiConsentDialogOpen(true);
+                    }}
+                  >
                     Enable
                   </button>
                 ) : hasUnacceptedDrafts ? (
@@ -775,6 +794,16 @@ export function FloatOver({
           ) : null}
         </div>
       )}
+
+      {aiConsentDialogOpen ? (
+        <AiConsentDialog
+          onCancel={() => setAiConsentDialogOpen(false)}
+          onAccept={() => {
+            setAiConsentDialogOpen(false);
+            onEnableAi?.();
+          }}
+        />
+      ) : null}
 
       {cfg.showFooter && (
         <div className="fo__foot">

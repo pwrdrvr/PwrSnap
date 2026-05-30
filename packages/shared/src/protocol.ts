@@ -705,12 +705,28 @@ export type DesktopCodexDiscoveryCandidate = {
   available: boolean;
 };
 
+export type DesktopCodexAuthStatus =
+  | "authenticated"
+  | "unauthenticated"
+  | "failed";
+
+export type DesktopCodexAuthProbe = {
+  status: DesktopCodexAuthStatus;
+  testedAt: string;
+  durationMs: number;
+  detail?: string;
+  errorMessage?: string;
+};
+
 export type DesktopCodexDiscoverySnapshot = {
   candidates: DesktopCodexDiscoveryCandidate[];
   /** The path that `resolveCodexCommand` will pick for the next spawn,
    *  or `null` if none is usable. Renderers compare to `candidate.path`
    *  to draw the "Using" badge. */
   resolvedPath: string | null;
+  /** Auth readiness for `resolvedPath`, from `codex login status`.
+   *  `null` means no usable Codex binary resolved. */
+  auth: DesktopCodexAuthProbe | null;
   /** ISO-8601 timestamp of when this snapshot was produced. */
   refreshedAt: string;
 };

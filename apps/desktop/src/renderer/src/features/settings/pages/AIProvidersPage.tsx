@@ -179,14 +179,16 @@ export function AIProvidersPage(): ReactElement {
           <OptionRow
             icon="~"
             primary="System default"
-            sub="~/.codex"
+            sub={codexAuthSubLine(snapshot, snapshotLoading)}
             using={true}
             badges={
               <>
                 <span className="pss__badge">default</span>
                 <span className="pss__badge">auth</span>
                 <span className="pss__badge">config</span>
-                <span className="pss__badge is-using">Using</span>
+                <span className={"pss__badge " + codexAuthBadgeClass(snapshot)}>
+                  {codexAuthBadgeLabel(snapshot, snapshotLoading)}
+                </span>
               </>
             }
           />
@@ -594,6 +596,47 @@ export function formatLastSetAt(iso: string | null): string {
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day} day${day === 1 ? "" : "s"} ago`;
   return new Date(then).toISOString().slice(0, 10);
+}
+
+function codexAuthBadgeLabel(
+  snapshot: DesktopCodexDiscoverySnapshot | null,
+  loading: boolean
+): string {
+  if (loading && snapshot === null) return "Checking";
+  if (snapshot?.resolvedPath === null) return "No Codex";
+  switch (snapshot?.auth?.status) {
+    case "authenticated": return "Signed in";
+    case "unauthenticated": return "Sign in";
+    case "failed": return "Check failed";
+    case undefined: return "Unknown";
+  }
+}
+
+function codexAuthBadgeClass(snapshot: DesktopCodexDiscoverySnapshot | null): string {
+  switch (snapshot?.auth?.status) {
+    case "authenticated": return "is-using";
+    case "unauthenticated":
+    case "failed": return "is-accent";
+    case undefined: return "";
+  }
+}
+
+function codexAuthSubLine(
+  snapshot: DesktopCodexDiscoverySnapshot | null,
+  loading: boolean
+): string {
+  if (loading && snapshot === null) return "Checking Codex auth…";
+  if (snapshot?.resolvedPath === null) return "No Codex binary resolved.";
+  if (snapshot?.auth?.status === "authenticated") {
+    return snapshot.auth.detail ?? "~/.codex";
+  }
+  if (snapshot?.auth?.status === "unauthenticated") {
+    return "Codex is installed but not signed in. Run codex login or sign in through Codex Desktop.";
+  }
+  if (snapshot?.auth?.status === "failed") {
+    return snapshot.auth.errorMessage ?? "Codex auth check failed.";
+  }
+  return "~/.codex";
 }
 
 export function codexTestBadgeLabel(

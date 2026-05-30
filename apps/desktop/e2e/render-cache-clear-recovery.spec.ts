@@ -96,7 +96,7 @@ async function seedBundleCapture(
               tempPath: string;
               sourceApp: { bundleId: string | null; appName: string | null } | null;
               outputDir?: string;
-            }) => Promise<{ record: { id: string }; isDedup: boolean }>;
+            }) => Promise<{ record: { id: string } }>;
             getCacheSourcePathFor: (id: string) => string;
           };
         }

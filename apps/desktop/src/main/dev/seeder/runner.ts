@@ -613,14 +613,6 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
       measurement.write({ type: "error", message: `ingest row ${row.index}: ${result.error.message}` });
       throw new Error(`capture:ingest failed at row ${row.index}: ${result.error.message}`);
     }
-    // sha256 collision = generator bug. Fail loud so EXPLAIN/curve
-    // tests don't pass on a row-short DB.
-    if (!result.value.isNew) {
-      throw new Error(
-        `sha256 collision at row ${row.index} (bundleId=${row.bundleId}). ` +
-          `PNG generator must produce per-row unique bytes — see indexToColor.`
-      );
-    }
 
     // Enqueue thumb render. await blocks if the queue is full
     // (backpressure: the insert loop pauses if sharp can't keep up,
@@ -628,7 +620,7 @@ export async function runProfile(name: ProfileName, options: RunOptions = {}): P
     await thumbQueue.enqueue({
       captureId: result.value.record.id,
       // Perf seeder uses the legacy capture-flow (putCaptureSource +
-      // insertOrFindCapture) — synthesized rows always have
+      // insertCapture) — synthesized rows always have
       // legacy_src_path populated. Bundle-flow captures (live ⌘⇧P)
       // route through persistCaptureFromTempV2 and use bundle_path
       // instead.

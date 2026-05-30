@@ -43,8 +43,9 @@ export type StoredSource = {
  * captured_at — the file system is asked only "give me this exact
  * path", not "list everything from May 2026."
  *
- * Returns the immutable storage record. Hashes via SHA-256 — caller
- * uses the hash for dedup against existing rows.
+ * Returns the immutable storage record. Hashes via SHA-256 so the
+ * row carries a content-addressable identifier; identical bytes are
+ * allowed to coexist as separate captures (see migration 0021).
  *
  * Uses sharp to read width/height in one pass while we already have
  * the buffer in flight; this saves a second decode in the capture hot

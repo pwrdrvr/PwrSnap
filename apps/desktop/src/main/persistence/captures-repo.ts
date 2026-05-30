@@ -7,8 +7,8 @@
 //   SUM(app_stats.count) == COUNT(captures WHERE deleted_at IS NULL)
 //
 // To keep the invariant intact:
-//   - insertOrFindCapture wraps INSERT … ON CONFLICT(sha256) DO NOTHING
-//     RETURNING * + bumpAppStat(+1) in a single db.transaction().
+//   - insertCapture wraps INSERT + bumpAppStat(+1) in a single
+//     db.transaction().
 //   - softDeleteCapture wraps the UPDATE + bumpAppStat(-1) in a
 //     transaction.
 //   - hardDeleteCapture is defensive — reads `(deleted_at, bundle_id)`
@@ -113,33 +113,28 @@ export type InsertCapture = {
 };
 
 /**
- * Insert a new capture row. If a row with the same `sha256` already
- * exists (UNIQUE constraint), returns the existing record instead —
- * dedup by content hash. The bundle / paired-PNG / legacy source files
- * should already be on disk before this is called; bundle_path /
- * flat_png_path / legacy_src_path columns point at them.
- *
- * Implementation: `INSERT … ON CONFLICT(sha256) DO NOTHING RETURNING *`
- * collapses the existing-row check + insert into a single round trip.
- * When the conflict path fires, RETURNING produces no row, and we
- * re-fetch the existing row by sha256.
+ * Insert a new capture row. The bundle / paired-PNG / legacy source
+ * files should already be on disk before this is called; bundle_path
+ * / flat_png_path / legacy_src_path columns point at them.
  *
  * Wrapped in `db.transaction()` with `bumpAppStat(+1)` so the
  * `SUM(app_stats.count) == COUNT(live captures)` invariant cannot
  * drift on partial failure.
+ *
+ * Note: identical bytes — same sha256 — are allowed to coexist as
+ * separate captures. See migration 0021. A user pasting the same
+ * image five times to edit each differently is a valid workflow;
+ * dedup-by-source-hash was removed because it broke that flow.
  */
-export function insertOrFindCapture(input: InsertCapture): {
-  record: CaptureRecord;
-  isNew: boolean;
-} {
+export function insertCapture(input: InsertCapture): { record: CaptureRecord } {
   const db = getDb();
-  return db.transaction(() => insertOrFindCaptureInTx(db, input))();
+  return db.transaction(() => insertCaptureInTx(db, input))();
 }
 
 /**
- * Bulk variant of `insertOrFindCapture`. Runs every insert inside a
- * single SQLite transaction so the chain pays ONE commit + fsync
- * instead of N (better-sqlite3 commits per `db.transaction()`).
+ * Bulk variant of `insertCapture`. Runs every insert inside a single
+ * SQLite transaction so the chain pays ONE commit + fsync instead of
+ * N (better-sqlite3 commits per `db.transaction()`).
  *
  * Only used by the E2E test bridge today — the production capture
  * flow ingests captures one-at-a-time as the user fires them. If a
@@ -147,17 +142,17 @@ export function insertOrFindCapture(input: InsertCapture): {
  * should call this directly rather than looping over the single
  * variant.
  */
-export function insertOrFindCapturesBatch(
+export function insertCapturesBatch(
   inputs: InsertCapture[]
-): Array<{ record: CaptureRecord; isNew: boolean }> {
+): Array<{ record: CaptureRecord }> {
   const db = getDb();
-  return db.transaction(() => inputs.map((input) => insertOrFindCaptureInTx(db, input)))();
+  return db.transaction(() => inputs.map((input) => insertCaptureInTx(db, input)))();
 }
 
-function insertOrFindCaptureInTx(
+function insertCaptureInTx(
   db: ReturnType<typeof getDb>,
   input: InsertCapture
-): { record: CaptureRecord; isNew: boolean } {
+): { record: CaptureRecord } {
   // Bundle columns are optional on InsertCapture (legacy-data path uses
   // legacy_src_path only). Normalize undefined → null/0 before binding
   // so the prepared statement always sees a value for every @-param.
@@ -192,37 +187,12 @@ function insertOrFindCaptureInTx(
         @width_px, @height_px, @device_pixel_ratio,
         @byte_size, @sha256, 0, NULL
       )
-      ON CONFLICT(sha256) DO NOTHING
       RETURNING *`
     )
-    .get(params) as CaptureRow | undefined;
+    .get(params) as CaptureRow;
 
-  if (inserted !== undefined) {
-    bumpAppStat(input.source_app_bundle_id, +1);
-    return { record: rowToRecord(inserted), isNew: true };
-  }
-  // Dedup path: a row with this sha256 already exists. Surface it
-  // unchanged; do NOT bump app_stats (the existing row is already
-  // counted).
-  const existing = db
-    .prepare("SELECT * FROM captures WHERE sha256 = ?")
-    .get(input.sha256) as CaptureRow;
-  return { record: rowToRecord(existing), isNew: false };
-}
-
-/**
- * Look up a capture by sha256. Used by the bundle-flow capture
- * orchestrator to dedup BEFORE packing a bundle: identical pixels
- * produce one bundle, not two. The existing `sha256 UNIQUE`
- * constraint is the safety net; this lookup is the optimization
- * that avoids wasted pack/write work.
- */
-export function findCaptureBySha256(sha256: string): CaptureRecord | null {
-  const db = getDb();
-  const row = db.prepare("SELECT * FROM captures WHERE sha256 = ?").get(sha256) as
-    | CaptureRow
-    | undefined;
-  return row ? rowToRecord(row) : null;
+  bumpAppStat(input.source_app_bundle_id, +1);
+  return { record: rowToRecord(inserted) };
 }
 
 /**
@@ -768,7 +738,7 @@ export function hardDeleteCapture(id: string): void {
  * another `db.transaction()` so it composes safely with the captures
  * mutation that triggered it.
  *
- * Module-private — callers go through `insertOrFindCapture` /
+ * Module-private — callers go through `insertCapture` /
  * `softDeleteCapture` / `hardDeleteCapture`.
  */
 function bumpAppStat(bundleId: string | null, delta: number): void {

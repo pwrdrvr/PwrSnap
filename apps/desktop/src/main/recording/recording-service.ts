@@ -25,7 +25,7 @@ import { getMainLogger } from "../log";
 import { setFloatOverState } from "../float-over";
 import { broadcastCapturesChanged } from "../events";
 import { maybeEnqueueCaptureEnrichment } from "../handlers/codex-handlers";
-import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
+import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import {
   adoptExistingFileAsSource,
   statSource
@@ -349,7 +349,7 @@ class NativeRecorderService implements RecordingService {
     const sourceAppName =
       subject.kind === "window" ? subject.appName ?? null : null;
 
-    const { record, isNew } = insertOrFindCapture({
+    const { record } = insertCapture({
       id: stored.id,
       kind: "video",
       captured_at: new Date().toISOString(),
@@ -372,7 +372,7 @@ class NativeRecorderService implements RecordingService {
     });
 
     // Re-read through getCaptureById so the record we ship to the
-    // float-over has `record.video` populated. `insertOrFindCapture`
+    // float-over has `record.video` populated. `insertCapture`
     // returns a bare row (rowToRecord defaults video to null), and
     // FloatOverHost's `record.video !== null` branch falls through
     // to the image FloatOver when null — silently producing the
@@ -382,9 +382,7 @@ class NativeRecorderService implements RecordingService {
     broadcastCapturesChanged([record.id]);
     setFloatOverState({ kind: "show-loaded", captureId: record.id, record: hydrated });
     setRecordingState({ phase: "ready", sessionId, captureId: record.id });
-    if (isNew) {
-      maybeEnqueueCaptureEnrichment(record.id);
-    }
+    maybeEnqueueCaptureEnrichment(record.id);
     // Best-effort system notification — not every platform / build
     // supports Notification.isSupported(), so fail open if it
     // doesn't. Mirrors the existing post-capture toast pattern.

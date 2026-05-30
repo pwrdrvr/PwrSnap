@@ -12,9 +12,9 @@
 // any extraction.
 //
 // Phase 1 lands the security primitives + atomic-rename helper here.
-// The yazl/yauzl integration (pack/unpack), sha256 dedup pre-check,
-// and scheduleRepack debounce land in the follow-up commit alongside
-// the capture-flow rewire.
+// The yazl/yauzl integration (pack/unpack) and scheduleRepack
+// debounce land in the follow-up commit alongside the capture-flow
+// rewire.
 //
 // See docs/plans/2026-05-07-001-feat-pwrsnap-bundle-storage-plan.md.
 
@@ -43,9 +43,8 @@ import {
   runCompositeThumbnailWorker
 } from "../workers/composite-thumbnail-worker-client";
 import {
-  findCaptureBySha256,
   getCaptureById,
-  insertOrFindCapture,
+  insertCapture,
   updateCaptureBundleAfterRepack
 } from "./captures-repo";
 import { getCacheSourcePath, getCapturesRoot, getTrashRoot } from "./paths";
@@ -577,7 +576,6 @@ export type PersistCaptureFromTempArgs = {
 
 export type PersistCaptureFromTempResult = {
   record: CaptureRecord;
-  isDedup: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -670,10 +668,13 @@ function basename(p: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Read a screencapture-CLI temp file, dedup by sha256, and (on miss)
- * pack a v2 `.pwrsnap` bundle + paired flat PNG. Inserts the capture
- * row at `bundle_format_version = 2` and seeds the `layers` table
- * with a root group + a raster layer pointing at the single source.
+ * Read a screencapture-CLI temp file, pack a v2 `.pwrsnap` bundle.
+ * Inserts the capture row at `bundle_format_version = 2` and seeds
+ * the `layers` table with a root group + a raster layer pointing at
+ * the single source.
+ *
+ * Identical pixels produce TWO captures — pasting the same image
+ * five times to edit each differently is a valid workflow.
  *
  * Initial v2 document has the canvas == source dimensions and one
  * raster at identity transform — visually indistinguishable from the
@@ -689,17 +690,6 @@ export async function persistCaptureFromTempV2(
 
   const buf = await readFile(args.tempPath);
   const sha256 = createHash("sha256").update(buf).digest("hex");
-
-  const existing = findCaptureBySha256(sha256);
-  if (existing !== null && existing.deleted_at === null) {
-    log.info("bundle-store v2: dedup hit on capture", { id: existing.id, sha256 });
-    try {
-      await unlink(args.tempPath);
-    } catch {
-      // best-effort
-    }
-    return { record: existing, isDedup: true };
-  }
 
   const id = nanoid(16);
   const meta = await sharp(buf).metadata();
@@ -806,7 +796,7 @@ export async function persistCaptureFromTempV2(
     // best-effort
   }
 
-  const { record } = insertOrFindCapture({
+  const { record } = insertCapture({
     id,
     kind: "image",
     captured_at: now,
@@ -838,7 +828,7 @@ export async function persistCaptureFromTempV2(
     heightPx
   });
 
-  return { record, isDedup: false };
+  return { record };
 }
 
 // ---------------------------------------------------------------------------

@@ -54,8 +54,8 @@ async function makeFixturePng(
 
   // Solid color image — sharp's `create` factory produces a real PNG
   // sized to whatever we ask for. Constant fill keeps the sha256
-  // deterministic so we don't trip the captures.sha256 UNIQUE
-  // constraint when the spec re-runs in the same DB.
+  // deterministic across re-runs; that's fine because the captures
+  // table no longer dedupes by sha256 (migration 0021).
   const buf = await sharp({
     create: {
       width: widthPx,
@@ -68,9 +68,9 @@ async function makeFixturePng(
     .toBuffer();
 
   await writeFile(pngPath, buf);
-  // sha256 isn't critical for the test — we just need a UNIQUE-safe
-  // value for the captures table. Use the file size + dims as a
-  // pseudo-hash; collision probability across one test run is zero.
+  // sha256 isn't critical for the test — captures no longer dedupes
+  // by sha256, so any string is fine. Use the file size + dims as a
+  // pseudo-hash for human-readable logging.
   const sha256 = `clipboard-spec-${widthPx}x${heightPx}-${buf.length}`;
   return { pngPath, sha256 };
 }

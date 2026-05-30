@@ -10,7 +10,7 @@
 //      a temp PNG.
 //   3. putCaptureSource() — moves to ~/Documents/PwrSnap/<id>.png,
 //      hashes, returns metadata.
-//   4. insertOrFindCapture() — INSERT (or dedup-return if sha256 hit).
+//   4. insertCapture() — INSERT.
 //   5. webContents.send 'events:captures:changed' — library + float-over
 //      refetch.
 //
@@ -55,7 +55,7 @@ import { setFloatOverState } from "../float-over";
 import { hideTrayPopoverIfVisible, setTrayCountdown } from "../tray";
 import { findMainLibraryWindow, reclaimDockIconIfLibraryAlive } from "../window";
 import { maybeEnqueueCaptureEnrichment } from "./codex-handlers";
-import { getCaptureById, insertOrFindCapture } from "../persistence/captures-repo";
+import { getCaptureById, insertCapture } from "../persistence/captures-repo";
 import { ensureEffectiveSrcPath, putCaptureSource } from "../persistence/source-store";
 import { persistCaptureFromTempV2 } from "../persistence/bundle-store";
 import { getMainLogger } from "../log";
@@ -619,7 +619,7 @@ export function registerCaptureHandlers(): void {
     bus.register("capture:ingest", async (req) => {
       try {
         const stored = await putCaptureSource(req.tempPngPath);
-        const { record, isNew } = insertOrFindCapture({
+        const { record } = insertCapture({
           id: stored.id,
           kind: "image",
           captured_at: req.capturedAt,
@@ -633,7 +633,7 @@ export function registerCaptureHandlers(): void {
           sha256: stored.sha256
         });
         broadcastCapturesChanged([record.id]);
-        return ok({ record, isNew });
+        return ok({ record, isNew: true });
       } catch (cause) {
         return err({
           kind: "capture",
@@ -927,7 +927,7 @@ async function persistAndBroadcast(
   // devicePixelRatio threads through so PR #48's clipboard-paste
   // flow (which passes 1, since pasted bytes aren't from a physical
   // display) doesn't get hardcoded to 2.
-  const { record, isDedup } = await persistCaptureFromTempV2({
+  const { record } = await persistCaptureFromTempV2({
     tempPath,
     sourceApp:
       sourceApp === null
@@ -938,18 +938,16 @@ async function persistAndBroadcast(
 
   log.info("capture persisted", {
     captureId: record.id,
-    isDedup,
     bundleFormatVersion: record.bundle_format_version,
     sourceAppBundleId: record.source_app_bundle_id,
     sourceAppName: record.source_app_name
   });
   broadcastCapturesChanged([record.id]);
-  if (!isDedup) {
-    // PR #30's Codex enrichment fires once per new capture.
-    // isDedup=true means sha256 matched an existing row; the
-    // `!isDedup` guard is the bundle-flow equivalent of isNew.
-    maybeEnqueueCaptureEnrichment(record.id);
-  }
+  // PR #30's Codex enrichment fires once per new capture. Every
+  // capture flowing through persistCaptureFromTempV2 is brand new —
+  // dedup was removed (migration 0021) so there's no "this is the
+  // same row again" branch to skip.
+  maybeEnqueueCaptureEnrichment(record.id);
   return ok(record);
 }
 

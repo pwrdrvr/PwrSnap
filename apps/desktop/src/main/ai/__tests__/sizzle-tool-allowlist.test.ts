@@ -245,6 +245,38 @@ describe("buildSizzleToolAllowlist", () => {
     expect(beats[1]!.videoFit).toBe("speed-to-fit");
   });
 
+  it("sequence_beat_update errors when the beat id is unknown", async () => {
+    primeBus(project([
+      scene({
+        id: "sc_seq",
+        kind: "sequence",
+        narration: "Open Settings",
+        scriptLine: "Open Settings",
+        beats: [
+          {
+            id: "bt_a",
+            captureId: "cap_a",
+            timing: { kind: "offset", startSec: 0, endSec: 1 },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          }
+        ]
+      })
+    ]));
+    const r = await tool(boundAllowlist(), "sequence_beat_update").dispatch(
+      {
+        sceneId: "sc_seq",
+        beatId: "missing",
+        videoFit: "loop"
+      },
+      CTX
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Beat missing not found");
+    expect(dispatch.mock.calls.some((c) => c[0] === "sizzle:update")).toBe(false);
+  });
+
   it("scene_set_script on an unknown scene errors and does NOT write", async () => {
     primeBus(project([scene({ id: "sc_a" })]));
     const r = await tool(boundAllowlist(), "scene_set_script").dispatch(

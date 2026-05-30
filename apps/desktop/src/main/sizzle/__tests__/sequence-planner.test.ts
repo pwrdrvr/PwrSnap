@@ -99,6 +99,47 @@ describe("planSequenceScene", () => {
     expect(plan.sceneInputs.map((input) => input.audioStartSec)).toEqual([0, 1]);
     expect(plan.sceneInputs[0]!.transition).toBe("crossfade");
     expect(plan.sceneInputs[1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
+    expect(plan.sceneInputs[1]!.durationSec).toBeCloseTo(1.18, 3);
+    expect(plan.sceneInputs[1]!.audioDurationSec).toBeCloseTo(1, 3);
+  });
+
+  it("honors sequence durationOverrideSec when distributing beat windows", () => {
+    const plan = planSequenceScene({
+      scene: sequenceScene({
+        durationOverrideSec: 4,
+        beats: [
+          {
+            id: "bt_1",
+            captureId: "cap_1",
+            timing: { kind: "offset", startSec: 0, endSec: null },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          },
+          {
+            id: "bt_2",
+            captureId: "cap_2",
+            timing: { kind: "offset", startSec: 2, endSec: null },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          }
+        ]
+      }),
+      capturesById: new Map([
+        ["cap_1", capture("cap_1", "image")],
+        ["cap_2", capture("cap_2", "image")]
+      ]),
+      imagePathByCaptureId: new Map([
+        ["cap_1", "/tmp/cap_1.png"],
+        ["cap_2", "/tmp/cap_2.png"]
+      ]),
+      narrationAudioPath: "/tmp/narration.mp3",
+      speechTiming: timing("Open the wizard then approve pairing", 2)
+    });
+
+    expect(plan.beatPlans[0]!.startSec).toBe(0);
+    expect(plan.beatPlans[1]!.endSec).toBe(4);
   });
 
   it("resolves phrase anchors using speech timing", () => {

@@ -34,6 +34,7 @@ export type ImageSceneInput = {
   imagePath: string;
   audioPath: string;
   audioStartSec?: number;
+  audioDurationSec?: number;
   durationSec: number;
   transition: SizzleTransition;
 };
@@ -61,6 +62,7 @@ export type VideoSceneInput = {
   durationSec: number;
   audioPath: string;
   audioStartSec?: number;
+  audioDurationSec?: number;
   transition: SizzleTransition;
   videoFit?: VideoFitRenderPlan;
 };
@@ -254,16 +256,15 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
       // `-shortest` truncates the whole reel at that point — caller's
       // job to keep them in sync, not the composer's to defend.
       const fit = scene.videoFit ?? { mode: "freeze-end", playbackRate: 1 };
-      const fitFilter = videoFitFilter(scene, fit, req.fps);
+      const baseLabel = `vb${i}`;
       filters.push(
         `[${i}:v]` +
           `scale=${req.width}:${req.height}:force_original_aspect_ratio=decrease,` +
           `pad=${req.width}:${req.height}:(ow-iw)/2:(oh-ih)/2:color=black,` +
-          `fps=${req.fps}` +
-          fitFilter +
-          `,setsar=1,format=yuv420p` +
-          `[v${i}]`
+          `fps=${req.fps},setsar=1,format=yuv420p` +
+          `[${baseLabel}]`
       );
+      filters.push(...videoFitFilters(baseLabel, `v${i}`, scene, fit, req.fps));
     }
   });
 
@@ -306,26 +307,50 @@ export function buildCompositionArgs(req: ComposeRequest): string[] {
   return args;
 }
 
-function videoFitFilter(
+function videoFitFilters(
+  inputLabel: string,
+  outputLabel: string,
   scene: VideoSceneInput,
   fit: VideoFitRenderPlan,
   fps: number
-): string {
+): string[] {
   if (fit.mode === "speed-to-fit") {
     const factor = 1 / Math.max(0.01, fit.playbackRate);
-    return `,setpts=${factor.toFixed(6)}*PTS,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
+    return [
+      `[${inputLabel}]setpts=${factor.toFixed(6)}*PTS,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
   }
   if (fit.mode === "loop") {
     const frames = Math.max(1, Math.round(scene.trimDurationSec * fps));
     const repeats = Math.max(1, Math.ceil(scene.durationSec / Math.max(0.01, scene.trimDurationSec)) - 1);
-    return `,loop=loop=${repeats}:size=${frames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
+    return [
+      `[${inputLabel}]loop=loop=${repeats}:size=${frames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
+  }
+  if (fit.mode === "ping-pong") {
+    const frames = Math.max(1, Math.round(scene.trimDurationSec * fps));
+    const pairFrames = frames * 2;
+    const pairDurationSec = Math.max(0.01, scene.trimDurationSec * 2);
+    const repeats = Math.max(0, Math.ceil(scene.durationSec / pairDurationSec) - 1);
+    const fwd = `${inputLabel}f`;
+    const revIn = `${inputLabel}r`;
+    const rev = `${inputLabel}rv`;
+    const pair = `${inputLabel}pp`;
+    return [
+      `[${inputLabel}]split=2[${fwd}][${revIn}]`,
+      `[${revIn}]reverse[${rev}]`,
+      `[${fwd}][${rev}]concat=n=2:v=1:a=0[${pair}]`,
+      `[${pair}]loop=loop=${repeats}:size=${pairFrames}:start=0,trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+    ];
   }
   const padSec = Math.max(0, scene.durationSec - scene.trimDurationSec);
   const tpadFilter =
     padSec > 0.05
       ? `,tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`
       : "";
-  return `${tpadFilter},trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS`;
+  return [
+    `[${inputLabel}]${tpadFilter.startsWith(",") ? tpadFilter.slice(1) + "," : ""}trim=duration=${scene.durationSec.toFixed(3)},setpts=PTS-STARTPTS[${outputLabel}]`
+  ];
 }
 
 function videoBitrate(width: number, height: number, fps: number): string {
@@ -425,12 +450,14 @@ function ffmpegXfadeName(type: SizzleTransitionType): string {
 function buildAudioConcat(scenes: SceneInput[], filters: string[]): string {
   scenes.forEach((scene, i) => {
     const inputIndex = scenes.length + i;
+    const audioDurationSec = scene.audioDurationSec ?? scene.durationSec;
+    const audioStartSec = scene.audioStartSec ?? 0;
     filters.push(
       `[${inputIndex}:a]` +
         "aresample=44100," +
         "aformat=sample_fmts=fltp:channel_layouts=stereo," +
         "apad," +
-        `atrim=${(scene.audioStartSec ?? 0).toFixed(3)}:${((scene.audioStartSec ?? 0) + scene.durationSec).toFixed(3)},` +
+        `atrim=${audioStartSec.toFixed(3)}:${(audioStartSec + audioDurationSec).toFixed(3)},` +
         "asetpts=PTS-STARTPTS" +
         `[a${i}]`
     );

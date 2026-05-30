@@ -35,6 +35,17 @@ describe("resolveVideoFit", () => {
     expect(fit.inputDurationSec).toBe(1);
   });
 
+  it("keeps explicit ping-pong as a distinct render mode", () => {
+    const fit = resolveVideoFit({
+      policy: "ping-pong",
+      sourceDurationSec: 1,
+      targetDurationSec: 4
+    });
+    expect(fit.selected).toBe("ping-pong");
+    expect(fit.renderMode).toBe("ping-pong");
+    expect(fit.inputDurationSec).toBe(1);
+  });
+
   it("falls back when explicit speed-to-fit would be extreme", () => {
     const fit = resolveVideoFit({
       policy: "speed-to-fit",

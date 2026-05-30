@@ -5,6 +5,10 @@ import type {
   SizzleSpeechTiming,
   SizzleTransition
 } from "@pwrsnap/shared";
+import {
+  sizzleTransitionDurationSec,
+  sizzleTransitionType
+} from "@pwrsnap/shared";
 import type { SceneInput } from "./composer";
 import { resolvePhraseTiming } from "./speech-timing";
 import { resolveVideoFit, type VideoFitDecision } from "./video-fit";
@@ -40,7 +44,16 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
     throw new SequencePlannerError("not_sequence", "Scene is not a sequence scene");
   }
   const diagnostics: SequencePlannerDiagnostic[] = [];
-  const windows = resolveBeatWindows(req.scene.beats, req.speechTiming, diagnostics);
+  const timelineDurationSec =
+    req.scene.durationOverrideSec !== null && req.scene.durationOverrideSec > 0
+      ? req.scene.durationOverrideSec
+      : req.speechTiming.durationSec;
+  const windows = resolveBeatWindows(
+    req.scene.beats,
+    req.speechTiming,
+    timelineDurationSec,
+    diagnostics
+  );
   const sceneInputs: SceneInput[] = [];
   const beatPlans: SequenceRenderPlan["beatPlans"] = [];
 
@@ -53,8 +66,11 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
       );
     }
     const window = windows[index]!;
-    const durationSec = Math.max(0.1, window.endSec - window.startSec);
     const transition: SizzleTransition = index === 0 ? req.scene.transition : beat.transition;
+    const audioDurationSec = Math.max(0.1, window.endSec - window.startSec);
+    const transitionOverlapSec =
+      index > 0 ? transitionOverlapDurationSec(transition) : 0;
+    const durationSec = audioDurationSec + transitionOverlapSec;
     let fit: VideoFitDecision | undefined;
 
     if (capture.kind === "video") {
@@ -85,6 +101,7 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
         durationSec,
         audioPath: req.narrationAudioPath,
         audioStartSec: window.startSec,
+        audioDurationSec,
         transition,
         videoFit: {
           mode: fit.renderMode,
@@ -105,6 +122,7 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
         durationSec,
         audioPath: req.narrationAudioPath,
         audioStartSec: window.startSec,
+        audioDurationSec,
         transition
       });
     }
@@ -139,9 +157,12 @@ export class SequencePlannerError extends Error {
 function resolveBeatWindows(
   beats: SizzleSequenceBeat[],
   speechTiming: SizzleSpeechTiming,
+  timelineDurationSec: number,
   diagnostics: SequencePlannerDiagnostic[]
 ): Array<{ startSec: number; endSec: number }> {
-  const duration = Math.max(0.1, speechTiming.durationSec);
+  const duration = Math.max(0.1, timelineDurationSec);
+  const phraseScale =
+    speechTiming.durationSec > 0 ? duration / speechTiming.durationSec : 1;
   const latestStart = Math.max(0, duration - 0.1);
   const starts = beats.map((beat, index) => {
     if (beat.timing.kind === "offset") return clamp(beat.timing.startSec, 0, latestStart);
@@ -151,7 +172,7 @@ function resolveBeatWindows(
       offsetSec: beat.timing.offsetSec,
       durationSec: beat.timing.durationSec
     });
-    if (resolved !== null) return clamp(resolved.startSec, 0, latestStart);
+    if (resolved !== null) return clamp(resolved.startSec * phraseScale, 0, latestStart);
     diagnostics.push({
       beatId: beat.id,
       code: "phrase_unresolved",
@@ -180,6 +201,12 @@ function resolveBeatWindows(
     }
     return { startSec: roundSec(startSec), endSec: roundSec(clampedEnd) };
   });
+}
+
+function transitionOverlapDurationSec(transition: SizzleTransition): number {
+  const type = sizzleTransitionType(transition);
+  if (type === "none" || type === "cut") return 0;
+  return sizzleTransitionDurationSec(transition);
 }
 
 function clamp(value: number, min: number, max: number): number {

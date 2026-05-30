@@ -1,6 +1,11 @@
 import type { SizzleVideoFitPolicy } from "@pwrsnap/shared";
 
-export type VideoFitRenderMode = "trim" | "freeze-end" | "loop" | "speed-to-fit";
+export type VideoFitRenderMode =
+  | "trim"
+  | "freeze-end"
+  | "loop"
+  | "ping-pong"
+  | "speed-to-fit";
 
 export type VideoFitDecision = {
   requested: SizzleVideoFitPolicy;
@@ -71,7 +76,9 @@ export function resolveVideoFit(args: {
       warnings.push("Requested loop would repeat too many times; using freeze-end");
       return freezeDecision(args.policy, "freeze-end", source, target, warnings);
     }
-    return loopDecision(args.policy, args.policy, source, target, warnings);
+    return args.policy === "ping-pong"
+      ? pingPongDecision(args.policy, source, target, warnings)
+      : loopDecision(args.policy, "loop", source, target, warnings);
   }
 
   if (args.policy === "trim") {
@@ -134,6 +141,24 @@ function loopDecision(
     requested,
     selected,
     renderMode: "loop",
+    sourceDurationSec: source,
+    targetDurationSec: target,
+    inputDurationSec: source,
+    playbackRate: 1,
+    warnings
+  };
+}
+
+function pingPongDecision(
+  requested: SizzleVideoFitPolicy,
+  source: number,
+  target: number,
+  warnings: string[]
+): VideoFitDecision {
+  return {
+    requested,
+    selected: "ping-pong",
+    renderMode: "ping-pong",
     sourceDurationSec: source,
     targetDurationSec: target,
     inputDurationSec: source,

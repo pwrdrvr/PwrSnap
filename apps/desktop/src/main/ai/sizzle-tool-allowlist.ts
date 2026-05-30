@@ -459,12 +459,16 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         mediaTrim: z.object({ startSec: z.number().min(0), endSec: z.number().min(0) }).nullable().optional()
       }),
       dispatch: async (args, ctx) =>
-        editScene(ctx.threadId, mutateScenes, args.sceneId, (s) => {
-          if (s.kind !== "sequence" || s.beats === undefined) return s;
-          return {
-            ...s,
-            beats: s.beats.map((beat) => {
+        mutateScenes(ctx.threadId, (scenes) => {
+          let foundScene = false;
+          let foundBeat = false;
+          const next = scenes.map((s) => {
+            if (s.id !== args.sceneId) return s;
+            foundScene = true;
+            if (s.kind !== "sequence" || s.beats === undefined) return s;
+            const beats = s.beats.map((beat) => {
               if (beat.id !== args.beatId) return beat;
+              foundBeat = true;
               return {
                 ...beat,
                 ...(args.captureId !== undefined ? { captureId: args.captureId } : {}),
@@ -473,8 +477,12 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
                 ...(args.videoFit !== undefined ? { videoFit: args.videoFit } : {}),
                 ...(args.mediaTrim !== undefined ? { mediaTrim: args.mediaTrim } : {})
               };
-            })
-          };
+            });
+            return { ...s, beats };
+          });
+          if (!foundScene) return { error: `Scene ${args.sceneId} not found.` };
+          if (!foundBeat) return { error: `Beat ${args.beatId} not found in scene ${args.sceneId}.` };
+          return next;
         })
     }),
     defineTool({

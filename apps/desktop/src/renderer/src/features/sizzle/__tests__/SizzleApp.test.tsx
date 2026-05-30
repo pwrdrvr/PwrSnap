@@ -142,6 +142,13 @@ function clickProjectRow(list: Element | null, name: string): void {
   button.click();
 }
 
+function findButton(el: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(el.querySelectorAll<HTMLButtonElement>("button"))
+    .find((candidate) => candidate.textContent?.trim() === label);
+  if (button === undefined) throw new Error(`button not found: ${label}`);
+  return button;
+}
+
 afterEach(async () => {
   await act(async () => {
     root?.unmount();
@@ -203,6 +210,25 @@ describe("SizzleApp live project sync", () => {
       emit(EVENT_CHANNELS.sizzleProjectsChanged, null);
     });
     expect(scriptBox(el).value).toBe("kept");
+  });
+});
+
+describe("SizzleApp sequence authoring", () => {
+  test("turns a simple scene into a visible grouped sequence", async () => {
+    const { el } = await renderApp(
+      project({ scenes: [scene({ scriptLine: "one narration block" })] })
+    );
+
+    expect(el.textContent).not.toContain("Sequence · one narration block");
+
+    await act(async () => {
+      findButton(el, "Sequence").click();
+    });
+
+    expect(el.textContent).toContain("Sequence · one narration block");
+    expect(scriptBox(el).value).toBe("one narration block");
+    expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
+    expect(el.textContent).toContain("Use offset seconds or phrase anchors");
   });
 });
 

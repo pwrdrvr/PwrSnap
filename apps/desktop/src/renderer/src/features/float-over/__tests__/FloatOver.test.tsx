@@ -120,6 +120,12 @@ function installHostApi(): {
           value: {
             candidates: [{ path: "codex", source: "path", version: "1.0.0", available: true }],
             resolvedPath: "codex",
+            auth: {
+              status: "authenticated",
+              testedAt: "2026-05-19T12:00:00.000Z",
+              durationMs: 12,
+              detail: "Logged in using ChatGPT"
+            },
             refreshedAt: "2026-05-19T12:00:00.000Z"
           }
         };

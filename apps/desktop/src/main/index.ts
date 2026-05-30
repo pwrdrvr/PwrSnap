@@ -982,6 +982,16 @@ export function bootstrapApp(): void {
     installProtocolHandlers(protocolResolver);
     registerAppHandlers();
     registerSettingsHandlers();
+    void bus
+      .dispatch("settings:refreshCodexDiscovery", { force: true }, { principal: "ipc" })
+      .then((result) => {
+        if (!result.ok) {
+          log.warn("startup Codex readiness probe failed", {
+            code: result.error.code,
+            message: result.error.message
+          });
+        }
+      });
     registerCodexHandlers();
     registerLibraryChatHandlers();
     registerCaptureHandlers();

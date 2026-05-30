@@ -53,6 +53,7 @@ import { Thumb } from "./Thumb";
 
 function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
   if (snapshot.resolvedPath === null) return false;
+  if (snapshot.auth?.status !== "authenticated") return false;
   return snapshot.candidates.some(
     (candidate) => candidate.available && candidate.path === snapshot.resolvedPath
   );

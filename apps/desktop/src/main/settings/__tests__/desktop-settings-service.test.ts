@@ -295,8 +295,18 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
     const codexDiscovery = await import("../codex-discovery");
     const discoverSpy = vi
       .spyOn(codexDiscovery, "discoverCodexCommands")
-      .mockImplementation(async () => ({
-        candidates: []
+      .mockImplementation(async ({ configuredCommand } = {}) => ({
+        selectedCommand: configuredCommand ?? "codex",
+        selectedSource: configuredCommand === undefined ? "path" : "config",
+        candidates: [
+          {
+            command: configuredCommand ?? "codex",
+            source: configuredCommand === undefined ? "path" : "config",
+            executable: true,
+            selected: true,
+            version: "stub"
+          }
+        ]
       }));
     const resolveSpy = vi
       .spyOn(codexDiscovery, "resolveCodexCommand")
@@ -305,6 +315,14 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
         source: "config" as const,
         version: "stub"
       }));
+    const authSpy = vi
+      .spyOn(codexDiscovery, "probeCodexAuth")
+      .mockImplementation(async () => ({
+        status: "authenticated",
+        testedAt: "2026-05-19T12:00:00.000Z",
+        durationMs: 1,
+        detail: "Logged in using ChatGPT"
+      }));
 
     try {
       const svc = makeService();
@@ -312,6 +330,7 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
       const first = await svc.getCodexDiscoverySnapshot();
       // `resolveCodexCommand` is called with "codex" when no pin is set.
       expect(first.resolvedPath).toBe("codex");
+      expect(first.auth?.status).toBe("authenticated");
 
       // Pin a path through the real write path.
       await svc.write({ codex: { mode: "pinned", pinnedPath: "/opt/codex-pinned" } });
@@ -323,6 +342,7 @@ describe("DesktopSettingsService.getCodexDiscoverySnapshot cache invalidation", 
     } finally {
       discoverSpy.mockRestore();
       resolveSpy.mockRestore();
+      authSpy.mockRestore();
     }
   });
 });

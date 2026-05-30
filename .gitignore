@@ -16,6 +16,7 @@ dist-electron/
 apps/desktop/build/native/
 apps/desktop/build/ffmpeg/
 apps/desktop/build/ffmpeg-cache/
+apps/desktop/build/ffmpeg-source/
 
 # ---- Electron-builder output ----
 # Signed/notarized DMG + ZIP land here

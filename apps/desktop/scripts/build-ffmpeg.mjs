@@ -14,6 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -22,12 +23,14 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cpus } from "node:os";
+import { cpus, homedir } from "node:os";
 
 const FFMPEG_VERSION = "8.1.1";
 const FFMPEG_SHA256 = "b6863adde98898f42602017462871b5f6333e65aec803fdd7a6308639c52edf3";
 const FFMPEG_URL = `https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz`;
+const BUILD_PROFILE_VERSION = "lgpl-v1";
 const PKG_CONFIG_MANIFEST = "disabled-shim-v2";
+const MIN_MACOS_VERSION = "14.0";
 const FORBIDDEN_CONFIG_FLAGS = [
   "--enable-gpl",
   "--enable-nonfree",
@@ -42,7 +45,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const desktopRoot = resolve(__dirname, "..");
 const buildRoot = join(desktopRoot, "build", "ffmpeg");
-const cacheRoot = join(desktopRoot, "build", "ffmpeg-cache");
+const sourceArtifactRoot = join(desktopRoot, "build", "ffmpeg-source");
+const cacheRoot = resolve(
+  process.env.PWRSNAP_FFMPEG_CACHE_DIR ??
+    join(homedir(), "Library", "Caches", "PwrSnap", "ffmpeg-builds")
+);
+const localCacheRoot = join(desktopRoot, "build", "ffmpeg-cache");
 const disabledPkgConfigPath = join(cacheRoot, "pkg-config-disabled");
 const outputPath = join(buildRoot, "ffmpeg");
 const manifestPath = join(buildRoot, "manifest.json");
@@ -54,17 +62,43 @@ if (process.platform !== "darwin") {
 
 mkdirSync(buildRoot, { recursive: true });
 mkdirSync(cacheRoot, { recursive: true });
+mkdirSync(localCacheRoot, { recursive: true });
 ensureDisabledPkgConfig();
 
 const universal = process.env.PWRSNAP_FFMPEG_UNIVERSAL === "1";
 const targetArchs = universal ? ["arm64", "x86_64"] : [process.arch === "x64" ? "x86_64" : process.arch];
+const buildKey = [
+  `ffmpeg-${FFMPEG_VERSION}`,
+  FFMPEG_SHA256.slice(0, 16),
+  BUILD_PROFILE_VERSION,
+  PKG_CONFIG_MANIFEST,
+  `macos-${MIN_MACOS_VERSION}`,
+  targetArchs.join("-")
+].join("_");
+const sourceCacheRoot = join(cacheRoot, "sources");
+const binaryCacheRoot = join(cacheRoot, "binaries", buildKey);
+const cacheOutputPath = join(binaryCacheRoot, "ffmpeg");
+const cacheManifestPath = join(binaryCacheRoot, "manifest.json");
+const sourceArtifactPath = join(sourceArtifactRoot, `ffmpeg-${FFMPEG_VERSION}.tar.xz`);
+const sourceArtifactSha256Path = `${sourceArtifactPath}.sha256`;
+
+mkdirSync(sourceArtifactRoot, { recursive: true });
+mkdirSync(sourceCacheRoot, { recursive: true });
+mkdirSync(binaryCacheRoot, { recursive: true });
+
+const tarballPath = downloadSource();
 
 if (isUpToDate()) {
   console.log("[build-ffmpeg] ffmpeg up to date");
   process.exit(0);
 }
 
-const tarballPath = downloadSource();
+if (isUpToDate(cacheOutputPath, cacheManifestPath)) {
+  installCachedBinary(cacheOutputPath);
+  console.log(`[build-ffmpeg] ffmpeg restored from ${cacheOutputPath}`);
+  process.exit(0);
+}
+
 const slicePaths = [];
 
 for (const arch of targetArchs) {
@@ -72,42 +106,39 @@ for (const arch of targetArchs) {
 }
 
 if (slicePaths.length === 1) {
-  rmSync(outputPath, { force: true });
-  execFileSync("cp", [slicePaths[0], outputPath], { stdio: "inherit" });
+  rmSync(cacheOutputPath, { force: true });
+  copyFileSync(slicePaths[0], cacheOutputPath);
 } else {
-  run("lipo", ["-create", ...slicePaths, "-output", outputPath], { cwd: cacheRoot });
+  run("lipo", ["-create", ...slicePaths, "-output", cacheOutputPath], { cwd: binaryCacheRoot });
 }
 
-chmodSync(outputPath, 0o755);
-run("codesign", ["-s", "-", "--force", outputPath], { cwd: desktopRoot });
-verifyBinary(outputPath);
-writeFileSync(
-  manifestPath,
-  `${JSON.stringify(
-    {
-      version: FFMPEG_VERSION,
-      sourceUrl: FFMPEG_URL,
-      sourceSha256: FFMPEG_SHA256,
-      pkgConfig: PKG_CONFIG_MANIFEST,
-      archs: targetArchs,
-      forbiddenConfigFlags: FORBIDDEN_CONFIG_FLAGS,
-      requiredEncoders: REQUIRED_ENCODERS
-    },
-    null,
-    2
-  )}\n`
-);
+chmodSync(cacheOutputPath, 0o755);
+run("codesign", ["-s", "-", "--force", cacheOutputPath], { cwd: desktopRoot });
+verifyBinary(cacheOutputPath);
+writeManifest(cacheManifestPath);
+installCachedBinary(cacheOutputPath);
 console.log(`[build-ffmpeg] ffmpeg -> ${outputPath}`);
 
-function isUpToDate() {
-  if (!existsSync(outputPath) || !existsSync(manifestPath)) return false;
+function installCachedBinary(path) {
+  rmSync(outputPath, { force: true });
+  copyFileSync(path, outputPath);
+  chmodSync(outputPath, 0o755);
+  run("codesign", ["-s", "-", "--force", outputPath], { cwd: desktopRoot });
+  verifyBinary(outputPath);
+  writeManifest(manifestPath);
+}
+
+function isUpToDate(binaryPath = outputPath, binaryManifestPath = manifestPath) {
+  if (!existsSync(binaryPath) || !existsSync(binaryManifestPath)) return false;
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifest = JSON.parse(readFileSync(binaryManifestPath, "utf8"));
     if (manifest.version !== FFMPEG_VERSION) return false;
     if (manifest.sourceSha256 !== FFMPEG_SHA256) return false;
+    if (manifest.buildProfile !== BUILD_PROFILE_VERSION) return false;
+    if (manifest.minMacosVersion !== MIN_MACOS_VERSION) return false;
     if (manifest.pkgConfig !== PKG_CONFIG_MANIFEST) return false;
     if (JSON.stringify(manifest.archs) !== JSON.stringify(targetArchs)) return false;
-    verifyBinary(outputPath);
+    verifyBinary(binaryPath);
     return true;
   } catch {
     return false;
@@ -115,8 +146,9 @@ function isUpToDate() {
 }
 
 function downloadSource() {
-  const tarballPath = join(cacheRoot, `ffmpeg-${FFMPEG_VERSION}.tar.xz`);
+  const tarballPath = join(sourceCacheRoot, `ffmpeg-${FFMPEG_VERSION}.tar.xz`);
   if (existsSync(tarballPath) && sha256(tarballPath) === FFMPEG_SHA256) {
+    installSourceArtifact(tarballPath);
     return tarballPath;
   }
   rmSync(tarballPath, { force: true });
@@ -128,20 +160,20 @@ function downloadSource() {
       `ffmpeg source checksum mismatch: expected ${FFMPEG_SHA256}, got ${actual}`
     );
   }
+  installSourceArtifact(tarballPath);
   return tarballPath;
 }
 
 function buildSlice(tarballPath, arch) {
-  const workRoot = join(cacheRoot, `work-${arch}`);
+  const workRoot = join(localCacheRoot, `work-${buildKey}-${arch}`);
   const sourceRoot = join(workRoot, `ffmpeg-${FFMPEG_VERSION}`);
   const prefix = join(workRoot, "prefix");
-  const slicePath = join(cacheRoot, `ffmpeg-${arch}`);
+  const slicePath = join(binaryCacheRoot, `ffmpeg-${arch}`);
   rmSync(workRoot, { recursive: true, force: true });
   rmSync(slicePath, { force: true });
   mkdirSync(workRoot, { recursive: true });
-  run("tar", ["-xf", tarballPath, "-C", workRoot], { cwd: cacheRoot });
+  run("tar", ["-xf", tarballPath, "-C", workRoot], { cwd: localCacheRoot });
 
-  const minVersion = "14.0";
   const hostArch = process.arch === "x64" ? "x86_64" : process.arch;
   const configureArgs = [
     `--prefix=${prefix}`,
@@ -156,8 +188,8 @@ function buildSlice(tarballPath, arch) {
     "--enable-videotoolbox",
     `--arch=${arch}`,
     "--target-os=darwin",
-    `--extra-cflags=-arch ${arch} -mmacosx-version-min=${minVersion}`,
-    `--extra-ldflags=-arch ${arch} -mmacosx-version-min=${minVersion}`
+    `--extra-cflags=-arch ${arch} -mmacosx-version-min=${MIN_MACOS_VERSION}`,
+    `--extra-ldflags=-arch ${arch} -mmacosx-version-min=${MIN_MACOS_VERSION}`
   ];
   if (arch !== hostArch) {
     configureArgs.push("--enable-cross-compile");
@@ -168,6 +200,33 @@ function buildSlice(tarballPath, arch) {
   execFileSync("cp", [join(prefix, "bin", "ffmpeg"), slicePath], { stdio: "inherit" });
   verifyBinary(slicePath);
   return slicePath;
+}
+
+function installSourceArtifact(path) {
+  copyFileSync(path, sourceArtifactPath);
+  writeFileSync(sourceArtifactSha256Path, `${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz\n`);
+}
+
+function writeManifest(path) {
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        version: FFMPEG_VERSION,
+        sourceUrl: FFMPEG_URL,
+        sourceSha256: FFMPEG_SHA256,
+        buildProfile: BUILD_PROFILE_VERSION,
+        minMacosVersion: MIN_MACOS_VERSION,
+        pkgConfig: PKG_CONFIG_MANIFEST,
+        archs: targetArchs,
+        cacheKey: buildKey,
+        forbiddenConfigFlags: FORBIDDEN_CONFIG_FLAGS,
+        requiredEncoders: REQUIRED_ENCODERS
+      },
+      null,
+      2
+    )}\n`
+  );
 }
 
 function ensureDisabledPkgConfig() {

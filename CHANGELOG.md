@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0-beta.12 - 2026-05-30
+
+- Routed external `.pwrsnap` capture opens through the main Library Focus
+  editor instead of the retired standalone editor window.
+- Added Library Back and Forward history controls so Finder-opened captures can
+  return to the previous Library view.
+- Fixed Library grid selection tracking by selected capture id.
+- Added single-instance `.pwrsnap` file-open handoff so Finder-launched
+  processes forward queued file paths to the running app before exiting.
+- Upgraded GitHub Actions cache usage to the Node.js 24-backed v5 action.
+
 ## v1.0.0-beta.11 - 2026-05-30
 
 - Replaced the redistributed FFmpeg binary with PwrSnap's pinned custom-built

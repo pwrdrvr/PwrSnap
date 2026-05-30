@@ -124,7 +124,7 @@ MIT
 - util-deprecate@1.0.2 | https://github.com/TooTallNate/util-deprecate
 - yauzl@3.3.0 | https://github.com/thejoshwolfe/yauzl
 - yazl@3.3.1 | https://github.com/thejoshwolfe/yazl
-- zod@4.4.2 | https://github.com/colinhacks/zod
+- zod@4.4.3 | https://github.com/colinhacks/zod
 
 OFL-1.1
 ~~~~~~~
@@ -2782,13 +2782,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-zod@4.4.2 (MIT)
+zod@4.4.3 (MIT)
 ---------------
 
 Applies to:
-- zod@4.4.2 (MIT)
+- zod@4.4.3 (MIT)
 
-Representative file: zod@4.4.2/LICENSE
+Representative file: zod@4.4.3/LICENSE
 
 MIT License
 

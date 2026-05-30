@@ -224,7 +224,6 @@ export async function ensureEffectiveSrcPath(record: {
   id: string;
   legacy_src_path: string | null;
   bundle_path?: string | null;
-  bundle_format_version?: number;
   sha256?: string;
   deleted_at: string | null;
 }): Promise<string> {
@@ -237,7 +236,6 @@ export async function ensureEffectiveSrcPath(record: {
     {
       id: record.id,
       bundlePath: record.bundle_path,
-      bundleFormatVersion: record.bundle_format_version ?? 1,
       sha256: record.sha256
     },
     path
@@ -255,28 +253,22 @@ async function rematerializeBundleSource(
   record: {
     id: string;
     bundlePath: string;
-    bundleFormatVersion: number;
     sha256: string | undefined;
   },
   cacheSourcePath: string
 ): Promise<void> {
   // Lazy import to avoid a top-of-module dependency on bundle-store
   // (and the yauzl/sharp surface it pulls in) just for the cold path.
-  const { readBundleEntry, readSourceFromBundle } = await import("./bundle-store");
+  const { readSourceFromBundle } = await import("./bundle-store");
 
-  let bytes: Buffer;
-  if (record.bundleFormatVersion >= 2) {
-    // v2 stores sources at `sources/<sha>.png`, keyed by content hash.
-    // The original capture's source bytes match `captures.sha256`.
-    if (record.sha256 === undefined || record.sha256.length === 0) {
-      throw new Error(
-        `source-store: cannot re-extract v2 source for ${record.id} — record.sha256 missing`
-      );
-    }
-    bytes = await readSourceFromBundle(record.bundlePath, record.sha256);
-  } else {
-    bytes = await readBundleEntry(record.bundlePath, "source.png");
+  // v2 stores sources at `sources/<sha>.png`, keyed by content hash.
+  // The original capture's source bytes match `captures.sha256`.
+  if (record.sha256 === undefined || record.sha256.length === 0) {
+    throw new Error(
+      `source-store: cannot re-extract source for ${record.id} — record.sha256 missing`
+    );
   }
+  const bytes = await readSourceFromBundle(record.bundlePath, record.sha256);
 
   await mkdir(dirname(cacheSourcePath), { recursive: true });
   // Atomic write — concurrent compose() calls reading the same path
@@ -291,8 +283,7 @@ async function rematerializeBundleSource(
   log.info("re-extracted bundle source to cache", {
     captureId: record.id,
     cacheSourcePath,
-    bytes: bytes.length,
-    bundleFormatVersion: record.bundleFormatVersion
+    bytes: bytes.length
   });
 }
 

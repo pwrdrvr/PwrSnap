@@ -95,32 +95,6 @@ export const EVENT_CHANNELS = {
    */
   popoverRemeasure: "events:popover:remeasure",
   /**
-   * Main → renderer one-shot legacy-bundle migration progress. Fired by
-   * `runLegacyBundleMigration` once when the run starts (with total),
-   * then throttled per N rows, then once at completion. Drives the
-   * library window's "Upgrading library…" banner. Payload type:
-   * `LegacyBundleMigrationProgress` (see protocol.ts).
-   *
-   * A run with `total === 0` (no rows needed migration) is silently
-   * skipped — no events fire, no banner shows.
-   */
-  legacyBundleMigrationProgress: "events:legacy-bundle-migration:progress",
-  /**
-   * Main → renderer v1 → v2 bundle doctor progress. Fired by both the
-   * boot-time `reconcileV1ToV2OnBoot` sweep AND the per-capture lazy
-   * `v1ToV2:upgrade` handler. Editor toolbar subscribes for the
-   * "Upgrading…" banner during a per-capture run; library banner
-   * subscribes for the boot-time global progress. Payload type:
-   * `V1ToV2DoctorProgress` (see protocol.ts).
-   *
-   * `captureId === null` → boot-time global event.
-   * `captureId !== null` → per-capture lazy event.
-   *
-   * Renderers that mount mid-flight call `v1ToV2:status` once for
-   * the cached snapshot, then subscribe here for updates.
-   */
-  v1ToV2DoctorProgress: "events:v1-to-v2-doctor:progress",
-  /**
    * Main → renderer storage accounting progress. Full scans are
    * singleton and async; this event lets detailed storage UI update
    * from cached/partial snapshots while the command that requested the
@@ -172,6 +146,14 @@ export const EVENT_CHANNELS = {
    * `sizzle:list`. Type: `{ projects: SizzleProject[] }`.
    */
   sizzleProjectsChanged: "events:sizzle:projects:changed",
+  /**
+   * Main → the Sizzle composer window: navigate to a project (e.g. the
+   * user clicked a Sizzle Reel in the Library while the composer is
+   * already open). For a NEWLY-created composer window the target rides
+   * the URL hash (`projectId=…`) instead, so this event only needs to
+   * reach an already-loaded window. Payload: `{ projectId: string }`.
+   */
+  sizzleNav: "events:sizzle:nav",
   /**
    * Main → every BrowserWindow: the single global Project Asset Cart
    * changed (toggle / reorder / remove / rename / clear / commit). The
@@ -252,7 +234,18 @@ export const EVENT_CHANNELS = {
    * Settings. The open chat panel shows a one-shot toast nudging
    * "try 'redact all <name>'" (plan §F11 G3). Payload: `{ name: string }`.
    */
-  libraryChatPatternLearned: "events:libraryChat:pattern:learned"
+  libraryChatPatternLearned: "events:libraryChat:pattern:learned",
+  // ── Sizzle composer chat ──────────────────────────────────────────
+  // Second surface on the shared chat substrate (Library is the first).
+  // Same payload shapes as the libraryChat channels (the controller is
+  // surface-parameterized), scoped to a Sizzle project rather than a
+  // capture. The Sizzle composer window subscribes.
+  sizzleChatThreadUpdated: "events:sizzleChat:thread:updated",
+  sizzleChatStreamDelta: "events:sizzleChat:stream:delta",
+  sizzleChatToolCall: "events:sizzleChat:tool:call",
+  sizzleChatMessageCommitted: "events:sizzleChat:message:committed",
+  sizzleChatTurnInterrupted: "events:sizzleChat:turn:interrupted",
+  sizzleChatApprovalRequested: "events:sizzleChat:approval:requested"
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -418,6 +411,14 @@ export type EventPayloads = {
   [EVENT_CHANNELS.libraryChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
   [EVENT_CHANNELS.libraryChatApprovalRequested]: ChatApprovalRequest;
   [EVENT_CHANNELS.libraryChatPatternLearned]: { name: string };
+  // Sizzle composer chat — identical payloads to the libraryChat
+  // channels (shared controller, different surface scope).
+  [EVENT_CHANNELS.sizzleChatThreadUpdated]: { thread: LibraryChatThreadView };
+  [EVENT_CHANNELS.sizzleChatStreamDelta]: LibraryChatStreamDeltaEvent;
+  [EVENT_CHANNELS.sizzleChatToolCall]: LibraryChatToolCallEvent;
+  [EVENT_CHANNELS.sizzleChatMessageCommitted]: LibraryChatMessageCommittedEvent;
+  [EVENT_CHANNELS.sizzleChatTurnInterrupted]: LibraryChatTurnInterruptedEvent;
+  [EVENT_CHANNELS.sizzleChatApprovalRequested]: ChatApprovalRequest;
 };
 
 /** Channel constants that carry a typed payload entry in

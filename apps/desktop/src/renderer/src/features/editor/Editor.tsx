@@ -70,11 +70,8 @@ import {
   useCaptureModel,
   type EditOpResult,
   type GeometryUpdate,
-  type LayerEditOp,
-  type OverlayEditOp
+  type LayerEditOp
 } from "./useCaptureModel";
-import { useEnsureV2, type EnsureV2State } from "./useEnsureV2";
-import { V1ToV2DoctorBanner } from "./V1ToV2DoctorBanner";
 import { OverlaySvg, TransformHandles, type DraftStyle } from "./OverlaySvg";
 import { BlurOverlays } from "./BlurOverlays";
 import { TextDraftInput } from "./TextDraftInput";
@@ -945,19 +942,6 @@ export function Editor({
   // OverlaySvg / BlurOverlays render path (read-only — write paths
   // still go through overlays:upsert for v1; v2 writes are Phase 4-5).
   const model = useCaptureModel(captureId);
-
-  // ----- v1 → v2 lazy doctor orchestration (Phase 3) --------------
-  //
-  // When the capture loads as v1, this hook fires `v1ToV2:upgrade` in
-  // the background. While the doctor runs, we render the banner and
-  // disable the toolbar. On success the doctor broadcasts
-  // `events:captures:changed`, useCaptureModel re-fetches, and the
-  // hook sees format >= 2 → flips to "irrelevant". On parking after
-  // MAX_ATTEMPTS=5, the hook flips to "view_only" — the banner
-  // surfaces a Retry button bound to ensureV2.retry().
-  const currentBundleFormatVersion: number | null =
-    model.kind === "loaded" ? model.record.bundle_format_version : null;
-  const ensureV2 = useEnsureV2({ captureId, currentBundleFormatVersion });
 
   // ----- Tool + style state ---------------------------------------
   //
@@ -1873,18 +1857,11 @@ export function Editor({
   /**
    * Returns true if the overlay was written successfully.
    *
-   * Routes through `model.dispatchEdit` so v1 + v2 write paths land
-   * in one place — the dispatcher picks `overlays:upsert` or
-   * `layers:upsert` based on `bundle_format_version`. The v2 branch
-   * runs `overlayToBundleLayerNode` to project the renderer's
-   * Overlay shape into a BundleLayerNode, then routes through
-   * dispatchEdit's `{ kind: "upsert", node }` op.
-   *
-   * Undo records for BOTH formats now — earlier the v2 path skipped
-   * recordCreate because useUndoRedo dispatched `overlays:*` directly
-   * (which v2 captures refuse). The undo hook now routes through
-   * dispatchEdit too, so the v2 inverse (`layers:delete` /
-   * `layers:upsert`) lands without the v2-guard refusal.
+   * Routes through `model.dispatchEdit`. `overlayToBundleLayerNode`
+   * projects the renderer's drawn Overlay shape into a BundleLayerNode,
+   * then dispatchEdit's `{ kind: "upsert", node }` op writes it via
+   * `layers:upsert`. Undo records through the same dispatcher so the
+   * inverse (`layers:delete` / `layers:upsert`) lands consistently.
    */
   async function persistOverlay(
     overlay: Overlay,
@@ -1907,116 +1884,64 @@ export function Editor({
       // guard, but be defensive.
       return { ok: false };
     }
-    if (model.format === 2) {
-      // v2 path: adapt the Overlay → BundleLayerNode + route through
-      // dispatchEdit. The adapter still refuses crop here — crop
-      // takes the dispatchEdit `{ kind: "crop" }` path via
-      // onCropCommit, not persistOverlay.
-      const adapted = overlayToBundleLayerNode(
-        overlay,
-        { width: model.record.width_px, height: model.record.height_px },
-        findRootGroupId(model.layers)
-      );
-      if (!adapted.ok) {
-        // eslint-disable-next-line no-console
-        console.error("overlayToBundleLayerNode failed", adapted.error);
-        return { ok: false };
-      }
-      const result = await model.dispatchEdit({
-        kind: "upsert",
-        node: adapted.layer,
-        // Fresh-draw commit — land at the top of the stack. Without
-        // this, the new behavior of layers-repo (preserve `node.z_index`
-        // verbatim when bumpZIndexToMax isn't passed) would freeze
-        // every new draw at z_index = 0, colliding with existing
-        // layers. This is the new explicit signal that replaces the
-        // pre-fix heuristic `if (node.z_index !== 0)` inside the repo.
-        // See LayerEditOp.upsert doc-block for the contract.
-        bumpZIndexToMax: true
-      });
-      if (!result.ok) {
-        // eslint-disable-next-line no-console
-        console.error("layers:upsert via dispatchEdit failed", result.error);
-        return { ok: false };
-      }
-      let newId = "";
-      if (result.value.kind === "upsert") {
-        const artifact = result.value.artifact;
-        if (artifact.format === 2) {
-          newId = artifact.node.id;
-          if (!undoApplyingRef.current) {
-            // Pass the inserted layer node so undo→redo can re-insert
-            // the structurally-identical layer via layers:upsert. The
-            // synthetic OverlayRow gives the v1-shaped recorder a
-            // working .id for the delete-side of undo (matches the
-            // layer's id since the v2-to-row projection in
-            // projectV2LayersToOverlayRows uses layer.id as row.id).
-            const syntheticRow: OverlayRow = {
-              id: artifact.node.id,
-              capture_id: captureId,
-              data: overlay,
-              schema_version: 1,
-              source: artifact.node.source,
-              ai_run_id: artifact.node.ai_run_id,
-              z_index: artifact.node.z_index,
-              rejected_at: artifact.node.rejected_at,
-              applied_at: artifact.node.applied_at,
-              superseded_by: artifact.node.superseded_by,
-              created_at: artifact.node.created_at
-            };
-            recordCreateRef.current?.(syntheticRow, {
-              node: artifact.node,
-              ...(recordOpts ?? {})
-            });
-          }
-        }
-      }
-      return { ok: true, newId };
+    // Adapt the Overlay → BundleLayerNode + route through dispatchEdit.
+    // The adapter refuses crop here — crop takes the dispatchEdit
+    // `{ kind: "crop" }` path via onCropCommit, not persistOverlay.
+    const adapted = overlayToBundleLayerNode(
+      overlay,
+      { width: model.record.width_px, height: model.record.height_px },
+      findRootGroupId(model.layers)
+    );
+    if (!adapted.ok) {
+      // eslint-disable-next-line no-console
+      console.error("overlayToBundleLayerNode failed", adapted.error);
+      return { ok: false };
     }
-
-    // v1 path — same dispatchEdit indirection. The synthesized
-    // OverlayRow comes back from the dispatcher (v1 captures persist
-    // OverlayRows verbatim). Behavior identical to the pre-refactor
-    // path; the only diff is the call goes through model.dispatchEdit.
-    // Need a placeholder OverlayRow to pass into the dispatcher — the
-    // v1 dispatcher only reads `op.row.data`, so a minimal shape is
-    // enough. The REAL row id comes back in the artifact.
-    const placeholderRow: OverlayRow = {
-      id: "",
-      capture_id: captureId,
-      data: overlay,
-      schema_version: 1,
-      source: "user",
-      ai_run_id: null,
-      z_index: 0,
-      rejected_at: null,
-      applied_at: null,
-      superseded_by: null,
-      created_at: new Date().toISOString()
-    };
     const result = await model.dispatchEdit({
       kind: "upsert",
-      row: placeholderRow
+      node: adapted.layer,
+      // Fresh-draw commit — land at the top of the stack. Without
+      // this, the layers-repo (preserve `node.z_index` verbatim when
+      // bumpZIndexToMax isn't passed) would freeze every new draw at
+      // z_index = 0, colliding with existing layers. See
+      // LayerEditOp.upsert doc-block for the contract.
+      bumpZIndexToMax: true
     });
     if (!result.ok) {
       // eslint-disable-next-line no-console
-      console.error("overlays:upsert via dispatchEdit failed", result.error);
+      console.error("layers:upsert via dispatchEdit failed", result.error);
       return { ok: false };
     }
     let newId = "";
     if (result.value.kind === "upsert") {
       const artifact = result.value.artifact;
-      if (artifact.format === 1) {
-        newId = artifact.row.id;
-        if (!undoApplyingRef.current) {
-          recordCreateRef.current?.(artifact.row, {
-            node: null,
-            ...(recordOpts ?? {})
-          });
-        }
+      newId = artifact.node.id;
+      if (!undoApplyingRef.current) {
+        // Pass the inserted layer node so undo→redo can re-insert
+        // the structurally-identical layer via layers:upsert. The
+        // synthetic OverlayRow gives the recorder a working .id for
+        // the delete-side of undo (matches the layer's id since the
+        // v2-to-row projection in projectV2LayersToOverlayRows uses
+        // layer.id as row.id).
+        const syntheticRow: OverlayRow = {
+          id: artifact.node.id,
+          capture_id: captureId,
+          data: overlay,
+          schema_version: 1,
+          source: artifact.node.source,
+          ai_run_id: artifact.node.ai_run_id,
+          z_index: artifact.node.z_index,
+          rejected_at: artifact.node.rejected_at,
+          applied_at: artifact.node.applied_at,
+          superseded_by: artifact.node.superseded_by,
+          created_at: artifact.node.created_at
+        };
+        recordCreateRef.current?.(syntheticRow, {
+          node: artifact.node,
+          ...(recordOpts ?? {})
+        });
       }
     }
-    // events:overlays:changed broadcast triggers refetch.
     return { ok: true, newId };
   }
 
@@ -2049,19 +1974,15 @@ export function Editor({
     // canvas's bucket math so the original "medium" no longer
     // matches the current canvas's medium-bucket value.
     //
-    // For v2 captures the source dims come from the raster layer's
-    // natural_*_px. For v1, the model doesn't carry separate source
-    // dims; fall back to record dims (= canvas dims = source dims
-    // for v1 since v1 crops don't shrink the canvas record).
+    // Source dims come from the raster layer's natural_*_px; fall back
+    // to record dims (= canvas dims) if no raster layer is found.
     let placementSourceW = model.record.width_px;
     let placementSourceH = model.record.height_px;
-    if (model.format === 2) {
-      for (const layer of model.layers) {
-        if (layer.kind === "raster" && layer.parent_id !== null) {
-          placementSourceW = layer.natural_width_px;
-          placementSourceH = layer.natural_height_px;
-          break;
-        }
+    for (const layer of model.layers) {
+      if (layer.kind === "raster" && layer.parent_id !== null) {
+        placementSourceW = layer.natural_width_px;
+        placementSourceH = layer.natural_height_px;
+        break;
       }
     }
     const sizePxAtPlacement = computeTextGlyphSize({
@@ -2185,13 +2106,10 @@ export function Editor({
     }
     clipboardRef.current = items;
     // Also push to the OS clipboard for cross-capture / cross-instance
-    // paste. v2-only — the main-side handler refuses v1 captures (no
-    // layer tree to serialize). For v1, in-memory paste-within-capture
-    // is the only mode; cross-capture paste in v1 isn't supported.
-    // Fire-and-forget — the in-memory clipboard is the load-bearing
-    // path for same-capture paste, and the user shouldn't have to wait
-    // for the OS write to complete on Cmd+C.
-    if (model.kind === "loaded" && model.format === 2) {
+    // paste. Fire-and-forget — the in-memory clipboard is the load-
+    // bearing path for same-capture paste, and the user shouldn't have
+    // to wait for the OS write to complete on Cmd+C.
+    if (model.kind === "loaded") {
       void dispatch("clipboard:copyLayerFragment", {
         captureId,
         layerIds: selectedLayerIds.slice()
@@ -2200,8 +2118,8 @@ export function Editor({
   }
 
   /** Paste-with-offset helper used by both Cmd+V and Cmd+D. The offset
-   *  is fixed (20 source-pixels in each axis) for v1. Returns once
-   *  every dispatch has settled. */
+   *  is fixed (20 source-pixels in each axis). Returns once every
+   *  dispatch has settled. */
   async function pasteOverlaysWithOffset(items: readonly Overlay[]): Promise<void> {
     if (items.length === 0) return;
     if (model.kind !== "loaded") return;
@@ -2251,18 +2169,14 @@ export function Editor({
     // private UTI (fragment) and PNG-fallback (creates a raster
     // layer); both count as a successful OS paste.
     //
-    // In-memory wins as a fallback for two cases:
-    //   • v1 captures, where the OS IPC is refused (no layer tree
-    //     to deserialize into; rasterize via PNG fallback is the
-    //     v2-only branch).
-    //   • OS clipboard is empty (most common when the user just
-    //     copied within the same capture and hasn't touched the
-    //     OS clipboard — in-memory has the data, no IPC needed).
+    // In-memory wins as a fallback when the OS clipboard is empty
+    // (most common when the user just copied within the same capture
+    // and hasn't touched the OS clipboard — in-memory has the data,
+    // no IPC needed).
     //
-    // We attempt OS first only for v2 captures. The OS call is
-    // async; on no-fragment + no-image, it returns
+    // The OS call is async; on no-fragment + no-image, it returns
     // `insertedLayerIds: []` which signals "fall back to in-memory".
-    if (model.kind === "loaded" && model.format === 2) {
+    if (model.kind === "loaded") {
       void (async (): Promise<void> => {
         const result = await dispatch("clipboard:pasteLayerFragment", {
           captureId,
@@ -2282,7 +2196,7 @@ export function Editor({
       })();
       return;
     }
-    // v1 capture (or model not loaded) — in-memory only.
+    // Model not loaded — in-memory only.
     void pasteOverlaysWithOffset(clipboardRef.current);
   }
 
@@ -2690,16 +2604,17 @@ export function Editor({
     );
   }
 
-  // Resolve OverlayRow[] for the existing renderer code path. v1 hands
-  // back overlays natively. v2 projects layer nodes back to OverlayRow
-  // shape (read-only — vector + blur-effect cover Phase 2 surface).
-  const overlaysForRender: OverlayRow[] =
-    model.format === 1
-      ? model.overlays
-      : projectV2LayersToOverlayRows(model.layers, captureId, {
-          widthPx: model.record.width_px,
-          heightPx: model.record.height_px
-        });
+  // Resolve OverlayRow[] for the existing renderer code path by
+  // projecting the v2 layer tree back to OverlayRow shape (vector +
+  // blur-effect cover the editor surface).
+  const overlaysForRender: OverlayRow[] = projectV2LayersToOverlayRows(
+    model.layers,
+    captureId,
+    {
+      widthPx: model.record.width_px,
+      heightPx: model.record.height_px
+    }
+  );
   // Sync the synchronous-read ref the outer pointerdown handler reads.
   // Render-phase write to a ref is safe (refs don't trigger renders);
   // we deliberately do this before returning EditorLoaded so a click
@@ -2747,53 +2662,39 @@ export function Editor({
     }
   }
 
-  // Type-erase dispatchEdit so EditorLoaded doesn't carry the format
-  // discriminant in its prop type. The hook itself reads
-  // `bundle_format_version` at dispatch time via its closure over
-  // `state`, so the runtime branch is correct regardless of which
-  // typed entry we hand over.
-  const dispatchEditErased = model.dispatchEdit as (
-    op: OverlayEditOp | LayerEditOp
-  ) => Promise<Result<EditOpResult, PwrSnapError>>;
+  const dispatchEditErased = model.dispatchEdit;
 
   // Source raster natural dims — separate from the capture's
-  // `width_px`/`height_px` which are the CANVAS (cropped) dims for v2.
+  // `width_px`/`height_px` which are the CANVAS (cropped) dims.
   // Without this, the editor's <img> would scale the full source into
   // the cropped canvas box, hiding the crop visually (aspect-preserved
   // squash looks identical at auto-fit zoom — real user hit exactly
   // this on 8nnmKLuUpBI4K8fl).
   //
-  // v1: there's no separate source vs canvas — record dims ARE source
-  // dims. Crop in v1 writes a CropOverlay; the bake honors it but the
-  // editor's source-PNG URL stays full-size. v1 didn't have this
-  // problem because v1 captures don't change their record dims on crop.
-  //
-  // v2: scan model.layers for the root raster's natural dims. The
-  // doctor + native-create paths always seed exactly one raster at
+  // Scan model.layers for the root raster's natural dims. The
+  // native-create path always seeds exactly one raster at
   // canvas-fits-source dims. Fall back to record dims if we can't find
-  // one (shouldn't happen for a healthy v2 capture).
+  // one (shouldn't happen for a healthy capture).
   let sourceWidthPx = model.record.width_px;
   let sourceHeightPx = model.record.height_px;
-  // Off-origin v2 crops translate the raster layer's transform by
+  // Off-origin crops translate the raster layer's transform by
   // (-rect.x × oldW, -rect.y × oldH) so the (smaller) canvas displays
   // the user's chosen region of the source. Read those translation
   // components here so the editor's <img> can mirror the offset via
-  // CSS transform. Identity (0, 0) for uncropped + edge-aligned
-  // crops + v1 captures (no layer tree). See pwrdrvr/PwrSnap#110 and
-  // useCaptureModel.ts's `Step 0.5: translate every raster layer's
-  // transform...` for the dispatcher side of this contract.
+  // CSS transform. Identity (0, 0) for uncropped + edge-aligned crops.
+  // See pwrdrvr/PwrSnap#110 and useCaptureModel.ts's `Step 0.5:
+  // translate every raster layer's transform...` for the dispatcher
+  // side of this contract.
   let rasterTranslateXPx = 0;
   let rasterTranslateYPx = 0;
-  if (model.format === 2) {
-    for (const layer of model.layers) {
-      if (layer.kind === "raster" && layer.parent_id !== null) {
-        sourceWidthPx = layer.natural_width_px;
-        sourceHeightPx = layer.natural_height_px;
-        // transform[4] = tx, transform[5] = ty, both in source-pixel units.
-        rasterTranslateXPx = layer.transform[4];
-        rasterTranslateYPx = layer.transform[5];
-        break;
-      }
+  for (const layer of model.layers) {
+    if (layer.kind === "raster" && layer.parent_id !== null) {
+      sourceWidthPx = layer.natural_width_px;
+      sourceHeightPx = layer.natural_height_px;
+      // transform[4] = tx, transform[5] = ty, both in source-pixel units.
+      rasterTranslateXPx = layer.transform[4];
+      rasterTranslateYPx = layer.transform[5];
+      break;
     }
   }
 
@@ -2842,8 +2743,6 @@ export function Editor({
       isControlled={isControlled}
       toolState={effectiveToolState}
       openActivePopoverRef={openActivePopoverRef}
-      ensureV2State={ensureV2.state}
-      onEnsureV2Retry={ensureV2.retry}
       selectedLayerIds={selectedLayerIds}
       setSelectedLayerIds={setSelectedLayerIds}
       setSelectionTrustingDispatch={setSelectionTrustingDispatch}
@@ -2852,8 +2751,7 @@ export function Editor({
       nudgeSelectedRef={nudgeSelectedRef}
       reorderSelectedRef={reorderSelectedRef}
       commitMultiDragRef={commitMultiDragRef}
-      modelFormat={model.format}
-      modelLayers={model.format === 2 ? model.layers : []}
+      modelLayers={model.layers}
       dispatchEdit={dispatchEditErased}
       sourceWidthPx={sourceWidthPx}
       sourceHeightPx={sourceHeightPx}
@@ -2899,8 +2797,6 @@ function EditorLoaded({
   isControlled,
   toolState,
   openActivePopoverRef,
-  ensureV2State,
-  onEnsureV2Retry,
   selectedLayerIds,
   setSelectedLayerIds,
   setSelectionTrustingDispatch,
@@ -2909,7 +2805,6 @@ function EditorLoaded({
   nudgeSelectedRef,
   reorderSelectedRef,
   commitMultiDragRef,
-  modelFormat,
   modelLayers,
   dispatchEdit,
   sourceWidthPx,
@@ -3010,12 +2905,6 @@ function EditorLoaded({
   isControlled: boolean;
   toolState: ReturnType<typeof useEditorToolState>;
   openActivePopoverRef: React.RefObject<(() => void) | null>;
-  /** v1 → v2 doctor state from `useEnsureV2`. While the doctor is
-   *  upgrading (or has parked), the toolbar is disabled and the
-   *  V1ToV2DoctorBanner renders over the canvas. */
-  ensureV2State: EnsureV2State;
-  /** Bound to the Retry button on the view-only banner. */
-  onEnsureV2Retry: () => void;
   /** Multi-select model — ids of every currently-selected overlay.
    *  Empty array means nothing selected. Drives the selection outline
    *  glyphs in OverlaySvg (one per id) and the keyboard-Delete /
@@ -3078,31 +2967,27 @@ function EditorLoaded({
       ) => Promise<void>)
     | null
   >;
-  /** Resolved bundle format from the model (1 or 2). EditorLoaded uses
-   *  it to branch overlay-delete IPC selection. */
-  modelFormat: 1 | 2;
-  /** v2 layer tree (empty array on v1 captures). The deleter looks up
-   *  the matching layer node by id so `recordDelete` can pass `node`
-   *  to the undo entry — without it, undo of a v2 delete re-upserts
-   *  via `{ row }` which the v2 dispatcher's type doesn't accept,
-   *  silently leaving the delete un-undoable. */
+  /** The v2 layer tree. The deleter looks up the matching layer node
+   *  by id so `recordDelete` can pass `node` to the undo entry —
+   *  without it, undo of a delete couldn't re-insert the
+   *  structurally-identical layer. */
   modelLayers: readonly BundleLayerNode[];
-  /** Type-erased dispatchEdit from the resolved CaptureModel. EditorLoaded
-   *  threads it into useUndoRedo (so undo/redo route through the same
-   *  format-aware dispatcher as create writes) and into onCropCommit
-   *  (so v2 captures use bundle:updateCanvasDimensions). */
+  /** dispatchEdit from the resolved CaptureModel. EditorLoaded threads
+   *  it into useUndoRedo (so undo/redo route through the same
+   *  dispatcher as create writes) and into onCropCommit (which uses
+   *  bundle:updateCanvasDimensions). */
   dispatchEdit: (
-    op: OverlayEditOp | LayerEditOp
+    op: LayerEditOp
   ) => Promise<Result<EditOpResult, PwrSnapError>>;
   /** Source raster's natural dimensions, distinct from the capture's
-   *  `width_px`/`height_px` which are the CANVAS (cropped) dims for v2.
+   *  `width_px`/`height_px` which are the CANVAS (cropped) dims.
    *  Editor's <img> renders at source dims; canvas wrap clips to canvas
    *  dims so the crop is visually reflected. */
   sourceWidthPx: number;
   sourceHeightPx: number;
   /** Raster layer's transform translation in source-pixel units —
    *  drives the off-origin crop view (pwrdrvr/PwrSnap#110). Zero
-   *  for uncropped captures, edge-aligned crops, and v1 captures. */
+   *  for uncropped captures and edge-aligned crops. */
   rasterTranslateXPx: number;
   rasterTranslateYPx: number;
   /** Phase 3.6 — caller-provided handler for double-click on a TEXT
@@ -3242,14 +3127,10 @@ function EditorLoaded({
       row: OverlayRow,
       opts?: RecordOptions
     ): Promise<void> => {
-      // For v2 captures, find the layer node so recordDelete can
-      // re-insert the structurally-identical layer on undo (preserves
-      // parent_id / z_index / transform[] beyond what's in row.data).
-      // For v1, node stays null and undo re-upserts via { row }.
-      const node =
-        modelFormat === 2
-          ? (modelLayers.find((l) => l.id === row.id) ?? null)
-          : null;
+      // Find the layer node so recordDelete can re-insert the
+      // structurally-identical layer on undo (preserves parent_id /
+      // z_index / transform[] beyond what's in row.data).
+      const node = modelLayers.find((l) => l.id === row.id) ?? null;
       const result = await dispatchEdit({ kind: "delete", id: row.id });
       if (!result.ok) {
         // eslint-disable-next-line no-console
@@ -3276,7 +3157,6 @@ function EditorLoaded({
   }, [
     deleteSelectedRef,
     dispatchEdit,
-    modelFormat,
     modelLayers,
     undo,
     undoApplyingRef
@@ -3421,8 +3301,7 @@ function EditorLoaded({
             continue;
           }
           const artifact = result.value.artifact;
-          const newId =
-            artifact.format === 1 ? artifact.row.id : artifact.node.id;
+          const newId = artifact.node.id;
           newIds.push(newId);
           // Record on the undo stack. Without this, nudge was
           // silently unundoable (the dispatcher itself doesn't auto-
@@ -3522,8 +3401,7 @@ function EditorLoaded({
             continue;
           }
           const artifact = result.value.artifact;
-          const newId =
-            artifact.format === 1 ? artifact.row.id : artifact.node.id;
+          const newId = artifact.node.id;
           newIds.push(newId);
           if (!undoApplyingRef.current && previousGeometry !== null) {
             undo.recordGeometry(
@@ -3696,8 +3574,7 @@ function EditorLoaded({
           return;
         }
         const artifact = result.value.artifact;
-        const newId =
-          artifact.format === 1 ? artifact.row.id : artifact.node.id;
+        const newId = artifact.node.id;
         // Re-anchor the selection on the new id so the handles + the
         // selection outline follow the freshly-inserted row. Geometry
         // drags happen via TransformHandles which only renders for
@@ -3834,8 +3711,7 @@ function EditorLoaded({
         }
         if (result.value.kind !== "update") return;
         const artifact = result.value.artifact;
-        const newId =
-          artifact.format === 1 ? artifact.row.id : artifact.node.id;
+        const newId = artifact.node.id;
         // Style edits go through onSelectedStyleFieldChange which is
         // single-selection-only (gated by selectedOverlayForHandles).
         // Replace, not merge — the new id supersedes the old.
@@ -4577,13 +4453,6 @@ function EditorLoaded({
             </div>
           )}
         </div>
-        {/* v1 → v2 lazy doctor banner. Anchored to the canvas-wrap so
-            it overlays the editor canvas; returns null in
-            irrelevant/ready states. */}
-        <V1ToV2DoctorBanner
-          state={ensureV2State}
-          onRetry={onEnsureV2Retry}
-        />
         {/* Phase 5 paste/drop notice. Surfaces user-friendly errors
             (v1-only, oversize, decode failure, symlink reject) for a
             short window. Auto-clears after 3.5s via the timer effect
@@ -4668,14 +4537,7 @@ function EditorLoaded({
             }
           }}
           popoverAnchorRef={popoverAnchorRef}
-          // Disable while the v1 → v2 doctor is running or has parked
-          // (Phase 3) — annotations on a v1 capture mid-migration
-          // would conflict with the doctor's atomic write ordering,
-          // and a parked capture is read-only by design until Retry.
-          disabled={
-            ensureV2State.status === "upgrading" ||
-            ensureV2State.status === "view_only"
-          }
+          disabled={false}
         />
       )}
 

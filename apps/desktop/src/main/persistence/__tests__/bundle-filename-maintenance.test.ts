@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { BundleManifestV1, BundleOverlaysV1 } from "@pwrsnap/shared";
+import type { BundleDocumentV2, BundleManifestV2 } from "@pwrsnap/shared";
 
 const mocks = vi.hoisted(() => ({
   db: null as Database.Database | null,
@@ -34,7 +34,7 @@ vi.mock("../bundle-filename-settings", () => ({
 }));
 
 const { buildCaptureBundleFilenameStem } = await import("../bundle-filename");
-const { packBundle, runExclusiveBundleFileOperation } = await import("../bundle-store");
+const { packBundleV2, runExclusiveBundleFileOperation } = await import("../bundle-store");
 const {
   expectedBundleStemForCapture,
   renameBundleToEffectiveFilename,
@@ -84,7 +84,7 @@ function insertCapture(args: {
         @id, @kind, '2026-05-29T18:38:12.000Z',
         NULL, @sourceAppName,
         NULL, @bundlePath, NULL, '2026-05-29T18:38:12.000Z',
-        1, 0,
+        2, 0,
         100, 80, 2, 1024,
         @sha256, 0, NULL
       )`
@@ -109,27 +109,28 @@ function insertEnrichment(args: {
 }
 
 async function writeBundleFixture(path: string, captureId: string): Promise<void> {
-  const manifest: BundleManifestV1 = {
-    bundle_format_version: 1,
+  const sourceSha = "a1b2c3d4".repeat(8);
+  const manifest: BundleManifestV2 = {
+    bundle_format_version: 2,
     capture_id: captureId,
-    source_sha256: "a1b2c3d4".repeat(8),
-    source_dimensions: { width_px: 100, height_px: 80 },
+    canvas_dimensions: { width_px: 100, height_px: 80 },
     paired_png_filename: `${captureId}.png`,
     created_at: "2026-05-29T18:38:12.000Z",
     bundle_modified_at: "2026-05-29T18:38:12.000Z"
   };
-  const overlays: BundleOverlaysV1 = {
-    overlays_format_version: 1,
-    overlays_version: 0,
-    overlays: [],
+  const document: BundleDocumentV2 = {
+    document_format_version: 1,
+    edits_version: 0,
+    layers: [],
     tags: [],
     description: null,
     ai_runs: []
   };
-  const bytes = await packBundle({
+  const bytes = await packBundleV2({
     manifest,
-    overlays,
-    sourcePng: Buffer.from("fake-source"),
+    document,
+    sources: new Map([[sourceSha, Buffer.from("fake-source")]]),
+    layerBytes: new Map(),
     thumbnailJpg: Buffer.from("fake-thumb")
   });
   await writeFile(path, bytes);

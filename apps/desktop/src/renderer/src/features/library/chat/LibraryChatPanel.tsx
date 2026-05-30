@@ -21,7 +21,7 @@ import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import { MessageList, type ChatActivityChip } from "../../shared/chat/MessageList";
 import { Composer, type ComposerAttachment } from "../../shared/chat/Composer";
 import { ChatApprovalModal } from "../../shared/chat/ChatApprovalModal";
-import "./LibraryChatPanel.css";
+import "../../shared/chat/chat-panel.css";
 
 export interface LibraryChatPanelProps {
   /** The capture the user is currently viewing, passed as the thread
@@ -111,7 +111,12 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         setLoading(false);
         return;
       }
-      setThreads(result.value?.threads ?? []);
+      const found = result.value?.threads ?? [];
+      setThreads(found);
+      // Resume this capture's most-recent chat (threads are modified_at
+      // DESC) instead of dropping to the greeting — so navigating away
+      // and back (and relaunching) reopens the conversation.
+      if (found.length > 0) setActiveThreadId(found[0]!.threadId);
       setLoading(false);
     })();
     return () => {
@@ -309,7 +314,13 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
           return;
         }
         threadId = created.value.threadId;
-        setThreads((prev) => [created.value, ...prev]);
+        // Dedup: the controller also broadcasts threadUpdated for this new
+        // thread, which can land before this optimistic add — without the
+        // filter the same thread shows as two tiles.
+        setThreads((prev) => [
+          created.value,
+          ...prev.filter((t) => t.threadId !== created.value.threadId)
+        ]);
         setActiveThreadId(threadId);
       }
       // Fresh turn: clear only the pending (in-flight) chips. Prior

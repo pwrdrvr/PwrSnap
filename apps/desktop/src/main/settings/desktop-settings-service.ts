@@ -17,6 +17,7 @@ import type {
   BlurToolStyle,
   ChatSettings,
   CodexTestResult,
+  DesktopCodexAuthProbe as SharedCodexAuthProbe,
   DesktopCodexCandidateSource as SharedCodexCandidateSource,
   DesktopCodexDiscoveryCandidate as SharedCodexCandidate,
   DesktopCodexDiscoverySnapshot as SharedCodexSnapshot,
@@ -56,6 +57,7 @@ import {
   compareCodexCliVersions,
   discoverCodexCommands,
   MINIMUM_CODEX_CLI_VERSION,
+  probeCodexAuth,
   resolveCodexCommand
 } from "./codex-discovery";
 import { getMainLogger } from "../log";
@@ -789,6 +791,7 @@ export class DesktopSettingsService {
     );
 
     let resolvedPath: string | null = null;
+    let auth: SharedCodexAuthProbe | null = null;
     try {
       const resolved = await resolveCodexCommand({
         command:
@@ -797,7 +800,13 @@ export class DesktopSettingsService {
             : "codex",
         env: process.env
       });
-      resolvedPath = resolved.command;
+      const resolvedCandidate = candidates.find(
+        (candidate) => candidate.available && candidate.path === resolved.command
+      );
+      if (resolvedCandidate !== undefined) {
+        resolvedPath = resolved.command;
+        auth = await probeCodexAuth(resolved.command, process.env);
+      }
     } catch (cause) {
       this.log.warn("settings-service: resolveCodexCommand failed", {
         message: cause instanceof Error ? cause.message : String(cause)
@@ -808,6 +817,7 @@ export class DesktopSettingsService {
     const snapshot: SharedCodexSnapshot = {
       candidates,
       resolvedPath,
+      auth,
       refreshedAt: new Date().toISOString()
     };
     this.codexSnapshotCache = { snapshot, computedAt: Date.now() };

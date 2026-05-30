@@ -17,9 +17,10 @@ import type {
   Res,
   Result,
   ScrollProbeRequest,
-  Settings
+  Settings,
+  DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS, type SizzleProject } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type SettingsChangedEvent, type SizzleProject } from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -31,6 +32,7 @@ import { FixtureBackedRecords, mapBundleIdToAppId } from "./adapter";
 import type { Capture } from "./captures";
 import { APP_INFO, groupByDay } from "./captures";
 import { DetailRail } from "./DetailRail";
+import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { initialLibraryView, libraryReducer } from "./library-view";
 import { Stage } from "./Stage";
 import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
@@ -44,10 +46,19 @@ import { useHotkeys } from "../shared/useHotkeys";
 import { LayoutToggleButtons } from "../shared/LayoutToggleButtons";
 import "../shared/LayoutToggleButtons.css";
 import { acceleratorToDisplayKeys } from "../../lib/format-hotkey";
+import { AiConsentDialog } from "../shared/AiConsentDialog";
 // Thumb (synthetic per-app gradient) is the fallback for the empty
 // state and for fixture rows in dev. Real captures render via
 // <img src="pwrsnap-cache://"> through CellThumb below.
 import { Thumb } from "./Thumb";
+
+function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
+  if (snapshot.resolvedPath === null) return false;
+  if (snapshot.auth?.status !== "authenticated") return false;
+  return snapshot.candidates.some(
+    (candidate) => candidate.available && candidate.path === snapshot.resolvedPath
+  );
+}
 
 function copyPresetForShortcutKey(key: string): CopyPreset | null {
   if (key === "1") return "low";
@@ -423,6 +434,19 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
   useEffect(() => {
     rightPinnedRef.current = rightPinned;
   }, [rightPinned]);
+
+  const [aiEnabled, setAiEnabledState] = useState<boolean>(false);
+  const [aiConsentAcceptedAt, setAiConsentAcceptedAtState] = useState<string | null>(null);
+  const [aiToggleBusy, setAiToggleBusy] = useState<boolean>(false);
+  const [aiConsentDialogOpen, setAiConsentDialogOpen] = useState<boolean>(false);
+  const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
+  const userTouchedAiRef = useRef<boolean>(false);
+
+  const applyAiSettings = useCallback((settings: Settings): void => {
+    setAiEnabledState(settings.ai.enabled);
+    setAiConsentAcceptedAtState(settings.ai.consentAcceptedAt);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void dispatch("settings:read", {}).then((result) => {
@@ -435,11 +459,39 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           setRightActiveTabState(rail.lastSelectedTab);
         }
       }
+      if (result.ok && !userTouchedAiRef.current) {
+        applyAiSettings(result.value);
+      }
       // Always mark hydrated — even on read failure / user-touched
       // bail — so the rail doesn't stay in its pre-hydration phantom
       // state forever. Mirror of the same pattern in DetailRail's
       // uncontrolled-mode read.
       setSettingsHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyAiSettings]);
+  useEffect(() => {
+    const unsubscribe = subscribe(EVENT_CHANNELS.settingsChanged, (payload) => {
+      const evt = payload as SettingsChangedEvent;
+      applyAiSettings(evt.settings);
+      void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+        if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
+      });
+    });
+    return unsubscribe;
+  }, [applyAiSettings]);
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        const snapshot = result.value as DesktopCodexDiscoverySnapshot;
+        setCodexAvailable(codexAvailableInSnapshot(snapshot));
+      } else {
+        setCodexAvailable(false);
+      }
     });
     return () => {
       cancelled = true;
@@ -481,6 +533,59 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
       library: { detailRail: { pinned: next } }
     });
   }, []);
+
+  const writeAiEnabled = useCallback((next: boolean, consentAcceptedAt: string | null): void => {
+    const previousEnabled = aiEnabled;
+    const previousConsentAcceptedAt = aiConsentAcceptedAt;
+
+    userTouchedAiRef.current = true;
+    setAiToggleBusy(true);
+    setAiEnabledState(next);
+    setAiConsentAcceptedAtState(consentAcceptedAt);
+    void dispatch("settings:write", {
+      ai: {
+        enabled: next,
+        consentAcceptedAt
+      }
+    }).then((result) => {
+      setAiToggleBusy(false);
+      if (result.ok) {
+        applyAiSettings(result.value);
+        return;
+      }
+      setAiEnabledState(previousEnabled);
+      setAiConsentAcceptedAtState(previousConsentAcceptedAt);
+    });
+  }, [aiConsentAcceptedAt, aiEnabled, applyAiSettings]);
+
+  const toggleAiEnabled = useCallback((): void => {
+    const action = resolveLibraryAiToggleAction({
+      aiEnabled,
+      aiConsentAcceptedAt,
+      codexAvailable
+    });
+    switch (action) {
+      case "disable":
+        writeAiEnabled(false, aiConsentAcceptedAt);
+        return;
+      case "configure":
+        void dispatch("settings:open", { page: "ai" });
+        return;
+      case "consent":
+        userTouchedAiRef.current = true;
+        setAiConsentDialogOpen(true);
+        return;
+      case "enable":
+        userTouchedAiRef.current = true;
+        writeAiEnabled(true, aiConsentAcceptedAt);
+        return;
+    }
+  }, [aiConsentAcceptedAt, aiEnabled, codexAvailable, writeAiEnabled]);
+
+  const acceptAiConsent = useCallback((): void => {
+    setAiConsentDialogOpen(false);
+    writeAiEnabled(true, new Date().toISOString());
+  }, [writeAiEnabled]);
 
   // View-state reducer — single source of truth for {grid, focus, reel}
   // mode + selected record id. Discriminated-union shape encodes the
@@ -2489,9 +2594,40 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
               </div>
             ) : null}
           </div>
-          <span>
-            Codex auto-tag <b>on</b>
-          </span>
+          <button
+            type="button"
+            className={
+              "psl__ai-toggle" +
+              (aiEnabled ? " is-on" : "") +
+              (codexAvailable === false ? " is-configure" : "")
+            }
+            role="switch"
+            aria-checked={aiEnabled}
+            disabled={aiToggleBusy}
+            title={
+              codexAvailable === false && !aiEnabled
+                ? "Open AI Providers settings to configure Codex"
+                : aiEnabled
+                ? "Turn off automatic Codex enrichment for new captures"
+                : "Turn on automatic Codex enrichment for new captures"
+            }
+            onClick={toggleAiEnabled}
+          >
+            <span className="psl__ai-toggle-track" aria-hidden="true">
+              <span className="psl__ai-toggle-thumb" />
+            </span>
+            <span>
+              {codexAvailable === false && !aiEnabled ? (
+                <>
+                  Configure <b>AI</b>
+                </>
+              ) : (
+                <>
+                  Codex enrich <b>{aiEnabled ? "on" : "off"}</b>
+                </>
+              )}
+            </span>
+          </button>
         </div>
         <div className="psl__status-r">
           <span>
@@ -2499,6 +2635,12 @@ export function Library({ initialSelected = 1 }: { initialSelected?: number }) {
           </span>
         </div>
       </footer>
+      {aiConsentDialogOpen ? (
+        <AiConsentDialog
+          onCancel={() => setAiConsentDialogOpen(false)}
+          onAccept={acceptAiConsent}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2962,4 +3104,3 @@ function CellRow({
     </div>
   );
 }
-

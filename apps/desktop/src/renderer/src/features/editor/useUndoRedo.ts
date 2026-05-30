@@ -1,8 +1,8 @@
-// Session-memory undo/redo stack for editor overlay edits.
+// Session-memory undo/redo stack for editor layer edits.
 //
-// The DB doesn't track an edit history per se — every overlay change
-// goes through `overlays:upsert` or `overlays:delete` and bumps the
-// capture's `edits_version`. For v1 undo/redo we don't need persistent
+// The DB doesn't track an edit history per se — every layer change
+// goes through `layers:upsert` / `layers:delete` (via the dispatcher)
+// and bumps the capture's `edits_version`. We don't need persistent
 // time-travel; we just need the user to be able to walk back the
 // operations they did in *this* editor session.
 //
@@ -20,9 +20,9 @@
 //     state.
 //   • Capacity-bounded at MAX_DEPTH=100. Older ops drop off the back.
 //
-// The recompose cost per undo is one v1-bake pass (~10-50ms on
-// typical captures). For arrow/rect/text overlays this is below
-// human-perceptible latency — feels instant.
+// The recompose cost per undo is one bake pass (~10-50ms on typical
+// captures). For arrow/rect/text layers this is below human-
+// perceptible latency — feels instant.
 //
 // v2 editor refresh (Phase 2, task #14) — coalescing per plan Alt 5:
 //
@@ -47,38 +47,26 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BundleLayerNode, OverlayRow, PwrSnapError, Result } from "@pwrsnap/shared";
-import { dispatch } from "../../lib/pwrsnap";
 import type {
   CropRect,
   EditOpResult,
   GeometryUpdate,
   LayerEditOp,
-  OverlayEditOp,
   OverlayPatch
 } from "./useCaptureModel";
 
 /**
- * EditOps recorded on the undo stack. v1 only has `create` and
- * `delete` because the overlays IPC is INSERT-only — `overlays:upsert`
- * always produces a new row id, and there is no `overlays:update`.
+ * EditOps recorded on the undo stack.
  *
- * When the editor grows drag-existing-overlay (edit-after-place), an
- * "edit" will be recorded as TWO independent ops: a `delete` of the
- * existing row + a `create` of the replacement. Undoing once reverts
- * the most-recent half (the create), undoing twice reverts the
- * other half (the delete). That keeps the IPC contract honest — the
- * hook never has to fabricate an id round-trip.
- *
- * v2 captures carry an additional `node` field so the redo of a
- * delete (or undo of a create) can dispatch `layers:upsert` with the
- * original BundleLayerNode shape — not just the v1-shaped row.data.
- * For v1 captures the node is null and the hook falls through to
- * overlays:upsert/delete via the format-aware dispatchEdit callback.
+ * create/delete ops carry both an OverlayRow (`row`, for the row.id
+ * and coalescing diff) and the original BundleLayerNode (`node`) so
+ * the redo of a delete (or undo of a create) can dispatch
+ * `layers:upsert` with the structurally-identical layer shape —
+ * preserving parent_id / z_index / transform beyond what's in
+ * row.data.
  *
  * `crop` ops carry the previous canvas dimensions (in source pixels)
- * so undo can restore them via bundle:updateCanvasDimensions on v2
- * captures. v1 captures don't actually mutate canvas dims, so the
- * previous values are surfaced uniformly but only acted on for v2.
+ * so undo can restore them via bundle:updateCanvasDimensions.
  */
 /** Single create-or-delete entry — the data the inverse needs to
  *  re-upsert (on delete-undo) or re-delete (on create-undo). Stored
@@ -187,10 +175,9 @@ const COALESCE_WINDOW_MS = 300;
 export type InteractionToken = { readonly __brand: "InteractionToken" };
 
 export type UseUndoRedoResult = {
-  /** Record an overlay create. For v2 captures, pass the inserted
-   *  BundleLayerNode under `node` — required so the redo path can
-   *  re-dispatch `layers:upsert` with the original layer shape. v1
-   *  callers pass `node: null`. */
+  /** Record a layer create. Pass the inserted BundleLayerNode under
+   *  `node` — required so the redo path can re-dispatch `layers:upsert`
+   *  with the original layer shape. */
   recordCreate: (
     row: OverlayRow,
     opts?: RecordOptions & { node?: BundleLayerNode | null }
@@ -217,9 +204,9 @@ export type UseUndoRedoResult = {
    *  the POST-DRAG geometry. `currentIdRef` is a mutable id pointer
    *  the hook updates after each undo/redo cycle (the update IPC mints
    *  a fresh id on every replay). Caller initializes it with the
-   *  post-edit overlay id (typically `result.value.artifact.row.id`
-   *  or `.node.id`). The caller is responsible for updating the
-   *  selection model to follow `currentIdRef.current` on undo/redo. */
+   *  post-edit layer id (typically `result.value.artifact.node.id`).
+   *  The caller is responsible for updating the selection model to
+   *  follow `currentIdRef.current` on undo/redo. */
   recordGeometry: (
     entry: {
       currentIdRef: { current: string };
@@ -250,14 +237,12 @@ export type UseUndoRedoResult = {
   canRedo: boolean;
 };
 
-/** Format-aware dispatcher passed in by the caller (Editor.tsx wires
- *  this from the resolved CaptureModel). The hook never reaches for
- *  the bus directly — it just hands ops to this callback. Same shape
- *  as `CaptureModelV1.dispatchEdit` / `CaptureModelV2.dispatchEdit`,
- *  union-typed because the hook doesn't care which format it's on
- *  (the dispatcher itself does the routing). */
+/** Dispatcher passed in by the caller (Editor.tsx wires this from the
+ *  resolved CaptureModel). The hook never reaches for the bus directly
+ *  — it just hands layer ops to this callback. Same shape as
+ *  `CaptureModelV2.dispatchEdit`. */
 export type UndoRedoDispatchEdit = (
-  op: OverlayEditOp | LayerEditOp
+  op: LayerEditOp
 ) => Promise<Result<EditOpResult, PwrSnapError>>;
 
 /** Hints for the coalescing layer. When provided, two consecutive
@@ -268,9 +253,8 @@ export type RecordOptions = {
   /** A string identifier for the operation kind (e.g. "drag",
    *  "setColor", "resize"). Used as half of the coalescing key. */
   readonly opKind?: string;
-  /** The layer (or future v2 layer) being edited. Used as the other
-   *  half of the coalescing key. v1 row ids work — pass `row.id` for
-   *  edits to the same overlay. */
+  /** The layer being edited. Used as the other half of the coalescing
+   *  key — pass `row.id` for edits to the same layer. */
   readonly layerId?: string;
   /** How to coalesce when this push matches an open bracket's key:
    *   - `"replace"` (default): the NEW row/geometry REPLACES the last
@@ -300,23 +284,18 @@ export function useUndoRedo(opts: {
    *  uses this to suppress recording of the resulting IPC roundtrip,
    *  which would otherwise re-enter the stack. */
   applyingRef?: React.RefObject<boolean>;
-  /** Format-aware dispatcher from the resolved CaptureModel. The
-   *  hook never reaches for the bus directly — every undo/redo IPC
-   *  goes through this callback, which picks the right verb based
-   *  on `bundle_format_version`. When omitted (rare; legacy code
-   *  paths and tests), the hook falls back to direct overlays:*
-   *  dispatch via the renderer's dispatch shim. */
-  dispatchEdit?: UndoRedoDispatchEdit;
+  /** Dispatcher from the resolved CaptureModel. The hook never reaches
+   *  for the bus directly — every undo/redo IPC goes through this
+   *  callback, which emits the right `layers:*` verb. */
+  dispatchEdit: UndoRedoDispatchEdit;
 }): UseUndoRedoResult {
-  const { captureId } = opts;
   const [past, setPast] = useState<EditOp[]>([]);
   const [future, setFuture] = useState<EditOp[]>([]);
   // Stash the dispatchEdit in a ref so the undo/redo callbacks don't
   // re-create on every render (it changes identity whenever the model
-  // refetches, which is every overlay write). Tests + legacy callers
-  // that don't pass one fall through to the direct-dispatch path.
-  const dispatchEditRef = useRef<UndoRedoDispatchEdit | null>(null);
-  dispatchEditRef.current = opts.dispatchEdit ?? null;
+  // refetches, which is every layer write).
+  const dispatchEditRef = useRef<UndoRedoDispatchEdit>(opts.dispatchEdit);
+  dispatchEditRef.current = opts.dispatchEdit;
   // Internal ref used to suppress recording when WE are the ones
   // re-issuing an op via undo/redo. If the caller passed an
   // `applyingRef`, we expose ours through that one too — but the
@@ -590,14 +569,9 @@ export function useUndoRedo(opts: {
     // handler.
   }, []);
 
-  // Apply a single EditOp's INVERSE through the format-aware
-  // dispatcher (or the legacy direct-dispatch fallback). Shared between
-  // undo (inverse of the latest past op) and redo (re-apply the
+  // Apply a single EditOp's INVERSE through the dispatcher. Shared
+  // between undo (inverse of the latest past op) and redo (re-apply the
   // future op = inverse of what undo just did).
-  //
-  // The hook never knows the capture's bundle_format_version directly
-  // — that's the dispatchEdit's job. We just describe the op shape and
-  // let the dispatcher pick the right verb.
   const applyInverse = useCallback(
     async (op: EditOp, direction: "undo" | "redo"): Promise<void> => {
       const dispatchEdit = dispatchEditRef.current;
@@ -616,47 +590,21 @@ export function useUndoRedo(opts: {
         // earlier rows in a burst were silently lost.
         for (const item of op.items) {
           if (isInverse) {
-            // Delete the just-created row/layer.
-            if (dispatchEdit !== null) {
-              // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({ kind: "delete", id: item.row.id });
-            } else {
-              // Legacy fallback: direct v1 dispatch.
-              // eslint-disable-next-line no-await-in-loop
-              await dispatch("overlays:delete", { id: item.row.id });
-            }
+            // Delete the just-created layer.
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "delete", id: item.row.id });
             continue;
           }
-          // redo of create — re-upsert with the original z_index
-          // preserved. v2's `kind: "upsert"` defaults to preservation
-          // (the node carries its z_index); v1's defaults to auto-
-          // bump unless `preserveZIndex: true`. Without explicit
-          // preservation the redone layer would land at MAX + GAP
-          // again, which is OK for a redo right after undo but
-          // diverges from "redo restores the same logical state" if
-          // any layers were added in between.
-          if (dispatchEdit !== null) {
-            if (item.node !== null) {
-              // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({ kind: "upsert", node: item.node });
-            } else {
-              // eslint-disable-next-line no-await-in-loop
-              await dispatchEdit({
-                kind: "upsert",
-                row: item.row,
-                preserveZIndex: true
-              });
-            }
-            continue;
+          // redo of create — re-upsert. The node carries its z_index;
+          // layers:upsert defaults to preserving it (no
+          // bumpZIndexToMax), so the redone layer lands at its original
+          // logical position. `item.node` is always set for v2 creates;
+          // the `null` fallback is dead but kept for the recorder's
+          // optional-node shape.
+          if (item.node !== null) {
+            // eslint-disable-next-line no-await-in-loop
+            await dispatchEdit({ kind: "upsert", node: item.node });
           }
-          // eslint-disable-next-line no-await-in-loop
-          await dispatch("overlays:upsert", {
-            captureId,
-            overlay: item.row.data,
-            // Same preservation discipline on the legacy direct-IPC
-            // fallback — keeps the redone row at its original z_index.
-            zIndex: item.row.z_index
-          });
         }
         return;
       }
@@ -670,42 +618,19 @@ export function useUndoRedo(opts: {
         // looping here.
         for (const item of op.items) {
           if (isInverse) {
-            // Undo of delete — re-create at the row's ORIGINAL
-            // z_index. Same shape rules as the create→redo branch
-            // above. Without explicit preservation, the v1 fast
-            // path would auto-bump the restored row to the top of
-            // the stack, breaking the user's mental model ("undo
-            // brings it back where it was, not on top").
-            if (dispatchEdit !== null) {
-              if (item.node !== null) {
-                // eslint-disable-next-line no-await-in-loop
-                await dispatchEdit({ kind: "upsert", node: item.node });
-              } else {
-                // eslint-disable-next-line no-await-in-loop
-                await dispatchEdit({
-                  kind: "upsert",
-                  row: item.row,
-                  preserveZIndex: true
-                });
-              }
-              continue;
+            // Undo of delete — re-create the layer. The node carries
+            // its original z_index so the restored layer comes back
+            // where it was, not on top (layers:upsert preserves
+            // node.z_index when bumpZIndexToMax isn't set).
+            if (item.node !== null) {
+              // eslint-disable-next-line no-await-in-loop
+              await dispatchEdit({ kind: "upsert", node: item.node });
             }
-            // eslint-disable-next-line no-await-in-loop
-            await dispatch("overlays:upsert", {
-              captureId,
-              overlay: item.row.data,
-              zIndex: item.row.z_index
-            });
             continue;
           }
           // redo of delete — re-delete.
-          if (dispatchEdit !== null) {
-            // eslint-disable-next-line no-await-in-loop
-            await dispatchEdit({ kind: "delete", id: item.row.id });
-            continue;
-          }
           // eslint-disable-next-line no-await-in-loop
-          await dispatch("overlays:delete", { id: item.row.id });
+          await dispatchEdit({ kind: "delete", id: item.row.id });
         }
         return;
       }
@@ -717,19 +642,6 @@ export function useUndoRedo(opts: {
         // direction === "redo" → re-apply the original normalized rect
         // against the (currently restored) previous canvas — produces
         // newWidth/newHeight again.
-        if (dispatchEdit === null) {
-          // v1 fallback can't crop a v2 capture — and the legacy code
-          // path was overlays:upsert with a CropOverlay which doesn't
-          // change canvas dims anyway. Best we can do is replay the
-          // original rect as a v1 CropOverlay; on undo that's a no-op
-          // for canvas, on redo we re-insert the crop overlay.
-          if (direction === "undo") return;
-          await dispatch("overlays:upsert", {
-            captureId,
-            overlay: { kind: "crop", rect: op.rect }
-          });
-          return;
-        }
         if (direction === "undo") {
           // The inverse of crop(cx, cy, cw, ch) is the rect
           //   (-cx/cw, -cy/ch, 1/cw, 1/ch)
@@ -784,7 +696,6 @@ export function useUndoRedo(opts: {
         // Loop over EVERY item so multi-drag undo restores every
         // layer's geometry, not just the first. Same items[]
         // discipline as create/delete above.
-        if (dispatchEdit === null) return;
         for (const item of op.items) {
           const targetGeometry =
             direction === "undo" ? item.previousGeometry : item.nextGeometry;
@@ -794,17 +705,7 @@ export function useUndoRedo(opts: {
             layerId: item.currentIdRef.current,
             geometry: targetGeometry
           });
-          if (
-            result.ok &&
-            result.value.kind === "update" &&
-            result.value.artifact.format === 1
-          ) {
-            item.currentIdRef.current = result.value.artifact.row.id;
-          } else if (
-            result.ok &&
-            result.value.kind === "update" &&
-            result.value.artifact.format === 2
-          ) {
+          if (result.ok && result.value.kind === "update") {
             item.currentIdRef.current = result.value.artifact.node.id;
           }
         }
@@ -813,7 +714,6 @@ export function useUndoRedo(opts: {
       if (op.kind === "style") {
         // Phase 3.5 — same chain-id semantics as geometry above; verb
         // is updateOverlay.
-        if (dispatchEdit === null) return;
         const targetPatch =
           direction === "undo" ? op.previousPatch : op.nextPatch;
         const result = await dispatchEdit({
@@ -821,17 +721,7 @@ export function useUndoRedo(opts: {
           layerId: op.currentIdRef.current,
           patch: targetPatch
         });
-        if (
-          result.ok &&
-          result.value.kind === "update" &&
-          result.value.artifact.format === 1
-        ) {
-          op.currentIdRef.current = result.value.artifact.row.id;
-        } else if (
-          result.ok &&
-          result.value.kind === "update" &&
-          result.value.artifact.format === 2
-        ) {
+        if (result.ok && result.value.kind === "update") {
           op.currentIdRef.current = result.value.artifact.node.id;
         }
         return;
@@ -841,7 +731,7 @@ export function useUndoRedo(opts: {
       const _exhaustive: never = op;
       void _exhaustive;
     },
-    [captureId]
+    []
   );
 
   const undo = useCallback(async () => {

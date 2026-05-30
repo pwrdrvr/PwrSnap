@@ -60,12 +60,47 @@ export type ChatSystemPromptBuilder = (input: {
   anchorCaptureId: string | null;
 }) => string;
 
+/** The six `events:*Chat:*` channels a surface broadcasts on. Each
+ *  surface (Library, Sizzle) passes its own set so one controller serves
+ *  many surfaces. The Library + Sizzle channels share payload types, so
+ *  the typed broadcast resolves to the same payload for either. */
+export type ChatChannelSet = {
+  threadUpdated:
+    | typeof EVENT_CHANNELS.libraryChatThreadUpdated
+    | typeof EVENT_CHANNELS.sizzleChatThreadUpdated;
+  streamDelta:
+    | typeof EVENT_CHANNELS.libraryChatStreamDelta
+    | typeof EVENT_CHANNELS.sizzleChatStreamDelta;
+  toolCall:
+    | typeof EVENT_CHANNELS.libraryChatToolCall
+    | typeof EVENT_CHANNELS.sizzleChatToolCall;
+  messageCommitted:
+    | typeof EVENT_CHANNELS.libraryChatMessageCommitted
+    | typeof EVENT_CHANNELS.sizzleChatMessageCommitted;
+  turnInterrupted:
+    | typeof EVENT_CHANNELS.libraryChatTurnInterrupted
+    | typeof EVENT_CHANNELS.sizzleChatTurnInterrupted;
+  approvalRequested:
+    | typeof EVENT_CHANNELS.libraryChatApprovalRequested
+    | typeof EVENT_CHANNELS.sizzleChatApprovalRequested;
+};
+
 export type ChatThreadControllerDeps = {
   client: CodexThreadClient;
   store: ChatThreadStore;
   readSettings: () => Promise<Settings>;
   broadcast: ChatBroadcast;
   buildSystemPrompt: ChatSystemPromptBuilder;
+  /** The surface's broadcast channels (Library vs Sizzle). */
+  channels: ChatChannelSet;
+  /** Per-turn runtime context (L3), framed as system-generated and sent
+   *  as a leading turn item — never folded into the user's message. For
+   *  Library this is the `<current_capture>` block; for Sizzle the active
+   *  project. Omit for no per-turn context. Receives the turn's anchor. */
+  buildTurnContext?: (anchor: string) => string;
+  /** Friendly present-tense labels for tool activity chips, keyed by
+   *  tool name. Falls back to the raw tool name when unmapped. */
+  toolLabels?: Record<string, string>;
   /** DynamicToolSpec[] registered on every thread/start. Empty in
    *  Phase 0. */
   catalog?: DynamicToolSpec[];
@@ -174,7 +209,7 @@ export class ChatThreadController {
       anchorCaptureId
     });
     const view = this.toView(sidecar);
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, { thread: view });
+    this.deps.broadcast(this.deps.channels.threadUpdated, { thread: view });
     return view;
   }
 
@@ -196,7 +231,7 @@ export class ChatThreadController {
   async rename(threadId: string, name: string): Promise<LibraryChatThreadView> {
     const sidecar = await this.deps.store.update(threadId, { name: name.trim() });
     const view = this.toView(sidecar);
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, { thread: view });
+    this.deps.broadcast(this.deps.channels.threadUpdated, { thread: view });
     return view;
   }
 
@@ -204,7 +239,7 @@ export class ChatThreadController {
     const sidecar = await this.deps.store.update(threadId, { archived });
     if (archived) await this.deps.client.archiveThread(threadId).catch(() => undefined);
     const view = this.toView(sidecar);
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, { thread: view });
+    this.deps.broadcast(this.deps.channels.threadUpdated, { thread: view });
     return view;
   }
 
@@ -256,10 +291,10 @@ export class ChatThreadController {
     // `input.text`. Pattern mirrors OpenClaw's runtime-context message.
     const anchorForTurn = input.anchorCaptureId ?? null;
     const turnInput: UserInput[] = [];
-    if (anchorForTurn !== null) {
+    if (anchorForTurn !== null && this.deps.buildTurnContext !== undefined) {
       turnInput.push({
         type: "text",
-        text: buildCurrentCaptureContext(anchorForTurn),
+        text: this.deps.buildTurnContext(anchorForTurn),
         text_elements: []
       });
     }
@@ -311,7 +346,7 @@ export class ChatThreadController {
     if (turn === undefined) return;
     await this.deps.client.interruptTurn(threadId).catch(() => undefined);
     await this.finalizeAssistant(threadId, "interrupted");
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatTurnInterrupted, {
+    this.deps.broadcast(this.deps.channels.turnInterrupted, {
       threadId,
       turnId: turn.turnId,
       reason: "user_interrupted"
@@ -342,7 +377,7 @@ export class ChatThreadController {
     const turn = this.turns.get(threadId);
     if (turn === undefined || turn.turnId !== turnId) return;
     turn.buffer += delta;
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatStreamDelta, {
+    this.deps.broadcast(this.deps.channels.streamDelta, {
       threadId,
       turnId,
       messageId: turn.assistantMessageId,
@@ -369,13 +404,13 @@ export class ChatThreadController {
     // "Drew an arrow" / "Searched the library" activity chips + the
     // working indicator). Without this the turn looks frozen while the
     // agent runs tools before producing text.
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatToolCall, {
+    this.deps.broadcast(this.deps.channels.toolCall, {
       threadId: params.threadId,
       turnId: params.turnId,
       callId: params.callId,
       tool: params.tool,
       ok: response.success,
-      summary: humanizeToolCall(params.tool, response.success)
+      summary: humanizeToolCall(params.tool, response.success, this.deps.toolLabels)
     });
     return response;
   }
@@ -426,7 +461,7 @@ export class ChatThreadController {
         approvalId,
         resolve
       });
-      this.deps.broadcast(EVENT_CHANNELS.libraryChatApprovalRequested, request);
+      this.deps.broadcast(this.deps.channels.approvalRequested, request);
       void this.broadcastThreadStatus(threadId, { kind: "awaiting_approval", approvalId });
     });
 
@@ -461,7 +496,7 @@ export class ChatThreadController {
 
   private async commitMessage(threadId: string, message: ChatMessage): Promise<void> {
     await this.deps.store.journalAppend(threadId, { kind: "message", message });
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatMessageCommitted, { threadId, message });
+    this.deps.broadcast(this.deps.channels.messageCommitted, { threadId, message });
   }
 
   private async readJournalMessages(threadId: string): Promise<ChatMessage[]> {
@@ -509,7 +544,7 @@ export class ChatThreadController {
   ): Promise<void> {
     const sidecar = await this.deps.store.get(threadId);
     if (sidecar === null) return;
-    this.deps.broadcast(EVENT_CHANNELS.libraryChatThreadUpdated, {
+    this.deps.broadcast(this.deps.channels.threadUpdated, {
       thread: this.toView(sidecar, status)
     });
   }
@@ -533,37 +568,22 @@ export class ChatThreadController {
   }
 
   private defaultName(): string {
-    const d = new Date(this.now());
-    const date = d.toISOString().slice(0, 10);
-    return `Chat ${date}`;
+    return `Chat ${localDateStamp(new Date(this.now()))}`;
   }
+}
+
+/** Local-timezone `YYYY-MM-DD` stamp. Deliberately NOT `toISOString()`
+ *  (which is UTC): a chat created at 10pm in New York must read as that
+ *  day, not tomorrow's UTC date. Uses the runtime's local components. */
+export function localDateStamp(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {
   return `${threadId}::${turnId}::${approvalId}`;
-}
-
-/** The per-turn active-capture context (L3), sent as its own leading
- *  turn item — NOT the committed user message. The `<runtime_context>`
- *  wrapper + the "not user-authored" note tell the agent this is
- *  app-generated environment framing, not the user's words (mirrors
- *  OpenClaw's runtime-context message). The base prompt
- *  (library-chat-base.md §"The capture you're looking at") tells the
- *  agent how to read it. Resolves "this image / here / it" to the
- *  capture the user is actually looking at so edit tools get the right
- *  `capture_id`. */
-function buildCurrentCaptureContext(captureId: string): string {
-  return (
-    `<runtime_context source="pwrsnap" note="runtime-generated, not user-authored">\n` +
-    `<current_capture id="${captureId}">\n` +
-    `The user is viewing this capture right now. "this", "this image", ` +
-    `"this capture", "here", "it" all refer to ${captureId}. Pass ` +
-    `capture_id="${captureId}" to your edit / redact / draw / metadata ` +
-    `tools unless the user explicitly names a different capture — do NOT ` +
-    `pick a capture from library_list when this block is present.\n` +
-    `</current_capture>\n` +
-    `</runtime_context>`
-  );
 }
 
 /** Map a Codex turn-completion status onto the message lifecycle. A turn
@@ -586,35 +606,10 @@ function mapTurnStatus(status: string): ChatMessage["status"] {
 }
 
 /** Friendly present-tense label for a tool invocation, shown as an
- *  activity chip in the chat while the turn runs. Falls back to the raw
- *  tool name for tools not in the map (new tools still show up, just
- *  less prettily). The `ok` flag lets a failed call read "couldn't …". */
-function humanizeToolCall(tool: string, ok: boolean): string {
-  const labels: Record<string, string> = {
-    library_list: "Listed captures",
-    library_search: "Searched the library",
-    capture_metadata: "Read capture details",
-    read_ocr_text: "Read the capture text",
-    list_layers: "Read the layers",
-    list_layer_capabilities: "Checked capabilities",
-    render_composite: "Looked at the canvas",
-    open_in_library: "Opened in Library",
-    open_editor: "Opened the editor",
-    draw_arrow: "Drew an arrow",
-    draw_text: "Added a text label",
-    draw_highlight: "Added a highlight",
-    draw_rect: "Drew a rectangle",
-    draw_square: "Drew a square",
-    draw_circle: "Drew a circle",
-    draw_oval: "Drew an oval",
-    draw_parallelogram: "Drew a parallelogram",
-    redact: "Blacked out a region",
-    blur: "Blurred a region",
-    delete_layer: "Deleted a layer",
-    reorder_layer: "Reordered a layer",
-    add_tag: "Added a tag",
-    remove_tag: "Removed a tag"
-  };
+ *  activity chip in the chat while the turn runs. The surface supplies
+ *  the label map (`toolLabels` dep); falls back to the raw tool name for
+ *  unmapped tools. The `ok` flag lets a failed call read "couldn't …". */
+function humanizeToolCall(tool: string, ok: boolean, labels: Record<string, string> = {}): string {
   const label = labels[tool] ?? tool;
   return ok ? label : `Couldn't: ${label.toLowerCase()}`;
 }

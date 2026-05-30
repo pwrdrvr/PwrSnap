@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   capturesRoot: "",
   trashRoot: "",
   cacheRoot: "",
-  readBundleEntry: vi.fn(),
   readSourceFromBundle: vi.fn()
 }));
 
@@ -26,7 +25,6 @@ vi.mock("../paths", () => ({
 }));
 
 vi.mock("../bundle-store", () => ({
-  readBundleEntry: (...args: unknown[]) => mocks.readBundleEntry(...args),
   readSourceFromBundle: (...args: unknown[]) => mocks.readSourceFromBundle(...args)
 }));
 
@@ -50,7 +48,6 @@ beforeEach(async () => {
   await mkdir(mocks.capturesRoot, { recursive: true });
   await mkdir(mocks.trashRoot, { recursive: true });
   await mkdir(mocks.cacheRoot, { recursive: true });
-  mocks.readBundleEntry.mockReset();
   mocks.readSourceFromBundle.mockReset();
 });
 
@@ -151,40 +148,17 @@ describe("source-store extension generalization", () => {
 });
 
 describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
-  test("v1 bundle: re-extracts source.png from bundle when cache missing", async () => {
+  test("bundle: re-extracts via readSourceFromBundle keyed by record.sha256", async () => {
     const { ensureEffectiveSrcPath } = await import("../source-store");
-    const fakeBundleBytes = Buffer.from("v1-source-png-bytes");
-    mocks.readBundleEntry.mockResolvedValue(fakeBundleBytes);
-    const cachePath = join(mocks.cacheRoot, "cap-v1", "source.png");
+    const fakeBundleBytes = Buffer.from("source-png-bytes");
+    mocks.readSourceFromBundle.mockResolvedValue(fakeBundleBytes);
+    const cachePath = join(mocks.cacheRoot, "cap-1", "source.png");
     expect(existsSync(cachePath)).toBe(false);
 
     const returned = await ensureEffectiveSrcPath({
-      id: "cap-v1",
+      id: "cap-1",
       legacy_src_path: null,
       bundle_path: "/fake/bundle.pwrsnap",
-      bundle_format_version: 1,
-      sha256: "sha-not-used-for-v1",
-      deleted_at: null
-    });
-
-    expect(returned).toBe(cachePath);
-    expect(existsSync(cachePath)).toBe(true);
-    expect(await readFile(cachePath)).toEqual(fakeBundleBytes);
-    expect(mocks.readBundleEntry).toHaveBeenCalledWith("/fake/bundle.pwrsnap", "source.png");
-    expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
-  });
-
-  test("v2 bundle: re-extracts via readSourceFromBundle keyed by record.sha256", async () => {
-    const { ensureEffectiveSrcPath } = await import("../source-store");
-    const fakeBundleBytes = Buffer.from("v2-source-png-bytes");
-    mocks.readSourceFromBundle.mockResolvedValue(fakeBundleBytes);
-    const cachePath = join(mocks.cacheRoot, "cap-v2", "source.png");
-
-    const returned = await ensureEffectiveSrcPath({
-      id: "cap-v2",
-      legacy_src_path: null,
-      bundle_path: "/fake/bundle.pwrsnap",
-      bundle_format_version: 2,
       sha256: "abc123",
       deleted_at: null
     });
@@ -193,7 +167,6 @@ describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
     expect(existsSync(cachePath)).toBe(true);
     expect(await readFile(cachePath)).toEqual(fakeBundleBytes);
     expect(mocks.readSourceFromBundle).toHaveBeenCalledWith("/fake/bundle.pwrsnap", "abc123");
-    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
   });
 
   test("cache already present: no re-extract, no bundle read", async () => {
@@ -206,13 +179,12 @@ describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
       id: "cap-warm",
       legacy_src_path: null,
       bundle_path: "/fake/bundle.pwrsnap",
-      bundle_format_version: 1,
+      sha256: "abc123",
       deleted_at: null
     });
 
     expect(returned).toBe(cachePath);
     expect(await readFile(cachePath, "utf8")).toBe("existing-bytes");
-    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
     expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
   });
 
@@ -224,12 +196,10 @@ describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
       id: "deleted",
       legacy_src_path: legacyPath,
       bundle_path: "/fake/bundle.pwrsnap",
-      bundle_format_version: 1,
       deleted_at: "2026-05-18T00:00:00Z"
     });
 
     expect(returned).toBe(join(mocks.trashRoot, "deleted.png"));
-    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
     expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
   });
 
@@ -245,19 +215,17 @@ describe("ensureEffectiveSrcPath — lazy re-extract after cache wipe", () => {
     });
 
     expect(returned).toBe(legacyPath);
-    expect(mocks.readBundleEntry).not.toHaveBeenCalled();
     expect(mocks.readSourceFromBundle).not.toHaveBeenCalled();
   });
 
-  test("v2 bundle without sha256: throws rather than producing a bogus path", async () => {
+  test("bundle without sha256: throws rather than producing a bogus path", async () => {
     const { ensureEffectiveSrcPath } = await import("../source-store");
 
     await expect(
       ensureEffectiveSrcPath({
-        id: "cap-v2-broken",
+        id: "cap-broken",
         legacy_src_path: null,
         bundle_path: "/fake/bundle.pwrsnap",
-        bundle_format_version: 2,
         deleted_at: null
       })
     ).rejects.toThrow(/sha256 missing/);

@@ -245,7 +245,6 @@ beforeEach(() => {
 
 afterEach(() => {
   const db = getDb();
-  db.exec(`DELETE FROM overlays`);
   db.exec(`DELETE FROM layers`);
   db.exec(`DELETE FROM captures`);
 });

@@ -11,6 +11,7 @@ import {
 } from "@pwrsnap/shared";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
+import { SizzleChatPanel } from "./SizzleChatPanel";
 import "./sizzle.css";
 
 type RenderStatus = {
@@ -26,6 +27,9 @@ const IDLE_STATUS: RenderStatus = {
   ratio: 0,
   error: null
 };
+
+const RECENT_PROJECT_LIMIT = 5;
+const PROJECT_LIST_LIMIT = 100;
 
 /**
  * Apply a debounced edit's patch to the local project state. Used to
@@ -50,6 +54,30 @@ function formatDur(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+function formatProjectDate(iso: string): string {
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "Unknown date";
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
+function isDifferentProjectDate(a: string, b: string): boolean {
+  const left = new Date(a);
+  const right = new Date(b);
+  if (!Number.isFinite(left.getTime()) || !Number.isFinite(right.getTime())) {
+    return a !== b;
+  }
+  return Math.abs(right.getTime() - left.getTime()) > 1000;
+}
+
+function admitRecentProject(prev: string[], id: string): string[] {
+  if (prev.includes(id)) return prev;
+  return [id, ...prev].slice(0, RECENT_PROJECT_LIMIT);
+}
+
 function mergeProjectPatch(
   p: SizzleProject,
   patch: Partial<Omit<SizzleProject, "id" | "createdAt">>
@@ -62,19 +90,56 @@ function mergeProjectPatch(
   };
 }
 
+/** The project a freshly-opened composer window should focus, passed by
+ *  `sizzle:open` via the URL hash (`#stage=sizzle&projectId=…`). Null when
+ *  opened without a target. */
+function readInitialProjectId(): string | null {
+  const hash = window.location.hash.replace(/^#/, "");
+  return new URLSearchParams(hash).get("projectId");
+}
+
 export function SizzleApp(): ReactElement {
   const [projects, setProjects] = useState<SizzleProject[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Seed from the hash so a window opened to a specific reel lands on it,
+  // not on projects[0]. reloadProjects only defaults to projects[0] when
+  // activeId is still null, so this never gets clobbered.
+  const [activeId, setActiveId] = useState<string | null>(() => readInitialProjectId());
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [picker, setPicker] = useState(false);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
   const [focusTitleForId, setFocusTitleForId] = useState<string | null>(null);
+  const [recentProjectIds, setRecentProjectIds] = useState<string[]>(() => {
+    const initial = readInitialProjectId();
+    return initial === null ? [] : [initial];
+  });
+  // Chat lives in a right sidebar alongside the editor (not a full-pane
+  // swap) so the scene list stays visible + updates live as the agent
+  // edits. Shown by default — chat is the primary way to compose a reel.
+  const [showChat, setShowChat] = useState(true);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
     [projects, activeId]
   );
+
+  const projectRail = useMemo(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const recents = recentProjectIds
+      .map((id) => byId.get(id) ?? null)
+      .filter((p): p is SizzleProject => p !== null)
+      .slice(0, RECENT_PROJECT_LIMIT);
+    const recentSet = new Set(recents.map((p) => p.id));
+    const list = projects
+      .filter((p) => !recentSet.has(p.id))
+      .slice(0, PROJECT_LIST_LIMIT);
+    return { recents, list, totalProjectCount: projects.length };
+  }, [activeId, projects, recentProjectIds]);
+
+  const selectProject = useCallback((id: string): void => {
+    setActiveId(id);
+    setRecentProjectIds((prev) => admitRecentProject(prev, id));
+  }, []);
 
   const reloadProjects = useCallback(async () => {
     const r = await dispatch("sizzle:list", {});
@@ -82,10 +147,10 @@ export function SizzleApp(): ReactElement {
       setProjects(r.value.projects);
       setLoading(false);
       if (activeId === null && r.value.projects.length > 0) {
-        setActiveId(r.value.projects[0]!.id);
+        selectProject(r.value.projects[0]!.id);
       }
     }
-  }, [activeId]);
+  }, [activeId, selectProject]);
 
   useEffect(() => {
     void reloadProjects();
@@ -121,10 +186,10 @@ export function SizzleApp(): ReactElement {
     const r = await dispatch("sizzle:create", { name: "Untitled Sizzle" });
     if (r.ok) {
       setProjects((prev) => [r.value, ...prev]);
-      setActiveId(r.value.id);
+      selectProject(r.value.id);
       setFocusTitleForId(r.value.id);
     }
-  }, []);
+  }, [selectProject]);
 
   // Per-project debounce timers + pending-patch coalescing. Multiple
   // edits to the same project within DEBOUNCE_MS get merged into one
@@ -206,19 +271,62 @@ export function SizzleApp(): ReactElement {
     };
   }, [flushPatch]);
 
+  // Live-sync external project mutations (e.g. a chat agent's scene
+  // edits, or another window). Without this, an external write lands in
+  // the store + broadcasts, but the open editor never sees it.
+  //
+  // Merge, don't replace: any project with a pending DEBOUNCED local
+  // patch is kept as-is so a broadcast (including the echo of our OWN
+  // write, which round-trips ~350ms after the last keystroke) can't
+  // clobber text the user is still typing. Projects with no in-flight
+  // edit take the authoritative broadcast value.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleProjectsChanged, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const incoming = (payload as { projects?: unknown }).projects;
+      if (!Array.isArray(incoming)) return;
+      const incomingProjects = incoming as SizzleProject[];
+      setProjects((prev) =>
+        incomingProjects.map((p) =>
+          pendingPatches.current.has(p.id)
+            ? (prev.find((lp) => lp.id === p.id) ?? p)
+            : p
+        )
+      );
+    });
+  }, []);
+
+  // Navigate when the user clicks a Sizzle Reel in the Library while this
+  // composer window is already open (a new window instead gets the target
+  // via the hash — see readInitialProjectId). Without this the click
+  // focuses the window but the reel selection never changes.
+  useEffect(() => {
+    return subscribe(EVENT_CHANNELS.sizzleNav, (payload) => {
+      if (typeof payload !== "object" || payload === null) return;
+      const projectId = (payload as { projectId?: unknown }).projectId;
+      if (typeof projectId === "string" && projectId.length > 0) {
+        selectProject(projectId);
+      }
+    });
+  }, [selectProject]);
+
   const onDelete = useCallback(
     async (id: string) => {
       if (!window.confirm("Delete this sizzle reel?")) return;
       const r = await dispatch("sizzle:delete", { id });
       if (r.ok) {
-        setProjects((prev) => {
-          const next = prev.filter((p) => p.id !== id);
-          if (activeId === id) setActiveId(next[0]?.id ?? null);
-          return next;
-        });
+        const fallbackId = projects.find((p) => p.id !== id)?.id ?? null;
+        setProjects((prev) => prev.filter((p) => p.id !== id));
+        setRecentProjectIds((prev) => prev.filter((recentId) => recentId !== id));
+        if (activeId === id) {
+          setActiveId(fallbackId);
+          if (fallbackId !== null) {
+            setRecentProjectIds((prev) => admitRecentProject(prev, fallbackId));
+          }
+        }
       }
     },
-    [activeId]
+    [activeId, projects]
   );
 
   const onRender = useCallback(async () => {
@@ -311,61 +419,105 @@ export function SizzleApp(): ReactElement {
             </>
           ) : null}
         </span>
+        {active !== null ? (
+          <>
+            <span className="szl__spacer" />
+            <button
+              type="button"
+              className={"szl__chat-toggle" + (showChat ? " is-active" : "")}
+              aria-pressed={showChat}
+              onClick={() => setShowChat((v) => !v)}
+              title={showChat ? "Hide agent chat" : "Show agent chat"}
+            >
+              {showChat ? "Hide chat" : "Chat with agent"}
+            </button>
+          </>
+        ) : null}
       </header>
       <aside className="szl__rail">
         <button className="szl__new" onClick={onCreate} type="button">
           + New Sizzle Reel
         </button>
-        <ul className="szl__list">
-          {loading ? (
-            <li className="szl__empty">Loading…</li>
-          ) : projects.length === 0 ? (
-            <li className="szl__empty">No projects yet. Create one above.</li>
-          ) : (
-            projects.map((p) => (
-              <li key={p.id}>
-                <button
-                  className={
-                    "szl__row" + (activeId === p.id ? " is-active" : "")
-                  }
-                  onClick={() => setActiveId(p.id)}
-                  type="button"
-                >
-                  <span className="szl__row-name">{p.name}</span>
-                  <span className="szl__row-meta">
-                    {p.scenes.length} clip{p.scenes.length === 1 ? "" : "s"} ·{" "}
-                    {p.voice}
-                  </span>
-                </button>
-              </li>
-            ))
-          )}
-        </ul>
+        <section className="szl__section" aria-label="Recent projects">
+          <div className="szl__section-head">
+            <span>Recents</span>
+          </div>
+          <ul className="szl__list szl__list--recents" data-testid="sizzle-recents-list">
+            {loading ? (
+              <li className="szl__empty">Loading...</li>
+            ) : projectRail.recents.length === 0 ? (
+              <li className="szl__empty">No recent projects.</li>
+            ) : (
+              projectRail.recents.map((p) => (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  active={activeId === p.id}
+                  onSelect={() => selectProject(p.id)}
+                />
+              ))
+            )}
+          </ul>
+        </section>
+        <section className="szl__section szl__section--projects" aria-label="Projects">
+          <div className="szl__section-head">
+            <span>Projects</span>
+            {projectRail.totalProjectCount > projectRail.recents.length ? (
+              <span className="szl__section-count">
+                {projectRail.list.length} of{" "}
+                {projectRail.totalProjectCount - projectRail.recents.length}
+              </span>
+            ) : null}
+          </div>
+          <ul className="szl__list szl__list--projects" data-testid="sizzle-projects-list">
+            {loading ? null : projects.length === 0 ? (
+              <li className="szl__empty">No projects yet. Create one above.</li>
+            ) : projectRail.list.length === 0 ? (
+              <li className="szl__empty">All visible projects are in Recents.</li>
+            ) : (
+              projectRail.list.map((p) => (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  active={activeId === p.id}
+                  onSelect={() => selectProject(p.id)}
+                />
+              ))
+            )}
+          </ul>
+        </section>
       </aside>
 
       <main className="szl__main">
         {active === null ? (
           <EmptyState />
         ) : (
-          <Editor
-            project={active}
-            captures={captures}
-            autoFocusTitle={focusTitleForId === active.id}
-            onTitleFocused={() => setFocusTitleForId(null)}
-            onRename={(name) => onUpdate(active.id, { name })}
-            onVoice={(voice) => onUpdate(active.id, { voice })}
-            onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
-            onResolution={(resolution) =>
-              onUpdate(active.id, { resolution })
-            }
-            onScenes={(scenes) => onUpdate(active.id, { scenes })}
-            onFlushPending={() => flushPatch(active.id)}
-            onPickCapture={() => setPicker(true)}
-            onRender={onRender}
-            onReveal={onReveal}
-            onDelete={() => onDelete(active.id)}
-            status={status}
-          />
+          <div className="szl__workspace">
+            <Editor
+              project={active}
+              captures={captures}
+              autoFocusTitle={focusTitleForId === active.id}
+              onTitleFocused={() => setFocusTitleForId(null)}
+              onRename={(name) => onUpdate(active.id, { name })}
+              onVoice={(voice) => onUpdate(active.id, { voice })}
+              onProvider={(ttsProvider) => onUpdate(active.id, { ttsProvider })}
+              onResolution={(resolution) =>
+                onUpdate(active.id, { resolution })
+              }
+              onScenes={(scenes) => onUpdate(active.id, { scenes })}
+              onFlushPending={() => flushPatch(active.id)}
+              onPickCapture={() => setPicker(true)}
+              onRender={onRender}
+              onReveal={onReveal}
+              onDelete={() => onDelete(active.id)}
+              status={status}
+            />
+            {showChat ? (
+              <aside className="szl__chat">
+                <SizzleChatPanel key={active.id} projectId={active.id} />
+              </aside>
+            ) : null}
+          </div>
         )}
       </main>
 
@@ -378,6 +530,38 @@ export function SizzleApp(): ReactElement {
         />
       ) : null}
     </div>
+  );
+}
+
+function ProjectRow({
+  project,
+  active,
+  onSelect
+}: {
+  project: SizzleProject;
+  active: boolean;
+  onSelect: () => void;
+}): ReactElement {
+  const clipLabel = `${project.scenes.length} clip${project.scenes.length === 1 ? "" : "s"}`;
+  const updatedLabel = isDifferentProjectDate(project.createdAt, project.modifiedAt)
+    ? `Updated ${formatProjectDate(project.modifiedAt)}`
+    : null;
+  return (
+    <li>
+      <button
+        className={"szl__row" + (active ? " is-active" : "")}
+        onClick={onSelect}
+        type="button"
+      >
+        <span className="szl__row-name">{project.name}</span>
+        <span className="szl__row-meta">
+          Created {formatProjectDate(project.createdAt)} · {clipLabel}
+        </span>
+        {updatedLabel !== null ? (
+          <span className="szl__row-meta szl__row-meta--sub">{updatedLabel}</span>
+        ) : null}
+      </button>
+    </li>
   );
 }
 

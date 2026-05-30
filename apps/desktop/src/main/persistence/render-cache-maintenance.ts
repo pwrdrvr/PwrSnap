@@ -3,9 +3,9 @@ import { access, cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { getMainLogger } from "../log";
-import { computeRenderHash } from "../render/overlay-hash";
+import { computeTreeRenderHash } from "../render/compose-tree";
 import { getDb } from "./db";
-import { listLiveOverlays } from "./overlays-repo";
+import { listLayerTree } from "./layers-repo";
 import { getCacheRoot, getLegacyCacheRoot } from "./paths";
 
 const log = getMainLogger("pwrsnap:render-cache-maintenance");
@@ -13,6 +13,12 @@ const RAPID_RENDER_WIDTHS = [140, 400] as const;
 
 type CaptureIdRow = {
   id: string;
+};
+
+type CaptureDimsRow = {
+  id: string;
+  width_px: number;
+  height_px: number;
 };
 
 export type LegacyRenderCacheMigrationResult = {
@@ -52,16 +58,30 @@ export async function trimRenderCache(): Promise<void> {
 }
 
 function buildRapidRenderCacheKeepSet(): Map<string, Set<string>> {
-  const rows = getDb().prepare("SELECT id FROM captures").all() as CaptureIdRow[];
+  // The keep-set must match the cache filenames `composeV2` actually
+  // writes: `<treeHash>.<format>`, where the tree hash is
+  // `computeTreeRenderHash(layers, canvasDims, width, format)`. Earlier
+  // this computed a v1 overlay-table hash (`computeRenderHash` over
+  // `listLiveOverlays`), which never matched a v2 capture's real cache
+  // file — so the rapid-render derivatives were silently over-pruned
+  // (rebuilt on demand). Now that v2 is the only format, hash the live
+  // layer tree directly. Captures with no layer tree (e.g. videos)
+  // yield a hash for an empty tree that matches no real file — their
+  // (absent) render-cache dirs prune to nothing, which is correct.
+  const rows = getDb()
+    .prepare("SELECT id, width_px, height_px FROM captures")
+    .all() as CaptureDimsRow[];
   const keepByCaptureId = new Map<string, Set<string>>();
   for (const row of rows) {
-    const overlays = listLiveOverlays(row.id);
+    const layers = listLayerTree(row.id);
     const keep = new Set<string>();
     for (const width of RAPID_RENDER_WIDTHS) {
-      const hash = computeRenderHash({
-        format: "webp",
+      const hash = computeTreeRenderHash({
+        layers,
+        canvasWidthPx: row.width_px,
+        canvasHeightPx: row.height_px,
         width,
-        appliedOverlays: overlays
+        format: "webp"
       });
       keep.add(`${hash}.webp`);
     }

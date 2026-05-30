@@ -8,7 +8,6 @@
 // up the new command for free.
 
 import type { BundleLayerNode } from "./bundle-manifest-schema-v2";
-import type { Overlay, OverlayRow } from "./overlay-schemas";
 import type { CaptureEnrichment, SuggestedTag, AiRunStatus } from "./ai-enrichment-schemas";
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -705,12 +704,28 @@ export type DesktopCodexDiscoveryCandidate = {
   available: boolean;
 };
 
+export type DesktopCodexAuthStatus =
+  | "authenticated"
+  | "unauthenticated"
+  | "failed";
+
+export type DesktopCodexAuthProbe = {
+  status: DesktopCodexAuthStatus;
+  testedAt: string;
+  durationMs: number;
+  detail?: string;
+  errorMessage?: string;
+};
+
 export type DesktopCodexDiscoverySnapshot = {
   candidates: DesktopCodexDiscoveryCandidate[];
   /** The path that `resolveCodexCommand` will pick for the next spawn,
    *  or `null` if none is usable. Renderers compare to `candidate.path`
    *  to draw the "Using" badge. */
   resolvedPath: string | null;
+  /** Auth readiness for `resolvedPath`, from `codex login status`.
+   *  `null` means no usable Codex binary resolved. */
+  auth: DesktopCodexAuthProbe | null;
   /** ISO-8601 timestamp of when this snapshot was produced. */
   refreshedAt: string;
 };
@@ -1289,71 +1304,6 @@ export type AppUpdateInstallResult =
   | { status: "restarting" }
   | { status: "error"; message: string };
 
-/**
- * Progress payload for `events:legacy-bundle-migration:progress`. Fired
- * by the one-shot legacy → v1-bundle wrapper on first boot post-bundle-
- * format. Library shows an "Upgrading library…" banner while status is
- * "running"; banner auto-dismisses on "complete".
- *
- *   • `total` — rows the runner queued at start. Includes parked
- *     (exhausted-retry) rows in the count so the user sees a stable
- *     denominator even across boots that find new attempts.
- *   • `done` — rows that have either succeeded OR been parked
- *     (giving up after MAX_ATTEMPTS). Both count toward "done" since
- *     neither will be retried this run.
- *   • `failed` — subset of `done` that failed (parked or transient).
- *     A run with `failed > 0` after `status === "complete"` is worth
- *     surfacing as a one-time toast.
- */
-export type LegacyBundleMigrationProgress =
-  | { status: "running"; total: number; done: number; failed: number }
-  | { status: "complete"; total: number; done: number; failed: number };
-
-/**
- * Progress payload for `events:v1-to-v2-doctor:progress`. Fired by the
- * v1 → v2 bundle doctor (apps/desktop/src/main/persistence/
- * v1-to-v2-doctor.ts) for both the boot-time reconcile sweep AND
- * per-capture lazy upgrades. Editor toolbar consumes this to show the
- * "Upgrading…" banner during a doctor run; library banner reports
- * boot-time progress.
- *
- * Two scopes share the channel:
- *   • Boot-time sweep — fired once at run start (with total), throttled
- *     per row, once at completion.
- *   • Per-capture lazy — fired at start (`captureId` set, `total: 1`),
- *     once at success or failure.
- *
- * The `captureId` field disambiguates per-capture events from the
- * boot-time global progress (captureId === null in the latter).
- * Mirrors the LegacyBundleMigrationProgress shape so the renderer
- * can reuse the same banner component.
- */
-export type V1ToV2DoctorProgress =
-  | {
-      status: "running";
-      captureId: string | null;
-      total: number;
-      done: number;
-      failed: number;
-    }
-  | {
-      status: "complete";
-      captureId: string | null;
-      total: number;
-      done: number;
-      failed: number;
-    }
-  | {
-      /** Per-capture failure event. `captureId` set; `errorCode`
-       *  carries the structured error envelope so the editor banner
-       *  can offer a Retry button bound to the right capture. */
-      status: "failed";
-      captureId: string;
-      errorCode: string;
-      attempts: number;
-      parked: boolean;
-    };
-
 export type AppUpdateReleaseInfo = {
   version?: string;
   name?: string;
@@ -1620,63 +1570,6 @@ export type Commands = {
    *  fresh window — edits are per-capture, not singleton. */
   "editor:open": { req: { captureId: string }; res: void };
 
-  /** Current status of the legacy-bundle migration, or `null` if no
-   *  migration has run this boot. The migration also broadcasts live
-   *  updates via `EVENT_CHANNELS.legacyBundleMigrationProgress`; this
-   *  verb exists to recover from the cold-start race where the
-   *  renderer's banner mounts AFTER the first progress events were
-   *  sent (and thus dropped — `webContents.send` is fire-and-forget,
-   *  not buffered). The banner queries this on mount to pick up the
-   *  current snapshot, then watches the event channel for updates. */
-  "migration:status": {
-    req: Record<string, never>;
-    res: LegacyBundleMigrationProgress | null;
-  };
-
-  // ---- v1 → v2 bundle doctor ----
-  /** Trigger the per-capture v1 → v2 bundle doctor for `captureId`.
-   *  Idempotent: returns `{ migrated: false, reason: "already_v2" }`
-   *  if the bundle on disk is already v2 (reads the bundle manifest,
-   *  not the DB row — heals mid-crash gaps where the row claims v1
-   *  but the bundle is already v2). Per-capture retry budget (5
-   *  attempts); after exhaustion the row parks and the editor renders
-   *  read-only with a Retry button that calls `v1ToV2:retry`.
-   *
-   *  Atomic ordering inside the implementation:
-   *    1. atomicWriteBundle(tempPath, v2_bytes) + fsync
-   *    2. BEGIN IMMEDIATE
-   *       INSERT INTO layers (...);
-   *       UPDATE captures SET bundle_format_version=2, bundle_path=tempPath, ...;
-   *       COMMIT
-   *    3. rename(tempPath → finalBundlePath) + dir-fsync
-   *    4. DELETE FROM overlays WHERE capture_id = ?
-   *
-   *  Each step is independently recoverable; `reconcileV1ToV2OnBoot`
-   *  heals any mid-step crash.
-   */
-  "v1ToV2:upgrade": {
-    req: { captureId: string };
-    res: { migrated: boolean; reason?: "already_v2" | "parked" | "no_bundle" };
-  };
-  /** Cached-snapshot reader for the v1 → v2 doctor. Same race-safe
-   *  pattern as `migration:status` — late-mounting renderers query
-   *  this once on mount to pick up the current state, then subscribe
-   *  to `events:v1-to-v2-doctor:progress` for updates. Returns null
-   *  if no doctor activity has happened this session. */
-  "v1ToV2:status": {
-    req: Record<string, never>;
-    res: V1ToV2DoctorProgress | null;
-  };
-  /** Clear a parked capture's retry budget so the doctor can re-attempt
-   *  on next user open. Sets `v1_to_v2_attempts = 0` and clears
-   *  `v1_to_v2_last_failed_at` + `v1_to_v2_last_error_code`. Bound to
-   *  the Retry button on the editor's "Couldn't upgrade — read-only
-   *  view" banner. */
-  "v1ToV2:retry": {
-    req: { captureId: string };
-    res: void;
-  };
-
   // ---- storage ----
   "storage:summary": { req: Record<string, never>; res: StorageSummary };
   "storage:snapshot": { req: { force?: boolean; audit?: boolean }; res: StorageSnapshot };
@@ -1685,39 +1578,6 @@ export type Commands = {
     req: { mode: RenderCacheMaintenanceMode };
     res: StorageMaintenanceResult;
   };
-
-  // ---- overlays (v1 captures only) ----
-  "overlays:list": { req: { captureId: string }; res: OverlayRow[] };
-  /** Insert an overlay row. The repo mints a fresh id (nanoid) and
-   *  stamps `applied_at` / `created_at` server-side.
-   *
-   *  `zIndex` (optional, default omitted) preserves the caller's exact
-   *  z_index for the new row. When omitted, the repo auto-bumps to
-   *  `MAX(existing z_index for this capture) + Z_INDEX_INSERT_GAP` so
-   *  fresh draws land at the top of the stack. Update-in-place callers
-   *  (updateGeometry / updateOverlay) pass the row's PREVIOUS z_index
-   *  here so drag-drop / nudge / style-patch preserves stacking; undo
-   *  restore passes the snapshotted z_index so a deleted row comes
-   *  back at its original position, not on top.
-   *
-   *  Pre-fix the IPC didn't carry `zIndex` at all — every overlays:upsert
-   *  hit the auto-bump path. updateGeometry was the user-visible
-   *  manifestation: drag-dropping a Sent-to-Back rect jumped it back to
-   *  the top because the dispatcher's delete-plus-insert sequence had
-   *  no way to tell the repo "keep this layer at z = 0." */
-  "overlays:upsert": {
-    req: { captureId: string; overlay: Overlay; zIndex?: number };
-    res: OverlayRow;
-  };
-  "overlays:delete": { req: { id: string }; res: void };
-  /** Update an overlay's `z_index`. Mirrors `layers:reorder` for v1
-   *  captures so the renderer can use the same `kind: "reorder"`
-   *  dispatch op across both formats without format-specific
-   *  branching. The handler computes the new value; the renderer
-   *  picks values with gap (~1000-step) so most reorders avoid
-   *  re-numbering neighbors. Atomic UPDATE on z_index; id preserved
-   *  (unlike upsert which would churn the id on every move). */
-  "overlays:reorder": { req: { id: string; zIndex: number }; res: void };
 
   // ---- layers (v2 captures only) ----
   /** List the live layer tree for a v2 capture. Flat array; tree is
@@ -2207,6 +2067,54 @@ export type Commands = {
   /** Resolve a pending approval. Carries (threadId, turnId, approvalId)
    *  so a late resolution can't land in the wrong turn (plan §F10 T3). */
   "codex:libraryChat:approval": {
+    req: {
+      threadId: string;
+      turnId: string;
+      approvalId: string;
+      decision: ChatApprovalDecision;
+    };
+    res: void;
+  };
+
+  // ── Sizzle composer chat ────────────────────────────────────────────
+  // Second surface on the shared chat substrate (mirrors codex:libraryChat:*).
+  // `anchorCaptureId` carries the Sizzle PROJECT id this thread is scoped
+  // to — the substrate's anchor field is surface-neutral, and a project id
+  // (`sz_…`) never collides with a capture id. Mutations are bound to it.
+  "codex:sizzleChat:list": {
+    req: { includeArchived?: boolean; anchorCaptureId?: string | null };
+    res: { threads: LibraryChatThreadView[] };
+  };
+  "codex:sizzleChat:create": {
+    req: { name?: string; anchorCaptureId?: string | null };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:send": {
+    req: {
+      threadId: string;
+      text: string;
+      imageAttachmentPaths?: string[];
+      anchorCaptureId?: string | null;
+    };
+    res: { turnId: string };
+  };
+  "codex:sizzleChat:history": {
+    req: { threadId: string };
+    res: { messages: ChatMessage[] };
+  };
+  "codex:sizzleChat:rename": {
+    req: { threadId: string; name: string };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:archive": {
+    req: { threadId: string; archived: boolean };
+    res: LibraryChatThreadView;
+  };
+  "codex:sizzleChat:interrupt": {
+    req: { threadId: string };
+    res: void;
+  };
+  "codex:sizzleChat:approval": {
     req: {
       threadId: string;
       turnId: string;

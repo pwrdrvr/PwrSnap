@@ -1,33 +1,24 @@
-// Phase 2 starter Editor — round-trip spec.
+// Phase 2 starter Editor — `editor:open` window spec.
 //
 // Inserts a synthetic capture row directly via the better-sqlite3
-// instance (no Screen Recording perms required), then drives:
-//   1. `editor:open` → asserts a new BrowserWindow with the right
-//      stage + captureId hash appears.
-//   2. `overlays:upsert` with a valid arrow → asserts the live
-//      `overlays:list` returns the inserted row, validated against
-//      the zod schema.
-//   3. `overlays:upsert` with garbage → asserts the validation gate
-//      rejects it with `code: 'schema_mismatch'` and the table
-//      stays clean.
-//   4. `overlays:delete` → asserts the row drops from the live list.
+// instance (no Screen Recording perms required), then drives
+// `editor:open` and asserts a new BrowserWindow with the right
+// stage + captureId hash appears.
 //
 // Keeps the test deterministic across platforms (no PNG decode, no
 // renderer drag simulation — the renderer Editor.tsx is exercised
 // indirectly via the IPC contract it uses).
+//
+// The former `overlays:upsert + list + delete` round-trip lived here
+// too; it exercised the retired v1 overlays IPC and was removed when
+// the v1 write path was deleted. The v2 layer-tree equivalent is
+// covered by the layers-handlers unit tests.
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { launchPwrSnap } from "./fixtures/electron-app";
-
-const ARROW_FIXTURE = {
-  kind: "arrow" as const,
-  from: { x: 0.1, y: 0.1 },
-  to: { x: 0.5, y: 0.5 },
-  color: "auto" as const
-};
 
 test("editor:open creates a new window with the captureId hash", async () => {
   const app = await launchPwrSnap();
@@ -59,68 +50,6 @@ test("editor:open creates a new window with the captureId hash", async () => {
 // The handler is one `getCaptureById` lookup + a null-check — the
 // launchPwrSnap round-trip was 100% of the test budget and the dominant
 // source of the Linux/xvfb worker-teardown flakes on PR #125.
-
-test("overlays:upsert + list + delete round-trip", async () => {
-  const app = await launchPwrSnap();
-  try {
-    const captureId = await seedCapture(app);
-
-    // Live list starts empty.
-    const initial = await app.dispatch("overlays:list", { captureId });
-    expect(initial.ok).toBe(true);
-    if (initial.ok) expect(initial.value).toHaveLength(0);
-
-    // Insert a valid arrow.
-    const inserted = await app.dispatch("overlays:upsert", {
-      captureId,
-      overlay: ARROW_FIXTURE
-    });
-    expect(inserted.ok).toBe(true);
-    if (!inserted.ok) return;
-    expect(inserted.value.data.kind).toBe("arrow");
-    expect(inserted.value.applied_at).not.toBeNull();
-    expect(inserted.value.source).toBe("user");
-
-    // It comes back in the live list.
-    const live = await app.dispatch("overlays:list", { captureId });
-    expect(live.ok).toBe(true);
-    if (!live.ok) return;
-    expect(live.value).toHaveLength(1);
-    expect(live.value[0]!.id).toBe(inserted.value.id);
-
-    // overlays_version on the capture bumped — fetch via the test
-    // bridge and verify the editor can rely on it for cache
-    // invalidation later.
-    const editsVersion = await app.electronApp.evaluate((_electron, id: string) => {
-      const bridge = (
-        globalThis as unknown as {
-          __PWRSNAP_TEST__: { getEditsVersion: (id: string) => number | null };
-        }
-      ).__PWRSNAP_TEST__;
-      return bridge.getEditsVersion(id);
-    }, captureId);
-    expect(editsVersion ?? 0).toBeGreaterThanOrEqual(1);
-
-    // Reject with garbage payload — validation gate kicks in.
-    const garbage = await app.dispatch("overlays:upsert", {
-      captureId,
-      overlay: { kind: "wat", payload: "nope" } as never
-    });
-    expect(garbage.ok).toBe(false);
-    if (!garbage.ok) {
-      expect(garbage.error.code).toBe("schema_mismatch");
-    }
-
-    // Delete → live list goes back to empty.
-    const deleted = await app.dispatch("overlays:delete", { id: inserted.value.id });
-    expect(deleted.ok).toBe(true);
-    const final = await app.dispatch("overlays:list", { captureId });
-    expect(final.ok).toBe(true);
-    if (final.ok) expect(final.value).toHaveLength(0);
-  } finally {
-    await app.close();
-  }
-});
 
 /**
  * Seed a synthetic capture row + a 1×1 PNG file so handlers that

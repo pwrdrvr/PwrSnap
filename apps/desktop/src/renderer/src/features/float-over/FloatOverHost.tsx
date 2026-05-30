@@ -22,6 +22,7 @@ import {
   EVENT_CHANNELS,
   type CaptureEnrichment,
   type CaptureRecord,
+  type DesktopCodexDiscoverySnapshot,
   type FloatOverEvent,
   type RenderPreset,
   type Settings,
@@ -48,6 +49,14 @@ const INITIAL_COPY_PULSES: Record<RenderPreset, number> = {
   high: 0
 };
 
+function codexAvailableInSnapshot(snapshot: DesktopCodexDiscoverySnapshot): boolean {
+  if (snapshot.resolvedPath === null) return false;
+  if (snapshot.auth?.status !== "authenticated") return false;
+  return snapshot.candidates.some(
+    (candidate) => candidate.available && candidate.path === snapshot.resolvedPath
+  );
+}
+
 type AiRunUpdatedPayload = {
   enrichment?: CaptureEnrichment | null;
 };
@@ -55,6 +64,7 @@ type AiRunUpdatedPayload = {
 export function FloatOverHost(): React.ReactElement {
   const [state, setState] = useState<HostState>({ kind: "idle" });
   const [copyPulses, setCopyPulses] = useState(INITIAL_COPY_PULSES);
+  const [codexAvailable, setCodexAvailable] = useState<boolean | undefined>(undefined);
   // capture:presetMetrics returns empty for video captures (the
   // sharp render pipeline is image-only); only request the hook for
   // image-kind captures so we don't fire a no-op IPC on every video
@@ -210,9 +220,28 @@ export function FloatOverHost(): React.ReactElement {
         if (current.kind !== "loaded") return current;
         return { ...current, settings };
       });
+      void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+        if (result.ok) setCodexAvailable(codexAvailableInSnapshot(result.value));
+      });
     });
     return () => {
       unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void dispatch("settings:refreshCodexDiscovery", { force: false }).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        const snapshot = result.value as DesktopCodexDiscoverySnapshot;
+        setCodexAvailable(codexAvailableInSnapshot(snapshot));
+      } else {
+        setCodexAvailable(false);
+      }
+    });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -355,6 +384,7 @@ export function FloatOverHost(): React.ReactElement {
         onDragFile={() => startCaptureDrag(record.id, "high")}
         onDragPreset={(preset) => startCaptureDrag(record.id, preset)}
         enrichment={enrichment}
+        codexAvailable={codexAvailable !== false}
         aiEnabled={settings?.ai.enabled ?? false}
         aiConsentAccepted={settings?.ai.consentAcceptedAt !== null && settings !== null}
         autoAcceptSuggestions={settings?.ai.autoAcceptSuggestions ?? false}
@@ -370,10 +400,16 @@ export function FloatOverHost(): React.ReactElement {
           });
         }}
         onEnableAi={() => {
+          if (codexAvailable === false) {
+            void dispatch("settings:open", { page: "ai" });
+            return;
+          }
+          const consentAcceptedAt =
+            settings?.ai.consentAcceptedAt ?? new Date().toISOString();
           void dispatch("settings:write", {
             ai: {
               enabled: true,
-              consentAcceptedAt: new Date().toISOString()
+              consentAcceptedAt
             }
           }).then((result) => {
             if (!result.ok) return;
@@ -383,6 +419,9 @@ export function FloatOverHost(): React.ReactElement {
             });
             void dispatch("codex:enrich", { captureId: record.id });
           });
+        }}
+        onConfigureAi={() => {
+          void dispatch("settings:open", { page: "ai" });
         }}
         onAcceptTitle={(title) => {
           void dispatch("codex:acceptTitle", { captureId: record.id, title });

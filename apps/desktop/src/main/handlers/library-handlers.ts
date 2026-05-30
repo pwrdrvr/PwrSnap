@@ -44,7 +44,6 @@ import {
   restoreSourceFromTrash
 } from "../persistence/source-store";
 import { createEditWindow, createMainWindow, findMainLibraryWindow } from "../window";
-import { getLegacyMigrationProgress } from "../persistence/legacy-bundle-migration";
 import { getMainLogger } from "../log";
 
 const log = getMainLogger("pwrsnap:library-handlers");
@@ -469,18 +468,6 @@ export function registerLibraryHandlers(): void {
     createEditWindow(req.captureId);
     log.info("editor opened", { captureId: req.captureId });
     return ok(undefined);
-  });
-
-  // Cold-start race recovery for the legacy-migration banner: the
-  // banner mounts in the renderer some 500-1500ms after the main
-  // process kicks off the migration. The migration's first
-  // `webContents.send("…progress")` events fire BEFORE the
-  // renderer's IPC listener attaches and get dropped. The banner
-  // dispatches `migration:status` on mount to pick up the current
-  // cached snapshot, then watches the event channel for live
-  // updates. See legacy-bundle-migration.ts `cachedProgress`.
-  bus.register("migration:status", async () => {
-    return ok(getLegacyMigrationProgress());
   });
 }
 

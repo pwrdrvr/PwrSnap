@@ -52,6 +52,19 @@ export type DesktopCodexDiscoverySnapshot = {
   error?: string | undefined;
 };
 
+export type CodexAuthProbeStatus =
+  | "authenticated"
+  | "unauthenticated"
+  | "failed";
+
+export type CodexAuthProbeResult = {
+  status: CodexAuthProbeStatus;
+  testedAt: string;
+  durationMs: number;
+  detail?: string;
+  errorMessage?: string;
+};
+
 export type ResolvedCodexCommandCandidate = {
   command: string;
   source: DesktopCodexCandidateSource;
@@ -109,6 +122,62 @@ async function readCodexVersion(
     return {
       ran: false,
       failureReason: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+const AUTH_PROBE_TIMEOUT_MS = 2_500;
+const AUTH_PROBE_MESSAGE_LIMIT = 240;
+
+function trimProbeMessage(value: string): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, AUTH_PROBE_MESSAGE_LIMIT);
+}
+
+function outputFromExecError(error: unknown): string {
+  if (typeof error !== "object" || error === null) {
+    return String(error);
+  }
+  const maybeOutput = error as {
+    stdout?: unknown;
+    stderr?: unknown;
+    message?: unknown;
+  };
+  const stdout = typeof maybeOutput.stdout === "string" ? maybeOutput.stdout : "";
+  const stderr = typeof maybeOutput.stderr === "string" ? maybeOutput.stderr : "";
+  const message = typeof maybeOutput.message === "string" ? maybeOutput.message : "";
+  return `${stdout}\n${stderr}\n${message}`;
+}
+
+export async function probeCodexAuth(
+  command: string,
+  env: NodeJS.ProcessEnv
+): Promise<CodexAuthProbeResult> {
+  const startedAt = Date.now();
+  const testedAt = new Date().toISOString();
+  try {
+    const result = await execFile(command, ["login", "status"], {
+      env,
+      timeout: AUTH_PROBE_TIMEOUT_MS
+    });
+    const output = trimProbeMessage(`${result.stdout}\n${result.stderr ?? ""}`);
+    return {
+      status: "authenticated",
+      testedAt,
+      durationMs: Date.now() - startedAt,
+      detail: output.length > 0 ? output : "Logged in"
+    };
+  } catch (error) {
+    const output = trimProbeMessage(outputFromExecError(error));
+    const status: CodexAuthProbeStatus = /not\s+logged\s+in|not\s+authenticated|login\s+required/i.test(
+      output
+    )
+      ? "unauthenticated"
+      : "failed";
+    return {
+      status,
+      testedAt,
+      durationMs: Date.now() - startedAt,
+      errorMessage: output.length > 0 ? output : "Codex auth probe failed"
     };
   }
 }

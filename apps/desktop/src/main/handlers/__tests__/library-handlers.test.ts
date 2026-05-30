@@ -108,10 +108,6 @@ vi.mock("../../window", () => ({
   findMainLibraryWindow: vi.fn()
 }));
 
-vi.mock("../../persistence/legacy-bundle-migration", () => ({
-  getLegacyMigrationProgress: vi.fn(() => ({ pending: 0, total: 0 }))
-}));
-
 vi.mock("../../log", () => ({
   getMainLogger: () => ({
     info: vi.fn(),

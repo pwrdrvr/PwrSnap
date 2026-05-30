@@ -111,12 +111,11 @@ export function ChatPanel({ captureId }: ChatPanelProps): ReactElement {
         });
         return;
       }
-      // Layer count: v2 only — read via `layers:list` and count the
-      // BundleLayerNode array; v1 captures (and test fixtures that
-      // don't carry `bundle_format_version`) fall back to 0.
+      // Layer count: read via `layers:list` and count the
+      // BundleLayerNode array. A record with bundle_format_version < 2
+      // (or a test fixture that doesn't carry one) falls back to 0.
       let layerCount = 0;
-      const fmt = record.bundle_format_version ?? 1;
-      if (fmt >= 2) {
+      if ((record.bundle_format_version ?? 0) >= 2) {
         const layersResult = await dispatch("layers:list", { captureId });
         if (cancelled) return;
         if (layersResult.ok) {

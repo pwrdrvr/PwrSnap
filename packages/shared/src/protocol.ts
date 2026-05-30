@@ -682,6 +682,47 @@ export type SizzleSequenceBeat = {
   videoFit: SizzleVideoFitPolicy;
 };
 
+export type SizzleSpeechTimingQuality = "precise" | "approximate";
+
+export type SizzleSpeechTimingWarningCode =
+  | "precise_unavailable"
+  | "precise_failed"
+  | "timing_cache_failed"
+  | "empty_narration"
+  | "invalid_duration"
+  | "phrase_unresolved";
+
+export type SizzleSpeechTimingWarning = {
+  code: SizzleSpeechTimingWarningCode;
+  message: string;
+};
+
+export type SizzleWordTiming = {
+  index: number;
+  word: string;
+  normalized: string;
+  startSec: number;
+  endSec: number;
+};
+
+export type SizzleSpeechTiming = {
+  text: string;
+  durationSec: number;
+  quality: SizzleSpeechTimingQuality;
+  words: SizzleWordTiming[];
+  warnings: SizzleSpeechTimingWarning[];
+};
+
+export type SizzleResolvedPhraseTiming = {
+  startSec: number;
+  endSec: number;
+  quality: SizzleSpeechTimingQuality;
+  wordStartIndex: number;
+  wordEndIndex: number;
+  matchedText: string;
+  warnings: SizzleSpeechTimingWarning[];
+};
+
 /**
  * Resolve a scene's audio source policy to a concrete choice at
  * render time. Single source of truth — `auto` collapses based on

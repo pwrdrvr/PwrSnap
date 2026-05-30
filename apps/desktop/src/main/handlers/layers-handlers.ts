@@ -21,7 +21,8 @@ import {
   rejectLayer,
   reparent,
   setLayerZIndex,
-  listLayerTree
+  listLayerTree,
+  updateLayer
 } from "../persistence/layers-repo";
 
 const log = getMainLogger("pwrsnap:layers-handlers");
@@ -115,6 +116,47 @@ export function registerLayersHandlers(): void {
       return err({
         kind: "persistence",
         code: "insert_failed",
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  });
+
+  bus.register("layers:update", async (req) => {
+    const refusal = refuseIfV1Capture(req.captureId);
+    if (refusal !== null) return err(refusal);
+
+    const parseResult = BundleLayerNodeSchema.safeParse(req.layer);
+    if (!parseResult.success) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: `layer payload failed schema validation: ${parseResult.error.message}`
+      });
+    }
+    try {
+      const updated = updateLayer({
+        captureId: req.captureId,
+        node: parseResult.data
+      });
+      if (updated === null) {
+        return err({
+          kind: "validation",
+          code: "not_found",
+          message: `live layer not found for capture ${req.captureId}: ${req.layer.id}`
+        });
+      }
+      log.info("layer updated", {
+        id: updated.id,
+        captureId: req.captureId,
+        kind: updated.kind
+      });
+      broadcastLayersChanged(req.captureId);
+      scheduleRepack(req.captureId);
+      return ok(updated);
+    } catch (cause) {
+      return err({
+        kind: "persistence",
+        code: "update_failed",
         message: cause instanceof Error ? cause.message : String(cause)
       });
     }

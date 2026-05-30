@@ -672,6 +672,7 @@ function isToolSizePreset(value: unknown): boolean {
     value === "small" ||
     value === "medium" ||
     value === "large" ||
+    value === "x-large" ||
     isFiniteNumber(value)
   );
 }
@@ -681,7 +682,7 @@ function validateArrowStyle(raw: Record<string, unknown>): PwrSnapError | null {
     return validationError("invalid_editor_arrow_color", "settings:write: editor.toolStyles.arrow.color must be a color token or string");
   }
   if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
-    return validationError("invalid_editor_arrow_thickness", "settings:write: editor.toolStyles.arrow.thickness must be auto/small/medium/large or a finite number");
+    return validationError("invalid_editor_arrow_thickness", "settings:write: editor.toolStyles.arrow.thickness must be auto/small/medium/large/x-large or a finite number");
   }
   if (!isUndefined(raw.endStyle)) {
     const v = raw.endStyle;
@@ -706,7 +707,7 @@ function validateTextStyle(raw: Record<string, unknown>): PwrSnapError | null {
     return validationError("invalid_editor_text_color", "settings:write: editor.toolStyles.text.color must be a color token or string");
   }
   if (!isUndefined(raw.fontSize) && !isToolSizePreset(raw.fontSize)) {
-    return validationError("invalid_editor_text_fontSize", "settings:write: editor.toolStyles.text.fontSize must be auto/small/medium/large or a finite number");
+    return validationError("invalid_editor_text_fontSize", "settings:write: editor.toolStyles.text.fontSize must be auto/small/medium/large/x-large or a finite number");
   }
   if (!isUndefined(raw.weight)) {
     const v = raw.weight;
@@ -722,7 +723,7 @@ function validateShapeStyle(raw: Record<string, unknown>): PwrSnapError | null {
     return validationError("invalid_editor_shape_color", "settings:write: editor.toolStyles.shape.color must be a color token or string");
   }
   if (!isUndefined(raw.thickness) && !isToolSizePreset(raw.thickness)) {
-    return validationError("invalid_editor_shape_thickness", "settings:write: editor.toolStyles.shape.thickness must be auto/small/medium/large or a finite number");
+    return validationError("invalid_editor_shape_thickness", "settings:write: editor.toolStyles.shape.thickness must be auto/small/medium/large/x-large or a finite number");
   }
   if (!isUndefined(raw.filled) && !isBoolean(raw.filled)) {
     return validationError("invalid_editor_shape_filled", "settings:write: editor.toolStyles.shape.filled must be a boolean");

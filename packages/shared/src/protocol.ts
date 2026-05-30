@@ -1980,6 +1980,14 @@ export type Commands = {
     req: { captureId: string; layer: BundleLayerNode; bumpZIndexToMax?: boolean };
     res: BundleLayerNode;
   };
+  /** Update an existing live layer in place, preserving its id and
+   *  z-order. Intended for style/geometry edits where the annotation is
+   *  conceptually the same object (for example: make this arrow
+   *  x-large), not a fresh draw. */
+  "layers:update": {
+    req: { captureId: string; layer: BundleLayerNode };
+    res: BundleLayerNode;
+  };
   /** Move a layer to a new parent (or root via newParentId=null).
    *  Refuses cycles via a recursive-CTE check inside a BEGIN
    *  IMMEDIATE transaction — safe under concurrent reparents from

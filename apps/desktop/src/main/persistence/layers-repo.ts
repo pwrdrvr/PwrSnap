@@ -395,6 +395,76 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
   return loadLayer(node.id);
 }
 
+export type UpdateLayerInput = {
+  node: BundleLayerNode;
+  captureId: string;
+};
+
+export function updateLayer(input: UpdateLayerInput): BundleLayerNode | null {
+  const node = BundleLayerNodeSchema.parse(input.node);
+  const db = getDb();
+  let updated = false;
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare<[string], { capture_id: string; rejected_at: string | null; superseded_by: string | null }>(
+        `SELECT capture_id, rejected_at, superseded_by FROM layers WHERE id = ?`
+      )
+      .get(node.id);
+    if (
+      existing === undefined ||
+      existing.capture_id !== input.captureId ||
+      existing.rejected_at !== null ||
+      existing.superseded_by !== null
+    ) {
+      return;
+    }
+
+    const { kindSpecificData, transformJson } = splitNodeForStorage(node);
+    db.prepare(
+      `UPDATE layers
+          SET parent_id = @parent_id,
+              kind = @kind,
+              z_index = @z_index,
+              name = @name,
+              visible = @visible,
+              locked = @locked,
+              opacity = @opacity,
+              blend_mode = @blend_mode,
+              transform_json = @transform_json,
+              data = @data,
+              source = @source,
+              ai_run_id = @ai_run_id,
+              applied_at = @applied_at,
+              rejected_at = NULL,
+              superseded_by = NULL
+        WHERE id = @id
+          AND capture_id = @capture_id
+          AND rejected_at IS NULL
+          AND superseded_by IS NULL`
+    ).run({
+      id: node.id,
+      capture_id: input.captureId,
+      parent_id: node.parent_id,
+      kind: node.kind,
+      z_index: node.z_index,
+      name: node.name,
+      visible: node.visible ? 1 : 0,
+      locked: node.locked ? 1 : 0,
+      opacity: node.opacity,
+      blend_mode: node.blend_mode,
+      transform_json: transformJson,
+      data: kindSpecificData,
+      source: node.source,
+      ai_run_id: node.ai_run_id,
+      applied_at: node.applied_at
+    });
+    bumpEditsVersion(input.captureId);
+    updated = true;
+  });
+  tx();
+  return updated ? loadLayer(node.id) : null;
+}
+
 /**
  * Bulk insert — used by the legacy migration + the future v1→v2
  * migration to populate a tree atomically. Validates each node;

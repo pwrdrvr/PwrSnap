@@ -19,6 +19,7 @@
 import Database from "better-sqlite3";
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { BundleLayerNode } from "@pwrsnap/shared";
 
 let testDb: Database.Database;
 
@@ -40,6 +41,7 @@ vi.mock("../../persistence/bundle-store", () => ({
 
 const { bus } = await import("../../command-bus");
 const { registerLayersHandlers } = await import("../layers-handlers");
+const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
 
 registerLayersHandlers();
 
@@ -63,6 +65,62 @@ beforeEach(() => {
 afterEach(() => {
   testDb.close();
 });
+
+function seedV2Capture(id: string): void {
+  testDb
+    .prepare(
+      `INSERT INTO captures (
+        id, kind, captured_at,
+        source_app_bundle_id, source_app_name,
+        legacy_src_path, bundle_path, flat_png_path,
+        bundle_modified_at, bundle_format_version, bundle_edits_version,
+        width_px, height_px, device_pixel_ratio,
+        byte_size, sha256, edits_version, deleted_at
+      ) VALUES (
+        @id, 'image', '2026-05-30T12:00:00.000Z',
+        NULL, NULL,
+        NULL, @bundlePath, NULL,
+        '2026-05-30T12:00:00.000Z', 2, 0,
+        1000, 800, 2,
+        1000, @sha, 0, NULL
+      )`
+    )
+    .run({
+      id,
+      bundlePath: `/tmp/${id}.pwrsnap`,
+      sha: `sha_${id}`
+    });
+}
+
+function seedArrowLayer(captureId: string): Extract<BundleLayerNode, { kind: "vector" }> {
+  const now = "2026-05-30T12:00:00.000Z";
+  const layer: BundleLayerNode = {
+    id: "arrow_layer_0001",
+    parent_id: null,
+    kind: "vector",
+    name: "Arrow",
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: 1000,
+    source: "codex",
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now,
+    shape: {
+      kind: "arrow",
+      from: { x: 0.1, y: 0.9 },
+      to: { x: 0.7, y: 0.2 },
+      color: "auto"
+    }
+  };
+  insertLayerTreeForCapture(captureId, [layer]);
+  return layer;
+}
 
 describe("layers:reorder zIndex validation", () => {
   test("rejects NaN zIndex with schema_mismatch", async () => {
@@ -132,5 +190,40 @@ describe("layers:reorder zIndex validation", () => {
       { principal: "ipc" }
     );
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("layers:update", () => {
+  test("updates a live layer in place and preserves the id", async () => {
+    seedV2Capture("cap_update");
+    const original = seedArrowLayer("cap_update");
+    if (original.shape.kind !== "arrow") throw new Error("expected seeded arrow");
+
+    const result = await bus.dispatch(
+      "layers:update",
+      {
+        captureId: "cap_update",
+        layer: {
+          ...original,
+          shape: { ...original.shape, thickness: "x-large" }
+        }
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error.message);
+    expect(result.value.id).toBe("arrow_layer_0001");
+    expect(result.value.z_index).toBe(1000);
+    expect(result.value.kind).toBe("vector");
+    if (result.value.kind !== "vector") throw new Error("expected vector layer");
+    expect(result.value.shape.kind).toBe("arrow");
+    if (result.value.shape.kind !== "arrow") throw new Error("expected arrow layer");
+    expect(result.value.shape.thickness).toBe("x-large");
+
+    const row = testDb
+      .prepare<[string], { count: number }>(`SELECT COUNT(*) AS count FROM layers WHERE id = ?`)
+      .get("arrow_layer_0001");
+    expect(row?.count).toBe(1);
   });
 });

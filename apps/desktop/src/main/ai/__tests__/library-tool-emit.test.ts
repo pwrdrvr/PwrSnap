@@ -36,15 +36,54 @@ function lastUpsertedLayer(): Record<string, unknown> {
   return (call[1] as { layer: Record<string, unknown> }).layer;
 }
 
+function lastUpdatedLayer(): Record<string, unknown> {
+  const call = [...dispatch.mock.calls].reverse().find((c) => c[0] === "layers:update");
+  if (call === undefined) throw new Error("layers:update was not dispatched");
+  return (call[1] as { layer: Record<string, unknown> }).layer;
+}
+
 beforeEach(() => {
   dispatch.mockReset();
   dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
     if (name === "layers:upsert") return { ok: true, value: req.layer };
+    if (name === "layers:update") return { ok: true, value: req.layer };
     // Effect tools fetch canvas dims via library:byId to denormalize.
     if (name === "library:byId") {
       return { ok: true, value: { id: req.id, kind: "image", width_px: 1000, height_px: 800 } };
     }
     return { ok: true, value: {} };
+  });
+});
+
+describe("draw_arrow emits the full arrow style surface", () => {
+  it("passes thickness/end/stem settings through to the vector shape", async () => {
+    const res = await toolByName("draw_arrow").dispatch(
+      {
+        capture_id: "cap1",
+        from: { x: 0.1, y: 0.9 },
+        to: { x: 0.7, y: 0.2 },
+        color: "#0066cc",
+        thickness: "x-large",
+        end_style: "open-triangle",
+        stem_style: "dashed",
+        double_ended: true
+      },
+      { threadId: "t1" }
+    );
+    expect(res.ok).toBe(true);
+
+    const layer = lastUpsertedLayer();
+    expect(layer.kind).toBe("vector");
+    const shape = layer.shape as Record<string, unknown>;
+    expect(shape).toMatchObject({
+      kind: "arrow",
+      color: "#0066cc",
+      thickness: "x-large",
+      endStyle: "open-triangle",
+      stemStyle: "dashed",
+      doubleEnded: true
+    });
+    expect(BundleLayerNode.safeParse(layer).success).toBe(true);
   });
 });
 
@@ -60,7 +99,13 @@ describe("draw shape tools emit a valid v2 ShapeOverlay layer", () => {
   for (const [name, shapeKind] of cases) {
     it(`${name} → vector layer with shape.kind="shape", shape.shape="${shapeKind}"`, async () => {
       const res = await toolByName(name).dispatch(
-        { capture_id: "cap1", rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 }, color: "#ff0000", filled: true },
+        {
+          capture_id: "cap1",
+          rect: { x: 0.1, y: 0.1, w: 0.3, h: 0.3 },
+          color: "#ff0000",
+          thickness: "large",
+          filled: true
+        },
         { threadId: "t1" }
       );
       // ok:true means the tool's internal BundleLayerNode.safeParse passed.
@@ -71,10 +116,66 @@ describe("draw shape tools emit a valid v2 ShapeOverlay layer", () => {
       const shape = layer.shape as { kind: string; shape: string };
       expect(shape.kind).toBe("shape");
       expect(shape.shape).toBe(shapeKind);
+      expect((layer.shape as { thickness?: string }).thickness).toBe("large");
       // And it round-trips the shared schema.
       expect(BundleLayerNode.safeParse(layer).success).toBe(true);
     });
   }
+});
+
+describe("update_layer edits existing layers in place", () => {
+  it("uses layers:update, not delete+redraw, when changing arrow thickness", async () => {
+    const now = new Date().toISOString();
+    const existing = {
+      id: "arrow_layer_0001",
+      parent_id: null,
+      kind: "vector",
+      name: "AI arrow",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      blend_mode: "normal",
+      transform: [1, 0, 0, 1, 0, 0],
+      z_index: 1000,
+      source: "codex",
+      ai_run_id: null,
+      applied_at: now,
+      rejected_at: null,
+      superseded_by: null,
+      created_at: now,
+      shape: {
+        kind: "arrow",
+        from: { x: 0.1, y: 0.9 },
+        to: { x: 0.7, y: 0.2 },
+        color: "auto"
+      }
+    };
+    dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
+      if (name === "layers:list") return { ok: true, value: [existing] };
+      if (name === "layers:update") return { ok: true, value: req.layer };
+      if (name === "layers:upsert") return { ok: true, value: req.layer };
+      if (name === "library:byId") {
+        return { ok: true, value: { id: req.id, kind: "image", width_px: 1000, height_px: 800 } };
+      }
+      return { ok: true, value: {} };
+    });
+
+    const res = await toolByName("update_layer").dispatch(
+      {
+        capture_id: "cap1",
+        layer_id: "arrow_layer_0001",
+        thickness: "x-large"
+      },
+      { threadId: "t1" }
+    );
+    expect(res.ok).toBe(true);
+
+    const updated = lastUpdatedLayer();
+    expect(updated.id).toBe("arrow_layer_0001");
+    expect((updated.shape as { thickness?: string }).thickness).toBe("x-large");
+    expect(dispatch.mock.calls.some((call) => call[0] === "layers:delete")).toBe(false);
+    expect(BundleLayerNode.safeParse(updated).success).toBe(true);
+  });
 });
 
 describe("effect tools emit a valid v2 EffectLayer with a pixel clip_rect", () => {

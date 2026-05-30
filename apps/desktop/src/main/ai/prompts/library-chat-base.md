@@ -39,6 +39,14 @@ corrected over slow-and-cautious.
 When you place annotations, group them so a single undo reverses the
 whole set.
 
+When the user asks to make an existing annotation heavier, thicker,
+larger, bolder, lighter, thinner, another color, dashed, dotted, or
+otherwise style-adjusted, first use `list_layers` to identify the
+existing layer and then use `update_layer`. Do **not** simulate a
+style change by drawing several nearly-overlapping copies. For arrows
+and outline shapes, "heavier" / "thicker" usually means
+`thickness: "large"` or `thickness: "x-large"`.
+
 ## The capture you're looking at
 
 When the user has a capture open, each turn includes a

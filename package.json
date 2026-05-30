@@ -30,7 +30,7 @@
     "@types/node": "24.12.4",
     "jsdom": "^29.0.2",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.7"
   },
   "pnpm": {
     "overrides": {

@@ -51,21 +51,49 @@
   min-width: 0;
   overflow-x: auto;
 }
-.ps-libchat-thread {
+.ps-libchat-thread-shell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 24px;
-  padding: 0 10px;
   border: 1px solid var(--border-default);
   border-radius: 999px;
   background: transparent;
   color: var(--text-secondary);
+  overflow: hidden;
+}
+.ps-libchat-thread-shell.is-active { border-color: var(--accent); color: var(--text-primary); }
+.ps-libchat-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  min-width: 0;
+  padding: 0 2px 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
   font: 500 11px/1 var(--font-sans);
   white-space: nowrap;
   cursor: pointer;
 }
-.ps-libchat-thread.is-active { border-color: var(--accent); color: var(--text-primary); }
+.ps-libchat-thread-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-sans);
+  cursor: pointer;
+}
+.ps-libchat-thread-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-hover);
+}
 .ps-libchat-thread-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
 .ps-libchat-dot {
   width: 6px;

@@ -30,6 +30,7 @@ export interface LibraryChatPanelProps {
 }
 
 type StreamEntry = { full: string; listeners: Set<(t: string) => void> };
+type ChatPanelError = { message: string; showSettingsHint: boolean };
 
 export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelProps): ReactElement {
   const [threads, setThreads] = useState<LibraryChatThreadView[]>([]);
@@ -37,7 +38,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [approval, setApproval] = useState<ChatApprovalRequest | null>(null);
-  const [codexError, setCodexError] = useState<string | null>(null);
+  const [codexError, setCodexError] = useState<ChatPanelError | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   // Tool-activity lives IN the transcript flow, not a fixed bar:
   //   • activityByMsg — chips for completed turns, keyed by the assistant
@@ -51,6 +52,8 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const [activityByMsg, setActivityByMsg] = useState<Record<string, ChatActivityChip[]>>({});
   const [pendingChips, setPendingChips] = useState<ChatActivityChip[]>([]);
 
+  const threadsRef = useRef<LibraryChatThreadView[]>([]);
+  threadsRef.current = threads;
   const activeThreadRef = useRef<string | null>(null);
   activeThreadRef.current = activeThreadId;
   const activeTurnRef = useRef<string | null>(null);
@@ -107,7 +110,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       const result = await dispatch("codex:libraryChat:list", { anchorCaptureId });
       if (cancelled) return;
       if (!result.ok) {
-        setCodexError(result.error.message);
+        setCodexError(errorFor(result.error));
         setLoading(false);
         return;
       }
@@ -156,6 +159,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       subscribe(EVENT_CHANNELS.libraryChatThreadUpdated, (payload) => {
         const { thread } = payload as { thread: LibraryChatThreadView };
         setThreads((prev) => {
+          if (thread.archived) return prev.filter((t) => t.threadId !== thread.threadId);
           const idx = prev.findIndex((t) => t.threadId === thread.threadId);
           if (idx === -1) return [thread, ...prev];
           const next = [...prev];
@@ -293,7 +297,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
   const onNewChat = useCallback(async () => {
     const result = await dispatch("codex:libraryChat:create", { anchorCaptureId });
     if (!result.ok) {
-      setCodexError(result.error.message);
+      setCodexError(errorFor(result.error));
       return;
     }
     setThreads((prev) => [result.value, ...prev.filter((t) => t.threadId !== result.value.threadId)]);
@@ -310,7 +314,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
       if (threadId === null) {
         const created = await dispatch("codex:libraryChat:create", { anchorCaptureId });
         if (!created.ok) {
-          setCodexError(created.error.message);
+          setCodexError(errorFor(created.error));
           return;
         }
         threadId = created.value.threadId;
@@ -332,7 +336,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         anchorCaptureId
       });
       if (!result.ok) {
-        setCodexError(result.error.message);
+        setCodexError(errorFor(result.error));
         return;
       }
       setActiveTurnId(result.value.turnId);
@@ -340,14 +344,29 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
     [anchorCaptureId]
   );
 
+  const onCloseThread = useCallback(async (threadId: string): Promise<void> => {
+    const result = await dispatch("codex:libraryChat:archive", { threadId, archived: true });
+    if (!result.ok) {
+      setCodexError(errorFor(result.error));
+      return;
+    }
+    const next = threadsRef.current.filter((t) => t.threadId !== threadId);
+    setThreads(next);
+    if (activeThreadRef.current === threadId) {
+      setActiveThreadId(next[0]?.threadId ?? null);
+    }
+  }, []);
+
   if (codexError !== null) {
     return (
       <div className="ps-libchat ps-libchat--empty" data-testid="library-chat-panel">
         <div className="ps-libchat-empty-title">Chat is unavailable</div>
-        <p className="ps-libchat-empty-body">{codexError}</p>
-        <p className="ps-libchat-empty-body">
-          Open <b>Settings → AI Providers</b> to configure Codex, then try again.
-        </p>
+        <p className="ps-libchat-empty-body">{codexError.message}</p>
+        {codexError.showSettingsHint ? (
+          <p className="ps-libchat-empty-body">
+            Open <b>Settings → AI Providers</b> to configure Codex, then try again.
+          </p>
+        ) : null}
         <button
           type="button"
           className="ps-libchat-cta"
@@ -356,7 +375,7 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
             setLoading(true);
             void dispatch("codex:libraryChat:list", { anchorCaptureId }).then((r) => {
               if (r.ok) setThreads(r.value.threads);
-              else setCodexError(r.error.message);
+              else setCodexError(errorFor(r.error));
               setLoading(false);
             });
           }}
@@ -390,17 +409,34 @@ export function LibraryChatPanel({ anchorCaptureId = null }: LibraryChatPanelPro
         </button>
         <div className="ps-libchat-thread-strip">
           {threads.map((t) => (
-            <button
-              type="button"
+            <div
               key={t.threadId}
               className={
-                "ps-libchat-thread" + (t.threadId === activeThreadId ? " is-active" : "")
+                "ps-libchat-thread-shell" + (t.threadId === activeThreadId ? " is-active" : "")
               }
-              onClick={() => setActiveThreadId(t.threadId)}
             >
-              <span className="ps-libchat-thread-name">{t.name}</span>
-              {t.status.kind === "streaming" ? <span className="ps-libchat-dot" /> : null}
-            </button>
+              <button
+                type="button"
+                className="ps-libchat-thread"
+                onClick={() => setActiveThreadId(t.threadId)}
+                title={t.name}
+              >
+                <span className="ps-libchat-thread-name">{t.name}</span>
+                {t.status.kind === "streaming" ? <span className="ps-libchat-dot" /> : null}
+              </button>
+              <button
+                type="button"
+                className="ps-libchat-thread-close"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void onCloseThread(t.threadId);
+                }}
+                title="Close chat"
+                aria-label={`Close ${t.name}`}
+              >
+                x
+              </button>
+            </div>
           ))}
         </div>
       </div>
@@ -453,4 +489,17 @@ function streamingMessageIdMatches(
   streamState: React.MutableRefObject<Map<string, StreamEntry>>
 ): boolean {
   return streamState.current.has(messageId);
+}
+
+function errorFor(error: { code?: string; message: string }): ChatPanelError {
+  const staleThread =
+    error.code === "thread_not_found" ||
+    error.message.includes("thread not found") ||
+    error.message.includes("could not be reopened");
+  return {
+    message: staleThread
+      ? "This chat could not be reopened. Start a new chat or close this chat chip."
+      : error.message,
+    showSettingsHint: !staleThread
+  };
 }

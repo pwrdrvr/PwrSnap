@@ -229,6 +229,9 @@ export function registerLibraryChatHandlers(params?: {
       if (message.includes("already in progress")) {
         return aiError("turn_in_progress", message);
       }
+      if (message.includes("thread not found")) {
+        return aiError("thread_not_found", "This chat thread could not be reopened.");
+      }
       return codexUnreachable(cause);
     }
   });

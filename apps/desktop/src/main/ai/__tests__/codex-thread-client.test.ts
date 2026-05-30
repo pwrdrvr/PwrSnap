@@ -122,6 +122,32 @@ class FakeTransport implements JsonRpcTransport {
       return;
     }
 
+    if (envelope.method === "thread/resume") {
+      const threadId = (envelope.params as { threadId?: string }).threadId ?? "thread-resumed";
+      this.emit({
+        id,
+        result: {
+          thread: {
+            id: threadId,
+            items: [],
+            turns: []
+          },
+          model: "gpt-test",
+          modelProvider: "openai",
+          serviceTier: null,
+          cwd: "/tmp",
+          runtimeWorkspaceRoots: [],
+          instructionSources: [],
+          approvalPolicy: "never",
+          approvalsReviewer: "auto",
+          sandbox: { mode: "read-only" },
+          activePermissionProfile: null,
+          reasoningEffort: "low"
+        }
+      });
+      return;
+    }
+
     if (envelope.method === "turn/start") {
       this.turnCounter += 1;
       const threadId = (envelope.params as { threadId?: string }).threadId ?? "thread-?";
@@ -303,5 +329,45 @@ describe("CodexThreadClient", () => {
       threadId: "thread-1",
       gitInfo: { sha: null, branch: null, originUrl: null }
     });
+  });
+
+  it("resumes a persisted thread before starting its first turn in this client", async () => {
+    const transport = new FakeTransport();
+    const client = new CodexThreadClient({
+      command: "/bin/codex",
+      transportFactory: () => transport
+    });
+
+    await client.startTurn({
+      threadId: "thread-from-disk",
+      input: [{ type: "text", text: "continue", text_elements: [] }]
+    });
+
+    const methods = transport.outbound.map((envelope) => envelope.method).filter(Boolean);
+    expect(methods).toEqual(["initialize", "thread/resume", "turn/start"]);
+    expect(transport.outbound.find((envelope) => envelope.method === "thread/resume")?.params).toEqual(
+      {
+        threadId: "thread-from-disk",
+        persistExtendedHistory: false
+      }
+    );
+  });
+
+  it("does not resume a thread that was started by this client", async () => {
+    const transport = new FakeTransport();
+    const client = new CodexThreadClient({
+      command: "/bin/codex",
+      transportFactory: () => transport
+    });
+
+    const { threadId } = await client.startThread();
+    await client.startTurn({
+      threadId,
+      input: [{ type: "text", text: "hello", text_elements: [] }]
+    });
+
+    expect(transport.outbound.filter((envelope) => envelope.method === "thread/resume")).toEqual(
+      []
+    );
   });
 });

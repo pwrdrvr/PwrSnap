@@ -415,6 +415,135 @@ describe("validateSizzleUpdate — Phase 3a transition validation", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("scene_transition_invalid");
   });
+
+  it("accepts an object transition with an explicit duration", () => {
+    const transition = { type: "dip-black", durationSec: 0.25 };
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: { scenes: [{ ...validSceneBase(), transition }] }
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.scenes![0]!.transition).toEqual(transition);
+  });
+
+  it("rejects an object transition duration over the cap", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            ...validSceneBase(),
+            transition: {
+              type: "dip-black",
+              durationSec: SIZZLE_LIMITS.transitionDurationSecMax + 1
+            }
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("scene_transition_duration_invalid");
+  });
+});
+
+describe("validateSizzleUpdate — sequence scene validation", () => {
+  it("accepts a sequence scene and mirrors narration into scriptLine", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            id: "sc_sequence",
+            kind: "sequence",
+            scriptLine: "",
+            narration: "Open the wizard, then enable Telegram in Settings.",
+            durationOverrideSec: null,
+            beats: [
+              {
+                id: "bt_wizard",
+                captureId: "cap_wizard",
+                timing: { kind: "offset", startSec: 0, endSec: 1.2 },
+                mediaTrim: null,
+                transition: "cut",
+                videoFit: "smart-fit"
+              },
+              {
+                id: "bt_settings",
+                captureId: "cap_settings",
+                timing: {
+                  kind: "phrase",
+                  phrase: "Settings",
+                  occurrence: 1,
+                  offsetSec: -0.1,
+                  durationSec: 0.8
+                },
+                mediaTrim: null,
+                transition: { type: "push-left", durationSec: 0.18 },
+                videoFit: "loop"
+              }
+            ]
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const scene = r.value.patch.scenes![0]!;
+      expect(scene.kind).toBe("sequence");
+      expect(scene.captureId).toBe("cap_wizard");
+      expect(scene.scriptLine).toBe("Open the wizard, then enable Telegram in Settings.");
+      expect(scene.narration).toBe(scene.scriptLine);
+      expect(scene.beats).toHaveLength(2);
+      expect(scene.beats![1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
+      expect(scene.beats![1]!.videoFit).toBe("loop");
+    }
+  });
+
+  it("rejects a sequence scene with no beats", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            id: "sc_sequence",
+            kind: "sequence",
+            captureId: "cap_1",
+            scriptLine: "Narration",
+            durationOverrideSec: null,
+            beats: []
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("scene_beats_empty");
+  });
+
+  it("rejects a sequence beat with an unknown videoFit policy", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            id: "sc_sequence",
+            kind: "sequence",
+            scriptLine: "Narration",
+            durationOverrideSec: null,
+            beats: [
+              {
+                id: "bt_1",
+                captureId: "cap_1",
+                timing: { kind: "offset", startSec: 0, endSec: null },
+                videoFit: "stretch"
+              }
+            ]
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("scene_beat_videoFit_invalid");
+  });
 });
 
 describe("validateSizzleToggleScene", () => {

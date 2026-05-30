@@ -2,7 +2,16 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
-import type { SizzleProject, SizzleScene } from "@pwrsnap/shared";
+import {
+  normalizeSizzleTransition,
+  type SizzleAudioSource,
+  type SizzleBeatTiming,
+  type SizzleMediaTrim,
+  type SizzleProject,
+  type SizzleScene,
+  type SizzleSequenceBeat,
+  type SizzleVideoFitPolicy
+} from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 
 type Logger = ReturnType<typeof getMainLogger>;
@@ -213,23 +222,114 @@ export class SizzleProjectNotFoundError extends Error {
 }
 
 function sanitizeScenes(scenes: SizzleScene[]): SizzleScene[] {
-  return scenes.map((s) => ({
+  return scenes.map(sanitizeScene);
+}
+
+function sanitizeScene(s: SizzleScene): SizzleScene {
+  const kind = s.kind === "sequence" ? "sequence" : "simple";
+  const beats =
+    kind === "sequence" ? sanitizeSequenceBeats(s.beats, s.captureId) : [];
+  const captureId =
+    kind === "sequence" ? beats[0]?.captureId ?? s.captureId : s.captureId;
+  const narration = s.narration ?? s.scriptLine ?? "";
+  const base: SizzleScene = {
     id: s.id || `sc_${randomUUID().slice(0, 10)}`,
-    captureId: s.captureId,
-    scriptLine: s.scriptLine ?? "",
+    captureId,
+    scriptLine: kind === "sequence" ? narration : s.scriptLine ?? "",
     durationOverrideSec:
       typeof s.durationOverrideSec === "number" && s.durationOverrideSec > 0
         ? s.durationOverrideSec
         : null,
     // New fields with backward-compatible defaults. Older projects on
     // disk predate these — readBlob hands them through here.
-    mediaTrim:
-      s.mediaTrim !== undefined && s.mediaTrim !== null
-        ? { startSec: s.mediaTrim.startSec, endSec: s.mediaTrim.endSec }
-        : null,
-    audioSource: s.audioSource ?? "auto",
-    transition: s.transition ?? "crossfade"
+    mediaTrim: sanitizeMediaTrim(s.mediaTrim),
+    audioSource: sanitizeAudioSource(s.audioSource),
+    transition: normalizeSizzleTransition(s.transition, { type: "crossfade" })
+  };
+  if (kind === "sequence") {
+    base.kind = "sequence";
+    base.narration = narration;
+    base.beats = beats;
+  }
+  return base;
+}
+
+function sanitizeSequenceBeats(
+  beats: SizzleSequenceBeat[] | undefined,
+  fallbackCaptureId: string
+): SizzleSequenceBeat[] {
+  const source =
+    Array.isArray(beats) && beats.length > 0
+      ? beats
+      : fallbackCaptureId.length > 0
+        ? [
+            {
+              id: `bt_${randomUUID().slice(0, 10)}`,
+              captureId: fallbackCaptureId,
+              timing: { kind: "offset", startSec: 0, endSec: null },
+              mediaTrim: null,
+              transition: "cut",
+              videoFit: "smart-fit"
+            } satisfies SizzleSequenceBeat
+          ]
+        : [];
+  return source.map((beat) => ({
+    id: beat.id || `bt_${randomUUID().slice(0, 10)}`,
+    captureId: beat.captureId || fallbackCaptureId,
+    timing: sanitizeBeatTiming(beat.timing),
+    mediaTrim: sanitizeMediaTrim(beat.mediaTrim),
+    transition: normalizeSizzleTransition(beat.transition, {
+      type: "cut",
+      durationSec: 0
+    }),
+    videoFit: sanitizeVideoFit(beat.videoFit)
   }));
+}
+
+function sanitizeBeatTiming(timing: SizzleBeatTiming | undefined): SizzleBeatTiming {
+  if (timing?.kind === "phrase") {
+    return {
+      kind: "phrase",
+      phrase: timing.phrase ?? "",
+      occurrence:
+        typeof timing.occurrence === "number" && Number.isInteger(timing.occurrence) && timing.occurrence > 0
+          ? timing.occurrence
+          : null,
+      offsetSec:
+        typeof timing.offsetSec === "number" && Number.isFinite(timing.offsetSec)
+          ? timing.offsetSec
+          : 0,
+      durationSec:
+        typeof timing.durationSec === "number" && Number.isFinite(timing.durationSec) && timing.durationSec > 0
+          ? timing.durationSec
+          : null
+    };
+  }
+  return {
+    kind: "offset",
+    startSec:
+      timing?.kind === "offset" && typeof timing.startSec === "number" && Number.isFinite(timing.startSec)
+        ? Math.max(0, timing.startSec)
+        : 0,
+    endSec:
+      timing?.kind === "offset" && typeof timing.endSec === "number" && Number.isFinite(timing.endSec)
+        ? timing.endSec
+        : null
+  };
+}
+
+function sanitizeMediaTrim(trim: SizzleMediaTrim | null | undefined): SizzleMediaTrim | null {
+  return trim !== undefined && trim !== null
+    ? { startSec: trim.startSec, endSec: trim.endSec }
+    : null;
+}
+
+function sanitizeAudioSource(audioSource: SizzleAudioSource | undefined): SizzleAudioSource {
+  return audioSource ?? "auto";
+}
+
+function sanitizeVideoFit(videoFit: SizzleVideoFitPolicy | undefined): SizzleVideoFitPolicy {
+  return videoFit ?? "smart-fit";
 }
 
 function clone<T>(v: T): T {

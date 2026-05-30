@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonRpcTransport } from "../../codex-app-server/json-rpc";
 import { CodexAppServerClient } from "../codex-client";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "../codex-thread-config";
 import { afterEach, describe, expect, it } from "vitest";
 
 type Envelope = {
@@ -272,7 +273,7 @@ describe("CodexAppServerClient", () => {
       ephemeral: true,
       approvalPolicy: "never",
       baseInstructions: expect.stringContaining("Primary goals, in order:"),
-      config: { web_search: "disabled" },
+      config: PWRSNAP_CODEX_THREAD_CONFIG,
       environments: [],
       experimentalRawEvents: false,
       persistExtendedHistory: false

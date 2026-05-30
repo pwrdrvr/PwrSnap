@@ -21,6 +21,7 @@ import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { getMainLogger } from "../log";
+import { PWRSNAP_CODEX_THREAD_CONFIG } from "./codex-thread-config";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
@@ -125,9 +126,9 @@ export class CodexAppServerClient {
           sandbox: "read-only",
           baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
           // This background turn only needs image understanding. Empty
-          // environments and disabled web search keep Codex from attaching
-          // coding-agent tool/context scaffolding to every enrichment.
-          config: { web_search: "disabled" },
+          // environments remove env-gated coding tools; the config overlay
+          // disables Codex prompt/tool scaffolding unrelated to enrichment.
+          config: PWRSNAP_CODEX_THREAD_CONFIG,
           environments: [],
           experimentalRawEvents: false,
           persistExtendedHistory: false

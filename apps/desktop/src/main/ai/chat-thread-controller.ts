@@ -110,14 +110,11 @@ export type ChatThreadControllerDeps = {
   /** Default-Access policy applied to every chat thread. */
   approvalPolicy?: string;
   sandbox?: string;
-  /** Per-thread Codex config overlay applied on every thread/start —
-   *  e.g. `web_search = "disabled"` so the agent doesn't advertise web
-   *  search. */
+  /** Per-thread Codex config overlay applied on every thread/start. */
   threadConfig?: Record<string, unknown>;
   /** Thread environments. `[]` disables exec-environment access, which
    *  drops Codex's built-in shell / unified_exec / apply_patch tools
-   *  (they're env-gated) while leaving our dynamic tools intact — so the
-   *  agent presents only PwrSnap's tools. */
+   *  (they're env-gated) while leaving our dynamic tools intact. */
   threadEnvironments?: unknown[];
   /** Injectable clock for tests. */
   now?: () => number;

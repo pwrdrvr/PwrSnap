@@ -1980,6 +1980,14 @@ export type Commands = {
     req: { captureId: string; layer: BundleLayerNode; bumpZIndexToMax?: boolean };
     res: BundleLayerNode;
   };
+  /** Update an existing live layer in place, preserving its id and
+   *  z-order. Intended for style/geometry edits where the annotation is
+   *  conceptually the same object (for example: make this arrow
+   *  x-large), not a fresh draw. */
+  "layers:update": {
+    req: { captureId: string; layer: BundleLayerNode };
+    res: BundleLayerNode;
+  };
   /** Move a layer to a new parent (or root via newParentId=null).
    *  Refuses cycles via a recursive-CTE check inside a BEGIN
    *  IMMEDIATE transaction — safe under concurrent reparents from
@@ -1992,10 +2000,34 @@ export type Commands = {
    *  reordering (1000-step increments) so most reorders touch only
    *  the moving layer. */
   "layers:reorder": { req: { id: string; zIndex: number }; res: void };
+  /** Atomic bulk z-order update. Used by agent tools that rewrite an
+   *  ordered layer list instead of issuing several independent
+   *  reorder calls. */
+  "layers:reorderMany": {
+    req: { orders: { id: string; zIndex: number }[] };
+    res: void;
+  };
   /** Soft-delete a layer. Cascades rejected_at transitively to every
    *  descendant in one transaction — leaving orphaned-but-live
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
+
+  /** Atomically apply a v2 viewport crop: re-normalize existing layers,
+   *  insert a crop marker layer, and update the capture canvas
+   *  dimensions in one main-side transaction. */
+  "bundle:cropCanvas": {
+    req: {
+      captureId: string;
+      rect: { x: number; y: number; w: number; h: number };
+      source?: "user" | "codex";
+    };
+    res: {
+      previousWidthPx: number;
+      previousHeightPx: number;
+      widthPx: number;
+      heightPx: number;
+    };
+  };
 
   /** Render the current composite (source + applied layers) to a
    *  downscaled PNG and return it base64-encoded. Powers the Library

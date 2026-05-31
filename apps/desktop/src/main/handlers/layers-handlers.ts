@@ -10,7 +10,15 @@
 // hit.
 
 import { BrowserWindow } from "electron";
-import { ok, err, EVENT_CHANNELS, BundleLayerNode as BundleLayerNodeSchema } from "@pwrsnap/shared";
+import { nanoid } from "nanoid";
+import {
+  ok,
+  err,
+  EVENT_CHANNELS,
+  BundleLayerNode as BundleLayerNodeSchema,
+  type BundleLayerNode
+} from "@pwrsnap/shared";
+import type { Overlay } from "@pwrsnap/shared/overlay";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { scheduleRepack } from "../persistence/bundle-store";
@@ -21,7 +29,9 @@ import {
   rejectLayer,
   reparent,
   setLayerZIndex,
-  listLayerTree
+  setLayerZIndexes,
+  listLayerTree,
+  updateLayer
 } from "../persistence/layers-repo";
 
 const log = getMainLogger("pwrsnap:layers-handlers");
@@ -66,6 +76,166 @@ function refuseIfV1Capture(
     };
   }
   return null;
+}
+
+class CropCanvasError extends Error {
+  constructor(
+    readonly kind: "validation" | "persistence",
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+function validateCropRect(rect: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}): CropCanvasError | null {
+  for (const [key, value] of Object.entries(rect)) {
+    if (!Number.isFinite(value)) {
+      return new CropCanvasError(
+        "validation",
+        "invalid_crop_rect",
+        `crop rect ${key} must be finite: got ${String(value)}`
+      );
+    }
+  }
+  if (rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0) {
+    return new CropCanvasError(
+      "validation",
+      "invalid_crop_rect",
+      `crop rect must have non-negative x/y and positive w/h: got ${JSON.stringify(rect)}`
+    );
+  }
+  if (rect.x + rect.w > 1 || rect.y + rect.h > 1) {
+    return new CropCanvasError(
+      "validation",
+      "invalid_crop_rect",
+      `crop rect must stay inside the canvas: got ${JSON.stringify(rect)}`
+    );
+  }
+  return null;
+}
+
+function inverseTransformOverlayByCrop(
+  overlay: Overlay,
+  rect: { x: number; y: number; w: number; h: number }
+): Overlay | null {
+  if (rect.w <= 0 || rect.h <= 0) return null;
+  const tx = (n: number): number => (n - rect.x) / rect.w;
+  const ty = (n: number): number => (n - rect.y) / rect.h;
+  const sx = (n: number): number => n / rect.w;
+  const sy = (n: number): number => n / rect.h;
+  switch (overlay.kind) {
+    case "arrow":
+      return {
+        ...overlay,
+        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
+        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
+      };
+    case "shape":
+    case "highlight":
+    case "blur":
+      return {
+        ...overlay,
+        rect: {
+          x: tx(overlay.rect.x),
+          y: ty(overlay.rect.y),
+          w: sx(overlay.rect.w),
+          h: sy(overlay.rect.h)
+        }
+      } as Overlay;
+    case "text":
+    case "step":
+      return { ...overlay, point: { x: tx(overlay.point.x), y: ty(overlay.point.y) } };
+    case "crop":
+      return null;
+  }
+}
+
+function commonCropLayerProps(
+  name: string,
+  source: "user" | "codex"
+): Omit<BundleLayerNode, "kind"> {
+  const now = new Date().toISOString();
+  return {
+    id: nanoid(16),
+    parent_id: null,
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blend_mode: "normal",
+    transform: [1, 0, 0, 1, 0, 0],
+    z_index: 0,
+    source,
+    ai_run_id: null,
+    applied_at: now,
+    rejected_at: null,
+    superseded_by: null,
+    created_at: now
+  };
+}
+
+function applyCropCanvasAtomic(input: {
+  captureId: string;
+  updates: BundleLayerNode[];
+  deleteLayerIds: string[];
+  cropLayer: BundleLayerNode | null;
+  widthPx: number;
+  heightPx: number;
+}): { previousWidthPx: number; previousHeightPx: number } {
+  const db = getDb();
+  const tx = db.transaction(() => {
+    for (const node of input.updates) {
+      const updated = updateLayer({ captureId: input.captureId, node });
+      if (updated.status === "not_found") {
+        throw new CropCanvasError(
+          "validation",
+          "not_found",
+          `live layer not found for capture ${input.captureId}: ${node.id}`
+        );
+      }
+      if (updated.status === "immutable_violation") {
+        throw new CropCanvasError("validation", "immutable_layer_identity", updated.message);
+      }
+    }
+
+    for (const id of input.deleteLayerIds) {
+      const deletedCaptureId = rejectLayer(id);
+      if (deletedCaptureId !== input.captureId) {
+        throw new CropCanvasError(
+          "validation",
+          "not_found",
+          `live layer not found for capture ${input.captureId}: ${id}`
+        );
+      }
+    }
+
+    if (input.cropLayer !== null) {
+      insertLayer({ captureId: input.captureId, node: input.cropLayer, bumpZIndexToMax: true });
+    }
+
+    const previous = updateCaptureCanvasDimensions(input.captureId, {
+      widthPx: input.widthPx,
+      heightPx: input.heightPx
+    });
+    if (previous === null) {
+      throw new CropCanvasError(
+        "validation",
+        "not_found",
+        `capture not found: ${input.captureId}`
+      );
+    }
+    return {
+      previousWidthPx: previous.widthPx,
+      previousHeightPx: previous.heightPx
+    };
+  });
+  return tx();
 }
 
 export function registerLayersHandlers(): void {
@@ -120,6 +290,54 @@ export function registerLayersHandlers(): void {
     }
   });
 
+  bus.register("layers:update", async (req) => {
+    const refusal = refuseIfV1Capture(req.captureId);
+    if (refusal !== null) return err(refusal);
+
+    const parseResult = BundleLayerNodeSchema.safeParse(req.layer);
+    if (!parseResult.success) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: `layer payload failed schema validation: ${parseResult.error.message}`
+      });
+    }
+    try {
+      const updated = updateLayer({
+        captureId: req.captureId,
+        node: parseResult.data
+      });
+      if (updated.status === "not_found") {
+        return err({
+          kind: "validation",
+          code: "not_found",
+          message: `live layer not found for capture ${req.captureId}: ${req.layer.id}`
+        });
+      }
+      if (updated.status === "immutable_violation") {
+        return err({
+          kind: "validation",
+          code: "immutable_layer_identity",
+          message: updated.message
+        });
+      }
+      log.info("layer updated", {
+        id: updated.node.id,
+        captureId: req.captureId,
+        kind: updated.node.kind
+      });
+      broadcastLayersChanged(req.captureId);
+      scheduleRepack(req.captureId);
+      return ok(updated.node);
+    } catch (cause) {
+      return err({
+        kind: "persistence",
+        code: "update_failed",
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  });
+
   bus.register("layers:reparent", async (req) => {
     const status = reparent(req.id, req.newParentId);
     if (status === "ok") {
@@ -160,6 +378,40 @@ export function registerLayersHandlers(): void {
     return ok(undefined);
   });
 
+  bus.register("layers:reorderMany", async (req) => {
+    if (!Array.isArray(req.orders) || req.orders.length === 0) {
+      return err({
+        kind: "validation",
+        code: "schema_mismatch",
+        message: "layers:reorderMany rejected: orders must be a non-empty array"
+      });
+    }
+    const seen = new Set<string>();
+    for (const order of req.orders) {
+      if (seen.has(order.id)) {
+        return err({
+          kind: "validation",
+          code: "schema_mismatch",
+          message: `layers:reorderMany rejected: duplicate layer id ${order.id}`
+        });
+      }
+      seen.add(order.id);
+      if (!Number.isFinite(order.zIndex)) {
+        return err({
+          kind: "validation",
+          code: "schema_mismatch",
+          message: `layers:reorderMany rejected: zIndex must be finite, got ${String(order.zIndex)}`
+        });
+      }
+    }
+    const captureIds = setLayerZIndexes(req.orders);
+    for (const captureId of captureIds) {
+      broadcastLayersChanged(captureId);
+      scheduleRepack(captureId);
+    }
+    return ok(undefined);
+  });
+
   bus.register("layers:delete", async (req) => {
     const captureId = rejectLayer(req.id);
     log.info("layer rejected (soft-delete cascade)", { id: req.id, captureId });
@@ -168,6 +420,146 @@ export function registerLayersHandlers(): void {
       scheduleRepack(captureId);
     }
     return ok(undefined);
+  });
+
+  bus.register("bundle:cropCanvas", async (req) => {
+    const refusal = refuseIfV1Capture(req.captureId);
+    if (refusal !== null) return err(refusal);
+
+    const rectError = validateCropRect(req.rect);
+    if (rectError !== null) {
+      return err({
+        kind: rectError.kind,
+        code: rectError.code,
+        message: rectError.message
+      });
+    }
+
+    const record = getCaptureById(req.captureId);
+    if (record === null) {
+      return err({
+        kind: "validation",
+        code: "not_found",
+        message: `capture not found: ${req.captureId}`
+      });
+    }
+
+    const widthPx = Math.max(1, Math.round(req.rect.w * record.width_px));
+    const heightPx = Math.max(1, Math.round(req.rect.h * record.height_px));
+    const MIN_CANVAS_DIM_PX = 32;
+    if (widthPx < MIN_CANVAS_DIM_PX || heightPx < MIN_CANVAS_DIM_PX) {
+      return err({
+        kind: "validation",
+        code: "canvas_below_minimum",
+        message: `canvas dimensions ${widthPx}x${heightPx} below minimum ${MIN_CANVAS_DIM_PX}px on either axis`
+      });
+    }
+
+    const layers = listLayerTree(req.captureId);
+    let maxNaturalWidth = 0;
+    let maxNaturalHeight = 0;
+    for (const layer of layers) {
+      if (layer.kind === "raster") {
+        if (layer.natural_width_px > maxNaturalWidth) maxNaturalWidth = layer.natural_width_px;
+        if (layer.natural_height_px > maxNaturalHeight) maxNaturalHeight = layer.natural_height_px;
+      }
+    }
+    const maxAllowedWidth = maxNaturalWidth > 0 ? maxNaturalWidth : record.width_px;
+    const maxAllowedHeight = maxNaturalHeight > 0 ? maxNaturalHeight : record.height_px;
+    if (widthPx > maxAllowedWidth || heightPx > maxAllowedHeight) {
+      return err({
+        kind: "validation",
+        code: "canvas_exceeds_source",
+        message: `canvas dimensions ${widthPx}x${heightPx} exceed source raster ${maxAllowedWidth}x${maxAllowedHeight}`
+      });
+    }
+
+    const offsetXPx = req.rect.x * record.width_px;
+    const offsetYPx = req.rect.y * record.height_px;
+    const updates: BundleLayerNode[] = [];
+    const deleteLayerIds: string[] = [];
+    const root = layers.find((layer) => layer.kind === "group" && layer.parent_id === null);
+    for (const layer of layers) {
+      if (layer.kind === "vector") {
+        const transformed = inverseTransformOverlayByCrop(layer.shape, req.rect);
+        if (transformed === null) {
+          deleteLayerIds.push(layer.id);
+        } else {
+          updates.push({ ...layer, shape: transformed });
+        }
+      } else if (layer.kind === "raster" && (offsetXPx !== 0 || offsetYPx !== 0)) {
+        updates.push({
+          ...layer,
+          transform: [
+            layer.transform[0],
+            layer.transform[1],
+            layer.transform[2],
+            layer.transform[3],
+            layer.transform[4] - offsetXPx,
+            layer.transform[5] - offsetYPx
+          ]
+        });
+      } else if (layer.kind === "effect" && layer.clip_rect !== null && (offsetXPx !== 0 || offsetYPx !== 0)) {
+        updates.push({
+          ...layer,
+          clip_rect: {
+            ...layer.clip_rect,
+            x: layer.clip_rect.x - offsetXPx,
+            y: layer.clip_rect.y - offsetYPx
+          }
+        });
+      }
+    }
+
+    const source = req.source ?? "user";
+    const cropLayer =
+      root === undefined
+        ? null
+        : BundleLayerNodeSchema.parse({
+            ...commonCropLayerProps(source === "codex" ? "AI crop" : "Crop", source),
+            parent_id: root.id,
+            kind: "vector",
+            shape: { kind: "crop", rect: req.rect }
+          });
+
+    try {
+      const previous = applyCropCanvasAtomic({
+        captureId: req.captureId,
+        updates,
+        deleteLayerIds,
+        cropLayer,
+        widthPx,
+        heightPx
+      });
+      log.info("canvas cropped", {
+        captureId: req.captureId,
+        previousWidthPx: previous.previousWidthPx,
+        previousHeightPx: previous.previousHeightPx,
+        widthPx,
+        heightPx
+      });
+      broadcastLayersChanged(req.captureId);
+      scheduleRepack(req.captureId);
+      return ok({
+        previousWidthPx: previous.previousWidthPx,
+        previousHeightPx: previous.previousHeightPx,
+        widthPx,
+        heightPx
+      });
+    } catch (cause) {
+      if (cause instanceof CropCanvasError) {
+        return err({
+          kind: cause.kind,
+          code: cause.code,
+          message: cause.message
+        });
+      }
+      return err({
+        kind: "persistence",
+        code: "crop_failed",
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
   });
 
   // v2-native crop: update the captures row's canvas dimensions, bump

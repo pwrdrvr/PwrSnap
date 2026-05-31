@@ -395,6 +395,103 @@ export function insertLayer(input: InsertLayerInput): BundleLayerNode {
   return loadLayer(node.id);
 }
 
+export type UpdateLayerInput = {
+  node: BundleLayerNode;
+  captureId: string;
+};
+
+export type UpdateLayerResult =
+  | { status: "updated"; node: BundleLayerNode }
+  | { status: "not_found" }
+  | { status: "immutable_violation"; message: string };
+
+export function updateLayer(input: UpdateLayerInput): UpdateLayerResult {
+  const node = BundleLayerNodeSchema.parse(input.node);
+  const db = getDb();
+  let result: UpdateLayerResult = { status: "not_found" };
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare<
+        [string],
+        {
+          capture_id: string;
+          parent_id: string | null;
+          kind: BundleLayerNode["kind"];
+          rejected_at: string | null;
+          superseded_by: string | null;
+        }
+      >(
+        `SELECT capture_id, parent_id, kind, rejected_at, superseded_by
+           FROM layers
+          WHERE id = ?`
+      )
+      .get(node.id);
+    if (
+      existing === undefined ||
+      existing.capture_id !== input.captureId ||
+      existing.rejected_at !== null ||
+      existing.superseded_by !== null
+    ) {
+      return;
+    }
+    if (existing.parent_id !== node.parent_id) {
+      result = {
+        status: "immutable_violation",
+        message:
+          "layers:update cannot change parent_id; use layers:reparent so cycle and same-capture guards run"
+      };
+      return;
+    }
+    if (existing.kind !== node.kind) {
+      result = {
+        status: "immutable_violation",
+        message: "layers:update cannot change layer kind"
+      };
+      return;
+    }
+
+    const { kindSpecificData, transformJson } = splitNodeForStorage(node);
+    db.prepare(
+      `UPDATE layers
+          SET z_index = @z_index,
+              name = @name,
+              visible = @visible,
+              locked = @locked,
+              opacity = @opacity,
+              blend_mode = @blend_mode,
+              transform_json = @transform_json,
+              data = @data,
+              source = @source,
+              ai_run_id = @ai_run_id,
+              applied_at = @applied_at,
+              rejected_at = NULL,
+              superseded_by = NULL
+        WHERE id = @id
+          AND capture_id = @capture_id
+          AND rejected_at IS NULL
+          AND superseded_by IS NULL`
+    ).run({
+      id: node.id,
+      capture_id: input.captureId,
+      z_index: node.z_index,
+      name: node.name,
+      visible: node.visible ? 1 : 0,
+      locked: node.locked ? 1 : 0,
+      opacity: node.opacity,
+      blend_mode: node.blend_mode,
+      transform_json: transformJson,
+      data: kindSpecificData,
+      source: node.source,
+      ai_run_id: node.ai_run_id,
+      applied_at: node.applied_at
+    });
+    bumpEditsVersion(input.captureId);
+    result = { status: "updated", node: loadLayer(node.id) };
+  });
+  tx();
+  return result;
+}
+
 /**
  * Bulk insert — used by the legacy migration + the future v1→v2
  * migration to populate a tree atomically. Validates each node;
@@ -539,6 +636,31 @@ export function setLayerZIndex(id: string, zIndex: number): void {
     bumpEditsVersion(row.capture_id);
   });
   tx();
+}
+
+export function setLayerZIndexes(
+  orders: readonly { id: string; zIndex: number }[]
+): string[] {
+  const db = getDb();
+  const captureIds = new Set<string>();
+  const tx = db.transaction(() => {
+    for (const order of orders) {
+      const row = db
+        .prepare<[string], { capture_id: string }>(
+          `SELECT capture_id FROM layers WHERE id = ? AND rejected_at IS NULL`
+        )
+        .get(order.id);
+      if (row === undefined) continue;
+      db.prepare<[number, string]>(`UPDATE layers SET z_index = ? WHERE id = ?`).run(
+        order.zIndex,
+        order.id
+      );
+      captureIds.add(row.capture_id);
+    }
+    for (const captureId of captureIds) bumpEditsVersion(captureId);
+  });
+  tx();
+  return [...captureIds];
 }
 
 /**

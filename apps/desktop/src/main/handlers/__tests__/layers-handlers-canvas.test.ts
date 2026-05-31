@@ -36,9 +36,21 @@ vi.mock("../../persistence/bundle-store", () => ({
   }
 }));
 
+const { nanoidState } = vi.hoisted(() => ({
+  nanoidState: { queued: [] as string[], counter: 0 }
+}));
+vi.mock("nanoid", () => ({
+  nanoid: (size = 16): string => {
+    const queued = nanoidState.queued.shift();
+    if (queued !== undefined) return queued;
+    nanoidState.counter += 1;
+    return `crop_${nanoidState.counter}`.padEnd(size, "x").slice(0, size);
+  }
+}));
+
 const { bus } = await import("../../command-bus");
 const { registerLayersHandlers } = await import("../layers-handlers");
-const { insertLayerTreeForCapture } = await import("../../persistence/layers-repo");
+const { insertLayerTreeForCapture, listLayerTree } = await import("../../persistence/layers-repo");
 
 registerLayersHandlers();
 
@@ -168,6 +180,8 @@ describe("bundle:updateCanvasDimensions handler", () => {
     testDb.pragma("foreign_keys = ON");
     applyAllMigrations();
     repackCalls.length = 0;
+    nanoidState.queued.length = 0;
+    nanoidState.counter = 0;
   });
 
   afterEach(() => {
@@ -206,6 +220,81 @@ describe("bundle:updateCanvasDimensions handler", () => {
     expect(row?.height_px).toBe(540);
     expect(row?.edits_version).toBe((before?.edits_version ?? 0) + 1);
     expect(repackCalls).toEqual(["cap_a"]);
+  });
+
+  test("bundle:cropCanvas transforms layers and canvas in one command", async () => {
+    seedV2Capture("cap_crop", 1000, 800, 1000, 800);
+
+    const result = await bus.dispatch(
+      "bundle:cropCanvas",
+      {
+        captureId: "cap_crop",
+        rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 },
+        source: "codex"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value).toMatchObject({
+      previousWidthPx: 1000,
+      previousHeightPx: 800,
+      widthPx: 500,
+      heightPx: 400
+    });
+
+    const row = testDb
+      .prepare<[string], { width_px: number; height_px: number }>(
+        `SELECT width_px, height_px FROM captures WHERE id = ?`
+      )
+      .get("cap_crop");
+    expect(row).toEqual({ width_px: 500, height_px: 400 });
+
+    const layers = listLayerTree("cap_crop");
+    const raster = layers.find((layer) => layer.kind === "raster");
+    expect(raster?.transform).toEqual([1, 0, 0, 1, -100, -160]);
+    const crop = layers.find((layer) => layer.kind === "vector" && layer.shape.kind === "crop");
+    expect(crop).toMatchObject({
+      name: "AI crop",
+      source: "codex",
+      shape: { kind: "crop", rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 } }
+    });
+    expect(repackCalls).toEqual(["cap_crop"]);
+  });
+
+  test("bundle:cropCanvas rolls back layer updates when a later crop write fails", async () => {
+    const captureId = "cap_roll";
+    seedV2Capture(captureId, 1000, 800, 1000, 800);
+    const rasterId = `rstr_${captureId}`.padEnd(16, "x");
+    nanoidState.queued.push(rasterId);
+
+    const result = await bus.dispatch(
+      "bundle:cropCanvas",
+      {
+        captureId,
+        rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 },
+        source: "codex"
+      },
+      { principal: "ipc" }
+    );
+
+    expect(result.ok).toBe(false);
+
+    const row = testDb
+      .prepare<[string], { width_px: number; height_px: number }>(
+        `SELECT width_px, height_px FROM captures WHERE id = ?`
+      )
+      .get(captureId);
+    expect(row).toEqual({ width_px: 1000, height_px: 800 });
+
+    const layers = listLayerTree(captureId);
+    const raster = layers.find((layer) => layer.kind === "raster");
+    expect(raster?.transform).toEqual([1, 0, 0, 1, 0, 0]);
+    expect(layers.some((layer) => layer.kind === "vector" && layer.shape.kind === "crop")).toBe(
+      false
+    );
+    expect(repackCalls).toEqual([]);
   });
 
   test("refuses v1 captures (v1_capture_use_overlays_ipc)", async () => {

@@ -166,6 +166,9 @@ export function registerSizzleChatHandlers(params?: {
       const message = cause instanceof Error ? cause.message : String(cause);
       if (message.includes("rate limit")) return aiError("rate_limited", message);
       if (message.includes("already in progress")) return aiError("turn_in_progress", message);
+      if (message.includes("thread not found")) {
+        return aiError("thread_not_found", "This chat thread could not be reopened.");
+      }
       return codexUnreachable(cause);
     }
   });

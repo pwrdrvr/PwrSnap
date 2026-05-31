@@ -288,7 +288,15 @@ function pickToolColor(value: unknown, fallback: ToolColor): ToolColor {
 }
 
 function pickToolSizePreset(value: unknown, fallback: ToolSizePreset | number): ToolSizePreset | number {
-  if (value === "auto" || value === "small" || value === "medium" || value === "large") return value;
+  if (
+    value === "auto" ||
+    value === "small" ||
+    value === "medium" ||
+    value === "large" ||
+    value === "x-large"
+  ) {
+    return value;
+  }
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return fallback;
 }

@@ -38,6 +38,15 @@ import {
   type CommandName,
   type Req
 } from "@pwrsnap/shared";
+import {
+  ArrowEndStyle,
+  ArrowStemStyle,
+  BlurStyle,
+  HighlightBlendModeSchema,
+  Overlay,
+  OverlayThickness,
+  ShapeKind
+} from "@pwrsnap/shared/overlay";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
 
@@ -326,7 +335,7 @@ const listLayerCapabilities = defineTool({
   namespace: "pwrsnap_library",
   name: "list_layer_capabilities",
   description:
-    "Describe what you can place on a capture: the draw tools (draw_arrow / draw_text / draw_highlight + the shape tools draw_rect / draw_square / draw_circle / draw_oval / draw_parallelogram), the effect tools (redact / blur), and the coordinate convention. Call this if you're unsure what's available.",
+    "Describe what you can place or update on a capture: draw tools, effect tools, update_layer, and the coordinate/style conventions. Call this if you're unsure what's available.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({}),
   dispatch: async () => ({
@@ -351,6 +360,13 @@ const listLayerCapabilities = defineTool({
         redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"
       },
+      update_tool:
+        "update_layer edits an existing layer in place. Use it for style-only changes like thickness=large/x-large, color, blend, rotation, arrow endpoints, text body/weight, shape rect/fill, or blur mode/radius.",
+      crop: "crop trims the current canvas to a normalized rect while translating existing layers so the crop behaves like the editor's viewport crop.",
+      z_order:
+        "reorder_layers rewrites z-order in one bulk call. ordered_layer_ids is bottom-to-top.",
+      thickness:
+        "arrow and shape tools accept thickness auto|small|medium|large|x-large or a normalized numeric stroke fraction",
       stoplight_colors: {
         red: "problem / failure",
         green: "fix / confirmation",
@@ -381,6 +397,13 @@ const listLayerCapabilities = defineTool({
  *  canvas (matches the Overlay schema's finite-scalar tolerance + the
  *  system prompt's artistic-license guidance). */
 const hexColor = z.string().regex(/^#[0-9a-f]{6}$/i);
+const toolColor = z.union([z.literal("auto"), hexColor]);
+const overlayThickness = OverlayThickness;
+const arrowEndStyle = ArrowEndStyle;
+const arrowStemStyle = ArrowStemStyle;
+const shapeKind = ShapeKind;
+const blurStyle = BlurStyle;
+const highlightBlendMode = HighlightBlendModeSchema;
 const normPoint = z.object({ x: z.number().finite(), y: z.number().finite() });
 const normRect = z.object({
   x: z.number().finite(),
@@ -388,6 +411,12 @@ const normRect = z.object({
   w: z.number().finite().positive(),
   h: z.number().finite().positive()
 });
+const cropRect = normRect.refine(
+  (rect) => rect.x >= 0 && rect.y >= 0 && rect.x + rect.w <= 1 && rect.y + rect.h <= 1,
+  "crop rect must stay inside the current canvas"
+);
+
+type BundleLayerNodeValue = z.infer<typeof BundleLayerNode>;
 
 /** Build + upsert a VectorLayer wrapping a plain Overlay shape. The
  *  shape object is validated by BundleLayerNode.safeParse. */
@@ -404,32 +433,56 @@ async function upsertVector(
   return runVerb("layers:upsert", { captureId, layer: parsed.data, bumpZIndexToMax: true });
 }
 
+async function getCaptureDims(
+  captureId: string
+): Promise<
+  | { ok: true; widthPx: number; heightPx: number }
+  | { ok: false; error: string }
+> {
+  const meta = await bus.dispatch("library:byId", { id: captureId }, { principal: "mcp" });
+  if (!meta.ok) {
+    return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
+  }
+  if (meta.value === null) return { ok: false, error: `capture not found: ${captureId}` };
+  return { ok: true, widthPx: meta.value.width_px, heightPx: meta.value.height_px };
+}
+
+function canvasRectFromNormalized(
+  rect: { x: number; y: number; w: number; h: number },
+  dims: { widthPx: number; heightPx: number }
+): z.infer<typeof CanvasRect> | string {
+  const clip = CanvasRect.safeParse({
+    x: rect.x * dims.widthPx,
+    y: rect.y * dims.heightPx,
+    w: rect.w * dims.widthPx,
+    h: rect.h * dims.heightPx
+  });
+  return clip.success ? clip.data : `invalid rect: ${clip.error.message}`;
+}
+
 /** Build + upsert an EffectLayer (blur/redact) clipped to a NORMALIZED
  *  rect. Fetches the capture's canvas dims to convert normalized →
  *  pixel clip_rect. */
 async function upsertEffectRect(
   captureId: string,
   rect: { x: number; y: number; w: number; h: number },
-  effect: { type: "blur"; radius_px: number; style: "redact" | "pixelate" | "gaussian" },
+  effect: {
+    type: "blur";
+    radius_px: number;
+    style: "redact" | "pixelate" | "gaussian";
+    rotation?: number | undefined;
+  },
   name: string
 ): Promise<ToolDispatchResult> {
-  const meta = await bus.dispatch("library:byId", { id: captureId }, { principal: "mcp" });
-  if (!meta.ok) {
-    return { ok: false, error: `${meta.error.kind}/${meta.error.code}: ${meta.error.message}` };
-  }
-  if (meta.value === null) return { ok: false, error: `capture not found: ${captureId}` };
-  const clip = CanvasRect.safeParse({
-    x: rect.x * meta.value.width_px,
-    y: rect.y * meta.value.height_px,
-    w: rect.w * meta.value.width_px,
-    h: rect.h * meta.value.height_px
-  });
-  if (!clip.success) return { ok: false, error: `invalid rect: ${clip.error.message}` };
+  const dims = await getCaptureDims(captureId);
+  if (!dims.ok) return { ok: false, error: dims.error };
+  const clip = canvasRectFromNormalized(rect, dims);
+  if (typeof clip === "string") return { ok: false, error: clip };
   const node = {
     ...commonLayerProps(name),
     kind: "effect" as const,
     effect,
-    clip_rect: clip.data
+    clip_rect: clip
   };
   const parsed = BundleLayerNode.safeParse(node);
   if (!parsed.success) {
@@ -442,14 +495,17 @@ const drawArrow = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_arrow",
   description:
-    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). Optional `label` rides at the tail. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
+    "Draw an arrow. `from`/`to` are NORMALIZED points — (0,0)=top-left, (1,1)=bottom-right. Endpoints MAY sit slightly outside [0,1] for an arrow coming in from off-canvas. `color` is #rrggbb (omit = auto). `thickness` is auto|small|medium|large|x-large or a normalized numeric stroke fraction; use this for heavier/thicker arrows, NOT multiple overlapping arrows. Optional `label` rides at the tail. `end_style` filled-triangle|open-triangle|line|dot, `stem_style` solid|dashed|dotted. Stoplight: red=problem, green=fix, yellow=warning, blue=context.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     from: normPoint,
     to: normPoint,
     color: hexColor.optional(),
+    thickness: overlayThickness.optional(),
     label: z.string().max(80).optional(),
+    end_style: arrowEndStyle.optional(),
+    stem_style: arrowStemStyle.optional(),
     double_ended: z.boolean().optional()
   }),
   dispatch: async (args) =>
@@ -460,7 +516,10 @@ const drawArrow = defineTool({
         from: args.from,
         to: args.to,
         color: args.color ?? "auto",
+        ...(args.thickness !== undefined ? { thickness: args.thickness } : {}),
         ...(args.label !== undefined ? { label: args.label } : {}),
+        ...(args.end_style !== undefined ? { endStyle: args.end_style } : {}),
+        ...(args.stem_style !== undefined ? { stemStyle: args.stem_style } : {}),
         ...(args.double_ended !== undefined ? { doubleEnded: args.double_ended } : {})
       },
       "AI arrow"
@@ -471,7 +530,7 @@ const drawText = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_text",
   description:
-    "Place a text label. `at` is a NORMALIZED anchor point [0,1] — keep labels fully on-canvas so they're readable. `color` is #rrggbb (omit = auto). `size` small|medium|large, `weight` regular|bold.",
+    "Place a text label. `at` is a NORMALIZED anchor point [0,1] — keep labels fully on-canvas so they're readable. `color` is #rrggbb (omit = auto). `size` small|medium|large, `weight` regular|bold. `rotation` is radians clockwise around the anchor.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
@@ -479,7 +538,8 @@ const drawText = defineTool({
     body: z.string().min(1).max(2000),
     color: hexColor.optional(),
     size: z.enum(["small", "medium", "large"]).optional(),
-    weight: z.enum(["regular", "bold"]).optional()
+    weight: z.enum(["regular", "bold"]).optional(),
+    rotation: z.number().finite().optional()
   }),
   dispatch: async (args) =>
     upsertVector(
@@ -490,7 +550,8 @@ const drawText = defineTool({
         body: args.body,
         color: args.color ?? "auto",
         size: args.size ?? "medium",
-        ...(args.weight !== undefined ? { weight: args.weight } : {})
+        ...(args.weight !== undefined ? { weight: args.weight } : {}),
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
       "AI text"
     )
@@ -500,13 +561,15 @@ const drawHighlight = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_highlight",
   description:
-    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default).",
+    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default). `blend` multiply|screen|overlay. `rotation` is radians clockwise around the rect center.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
     color: hexColor.optional(),
-    opacity: z.number().min(0).max(1).optional()
+    opacity: z.number().min(0).max(1).optional(),
+    blend: highlightBlendMode.optional(),
+    rotation: z.number().finite().optional()
   }),
   dispatch: async (args) =>
     upsertVector(
@@ -515,7 +578,9 @@ const drawHighlight = defineTool({
         kind: "highlight",
         rect: args.rect,
         ...(args.color !== undefined ? { color: args.color } : {}),
-        ...(args.opacity !== undefined ? { opacity: args.opacity } : {})
+        ...(args.opacity !== undefined ? { opacity: args.opacity } : {}),
+        ...(args.blend !== undefined ? { blend: args.blend } : {}),
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
       "AI highlight"
     )
@@ -536,6 +601,7 @@ async function upsertShape(
   args: {
     rect: { x: number; y: number; w: number; h: number };
     color?: string | undefined;
+    thickness?: z.infer<typeof overlayThickness> | undefined;
     filled?: boolean | undefined;
     rotation?: number | undefined;
     skewDeg?: number | undefined;
@@ -549,6 +615,7 @@ async function upsertShape(
       shape,
       rect: args.rect,
       color: args.color ?? "auto",
+      ...(args.thickness !== undefined ? { thickness: args.thickness } : {}),
       ...(args.filled !== undefined ? { filled: args.filled } : {}),
       ...(args.rotation !== undefined ? { rotation: args.rotation } : {}),
       ...(shape === "parallelogram" && args.skewDeg !== undefined
@@ -564,6 +631,7 @@ const shapeArgsSchema = z.object({
   capture_id: z.string(),
   rect: normRect,
   color: hexColor.optional(),
+  thickness: overlayThickness.optional(),
   filled: z.boolean().optional(),
   rotation: z.number().finite().optional()
 });
@@ -572,7 +640,7 @@ const drawRect = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_rect",
   description:
-    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0).",
+    "Draw a rectangle. `rect` is NORMALIZED [0,1] {x,y,w,h} (x,y = top-left, w,h = size). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid fill, false/omit = outline only. `rotation` radians clockwise around the rect center (omit = 0).",
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
   dispatch: async (args) => upsertShape(args.capture_id, "rect", args, "AI rectangle")
@@ -582,7 +650,7 @@ const drawSquare = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_square",
   description:
-    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a square. Give a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal for a true square. `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
   dispatch: async (args) => upsertShape(args.capture_id, "square", args, "AI square")
@@ -592,7 +660,7 @@ const drawCircle = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_circle",
   description:
-    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline.",
+    "Draw a circle inscribed in a NORMALIZED bounding `rect` {x,y,w,h}; keep w and h equal so it's round (use draw_oval for a stretched ellipse). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline.",
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
   dispatch: async (args) => upsertShape(args.capture_id, "circle", args, "AI circle")
@@ -602,7 +670,7 @@ const drawOval = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_oval",
   description:
-    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw an oval / ellipse inscribed in a NORMALIZED bounding `rect` {x,y,w,h} (free aspect). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
   annotations: { destructiveHint: false },
   argsSchema: shapeArgsSchema,
   dispatch: async (args) => upsertShape(args.capture_id, "oval", args, "AI oval")
@@ -612,12 +680,13 @@ const drawParallelogram = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_parallelogram",
   description:
-    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
+    "Draw a parallelogram in a NORMALIZED bounding `rect` {x,y,w,h}. `skew_deg` = horizontal skew in degrees, positive shifts the top edge right (omit = 15). `color` #rrggbb (omit = auto). `thickness` auto|small|medium|large|x-large or numeric. `filled` true = solid, false/omit = outline. `rotation` radians (omit = 0).",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
     color: hexColor.optional(),
+    thickness: overlayThickness.optional(),
     filled: z.boolean().optional(),
     rotation: z.number().finite().optional(),
     skew_deg: z.number().finite().optional()
@@ -629,6 +698,7 @@ const drawParallelogram = defineTool({
       {
         rect: args.rect,
         color: args.color,
+        thickness: args.thickness,
         filled: args.filled,
         rotation: args.rotation,
         skewDeg: args.skew_deg
@@ -657,25 +727,348 @@ const blur = defineTool({
   namespace: "pwrsnap_library",
   name: "blur",
   description:
-    "Soften a rectangular region — REVERSIBLE (deconvolution can recover it). Use ONLY for non-secret content like a face or a logo; for secrets use `redact` (opaque blackout). `rect` is NORMALIZED [0,1] {x,y,w,h}. `pixelate` true = chunky mosaic, false/omit = gaussian smear. `radius_px` controls strength (default 16).",
+    "Apply a rectangular effect. `mode` gaussian|pixelate|redact; gaussian/pixelate are REVERSIBLE and only for non-secret content, redact is opaque blackout for secrets. Prefer the dedicated `redact` tool for secrets. `rect` is NORMALIZED [0,1] {x,y,w,h}. `pixelate` is a legacy alias for mode. `radius_px` controls gaussian/pixelate strength (default 16). `rotation` is radians clockwise around the rect center.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
+    mode: blurStyle.optional(),
     pixelate: z.boolean().optional(),
-    radius_px: z.number().positive().max(200).optional()
+    radius_px: z.number().positive().max(200).optional(),
+    rotation: z.number().finite().optional()
   }),
-  dispatch: async (args) =>
-    upsertEffectRect(
+  dispatch: async (args) => {
+    const mode = args.mode ?? (args.pixelate === true ? "pixelate" : "gaussian");
+    return upsertEffectRect(
       args.capture_id,
       args.rect,
       {
         type: "blur",
-        radius_px: args.radius_px ?? 16,
-        style: args.pixelate === true ? "pixelate" : "gaussian"
+        radius_px: mode === "redact" ? 1 : (args.radius_px ?? 16),
+        style: mode,
+        ...(args.rotation !== undefined ? { rotation: args.rotation } : {})
       },
-      "AI blur"
-    )
+      mode === "redact" ? "AI redaction" : "AI blur"
+    );
+  }
+});
+
+const cropTool = defineTool({
+  namespace: "pwrsnap_library",
+  name: "crop",
+  description:
+    "Crop the current canvas to a normalized rect inside [0,1]. This is a viewport crop, not destructive: the source raster and existing layers are translated/re-normalized so undo/reset can restore them. Use render_composite first when choosing visual bounds.",
+  annotations: { destructiveHint: false },
+  argsSchema: z.object({
+    capture_id: z.string(),
+    rect: cropRect
+  }),
+  dispatch: async (args) => {
+    const cropped = await bus.dispatch(
+      "bundle:cropCanvas",
+      { captureId: args.capture_id, rect: args.rect, source: "codex" },
+      { principal: "mcp" }
+    );
+    if (!cropped.ok) {
+      return { ok: false, error: `${cropped.error.kind}/${cropped.error.code}: ${cropped.error.message}` };
+    }
+    return {
+      ok: true,
+      data: {
+        capture_id: args.capture_id,
+        rect: args.rect,
+        width_px: cropped.value.widthPx,
+        height_px: cropped.value.heightPx
+      }
+    };
+  }
+});
+
+const reorderLayers = defineTool({
+  namespace: "pwrsnap_library",
+  name: "reorder_layers",
+  description:
+    "Bulk rewrite z-order for a set of layers. `ordered_layer_ids` is bottom-to-top: first paints behind, last paints on top. Use list_layers first and include every layer whose relative order you want to control.",
+  annotations: { idempotentHint: true },
+  argsSchema: z.object({
+    ordered_layer_ids: z.array(z.string()).min(1).max(4096),
+    start_z_index: z.number().int().optional(),
+    gap: z.number().int().positive().max(1_000_000).optional()
+  }),
+  dispatch: async (args) => {
+    const seen = new Set<string>();
+    for (const id of args.ordered_layer_ids) {
+      if (seen.has(id)) return { ok: false, error: `duplicate layer id: ${id}` };
+      seen.add(id);
+    }
+    const start = args.start_z_index ?? 0;
+    const gap = args.gap ?? 1000;
+    return runVerb("layers:reorderMany", {
+      orders: args.ordered_layer_ids.map((id, index) => ({
+        id,
+        zIndex: start + index * gap
+      }))
+    });
+  }
+});
+
+const updateLayerArgsSchema = z.object({
+  capture_id: z.string(),
+  layer_id: z.string(),
+  from: normPoint.optional(),
+  to: normPoint.optional(),
+  rect: normRect.optional(),
+  at: normPoint.optional(),
+  color: toolColor.optional(),
+  label: z.string().max(80).nullable().optional(),
+  body: z.string().min(1).max(2000).optional(),
+  thickness: overlayThickness.optional(),
+  end_style: arrowEndStyle.optional(),
+  stem_style: arrowStemStyle.optional(),
+  double_ended: z.boolean().optional(),
+  shape: shapeKind.optional(),
+  filled: z.boolean().optional(),
+  rotation: z.number().finite().optional(),
+  skew_deg: z.number().finite().optional(),
+  blend: highlightBlendMode.optional(),
+  opacity: z.number().min(0).max(1).optional(),
+  size: z.enum(["small", "medium", "large"]).optional(),
+  weight: z.enum(["regular", "bold"]).optional(),
+  mode: blurStyle.optional(),
+  radius_px: z.number().positive().max(200).optional(),
+  pixelate: z.boolean().optional()
+});
+
+type UpdateLayerArgs = z.infer<typeof updateLayerArgsSchema>;
+
+async function loadCurrentLayer(
+  captureId: string,
+  layerId: string
+): Promise<
+  | { ok: true; layer: BundleLayerNodeValue }
+  | { ok: false; error: string }
+> {
+  const listed = await bus.dispatch("layers:list", { captureId }, { principal: "mcp" });
+  if (!listed.ok) {
+    return { ok: false, error: `${listed.error.kind}/${listed.error.code}: ${listed.error.message}` };
+  }
+  const layer = listed.value.find((candidate) => candidate.id === layerId);
+  if (layer === undefined) return { ok: false, error: `layer not found: ${layerId}` };
+  return { ok: true, layer };
+}
+
+function hasAny(args: UpdateLayerArgs, keys: readonly (keyof UpdateLayerArgs)[]): boolean {
+  return keys.some((key) => args[key] !== undefined);
+}
+
+async function applyAgentLayerPatch(
+  layer: BundleLayerNodeValue,
+  args: UpdateLayerArgs
+): Promise<ToolDispatchResult> {
+  const invalidForArrow = hasAny(args, [
+    "rect",
+    "at",
+    "body",
+    "shape",
+    "filled",
+    "blend",
+    "opacity",
+    "size",
+    "weight",
+    "rotation",
+    "skew_deg",
+    "radius_px",
+    "pixelate"
+  ]);
+  const invalidForText = hasAny(args, [
+    "from",
+    "to",
+    "rect",
+    "label",
+    "thickness",
+    "end_style",
+    "stem_style",
+    "double_ended",
+    "shape",
+    "filled",
+    "blend",
+    "opacity",
+    "skew_deg",
+    "mode",
+    "radius_px",
+    "pixelate"
+  ]);
+  const invalidForShape = hasAny(args, [
+    "from",
+    "to",
+    "at",
+    "label",
+    "body",
+    "end_style",
+    "stem_style",
+    "double_ended",
+    "opacity",
+    "size",
+    "weight",
+    "blend",
+    "mode",
+    "radius_px",
+    "pixelate"
+  ]);
+  const invalidForHighlight = hasAny(args, [
+    "from",
+    "to",
+    "at",
+    "label",
+    "body",
+    "thickness",
+    "end_style",
+    "stem_style",
+    "double_ended",
+    "shape",
+    "filled",
+    "size",
+    "weight",
+    "skew_deg",
+    "mode",
+    "radius_px",
+    "pixelate"
+  ]);
+
+  if (layer.kind === "vector") {
+    const shape = { ...layer.shape };
+    switch (shape.kind) {
+      case "arrow":
+        if (invalidForArrow) return { ok: false, error: "patch fields do not apply to an arrow layer" };
+        if (args.from !== undefined) shape.from = args.from;
+        if (args.to !== undefined) shape.to = args.to;
+        if (args.color !== undefined) shape.color = args.color;
+        if (args.thickness !== undefined) shape.thickness = args.thickness;
+        if (args.label !== undefined) {
+          if (args.label === null) delete shape.label;
+          else shape.label = args.label;
+        }
+        if (args.end_style !== undefined) shape.endStyle = args.end_style;
+        if (args.stem_style !== undefined) shape.stemStyle = args.stem_style;
+        if (args.double_ended !== undefined) shape.doubleEnded = args.double_ended;
+        break;
+      case "text":
+        if (invalidForText) return { ok: false, error: "patch fields do not apply to a text layer" };
+        if (args.at !== undefined) shape.point = args.at;
+        if (args.body !== undefined) shape.body = args.body;
+        if (args.color !== undefined) shape.color = args.color;
+        if (args.size !== undefined) shape.size = args.size;
+        if (args.weight !== undefined) shape.weight = args.weight;
+        if (args.rotation !== undefined) shape.rotation = args.rotation;
+        break;
+      case "shape":
+        if (invalidForShape) return { ok: false, error: "patch fields do not apply to a shape layer" };
+        if (args.rect !== undefined) shape.rect = args.rect;
+        if (args.color !== undefined) shape.color = args.color;
+        if (args.thickness !== undefined) shape.thickness = args.thickness;
+        if (args.shape !== undefined) shape.shape = args.shape;
+        if (args.filled !== undefined) shape.filled = args.filled;
+        if (args.rotation !== undefined) shape.rotation = args.rotation;
+        if (args.skew_deg !== undefined) shape.skewDeg = args.skew_deg;
+        break;
+      case "highlight":
+        if (invalidForHighlight) {
+          return { ok: false, error: "patch fields do not apply to a highlight layer" };
+        }
+        if (args.rect !== undefined) shape.rect = args.rect;
+        if (args.color !== undefined) shape.color = args.color;
+        if (args.opacity !== undefined) shape.opacity = args.opacity;
+        if (args.blend !== undefined) shape.blend = args.blend;
+        if (args.rotation !== undefined) shape.rotation = args.rotation;
+        break;
+      default:
+        return { ok: false, error: `update_layer cannot edit vector kind "${shape.kind}" yet` };
+    }
+    return { ok: true, data: { ...layer, shape } };
+  }
+
+  if (layer.kind !== "effect") {
+    return { ok: false, error: `update_layer can only edit vector/effect layers, not ${layer.kind}` };
+  }
+
+  if (
+    hasAny(args, [
+      "from",
+      "to",
+      "at",
+      "color",
+      "label",
+      "body",
+      "thickness",
+      "end_style",
+      "stem_style",
+      "double_ended",
+      "shape",
+      "filled",
+      "opacity",
+      "size",
+      "weight",
+      "skew_deg",
+      "blend"
+    ])
+  ) {
+    return { ok: false, error: "patch fields do not apply to an effect layer" };
+  }
+
+  let clipRect = layer.clip_rect;
+  if (args.rect !== undefined) {
+    const dims = await getCaptureDims(args.capture_id);
+    if (!dims.ok) return { ok: false, error: dims.error };
+    const converted = canvasRectFromNormalized(args.rect, dims);
+    if (typeof converted === "string") return { ok: false, error: converted };
+    clipRect = converted;
+  }
+
+  if (layer.effect.type !== "blur") {
+    if (args.radius_px !== undefined || args.pixelate !== undefined) {
+      return { ok: false, error: "radius_px/pixelate only apply to blur/redaction layers" };
+    }
+    return { ok: true, data: { ...layer, clip_rect: clipRect } };
+  }
+
+  const effect = { ...layer.effect };
+  if (args.radius_px !== undefined) effect.radius_px = args.radius_px;
+  if (args.rotation !== undefined) effect.rotation = args.rotation;
+  const modeUpdate = args.mode ?? (args.pixelate !== undefined ? (args.pixelate ? "pixelate" : "gaussian") : undefined);
+  if (modeUpdate !== undefined) {
+    if (effect.style === "redact" && modeUpdate !== "redact") {
+      return {
+        ok: false,
+        error:
+          "cannot change a redaction layer to blur/pixelate; redactions must stay opaque"
+      };
+    }
+    effect.style = modeUpdate;
+  }
+  return { ok: true, data: { ...layer, clip_rect: clipRect, effect } };
+}
+
+const updateLayerTool = defineTool({
+  namespace: "pwrsnap_library",
+  name: "update_layer",
+  description:
+    "Edit one existing layer in place by id. Use list_layers first, then change only the requested fields. This preserves the layer id/z-order and is the right tool for 'make that arrow heavier/thicker' (`thickness`: auto|small|medium|large|x-large), color/blend/rotation changes, moving endpoints/rects, text edits, and blur mode/radius. `mode` is gaussian|pixelate|redact; changing an existing redaction to gaussian/pixelate is refused. Do NOT delete and redraw just to change style.",
+  annotations: { idempotentHint: true },
+  argsSchema: updateLayerArgsSchema,
+  dispatch: async (args) => {
+    const current = await loadCurrentLayer(args.capture_id, args.layer_id);
+    if (!current.ok) return { ok: false, error: current.error };
+    const patched = await applyAgentLayerPatch(current.layer, args);
+    if (!patched.ok) return patched;
+    if (!("data" in patched)) {
+      return { ok: false, error: "update_layer built no layer payload" };
+    }
+    const parsed = BundleLayerNode.safeParse(patched.data);
+    if (!parsed.success) {
+      return { ok: false, error: `built an invalid layer update: ${parsed.error.message}` };
+    }
+    return runVerb("layers:update", { captureId: args.capture_id, layer: parsed.data });
+  }
 });
 
 const deleteLayer = defineTool({
@@ -745,8 +1138,11 @@ export const LIBRARY_TOOL_ALLOWLIST: ToolSpec<unknown>[] = [
   drawParallelogram,
   redact,
   blur,
+  cropTool,
+  updateLayerTool,
   deleteLayer,
   reorderLayer,
+  reorderLayers,
   addTag,
   removeTag
 ] as ToolSpec<unknown>[];

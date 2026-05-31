@@ -13,6 +13,8 @@ import type {
   SandboxMode,
   ThreadStartParams,
   ThreadStartResponse,
+  ThreadResumeParams,
+  ThreadResumeResponse,
   ThreadSettingsUpdatedNotification,
   ThreadTokenUsage,
   ThreadTokenUsageUpdatedNotification,
@@ -141,6 +143,7 @@ export class CodexThreadClient {
   private readonly threadSettingsListeners = new Set<(event: CodexThreadSettingsEvent) => void>();
   private toolCallHandler: CodexToolCallHandler | null = null;
   private approvalRequestHandler: CodexApprovalRequestHandler | null = null;
+  private readonly loadedThreadIds = new Set<string>();
 
   constructor(private readonly options: CodexThreadClientOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 20_000;
@@ -204,6 +207,7 @@ export class CodexThreadClient {
       this.requestTimeoutMs
     )) as ThreadStartResponse;
     const threadId = response.thread.id;
+    this.loadedThreadIds.add(threadId);
     codexThreadClientLog.debug("thread started", { threadId });
     return {
       threadId,
@@ -211,6 +215,26 @@ export class CodexThreadClient {
       modelProvider: response.modelProvider,
       serviceTier: response.serviceTier
     };
+  }
+
+  async resumeThread(threadId: string): Promise<void> {
+    if (this.loadedThreadIds.has(threadId)) {
+      return;
+    }
+    const connection = await this.getConnection();
+    await this.initialize();
+
+    const params: ThreadResumeParams = {
+      threadId,
+      persistExtendedHistory: false
+    };
+    const response = (await connection.request(
+      "thread/resume",
+      params,
+      this.requestTimeoutMs
+    )) as ThreadResumeResponse;
+    this.loadedThreadIds.add(response.thread.id);
+    codexThreadClientLog.debug("thread resumed", { threadId: response.thread.id });
   }
 
   async clearThreadGitInfo(threadId: string): Promise<void> {
@@ -227,6 +251,7 @@ export class CodexThreadClient {
   }
 
   async startTurn(opts: CodexStartTurnOptions): Promise<{ turnId: string }> {
+    await this.resumeThread(opts.threadId);
     const connection = await this.getConnection();
     await this.initialize();
 
@@ -262,6 +287,7 @@ export class CodexThreadClient {
     const connection = this.connection;
     this.connection = null;
     this.initializeResponse = null;
+    this.loadedThreadIds.clear();
     if (connection) {
       await connection.close();
     }

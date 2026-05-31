@@ -111,7 +111,9 @@ import {
 
 const APP_NAME = "PwrSnap";
 const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
-const APP_WEBSITE = "https://pwrdrvr.com";
+const APP_WEBSITE = "https://pwrsnap.com";
+const APP_DOCS = "https://docs.pwrsnap.com";
+const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
 /** Settings (⌘,) stays hardcoded — it isn't exposed in the Hotkeys
  *  page, and the platform convention is well-established. Quick
  *  Capture / Region / Window / Video Capture are dynamically
@@ -246,31 +248,54 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
     {
       role: "help",
       submenu: [
+        // macOS surfaces About + Settings in the app menu, so Help omits
+        // them there. Non-Mac has no app menu — mirror PwrAgent and
+        // surface About + Settings at the top of Help instead.
         ...(isMac
           ? []
           : [
+              {
+                label: `About ${APP_NAME}`,
+                click: () => {
+                  app.showAboutPanel();
+                }
+              },
+              { type: "separator" as const },
               settingsItem,
               { type: "separator" as const }
             ]),
-        {
-          label: `About ${APP_NAME}`,
-          click: () => {
-            app.showAboutPanel();
-          }
-        },
         {
           label: "Check for Updates",
           click: () => {
             void checkForAppUpdatesNow("menu");
           }
         },
-        { type: "separator" },
         {
           label: "Changelog",
           click: () => {
             void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
           }
         },
+        { type: "separator" },
+        {
+          label: "Documentation",
+          click: async () => {
+            await shell.openExternal(APP_DOCS);
+          }
+        },
+        {
+          label: "Report an Issue",
+          click: async () => {
+            await shell.openExternal(APP_ISSUE_REPORTER);
+          }
+        },
+        {
+          label: `${APP_NAME} Website`,
+          click: async () => {
+            await shell.openExternal(APP_WEBSITE);
+          }
+        },
+        { type: "separator" },
         {
           label: "Third-party Licenses",
           click: () => {
@@ -279,13 +304,6 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
               { kind: "third-party-licenses" },
               { principal: "ipc" }
             );
-          }
-        },
-        { type: "separator" },
-        {
-          label: "Visit Website",
-          click: async () => {
-            await shell.openExternal(APP_WEBSITE);
           }
         }
       ]

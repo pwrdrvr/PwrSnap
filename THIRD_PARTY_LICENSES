@@ -129,7 +129,7 @@ MIT
 
 OFL-1.1
 ~~~~~~~
-- @fontsource/geist-mono@5.2.7 | https://github.com/fontsource/font-files
+- @fontsource/geist-mono@5.2.8 | https://github.com/fontsource/font-files
 - @fontsource/geist-sans@5.2.5 | https://github.com/fontsource/font-files
 
 Python-2.0
@@ -139,15 +139,15 @@ Python-2.0
 License Texts
 -------------
 
-@fontsource/geist-mono@5.2.7 (OFL-1.1)
+@fontsource/geist-mono@5.2.8 (OFL-1.1)
 --------------------------------------
 
 Applies to:
-- @fontsource/geist-mono@5.2.7 (OFL-1.1)
+- @fontsource/geist-mono@5.2.8 (OFL-1.1)
 
-Representative file: @fontsource/geist-mono@5.2.7/LICENSE
+Representative file: @fontsource/geist-mono@5.2.8/LICENSE
 
-Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)
+Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git) GeistMono-Italic[wght].ttf: Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

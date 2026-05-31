@@ -20,6 +20,9 @@ const electronMock = vi.hoisted(() => ({
 }));
 
 vi.mock("electron", () => ({
+  app: {
+    getPath: () => join(tempRoot, "Documents")
+  },
   BrowserWindow: {
     getAllWindows: () => electronMock.windows
   }

@@ -61,7 +61,11 @@ class FakeTransport implements JsonRpcTransport {
     }
 
     if (envelope.method === "thread/start") {
-      const params = envelope.params as { model?: string | null };
+      const params = envelope.params as {
+        cwd?: string | null;
+        ephemeral?: boolean | null;
+        model?: string | null;
+      };
       this.emit({
         id,
         result: {
@@ -69,13 +73,13 @@ class FakeTransport implements JsonRpcTransport {
             id: "thread-1",
             forkedFromId: null,
             preview: "",
-            ephemeral: false,
+            ephemeral: params.ephemeral ?? false,
             modelProvider: "openai",
             createdAt: 0,
             updatedAt: 0,
             status: "running",
             path: null,
-            cwd: "/tmp",
+            cwd: params.cwd ?? "/tmp",
             cliVersion: "test",
             source: "codex_app_server",
             agentNickname: null,
@@ -87,7 +91,7 @@ class FakeTransport implements JsonRpcTransport {
           model: params.model ?? "gpt-test",
           modelProvider: "openai",
           serviceTier: null,
-          cwd: "/tmp",
+          cwd: params.cwd ?? "/tmp",
           instructionSources: [],
           approvalPolicy: "never",
           approvalsReviewer: "auto",
@@ -95,6 +99,11 @@ class FakeTransport implements JsonRpcTransport {
           reasoningEffort: "low"
         }
       });
+      return;
+    }
+
+    if (envelope.method === "thread/metadata/update") {
+      this.emit({ id, result: {} });
       return;
     }
 
@@ -235,7 +244,11 @@ class FakeTransport implements JsonRpcTransport {
       return;
     }
 
-    if (envelope.method === "thread/archive" || envelope.method === "turn/interrupt") {
+    if (
+      envelope.method === "thread/archive" ||
+      envelope.method === "thread/name/set" ||
+      envelope.method === "turn/interrupt"
+    ) {
       this.emit({ id, result: {} });
     }
   }
@@ -250,14 +263,16 @@ describe("CodexAppServerClient", () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
   });
 
-  it("starts a persistent image turn, rolls it back, and parses structured output", async () => {
+  it("starts an isolated persistent image turn, rolls it back, and parses structured output", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
     tempRoots.push(tempRoot);
     const imagePath = join(tempRoot, "capture.jpg");
+    const workspaceDir = join(tempRoot, "metadata-worker");
     await writeFile(imagePath, Buffer.from([1, 2, 3]));
     const transport = new FakeTransport();
     const client = new CodexAppServerClient({
       command: "/bin/codex",
+      captureMetadataWorkspaceDir: workspaceDir,
       transportFactory: () => transport,
       turnTimeoutMs: 1000
     });
@@ -296,18 +311,35 @@ describe("CodexAppServerClient", () => {
     expect(transport.outbound.map((message) => message.method)).toEqual([
       "initialize",
       "thread/start",
+      "thread/metadata/update",
+      "thread/name/set",
       "turn/start",
       "thread/rollback"
     ]);
     expect(transport.outbound.find((message) => message.method === "thread/start")?.params).toMatchObject({
       model: "gpt-5.4-mini",
       ephemeral: false,
+      cwd: workspaceDir,
+      runtimeWorkspaceRoots: [workspaceDir],
+      serviceName: "pwrsnap",
       approvalPolicy: "never",
       baseInstructions: expect.stringContaining("Primary goals, in order:"),
       config: PWRSNAP_CODEX_THREAD_CONFIG,
       environments: [],
       experimentalRawEvents: false,
       persistExtendedHistory: false
+    });
+    expect(transport.outbound.find((message) => message.method === "thread/metadata/update")?.params).toEqual({
+      threadId: "thread-1",
+      gitInfo: {
+        sha: null,
+        branch: null,
+        originUrl: null
+      }
+    });
+    expect(transport.outbound.find((message) => message.method === "thread/name/set")?.params).toEqual({
+      threadId: "thread-1",
+      name: "PwrSnap Capture Metadata Worker"
     });
     const turnStart = transport.outbound.find((message) => message.method === "turn/start");
     expect(turnStart?.params).toMatchObject({
@@ -319,16 +351,18 @@ describe("CodexAppServerClient", () => {
     expect(JSON.stringify(turnStart?.params)).toContain("Dimensions: 2880 x 1920 px");
   });
 
-  it("reuses the persistent enrichment thread across turns", async () => {
+  it("reuses the isolated persistent enrichment thread across turns", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
     tempRoots.push(tempRoot);
     const firstPath = join(tempRoot, "capture-1.jpg");
     const secondPath = join(tempRoot, "capture-2.jpg");
+    const workspaceDir = join(tempRoot, "metadata-worker");
     await writeFile(firstPath, Buffer.from([1]));
     await writeFile(secondPath, Buffer.from([2]));
     const transport = new FakeTransport();
     const client = new CodexAppServerClient({
       command: "/bin/codex",
+      captureMetadataWorkspaceDir: workspaceDir,
       transportFactory: () => transport,
       turnTimeoutMs: 1000
     });
@@ -347,6 +381,8 @@ describe("CodexAppServerClient", () => {
     expect(transport.outbound.map((message) => message.method)).toEqual([
       "initialize",
       "thread/start",
+      "thread/metadata/update",
+      "thread/name/set",
       "turn/start",
       "thread/rollback",
       "turn/start",

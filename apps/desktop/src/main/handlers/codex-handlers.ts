@@ -1,4 +1,5 @@
-import { BrowserWindow } from "electron";
+import { join } from "node:path";
+import { BrowserWindow, app } from "electron";
 import {
   AcceptAllDraftsRequestSchema,
   AcceptDescriptionRequestSchema,
@@ -77,6 +78,10 @@ export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
 const activeRuns = new Map<string, AbortController>();
+
+function captureMetadataWorkspaceDir(): string {
+  return join(app.getPath("documents"), "PwrSnap", "Chats", ".capture-metadata");
+}
 
 function broadcastAiRunUpdated(payload: {
   run: AiRunSnapshot | null;
@@ -307,7 +312,10 @@ export function registerCodexHandlers(params?: {
     ((command) => {
       const existing = defaultClients.get(command);
       if (existing) return existing;
-      const client = new CodexAppServerClient({ command });
+      const client = new CodexAppServerClient({
+        command,
+        captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
+      });
       defaultClients.set(command, client);
       return client;
     });

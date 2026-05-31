@@ -1,3 +1,6 @@
+import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   InitializeParams,
   InitializeResponse,
@@ -54,6 +57,7 @@ export type CodexCaptureEnrichmentResponse = {
 
 export type CodexAppServerClientOptions = {
   command: string;
+  captureMetadataWorkspaceDir?: string;
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
   transportFactory?: CodexClientTransportFactory;
@@ -253,16 +257,22 @@ export class CodexAppServerClient {
     }
 
     const connection = await this.getConnection();
+    const workspaceDir = await this.prepareCaptureMetadataWorkspace();
     const threadResponse = (await connection.request(
       "thread/start",
       {
         model,
         ephemeral: false,
+        cwd: workspaceDir,
+        runtimeWorkspaceRoots: [workspaceDir],
+        serviceName: "pwrsnap",
         approvalPolicy: "never",
         sandbox: "read-only",
         baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
         // Persistent worker thread for a cache experiment: keep the thread id
-        // stable across enrichments, then roll back each capture turn.
+        // stable across enrichments, then roll back each capture turn. The
+        // dedicated cwd prevents this background worker from inheriting the
+        // PwrSnap repo/worktree as its Codex directory.
         config: PWRSNAP_CODEX_THREAD_CONFIG,
         environments: [],
         experimentalRawEvents: false,
@@ -270,6 +280,8 @@ export class CodexAppServerClient {
       },
       this.requestTimeoutMs
     )) as ThreadStartResponse;
+    await this.clearThreadGitInfo(threadResponse.thread.id);
+    await this.setCaptureMetadataThreadName(threadResponse.thread.id);
     this.enrichmentThread = {
       threadId: threadResponse.thread.id,
       modelKey,
@@ -283,6 +295,56 @@ export class CodexAppServerClient {
   private async rollbackEnrichmentThread(threadId: string): Promise<void> {
     const connection = await this.getConnection();
     await connection.request("thread/rollback", { threadId, numTurns: 1 }, this.requestTimeoutMs);
+  }
+
+  private async prepareCaptureMetadataWorkspace(): Promise<string> {
+    const workspaceDir =
+      this.options.captureMetadataWorkspaceDir ??
+      join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
+    await mkdir(workspaceDir, { recursive: true });
+    return workspaceDir;
+  }
+
+  private async clearThreadGitInfo(threadId: string): Promise<void> {
+    const connection = await this.getConnection();
+    await connection
+      .request(
+        "thread/metadata/update",
+        {
+          threadId,
+          gitInfo: {
+            sha: null,
+            branch: null,
+            originUrl: null
+          }
+        },
+        this.requestTimeoutMs
+      )
+      .catch((error: unknown) => {
+        codexClientLog.warn("thread git metadata clear failed", {
+          threadId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
+  private async setCaptureMetadataThreadName(threadId: string): Promise<void> {
+    const connection = await this.getConnection();
+    await connection
+      .request(
+        "thread/name/set",
+        {
+          threadId,
+          name: "PwrSnap Capture Metadata Worker"
+        },
+        this.requestTimeoutMs
+      )
+      .catch((error: unknown) => {
+        codexClientLog.warn("capture metadata thread name set failed", {
+          threadId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
   }
 
   private async initialize(): Promise<InitializeResponse> {

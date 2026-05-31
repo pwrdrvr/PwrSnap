@@ -2012,6 +2012,23 @@ export type Commands = {
    *  children would render undefined behavior. */
   "layers:delete": { req: { id: string }; res: void };
 
+  /** Atomically apply a v2 viewport crop: re-normalize existing layers,
+   *  insert a crop marker layer, and update the capture canvas
+   *  dimensions in one main-side transaction. */
+  "bundle:cropCanvas": {
+    req: {
+      captureId: string;
+      rect: { x: number; y: number; w: number; h: number };
+      source?: "user" | "codex";
+    };
+    res: {
+      previousWidthPx: number;
+      previousHeightPx: number;
+      widthPx: number;
+      heightPx: number;
+    };
+  };
+
   /** Render the current composite (source + applied layers) to a
    *  downscaled PNG and return it base64-encoded. Powers the Library
    *  chat agent's `render_composite` vision tool — the agent grounds

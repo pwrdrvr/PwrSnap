@@ -342,56 +342,14 @@ describe("reorder_layers emits one bulk z-order command", () => {
 });
 
 describe("crop tool applies viewport crop layer transforms", () => {
-  it("translates raster layers and shrinks the canvas", async () => {
-    const now = new Date().toISOString();
-    const root = {
-      id: "root_layer_0001",
-      parent_id: null,
-      kind: "group",
-      collapsed: false,
-      name: "Root",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 0,
-      source: "user",
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now
-    };
-    const raster = {
-      id: "raster_layer_01",
-      parent_id: root.id,
-      kind: "raster",
-      name: "Source",
-      visible: true,
-      locked: false,
-      opacity: 1,
-      blend_mode: "normal",
-      transform: [1, 0, 0, 1, 0, 0],
-      z_index: 0,
-      source: "user",
-      ai_run_id: null,
-      applied_at: now,
-      rejected_at: null,
-      superseded_by: null,
-      created_at: now,
-      source_ref: { kind: "bundle", path: "sources/source.png" },
-      natural_width_px: 1000,
-      natural_height_px: 800
-    };
-    dispatch.mockImplementation(async (name: string, req: { id?: string; layer?: unknown }) => {
+  it("delegates the whole crop to one atomic bus command", async () => {
+    dispatch.mockImplementation(async (name: string, req: { id?: string }) => {
       if (name === "library:byId") {
         return { ok: true, value: { id: req.id, kind: "image", width_px: 1000, height_px: 800 } };
       }
-      if (name === "layers:list") return { ok: true, value: [root, raster] };
-      if (name === "layers:update") return { ok: true, value: req.layer };
-      if (name === "layers:upsert") return { ok: true, value: req.layer };
-      if (name === "bundle:updateCanvasDimensions") return { ok: true, value: {} };
+      if (name === "bundle:cropCanvas") {
+        return { ok: true, value: { widthPx: 500, heightPx: 400 } };
+      }
       return { ok: true, value: {} };
     });
 
@@ -401,17 +359,15 @@ describe("crop tool applies viewport crop layer transforms", () => {
     );
 
     expect(res.ok).toBe(true);
-    const rasterUpdate = dispatch.mock.calls.find(
-      (call) => call[0] === "layers:update" && ((call[1] as { layer: { id: string } }).layer.id === "raster_layer_01")
-    );
-    expect((rasterUpdate?.[1] as { layer: { transform: number[] } }).layer.transform).toEqual([
-      1, 0, 0, 1, -100, -160
-    ]);
-    expect(lastCall("bundle:updateCanvasDimensions")[1]).toMatchObject({
+    expect(lastCall("bundle:cropCanvas")[1]).toEqual({
       captureId: "cap1",
-      widthPx: 500,
-      heightPx: 400
+      rect: { x: 0.1, y: 0.2, w: 0.5, h: 0.5 },
+      source: "codex"
     });
+    expect(dispatch.mock.calls.some((call) => call[0] === "layers:update")).toBe(false);
+    expect(dispatch.mock.calls.some((call) => call[0] === "bundle:updateCanvasDimensions")).toBe(
+      false
+    );
   });
 });
 

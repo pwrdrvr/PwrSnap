@@ -753,42 +753,6 @@ const blur = defineTool({
   }
 });
 
-function inverseTransformOverlayByCrop(
-  overlay: z.infer<typeof Overlay>,
-  rect: { x: number; y: number; w: number; h: number }
-): z.infer<typeof Overlay> | null {
-  if (rect.w <= 0 || rect.h <= 0) return null;
-  const tx = (n: number): number => (n - rect.x) / rect.w;
-  const ty = (n: number): number => (n - rect.y) / rect.h;
-  const sx = (n: number): number => n / rect.w;
-  const sy = (n: number): number => n / rect.h;
-  switch (overlay.kind) {
-    case "arrow":
-      return {
-        ...overlay,
-        from: { x: tx(overlay.from.x), y: ty(overlay.from.y) },
-        to: { x: tx(overlay.to.x), y: ty(overlay.to.y) }
-      };
-    case "shape":
-    case "highlight":
-    case "blur":
-      return {
-        ...overlay,
-        rect: {
-          x: tx(overlay.rect.x),
-          y: ty(overlay.rect.y),
-          w: sx(overlay.rect.w),
-          h: sy(overlay.rect.h)
-        }
-      };
-    case "text":
-    case "step":
-      return { ...overlay, point: { x: tx(overlay.point.x), y: ty(overlay.point.y) } };
-    case "crop":
-      return null;
-  }
-}
-
 const cropTool = defineTool({
   namespace: "pwrsnap_library",
   name: "crop",
@@ -800,123 +764,21 @@ const cropTool = defineTool({
     rect: cropRect
   }),
   dispatch: async (args) => {
-    const dims = await getCaptureDims(args.capture_id);
-    if (!dims.ok) return { ok: false, error: dims.error };
-    const newWidthPx = Math.max(1, Math.round(args.rect.w * dims.widthPx));
-    const newHeightPx = Math.max(1, Math.round(args.rect.h * dims.heightPx));
-    if (newWidthPx < 32 || newHeightPx < 32) {
-      return {
-        ok: false,
-        error: `crop would shrink the canvas below 32px: ${newWidthPx}x${newHeightPx}`
-      };
-    }
-
-    const listed = await bus.dispatch("layers:list", { captureId: args.capture_id }, { principal: "mcp" });
-    if (!listed.ok) {
-      return { ok: false, error: `${listed.error.kind}/${listed.error.code}: ${listed.error.message}` };
-    }
-
-    const offsetXPx = args.rect.x * dims.widthPx;
-    const offsetYPx = args.rect.y * dims.heightPx;
-    const root = listed.value.find((layer) => layer.kind === "group" && layer.parent_id === null);
-
-    for (const layer of listed.value) {
-      if (layer.kind === "vector") {
-        const transformed = inverseTransformOverlayByCrop(layer.shape, args.rect);
-        if (transformed === null) {
-          // eslint-disable-next-line no-await-in-loop
-          const deleted = await bus.dispatch("layers:delete", { id: layer.id }, { principal: "mcp" });
-          if (!deleted.ok) {
-            return { ok: false, error: `${deleted.error.kind}/${deleted.error.code}: ${deleted.error.message}` };
-          }
-          continue;
-        }
-        // eslint-disable-next-line no-await-in-loop
-        const updated = await bus.dispatch(
-          "layers:update",
-          { captureId: args.capture_id, layer: { ...layer, shape: transformed } },
-          { principal: "mcp" }
-        );
-        if (!updated.ok) {
-          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
-        }
-      } else if (layer.kind === "raster" && (offsetXPx !== 0 || offsetYPx !== 0)) {
-        const transform: [number, number, number, number, number, number] = [
-          layer.transform[0],
-          layer.transform[1],
-          layer.transform[2],
-          layer.transform[3],
-          layer.transform[4] - offsetXPx,
-          layer.transform[5] - offsetYPx
-        ];
-        // eslint-disable-next-line no-await-in-loop
-        const updated = await bus.dispatch(
-          "layers:update",
-          { captureId: args.capture_id, layer: { ...layer, transform } },
-          { principal: "mcp" }
-        );
-        if (!updated.ok) {
-          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
-        }
-      } else if (layer.kind === "effect" && layer.clip_rect !== null && (offsetXPx !== 0 || offsetYPx !== 0)) {
-        // eslint-disable-next-line no-await-in-loop
-        const updated = await bus.dispatch(
-          "layers:update",
-          {
-            captureId: args.capture_id,
-            layer: {
-              ...layer,
-              clip_rect: {
-                ...layer.clip_rect,
-                x: layer.clip_rect.x - offsetXPx,
-                y: layer.clip_rect.y - offsetYPx
-              }
-            }
-          },
-          { principal: "mcp" }
-        );
-        if (!updated.ok) {
-          return { ok: false, error: `${updated.error.kind}/${updated.error.code}: ${updated.error.message}` };
-        }
-      }
-    }
-
-    if (root !== undefined) {
-      const cropLayer = {
-        ...commonLayerProps("AI crop"),
-        parent_id: root.id,
-        kind: "vector" as const,
-        shape: { kind: "crop" as const, rect: args.rect }
-      };
-      const parsed = BundleLayerNode.safeParse(cropLayer);
-      if (!parsed.success) {
-        return { ok: false, error: `built an invalid crop layer: ${parsed.error.message}` };
-      }
-      const inserted = await bus.dispatch(
-        "layers:upsert",
-        { captureId: args.capture_id, layer: parsed.data, bumpZIndexToMax: true },
-        { principal: "mcp" }
-      );
-      if (!inserted.ok) {
-        return { ok: false, error: `${inserted.error.kind}/${inserted.error.code}: ${inserted.error.message}` };
-      }
-    }
-
-    const resized = await bus.dispatch(
-      "bundle:updateCanvasDimensions",
-      { captureId: args.capture_id, widthPx: newWidthPx, heightPx: newHeightPx },
+    const cropped = await bus.dispatch(
+      "bundle:cropCanvas",
+      { captureId: args.capture_id, rect: args.rect, source: "codex" },
       { principal: "mcp" }
     );
-    if (!resized.ok) {
-      return { ok: false, error: `${resized.error.kind}/${resized.error.code}: ${resized.error.message}` };
+    if (!cropped.ok) {
+      return { ok: false, error: `${cropped.error.kind}/${cropped.error.code}: ${cropped.error.message}` };
     }
     return {
       ok: true,
       data: {
         capture_id: args.capture_id,
         rect: args.rect,
-        width_px: newWidthPx,
-        height_px: newHeightPx
+        width_px: cropped.value.widthPx,
+        height_px: cropped.value.heightPx
       }
     };
   }

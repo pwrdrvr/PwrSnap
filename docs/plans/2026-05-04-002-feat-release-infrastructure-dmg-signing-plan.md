@@ -429,12 +429,12 @@ notarized DMG that installs cleanly.
 
 ### Internal References
 
-- PwrAgnt DMG generator: `/Users/huntharo/github/PwrAgnt/apps/desktop/scripts/generate-dmg-background.swift`
-- PwrAgnt entitlements: `/Users/huntharo/github/PwrAgnt/apps/desktop/build/entitlements.mac.plist`
-- PwrAgnt release workflow: `/Users/huntharo/github/PwrAgnt/.github/workflows/release.yml`
-- PwrAgnt preview workflow: `/Users/huntharo/github/PwrAgnt/.github/workflows/preview-build.yml`
-- PwrAgnt asar verifier: `/Users/huntharo/github/PwrAgnt/apps/desktop/scripts/verify-asar-contents.mjs`
-- PwrAgnt metadata check: `/Users/huntharo/github/PwrAgnt/scripts/check-desktop-release-metadata.mjs`
+- PwrAgnt DMG generator: `~/github/PwrAgnt/apps/desktop/scripts/generate-dmg-background.swift`
+- PwrAgnt entitlements: `~/github/PwrAgnt/apps/desktop/build/entitlements.mac.plist`
+- PwrAgnt release workflow: `~/github/PwrAgnt/.github/workflows/release.yml`
+- PwrAgnt preview workflow: `~/github/PwrAgnt/.github/workflows/preview-build.yml`
+- PwrAgnt asar verifier: `~/github/PwrAgnt/apps/desktop/scripts/verify-asar-contents.mjs`
+- PwrAgnt metadata check: `~/github/PwrAgnt/scripts/check-desktop-release-metadata.mjs`
 - PwrSnap design system accent: `design/ds/colors_and_type.css` (`--accent: #e8743a`)
 - PwrSnap brand mark: `apps/desktop/src/renderer/src/features/shared/BrandMark.tsx`
 

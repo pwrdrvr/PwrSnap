@@ -89,7 +89,7 @@ newest first. Today there's one entry (v1). When the shape changes:
    `defaultSettings()`. Never silently swallow.
 
 This pattern is lifted from PwrAgnt's
-[`docs/config-file-evolution.md`](file:///Users/huntharo/github/PwrAgnt/docs/config-file-evolution.md).
+[`docs/config-file-evolution.md`](file://~/github/PwrAgnt/docs/config-file-evolution.md).
 PwrAgnt found out the hard way that monolithic startup migrations
 break under downgrade; a path-based, recognize-then-normalize reader
 survives version churn for free.

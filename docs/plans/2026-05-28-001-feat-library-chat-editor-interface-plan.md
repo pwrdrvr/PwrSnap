@@ -317,7 +317,7 @@ day chat with PwrSnap.
 - **Origin plan (coordinating):** [`docs/plans/2026-05-26-001-feat-sizzle-reels-plan.md`](2026-05-26-001-feat-sizzle-reels-plan.md) §Phase 5 — Sizzle composer chat. **Carries forward:** the long-lived-thread substrate, directory-scoped chat storage (`~/Documents/PwrSnap/Chats/YYYY-MM-DD-[Name]/`), Default Access (workspace-write + on-request approvals), per-thread isolation, the diff-emit-→-Keep/Undo card pattern.
 - **Brand and tone:** [`design/`](../../design/) + [CLAUDE.md](../../CLAUDE.md) §"Brand and Identity" — PwrSnap is one word, two capitals; tangerine accent on pure black; Geist / Geist Mono; we mirror PwrAgnt’s settings/secrets infra.
 - **Codex protocol surface:** [`packages/codex-app-server-protocol/`](../../packages/codex-app-server-protocol/) — generated TS types. Relevant: `UserInput` (send-side: text + `localImage` path + `image` url), `ContentItem` (receive-side: `input_text` + `input_image` with `image_url`), `DynamicToolSpec`, `DynamicToolCallParams`/`Response`, `Tool`, v2 `thread/start` with `dynamicTools: DynamicToolSpec[]` **(tools are sticky for thread lifetime — not per-turn)**, `turn/start` with `input: UserInput[]` and per-turn `effort: ReasoningEffort`, `ServerRequest "item/tool/call"`, approval routes (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/tool/requestUserInput`, `mcpServer/elicitation/request`, plus legacy `ApplyPatchApprovalParams` / `ExecCommandApprovalParams` / `item/permissions/requestApproval`). **The checked-in types in this repo are stale relative to current Codex Desktop — `dynamicTools` is missing from PwrSnap's local `ThreadStartParams.ts` today. `pnpm codex:generate-protocol` against a current Codex Desktop is a hard Phase 0 prerequisite.** See §Deepening Findings F1 for the full verification trace.
-- **Prior art (PwrAgnt):** `/Users/huntharo/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts` — dynamic-tool registration pattern (`buildAutomationInspectionDynamicToolSpecs` returns `DynamicToolSpec[]`; `handle…DynamicToolCall` dispatches by namespace/name). Also `/Users/huntharo/github/PwrAgnt/apps/desktop/src/main/__tests__/backend-registry-replay-isolation.test.ts:276` — Default Access wiring (`sandbox_mode="workspace-write"`, `approvalPolicy: "on-request"`).
+- **Prior art (PwrAgnt):** `~/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts` — dynamic-tool registration pattern (`buildAutomationInspectionDynamicToolSpecs` returns `DynamicToolSpec[]`; `handle…DynamicToolCall` dispatches by namespace/name). Also `~/github/PwrAgnt/apps/desktop/src/main/__tests__/backend-registry-replay-isolation.test.ts:276` — Default Access wiring (`sandbox_mode="workspace-write"`, `approvalPolicy: "on-request"`).
 - **Existing surfaces this plan extends:**
   - [`apps/desktop/src/renderer/src/features/shared/RightActivityBar.tsx`](../../apps/desktop/src/renderer/src/features/shared/RightActivityBar.tsx) — the activity-bar primitive that hosts the four library rail tabs.
   - [`apps/desktop/src/renderer/src/features/library/DetailRail.tsx`](../../apps/desktop/src/renderer/src/features/library/DetailRail.tsx) — current Library right-rail (Info / OCR / Project; Chat slot is empty).
@@ -1308,7 +1308,7 @@ treated as authoritative.
 
 The protocol package checked into this repo is **stale** relative to
 current Codex Desktop. Verified against PwrAgnt’s freshly-regenerated
-copy at `/Users/huntharo/github/PwrAgnt/packages/codex-app-server-protocol/`.
+copy at `~/github/PwrAgnt/packages/codex-app-server-protocol/`.
 
 | Plan claim | Verified shape | Action |
 |---|---|---|
@@ -1359,8 +1359,8 @@ regen — verify by running `codex --version` and checking against the
 last release.
 
 **Files to consult during Phase 0/1 implementation:**
-- `/Users/huntharo/github/PwrAgnt/apps/desktop/src/main/codex-app-server/client.ts:3503-3548, 4505-4622` — multi-turn + `dynamicTools` wiring template.
-- `/Users/huntharo/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts:23-29` — `DynamicToolSpec` pattern.
+- `~/github/PwrAgnt/apps/desktop/src/main/codex-app-server/client.ts:3503-3548, 4505-4622` — multi-turn + `dynamicTools` wiring template.
+- `~/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts:23-29` — `DynamicToolSpec` pattern.
 - `apps/desktop/src/main/ai/codex-client.ts` — the one-shot enrichment template to fork from.
 - `apps/desktop/src/main/codex-app-server/json-rpc.ts` — request/notification plumbing (reuse).
 
@@ -2616,7 +2616,7 @@ original criteria; conflicts resolved in favor of these.
 - [`packages/codex-app-server-protocol/src/v2/DynamicToolSpec.ts`](../../packages/codex-app-server-protocol/src/v2/DynamicToolSpec.ts) + `DynamicToolCallParams.ts` — protocol surface for dynamic tools.
 - [`packages/shared/src/protocol.ts:976`](../../packages/shared/src/protocol.ts:976) — `LibrarySidebarTab` includes `"chat"` already.
 - [`packages/shared/src/protocol.ts:1004-1022`](../../packages/shared/src/protocol.ts:1004) — `ChatMessageContent` discriminated union (already exported).
-- [`/Users/huntharo/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts`](file:///Users/huntharo/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts) — dynamic-tool registration prior art.
+- [`~/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts`](file://~/github/PwrAgnt/apps/desktop/src/main/automations/automation-inspection-codex-tools.ts) — dynamic-tool registration prior art.
 
 ### External references
 

@@ -135,62 +135,26 @@ export function projectToFixture(
 }
 
 /**
- * Anchored regex patterns matching the lowercased bundle ids of the
- * apps we ship a hand-drawn glyph for. Each pattern:
+ * Bundle-id → AppId grouping key.
  *
- *   - Anchors the needle to a dotted segment boundary (start of
- *     string or preceded by `.`) so we only match dotted SEGMENTS,
- *     not arbitrary substrings — `com.acme.notion-importer` no
- *     longer steals Notion's glyph.
- *   - Allows the legitimate trailing-suffix glueing real bundle ids
- *     use (`slackmacgap`, `edgemac`, `vscodeinsiders`, `githubclient`,
- *     `desktop`, `client`, `mac`) so we don't false-negative the
- *     curated set.
+ * The AppId is a stable, app-distinctive key the Library sidebar
+ * groups + filters by. We use the LOWERCASED bundle id directly
+ * (`"com.tinyspeck.slackmacgap"`, `"com.spotify.client"`) so two
+ * captures of the same app — even when macOS returns the bundle id
+ * with different casing across launches (`com.hnc.Discord` vs
+ * `com.hnc.discord`) — fold into the same sidebar group.
  *
- * Order is irrelevant — patterns are pairwise disjoint by anchor +
- * needle. The first match wins regardless.
- */
-const KNOWN_APP_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
-  ["vscode",   /(?:^|\.)vscode(?:insiders)?(?:\.|$)/],
-  ["chrome",   /(?:^|\.)chrome(?:\.|$)/],
-  ["safari",   /(?:^|\.)safari(?:\.|$)/],
-  ["slack",    /(?:^|\.)slack(?:macgap)?(?:\.|$)/],
-  ["figma",    /(?:^|\.)figma(?:\.desktop)?(?:\.|$)/],
-  ["terminal", /(?:^|\.)(?:terminal|ghostty)(?:\.|$)/],
-  ["notion",   /(?:^|\.)notion(?:\.|$)/],
-  ["github",   /(?:^|\.)github(?:client|desktop)(?:\.|$)/],
-  ["linear",   /(?:^|\.)linear(?:\.|$)/],
-  ["zoom",     /(?:^|\.)(?:zoom|zoomus)(?:\.|$)/],
-  ["preview",  /(?:^|\.)preview(?:\.|$)/],
-  ["finder",   /(?:^|\.)finder(?:\.|$)/],
-  ["excel",    /(?:^|\.)excel(?:\.|$)/],
-  ["telegram", /(?:^|\.)telegram(?:\.|$)/]
-];
-
-/**
- * Bundle-id → AppId mapping with an open fallback set.
- *
- * Known apps map to a curated short id (`"slack"`, `"vscode"`, …)
- * so they pick up the hand-drawn icon set in `AppIcons.tsx`. Anything
- * we don't have a glyph for falls through to the lowercased bundle
- * id itself (`"com.spotify.client"`, `"com.hnc.discord"`) — the
- * Library sidebar groups by that key and the chip renders procedural
- * initials taken from the captured `source_app_name`.
- *
- * Matching is case-insensitive: real bundle ids use CamelCase tail
- * components (`com.apple.Terminal`, `com.microsoft.VSCode`,
- * `com.hnc.Discord`) that wouldn't match a lowercase substring
- * directly. Patterns are anchored to dotted segment boundaries to
- * keep false positives down (`com.acme.notion-importer` won't pick
- * up Notion's glyph).
+ * No brand mapping: the key is NOT used to pick a brand-specific
+ * glyph or palette. The chip's icon comes from the OS-extracted app
+ * icon (resolved off the raw `bundleId` via the `pwrsnap-app-icon://`
+ * protocol), falling back to two-letter procedural initials derived
+ * from the captured `source_app_name` / bundle-id segments. `null` /
+ * empty bundle ids fold into the synthetic `"any"` group.
  */
 export function mapBundleIdToAppId(bundleId: string | null): AppId {
   if (bundleId === null) return "any";
   const lower = bundleId.toLowerCase();
   if (lower.length === 0) return "any";
-  for (const [appId, pattern] of KNOWN_APP_PATTERNS) {
-    if (pattern.test(lower)) return appId;
-  }
   return lower;
 }
 

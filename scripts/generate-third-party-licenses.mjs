@@ -12,9 +12,68 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
 const outputPath = join(repoRoot, "THIRD_PARTY_LICENSES");
 const desktopFilter = "@pwrsnap/desktop";
+const licenseTextsDir = join(scriptDir, "license-texts");
+
+// PwrSnap bundles two weak-copyleft binaries whose licenses require shipping
+// the full license text plus a written offer to relink against modified
+// versions of the covered library. The npm packages that stand in for these
+// binaries do not ship the canonical FSF license text (and the macOS-arm64
+// libvips package is not even installed on Linux CI), so we embed the canonical
+// FSF texts as committed assets under scripts/license-texts/ and append them in
+// a dedicated section below the per-package License Texts. The texts are the
+// verbatim FSF distributions of https://www.gnu.org/licenses/lgpl-2.1.txt and
+// https://www.gnu.org/licenses/lgpl-3.0.txt.
+const weakCopyleftBundledBinaries = [
+  {
+    name: "FFmpeg",
+    version: "8.1.1",
+    declaredLicense: "LGPL-2.1-or-later",
+    licenseTextFile: "lgpl-2.1.txt",
+    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 2.1",
+    summary: [
+      "PwrSnap bundles an FFmpeg executable built from the official FFmpeg 8.1.1 source release",
+      "(apps/desktop/scripts/build-ffmpeg.mjs), configured without --enable-gpl, --enable-nonfree,",
+      "--enable-libx264, --enable-libx265, --enable-libvidstab, or --enable-libfdk-aac, so the",
+      "resulting binary is covered by the GNU Lesser General Public License, version 2.1 or later.",
+      "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
+      "License guidance: https://ffmpeg.org/legal.html",
+    ].join("\n"),
+    relinkOffer: [
+      "Relinking / source offer: PwrSnap ships the bundled ffmpeg executable as a separate file",
+      "(not statically linked into the application), so it may be replaced with a compatible",
+      "build. The exact source used, the build script, and the verified configure flags are in",
+      "this repository under apps/desktop/scripts/build-ffmpeg.mjs and the FFmpeg 8.1.1 source",
+      "release linked above. PwrDrvr LLC will additionally provide the corresponding source on",
+      "written request to support@pwrdrvr.com for at least three years from the date of",
+      "distribution.",
+    ].join("\n"),
+  },
+  {
+    name: "@img/sharp-libvips-darwin-arm64",
+    version: "1.2.4",
+    declaredLicense: "LGPL-3.0-or-later",
+    licenseTextFile: "lgpl-3.0.txt",
+    licenseTitle: "GNU LESSER GENERAL PUBLIC LICENSE, Version 3",
+    summary: [
+      "PwrSnap's macOS arm64 release bundles the prebuilt libvips-cpp dynamic library shipped in",
+      "@img/sharp-libvips-darwin-arm64, used by sharp for image processing. libvips-cpp is",
+      "distributed under the GNU Lesser General Public License, version 3 or later.",
+      "Source: https://github.com/lovell/sharp-libvips",
+      "Upstream library: https://github.com/libvips/libvips",
+    ].join("\n"),
+    relinkOffer: [
+      "Relinking / source offer: the libvips library is bundled as a dynamic library (dylib)",
+      "loaded at runtime, so it may be replaced with a compatible build of the same major version.",
+      "The corresponding source for libvips and its dependencies is published at the URLs above.",
+      "PwrDrvr LLC will additionally provide the corresponding source on written request to",
+      "support@pwrdrvr.com for at least three years from the date of distribution.",
+    ].join("\n"),
+  },
+];
 const supplementalMacArm64Records = [
   {
     name: "FFmpeg",
@@ -29,7 +88,9 @@ const supplementalMacArm64Records = [
       "",
       "FFmpeg's source release includes its license texts and states that most files are under the GNU Lesser General Public License version 2.1 or later.",
       "Source: https://ffmpeg.org/releases/ffmpeg-8.1.1.tar.xz",
-      "License guidance: https://ffmpeg.org/legal.html"
+      "License guidance: https://ffmpeg.org/legal.html",
+      "",
+      "The full GNU Lesser General Public License, version 2.1, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
     ].join("\n"),
   },
   {
@@ -45,6 +106,14 @@ const supplementalMacArm64Records = [
     declaredLicense: "LGPL-3.0-or-later",
     source: "https://github.com/lovell/sharp-libvips",
     description: "Prebuilt libvips and dependencies for use with sharp on macOS 64-bit ARM",
+    licenseText: [
+      "PwrSnap's macOS arm64 release bundles the prebuilt libvips-cpp dynamic library from this package.",
+      "libvips-cpp is distributed under the GNU Lesser General Public License, version 3 or later.",
+      "Source: https://github.com/lovell/sharp-libvips",
+      "Upstream library: https://github.com/libvips/libvips",
+      "",
+      "The full GNU Lesser General Public License, version 3, and the corresponding relinking / source offer are reproduced below under \"Full License Texts — Weak-Copyleft Bundled Binaries\"."
+    ].join("\n"),
   },
 ];
 
@@ -185,6 +254,52 @@ export function normalizeLicenseText(text) {
   return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
+export function readCanonicalLicenseText(fileName, baseDir = licenseTextsDir) {
+  const path = join(baseDir, fileName);
+  if (!existsSync(path)) {
+    throw new Error(
+      `Canonical license text ${fileName} not found at ${path}. ` +
+        "Restore it from the verbatim FSF distribution before generating notices.",
+    );
+  }
+  return normalizeLicenseText(readFileSync(path, "utf8"));
+}
+
+export function buildWeakCopyleftSection(binaries, baseDir = licenseTextsDir) {
+  if (!binaries.length) return [];
+  const lines = [];
+  const heading = "Full License Texts — Weak-Copyleft Bundled Binaries";
+  lines.push(heading);
+  lines.push("-".repeat(heading.length));
+  lines.push("");
+  lines.push(
+    "The bundled binaries below are distributed under weak-copyleft licenses that require the full",
+  );
+  lines.push(
+    "license text and an offer to relink/obtain corresponding source. The verbatim canonical FSF",
+  );
+  lines.push(
+    "license texts follow, sourced from https://www.gnu.org/licenses/ and committed under",
+  );
+  lines.push("scripts/license-texts/.");
+  lines.push("");
+  for (const binary of binaries) {
+    const binHeading = `${stableRecordKey(binary)} (${binary.declaredLicense})`;
+    lines.push(binHeading);
+    lines.push("~".repeat(binHeading.length));
+    lines.push("");
+    lines.push(binary.summary);
+    lines.push("");
+    lines.push(binary.relinkOffer);
+    lines.push("");
+    lines.push(`${binary.licenseTitle}:`);
+    lines.push("");
+    lines.push(readCanonicalLicenseText(binary.licenseTextFile, baseDir));
+    lines.push("");
+  }
+  return lines;
+}
+
 export function compareRecords(a, b) {
   return (
     a.name.localeCompare(b.name) ||
@@ -231,6 +346,8 @@ export function buildThirdPartyLicenseNotice({
   productionReport,
   allReport,
   supplementalRecords = supplementalMacArm64Records,
+  weakCopyleftBinaries = weakCopyleftBundledBinaries,
+  licenseTextsBaseDir = licenseTextsDir,
   productName = "PwrSnap",
   packageFilter = desktopFilter,
 }) {
@@ -307,6 +424,9 @@ export function buildThirdPartyLicenseNotice({
   lines.push(
     "PwrSnap's macOS arm64 release also bundles sharp's native optional runtime packages for macOS: @img/sharp-darwin-arm64 and @img/sharp-libvips-darwin-arm64. They are listed below explicitly so this notice remains deterministic when checked on Linux CI.",
   );
+  lines.push(
+    "PwrSnap ships two weak-copyleft bundled binaries — the FFmpeg executable (LGPL-2.1-or-later) and libvips-cpp via @img/sharp-libvips-darwin-arm64 (LGPL-3.0-or-later). Their full canonical FSF license texts and the corresponding relinking / written source offers are reproduced in the \"Full License Texts — Weak-Copyleft Bundled Binaries\" section at the end of this notice.",
+  );
   lines.push("");
   lines.push("Dependency Summary");
   lines.push("------------------");
@@ -352,6 +472,8 @@ export function buildThirdPartyLicenseNotice({
     lines.push(group.text);
     lines.push("");
   }
+
+  lines.push(...buildWeakCopyleftSection(weakCopyleftBinaries, licenseTextsBaseDir));
 
   return `${lines.join("\n").replace(/[ \t]+$/gm, "").trimEnd()}\n`;
 }

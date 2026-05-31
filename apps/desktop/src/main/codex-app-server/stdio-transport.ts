@@ -1,4 +1,4 @@
-// Lifted from ~/github/PwrAgnt/apps/desktop/src/main/codex-app-server/stdio-transport.ts
+// Lifted from PwrAgnt (apps/desktop/src/main/codex-app-server/stdio-transport.ts).
 // — only PwrAgnt-isms are the logger scope and the "pwragnt:" log namespace.
 // Spawns the user-selected Codex CLI binary with `app-server` as the
 // subcommand and shuttles JSON-RPC envelopes line-delimited over stdio.

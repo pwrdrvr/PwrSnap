@@ -236,7 +236,7 @@ function defaultEditorSettings(): EditorSettings {
  *  Today's catalog has exactly one entry — the current v1 shape. The
  *  pattern is here from day one so adding a v0-recognizer or a future
  *  v2-recognizer is one new entry and zero structural change. See
- *  ~/github/PwrAgnt/docs/config-file-evolution.md. */
+ *  PwrAgnt's docs/config-file-evolution.md. */
 type ShapeEntry = {
   shape: string;
   parse(raw: unknown): Settings | null;

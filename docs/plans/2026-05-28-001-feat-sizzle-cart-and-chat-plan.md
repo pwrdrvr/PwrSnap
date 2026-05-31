@@ -30,7 +30,7 @@ This plan adds three connected capabilities, deepest-dependency first:
 ## Source of inputs + prior art
 
 - **PwrAgnt's Codex App Server integration** at
-  `/Users/huntharo/github/PwrAgnt`. PwrAgnt is the canonical reference
+  `~/github/PwrAgnt`. PwrAgnt is the canonical reference
   for the multi-turn chat shape, the approval relay over JSON-RPC
   server-initiated requests, the scratch-directory pattern, and the
   inline transcript UI. We mirror its substrate but not its specifics

@@ -1,8 +1,10 @@
-// Tests for the bundle-id → AppId mapping. The mapper is pure logic
-// keyed off a small table of anchored regex patterns; each branch
-// gets one realistic bundle id so a future edit that breaks a row
-// (regression on case sensitivity, anchor drift, accidental false
-// positive) fails loudly.
+// Tests for the bundle-id → AppId grouping key. The mapper is pure
+// logic: it lowercases the bundle id so two captures of the same app
+// fold into one sidebar group regardless of the casing macOS returns,
+// with null / empty folding into the synthetic `"any"` group. It does
+// NOT map bundle ids onto brand-specific keys — the chip icon comes
+// from the OS-extracted app icon (keyed off the raw bundle id) or the
+// two-letter procedural initials, never a brand facsimile.
 
 import { describe, expect, test } from "vitest";
 import type { CaptureRecord, SizzleProject } from "@pwrsnap/shared";
@@ -72,38 +74,39 @@ describe("mapBundleIdToAppId — null / empty input", () => {
   });
 });
 
-describe("mapBundleIdToAppId — curated apps (case-insensitive)", () => {
-  // Real macOS bundle ids use CamelCase tail components; the matcher
-  // must lowercase before testing. Each row is the EXACT id macOS
-  // returns from CFBundleIdentifier.
+describe("mapBundleIdToAppId — lowercased passthrough (no brand mapping)", () => {
+  // The key is ALWAYS the lowercased bundle id verbatim — no bundle
+  // id is folded onto a brand-specific short key. Each row is the
+  // EXACT id macOS returns from CFBundleIdentifier; the expected
+  // value is just its lowercase form. This is the stable sidebar
+  // group key; the chip's icon is resolved separately off the raw
+  // bundle id (OS-extracted) or from procedural initials.
   test.each<[string, string]>([
-    ["com.tinyspeck.slackmacgap", "slack"],
-    ["com.apple.Terminal", "terminal"],
-    ["com.microsoft.VSCode", "vscode"],
-    ["com.microsoft.VSCodeInsiders", "vscode"],
-    ["com.apple.finder", "finder"],
-    ["com.google.Chrome", "chrome"],
-    ["com.apple.Safari", "safari"],
-    ["com.figma.Desktop", "figma"],
-    ["notion.id", "notion"],
-    ["com.github.GitHubClient", "github"],
-    ["com.linear.LinearMac", "linear"],
-    ["us.zoom.xos", "zoom"],
-    ["com.apple.Preview", "preview"],
-    ["com.microsoft.Excel", "excel"],
-    ["ru.keepcoder.Telegram", "telegram"],
-    ["com.mitchellh.ghostty", "terminal"]
-  ])("%s → %s", (bundleId, expected) => {
+    ["com.tinyspeck.slackmacgap", "com.tinyspeck.slackmacgap"],
+    ["com.apple.Terminal", "com.apple.terminal"],
+    ["com.microsoft.VSCode", "com.microsoft.vscode"],
+    ["com.microsoft.VSCodeInsiders", "com.microsoft.vscodeinsiders"],
+    ["com.apple.finder", "com.apple.finder"],
+    ["com.google.Chrome", "com.google.chrome"],
+    ["com.apple.Safari", "com.apple.safari"],
+    ["com.figma.Desktop", "com.figma.desktop"],
+    ["notion.id", "notion.id"],
+    ["com.github.GitHubClient", "com.github.githubclient"],
+    ["com.linear.LinearMac", "com.linear.linearmac"],
+    ["us.zoom.xos", "us.zoom.xos"],
+    ["com.apple.Preview", "com.apple.preview"],
+    ["com.microsoft.Excel", "com.microsoft.excel"],
+    ["ru.keepcoder.Telegram", "ru.keepcoder.telegram"],
+    ["com.mitchellh.ghostty", "com.mitchellh.ghostty"]
+  ])("%s → %s (lowercased, no brand key)", (bundleId, expected) => {
     expect(mapBundleIdToAppId(bundleId)).toBe(expected);
   });
 });
 
-describe("mapBundleIdToAppId — open fallback for unknown apps", () => {
-  // Unknown apps return their LOWERCASED bundle id as a stable
-  // group key. The Library sidebar groups by this key, so two
-  // captures of the same app must produce the same key regardless
-  // of whether macOS returned the bundle id as `com.hnc.Discord`
-  // or `com.hnc.discord`.
+describe("mapBundleIdToAppId — grouping key is stable across casing", () => {
+  // The Library sidebar groups by this key, so two captures of the
+  // same app must produce the same key regardless of whether macOS
+  // returned the bundle id as `com.hnc.Discord` or `com.hnc.discord`.
   test.each<[string, string]>([
     ["com.spotify.client", "com.spotify.client"],
     ["com.hnc.Discord", "com.hnc.discord"],
@@ -117,46 +120,28 @@ describe("mapBundleIdToAppId — open fallback for unknown apps", () => {
   ])("%s → %s (lowercased)", (bundleId, expected) => {
     expect(mapBundleIdToAppId(bundleId)).toBe(expected);
   });
+
+  test("differently-cased ids of the same app fold into one group key", () => {
+    expect(mapBundleIdToAppId("com.hnc.Discord")).toBe(
+      mapBundleIdToAppId("com.hnc.discord")
+    );
+  });
 });
 
-describe("mapBundleIdToAppId — anchored matching prevents false positives", () => {
-  // The matcher used to do unanchored substring tests
-  // (`bundleId.includes("notion")`), so a third-party clone like
-  // `com.acme.notion-importer` would steal Notion's hand-drawn
-  // glyph. After the regex tightening, generic-name third parties
-  // fall through to the open set and get a procedural icon.
+describe("mapBundleIdToAppId — no facsimile false positives", () => {
+  // No brand mapping means a third-party clone like
+  // `com.acme.notion-importer` can never steal another app's brand
+  // glyph — it just gets its own lowercased group key and a
+  // procedural initials icon. These rows pin that there's no
+  // residual substring/brand matching.
   test.each<string>([
     "com.acme.notion-importer",
     "com.someone.fakelinear",
     "com.example.previewer",
-    "com.anothercompany.figmaclone"
-  ])("%s falls through (no false positive)", (bundleId) => {
+    "com.anothercompany.figmaclone",
+    "com.apple.dt.Xcode"
+  ])("%s → its own lowercased key (no brand fold)", (bundleId) => {
     expect(mapBundleIdToAppId(bundleId)).toBe(bundleId.toLowerCase());
-  });
-
-  // But legitimate vendor-glued tail words MUST still match — the
-  // matcher allows known suffixes (slackmacgap, vscodeinsiders,
-  // githubclient, …) for this reason.
-  test("Slack still matches despite glued 'macgap' suffix", () => {
-    expect(mapBundleIdToAppId("com.tinyspeck.slackmacgap")).toBe("slack");
-  });
-
-  test("VS Code Insiders still matches", () => {
-    expect(mapBundleIdToAppId("com.microsoft.VSCodeInsiders")).toBe("vscode");
-  });
-
-  test("GitHub Client still matches", () => {
-    expect(mapBundleIdToAppId("com.github.GitHubClient")).toBe("github");
-  });
-});
-
-describe("mapBundleIdToAppId — Xcode does not get VS Code's glyph", () => {
-  // Regression: when the matcher had a `lower.includes("code")`
-  // branch, Xcode (`com.apple.dt.Xcode`) and any other app with
-  // "code" in its bundle id would inherit VS Code's glyph. The
-  // `vscode`-only needle, anchored, prevents that.
-  test("Xcode falls through to its lowercased bundle id", () => {
-    expect(mapBundleIdToAppId("com.apple.dt.Xcode")).toBe("com.apple.dt.xcode");
   });
 });
 

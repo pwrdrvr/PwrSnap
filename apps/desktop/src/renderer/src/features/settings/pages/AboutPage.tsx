@@ -1,7 +1,7 @@
 // About page — version + license + links. The version block reads
 // from the new `app:version` bus verb (apps/desktop/src/main/handlers/
-// app-handlers.ts). License row is a hard-coded string from
-// CLAUDE.md; links are inert placeholders until we have real URLs.
+// app-handlers.ts). License row reflects the MIT license (see the
+// repo LICENSE file); links open the changelog + third-party notices.
 
 import { useEffect, useState, type ReactElement } from "react";
 import { Card, Row } from "../components";
@@ -51,8 +51,8 @@ export function AboutPage(): ReactElement {
           <h1 className="pss__main-title">About PwrSnap</h1>
           <p className="pss__main-sub">
             Build metadata, license terms, and links to the project. PwrSnap is
-            a closed-source product of PwrDrvr LLC; this release is for
-            personal use under the proprietary terms below.
+            open-source software from PwrDrvr LLC, released under the MIT
+            License.
           </p>
         </div>
       </div>
@@ -80,10 +80,10 @@ export function AboutPage(): ReactElement {
       <Card eyebrow="LICENSE" title="License">
         <Row
           label="Terms"
-          sub="PwrSnap v1 is closed-source proprietary. Distribution, redistribution, or modification require a written grant from PwrDrvr LLC."
-          tag="UNLICENSED"
+          sub="PwrSnap is released under the MIT License — free to use, modify, and redistribute. See the LICENSE file for the full terms."
+          tag="MIT"
         >
-          <span className="pss__opt-primary">UNLICENSED · © 2026 PwrDrvr LLC</span>
+          <span className="pss__opt-primary">MIT · © 2026 PwrDrvr LLC</span>
         </Row>
         <Row
           label="Third-party notices"

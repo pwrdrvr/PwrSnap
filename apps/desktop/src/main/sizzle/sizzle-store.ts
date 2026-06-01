@@ -290,6 +290,13 @@ function sanitizeSequenceBeats(
 }
 
 function sanitizeBeatTiming(timing: SizzleBeatTiming | undefined): SizzleBeatTiming {
+  // `auto` carries no fields — recognize it explicitly so a saved auto beat
+  // survives the round-trip instead of silently degrading to `offset:0`.
+  // Any genuinely-unknown kind still falls through to the safe `offset`
+  // default below (never throws on read).
+  if (timing?.kind === "auto") {
+    return { kind: "auto" };
+  }
   if (timing?.kind === "phrase") {
     return {
       kind: "phrase",

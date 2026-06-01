@@ -459,9 +459,23 @@ function validateBeatTiming(
       }
     };
   }
+  if (v.kind === "auto") {
+    // Auto beats carry no timing fields. Reject any that sneak in so a
+    // malformed agent/HTTP payload fails closed rather than silently
+    // dropping data.
+    for (const stray of ["startSec", "endSec", "phrase", "offsetSec", "occurrence", "durationSec"] as const) {
+      if (v[stray] !== undefined && v[stray] !== null) {
+        return {
+          ok: false,
+          error: validationError("scene_beat_timing_invalid", `${field}.${stray} is not allowed on an auto beat`)
+        };
+      }
+    }
+    return { ok: true, value: { kind: "auto" } };
+  }
   return {
     ok: false,
-    error: validationError("scene_beat_timing_invalid", `${field}.kind must be offset or phrase`)
+    error: validationError("scene_beat_timing_invalid", `${field}.kind must be offset, phrase, or auto`)
   };
 }
 

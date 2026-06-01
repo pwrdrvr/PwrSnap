@@ -93,15 +93,16 @@ beforeEach(() => {
 });
 
 describe("buildSizzleToolAllowlist", () => {
-  it("exposes all 16 tools under the pwrsnap_sizzle namespace", () => {
+  it("exposes all 17 tools under the pwrsnap_sizzle namespace", () => {
     const allow = boundAllowlist();
-    expect(allow).toHaveLength(16);
+    expect(allow).toHaveLength(17);
     expect(allow.every((t) => t.namespace === "pwrsnap_sizzle")).toBe(true);
     expect(allow.map((t) => t.name)).toEqual(
       expect.arrayContaining([
         "library_search",
         "library_get_metadata",
         "project_get",
+        "project_set_metadata",
         "scenes_set",
         "scenes_append",
         "sequence_scene_append",
@@ -127,6 +128,20 @@ describe("buildSizzleToolAllowlist", () => {
     if (r.ok && "data" in r) {
       expect((r.data as { rows: Array<{ captureId: string }> }).rows[0]?.captureId).toBe("cap_x");
     }
+  });
+
+  it("project_set_metadata renames the resolved project", async () => {
+    primeBus(project([scene()]));
+    const r = await tool(boundAllowlist(), "project_set_metadata").dispatch(
+      { name: "PwrSnap: From Screens to Story" },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    expect(dispatch).toHaveBeenCalledWith(
+      "sizzle:update",
+      { id: PROJECT_ID, patch: { name: "PwrSnap: From Screens to Story" } },
+      { principal: "mcp" }
+    );
   });
 
   it("scenes_append writes sizzle:update for the RESOLVED project (no project_id arg)", async () => {
@@ -191,6 +206,36 @@ describe("buildSizzleToolAllowlist", () => {
     expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(scenes[0]!.beats![1]!.transition).toEqual({ type: "push-left", durationSec: 0.18 });
     expect(scenes[0]!.beats![1]!.videoFit).toBe("loop");
+  });
+
+  it("sequence_scene_append accepts auto-timed beats (the default)", async () => {
+    primeBus(project([]));
+    const r = await tool(boundAllowlist(), "sequence_scene_append").dispatch(
+      {
+        scene: {
+          narration: "Open the wizard, then approve pairing.",
+          beats: [
+            { captureId: "cap_a", timing: { kind: "auto" } },
+            { captureId: "cap_b", timing: { kind: "auto" } },
+            { captureId: "cap_c", timing: { kind: "phrase", phrase: "approve" } }
+          ]
+        }
+      },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
+    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    expect(scenes[0]!.beats).toHaveLength(3);
+    expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "auto" });
+    expect(scenes[0]!.beats![1]!.timing).toEqual({ kind: "auto" });
+    expect(scenes[0]!.beats![2]!.timing).toEqual({
+      kind: "phrase",
+      phrase: "approve",
+      occurrence: null,
+      offsetSec: 0,
+      durationSec: null
+    });
   });
 
   it("sequence_beat_update changes one beat without replacing siblings", async () => {

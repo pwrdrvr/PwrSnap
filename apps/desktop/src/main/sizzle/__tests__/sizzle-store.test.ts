@@ -163,6 +163,36 @@ describe("SizzleStore", () => {
     expect(scene.beats![0]!.videoFit).toBe("smart-fit");
   });
 
+  it("preserves an auto beat across a write→read round-trip (no downgrade to offset)", async () => {
+    const store = makeStore();
+    const p = await store.create("Demo");
+    await store.update(p.id, {
+      scenes: [
+        {
+          id: "sc_seq",
+          kind: "sequence",
+          captureId: "cap_a",
+          scriptLine: "narration",
+          narration: "narration",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_0", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+            { id: "bt_1", captureId: "cap_b", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      ]
+    });
+    // A fresh store forces a read from disk → exercises sanitizeBeatTiming.
+    const reread = await makeStore().get(p.id);
+    expect(reread).not.toBeNull();
+    const beats = reread!.scenes[0]!.beats!;
+    expect(beats[0]!.timing).toEqual({ kind: "auto" });
+    expect(beats[1]!.timing).toEqual({ kind: "auto" });
+  });
+
   it("delete() removes a project and is idempotent on a missing id", async () => {
     const store = makeStore();
     const p = await store.create("Demo");

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  distributeSequenceBeatStarts,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   type CaptureRecord,
@@ -9,12 +10,15 @@ import {
   type SizzleProject,
   type SizzleRenderProgressEvent,
   type SizzleScene,
+  type SizzleSequencePreviewBeat,
+  type SizzleSequencePreviewPlan,
   type SizzleSequenceBeat,
   type SizzleTransition,
   type SizzleTransitionType,
   type SizzleVideoFitPolicy,
   type SizzleVoice
 } from "@pwrsnap/shared";
+import { IterableQueueMapperSimple } from "@shutterstock/p-map-iterable";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { SizzleChatPanel } from "./SizzleChatPanel";
@@ -73,6 +77,17 @@ function transitionFromType(type: SizzleTransitionType): SizzleTransition {
   return { type, durationSec: type === "none" ? 0 : 0.18 };
 }
 
+function transitionLabel(transition: SizzleTransition): string {
+  return transitionType(transition)
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function clampTime(value: number, durationSec: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), Math.max(0, durationSec));
+}
+
 function formatProjectDate(iso: string): string {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return "Unknown date";
@@ -115,6 +130,272 @@ function mergeProjectPatch(
 function readInitialProjectId(): string | null {
   const hash = window.location.hash.replace(/^#/, "");
   return new URLSearchParams(hash).get("projectId");
+}
+
+function fallbackSequenceBeats(scene: SizzleScene): SizzleSequencePreviewBeat[] {
+  const beats = normalizeSizzleSequenceBeatContinuity(scene.beats ?? []);
+  const durationSec = Math.max(1, scene.durationOverrideSec ?? beats.length);
+  // Idle (pre-preview) placement: no speech timing here, so only `offset`
+  // beats are anchors; `phrase` and `auto` are placed by the SAME shared
+  // even-division distributor the main planner uses, so the editor strip and
+  // the resolved preview/render never diverge.
+  const anchors = beats.map((beat): number | null =>
+    beat.timing.kind === "offset" ? clampTime(beat.timing.startSec, durationSec) : null
+  );
+  const starts = distributeSequenceBeatStarts(anchors, durationSec);
+  return beats.map((beat, index) => {
+    const startSec = starts[index] ?? 0;
+    const configuredEnd =
+      beat.timing.kind === "offset" && beat.timing.endSec !== null
+        ? beat.timing.endSec
+        : null;
+    const endSec = configuredEnd ?? starts[index + 1] ?? durationSec;
+    return {
+      beatId: beat.id,
+      captureId: beat.captureId,
+      startSec,
+      endSec: Math.min(durationSec, Math.max(startSec + 0.1, clampTime(endSec, durationSec))),
+      timing: beat.timing,
+      transition: index === 0 ? scene.transition : beat.transition,
+      videoFit: beat.videoFit
+    };
+  });
+}
+
+function sequencePreviewPlanKey(scene: SizzleScene): string {
+  return JSON.stringify({
+    scriptLine: scene.scriptLine,
+    durationOverrideSec: scene.durationOverrideSec,
+    transition: scene.transition,
+    beats: normalizeSizzleSequenceBeatContinuity(scene.beats ?? []).map((beat) => ({
+      id: beat.id,
+      captureId: beat.captureId,
+      timing: beat.timing,
+      mediaTrim: beat.mediaTrim,
+      transition: beat.transition,
+      videoFit: beat.videoFit
+    }))
+  });
+}
+
+type CachedSequencePreviewPlan = {
+  key: string;
+  plan: SizzleSequencePreviewPlan;
+};
+
+/** Bar count for the idle (pre-preview) waveform placeholder. */
+const SEQUENCE_WAVE_BARS = 52;
+
+/** How many cached narration audios to fetch+decode at once when
+ *  populating sequence waveforms in the background on reel open. Bounds
+ *  the burst of IPC payloads + wavesurfer decodes so a many-scene reel
+ *  doesn't jank the editor on load. */
+const WAVEFORM_LOAD_CONCURRENCY = 3;
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mimeType });
+}
+
+/**
+ * Render the narration's real waveform with wavesurfer.js (BSD-3-Clause)
+ * once a preview has decoded the audio. wavesurfer owns the decode →
+ * peak extraction → canvas render; we keep it display-only (no clicks,
+ * no cursor) and overlay our own beat track + playhead. Loaded by
+ * dynamic import so it is code-split out of the initial bundle and so
+ * jsdom unit tests (no canvas / ResizeObserver) never touch it.
+ */
+function SequenceWaveform({ audioBlob }: { audioBlob: Blob }): ReactElement {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    let instance: import("wavesurfer.js").default | null = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { default: WaveSurfer } = await import("wavesurfer.js");
+        if (cancelled || containerRef.current === null) return;
+        // Canvas can't read CSS vars; resolve the accent at runtime so
+        // the waveform tracks the theme. The container's own opacity
+        // mutes it to match the rest of the timeline chrome.
+        const accent =
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--accent")
+            .trim() || "#ff8a1f";
+        instance = WaveSurfer.create({
+          container: containerRef.current,
+          height: 24,
+          barWidth: 2,
+          barGap: 2,
+          barRadius: 2,
+          waveColor: accent,
+          progressColor: accent,
+          cursorWidth: 0,
+          interact: false,
+          normalize: true
+        });
+        await instance.loadBlob(audioBlob);
+      } catch {
+        // jsdom (no canvas) or a decode failure — the idle baseline
+        // stays in place rather than a fabricated waveform.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        instance?.destroy();
+      } catch {
+        // Already torn down; nothing to clean up.
+      }
+    };
+  }, [audioBlob]);
+  return <div ref={containerRef} className="szl__sequence-wave-surfer" aria-hidden="true" />;
+}
+
+function SequenceTimelinePreview(props: {
+  scene: SizzleScene;
+  captureMap: Map<string, CaptureRecord>;
+  plan: SizzleSequencePreviewPlan | undefined;
+  audioBlob: Blob | undefined;
+  currentTimeSec: number;
+  playing: boolean;
+  loading: boolean;
+  onPlay: () => void;
+  onSeek: (timeSec: number) => void;
+}): ReactElement {
+  const { scene, captureMap, plan, audioBlob, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const fallbackBeats = fallbackSequenceBeats(scene);
+  const beats = plan?.beats ?? fallbackBeats;
+  const fallbackDuration = Math.max(
+    1,
+    scene.durationOverrideSec ?? fallbackBeats.at(-1)?.endSec ?? fallbackBeats.length
+  );
+  const durationSec = Math.max(0.1, plan?.durationSec ?? fallbackDuration);
+  const timeSec = clampTime(currentTimeSec, durationSec);
+  const activeBeat =
+    beats.find((beat) => timeSec >= beat.startSec && timeSec < beat.endSec) ??
+    beats.at(-1) ??
+    null;
+  const activeCapture =
+    activeBeat === null ? null : captureMap.get(activeBeat.captureId) ?? null;
+  const activeThumb =
+    activeCapture?.edits_version !== undefined && activeBeat !== null
+      ? cacheUrl(activeBeat.captureId, 800, "webp", activeCapture.edits_version)
+      : activeBeat !== null
+        ? cacheUrl(activeBeat.captureId, 800, "webp")
+        : "";
+  const barCount = SEQUENCE_WAVE_BARS;
+  const playheadLeft = `${(timeSec / durationSec) * 100}%`;
+
+  const seekFromPointer = (clientX: number, target: HTMLElement): void => {
+    const rect = target.getBoundingClientRect();
+    const ratio = rect.width <= 0 ? 0 : (clientX - rect.left) / rect.width;
+    onSeek(clampTime(ratio * durationSec, durationSec));
+  };
+
+  return (
+    <div className="szl__sequence-preview">
+      <div className="szl__sequence-preview-stage">
+        {activeBeat === null ? (
+          <span className="szl__sequence-preview-empty">No beats</span>
+        ) : activeCapture?.kind === "video" ? (
+          <video
+            key={activeBeat.beatId}
+            src={captureSrcUrl(activeBeat.captureId)}
+            muted
+            playsInline
+            autoPlay={playing}
+            loop
+          />
+        ) : activeCapture !== null ? (
+          <img src={activeThumb} alt="" />
+        ) : (
+          <span className="szl__sequence-preview-empty">Missing capture</span>
+        )}
+      </div>
+      <div className="szl__sequence-preview-controls">
+        <button
+          className="szl__scene-mini szl__scene-mini--play"
+          onClick={onPlay}
+          disabled={loading || scene.scriptLine.trim().length === 0}
+          type="button"
+          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence"}
+        >
+          {loading ? "…" : playing ? "■" : "▶"}
+        </button>
+        <button
+          className="szl__scene-mini"
+          onClick={() => onSeek(0)}
+          type="button"
+          title="Seek to start"
+        >
+          ↤
+        </button>
+        <span className="szl__sequence-preview-time">
+          {formatDur(timeSec)} / {formatDur(durationSec)}
+        </span>
+        <span className="szl__spacer" />
+        <span className="szl__sequence-preview-quality">
+          {plan === undefined
+            ? "unresolved"
+            : plan.timingQuality === "precise"
+              ? "word timing"
+              : "approx timing"}
+        </span>
+      </div>
+      <button
+        className="szl__sequence-timeline"
+        type="button"
+        onClick={(event) => seekFromPointer(event.clientX, event.currentTarget)}
+        aria-label="Sequence timeline"
+      >
+        {audioBlob === undefined ? (
+          // No narration decoded yet — a flat dim baseline (no fabricated
+          // variation) until a preview runs and wavesurfer takes over.
+          <span className="szl__sequence-wave szl__sequence-wave--idle" aria-hidden="true">
+            {Array.from({ length: barCount }, (_, index) => (
+              <span key={index} style={{ height: "10%" }} />
+            ))}
+          </span>
+        ) : (
+          <SequenceWaveform audioBlob={audioBlob} />
+        )}
+        <span className="szl__sequence-track" aria-hidden="true">
+          {beats.map((beat, index) => {
+            const left = (beat.startSec / durationSec) * 100;
+            const width = Math.max(1, ((beat.endSec - beat.startSec) / durationSec) * 100);
+            const capture = captureMap.get(beat.captureId);
+            const isActive = activeBeat?.beatId === beat.beatId;
+            return (
+              <span
+                key={beat.beatId}
+                className={"szl__sequence-track-beat" + (isActive ? " is-active" : "")}
+                style={{ left: `${left}%`, width: `${width}%` }}
+              >
+                <span>{index + 1}</span>
+                <small>{capture?.source_app_name ?? "Capture"}</small>
+                {index > 0 ? <em>{transitionLabel(beat.transition)}</em> : null}
+              </span>
+            );
+          })}
+        </span>
+        <span className="szl__sequence-playhead" style={{ left: playheadLeft }} aria-hidden="true" />
+      </button>
+      {plan?.warnings.length ? (
+        <div className="szl__sequence-warnings">
+          {plan.warnings.slice(0, 3).map((warning, index) => (
+            <span key={`${warning.code}-${warning.beatId ?? "scene"}-${index}`}>
+              {warning.beatId === undefined ? "" : "Beat warning: "}
+              {warning.message}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function SizzleApp(): ReactElement {
@@ -225,6 +506,23 @@ export function SizzleApp(): ReactElement {
     new Map()
   );
 
+  // ── Undo / redo (per active project) ────────────────────────────────
+  // Every local scene mutation funnels through onUpdate({ scenes }); we
+  // snapshot the PRE-edit scenes so ⌘Z can restore them. Keyed by project
+  // id, so each reel keeps its own history for the session. External chat
+  // broadcasts arrive OUTSIDE onUpdate and are intentionally not recorded.
+  // Rapid edits (typing) coalesce into one entry within the debounce
+  // window. `applyingHistoryRef` suppresses recording while an undo/redo
+  // is being applied (so it doesn't re-record or clear the redo stack).
+  const HISTORY_COALESCE_MS = DEBOUNCE_MS;
+  const HISTORY_MAX = 50;
+  const projectsRef = useRef<SizzleProject[]>(projects);
+  projectsRef.current = projects;
+  const undoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
+  const redoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
+  const lastHistoryAtRef = useRef<Map<string, number>>(new Map());
+  const applyingHistoryRef = useRef(false);
+
   const flushPatch = useCallback(async (id: string): Promise<void> => {
     const pending = pendingPatches.current.get(id);
     pendingPatches.current.delete(id);
@@ -258,6 +556,24 @@ export function SizzleApp(): ReactElement {
 
   const onUpdate = useCallback(
     (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
+      // 0. Record undo history for scene edits (not name/voice patches, and
+      //    not while applying an undo/redo). Rapid edits coalesce: only the
+      //    pre-burst snapshot is kept.
+      if (patch.scenes !== undefined && !applyingHistoryRef.current) {
+        const prevScenes = projectsRef.current.find((p) => p.id === id)?.scenes;
+        if (prevScenes !== undefined) {
+          const now = Date.now();
+          const stack = undoStacks.current.get(id) ?? [];
+          const lastAt = lastHistoryAtRef.current.get(id) ?? 0;
+          if (stack.length === 0 || now - lastAt > HISTORY_COALESCE_MS) {
+            stack.push(prevScenes);
+            while (stack.length > HISTORY_MAX) stack.shift();
+            undoStacks.current.set(id, stack);
+          }
+          lastHistoryAtRef.current.set(id, now);
+          redoStacks.current.set(id, []); // a fresh edit invalidates redo
+        }
+      }
       // 1. Optimistic local update — text fields reflect immediately,
       //    next keystroke sees the latest value.
       setProjects((prev) =>
@@ -279,6 +595,67 @@ export function SizzleApp(): ReactElement {
     },
     [flushPatch]
   );
+
+  const applyHistoryScenes = useCallback(
+    (id: string, scenes: SizzleScene[]): void => {
+      applyingHistoryRef.current = true;
+      onUpdate(id, { scenes });
+      applyingHistoryRef.current = false;
+    },
+    [onUpdate]
+  );
+  const undoSceneEdit = useCallback((): void => {
+    const id = activeId;
+    if (id === null) return;
+    const stack = undoStacks.current.get(id);
+    if (stack === undefined || stack.length === 0) return;
+    const prevScenes = stack.pop();
+    if (prevScenes === undefined) return;
+    const current = projectsRef.current.find((p) => p.id === id)?.scenes;
+    if (current !== undefined) {
+      const redo = redoStacks.current.get(id) ?? [];
+      redo.push(current);
+      redoStacks.current.set(id, redo);
+    }
+    lastHistoryAtRef.current.set(id, 0); // next user edit starts a fresh entry
+    applyHistoryScenes(id, prevScenes);
+  }, [activeId, applyHistoryScenes]);
+  const redoSceneEdit = useCallback((): void => {
+    const id = activeId;
+    if (id === null) return;
+    const stack = redoStacks.current.get(id);
+    if (stack === undefined || stack.length === 0) return;
+    const nextScenes = stack.pop();
+    if (nextScenes === undefined) return;
+    const current = projectsRef.current.find((p) => p.id === id)?.scenes;
+    if (current !== undefined) {
+      const undo = undoStacks.current.get(id) ?? [];
+      undo.push(current);
+      undoStacks.current.set(id, undo);
+    }
+    lastHistoryAtRef.current.set(id, 0);
+    applyHistoryScenes(id, nextScenes);
+  }, [activeId, applyHistoryScenes]);
+
+  // ⌘Z / ⌘⇧Z (⌘Y) for scene-list edits. Text fields keep their own native
+  // per-character undo, so we only intercept when focus is NOT in one.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      const isUndo = key === "z" && !e.shiftKey;
+      const isRedo = (key === "z" && e.shiftKey) || key === "y";
+      if (!isUndo && !isRedo) return;
+      const ae = document.activeElement as HTMLElement | null;
+      const tag = ae?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || ae?.isContentEditable === true) return;
+      e.preventDefault();
+      if (isRedo) redoSceneEdit();
+      else undoSceneEdit();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoSceneEdit, redoSceneEdit]);
 
   // Flush any pending edits on unmount so the on-disk state catches up
   // when the window closes mid-debounce.
@@ -305,6 +682,23 @@ export function SizzleApp(): ReactElement {
       const incoming = (payload as { projects?: unknown }).projects;
       if (!Array.isArray(incoming)) return;
       const incomingProjects = incoming as SizzleProject[];
+      // An external actor (the chat agent, another window) changed a
+      // project's scenes out from under us — our local undo history would
+      // clobber that change on ⌘Z, so drop it. Skip projects with a
+      // pending local patch (we keep our copy) and the echo of our own
+      // writes (scenes unchanged → not cleared).
+      for (const inc of incomingProjects) {
+        if (pendingPatches.current.has(inc.id)) continue;
+        const local = projectsRef.current.find((lp) => lp.id === inc.id);
+        if (
+          local !== undefined &&
+          JSON.stringify(local.scenes) !== JSON.stringify(inc.scenes)
+        ) {
+          undoStacks.current.delete(inc.id);
+          redoStacks.current.delete(inc.id);
+          lastHistoryAtRef.current.delete(inc.id);
+        }
+      }
       setProjects((prev) =>
         incomingProjects.map((p) =>
           pendingPatches.current.has(p.id)
@@ -436,15 +830,12 @@ export function SizzleApp(): ReactElement {
       const nextScenes = active.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence") return scene;
         const beats = scene.beats ?? [];
-        const last = beats.at(-1);
-        const startSec =
-          last?.timing.kind === "offset" && last.timing.endSec !== null
-            ? last.timing.endSec
-            : beats.length;
+        // New beats default to `auto` — they slot in evenly between the
+        // anchored beats and need no manual timing (R4).
         const beat: SizzleSequenceBeat = {
           id: `bt_${Date.now().toString(36)}`,
           captureId,
-          timing: { kind: "offset", startSec, endSec: null },
+          timing: { kind: "auto" },
           mediaTrim,
           transition: "cut",
           videoFit: "smart-fit"
@@ -725,8 +1116,19 @@ function Editor(props: EditorProps): ReactElement {
     return () => revokeAudioObjectUrl();
   }, []);
   const [previewingSceneId, setPreviewingSceneId] = useState<string | null>(null);
+  const [previewLoadedSceneId, setPreviewLoadedSceneId] = useState<string | null>(null);
   const [previewLoadingSceneId, setPreviewLoadingSceneId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewTimeSec, setPreviewTimeSec] = useState(0);
+  const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
+    Record<string, CachedSequencePreviewPlan>
+  >({});
+  // Per-sequence-scene narration audio, captured when a preview decodes
+  // it, and handed to wavesurfer to draw the real waveform. Cleared when
+  // the narration text changes (the audio is then stale).
+  const [sequenceAudioBlobs, setSequenceAudioBlobs] = useState<
+    Record<string, Blob>
+  >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
   // bumps it; the response only applies if it's still current.
@@ -761,6 +1163,35 @@ function Editor(props: EditorProps): ReactElement {
       setPreviewLoadingSceneId(null);
       return;
     }
+    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    const cachedSequencePlan =
+      scene?.kind === "sequence"
+        ? sequencePreviewPlans[sceneId]?.key === sequencePreviewPlanKey(scene)
+          ? sequencePreviewPlans[sceneId]?.plan
+          : undefined
+        : undefined;
+    if (
+      previewLoadedSceneId === sceneId &&
+      (scene?.kind !== "sequence" || cachedSequencePlan !== undefined) &&
+      audioRef.current !== null &&
+      audioRef.current.src.length > 0
+    ) {
+      const el = audioRef.current;
+      const durationSec = cachedSequencePlan?.durationSec ?? previewDurations[sceneId] ?? el.duration;
+      if (Number.isFinite(durationSec) && el.currentTime >= durationSec - 0.05) {
+        el.currentTime = 0;
+        setPreviewTimeSec(0);
+      }
+      setPreviewError(null);
+      setPreviewingSceneId(sceneId);
+      try {
+        await el.play();
+      } catch (cause) {
+        setPreviewError(cause instanceof Error ? cause.message : String(cause));
+        setPreviewingSceneId(null);
+      }
+      return;
+    }
     const gen = bumpPreviewGeneration(sceneId);
     setPreviewError(null);
     setPreviewLoadingSceneId(sceneId);
@@ -768,36 +1199,73 @@ function Editor(props: EditorProps): ReactElement {
     // screen, not what was last flushed to disk.
     await onFlushPending();
     if (!isPreviewCurrent(sceneId, gen)) return;
-    const result = await dispatch("sizzle:previewSceneAudio", {
-      projectId: project.id,
-      sceneId
-    });
-    if (!isPreviewCurrent(sceneId, gen)) return;
-    setPreviewLoadingSceneId(null);
-    if (!result.ok) {
-      setPreviewError(result.error.message);
-      return;
+    let previewAudio: {
+      audioBase64: string;
+      mimeType: "audio/mpeg" | "audio/mp4";
+      durationSec: number;
+    };
+    if (scene?.kind === "sequence") {
+      const planResult = await dispatch("sizzle:previewSequenceScenePlan", {
+        projectId: project.id,
+        sceneId
+      });
+      if (!isPreviewCurrent(sceneId, gen)) return;
+      if (!planResult.ok) {
+        setPreviewLoadingSceneId(null);
+        setPreviewError(planResult.error.message);
+        return;
+      }
+      setSequencePreviewPlans((prev) => ({
+        ...prev,
+        [sceneId]: {
+          key: sequencePreviewPlanKey(scene),
+          plan: planResult.value
+        }
+      }));
+      previewAudio = planResult.value;
+    } else {
+      const result = await dispatch("sizzle:previewSceneAudio", {
+        projectId: project.id,
+        sceneId
+      });
+      if (!isPreviewCurrent(sceneId, gen)) return;
+      if (!result.ok) {
+        setPreviewLoadingSceneId(null);
+        setPreviewError(result.error.message);
+        return;
+      }
+      previewAudio = result.value;
     }
     // Cache the measured audio duration so the editor can surface
     // an inline "voiceover is X.Xs vs Y.Ys trim" hint on the video
     // scene's row without forcing the user to render to find out.
     setPreviewDurations((prev) => ({
       ...prev,
-      [sceneId]: result.value.durationSec
+      [sceneId]: previewAudio.durationSec
     }));
     const el = audioRef.current;
-    if (el === null) return;
+    if (el === null) {
+      setPreviewLoadingSceneId(null);
+      return;
+    }
     // Decode the base64 into a Blob, hand the audio element an
     // object URL, and revoke the previous one. This keeps a single
     // buffer alive at a time instead of accumulating data URLs.
-    const binary = atob(result.value.audioBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: result.value.mimeType });
+    const blob = base64ToBlob(previewAudio.audioBase64, previewAudio.mimeType);
+    // Hand the decoded narration to wavesurfer so the sequence preview
+    // can draw the real waveform. Independent Blob from the playback
+    // object URL, so revoking that URL never disturbs the waveform.
+    if (scene?.kind === "sequence") {
+      setSequenceAudioBlobs((prev) => ({ ...prev, [sceneId]: blob }));
+    }
     revokeAudioObjectUrl();
     const objectUrl = URL.createObjectURL(blob);
     audioObjectUrlRef.current = objectUrl;
     el.src = objectUrl;
+    el.currentTime = 0;
+    setPreviewTimeSec(0);
+    setPreviewLoadingSceneId(null);
+    setPreviewLoadedSceneId(sceneId);
     setPreviewingSceneId(sceneId);
     try {
       await el.play();
@@ -822,10 +1290,110 @@ function Editor(props: EditorProps): ReactElement {
           audioRef.current.pause();
           setPreviewingSceneId(null);
         }
+        if (previewLoadedSceneId === scene.id) setPreviewLoadedSceneId(null);
+        setSequencePreviewPlans((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
+        // The narration audio (and thus its waveform) is now stale.
+        setSequenceAudioBlobs((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
       }
       lastScriptByScene.current.set(scene.id, scene.scriptLine);
     }
-  }, [project.scenes, previewingSceneId]);
+  }, [project.scenes, previewingSceneId, previewLoadedSceneId]);
+
+  // Proactively fill in sequence waveforms when a reel opens (or a new
+  // sequence scene appears) using audio that is ALREADY cached from a
+  // prior preview/render — so a rendered reel shows its waveforms
+  // without making the user click ▶ first. This is cache-only on the
+  // main side (never synthesizes), and runs through a bounded-
+  // concurrency queue so a many-scene reel doesn't fire a burst of IPC
+  // payloads + wavesurfer decodes at once. Keyed on the set of sequence
+  // scene ids (not their text) so it doesn't re-run on every keystroke;
+  // the attempt-set guards against duplicate fetches, and a text edit
+  // clears the stale blob via the effect above (the user re-previews to
+  // regenerate, which isn't cached yet anyway).
+  const sequenceSceneIdsKey = useMemo(
+    () =>
+      project.scenes
+        .filter((s) => s.kind === "sequence")
+        .map((s) => s.id)
+        .join(","),
+    [project.scenes]
+  );
+  const waveformAttemptRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pending = project.scenes.filter(
+      (s) =>
+        s.kind === "sequence" &&
+        (s.narration ?? s.scriptLine).trim().length > 0 &&
+        sequenceAudioBlobs[s.id] === undefined &&
+        !waveformAttemptRef.current.has(s.id)
+    );
+    if (pending.length === 0) return undefined;
+    let cancelled = false;
+    const queue = new IterableQueueMapperSimple<SizzleScene>(
+      async (scene) => {
+        waveformAttemptRef.current.add(scene.id);
+        try {
+          const res = await dispatch("sizzle:loadSequenceSceneAudio", {
+            projectId: project.id,
+            sceneId: scene.id
+          });
+          if (cancelled || !res.ok || res.value.cached !== true) return;
+          const blob = base64ToBlob(res.value.audioBase64, res.value.mimeType);
+          if (cancelled) return;
+          setSequenceAudioBlobs((prev) =>
+            prev[scene.id] !== undefined ? prev : { ...prev, [scene.id]: blob }
+          );
+        } catch {
+          // A failed background load just leaves the idle baseline.
+        }
+      },
+      { concurrency: WAVEFORM_LOAD_CONCURRENCY }
+    );
+    void (async () => {
+      for (const scene of pending) {
+        if (cancelled) break;
+        await queue.enqueue(scene);
+      }
+      await queue.onIdle();
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `sequenceAudioBlobs` is intentionally not a dependency: it changes
+    // as blobs are populated, and the attempt-set already prevents
+    // re-fetching. Re-running here would just churn.
+  }, [project.id, sequenceSceneIdsKey]);
+
+  const seekPreview = (sceneId: string, timeSec: number): void => {
+    const scene = project.scenes.find((candidate) => candidate.id === sceneId);
+    const cachedPlan =
+      scene?.kind === "sequence" &&
+      sequencePreviewPlans[sceneId]?.key === sequencePreviewPlanKey(scene)
+        ? sequencePreviewPlans[sceneId]?.plan
+        : undefined;
+    const durationSec =
+      cachedPlan?.durationSec ??
+      previewDurations[sceneId] ??
+      0;
+    const clamped = clampTime(timeSec, durationSec);
+    setPreviewTimeSec(clamped);
+    if (
+      (previewingSceneId === sceneId || previewLoadedSceneId === sceneId) &&
+      audioRef.current !== null
+    ) {
+      audioRef.current.currentTime = clamped;
+    }
+  };
 
   const captureMap = useMemo(() => {
     const m = new Map<string, CaptureRecord>();
@@ -869,18 +1437,10 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
-  const nextBeatStartSec = (beats: SizzleSequenceBeat[]): number => {
-    const last = beats.at(-1);
-    if (last?.timing.kind === "offset" && last.timing.endSec !== null) {
-      return last.timing.endSec;
-    }
-    return beats.length;
-  };
-
-  const beatFromScene = (scene: SizzleScene, startSec: number): SizzleSequenceBeat => ({
+  const beatFromScene = (scene: SizzleScene): SizzleSequenceBeat => ({
     id: `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     captureId: scene.captureId,
-    timing: { kind: "offset", startSec, endSec: null },
+    timing: { kind: "auto" },
     mediaTrim: scene.mediaTrim,
     transition: "cut",
     videoFit: "smart-fit"
@@ -896,45 +1456,40 @@ function Editor(props: EditorProps): ReactElement {
           narration: scene.scriptLine,
           scriptLine: scene.scriptLine,
           audioSource: "voiceover",
-          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene, 0)])
+          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene)])
         };
       })
     );
   };
 
-  const appendNextSceneAsBeat = (sceneId: string): void => {
-    const idx = project.scenes.findIndex((scene) => scene.id === sceneId);
-    const scene = project.scenes[idx];
-    const nextScene = project.scenes[idx + 1];
-    if (idx < 0 || scene?.kind !== "sequence" || nextScene === undefined || nextScene.kind === "sequence") return;
-    const beats = scene.beats ?? [];
-    const beat = beatFromScene(nextScene, nextBeatStartSec(beats));
-    const narration = [scene.narration ?? scene.scriptLine, nextScene.scriptLine]
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .join(" ");
-    const next = [...project.scenes];
-    next[idx] = {
-      ...scene,
-      scriptLine: narration,
-      narration,
-      beats: normalizeSizzleSequenceBeatContinuity([...beats, beat])
-    };
-    next.splice(idx + 1, 1);
-    onScenes(next);
-  };
-
-  const moveSequenceBeat = (sceneId: string, beatIdx: number, delta: number): void => {
+  // Move a beat from one index to another (drag-drop or the ↑/↓ arrows). A
+  // splice-and-insert, not a pairwise swap, so dragging across several beats
+  // shifts the rest sensibly. `auto` beats need no timing fixup;
+  // normalizeSizzleSequenceBeatContinuity re-applies the non-final-end rule
+  // after the move. A reorder changes the beat windows, so any in-flight
+  // preview for this scene is discarded (generation bump) and a now-stale
+  // playback is stopped.
+  const reorderSequenceBeat = (sceneId: string, from: number, to: number): void => {
+    if (from === to) return; // self-drop / no-op — don't churn or invalidate
+    let changed = false;
     onScenes(
       project.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence" || scene.beats === undefined) return scene;
-        const target = beatIdx + delta;
-        if (target < 0 || target >= scene.beats.length) return scene;
+        if (from < 0 || from >= scene.beats.length || to < 0 || to >= scene.beats.length) return scene;
         const beats = [...scene.beats];
-        [beats[beatIdx], beats[target]] = [beats[target]!, beats[beatIdx]!];
+        const [moved] = beats.splice(from, 1);
+        if (moved === undefined) return scene;
+        beats.splice(to, 0, moved);
+        changed = true;
         return { ...scene, beats: normalizeSizzleSequenceBeatContinuity(beats) };
       })
     );
+    if (!changed) return;
+    bumpPreviewGeneration(sceneId);
+    if (previewingSceneId === sceneId && audioRef.current !== null) {
+      audioRef.current.pause();
+      setPreviewingSceneId(null);
+    }
   };
 
   const removeSequenceBeat = (sceneId: string, beatId: string): void => {
@@ -1060,6 +1615,13 @@ function Editor(props: EditorProps): ReactElement {
                 : effectiveAudio === "native"
                   ? "Preview native video audio"
                   : "Preview voiceover";
+            const sequencePreviewEntry =
+              scene.kind === "sequence" ? sequencePreviewPlans[scene.id] : undefined;
+            const sequencePreviewPlan =
+              scene.kind === "sequence" &&
+              sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
+                ? sequencePreviewEntry.plan
+                : undefined;
 
             const elements: ReactElement[] = [];
 
@@ -1093,34 +1655,42 @@ function Editor(props: EditorProps): ReactElement {
             }
 
             elements.push(
-              <li key={scene.id} className="szl__scene">
+              <li
+                key={scene.id}
+                className={
+                  "szl__scene" +
+                  (scene.kind === "sequence" ? " szl__scene--sequence" : "")
+                }
+              >
                 <span className="szl__scene-num">{idx + 1}</span>
-                <div className="szl__scene-thumb">
-                  {capture ? (
-                    <>
-                      {isVideo ? (
-                        <video
-                          src={captureSrcUrl(scene.captureId)}
-                          preload="metadata"
-                          muted
-                          playsInline
-                        />
-                      ) : (
-                        <img src={thumb} alt="" />
-                      )}
-                      {isVideo ? (
-                        <>
-                          <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
-                          <span className="szl__scene-thumb-duration">
-                            {formatDur(capture.video?.durationSec ?? 0)}
-                          </span>
-                        </>
-                      ) : null}
-                    </>
-                  ) : (
-                    <span className="szl__scene-missing">missing</span>
-                  )}
-                </div>
+                {scene.kind !== "sequence" ? (
+                  <div className="szl__scene-thumb">
+                    {capture ? (
+                      <>
+                        {isVideo ? (
+                          <video
+                            src={captureSrcUrl(scene.captureId)}
+                            preload="metadata"
+                            muted
+                            playsInline
+                          />
+                        ) : (
+                          <img src={thumb} alt="" />
+                        )}
+                        {isVideo ? (
+                          <>
+                            <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
+                            <span className="szl__scene-thumb-duration">
+                              {formatDur(capture.video?.durationSec ?? 0)}
+                            </span>
+                          </>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="szl__scene-missing">missing</span>
+                    )}
+                  </div>
+                ) : null}
                 <div className="szl__scene-body">
                   {scene.kind === "sequence" ? (
                     <>
@@ -1147,30 +1717,48 @@ function Editor(props: EditorProps): ReactElement {
                         >
                           + Beat
                         </button>
-                        <button
-                          className="szl__scene-action"
-                          onClick={() => appendNextSceneAsBeat(scene.id)}
-                          disabled={
-                            project.scenes[idx + 1] === undefined ||
-                            project.scenes[idx + 1]?.kind === "sequence"
-                          }
-                          type="button"
-                        >
-                          Add next scene
-                        </button>
                       </div>
                       <div className="szl__sequence-beats">
                         {(scene.beats ?? []).map((beat, beatIdx) => {
                           const beatCapture = captureMap.get(beat.captureId) ?? null;
                           const beatThumb =
                             beatCapture?.edits_version !== undefined
-                              ? cacheUrl(beat.captureId, 160, "webp", beatCapture.edits_version)
-                              : cacheUrl(beat.captureId, 160, "webp");
+                              ? cacheUrl(beat.captureId, 320, "webp", beatCapture.edits_version)
+                              : cacheUrl(beat.captureId, 320, "webp");
                           const timingKind = beat.timing.kind;
                           const isFirstBeat = beatIdx === 0;
                           const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
                           return (
-                            <div className="szl__sequence-beat" key={beat.id}>
+                            <div
+                              className="szl__sequence-beat"
+                              key={beat.id}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const from = Number.parseInt(
+                                  e.dataTransfer.getData("text/plain"),
+                                  10
+                                );
+                                if (Number.isInteger(from)) {
+                                  reorderSequenceBeat(scene.id, from, beatIdx);
+                                }
+                              }}
+                            >
+                              <span
+                                className="szl__sequence-beat-grip"
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData("text/plain", String(beatIdx));
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                title="Drag to reorder (or use the ↑/↓ buttons)"
+                                aria-hidden="true"
+                              >
+                                ⠿
+                              </span>
                               <span className="szl__sequence-beat-num">{beatIdx + 1}</span>
                               <span className="szl__sequence-beat-thumb">
                                 {beatCapture !== null ? (
@@ -1195,15 +1783,27 @@ function Editor(props: EditorProps): ReactElement {
                                     timing:
                                       kind === "offset"
                                         ? { kind: "offset", startSec: 0, endSec: null }
-                                        : { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
+                                        : kind === "phrase"
+                                          ? { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
+                                          : { kind: "auto" }
                                   });
                                 }}
-                                title={isFirstBeat ? "The first beat always starts at 0" : "Beat start timing"}
+                                title={
+                                  isFirstBeat
+                                    ? "The first beat always starts at 0"
+                                    : "When this beat appears: Auto (evenly spaced between anchors), a spoken Phrase, or an explicit Offset"
+                                }
                               >
+                                <option value="auto">Auto</option>
                                 <option value="offset">Offset</option>
                                 <option value="phrase">Phrase</option>
                               </select>
-                              {beat.timing.kind === "offset" ? (
+                              {isFirstBeat ? (
+                                // The first beat is always pinned to 0 by the
+                                // planner; show that instead of its (inert)
+                                // anchor inputs — its stored kind is parked.
+                                <span className="szl__sequence-beat-pinned">starts at 0</span>
+                              ) : beat.timing.kind === "offset" ? (
                                 <>
                                   <label className="szl__sequence-time-field">
                                     <span>Start</span>
@@ -1255,7 +1855,7 @@ function Editor(props: EditorProps): ReactElement {
                                     />
                                   </label>
                                 </>
-                              ) : (
+                              ) : beat.timing.kind === "phrase" ? (
                                 <>
                                   <input
                                     className="szl__sequence-phrase"
@@ -1298,7 +1898,7 @@ function Editor(props: EditorProps): ReactElement {
                                     />
                                   </label>
                                 </>
-                              )}
+                              ) : null}
                               <select
                                 value={beat.videoFit}
                                 onChange={(e) =>
@@ -1332,7 +1932,7 @@ function Editor(props: EditorProps): ReactElement {
                               </select>
                               <button
                                 className="szl__scene-mini"
-                                onClick={() => moveSequenceBeat(scene.id, beatIdx, -1)}
+                                onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx - 1)}
                                 disabled={beatIdx === 0}
                                 type="button"
                                 title="Move beat up"
@@ -1341,7 +1941,7 @@ function Editor(props: EditorProps): ReactElement {
                               </button>
                               <button
                                 className="szl__scene-mini"
-                                onClick={() => moveSequenceBeat(scene.id, beatIdx, 1)}
+                                onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx + 1)}
                                 disabled={beatIdx === (scene.beats?.length ?? 0) - 1}
                                 type="button"
                                 title="Move beat down"
@@ -1364,22 +1964,24 @@ function Editor(props: EditorProps): ReactElement {
                       <div className="szl__scene-hint">
                         Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
                       </div>
+                      <SequenceTimelinePreview
+                        scene={scene}
+                        captureMap={captureMap}
+                        plan={sequencePreviewPlan}
+                        audioBlob={sequenceAudioBlobs[scene.id]}
+                        currentTimeSec={
+                          previewingSceneId === scene.id || previewLoadedSceneId === scene.id
+                            ? previewTimeSec
+                            : 0
+                        }
+                        playing={previewingSceneId === scene.id}
+                        loading={previewLoadingSceneId === scene.id}
+                        onPlay={() => void onPreviewScene(scene.id)}
+                        onSeek={(timeSec) => seekPreview(scene.id, timeSec)}
+                      />
                       <div className="szl__scene-row">
                         <span className="szl__scene-app">sequence</span>
                         <span className="szl__spacer" />
-                        <button
-                          className="szl__scene-mini szl__scene-mini--play"
-                          onClick={() => void onPreviewScene(scene.id)}
-                          disabled={previewLoadingSceneId === scene.id || scene.scriptLine.trim().length === 0}
-                          type="button"
-                          title={scene.scriptLine.trim().length === 0 ? "Write narration to preview" : "Preview sequence narration"}
-                        >
-                          {previewLoadingSceneId === scene.id
-                            ? "…"
-                            : previewingSceneId === scene.id
-                              ? "■"
-                              : "▶"}
-                        </button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, -1)} disabled={idx === 0} type="button" title="Move up">↑</button>
                         <button className="szl__scene-mini" onClick={() => moveScene(idx, 1)} disabled={idx === project.scenes.length - 1} type="button" title="Move down">↓</button>
                         <button className="szl__scene-mini szl__scene-mini--danger" onClick={() => removeScene(scene.id)} type="button" title="Remove scene">✕</button>
@@ -1598,7 +2200,11 @@ function Editor(props: EditorProps): ReactElement {
       ) : null}
       <audio
         ref={audioRef}
-        onEnded={() => setPreviewingSceneId(null)}
+        onTimeUpdate={(event) => setPreviewTimeSec(event.currentTarget.currentTime)}
+        onEnded={() => {
+          setPreviewingSceneId(null);
+          setPreviewTimeSec(0);
+        }}
         onPause={() => {
           // Treat any pause (including end-of-track) as "no longer playing"
           // so the button flips back to ▶.

@@ -671,7 +671,11 @@ export type SizzleBeatTiming =
       occurrence: number | null;
       offsetSec: number;
       durationSec: number | null;
-    };
+    }
+  // No explicit timing: the beat's start is derived by evenly dividing the
+  // span between the anchored ("keyframe") beats that bound it. See
+  // `distributeSequenceBeatStarts`. This is the default for new beats.
+  | { kind: "auto" };
 
 export type SizzleSequenceBeat = {
   id: string;
@@ -685,20 +689,20 @@ export type SizzleSequenceBeat = {
 /**
  * Sequence beats are start anchors, not independent audio clips.
  * A non-final beat must run until the next beat's anchor; otherwise the
- * composer would cut a hole out of the continuous narration. The first
- * beat is pinned to the beginning because there is no earlier visual to
- * cover narration before it.
+ * composer would cut a hole out of the continuous narration.
+ *
+ * The "first beat starts at 0" rule is NOT enforced here — it is a planner
+ * rule (`distributeSequenceBeatStarts` pins index 0 to 0). Keeping it out of
+ * the stored data means an `offset`/`phrase` anchor dragged to the front is
+ * *parked* (inactive while it is first), not destroyed, and is restored if it
+ * moves back. `auto` beats carry no length, so the non-final nulling below is
+ * a no-op for them.
  */
 export function normalizeSizzleSequenceBeatContinuity(
   beats: SizzleSequenceBeat[]
 ): SizzleSequenceBeat[] {
   return beats.map((beat, index) => {
     let timing = beat.timing;
-    if (index === 0 && timing.kind === "phrase") {
-      timing = { kind: "offset", startSec: 0, endSec: null };
-    } else if (index === 0 && timing.kind === "offset" && timing.startSec !== 0) {
-      timing = { ...timing, startSec: 0 };
-    }
     if (index < beats.length - 1) {
       if (timing.kind === "offset" && timing.endSec !== null) {
         timing = { ...timing, endSec: null };
@@ -708,6 +712,56 @@ export function normalizeSizzleSequenceBeatContinuity(
     }
     return timing === beat.timing ? beat : { ...beat, timing };
   });
+}
+
+/**
+ * Place every sequence beat's start time using the auto/anchor model.
+ *
+ * `anchors[i]` is the RESOLVED start time (seconds) for an anchored beat
+ * (`offset`, or a resolved `phrase`), or `null` for an `auto` beat — and for
+ * an anchor that failed to resolve, which degrades to auto. The caller
+ * resolves anchors however it can (the main planner uses speech timing; the
+ * renderer's idle fallback only knows offsets); this function owns ONLY the
+ * even-division math, so preview, the editor strip, and the final render can
+ * never disagree.
+ *
+ * Rules:
+ *  - Index 0 is always the head anchor at 0 (the first beat covers narration
+ *    from the start); its `anchors[0]` value is ignored.
+ *  - A run of N consecutive auto beats between anchor A (time `tA`) and the
+ *    next anchor B (time `tB`, or the timeline end) divides `[tA, tB]` into
+ *    N+1 equal slices; the leading anchor keeps slice 0.
+ *  - Anchor times are clamped MONOTONICALLY (an anchor can never precede the
+ *    previous one), so reordering can never produce a negative slice.
+ */
+export function distributeSequenceBeatStarts(
+  anchors: ReadonlyArray<number | null>,
+  durationSec: number
+): number[] {
+  const n = anchors.length;
+  if (n === 0) return [];
+  const dur = Math.max(0.1, durationSec);
+  const starts = new Array<number>(n);
+  starts[0] = 0;
+  let runAnchorIdx = 0;
+  let runAnchorTime = 0;
+  const fillRun = (anchorIdx: number, tA: number, boundIdx: number, tB: number): void => {
+    const autoCount = boundIdx - anchorIdx - 1;
+    if (autoCount <= 0) return;
+    const slice = (tB - tA) / (autoCount + 1);
+    for (let k = 1; k <= autoCount; k++) starts[anchorIdx + k] = tA + k * slice;
+  };
+  for (let i = 1; i < n; i++) {
+    const a = anchors[i];
+    if (a === null || !Number.isFinite(a)) continue; // auto — fill later
+    const t = Math.min(Math.max(a, runAnchorTime), dur); // monotonic clamp
+    fillRun(runAnchorIdx, runAnchorTime, i, t);
+    starts[i] = t;
+    runAnchorIdx = i;
+    runAnchorTime = t;
+  }
+  fillRun(runAnchorIdx, runAnchorTime, n, dur); // trailing run → timeline end
+  return starts.map((s) => Math.round(s * 1000) / 1000);
 }
 
 export type SizzleSpeechTimingQuality = "precise" | "approximate";
@@ -749,6 +803,31 @@ export type SizzleResolvedPhraseTiming = {
   wordEndIndex: number;
   matchedText: string;
   warnings: SizzleSpeechTimingWarning[];
+};
+
+export type SizzleSequencePreviewWarning = {
+  beatId?: string;
+  code: string;
+  message: string;
+};
+
+export type SizzleSequencePreviewBeat = {
+  beatId: string;
+  captureId: string;
+  startSec: number;
+  endSec: number;
+  timing: SizzleBeatTiming;
+  transition: SizzleTransition;
+  videoFit: SizzleVideoFitPolicy;
+};
+
+export type SizzleSequencePreviewPlan = {
+  audioBase64: string;
+  mimeType: "audio/mpeg";
+  durationSec: number;
+  timingQuality: SizzleSpeechTimingQuality;
+  warnings: SizzleSequencePreviewWarning[];
+  beats: SizzleSequencePreviewBeat[];
 };
 
 /**
@@ -2609,6 +2688,27 @@ export type Commands = {
   "sizzle:previewSceneAudio": {
     req: { projectId: string; sceneId: string };
     res: { audioBase64: string; mimeType: "audio/mpeg" | "audio/mp4"; durationSec: number };
+  };
+  /** Resolve a sequence scene's narration audio + visual beat windows
+   *  for the editor timeline. This is intentionally lighter than render:
+   *  it synthesizes/loads narration timing, resolves phrase anchors, and
+   *  returns beat windows plus warnings, but it does not compose video. */
+  "sizzle:previewSequenceScenePlan": {
+    req: { projectId: string; sceneId: string };
+    res: SizzleSequencePreviewPlan;
+  };
+  /** Cache-only read of a sequence scene's narration audio for the
+   *  editor waveform. Unlike `previewSequenceScenePlan`, this NEVER
+   *  synthesizes, resolves speech timing, or hits any API — it only
+   *  returns the content-addressed TTS file if it is already on disk
+   *  (e.g. from a prior preview or render). Safe to call proactively on
+   *  reel open without spending TTS credits; returns `{ cached: false }`
+   *  when the audio has not been generated yet. */
+  "sizzle:loadSequenceSceneAudio": {
+    req: { projectId: string; sceneId: string };
+    res:
+      | { cached: true; audioBase64: string; mimeType: "audio/mpeg" }
+      | { cached: false };
   };
 
   // ── Project Asset Cart ──────────────────────────────────────────────

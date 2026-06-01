@@ -5,10 +5,30 @@ import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
 import { SizzleApp } from "../SizzleApp";
 
+// The sequence preview draws its waveform with wavesurfer.js, which needs
+// a real canvas + Web Audio. jsdom has neither, and we don't unit-test the
+// third-party renderer — stub it so the preview path stays deterministic.
+vi.mock("wavesurfer.js", () => ({
+  default: {
+    create: () => ({
+      loadBlob: () => Promise.resolve(),
+      destroy: () => undefined
+    })
+  }
+}));
+
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   // jsdom implements neither of these; the composer touches them.
   Element.prototype.scrollIntoView = vi.fn();
+  URL.createObjectURL = vi.fn(() => "blob:preview");
+  URL.revokeObjectURL = vi.fn();
+  HTMLMediaElement.prototype.play = vi.fn(async function play(this: HTMLMediaElement) {
+    this.dispatchEvent(new Event("timeupdate"));
+  });
+  HTMLMediaElement.prototype.pause = vi.fn(function pause(this: HTMLMediaElement) {
+    this.dispatchEvent(new Event("pause"));
+  });
 });
 
 let container: HTMLDivElement | null = null;
@@ -58,17 +78,64 @@ function projects(count: number): SizzleProject[] {
   });
 }
 
-function installApi(projects: SizzleProject[]): {
+function installApi(
+  projects: SizzleProject[],
+  overrides: Record<string, unknown> = {}
+): {
   dispatch: ReturnType<typeof vi.fn>;
   emit: (channel: string, payload: unknown) => void;
 } {
   const handlers = new Map<string, Set<Handler>>();
   const dispatch = vi.fn(async (name: string, req?: unknown) => {
+    if (name in overrides) return overrides[name];
     if (name === "sizzle:list") return { ok: true, value: { projects } };
     if (name === "library:list") return { ok: true, value: { rows: [] } };
+    // Cache-only waveform load defaults to a miss; specific tests
+    // override it to return cached audio.
+    if (name === "sizzle:loadSequenceSceneAudio") {
+      return { ok: true, value: { cached: false } };
+    }
     if (name === "sizzle:update") {
       const id = (req as { id?: string } | undefined)?.id;
       return { ok: true, value: projects.find((p) => p.id === id) ?? projects[0] };
+    }
+    if (name === "sizzle:previewSceneAudio") {
+      return {
+        ok: true,
+        value: { audioBase64: "AA==", mimeType: "audio/mpeg", durationSec: 4 }
+      };
+    }
+    if (name === "sizzle:previewSequenceScenePlan") {
+      return {
+        ok: true,
+        value: {
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          durationSec: 4,
+          timingQuality: "approximate",
+          warnings: [],
+          beats: [
+            {
+              beatId: "bt_1",
+              captureId: "cap_a",
+              startSec: 0,
+              endSec: 2,
+              timing: { kind: "offset", startSec: 0, endSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            },
+            {
+              beatId: "bt_2",
+              captureId: "cap_b",
+              startSec: 2,
+              endSec: 4,
+              timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            }
+          ]
+        }
+      };
     }
     return { ok: true, value: undefined };
   });
@@ -89,12 +156,18 @@ function installApi(projects: SizzleProject[]): {
   return { dispatch, emit };
 }
 
-async function renderApp(initial: SizzleProject | SizzleProject[]): Promise<{
+async function renderApp(
+  initial: SizzleProject | SizzleProject[],
+  overrides: Record<string, unknown> = {}
+): Promise<{
   el: HTMLDivElement;
   emit: (channel: string, payload: unknown) => void;
   dispatch: ReturnType<typeof vi.fn>;
 }> {
-  const { dispatch, emit } = installApi(Array.isArray(initial) ? initial : [initial]);
+  const { dispatch, emit } = installApi(
+    Array.isArray(initial) ? initial : [initial],
+    overrides
+  );
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -127,6 +200,15 @@ function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   )!.set!;
   setter.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function typeIntoInput(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value"
+  )!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function projectRowNames(list: Element | null): string[] {
@@ -229,6 +311,104 @@ describe("SizzleApp sequence authoring", () => {
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
     expect(el.textContent).toContain("non-final beats end automatically");
+    expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
+    expect(el.textContent).toContain("unresolved");
+  });
+
+  test("loads a resolved sequence timeline when previewing", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }));
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
+    expect(dispatch).not.toHaveBeenCalledWith("sizzle:previewSceneAudio", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
+    expect(el.textContent).toContain("approx timing");
+    expect(el.textContent).toContain("4s");
+  });
+
+  test("invalidates a resolved sequence timeline when beat timing changes", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(el.textContent).toContain("approx timing");
+
+    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
+    if (phrase === null) throw new Error("sequence phrase input not found");
+    await act(async () => {
+      typeIntoInput(phrase, "changed phrase");
+    });
+
+    expect(el.textContent).toContain("unresolved");
+    expect(el.textContent).not.toContain("approx timing");
   });
 });
 
@@ -301,5 +481,232 @@ describe("SizzleApp project rail", () => {
     });
     expect(projectRowNames(recents)).toEqual(["Reel 2", "Reel 1"]);
     expect(recents?.querySelector(".szl__row.is-active")?.textContent).toContain("Reel 1");
+  });
+});
+
+describe("sequence waveform", () => {
+  test("renders the idle baseline until a preview decodes the narration", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    // Default mock: the cache-only load reports a miss, so the proactive
+    // loader finds nothing and the honest flat baseline stays.
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(el.querySelector(".szl__sequence-wave--idle")).not.toBeNull();
+    expect(el.querySelector(".szl__sequence-wave-surfer")).toBeNull();
+  });
+
+  test("loads the waveform on open from already-cached audio, no Play click", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }), {
+      "sizzle:loadSequenceSceneAudio": {
+        ok: true,
+        value: { cached: true, audioBase64: "AA==", mimeType: "audio/mpeg" }
+      }
+    });
+    // Let the bounded-concurrency queue drain (enqueue → fetch → setState).
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The waveform was filled from the cache-only verb proactively — never
+    // the expensive previewSequenceScenePlan, and without a ▶ click.
+    expect(dispatch).toHaveBeenCalledWith("sizzle:loadSequenceSceneAudio", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
+    expect(dispatch).not.toHaveBeenCalledWith("sizzle:previewSequenceScenePlan", {
+      projectId: "sz_1",
+      sceneId: "sc_a"
+    });
+    expect(el.querySelector(".szl__sequence-wave-surfer")).not.toBeNull();
+    expect(el.querySelector(".szl__sequence-wave--idle")).toBeNull();
+  });
+});
+
+describe("auto beat timing UI", () => {
+  test("converting a scene to a sequence seeds an auto beat (R4)", async () => {
+    const { el } = await renderApp(project({ scenes: [scene({ scriptLine: "narration here" })] }));
+    await act(async () => {
+      findButton(el, "Sequence").click();
+    });
+    const timingSelect = el.querySelector<HTMLSelectElement>(".szl__sequence-beat select");
+    expect(timingSelect?.value).toBe("auto");
+  });
+
+  test("an auto beat shows the timing select but no start/length/phrase inputs (R9)", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      beats: [
+        { id: "bt_1", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+        { id: "bt_2", captureId: "cap_b", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+    const beatRows = el.querySelectorAll(".szl__sequence-beat");
+    expect(beatRows).toHaveLength(2);
+    // The 2nd (non-first) auto beat keeps the timing <select> for promotion
+    // but renders no value inputs.
+    const second = beatRows[1]!;
+    expect(second.querySelector<HTMLSelectElement>("select")?.value).toBe("auto");
+    expect(second.querySelector(".szl__sequence-time")).toBeNull();
+    expect(second.querySelector(".szl__sequence-phrase")).toBeNull();
+  });
+});
+
+describe("beat reorder", () => {
+  const autoBeat = (id: string, captureId: string): NonNullable<SizzleScene["beats"]>[number] => ({
+    id,
+    captureId,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit"
+  });
+  const seq = (): SizzleScene =>
+    scene({
+      kind: "sequence",
+      scriptLine: "n",
+      narration: "n",
+      beats: [autoBeat("bt_a", "cap_a"), autoBeat("bt_b", "cap_b"), autoBeat("bt_c", "cap_c")]
+    });
+  const order = (el: HTMLElement): (string | null)[] =>
+    [...el.querySelectorAll(".szl__sequence-beat-title")].map((n) => n.textContent);
+  const fireDrop = (row: Element, fromIndex: number): void => {
+    const ev = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "dataTransfer", {
+      value: { getData: () => String(fromIndex), dropEffect: "", effectAllowed: "" }
+    });
+    row.dispatchEvent(ev);
+  };
+
+  test("the ↓ button moves a beat down via a from→to splice", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
+    const firstRow = el.querySelectorAll(".szl__sequence-beat")[0]!;
+    const down = [...firstRow.querySelectorAll("button")].find((b) => b.title === "Move beat down")!;
+    await act(async () => {
+      down.click();
+    });
+    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+  });
+
+  test("dropping beat 0 onto beat 2 reorders by splice-and-insert (not swap)", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    const thirdRow = el.querySelectorAll(".szl__sequence-beat")[2]!;
+    await act(async () => {
+      fireDrop(thirdRow, 0); // drag index 0 → drop on index 2
+    });
+    // splice: [a,b,c] remove a → [b,c] insert at 2 → [b,c,a] (swap would give [c,b,a])
+    expect(order(el)).toEqual(["cap_b", "cap_c", "cap_a"]);
+  });
+
+  test("self-drop (drop a beat on itself) is a no-op", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    const firstRow = el.querySelectorAll(".szl__sequence-beat")[0]!;
+    await act(async () => {
+      fireDrop(firstRow, 0); // from === to
+    });
+    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
+  });
+
+  test("⌘Z restores a reorder and ⌘⇧Z re-applies it (AE16)", async () => {
+    const { el } = await renderApp(project({ scenes: [seq()] }));
+    const fireKey = (shift: boolean): void => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "z",
+          metaKey: true,
+          shiftKey: shift,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    };
+    // reorder: first beat down → [b, a, c]
+    const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
+      (b) => b.title === "Move beat down"
+    )!;
+    await act(async () => {
+      down.click();
+    });
+    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    await act(async () => {
+      fireKey(false); // ⌘Z → undo
+    });
+    expect(order(el)).toEqual(["cap_a", "cap_b", "cap_c"]);
+    await act(async () => {
+      fireKey(true); // ⌘⇧Z → redo
+    });
+    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+  });
+
+  test("an external (chat) scenes change drops local undo history — no ⌘Z clobber", async () => {
+    const { el, emit } = await renderApp(project({ scenes: [seq()] }));
+    // local reorder → an undo entry + a pending debounced write
+    const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
+      (b) => b.title === "Move beat down"
+    )!;
+    await act(async () => {
+      down.click();
+    });
+    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    // let the debounced write flush so the project is no longer "pending"
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    // an external actor (the chat agent) reorders differently and broadcasts
+    const external = project({
+      scenes: [
+        scene({
+          kind: "sequence",
+          scriptLine: "n",
+          narration: "n",
+          beats: [autoBeat("bt_c", "cap_c"), autoBeat("bt_b", "cap_b"), autoBeat("bt_a", "cap_a")]
+        })
+      ]
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [external] });
+    });
+    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
+    // ⌘Z must NOT restore the pre-reorder order — the stale history was dropped.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })
+      );
+    });
+    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
   });
 });

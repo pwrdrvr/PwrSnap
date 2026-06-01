@@ -396,6 +396,15 @@
   border-radius: 12px;
 }
 
+/* A sequence already lists every asset as a beat (and previews them
+   in its own full-width player), so the redundant left thumbnail rail
+   is dropped. The reclaimed width goes to the narration, the beat
+   list, and the preview timeline. A single-asset scene is just the
+   one-beat case and keeps its thumbnail. */
+.szl__scene--sequence {
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+
 .szl__scene-num {
   font: 700 12px/1 var(--font-mono);
   color: var(--accent);
@@ -435,9 +444,16 @@
 }
 
 .szl__scene-script {
-  flex: 1;
   width: 100%;
+  /* Auto-grow to contain the narration as the user types, capped at
+     ~8 lines, then scroll. `field-sizing: content` sizes the textarea
+     to its content between min/max-height with no JS and re-measures
+     on external value changes (e.g. a chat edit). Electron 41 ships
+     Chromium 136; the editor's TextDraftInput relies on the same
+     property. `resize: vertical` still lets the user drag it taller. */
+  field-sizing: content;
   min-height: 60px;
+  max-height: 184px;
   padding: 8px 10px;
   background: var(--bg-input);
   color: var(--text-primary);
@@ -445,6 +461,7 @@
   border-radius: 8px;
   font: 400 13px/1.5 var(--font-sans);
   resize: vertical;
+  overflow-y: auto;
   outline: none;
 }
 
@@ -516,6 +533,21 @@
   border-radius: 6px;
 }
 
+.szl__sequence-beat-grip {
+  cursor: grab;
+  color: var(--text-muted);
+  font: 700 13px/1 var(--font-mono);
+  padding: 0 2px;
+  user-select: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+.szl__sequence-beat-grip:active {
+  cursor: grabbing;
+}
+
 .szl__sequence-beat-num {
   color: var(--accent);
   font: 700 11px/1 var(--font-mono);
@@ -533,10 +565,10 @@
 }
 
 .szl__sequence-beat-thumb {
-  width: 54px;
-  height: 32px;
-  flex: 0 0 54px;
-  border-radius: 4px;
+  width: 160px;
+  height: 90px;
+  flex: 0 0 160px;
+  border-radius: 5px;
   overflow: hidden;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
@@ -544,7 +576,7 @@
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  font: 500 9px/1 var(--font-mono);
+  font: 500 10px/1 var(--font-mono);
 }
 
 .szl__sequence-beat-thumb img,
@@ -583,6 +615,190 @@
 .szl__sequence-phrase {
   flex: 1 1 130px;
   width: 130px;
+}
+
+.szl__sequence-beat-pinned {
+  color: var(--text-muted);
+  font: 600 9px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.szl__sequence-preview {
+  display: grid;
+  grid-template-columns: 368px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 8px 12px;
+  padding: 10px;
+  background: var(--bg-panel-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.szl__sequence-preview-stage {
+  grid-column: 1;
+  grid-row: 1;
+  width: 368px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.szl__sequence-preview-stage img,
+.szl__sequence-preview-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.szl__sequence-preview-empty {
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+}
+
+.szl__sequence-preview-controls {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.szl__sequence-preview-time,
+.szl__sequence-preview-quality {
+  color: var(--text-muted);
+  font: 600 10px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+.szl__sequence-timeline {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  position: relative;
+  display: grid;
+  grid-template-rows: 24px 42px;
+  gap: 4px;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-input);
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+}
+
+.szl__sequence-wave {
+  display: grid;
+  grid-template-columns: repeat(52, 1fr);
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  opacity: 0.85;
+}
+
+/* Before a preview decodes the narration there is no audio to draw, so
+   the bars sit at a flat low baseline. Dim them so the track reads as
+   "no signal yet" rather than a silent recording. */
+.szl__sequence-wave--idle {
+  opacity: 0.4;
+}
+
+.szl__sequence-wave span {
+  display: block;
+  min-height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 32%, var(--text-muted));
+}
+
+/* Mount point for the wavesurfer.js canvas once a preview has decoded
+   the narration. Occupies the same 24px wave row as the idle baseline;
+   the opacity mutes the accent waveColor to match the timeline chrome. */
+.szl__sequence-wave-surfer {
+  height: 24px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
+.szl__sequence-track {
+  position: relative;
+  height: 42px;
+}
+
+.szl__sequence-track-beat {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 24px;
+  padding: 4px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+
+.szl__sequence-track-beat.is-active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.szl__sequence-track-beat span,
+.szl__sequence-track-beat small,
+.szl__sequence-track-beat em {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.szl__sequence-track-beat span {
+  font: 700 10px/1 var(--font-mono);
+  color: var(--accent);
+}
+
+.szl__sequence-track-beat small {
+  margin-top: 2px;
+  font: 600 9px/1 var(--font-sans);
+}
+
+.szl__sequence-track-beat em {
+  margin-top: 2px;
+  font: 600 8px/1 var(--font-mono);
+  color: var(--text-muted);
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.szl__sequence-playhead {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--bg-panel);
+  pointer-events: none;
+}
+
+.szl__sequence-warnings {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--accent);
+  font: 500 10px/1.25 var(--font-sans);
 }
 
 .szl__scene-action {

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.0-beta.13 - 2026-06-01
+
+- Added Sizzle sequence scenes plus a sequence editor with real waveforms, auto
+  beat timing, drag reorder, and undo support.
+- Added AI usage cost observability and an AI enrichment budget breaker across
+  Codex-backed surfaces.
+- Fixed Codex thread isolation for PwrSnap chat and capture metadata pipelines.
+- Exposed chat-driven layer style updates in the editor.
+- Changed the Shape tool shortcut to `S`.
+- Prepared repository metadata and docs for the MIT open-source release,
+  including PwrDrvr/PwrAgent brand-orange parity notes.
+- Updated runtime and tooling dependencies, including React, better-sqlite3,
+  Zod, Vite, Vitest, Geist Mono, and Node 24 type pinning.
+- Improved settings safety by disabling secret replacement until the value has
+  actually been edited.
+
 ## v1.0.0-beta.12 - 2026-05-30
 
 - Routed external `.pwrsnap` capture opens through the main Library Focus

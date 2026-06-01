@@ -565,10 +565,10 @@
 }
 
 .szl__sequence-beat-thumb {
-  width: 54px;
-  height: 32px;
-  flex: 0 0 54px;
-  border-radius: 4px;
+  width: 160px;
+  height: 90px;
+  flex: 0 0 160px;
+  border-radius: 5px;
   overflow: hidden;
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
@@ -576,7 +576,7 @@
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  font: 500 9px/1 var(--font-mono);
+  font: 500 10px/1 var(--font-mono);
 }
 
 .szl__sequence-beat-thumb img,
@@ -619,7 +619,7 @@
 
 .szl__sequence-preview {
   display: grid;
-  grid-template-columns: 184px minmax(0, 1fr);
+  grid-template-columns: 368px minmax(0, 1fr);
   grid-template-rows: auto auto;
   gap: 8px 12px;
   padding: 10px;
@@ -631,7 +631,7 @@
 .szl__sequence-preview-stage {
   grid-column: 1;
   grid-row: 1;
-  width: 184px;
+  width: 368px;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 5px;

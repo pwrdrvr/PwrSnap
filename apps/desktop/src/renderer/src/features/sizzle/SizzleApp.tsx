@@ -283,9 +283,9 @@ function SequenceTimelinePreview(props: {
     activeBeat === null ? null : captureMap.get(activeBeat.captureId) ?? null;
   const activeThumb =
     activeCapture?.edits_version !== undefined && activeBeat !== null
-      ? cacheUrl(activeBeat.captureId, 640, "webp", activeCapture.edits_version)
+      ? cacheUrl(activeBeat.captureId, 960, "webp", activeCapture.edits_version)
       : activeBeat !== null
-        ? cacheUrl(activeBeat.captureId, 640, "webp")
+        ? cacheUrl(activeBeat.captureId, 960, "webp")
         : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
@@ -1706,8 +1706,8 @@ function Editor(props: EditorProps): ReactElement {
                           const beatCapture = captureMap.get(beat.captureId) ?? null;
                           const beatThumb =
                             beatCapture?.edits_version !== undefined
-                              ? cacheUrl(beat.captureId, 160, "webp", beatCapture.edits_version)
-                              : cacheUrl(beat.captureId, 160, "webp");
+                              ? cacheUrl(beat.captureId, 320, "webp", beatCapture.edits_version)
+                              : cacheUrl(beat.captureId, 320, "webp");
                           const timingKind = beat.timing.kind;
                           const isFirstBeat = beatIdx === 0;
                           const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;

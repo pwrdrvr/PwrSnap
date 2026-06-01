@@ -12,9 +12,14 @@ struct Color {
   // interpolate in linear light and render the upper half too bright.
   static let bgTop: (r: Double, g: Double, b: Double) = (30, 26, 20)
   static let bgBottom: (r: Double, g: Double, b: Double) = (10, 9, 8)
-  static let accent = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 1)
-  static let accentMid = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 0.55)
-  static let accentFaint = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 0.3)
+  // Accent orange — matched to PwrAgent's icon, whose most-saturated bar
+  // samples to rgb(232,116,58) / #e8743a. Defined in deviceRGB so the
+  // output pixels land on that exact value; the previous calibratedRGB
+  // value drifted lighter to #ee894a through the calibrated→device
+  // conversion. The mid/back layers are the same hue at lower opacity.
+  static let accent = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 1)
+  static let accentMid = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.55)
+  static let accentFaint = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.3)
 }
 
 func renderIcon(size: Int) -> NSBitmapImageRep {

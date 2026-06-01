@@ -20,7 +20,14 @@ import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
 import { cleanupProjectChats } from "./sizzle-chat-handlers";
-import { pruneTtsCache, synthesize, TtsError } from "../sizzle/tts";
+import {
+  pruneTtsCache,
+  readAudio,
+  synthesize,
+  ttsCacheDir,
+  ttsCacheFilename,
+  TtsError
+} from "../sizzle/tts";
 import { resolveSpeechTiming } from "../sizzle/speech-timing";
 import {
   planSequenceScene,
@@ -606,6 +613,55 @@ export function registerSizzleHandlers(): void {
       });
     } catch (cause) {
       return err(toError(cause, "sizzle_sequence_preview_failed"));
+    }
+  });
+
+  bus.register("sizzle:loadSequenceSceneAudio", async (req) => {
+    const v = validateSizzlePreviewRequest(req);
+    if (!v.ok) return err(v.error);
+    const project = await store.get(v.projectId);
+    if (project === null) {
+      return err({ kind: "validation", code: "not_found", message: "Project not found" });
+    }
+    const scene = project.scenes.find((s) => s.id === v.sceneId);
+    if (scene === undefined) {
+      return err({ kind: "validation", code: "not_found", message: "Scene not found" });
+    }
+    if (scene.kind !== "sequence") {
+      return err({
+        kind: "validation",
+        code: "not_sequence",
+        message: "Scene is not a sequence scene"
+      });
+    }
+    const text = scene.scriptLine.trim();
+    if (text.length === 0) {
+      return ok({ cached: false as const });
+    }
+    // Cache-only: this runs proactively on reel open, so it must NEVER
+    // synthesize, resolve speech timing, or hit any API — it only reads
+    // the content-addressed TTS file if a prior preview/render already
+    // produced it. Same hash tuple as synthesize() so the filenames
+    // agree. A missing file (or any read error) is a normal "not yet
+    // generated" miss, not a failure.
+    const audioPath = join(
+      ttsCacheDir(),
+      ttsCacheFilename({
+        provider: project.ttsProvider,
+        model: project.ttsModel,
+        voice: project.voice,
+        text
+      })
+    );
+    try {
+      const bytes = await readAudio(audioPath);
+      return ok({
+        cached: true as const,
+        audioBase64: bytes.toString("base64"),
+        mimeType: "audio/mpeg" as const
+      });
+    } catch {
+      return ok({ cached: false as const });
     }
   });
 

@@ -17,6 +17,7 @@ import {
   type SizzleVideoFitPolicy,
   type SizzleVoice
 } from "@pwrsnap/shared";
+import { IterableQueueMapperSimple } from "@shutterstock/p-map-iterable";
 import { cacheUrl, captureSrcUrl, dispatch, subscribe } from "../../lib/pwrsnap";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
 import { SizzleChatPanel } from "./SizzleChatPanel";
@@ -178,17 +179,90 @@ type CachedSequencePreviewPlan = {
   plan: SizzleSequencePreviewPlan;
 };
 
+/** Bar count for the idle (pre-preview) waveform placeholder. */
+const SEQUENCE_WAVE_BARS = 52;
+
+/** How many cached narration audios to fetch+decode at once when
+ *  populating sequence waveforms in the background on reel open. Bounds
+ *  the burst of IPC payloads + wavesurfer decodes so a many-scene reel
+ *  doesn't jank the editor on load. */
+const WAVEFORM_LOAD_CONCURRENCY = 3;
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mimeType });
+}
+
+/**
+ * Render the narration's real waveform with wavesurfer.js (BSD-3-Clause)
+ * once a preview has decoded the audio. wavesurfer owns the decode →
+ * peak extraction → canvas render; we keep it display-only (no clicks,
+ * no cursor) and overlay our own beat track + playhead. Loaded by
+ * dynamic import so it is code-split out of the initial bundle and so
+ * jsdom unit tests (no canvas / ResizeObserver) never touch it.
+ */
+function SequenceWaveform({ audioBlob }: { audioBlob: Blob }): ReactElement {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    let instance: import("wavesurfer.js").default | null = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { default: WaveSurfer } = await import("wavesurfer.js");
+        if (cancelled || containerRef.current === null) return;
+        // Canvas can't read CSS vars; resolve the accent at runtime so
+        // the waveform tracks the theme. The container's own opacity
+        // mutes it to match the rest of the timeline chrome.
+        const accent =
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--accent")
+            .trim() || "#ff8a1f";
+        instance = WaveSurfer.create({
+          container: containerRef.current,
+          height: 24,
+          barWidth: 2,
+          barGap: 2,
+          barRadius: 2,
+          waveColor: accent,
+          progressColor: accent,
+          cursorWidth: 0,
+          interact: false,
+          normalize: true
+        });
+        await instance.loadBlob(audioBlob);
+      } catch {
+        // jsdom (no canvas) or a decode failure — the idle baseline
+        // stays in place rather than a fabricated waveform.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        instance?.destroy();
+      } catch {
+        // Already torn down; nothing to clean up.
+      }
+    };
+  }, [audioBlob]);
+  return <div ref={containerRef} className="szl__sequence-wave-surfer" aria-hidden="true" />;
+}
+
 function SequenceTimelinePreview(props: {
   scene: SizzleScene;
   captureMap: Map<string, CaptureRecord>;
   plan: SizzleSequencePreviewPlan | undefined;
+  audioBlob: Blob | undefined;
   currentTimeSec: number;
   playing: boolean;
   loading: boolean;
   onPlay: () => void;
   onSeek: (timeSec: number) => void;
 }): ReactElement {
-  const { scene, captureMap, plan, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const { scene, captureMap, plan, audioBlob, currentTimeSec, playing, loading, onPlay, onSeek } = props;
   const fallbackBeats = fallbackSequenceBeats(scene);
   const beats = plan?.beats ?? fallbackBeats;
   const fallbackDuration = Math.max(
@@ -209,7 +283,7 @@ function SequenceTimelinePreview(props: {
       : activeBeat !== null
         ? cacheUrl(activeBeat.captureId, 640, "webp")
         : "";
-  const barCount = 52;
+  const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
@@ -274,16 +348,17 @@ function SequenceTimelinePreview(props: {
         onClick={(event) => seekFromPointer(event.clientX, event.currentTarget)}
         aria-label="Sequence timeline"
       >
-        <span className="szl__sequence-wave" aria-hidden="true">
-          {Array.from({ length: barCount }, (_, index) => (
-            <span
-              key={index}
-              style={{
-                height: `${22 + ((index * 17) % 34)}%`
-              }}
-            />
-          ))}
-        </span>
+        {audioBlob === undefined ? (
+          // No narration decoded yet — a flat dim baseline (no fabricated
+          // variation) until a preview runs and wavesurfer takes over.
+          <span className="szl__sequence-wave szl__sequence-wave--idle" aria-hidden="true">
+            {Array.from({ length: barCount }, (_, index) => (
+              <span key={index} style={{ height: "10%" }} />
+            ))}
+          </span>
+        ) : (
+          <SequenceWaveform audioBlob={audioBlob} />
+        )}
         <span className="szl__sequence-track" aria-hidden="true">
           {beats.map((beat, index) => {
             const left = (beat.startSec / durationSec) * 100;
@@ -934,6 +1009,12 @@ function Editor(props: EditorProps): ReactElement {
   const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
     Record<string, CachedSequencePreviewPlan>
   >({});
+  // Per-sequence-scene narration audio, captured when a preview decodes
+  // it, and handed to wavesurfer to draw the real waveform. Cleared when
+  // the narration text changes (the audio is then stale).
+  const [sequenceAudioBlobs, setSequenceAudioBlobs] = useState<
+    Record<string, Blob>
+  >({});
 
   // Per-scene preview-request generation counter. Each click of ▶
   // bumps it; the response only applies if it's still current.
@@ -1056,10 +1137,13 @@ function Editor(props: EditorProps): ReactElement {
     // Decode the base64 into a Blob, hand the audio element an
     // object URL, and revoke the previous one. This keeps a single
     // buffer alive at a time instead of accumulating data URLs.
-    const binary = atob(previewAudio.audioBase64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: previewAudio.mimeType });
+    const blob = base64ToBlob(previewAudio.audioBase64, previewAudio.mimeType);
+    // Hand the decoded narration to wavesurfer so the sequence preview
+    // can draw the real waveform. Independent Blob from the playback
+    // object URL, so revoking that URL never disturbs the waveform.
+    if (scene?.kind === "sequence") {
+      setSequenceAudioBlobs((prev) => ({ ...prev, [sceneId]: blob }));
+    }
     revokeAudioObjectUrl();
     const objectUrl = URL.createObjectURL(blob);
     audioObjectUrlRef.current = objectUrl;
@@ -1099,10 +1183,82 @@ function Editor(props: EditorProps): ReactElement {
           delete next[scene.id];
           return next;
         });
+        // The narration audio (and thus its waveform) is now stale.
+        setSequenceAudioBlobs((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
       }
       lastScriptByScene.current.set(scene.id, scene.scriptLine);
     }
   }, [project.scenes, previewingSceneId, previewLoadedSceneId]);
+
+  // Proactively fill in sequence waveforms when a reel opens (or a new
+  // sequence scene appears) using audio that is ALREADY cached from a
+  // prior preview/render — so a rendered reel shows its waveforms
+  // without making the user click ▶ first. This is cache-only on the
+  // main side (never synthesizes), and runs through a bounded-
+  // concurrency queue so a many-scene reel doesn't fire a burst of IPC
+  // payloads + wavesurfer decodes at once. Keyed on the set of sequence
+  // scene ids (not their text) so it doesn't re-run on every keystroke;
+  // the attempt-set guards against duplicate fetches, and a text edit
+  // clears the stale blob via the effect above (the user re-previews to
+  // regenerate, which isn't cached yet anyway).
+  const sequenceSceneIdsKey = useMemo(
+    () =>
+      project.scenes
+        .filter((s) => s.kind === "sequence")
+        .map((s) => s.id)
+        .join(","),
+    [project.scenes]
+  );
+  const waveformAttemptRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pending = project.scenes.filter(
+      (s) =>
+        s.kind === "sequence" &&
+        (s.narration ?? s.scriptLine).trim().length > 0 &&
+        sequenceAudioBlobs[s.id] === undefined &&
+        !waveformAttemptRef.current.has(s.id)
+    );
+    if (pending.length === 0) return undefined;
+    let cancelled = false;
+    const queue = new IterableQueueMapperSimple<SizzleScene>(
+      async (scene) => {
+        waveformAttemptRef.current.add(scene.id);
+        try {
+          const res = await dispatch("sizzle:loadSequenceSceneAudio", {
+            projectId: project.id,
+            sceneId: scene.id
+          });
+          if (cancelled || !res.ok || res.value.cached !== true) return;
+          const blob = base64ToBlob(res.value.audioBase64, res.value.mimeType);
+          if (cancelled) return;
+          setSequenceAudioBlobs((prev) =>
+            prev[scene.id] !== undefined ? prev : { ...prev, [scene.id]: blob }
+          );
+        } catch {
+          // A failed background load just leaves the idle baseline.
+        }
+      },
+      { concurrency: WAVEFORM_LOAD_CONCURRENCY }
+    );
+    void (async () => {
+      for (const scene of pending) {
+        if (cancelled) break;
+        await queue.enqueue(scene);
+      }
+      await queue.onIdle();
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `sequenceAudioBlobs` is intentionally not a dependency: it changes
+    // as blobs are populated, and the attempt-set already prevents
+    // re-fetching. Re-running here would just churn.
+  }, [project.id, sequenceSceneIdsKey]);
 
   const seekPreview = (sceneId: string, timeSec: number): void => {
     const scene = project.scenes.find((candidate) => candidate.id === sceneId);
@@ -1681,6 +1837,7 @@ function Editor(props: EditorProps): ReactElement {
                         scene={scene}
                         captureMap={captureMap}
                         plan={sequencePreviewPlan}
+                        audioBlob={sequenceAudioBlobs[scene.id]}
                         currentTimeSec={
                           previewingSceneId === scene.id || previewLoadedSceneId === scene.id
                             ? previewTimeSec

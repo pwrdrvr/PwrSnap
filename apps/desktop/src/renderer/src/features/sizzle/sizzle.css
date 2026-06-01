@@ -684,6 +684,13 @@
   opacity: 0.85;
 }
 
+/* Before a preview decodes the narration there is no audio to draw, so
+   the bars sit at a flat low baseline. Dim them so the track reads as
+   "no signal yet" rather than a silent recording. */
+.szl__sequence-wave--idle {
+  opacity: 0.4;
+}
+
 .szl__sequence-wave span {
   display: block;
   min-height: 3px;
@@ -691,9 +698,19 @@
   background: color-mix(in srgb, var(--accent) 32%, var(--text-muted));
 }
 
+/* Mount point for the wavesurfer.js canvas once a preview has decoded
+   the narration. Occupies the same 24px wave row as the idle baseline;
+   the opacity mutes the accent waveColor to match the timeline chrome. */
+.szl__sequence-wave-surfer {
+  height: 24px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.85;
+}
+
 .szl__sequence-track {
   position: relative;
-  height: 34px;
+  height: 42px;
 }
 
 .szl__sequence-track-beat {

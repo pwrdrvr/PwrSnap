@@ -2603,6 +2603,19 @@ export type Commands = {
     req: { projectId: string; sceneId: string };
     res: SizzleSequencePreviewPlan;
   };
+  /** Cache-only read of a sequence scene's narration audio for the
+   *  editor waveform. Unlike `previewSequenceScenePlan`, this NEVER
+   *  synthesizes, resolves speech timing, or hits any API — it only
+   *  returns the content-addressed TTS file if it is already on disk
+   *  (e.g. from a prior preview or render). Safe to call proactively on
+   *  reel open without spending TTS credits; returns `{ cached: false }`
+   *  when the audio has not been generated yet. */
+  "sizzle:loadSequenceSceneAudio": {
+    req: { projectId: string; sceneId: string };
+    res:
+      | { cached: true; audioBase64: string; mimeType: "audio/mpeg" }
+      | { cached: false };
+  };
 
   // ── Project Asset Cart ──────────────────────────────────────────────
   // The single global draft cart the user fills from the Library, then

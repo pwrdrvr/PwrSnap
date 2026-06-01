@@ -42,9 +42,12 @@ struct Color {
   static let pillBackground = NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
   static let text = NSColor(calibratedRed: 0.969, green: 0.953, blue: 0.922, alpha: 1)
   static let muted = NSColor(calibratedRed: 0.549, green: 0.522, blue: 0.478, alpha: 1)
-  // Brand tangerine — design system: #ff8a1f (rgb 255, 138, 31).
-  static let accent = NSColor(calibratedRed: 1.000, green: 0.541, blue: 0.122, alpha: 1)
-  static let arrowShaft = NSColor(calibratedRed: 1.000, green: 0.541, blue: 0.122, alpha: 1)
+  // Brand tangerine — design system: #ff8a1f (rgb 255, 138, 31). Pinned in
+  // deviceRGB so the rendered pixels land on #ff8a1f exactly; calibratedRGB
+  // drifted it to #ee894a — a spurious third orange next to the wordmark
+  // (#ff8a1f) and the app icon (#e8743a).
+  static let accent = NSColor(deviceRed: 255 / 255.0, green: 138 / 255.0, blue: 31 / 255.0, alpha: 1)
+  static let arrowShaft = NSColor(deviceRed: 255 / 255.0, green: 138 / 255.0, blue: 31 / 255.0, alpha: 1)
 }
 
 func renderBackground() -> NSBitmapImageRep {

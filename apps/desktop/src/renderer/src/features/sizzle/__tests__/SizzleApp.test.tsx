@@ -671,4 +671,42 @@ describe("beat reorder", () => {
     });
     expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
   });
+
+  test("an external (chat) scenes change drops local undo history — no ⌘Z clobber", async () => {
+    const { el, emit } = await renderApp(project({ scenes: [seq()] }));
+    // local reorder → an undo entry + a pending debounced write
+    const down = [...el.querySelectorAll(".szl__sequence-beat")[0]!.querySelectorAll("button")].find(
+      (b) => b.title === "Move beat down"
+    )!;
+    await act(async () => {
+      down.click();
+    });
+    expect(order(el)).toEqual(["cap_b", "cap_a", "cap_c"]);
+    // let the debounced write flush so the project is no longer "pending"
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    // an external actor (the chat agent) reorders differently and broadcasts
+    const external = project({
+      scenes: [
+        scene({
+          kind: "sequence",
+          scriptLine: "n",
+          narration: "n",
+          beats: [autoBeat("bt_c", "cap_c"), autoBeat("bt_b", "cap_b"), autoBeat("bt_a", "cap_a")]
+        })
+      ]
+    });
+    await act(async () => {
+      emit(EVENT_CHANNELS.sizzleProjectsChanged, { projects: [external] });
+    });
+    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
+    // ⌘Z must NOT restore the pre-reorder order — the stale history was dropped.
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true })
+      );
+    });
+    expect(order(el)).toEqual(["cap_c", "cap_b", "cap_a"]);
+  });
 });

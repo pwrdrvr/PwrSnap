@@ -617,6 +617,13 @@
   width: 130px;
 }
 
+.szl__sequence-beat-pinned {
+  color: var(--text-muted);
+  font: 600 9px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .szl__sequence-preview {
   display: grid;
   grid-template-columns: 368px minmax(0, 1fr);

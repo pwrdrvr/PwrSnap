@@ -283,9 +283,9 @@ function SequenceTimelinePreview(props: {
     activeBeat === null ? null : captureMap.get(activeBeat.captureId) ?? null;
   const activeThumb =
     activeCapture?.edits_version !== undefined && activeBeat !== null
-      ? cacheUrl(activeBeat.captureId, 960, "webp", activeCapture.edits_version)
+      ? cacheUrl(activeBeat.captureId, 800, "webp", activeCapture.edits_version)
       : activeBeat !== null
-        ? cacheUrl(activeBeat.captureId, 960, "webp")
+        ? cacheUrl(activeBeat.captureId, 800, "webp")
         : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
@@ -682,6 +682,23 @@ export function SizzleApp(): ReactElement {
       const incoming = (payload as { projects?: unknown }).projects;
       if (!Array.isArray(incoming)) return;
       const incomingProjects = incoming as SizzleProject[];
+      // An external actor (the chat agent, another window) changed a
+      // project's scenes out from under us — our local undo history would
+      // clobber that change on ⌘Z, so drop it. Skip projects with a
+      // pending local patch (we keep our copy) and the echo of our own
+      // writes (scenes unchanged → not cleared).
+      for (const inc of incomingProjects) {
+        if (pendingPatches.current.has(inc.id)) continue;
+        const local = projectsRef.current.find((lp) => lp.id === inc.id);
+        if (
+          local !== undefined &&
+          JSON.stringify(local.scenes) !== JSON.stringify(inc.scenes)
+        ) {
+          undoStacks.current.delete(inc.id);
+          redoStacks.current.delete(inc.id);
+          lastHistoryAtRef.current.delete(inc.id);
+        }
+      }
       setProjects((prev) =>
         incomingProjects.map((p) =>
           pendingPatches.current.has(p.id)
@@ -1781,7 +1798,12 @@ function Editor(props: EditorProps): ReactElement {
                                 <option value="offset">Offset</option>
                                 <option value="phrase">Phrase</option>
                               </select>
-                              {beat.timing.kind === "offset" ? (
+                              {isFirstBeat ? (
+                                // The first beat is always pinned to 0 by the
+                                // planner; show that instead of its (inert)
+                                // anchor inputs — its stored kind is parked.
+                                <span className="szl__sequence-beat-pinned">starts at 0</span>
+                              ) : beat.timing.kind === "offset" ? (
                                 <>
                                   <label className="szl__sequence-time-field">
                                     <span>Start</span>

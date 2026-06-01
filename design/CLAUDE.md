@@ -85,11 +85,17 @@ Exactly **two** definitions exist, and they must stay byte-identical to the snip
 ## 3. Suite color tokens (PwrAgent is system-of-record)
 
 - `--bg-app` is **pure black `#000000`**, not warm near-black.
-- `--accent` is **tangerine `#ff8a1f`**, not burnt copper.
+- `--accent` is **tangerine `#ff8a1f`**, not burnt copper. This is the wordmark
+  + all in-app UI accent — the same token PwrAgent uses for the "Agent" half of
+  its wordmark.
+- The **macOS app icon** uses a separate, deeper orange **`#e8743a`** — *not*
+  `--accent`. Two intentional oranges; don't unify them. PwrAgent uses the same
+  split (UI `#ff8a1f`, icon `#e8743a`). Full notes:
+  [docs/solutions/2026-05-31-brand-oranges-and-app-icon.md](../docs/solutions/2026-05-31-brand-oranges-and-app-icon.md).
 - `--button-text-on-accent` is `#000000`, not a warm near-black.
 - Geist + Geist Mono everywhere; never substitute Inter/Roboto/system fonts.
 
-Tokens live in `ds/colors_and_type.css`. Never hardcode brand colors in component files — reference the token. If a literal hex is unavoidable (e.g. in an SVG attribute that can't take `var()`), use `style={{ stroke: "var(--…)" }}` instead.
+Tokens live in `ds/colors_and_type.css`. Never hardcode brand colors in component files — reference the token. If a literal hex is unavoidable (e.g. in an SVG attribute that can't take `var()`), use `style={{ stroke: "var(--…)" }}` instead. Native (Swift) icon/DMG generators are outside the token system — they hardcode brand colors and **must use `deviceRGB`** (`calibratedRGB` drifts the rendered pixels lighter; that's what spawned the spurious `#ee894a`).
 
 The PwrAgent design system project (read-only) at `/projects/019debaf-c070-7afe-98db-4c9bbe10e72b/` is the visual reference for anything not pinned here.
 

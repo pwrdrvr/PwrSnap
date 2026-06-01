@@ -1,5 +1,6 @@
 import type {
   CaptureRecord,
+  SizzleMediaTrim,
   SizzleScene,
   SizzleSequencePreviewBeat,
   SizzleSequenceBeat,
@@ -17,6 +18,7 @@ import {
  *  read" warning (R10; confirmed 2026-05-31). */
 const SHORT_SLICE_SEC = 0.4;
 import type { SceneInput } from "./composer";
+import { mediaTrimWasClamped, normalizeVideoMediaTrim } from "./media-trim";
 import { resolvePhraseTiming } from "./speech-timing";
 import { resolveVideoFit, type VideoFitDecision } from "./video-fit";
 
@@ -50,6 +52,12 @@ export type SequencePlannerRequest = {
   speechTiming: SizzleSpeechTiming;
 };
 
+export type SequenceMediaDiagnosticsRequest = {
+  scene: SizzleScene;
+  capturesById: Map<string, CaptureRecord>;
+  timeline: SequenceTimelinePlan;
+};
+
 export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPlan {
   const timeline = planSequenceTimeline(req.scene, req.speechTiming);
   const diagnostics: SequencePlannerDiagnostic[] = [...timeline.diagnostics];
@@ -80,19 +88,10 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
           `Beat ${index + 1}: video capture ${beat.captureId} has no source file`
         );
       }
-      const trim = beat.mediaTrim ?? {
-        startSec: capture.video.defaultRange.start,
-        endSec: capture.video.defaultRange.end
-      };
-      const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
-      fit = resolveVideoFit({
-        policy: beat.videoFit,
-        sourceDurationSec,
-        targetDurationSec: durationSec
-      });
-      for (const warning of fit.warnings) {
-        diagnostics.push({ beatId: beat.id, code: "video_fit", message: warning });
-      }
+      const mediaPlan = planVideoBeatMedia(beat, capture, durationSec);
+      const trim = mediaPlan.trim;
+      fit = mediaPlan.fit;
+      diagnostics.push(...mediaPlan.diagnostics);
       sceneInputs.push({
         kind: "video",
         videoPath: capture.legacy_src_path,
@@ -170,6 +169,26 @@ export function planSequenceTimeline(
   return { durationSec, diagnostics, beatPlans };
 }
 
+export function planSequenceMediaDiagnostics(
+  req: SequenceMediaDiagnosticsRequest
+): SequencePlannerDiagnostic[] {
+  const beats = normalizeSizzleSequenceBeatContinuity(req.scene.beats ?? []);
+  const diagnostics: SequencePlannerDiagnostic[] = [];
+  beats.forEach((beat, index) => {
+    const capture = req.capturesById.get(beat.captureId);
+    if (capture?.kind !== "video" || capture.video === null || capture.video === undefined) return;
+    const window = req.timeline.beatPlans[index];
+    if (window === undefined) return;
+    const transition: SizzleTransition = window.transition;
+    const audioDurationSec = Math.max(0.1, window.endSec - window.startSec);
+    const transitionOverlapSec =
+      index > 0 ? transitionOverlapDurationSec(transition) : 0;
+    const durationSec = audioDurationSec + transitionOverlapSec;
+    diagnostics.push(...planVideoBeatMedia(beat, capture, durationSec).diagnostics);
+  });
+  return diagnostics;
+}
+
 export class SequencePlannerError extends Error {
   constructor(
     public readonly code:
@@ -182,6 +201,46 @@ export class SequencePlannerError extends Error {
     super(message);
     this.name = "SequencePlannerError";
   }
+}
+
+function planVideoBeatMedia(
+  beat: SizzleSequenceBeat,
+  capture: CaptureRecord,
+  targetDurationSec: number
+): {
+  trim: SizzleMediaTrim;
+  fit: VideoFitDecision;
+  diagnostics: SequencePlannerDiagnostic[];
+} {
+  if (capture.video === null || capture.video === undefined) {
+    throw new SequencePlannerError(
+      "video_source_missing",
+      `Video capture ${beat.captureId} has no metadata`
+    );
+  }
+  const diagnostics: SequencePlannerDiagnostic[] = [];
+  const trim = normalizeVideoMediaTrim({
+    trim: beat.mediaTrim,
+    defaultRange: capture.video.defaultRange,
+    sourceDurationSec: capture.video.durationSec
+  });
+  if (mediaTrimWasClamped(beat.mediaTrim, trim)) {
+    diagnostics.push({
+      beatId: beat.id,
+      code: "media_trim_clamped",
+      message: `Media trim was clamped to the ${roundSec(capture.video.durationSec)}s source duration`
+    });
+  }
+  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
+  const fit = resolveVideoFit({
+    policy: beat.videoFit,
+    sourceDurationSec,
+    targetDurationSec
+  });
+  for (const warning of fit.warnings) {
+    diagnostics.push({ beatId: beat.id, code: "video_fit", message: warning });
+  }
+  return { trim, fit, diagnostics };
 }
 
 function resolveBeatWindows(

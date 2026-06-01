@@ -30,10 +30,12 @@ import {
 } from "../sizzle/tts";
 import { resolveSpeechTiming } from "../sizzle/speech-timing";
 import {
+  planSequenceMediaDiagnostics,
   planSequenceScene,
   planSequenceTimeline,
   SequencePlannerError
 } from "../sizzle/sequence-planner";
+import { mediaTrimWasClamped, normalizeVideoMediaTrim } from "../sizzle/media-trim";
 import {
   compose,
   ComposeError,
@@ -194,11 +196,24 @@ async function prepareSceneInput(args: {
   let durationSec: number;
 
   if (capture.kind === "video") {
-    const trim = scene.mediaTrim ?? {
-      startSec: capture.video?.defaultRange.start ?? 0,
-      endSec:
-        capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
-    };
+    const trim = normalizeVideoMediaTrim({
+      trim: scene.mediaTrim,
+      defaultRange: {
+        start: capture.video?.defaultRange.start ?? 0,
+        end: capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
+      },
+      sourceDurationSec: capture.video?.durationSec ?? 5
+    });
+    if (mediaTrimWasClamped(scene.mediaTrim, trim)) {
+      log.info("sizzle:render clamped media trim to source duration", {
+        sceneIdx,
+        requestedStartSec: scene.mediaTrim!.startSec,
+        requestedEndSec: scene.mediaTrim!.endSec,
+        sourceDurationSec: capture.video?.durationSec ?? null,
+        startSec: trim.startSec,
+        endSec: trim.endSec
+      });
+    }
     const trimDur = trim.endSec - trim.startSec;
 
     // Scene duration policy for video scenes:
@@ -626,6 +641,21 @@ export function registerSizzleHandlers(): void {
         apiKey
       });
       const timeline = planSequenceTimeline(scene, speechTiming);
+      const beatCaptureIds = [
+        ...new Set((scene.beats ?? []).map((beat) => beat.captureId))
+      ];
+      const loadedCaptures = await Promise.all(
+        beatCaptureIds.map(async (captureId) => [captureId, await loadCapture(captureId)] as const)
+      );
+      const capturesById = new Map<string, CaptureRecord>();
+      for (const [captureId, capture] of loadedCaptures) {
+        if (capture !== null) capturesById.set(captureId, capture);
+      }
+      const mediaDiagnostics = planSequenceMediaDiagnostics({
+        scene,
+        capturesById,
+        timeline
+      });
       const bytes = await readFile(tts.audioPath);
       const warnings: SizzleSequencePreviewPlan["warnings"] = [
         ...speechTiming.warnings.map((warning) => ({
@@ -633,6 +663,11 @@ export function registerSizzleHandlers(): void {
           message: warning.message
         })),
         ...timeline.diagnostics.map((diagnostic) => ({
+          beatId: diagnostic.beatId,
+          code: diagnostic.code,
+          message: diagnostic.message
+        })),
+        ...mediaDiagnostics.map((diagnostic) => ({
           beatId: diagnostic.beatId,
           code: diagnostic.code,
           message: diagnostic.message

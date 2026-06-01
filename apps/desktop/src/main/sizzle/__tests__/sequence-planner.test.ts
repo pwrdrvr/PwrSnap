@@ -7,6 +7,7 @@ import type {
 } from "@pwrsnap/shared";
 import { approximateSpeechTiming } from "../speech-timing";
 import {
+  planSequenceMediaDiagnostics,
   planSequenceScene,
   planSequenceTimeline,
   SequencePlannerError
@@ -307,6 +308,89 @@ describe("planSequenceScene", () => {
       expect(plan.sceneInputs[0]!.trimDurationSec).toBe(1);
       expect(plan.sceneInputs[0]!.durationSec).toBe(4);
     }
+  });
+
+  it("clamps video beat trims to the real source duration before fitting", () => {
+    const scene = sequenceScene({
+      scriptLine: "The finished GIF is ready to share privately and publish.",
+      narration: "The finished GIF is ready to share privately and publish.",
+      beats: [
+        {
+          id: "bt_publish",
+          captureId: "cap_short",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 0, endSec: 9.1 },
+          transition: "cut",
+          videoFit: "speed-to-fit"
+        }
+      ]
+    });
+    const plan = planSequenceScene({
+      scene,
+      capturesById: new Map([["cap_short", capture("cap_short", "video", 4.204)]]),
+      imagePathByCaptureId: new Map(),
+      narrationAudioPath: "/tmp/narration.mp3",
+      speechTiming: timing(scene.scriptLine, 9.6)
+    });
+
+    expect(plan.sceneInputs).toHaveLength(1);
+    expect(plan.sceneInputs[0]!.kind).toBe("video");
+    if (plan.sceneInputs[0]!.kind === "video") {
+      expect(plan.sceneInputs[0]!.startSec).toBe(0);
+      expect(plan.sceneInputs[0]!.trimDurationSec).toBeCloseTo(4.204, 3);
+      expect(plan.sceneInputs[0]!.durationSec).toBeCloseTo(9.6, 3);
+      expect(plan.sceneInputs[0]!.videoFit?.mode).toBe("freeze-end");
+    }
+    expect(plan.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          beatId: "bt_publish",
+          code: "media_trim_clamped"
+        }),
+        expect.objectContaining({
+          beatId: "bt_publish",
+          code: "video_fit",
+          message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+        })
+      ])
+    );
+  });
+
+  it("reports unsafe video fit diagnostics during preview planning", () => {
+    const scene = sequenceScene({
+      scriptLine: "The finished GIF is ready to share privately and publish.",
+      narration: "The finished GIF is ready to share privately and publish.",
+      beats: [
+        {
+          id: "bt_publish",
+          captureId: "cap_short",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 0, endSec: 9.1 },
+          transition: "cut",
+          videoFit: "speed-to-fit"
+        }
+      ]
+    });
+    const timeline = planSequenceTimeline(scene, timing(scene.scriptLine, 9.6));
+    const diagnostics = planSequenceMediaDiagnostics({
+      scene,
+      timeline,
+      capturesById: new Map([["cap_short", capture("cap_short", "video", 4.204)]])
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          beatId: "bt_publish",
+          code: "media_trim_clamped"
+        }),
+        expect.objectContaining({
+          beatId: "bt_publish",
+          code: "video_fit",
+          message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+        })
+      ])
+    );
   });
 
   it("fails before expensive work when a beat capture is missing", () => {

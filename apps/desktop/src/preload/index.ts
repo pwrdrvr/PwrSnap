@@ -61,6 +61,7 @@ import {
   IPC_VIDEO_DRAG_START
 } from "@pwrsnap/shared/ipc";
 import type {
+  RecordingCapabilities,
   RenderPreset,
   VideoPreset
 } from "@pwrsnap/shared/protocol";
@@ -173,6 +174,7 @@ const pwrsnapApi = {
      *  ⇧ at commit time. Routes main to `screencapture -l <id>`
      *  instead of `-R <rect>`. */
     fullWindow?: boolean;
+    recordingCapabilities?: RecordingCapabilities;
   }): void {
     ipcRenderer.send(REGION_SELECTOR_RESULT_CHANNEL, payload);
   },
@@ -279,6 +281,7 @@ const pwrsnapApi = {
        *  starts a recording instead of taking a snap. Default
        *  `"snap"` keeps existing visuals unchanged. */
       intent?: "snap" | "video";
+      recordingCapabilities?: RecordingCapabilities;
     }) => void
   ): () => void {
     const wrapped = (_event: unknown, payload: unknown) =>
@@ -287,6 +290,7 @@ const pwrsnapApi = {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
           intent?: "snap" | "video";
+          recordingCapabilities?: RecordingCapabilities;
         }
       );
     ipcRenderer.on(REGION_SELECTOR_MODE_CHANNEL, wrapped);

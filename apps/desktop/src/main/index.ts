@@ -10,7 +10,7 @@ import {
   shell
 } from "electron";
 import { EVENT_CHANNELS } from "@pwrsnap/shared";
-import type { RecordingSubject, Settings } from "@pwrsnap/shared";
+import type { RecordingCapabilities, RecordingSubject, Settings } from "@pwrsnap/shared";
 import {
   disposeRegionSelector,
   getLastWindowListSnapshot,
@@ -61,7 +61,10 @@ import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
-import { DesktopSettingsService } from "./settings/desktop-settings-service";
+import {
+  DesktopSettingsService,
+  defaultSettings
+} from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
   initAppUpdater,
@@ -592,6 +595,22 @@ function pickFocusTargetForRecording(overlapping: BrowserWindow[]): BrowserWindo
  */
 async function runInteractiveRecord(): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
+  const settingsService = new DesktopSettingsService({
+    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
+  });
+  let settings: Settings;
+  try {
+    settings = await settingsService.read();
+  } catch (cause) {
+    log.warn("video-record: settings read failed; using silent audio defaults", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    settings = defaultSettings();
+  }
+  const defaultCapabilities: RecordingCapabilities = {
+    systemAudio: settings.recording.includeSystemAudio,
+    microphone: settings.recording.includeMicrophone
+  };
   // Pick a rect / window via the existing region selector. We can't
   // route through capture:interactive (which persists an image on
   // commit), so we drive the region-selector module directly. On
@@ -608,7 +627,8 @@ async function runInteractiveRecord(): Promise<void> {
   const selection = await pickRegion({
     mode: "auto",
     keepPwrSnapChrome: false,
-    intent: "video"
+    intent: "video",
+    recordingCapabilities: defaultCapabilities
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });
@@ -710,15 +730,24 @@ async function runInteractiveRecord(): Promise<void> {
     reclaimDockIconIfLibraryAlive();
     log.debug("video-record activated previous app", { previousAppPid });
   }
-  const settings = await new DesktopSettingsService({
-    filePath: join(app.getPath("userData"), "pwrsnap-settings.json")
-  }).read();
-  // Honor the user's persisted audio defaults; the in-context
-  // recording dialog (a later enhancement) can override these.
-  const capabilities = {
-    systemAudio: settings.recording.includeSystemAudio,
-    microphone: settings.recording.includeMicrophone
-  };
+  const capabilities = selection.recordingCapabilities ?? defaultCapabilities;
+  if (
+    capabilities.systemAudio !== settings.recording.includeSystemAudio ||
+    capabilities.microphone !== settings.recording.includeMicrophone
+  ) {
+    try {
+      await settingsService.write({
+        recording: {
+          includeSystemAudio: capabilities.systemAudio,
+          includeMicrophone: capabilities.microphone
+        }
+      });
+    } catch (cause) {
+      log.warn("video-record: failed to persist recording audio defaults", {
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    }
+  }
   // Source-app attribution mirrors the image-capture path
   // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
   // helper: snap-target id first, rect-center hit test as fallback,

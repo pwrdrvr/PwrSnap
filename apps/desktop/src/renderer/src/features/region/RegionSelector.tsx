@@ -36,6 +36,7 @@
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { RecordingCapabilities } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../preload-types";
 import {
   ALL_HANDLES,
@@ -52,6 +53,10 @@ const HASH_PARAM_DISPLAY_ID = "displayId";
 const MIN_DRAG_PX = 4;
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
+const DEFAULT_RECORDING_CAPABILITIES: RecordingCapabilities = {
+  systemAudio: false,
+  microphone: false
+};
 
 type SnapTarget =
   | { kind: "window"; entry: WindowSnapEntry }
@@ -123,6 +128,8 @@ export function RegionSelector() {
   // 'snap' for backwards-compat with every call site that doesn't
   // set the flag (Quick Capture, Region, Window, Timed).
   const [intent, setIntent] = useState<"snap" | "video">("snap");
+  const [recordingCapabilities, setRecordingCapabilities] =
+    useState<RecordingCapabilities>(DEFAULT_RECORDING_CAPABILITIES);
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -152,6 +159,9 @@ export function RegionSelector() {
   const lastMouseRef = useRef<{ x: number; y: number } | null>(null);
   const shiftRef = useRef(false);
   const modeRef = useRef<SelectorMode>("auto");
+  const intentRef = useRef<"snap" | "video">("snap");
+  const recordingCapabilitiesRef =
+    useRef<RecordingCapabilities>(DEFAULT_RECORDING_CAPABILITIES);
 
   useLayoutEffect(() => {
     document.title = "PwrSnap Region Selector";
@@ -163,6 +173,8 @@ export function RegionSelector() {
   spaceRef.current = spaceHeld;
   snapTargetRef.current = snapTarget;
   modeRef.current = mode;
+  intentRef.current = intent;
+  recordingCapabilitiesRef.current = recordingCapabilities;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -191,6 +203,11 @@ export function RegionSelector() {
       setMode(payload.mode);
       setScreenUrl(payload.screenUrl ?? null);
       setIntent(payload.intent ?? "snap");
+      setRecordingCapabilities(
+        payload.intent === "video" && payload.recordingCapabilities !== undefined
+          ? payload.recordingCapabilities
+          : DEFAULT_RECORDING_CAPABILITIES
+      );
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
       // window-snap rect from the previous session before they move
@@ -368,7 +385,10 @@ export function RegionSelector() {
       // by definition). The default (no ⇧, mode='auto'|'region')
       // goes through the rect path, which captures whatever's
       // literally on screen including overlapping windows.
-      ...(wantFull ? { fullWindow: true } : {})
+      ...(wantFull ? { fullWindow: true } : {}),
+      ...(intentRef.current === "video"
+        ? { recordingCapabilities: recordingCapabilitiesRef.current }
+        : {})
     });
     setInteraction({ kind: "snap" });
     setSnapTarget({ kind: "display" });
@@ -388,6 +408,10 @@ export function RegionSelector() {
       const handle = target.dataset.handle;
       if (handle === undefined) return null;
       return ALL_HANDLES.includes(handle as HandleId) ? (handle as HandleId) : null;
+    }
+
+    function isRegionControlsTarget(target: EventTarget | null): boolean {
+      return target instanceof HTMLElement && target.closest("[data-region-controls]") !== null;
     }
 
     function isInsideCurrentRect(clientX: number, clientY: number): boolean {
@@ -518,6 +542,7 @@ export function RegionSelector() {
     }
 
     function onMouseDown(event: MouseEvent): void {
+      if (isRegionControlsTarget(event.target)) return;
       if (event.button !== 0) return;
       event.preventDefault();
       const handle = getHandleFromTarget(event.target);
@@ -667,6 +692,7 @@ export function RegionSelector() {
     }
 
     function onMouseUp(event: MouseEvent): void {
+      if (isRegionControlsTarget(event.target)) return;
       const i = interactionRef.current;
       if (i.kind === "snap" || i.kind === "adjusting") return;
       event.preventDefault();
@@ -995,11 +1021,61 @@ export function RegionSelector() {
           <kbd>esc</kbd>cancel
         </span>
       </div>
+      {intent === "video" && (
+        <div
+          className="region-recording-controls"
+          data-region-controls="true"
+          role="group"
+          aria-label="Recording audio"
+        >
+          <AudioToggle
+            label="System audio"
+            pressed={recordingCapabilities.systemAudio}
+            onToggle={() =>
+              setRecordingCapabilities((current) => ({
+                ...current,
+                systemAudio: !current.systemAudio
+              }))
+            }
+          />
+          <AudioToggle
+            label="Microphone"
+            pressed={recordingCapabilities.microphone}
+            onToggle={() =>
+              setRecordingCapabilities((current) => ({
+                ...current,
+                microphone: !current.microphone
+              }))
+            }
+          />
+        </div>
+      )}
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }
         50% { opacity: 0.4; }
         100% { opacity: 1; }
       }`}</style>
     </div>
+  );
+}
+
+function AudioToggle(props: {
+  label: string;
+  pressed: boolean;
+  onToggle: () => void;
+}) {
+  const { label, pressed, onToggle } = props;
+  return (
+    <button
+      type="button"
+      className="region-audio-toggle"
+      aria-pressed={pressed}
+      onClick={onToggle}
+    >
+      <span className="region-audio-toggle__track" aria-hidden="true">
+        <span className="region-audio-toggle__thumb" />
+      </span>
+      <span className="region-audio-toggle__label">{label}</span>
+    </button>
   );
 }

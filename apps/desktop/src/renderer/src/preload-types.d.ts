@@ -8,6 +8,7 @@
 import type {
   CommandName,
   PerfMarkPayload,
+  RecordingCapabilities,
   RenderPreset,
   Req,
   Res,
@@ -50,6 +51,7 @@ declare global {
         displayId?: number;
         snappedWindowId?: number;
         fullWindow?: boolean;
+        recordingCapabilities?: RecordingCapabilities;
       }): void;
       onWindowListSnapshot(
         handler: (payload: {
@@ -64,6 +66,7 @@ declare global {
           mode: "auto" | "region" | "window";
           screenUrl?: string;
           intent?: "snap" | "video";
+          recordingCapabilities?: RecordingCapabilities;
         }) => void
       ): () => void;
       requestTrayResize(payload: { width: number; height: number }): void;

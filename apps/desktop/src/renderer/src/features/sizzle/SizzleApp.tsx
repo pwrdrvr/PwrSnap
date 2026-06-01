@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
+  distributeSequenceBeatStarts,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
   type CaptureRecord,
@@ -134,13 +135,16 @@ function readInitialProjectId(): string | null {
 function fallbackSequenceBeats(scene: SizzleScene): SizzleSequencePreviewBeat[] {
   const beats = normalizeSizzleSequenceBeatContinuity(scene.beats ?? []);
   const durationSec = Math.max(1, scene.durationOverrideSec ?? beats.length);
-  const starts = beats.map((beat, index) =>
-    beat.timing.kind === "offset"
-      ? clampTime(beat.timing.startSec, durationSec)
-      : (durationSec / Math.max(1, beats.length)) * index
+  // Idle (pre-preview) placement: no speech timing here, so only `offset`
+  // beats are anchors; `phrase` and `auto` are placed by the SAME shared
+  // even-division distributor the main planner uses, so the editor strip and
+  // the resolved preview/render never diverge.
+  const anchors = beats.map((beat): number | null =>
+    beat.timing.kind === "offset" ? clampTime(beat.timing.startSec, durationSec) : null
   );
+  const starts = distributeSequenceBeatStarts(anchors, durationSec);
   return beats.map((beat, index) => {
-    const startSec = Math.min(starts[index] ?? 0, Math.max(0, durationSec - 0.1));
+    const startSec = starts[index] ?? 0;
     const configuredEnd =
       beat.timing.kind === "offset" && beat.timing.endSec !== null
         ? beat.timing.endSec
@@ -502,6 +506,23 @@ export function SizzleApp(): ReactElement {
     new Map()
   );
 
+  // ── Undo / redo (per active project) ────────────────────────────────
+  // Every local scene mutation funnels through onUpdate({ scenes }); we
+  // snapshot the PRE-edit scenes so ⌘Z can restore them. Keyed by project
+  // id, so each reel keeps its own history for the session. External chat
+  // broadcasts arrive OUTSIDE onUpdate and are intentionally not recorded.
+  // Rapid edits (typing) coalesce into one entry within the debounce
+  // window. `applyingHistoryRef` suppresses recording while an undo/redo
+  // is being applied (so it doesn't re-record or clear the redo stack).
+  const HISTORY_COALESCE_MS = DEBOUNCE_MS;
+  const HISTORY_MAX = 50;
+  const projectsRef = useRef<SizzleProject[]>(projects);
+  projectsRef.current = projects;
+  const undoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
+  const redoStacks = useRef<Map<string, SizzleScene[][]>>(new Map());
+  const lastHistoryAtRef = useRef<Map<string, number>>(new Map());
+  const applyingHistoryRef = useRef(false);
+
   const flushPatch = useCallback(async (id: string): Promise<void> => {
     const pending = pendingPatches.current.get(id);
     pendingPatches.current.delete(id);
@@ -535,6 +556,24 @@ export function SizzleApp(): ReactElement {
 
   const onUpdate = useCallback(
     (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
+      // 0. Record undo history for scene edits (not name/voice patches, and
+      //    not while applying an undo/redo). Rapid edits coalesce: only the
+      //    pre-burst snapshot is kept.
+      if (patch.scenes !== undefined && !applyingHistoryRef.current) {
+        const prevScenes = projectsRef.current.find((p) => p.id === id)?.scenes;
+        if (prevScenes !== undefined) {
+          const now = Date.now();
+          const stack = undoStacks.current.get(id) ?? [];
+          const lastAt = lastHistoryAtRef.current.get(id) ?? 0;
+          if (stack.length === 0 || now - lastAt > HISTORY_COALESCE_MS) {
+            stack.push(prevScenes);
+            while (stack.length > HISTORY_MAX) stack.shift();
+            undoStacks.current.set(id, stack);
+          }
+          lastHistoryAtRef.current.set(id, now);
+          redoStacks.current.set(id, []); // a fresh edit invalidates redo
+        }
+      }
       // 1. Optimistic local update — text fields reflect immediately,
       //    next keystroke sees the latest value.
       setProjects((prev) =>
@@ -556,6 +595,67 @@ export function SizzleApp(): ReactElement {
     },
     [flushPatch]
   );
+
+  const applyHistoryScenes = useCallback(
+    (id: string, scenes: SizzleScene[]): void => {
+      applyingHistoryRef.current = true;
+      onUpdate(id, { scenes });
+      applyingHistoryRef.current = false;
+    },
+    [onUpdate]
+  );
+  const undoSceneEdit = useCallback((): void => {
+    const id = activeId;
+    if (id === null) return;
+    const stack = undoStacks.current.get(id);
+    if (stack === undefined || stack.length === 0) return;
+    const prevScenes = stack.pop();
+    if (prevScenes === undefined) return;
+    const current = projectsRef.current.find((p) => p.id === id)?.scenes;
+    if (current !== undefined) {
+      const redo = redoStacks.current.get(id) ?? [];
+      redo.push(current);
+      redoStacks.current.set(id, redo);
+    }
+    lastHistoryAtRef.current.set(id, 0); // next user edit starts a fresh entry
+    applyHistoryScenes(id, prevScenes);
+  }, [activeId, applyHistoryScenes]);
+  const redoSceneEdit = useCallback((): void => {
+    const id = activeId;
+    if (id === null) return;
+    const stack = redoStacks.current.get(id);
+    if (stack === undefined || stack.length === 0) return;
+    const nextScenes = stack.pop();
+    if (nextScenes === undefined) return;
+    const current = projectsRef.current.find((p) => p.id === id)?.scenes;
+    if (current !== undefined) {
+      const undo = undoStacks.current.get(id) ?? [];
+      undo.push(current);
+      undoStacks.current.set(id, undo);
+    }
+    lastHistoryAtRef.current.set(id, 0);
+    applyHistoryScenes(id, nextScenes);
+  }, [activeId, applyHistoryScenes]);
+
+  // ⌘Z / ⌘⇧Z (⌘Y) for scene-list edits. Text fields keep their own native
+  // per-character undo, so we only intercept when focus is NOT in one.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const key = e.key.toLowerCase();
+      const isUndo = key === "z" && !e.shiftKey;
+      const isRedo = (key === "z" && e.shiftKey) || key === "y";
+      if (!isUndo && !isRedo) return;
+      const ae = document.activeElement as HTMLElement | null;
+      const tag = ae?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || ae?.isContentEditable === true) return;
+      e.preventDefault();
+      if (isRedo) redoSceneEdit();
+      else undoSceneEdit();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undoSceneEdit, redoSceneEdit]);
 
   // Flush any pending edits on unmount so the on-disk state catches up
   // when the window closes mid-debounce.
@@ -713,15 +813,12 @@ export function SizzleApp(): ReactElement {
       const nextScenes = active.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence") return scene;
         const beats = scene.beats ?? [];
-        const last = beats.at(-1);
-        const startSec =
-          last?.timing.kind === "offset" && last.timing.endSec !== null
-            ? last.timing.endSec
-            : beats.length;
+        // New beats default to `auto` — they slot in evenly between the
+        // anchored beats and need no manual timing (R4).
         const beat: SizzleSequenceBeat = {
           id: `bt_${Date.now().toString(36)}`,
           captureId,
-          timing: { kind: "offset", startSec, endSec: null },
+          timing: { kind: "auto" },
           mediaTrim,
           transition: "cut",
           videoFit: "smart-fit"
@@ -1323,18 +1420,10 @@ function Editor(props: EditorProps): ReactElement {
     );
   };
 
-  const nextBeatStartSec = (beats: SizzleSequenceBeat[]): number => {
-    const last = beats.at(-1);
-    if (last?.timing.kind === "offset" && last.timing.endSec !== null) {
-      return last.timing.endSec;
-    }
-    return beats.length;
-  };
-
-  const beatFromScene = (scene: SizzleScene, startSec: number): SizzleSequenceBeat => ({
+  const beatFromScene = (scene: SizzleScene): SizzleSequenceBeat => ({
     id: `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     captureId: scene.captureId,
-    timing: { kind: "offset", startSec, endSec: null },
+    timing: { kind: "auto" },
     mediaTrim: scene.mediaTrim,
     transition: "cut",
     videoFit: "smart-fit"
@@ -1350,45 +1439,40 @@ function Editor(props: EditorProps): ReactElement {
           narration: scene.scriptLine,
           scriptLine: scene.scriptLine,
           audioSource: "voiceover",
-          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene, 0)])
+          beats: normalizeSizzleSequenceBeatContinuity([beatFromScene(scene)])
         };
       })
     );
   };
 
-  const appendNextSceneAsBeat = (sceneId: string): void => {
-    const idx = project.scenes.findIndex((scene) => scene.id === sceneId);
-    const scene = project.scenes[idx];
-    const nextScene = project.scenes[idx + 1];
-    if (idx < 0 || scene?.kind !== "sequence" || nextScene === undefined || nextScene.kind === "sequence") return;
-    const beats = scene.beats ?? [];
-    const beat = beatFromScene(nextScene, nextBeatStartSec(beats));
-    const narration = [scene.narration ?? scene.scriptLine, nextScene.scriptLine]
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .join(" ");
-    const next = [...project.scenes];
-    next[idx] = {
-      ...scene,
-      scriptLine: narration,
-      narration,
-      beats: normalizeSizzleSequenceBeatContinuity([...beats, beat])
-    };
-    next.splice(idx + 1, 1);
-    onScenes(next);
-  };
-
-  const moveSequenceBeat = (sceneId: string, beatIdx: number, delta: number): void => {
+  // Move a beat from one index to another (drag-drop or the ↑/↓ arrows). A
+  // splice-and-insert, not a pairwise swap, so dragging across several beats
+  // shifts the rest sensibly. `auto` beats need no timing fixup;
+  // normalizeSizzleSequenceBeatContinuity re-applies the non-final-end rule
+  // after the move. A reorder changes the beat windows, so any in-flight
+  // preview for this scene is discarded (generation bump) and a now-stale
+  // playback is stopped.
+  const reorderSequenceBeat = (sceneId: string, from: number, to: number): void => {
+    if (from === to) return; // self-drop / no-op — don't churn or invalidate
+    let changed = false;
     onScenes(
       project.scenes.map((scene) => {
         if (scene.id !== sceneId || scene.kind !== "sequence" || scene.beats === undefined) return scene;
-        const target = beatIdx + delta;
-        if (target < 0 || target >= scene.beats.length) return scene;
+        if (from < 0 || from >= scene.beats.length || to < 0 || to >= scene.beats.length) return scene;
         const beats = [...scene.beats];
-        [beats[beatIdx], beats[target]] = [beats[target]!, beats[beatIdx]!];
+        const [moved] = beats.splice(from, 1);
+        if (moved === undefined) return scene;
+        beats.splice(to, 0, moved);
+        changed = true;
         return { ...scene, beats: normalizeSizzleSequenceBeatContinuity(beats) };
       })
     );
+    if (!changed) return;
+    bumpPreviewGeneration(sceneId);
+    if (previewingSceneId === sceneId && audioRef.current !== null) {
+      audioRef.current.pause();
+      setPreviewingSceneId(null);
+    }
   };
 
   const removeSequenceBeat = (sceneId: string, beatId: string): void => {
@@ -1616,17 +1700,6 @@ function Editor(props: EditorProps): ReactElement {
                         >
                           + Beat
                         </button>
-                        <button
-                          className="szl__scene-action"
-                          onClick={() => appendNextSceneAsBeat(scene.id)}
-                          disabled={
-                            project.scenes[idx + 1] === undefined ||
-                            project.scenes[idx + 1]?.kind === "sequence"
-                          }
-                          type="button"
-                        >
-                          Add next scene
-                        </button>
                       </div>
                       <div className="szl__sequence-beats">
                         {(scene.beats ?? []).map((beat, beatIdx) => {
@@ -1639,7 +1712,36 @@ function Editor(props: EditorProps): ReactElement {
                           const isFirstBeat = beatIdx === 0;
                           const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
                           return (
-                            <div className="szl__sequence-beat" key={beat.id}>
+                            <div
+                              className="szl__sequence-beat"
+                              key={beat.id}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const from = Number.parseInt(
+                                  e.dataTransfer.getData("text/plain"),
+                                  10
+                                );
+                                if (Number.isInteger(from)) {
+                                  reorderSequenceBeat(scene.id, from, beatIdx);
+                                }
+                              }}
+                            >
+                              <span
+                                className="szl__sequence-beat-grip"
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData("text/plain", String(beatIdx));
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                title="Drag to reorder (or use the ↑/↓ buttons)"
+                                aria-hidden="true"
+                              >
+                                ⠿
+                              </span>
                               <span className="szl__sequence-beat-num">{beatIdx + 1}</span>
                               <span className="szl__sequence-beat-thumb">
                                 {beatCapture !== null ? (
@@ -1664,11 +1766,18 @@ function Editor(props: EditorProps): ReactElement {
                                     timing:
                                       kind === "offset"
                                         ? { kind: "offset", startSec: 0, endSec: null }
-                                        : { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
+                                        : kind === "phrase"
+                                          ? { kind: "phrase", phrase: "", occurrence: null, offsetSec: 0, durationSec: null }
+                                          : { kind: "auto" }
                                   });
                                 }}
-                                title={isFirstBeat ? "The first beat always starts at 0" : "Beat start timing"}
+                                title={
+                                  isFirstBeat
+                                    ? "The first beat always starts at 0"
+                                    : "When this beat appears: Auto (evenly spaced between anchors), a spoken Phrase, or an explicit Offset"
+                                }
                               >
+                                <option value="auto">Auto</option>
                                 <option value="offset">Offset</option>
                                 <option value="phrase">Phrase</option>
                               </select>
@@ -1724,7 +1833,7 @@ function Editor(props: EditorProps): ReactElement {
                                     />
                                   </label>
                                 </>
-                              ) : (
+                              ) : beat.timing.kind === "phrase" ? (
                                 <>
                                   <input
                                     className="szl__sequence-phrase"
@@ -1767,7 +1876,7 @@ function Editor(props: EditorProps): ReactElement {
                                     />
                                   </label>
                                 </>
-                              )}
+                              ) : null}
                               <select
                                 value={beat.videoFit}
                                 onChange={(e) =>
@@ -1801,7 +1910,7 @@ function Editor(props: EditorProps): ReactElement {
                               </select>
                               <button
                                 className="szl__scene-mini"
-                                onClick={() => moveSequenceBeat(scene.id, beatIdx, -1)}
+                                onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx - 1)}
                                 disabled={beatIdx === 0}
                                 type="button"
                                 title="Move beat up"
@@ -1810,7 +1919,7 @@ function Editor(props: EditorProps): ReactElement {
                               </button>
                               <button
                                 className="szl__scene-mini"
-                                onClick={() => moveSequenceBeat(scene.id, beatIdx, 1)}
+                                onClick={() => reorderSequenceBeat(scene.id, beatIdx, beatIdx + 1)}
                                 disabled={beatIdx === (scene.beats?.length ?? 0) - 1}
                                 type="button"
                                 title="Move beat down"

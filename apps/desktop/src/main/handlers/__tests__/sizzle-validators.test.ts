@@ -546,6 +546,48 @@ describe("validateSizzleUpdate — sequence scene validation", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("scene_beat_videoFit_invalid");
   });
+
+  it("accepts a sequence beat with auto timing", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            id: "sc_sequence",
+            kind: "sequence",
+            scriptLine: "Narration",
+            durationOverrideSec: null,
+            beats: [
+              { id: "bt_1", captureId: "cap_1", timing: { kind: "auto" }, videoFit: "smart-fit", transition: "cut" }
+            ]
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.scenes![0]!.beats![0]!.timing).toEqual({ kind: "auto" });
+  });
+
+  it("rejects an auto beat that carries timing fields", () => {
+    const r = validateSizzleUpdate({
+      id: "sz_1",
+      patch: {
+        scenes: [
+          {
+            id: "sc_sequence",
+            kind: "sequence",
+            scriptLine: "Narration",
+            durationOverrideSec: null,
+            beats: [
+              { id: "bt_1", captureId: "cap_1", timing: { kind: "auto", startSec: 3 }, videoFit: "smart-fit", transition: "cut" }
+            ]
+          }
+        ]
+      }
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe("scene_beat_timing_invalid");
+  });
 });
 
 describe("validateSizzleToggleScene", () => {

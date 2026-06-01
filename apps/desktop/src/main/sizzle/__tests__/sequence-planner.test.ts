@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { CaptureRecord, SizzleScene, SizzleSpeechTiming } from "@pwrsnap/shared";
+import type {
+  CaptureRecord,
+  SizzleScene,
+  SizzleSequenceBeat,
+  SizzleSpeechTiming
+} from "@pwrsnap/shared";
 import { approximateSpeechTiming } from "../speech-timing";
 import {
   planSequenceScene,
@@ -349,5 +354,58 @@ describe("planSequenceTimeline", () => {
     expect(plan.beatPlans[1]!.captureId).toBe("cap_2");
     expect(plan.beatPlans[1]!.videoFit).toBe("loop");
     expect(plan.beatPlans[0]!.endSec).toBe(plan.beatPlans[1]!.startSec);
+  });
+});
+
+describe("auto beat timing", () => {
+  const autoBeat = (id: string): SizzleSequenceBeat => ({
+    id,
+    captureId: id,
+    timing: { kind: "auto" },
+    mediaTrim: null,
+    transition: "cut",
+    videoFit: "smart-fit"
+  });
+
+  it("divides auto beats evenly between an offset anchor and the timeline end (AE1/AE6)", () => {
+    const scene = sequenceScene({
+      durationOverrideSec: 10,
+      beats: [
+        autoBeat("bt_0"),
+        {
+          id: "bt_1",
+          captureId: "bt_1",
+          timing: { kind: "offset", startSec: 4, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        autoBeat("bt_2"),
+        autoBeat("bt_3")
+      ]
+    });
+    const plan = planSequenceTimeline(scene, timing("Open the wizard then approve pairing", 10));
+    expect(plan.beatPlans.map((b) => b.startSec)).toEqual([0, 4, 6, 8]);
+    // continuity: each non-final beat ends at the next beat's start
+    expect(plan.beatPlans[0]!.endSec).toBe(plan.beatPlans[1]!.startSec);
+    expect(plan.beatPlans[3]!.endSec).toBe(10);
+  });
+
+  it("spreads an all-auto sequence evenly (AE8)", () => {
+    const scene = sequenceScene({
+      durationOverrideSec: 8,
+      beats: [autoBeat("a"), autoBeat("b"), autoBeat("c"), autoBeat("d")]
+    });
+    const plan = planSequenceTimeline(scene, timing("one two three four", 8));
+    expect(plan.beatPlans.map((b) => b.startSec)).toEqual([0, 2, 4, 6]);
+  });
+
+  it("warns when even-division makes a beat too short to read (AE5)", () => {
+    const scene = sequenceScene({
+      durationOverrideSec: 1,
+      beats: [autoBeat("a"), autoBeat("b"), autoBeat("c"), autoBeat("d")]
+    });
+    const plan = planSequenceTimeline(scene, timing("one two three four", 1));
+    expect(plan.diagnostics.some((d) => d.code === "beat_too_short")).toBe(true);
   });
 });

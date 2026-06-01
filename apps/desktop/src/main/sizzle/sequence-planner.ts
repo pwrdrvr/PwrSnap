@@ -7,10 +7,15 @@ import type {
   SizzleTransition
 } from "@pwrsnap/shared";
 import {
+  distributeSequenceBeatStarts,
   normalizeSizzleSequenceBeatContinuity,
   sizzleTransitionDurationSec,
   sizzleTransitionType
 } from "@pwrsnap/shared";
+
+/** Even-division slice shorter than this (seconds) earns a "too fast to
+ *  read" warning (R10; confirmed 2026-05-31). */
+const SHORT_SLICE_SEC = 0.4;
 import type { SceneInput } from "./composer";
 import { resolvePhraseTiming } from "./speech-timing";
 import { resolveVideoFit, type VideoFitDecision } from "./video-fit";
@@ -187,8 +192,15 @@ function resolveBeatWindows(
 ): Array<{ startSec: number; endSec: number }> {
   const duration = Math.max(0.1, timelineDurationSec);
   const latestStart = Math.max(0, duration - 0.1);
-  const starts = beats.map((beat, index) => {
+
+  // Resolve each beat to a concrete anchor time, or `null` for an `auto` beat
+  // — and for a `phrase` that fails to resolve, which degrades to auto (D7).
+  // The shared distributor owns the even-division of auto runs between anchors
+  // and the monotonic clamp, so preview, the editor strip, and the final
+  // render can never disagree.
+  const anchors = beats.map((beat): number | null => {
     if (beat.timing.kind === "offset") return clamp(beat.timing.startSec, 0, latestStart);
+    if (beat.timing.kind === "auto") return null;
     const resolved = resolvePhraseTiming(speechTiming, {
       phrase: beat.timing.phrase,
       occurrence: beat.timing.occurrence,
@@ -199,10 +211,12 @@ function resolveBeatWindows(
     diagnostics.push({
       beatId: beat.id,
       code: "phrase_unresolved",
-      message: `Could not resolve phrase anchor ${JSON.stringify(beat.timing.phrase)}`
+      message: `Could not resolve phrase anchor ${JSON.stringify(beat.timing.phrase)} — placing it automatically`
     });
-    return (duration / beats.length) * index;
+    return null; // degrade to auto
   });
+
+  const starts = distributeSequenceBeatStarts(anchors, duration);
 
   return beats.map((beat, index) => {
     const startSec = starts[index]!;
@@ -220,6 +234,12 @@ function resolveBeatWindows(
         beatId: beat.id,
         code: "beat_duration_clamped",
         message: "Beat timing was clamped to the minimum duration"
+      });
+    } else if (clampedEnd - startSec < SHORT_SLICE_SEC) {
+      diagnostics.push({
+        beatId: beat.id,
+        code: "beat_too_short",
+        message: `Beat is only ${roundSec(clampedEnd - startSec)}s — may be too fast to read`
       });
     }
     return { startSec: roundSec(startSec), endSec: roundSec(clampedEnd) };

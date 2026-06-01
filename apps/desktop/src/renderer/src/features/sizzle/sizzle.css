@@ -533,6 +533,21 @@
   border-radius: 6px;
 }
 
+.szl__sequence-beat-grip {
+  cursor: grab;
+  color: var(--text-muted);
+  font: 700 13px/1 var(--font-mono);
+  padding: 0 2px;
+  user-select: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+.szl__sequence-beat-grip:active {
+  cursor: grabbing;
+}
+
 .szl__sequence-beat-num {
   color: var(--accent);
   font: 700 11px/1 var(--font-mono);

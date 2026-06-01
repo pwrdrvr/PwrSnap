@@ -76,18 +76,23 @@ const sceneInputSchema = z.object({
 type SceneInput = z.infer<typeof sceneInputSchema>;
 
 const beatTimingInputSchema = z.union([
-  z.object({
-    kind: z.literal("offset"),
-    startSec: z.number().min(0).describe("Seconds from sequence narration start. The first beat must start at 0."),
-    endSec: z.number().min(0).nullable().optional()
-      .describe("Only valid on the final beat. For non-final beats omit/null; they continue until the next beat anchor.")
-  }),
+  z
+    .object({ kind: z.literal("auto") })
+    .describe(
+      "DEFAULT — prefer this for most beats. The beat is spaced evenly between the anchored beats around it; no timing needed. Only use `phrase` (or `offset`) for the few beats the narration explicitly names a moment for."
+    ),
   z.object({
     kind: z.literal("phrase"),
     phrase: z.string().min(1).max(160),
     occurrence: z.number().int().positive().nullable().optional(),
     offsetSec: z.number().optional(),
     durationSec: z.number().positive().nullable().optional()
+      .describe("Only valid on the final beat. For non-final beats omit/null; they continue until the next beat anchor.")
+  }),
+  z.object({
+    kind: z.literal("offset"),
+    startSec: z.number().min(0).describe("Seconds from sequence narration start. The first beat must start at 0."),
+    endSec: z.number().min(0).nullable().optional()
       .describe("Only valid on the final beat. For non-final beats omit/null; they continue until the next beat anchor.")
   })
 ]);
@@ -163,13 +168,15 @@ function toSequenceBeat(input: SequenceBeatInput): NonNullable<SizzleScene["beat
             startSec: input.timing.startSec,
             endSec: input.timing.endSec ?? null
           }
-        : {
-            kind: "phrase",
-            phrase: input.timing.phrase,
-            occurrence: input.timing.occurrence ?? null,
-            offsetSec: input.timing.offsetSec ?? 0,
-            durationSec: input.timing.durationSec ?? null
-          },
+        : input.timing.kind === "phrase"
+          ? {
+              kind: "phrase",
+              phrase: input.timing.phrase,
+              occurrence: input.timing.occurrence ?? null,
+              offsetSec: input.timing.offsetSec ?? 0,
+              durationSec: input.timing.durationSec ?? null
+            }
+          : { kind: "auto" },
     mediaTrim:
       input.mediaTrim != null
         ? { startSec: input.mediaTrim.startSec, endSec: input.mediaTrim.endSec }

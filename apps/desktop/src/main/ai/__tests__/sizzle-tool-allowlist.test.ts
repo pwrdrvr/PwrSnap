@@ -208,6 +208,36 @@ describe("buildSizzleToolAllowlist", () => {
     expect(scenes[0]!.beats![1]!.videoFit).toBe("loop");
   });
 
+  it("sequence_scene_append accepts auto-timed beats (the default)", async () => {
+    primeBus(project([]));
+    const r = await tool(boundAllowlist(), "sequence_scene_append").dispatch(
+      {
+        scene: {
+          narration: "Open the wizard, then approve pairing.",
+          beats: [
+            { captureId: "cap_a", timing: { kind: "auto" } },
+            { captureId: "cap_b", timing: { kind: "auto" } },
+            { captureId: "cap_c", timing: { kind: "phrase", phrase: "approve" } }
+          ]
+        }
+      },
+      CTX
+    );
+    expect(r.ok).toBe(true);
+    const updateCall = dispatch.mock.calls.find((c) => c[0] === "sizzle:update");
+    const scenes = (updateCall?.[1] as { patch: { scenes: SizzleScene[] } }).patch.scenes;
+    expect(scenes[0]!.beats).toHaveLength(3);
+    expect(scenes[0]!.beats![0]!.timing).toEqual({ kind: "auto" });
+    expect(scenes[0]!.beats![1]!.timing).toEqual({ kind: "auto" });
+    expect(scenes[0]!.beats![2]!.timing).toEqual({
+      kind: "phrase",
+      phrase: "approve",
+      occurrence: null,
+      offsetSec: 0,
+      durationSec: null
+    });
+  });
+
   it("sequence_beat_update changes one beat without replacing siblings", async () => {
     primeBus(project([
       scene({

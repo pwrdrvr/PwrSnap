@@ -45,7 +45,7 @@ afterEach(async () => {
 });
 
 describe("AboutPage", () => {
-  test("renders version metadata and proprietary license row", async () => {
+  test("renders version metadata and MIT license row", async () => {
     installFakeApi(
       vi.fn(async (name) => {
         if (name === "app:version") {
@@ -66,7 +66,7 @@ describe("AboutPage", () => {
     await renderAbout();
 
     expect(container?.textContent).toContain("1.0.0-alpha.3");
-    expect(container?.textContent).toContain("UNLICENSED · © 2026 PwrDrvr LLC");
+    expect(container?.textContent).toContain("MIT · © 2026 PwrDrvr LLC");
   });
 
   test("opens third-party licenses from About", async () => {

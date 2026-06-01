@@ -1,4 +1,4 @@
-// Lifted from ~/github/PwrAgnt/apps/desktop/src/main/codex-app-server/json-rpc.ts
+// Lifted from PwrAgnt (apps/desktop/src/main/codex-app-server/json-rpc.ts).
 // — only PwrAgnt-ism is the logger scope. JSON-RPC 2.0 client + server with
 // pending-request tracking, notifications, and an optional message observer
 // for protocol capture.

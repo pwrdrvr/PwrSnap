@@ -12,7 +12,7 @@
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 0 20px 0 76px;
+  padding: 0 20px 0 92px; /* left pad clears the OS traffic lights */
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-surface);
 }
@@ -23,7 +23,8 @@
   gap: 8px;
   min-width: 0;
   color: var(--text-primary);
-  font: 700 13px/1 var(--font-sans);
+  font: 700 14px/1 var(--font-display);
+  letter-spacing: -0.01em;
 }
 
 .ps-doc__crumb {

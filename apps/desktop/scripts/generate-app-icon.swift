@@ -6,10 +6,20 @@ import Foundation
 let outputDir = CommandLine.arguments.dropFirst().first ?? "build/icon.iconset"
 
 struct Color {
-  static let background = NSColor(calibratedRed: 0.08, green: 0.08, blue: 0.08, alpha: 1)
-  static let accent = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 1)
-  static let accentMid = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 0.55)
-  static let accentFaint = NSColor(calibratedRed: 0.910, green: 0.455, blue: 0.227, alpha: 0.3)
+  // Warm near-black vertical gradient matching the PwrAgent app icon, as
+  // 0–255 device-RGB endpoints (image top = lighter, bottom = near-black).
+  // Interpolated per scanline in encoded space below — NSGradient would
+  // interpolate in linear light and render the upper half too bright.
+  static let bgTop: (r: Double, g: Double, b: Double) = (30, 26, 20)
+  static let bgBottom: (r: Double, g: Double, b: Double) = (10, 9, 8)
+  // Accent orange — matched to PwrAgent's icon, whose most-saturated bar
+  // samples to rgb(232,116,58) / #e8743a. Defined in deviceRGB so the
+  // output pixels land on that exact value; the previous calibratedRGB
+  // value drifted lighter to #ee894a through the calibrated→device
+  // conversion. The mid/back layers are the same hue at lower opacity.
+  static let accent = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 1)
+  static let accentMid = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.55)
+  static let accentFaint = NSColor(deviceRed: 232 / 255.0, green: 116 / 255.0, blue: 58 / 255.0, alpha: 0.3)
 }
 
 func renderIcon(size: Int) -> NSBitmapImageRep {
@@ -33,12 +43,27 @@ func renderIcon(size: Int) -> NSBitmapImageRep {
   let s = CGFloat(size)
   let scale = s / 1024.0
 
-  // Rounded-rect background
+  // Rounded-rect background — vertical gradient (warm charcoal at the top,
+  // near-black at the bottom), matching the PwrAgent app icon. Filled per
+  // scanline in device-RGB (encoded) space so the ramp is linear in the
+  // output pixels; NSGradient interpolates in linear light and renders the
+  // upper half too bright. The bitmap context is y-up, so image row 0 (the
+  // top, lighter end) maps to the highest AppKit y.
   let cornerRadius = 180 * scale
   let bg = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: s, height: s),
                         xRadius: cornerRadius, yRadius: cornerRadius)
-  Color.background.setFill()
-  bg.fill()
+  NSGraphicsContext.saveGraphicsState()
+  bg.addClip()
+  let rows = Int(s)
+  for row in 0..<rows {
+    let t = rows > 1 ? Double(row) / Double(rows - 1) : 0  // 0 at top, 1 at bottom
+    let r = (Color.bgTop.r + (Color.bgBottom.r - Color.bgTop.r) * t) / 255.0
+    let g = (Color.bgTop.g + (Color.bgBottom.g - Color.bgTop.g) * t) / 255.0
+    let b = (Color.bgTop.b + (Color.bgBottom.b - Color.bgTop.b) * t) / 255.0
+    NSColor(deviceRed: CGFloat(r), green: CGFloat(g), blue: CGFloat(b), alpha: 1).setFill()
+    NSRect(x: 0, y: s - CGFloat(row) - 1, width: s, height: 1).fill()
+  }
+  NSGraphicsContext.restoreGraphicsState()
 
   // Three stacked rectangles (PwrSnap mark) — centered in the icon
   let rectWidth = 450 * scale

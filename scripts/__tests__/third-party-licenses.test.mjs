@@ -133,6 +133,30 @@ describe("buildThirdPartyLicenseNotice", () => {
     expect(output).toContain("deterministic when checked on Linux CI");
   });
 
+  test("appends full canonical LGPL texts and relink offers for weak-copyleft bundled binaries", () => {
+    const output = buildThirdPartyLicenseNotice({
+      productionReport: {},
+      allReport: {},
+    });
+
+    // Dedicated section heading.
+    expect(output).toContain("Full License Texts — Weak-Copyleft Bundled Binaries");
+
+    // Full canonical FSF texts, identified by their unmistakable version lines.
+    expect(output).toContain("Version 2.1, February 1999");
+    expect(output).toContain("Version 3, 29 June 2007");
+    expect(output.match(/GNU LESSER GENERAL PUBLIC LICENSE/g).length).toBeGreaterThanOrEqual(2);
+
+    // Relink / written-source offer for each binary.
+    expect(output).toContain("Relinking / source offer");
+    expect(output).toContain("three years from the date of distribution");
+
+    // The misleading "no license text" stub must not be emitted for libvips.
+    expect(output).not.toContain(
+      "No license text file was found in the installed package for @img/sharp-libvips-darwin-arm64",
+    );
+  });
+
   test("uses deterministic fallback text for MIT packages without license files", () => {
     const text = declaredLicenseFallbackText(
       {

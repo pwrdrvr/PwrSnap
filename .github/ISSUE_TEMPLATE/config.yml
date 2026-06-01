@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Get PwrSnap (free, macOS)
+    url: https://pwrsnap.com
+    about: >-
+      Don't have PwrSnap yet? Install it first — then you can snap the thing
+      you're reporting and paste it straight into your issue. A picture makes
+      reports far faster to act on.
+  - name: Documentation
+    url: https://docs.pwrsnap.com
+    about: Setup, features, and how-to guides.

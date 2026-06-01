@@ -1256,9 +1256,10 @@ export function Library() {
   }, [liveRecords, todayDateStr]);
   // Per-app counts come from the denormalized `app_stats` table via
   // useLibrary's head-page response — stable on first paint, doesn't
-  // climb as keyset pages stream in. Multiple bundle ids can map to
-  // the same fixture app key (e.g. `com.tinyspeck.slackmacgap` and
-  // `slack` both fold into `slack`), so we aggregate after mapping.
+  // climb as keyset pages stream in. The app key is the lowercased
+  // bundle id, so two stats rows that differ only in casing
+  // (`com.hnc.Discord` / `com.hnc.discord`) fold into one group; we
+  // aggregate after mapping.
   const appCounts = useMemo<Record<string, number>>(() => {
     const counts: Record<string, number> = {};
     for (const stat of appStats) {
@@ -1279,12 +1280,15 @@ export function Library() {
   // Display name per app key. Like appCounts, derived from app_stats
   // so the sidebar is stable on first paint instead of filling in as
   // records stream. For each bundle id:
-  //   1. Curated short id wins (so com.tinyspeck.slackmacgap → "Slack").
-  //   2. OS-supplied source_app_name from the stats payload wins for
-  //      open/fallback apps (so jp.naver.line.mac → "LINE", not "Mac").
-  //   3. Otherwise, derive a Title-Case label from the bundle id's
+  //   1. OS-supplied source_app_name from the stats payload wins
+  //      (so jp.naver.line.mac → "LINE", com.tinyspeck.slackmacgap →
+  //      whatever name macOS reports). This is the primary path.
+  //   2. Otherwise, derive a Title-Case label from the bundle id's
   //      tail segment (so com.pwrsnap.synth.air-table → "Air Table").
-  //   4. Loaded records only fill gaps for legacy/missing stats names.
+  //   3. Loaded records only fill gaps for legacy/missing stats names.
+  // (The APP_INFO lookup is a vestigial first check that no longer
+  // matches real captures — real keys are lowercased bundle ids, not
+  // curated short ids — so step 1 effectively leads.)
   const appLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
     const capturedStatLabels = new Set<string>();
@@ -1318,12 +1322,12 @@ export function Library() {
 
   // Representative bundle id per app key — used by `<AppIcon>` to
   // resolve the full-color icon from the installed .app via the
-  // `pwrsnap-app-icon://` protocol. Multiple bundle ids can fold
-  // into the same curated short id (`com.tinyspeck.slackmacgap` and
-  // `com.slack.macos` both → `"slack"`); we pick the highest-count
+  // `pwrsnap-app-icon://` protocol. The app key is the lowercased
+  // bundle id, so each distinct app gets its own entry; when stats
+  // rows differ only in casing we pick the highest-count
   // representative so the icon is most likely installed on the user's
   // machine. Bundle ids with no installed .app fall back to the
-  // procedural / hand-drawn glyph automatically.
+  // procedural two-letter initials glyph automatically.
   const appBundleIds = useMemo<Record<string, string>>(() => {
     const byApp = new Map<string, { bundleId: string; count: number }>();
     for (const stat of appStats) {

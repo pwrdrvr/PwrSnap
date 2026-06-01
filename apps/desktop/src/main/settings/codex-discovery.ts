@@ -1,4 +1,4 @@
-// Lifted from ~/github/PwrAgnt/apps/desktop/src/main/settings/codex-discovery.ts
+// Lifted from PwrAgnt (apps/desktop/src/main/settings/codex-discovery.ts).
 // — discovery of Codex CLI binaries on the user's machine. Adaptations:
 //   • DesktopCodex* type definitions inlined here (PwrAgnt has them in
 //     @pwragnt/shared but PwrSnap doesn't share that package — see

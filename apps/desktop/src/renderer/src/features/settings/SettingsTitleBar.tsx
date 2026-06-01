@@ -1,5 +1,5 @@
 // Settings window chrome. Matches the library's `.psl__topbar` so
-// the two surfaces read as the same app — 22×22 framed brand mark
+// the two surfaces read as the same app — unframed brand mark
 // + PwrSnapWordmark, then the breadcrumb. Real macOS traffic lights
 // are drawn by Electron via `titleBarStyle: "hiddenInset"`; left
 // padding on `.pss__titlebar` clears them.

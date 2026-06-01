@@ -610,7 +610,7 @@ function AIProvidersPage() {
             <span className="pss__opt-icon">~</span>
             <div className="pss__opt-text">
               <span className="pss__opt-primary">System default</span>
-              <span className="pss__opt-sub">/Users/huntharo/.codex</span>
+              <span className="pss__opt-sub">~/.codex</span>
             </div>
             <span className="pss__opt-badges">
               <span className="pss__badge">default</span>

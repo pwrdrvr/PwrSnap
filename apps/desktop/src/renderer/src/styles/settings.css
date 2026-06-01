@@ -57,11 +57,6 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--bg-panel-elevated);
-  border: 1px solid var(--accent-border);
 }
 .pss__title-crumb {
   display: inline-flex;

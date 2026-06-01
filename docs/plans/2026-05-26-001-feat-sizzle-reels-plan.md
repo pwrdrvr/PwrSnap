@@ -21,12 +21,10 @@ the follow-up work the design mock implies.
 - Right-rail base: branch `feat/right-rail-chat-tab` (merged into
   this branch; provides `RightActivityBar`, layout-toggle chips,
   Library DetailRail pin/last-tab persistence).
-- Prior art: [/Users/huntharo/github/openclaw-codex-app-server-videos](https://github.com/pwrdrvr/openclaw-codex-app-server-videos)
-  — earlier PwrDrvr sizzle reel that the user built with Remotion +
-  OpenAI TTS. Only the TTS script structure (per-scene mp3, ffmpeg
-  concat) and project shape were used as reference; the composition
-  engine is a clean-room replacement (see "Licensing constraint"
-  below).
+- Prior art: an earlier PwrDrvr sizzle reel informed only the TTS
+  script structure (per-scene mp3, ffmpeg concat) and overall project
+  shape used as reference here; the composition engine is a clean-room
+  replacement (see "Licensing constraint" below).
 
 ## Licensing constraint — no Remotion
 

@@ -1,13 +1,13 @@
 # Desktop Release Runbook
 
-> Closed-source preview. Copyright © 2026 PwrDrvr LLC.
+> MIT-licensed (see [LICENSE](../LICENSE)). Copyright © 2026 PwrDrvr LLC.
 >
 > Origin: [docs/plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md](plans/2026-05-04-002-feat-release-infrastructure-dmg-signing-plan.md)
 
 This runbook covers cutting v0.x and v1.x desktop releases. macOS releases
 ship as universal Apple Silicon + Intel binaries; distribution is outside
 the Mac App Store via signed/notarized DMG with auto-update through
-`electron-updater` against the private `pwrdrvr/PwrSnap` repo. Cross-
+`electron-updater` against the `pwrdrvr/PwrSnap` repo. Cross-
 platform (Windows / Linux) is deferred to Phase 8.
 
 ---

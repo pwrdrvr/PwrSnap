@@ -120,6 +120,20 @@ describe("startRecordingFromSelection — overlap coordinate space", () => {
     expect(JSON.stringify(dispatch.mock.calls)).not.toContain("windowTitle");
   });
 
+  test("selection audio overrides defaults and is persisted through the bus", async () => {
+    const { startRecordingFromSelection } = await import("../record-from-selection");
+    await startRecordingFromSelection({
+      ok: true, rect: { x: 0, y: 0, w: 400, h: 300 }, displayId: 1,
+      screenSnapshotId: "snap-1", previousAppPid: null,
+      recordingCapabilities: { systemAudio: true, microphone: false }
+    }, { includeSystemAudio: false, includeMicrophone: true, videoCaptureCursor: false });
+    expect(dispatch).toHaveBeenCalledWith("settings:write", {
+      recording: { includeSystemAudio: true, includeMicrophone: false }
+    }, { principal: "ipc" });
+    expect(dispatch).toHaveBeenCalledWith("recording:start", expect.objectContaining({
+      capabilities: { systemAudio: true, microphone: false }
+    }), { principal: "ipc" });
+  });
   test("passes the selector's global rect to the global entry point, unconverted", async () => {
     const { startRecordingFromSelection } = await import("../record-from-selection");
 

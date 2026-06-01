@@ -45,7 +45,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { acceleratorToDisplayKeys, MAX_SELECTOR_EXTENTS } from "@pwrsnap/shared";
-import type { QuickCaptureAction, SelectorTerminalAction } from "@pwrsnap/shared";
+import type { QuickCaptureAction, SelectorTerminalAction, RecordingCapabilities } from "@pwrsnap/shared";
 import type {
   SelectorRawSnapshotDescriptor,
   WindowSnapEntry
@@ -199,6 +199,9 @@ export function RegionSelector() {
   // the pre-warmed window), flipped with the `C` key, and shipped on the
   // commit payload for the hotkey path to pass to `recording:start`.
   const [captureCursor, setCaptureCursor] = useState(true);
+  const [recordingCapabilities, setRecordingCapabilities] = useState<RecordingCapabilities>({
+    systemAudio: false, microphone: false
+  });
   // Snap-vs-Record policy for THIS show, from
   // `settings.recording.quickCaptureAction` via the mode signal.
   //   - "ask"    — offer both: ↵ snaps, R records the same selection.
@@ -282,6 +285,7 @@ export function RegionSelector() {
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
   const captureCursorRef = useRef(true);
+  const recordingCapabilitiesRef = useRef(recordingCapabilities);
   const quickActionRef = useRef<QuickCaptureAction>("snap");
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
@@ -507,6 +511,7 @@ export function RegionSelector() {
   modeRef.current = mode;
   intentRef.current = intent;
   captureCursorRef.current = captureCursor;
+  recordingCapabilitiesRef.current = recordingCapabilities;
   quickActionRef.current = quickAction;
   picksRef.current = picks;
   outputModeRef.current = outputMode;
@@ -535,7 +540,7 @@ export function RegionSelector() {
     interaction.kind === "adjusting" ||
     interaction.kind === "moving" ||
     interaction.kind === "resizing";
-  const chooserBar = recordOffered && (picks.length > 0 || latched);
+  const chooserBar = (recordOffered || intent === "video") && (picks.length > 0 || latched);
   const showHud = picks.length > 0 || chooserBar;
 
   // Surface state to CSS for cursor switching + snap visualization.
@@ -597,6 +602,9 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
+      setRecordingCapabilities(payload.recordingCapabilities ?? {
+        systemAudio: false, microphone: false
+      });
       // Re-read the chooser policy on every show. Like `cursor`, this is
       // per-show state on a pre-warmed window: a selector opened under
       // "record" must not stay record-primary for the next capture after
@@ -1028,7 +1036,10 @@ export function RegionSelector() {
           displayId,
           snappedWindowId: only.windowId,
           ...(action === "record" ? { action } : {}),
-          ...(isRecording ? { captureCursor: captureCursorRef.current } : {}),
+          ...(isRecording ? {
+            captureCursor: captureCursorRef.current,
+            recordingCapabilities: recordingCapabilitiesRef.current
+          } : {}),
           // No `extents`. A one-window mask covers its own union box
           // edge to edge, so it can only ever produce the same pixels
           // as the plain crop — at the cost of a decode + composite in
@@ -1109,7 +1120,10 @@ export function RegionSelector() {
       // the ref (not state) because this commit closure is captured once
       // at mount by the global keydown listener. Omitted for image
       // captures, which don't consume it yet (Phase 3).
-      ...(isRecording ? { captureCursor: captureCursorRef.current } : {})
+      ...(isRecording ? {
+        captureCursor: captureCursorRef.current,
+        recordingCapabilities: recordingCapabilitiesRef.current
+      } : {})
     });
     // Full reset, same as the pick path above. Hand-rolling a partial
     // one here left `shiftHeld` / `spaceHeld` latched: the ⇧ keyup is
@@ -1785,6 +1799,8 @@ export function RegionSelector() {
         clearDiscardPending();
         if (interactionRef.current.kind === "pending") {
           setInteraction({ kind: "snap" });
+        } else if (["drawing", "moving", "resizing"].includes(interactionRef.current.kind)) {
+          setInteraction({ kind: "adjusting" });
         }
         return;
       }
@@ -1891,7 +1907,7 @@ export function RegionSelector() {
       if (payload.key === "Escape") {
         handleEscape();
       } else if (payload.key === "Enter") {
-        commit();
+        if (!isHudButtonFocused(document.activeElement)) commit();
       }
     });
     return () => {
@@ -2496,10 +2512,10 @@ export function RegionSelector() {
             className="region-hud__go"
             data-testid="region-hud-capture"
             data-action={primary}
-            aria-label={primary === "record" ? "Record (Return)" : "Capture (Return)"}
+            aria-label={intent === "video" || primary === "record" ? "Record (Return)" : "Capture (Return)"}
             onClick={() => commit(primary)}
           >
-            {primary === "record" ? "Record" : "Capture"}
+            {intent === "video" || primary === "record" ? "Record" : "Capture"}
             <kbd>↵</kbd>
           </button>
           {recordOffered && (
@@ -2532,7 +2548,7 @@ export function RegionSelector() {
               <kbd>{primary === "record" ? "S" : "R"}</kbd>
             </button>
           )}
-          {recordUsable && (
+          {(recordUsable || intent === "video") && (
             // Cursor bake, same toggle the dedicated video selector
             // carries on `C`. Only meaningful while Record is reachable.
             <button
@@ -2547,6 +2563,24 @@ export function RegionSelector() {
               Rec cursor: {captureCursor ? "on" : "off"}
               <kbd>C</kbd>
             </button>
+          )}
+          {(recordUsable || intent === "video") && (
+            <div className="region-audio-controls" role="group" aria-label="Recording audio">
+              {(["systemAudio", "microphone"] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className="region-hud__toggle"
+                  aria-pressed={recordingCapabilities[key]}
+                  onClick={() => setRecordingCapabilities((current) => ({
+                    ...current, [key]: !current[key]
+                  }))}
+                >
+                  <span aria-hidden className="region-audio-switch" data-on={recordingCapabilities[key]} />
+                  {key === "systemAudio" ? "System audio" : "Microphone"}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}

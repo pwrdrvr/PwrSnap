@@ -356,6 +356,8 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
 /* --- HUD ------------------------------------------------------------ */
 
 .region-hud {
+  flex-wrap: wrap;
+  justify-content: center;
   position: fixed;
   bottom: 24px;
   left: 50%;
@@ -381,6 +383,35 @@ body[data-stage="region"][data-discarding="true"] .region-rect {
   width: 1px;
   align-self: stretch;
   background: var(--border-default);
+}
+
+.region-audio-controls {
+  display: flex;
+  gap: 8px;
+}
+.region-audio-switch {
+  width: 24px;
+  height: 14px;
+  flex: 0 0 24px;
+  border-radius: 7px;
+  background: var(--text-muted);
+  position: relative;
+}
+.region-audio-switch::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: var(--text-primary);
+}
+.region-audio-switch[data-on="true"] {
+  background: var(--accent);
+}
+.region-audio-switch[data-on="true"]::after {
+  transform: translateX(10px);
 }
 
 .region-hud__seg {

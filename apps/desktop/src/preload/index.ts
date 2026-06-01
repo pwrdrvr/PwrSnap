@@ -288,6 +288,7 @@ const pwrsnapApi = {
     /** Recording-only: whether the recording bakes in the mouse cursor,
      *  from the selector's `C` toggle. Omitted for image captures. */
     captureCursor?: boolean;
+    recordingCapabilities?: import("@pwrsnap/shared").RecordingCapabilities;
     /** Multi-window pick. Each entry is one picked window's EXTENT —
      *  a rectangle on the frozen screen, in the same global logical-px
      *  space as `rect`. `rect` is ALWAYS the union bounding box of
@@ -505,6 +506,7 @@ const pwrsnapApi = {
       intent?: "snap" | "video";
       /** Recording seed for the cursor toggle. `undefined` = ON. */
       cursor?: boolean;
+      recordingCapabilities?: import("@pwrsnap/shared").RecordingCapabilities;
       invocationId?: string;
       generation?: number;
       /** Snap-vs-Record policy for this show, from
@@ -520,6 +522,7 @@ const pwrsnapApi = {
           snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
+          recordingCapabilities?: import("@pwrsnap/shared").RecordingCapabilities;
           invocationId?: string;
           generation?: number;
           quickCaptureAction?: "ask" | "snap" | "record";

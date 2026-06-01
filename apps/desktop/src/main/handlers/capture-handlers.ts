@@ -434,7 +434,13 @@ export function registerCaptureHandlers(options?: { includeSaveAs?: boolean }): 
       // consumed if the user chooses Record, but it has to be in the
       // mode signal BEFORE the selector shows — there is no second
       // chance to send it once the chooser is on screen.
-      ...(settings !== null ? { cursorDefault: settings.recording.videoCaptureCursor } : {})
+      ...(settings !== null ? {
+        cursorDefault: settings.recording.videoCaptureCursor,
+        recordingCapabilities: {
+          systemAudio: settings.recording.includeSystemAudio,
+          microphone: settings.recording.includeMicrophone
+        }
+      } : {})
     });
     log.info("capture:interactive pickRegion returned", {
       mode,

@@ -1103,7 +1103,11 @@ async function runInteractiveRecord(
     // Library as a valid target.
     protectWindowIds,
     // Seed the selector's cursor toggle from the persisted default.
-    cursorDefault: settings.recording.videoCaptureCursor
+    cursorDefault: settings.recording.videoCaptureCursor,
+    recordingCapabilities: {
+      systemAudio: settings.recording.includeSystemAudio,
+      microphone: settings.recording.includeMicrophone
+    }
   });
   if (!selection.ok) {
     setFloatOverState({ kind: "cancel" });

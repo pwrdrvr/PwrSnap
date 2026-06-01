@@ -69,6 +69,7 @@ declare global {
          *  `action` as `"snap"`. */
         action?: "snap" | "record";
         captureCursor?: boolean;
+        recordingCapabilities?: import("@pwrsnap/shared").RecordingCapabilities;
         /** Multi-window pick — one entry per picked window extent, in
          *  the same global logical-px space as `rect`. `rect` is always
          *  their union bounding box. */
@@ -132,6 +133,7 @@ declare global {
           snapshot?: SelectorRawSnapshotDescriptor;
           intent?: "snap" | "video";
           cursor?: boolean;
+          recordingCapabilities?: import("@pwrsnap/shared").RecordingCapabilities;
           invocationId?: string;
           generation?: number;
           /** Snap-vs-Record policy for this show, from

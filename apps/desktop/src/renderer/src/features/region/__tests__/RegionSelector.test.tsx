@@ -28,6 +28,7 @@ beforeAll(() => {
 });
 
 type ModePayload = {
+  recordingCapabilities?: { systemAudio: boolean; microphone: boolean };
   mode: "auto" | "region" | "window";
   screenUrl?: string;
   snapshot?: SelectorRawSnapshotDescriptor;
@@ -525,6 +526,28 @@ async function pickWindowSnap(): Promise<void> {
   await mouseDown(cx, cy);
   await mouseUp(cx, cy);
 }
+
+describe("recording audio choices", () => {
+  test.each(["video", "quick"] as const)("%s carries selected audio into a recording", async (entry) => {
+    await mountScene({ mode: "auto", intent: entry === "video" ? "video" : "snap",
+      quickCaptureAction: "record", recordingCapabilities: { systemAudio: true, microphone: false } });
+    await drawRect();
+    const buttons = Array.from(container!.querySelectorAll<HTMLButtonElement>(".region-audio-controls button"));
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => { buttons[0]!.click(); buttons[1]!.click(); });
+    await keyDown("Enter");
+    expect(submitRegion.mock.calls[0]?.[0].recordingCapabilities).toEqual({ systemAudio: false, microphone: true });
+  });
+  test("forwarded Enter does not submit a focused audio control", async () => {
+    await mountScene({ mode: "auto", intent: "video" });
+    await drawRect();
+    const button = container!.querySelector<HTMLButtonElement>(".region-audio-controls button")!;
+    button.focus();
+    await emitKey("Enter");
+    expect(submitRegion).not.toHaveBeenCalled();
+  });
+});
 
 describe("U1 — crosshair guide-lines", () => {
   test("mounts in snap mode and seeds the crosshair to viewport center", async () => {
@@ -1488,7 +1511,7 @@ describe("U5 — multi-window pick set", () => {
     });
     await clickWindow(WIN, { metaKey: true });
     expect(pickBoxes()).toHaveLength(0);
-    expect(hud()).toBeNull();
+    expect(container!.querySelector(".region-audio-controls")).not.toBeNull();
   });
 
   test("region mode has no multi-select", async () => {
@@ -1867,7 +1890,7 @@ describe("U6 — Snap-vs-Record chooser", () => {
     // and `S` must not turn a video hotkey into a screenshot.
     await mountScene({ mode: "auto", intent: "video", quickCaptureAction: "record" });
     await drawRect();
-    expect(hud()).toBeNull();
+    expect(container!.querySelector(".region-audio-controls")).not.toBeNull();
     expect(altButton()).toBeNull();
     await keyDown("s");
     expect(submitRegion).not.toHaveBeenCalled();

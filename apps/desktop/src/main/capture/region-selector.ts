@@ -25,7 +25,7 @@ import {
   type IpcMainInvokeEvent
 } from "electron";
 import { join } from "node:path";
-import type { QuickCaptureAction } from "@pwrsnap/shared";
+import type { QuickCaptureAction, RecordingCapabilities } from "@pwrsnap/shared";
 import { getMainLogger } from "../log";
 import { getPreloadPath } from "../window";
 import {
@@ -334,6 +334,7 @@ export type SelectorResult =
        *  `settings.recording.videoCaptureCursor`). Undefined for image
        *  captures, which don't consume it yet (Phase 3). */
       captureCursor?: boolean;
+      recordingCapabilities?: RecordingCapabilities;
       /** The terminal action the user chose at commit (issue #75).
        *  Present ONLY for `"record"`; a snap commit omits it and every
        *  reader treats a missing value as `"snap"`, so a pre-chooser
@@ -682,6 +683,9 @@ export function preWarmRegionSelector(reason: SelectorPrewarmReason = "startup")
           if (typeof payload.captureCursor === "boolean") {
             result.captureCursor = payload.captureCursor;
           }
+          if (payload.recordingCapabilities !== undefined) {
+            result.recordingCapabilities = { ...payload.recordingCapabilities };
+          }
           if (payload.action === "record") {
             result.action = "record";
           }
@@ -788,6 +792,7 @@ export async function pickRegion(
      *  when the chooser can reach a recording, or `C` starts from the
      *  wrong default. */
     cursorDefault?: boolean;
+    recordingCapabilities?: RecordingCapabilities;
     /** Selector-based image-capture diagnostics. Omitted by video flows. */
     latencyTrace?: CaptureLatencyTrace;
     /** Snap-vs-Record policy for this show (issue #75), from
@@ -1123,6 +1128,7 @@ export async function pickRegion(
               : {}),
             intent,
             cursor: cursorDefault,
+            recordingCapabilities: opts.recordingCapabilities,
             quickCaptureAction,
             ...(latencyTrace !== undefined && presentationGeneration !== undefined
               ? {
@@ -2174,6 +2180,7 @@ function isSelectorPayload(value: unknown): value is {
   snappedWindowId?: number;
   fullWindow?: boolean;
   captureCursor?: boolean;
+  recordingCapabilities?: RecordingCapabilities;
   action?: "snap" | "record";
   extents?: { x: number; y: number; w: number; h: number }[];
   outputMode?: "windows" | "rectangle";
@@ -2201,6 +2208,12 @@ function isSelectorPayload(value: unknown): value is {
   }
   if (v.captureCursor !== undefined && typeof v.captureCursor !== "boolean") {
     return false;
+  }
+  if (v.recordingCapabilities !== undefined) {
+    const c = v.recordingCapabilities;
+    if (c === null || typeof c !== "object" ||
+        !("systemAudio" in c) || typeof c.systemAudio !== "boolean" ||
+        !("microphone" in c) || typeof c.microphone !== "boolean") return false;
   }
   if (v.action !== undefined && v.action !== "snap" && v.action !== "record") {
     return false;

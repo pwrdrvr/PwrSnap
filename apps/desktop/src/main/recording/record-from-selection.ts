@@ -239,13 +239,22 @@ export async function startRecordingFromSelection(
       scheduleDockReclaim();
       log.debug("video-record left previous app frontmost", { previousAppPid });
     }
-    // Honor the user's persisted audio defaults; the in-context
-    // recording dialog (a later enhancement) can override these. The
-    // caller read these once, before opening the picker.
-    const capabilities = {
+    const capabilities = selection.recordingCapabilities ?? {
       systemAudio: recording.includeSystemAudio,
       microphone: recording.includeMicrophone,
     };
+    if (capabilities.systemAudio !== recording.includeSystemAudio ||
+        capabilities.microphone !== recording.includeMicrophone) {
+      const persisted = await bus.dispatch("settings:write", {
+        recording: {
+          includeSystemAudio: capabilities.systemAudio,
+          includeMicrophone: capabilities.microphone
+        }
+      }, { principal: "ipc" });
+      if (!persisted.ok) log.warn("Could not persist recording audio choices", {
+        code: persisted.error.code
+      });
+    }
     // Source-app attribution mirrors the image-capture path
     // (capture-handlers.ts) via the shared `resolveSelectionSourceApp`
     // helper: snap-target id first, rect-center hit test as fallback,

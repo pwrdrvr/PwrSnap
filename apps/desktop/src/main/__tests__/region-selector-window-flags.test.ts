@@ -488,6 +488,50 @@ describe("createSelectorWindow — Splashtop Space-shift guard (bug iii)", () =>
     ipcListeners.get("region-selector:result")?.({}, { ok: false });
     await expect(pick).resolves.toMatchObject({ ok: false, reason: "cancelled" });
   });
+
+  test("round-trips video audio choices through the selector IPC", async () => {
+    const recordingCapabilities = {
+      systemAudio: true,
+      microphone: false
+    };
+    const { pickRegion } = await import("../capture/region-selector");
+    const pick = pickRegion({
+      intent: "video",
+      keepPwrSnapChrome: true,
+      recordingCapabilities
+    });
+
+    await vi.waitFor(() => {
+      expect(constructed[0]?.webContents.send).toHaveBeenCalledWith(
+        "region-selector:mode",
+        expect.objectContaining({
+          intent: "video",
+          recordingCapabilities
+        })
+      );
+    });
+
+    ipcListeners.get("region-selector:result")?.(
+      {},
+      {
+        ok: true,
+        rect: { x: 20, y: 30, w: 400, h: 200 },
+        displayId: 1,
+        recordingCapabilities: {
+          systemAudio: false,
+          microphone: true
+        }
+      }
+    );
+
+    await expect(pick).resolves.toMatchObject({
+      ok: true,
+      recordingCapabilities: {
+        systemAudio: false,
+        microphone: true
+      }
+    });
+  });
 });
 
 describe("region-selector — snapshot-paint gate before show()", () => {

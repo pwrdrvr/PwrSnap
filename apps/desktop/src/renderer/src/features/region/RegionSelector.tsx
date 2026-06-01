@@ -36,6 +36,7 @@
 // global virtual coords + display id before screencapture.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { RecordingCapabilities } from "@pwrsnap/shared";
 import type { WindowSnapEntry } from "../../preload-types";
 import {
   ALL_HANDLES,
@@ -53,6 +54,10 @@ import {
 const HASH_PARAM_DISPLAY_ID = "displayId";
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
+const DEFAULT_RECORDING_CAPABILITIES: RecordingCapabilities = {
+  systemAudio: false,
+  microphone: false
+};
 // Escape de-dupe window. A single physical Esc can be delivered twice
 // near-simultaneously — once via the focused renderer keydown and once
 // via the forwarded globalShortcut IPC. handleEscape() ignores a second
@@ -138,6 +143,8 @@ export function RegionSelector() {
   // the pre-warmed window), flipped with the `C` key, and shipped on the
   // commit payload for the hotkey path to pass to `recording:start`.
   const [captureCursor, setCaptureCursor] = useState(true);
+  const [recordingCapabilities, setRecordingCapabilities] =
+    useState<RecordingCapabilities>(DEFAULT_RECORDING_CAPABILITIES);
   // ⇧ in snap mode opts into full-window capture: the rect expands
   // from the visible-region bounding box (`entry.rect`) to the
   // window's full bounds (`entry.rawRect`), and the commit payload
@@ -169,6 +176,8 @@ export function RegionSelector() {
   const modeRef = useRef<SelectorMode>("auto");
   const intentRef = useRef<"snap" | "video">("snap");
   const captureCursorRef = useRef(true);
+  const recordingCapabilitiesRef =
+    useRef<RecordingCapabilities>(DEFAULT_RECORDING_CAPABILITIES);
   // Cursor-tracking crosshair guide-lines (auto/region modes). Rendered
   // once and repositioned by direct DOM writes from `onMouseMove` /
   // the window-list cursor — never via React state, so they impose no
@@ -221,6 +230,7 @@ export function RegionSelector() {
   modeRef.current = mode;
   intentRef.current = intent;
   captureCursorRef.current = captureCursor;
+  recordingCapabilitiesRef.current = recordingCapabilities;
 
   // Surface state to CSS for cursor switching + snap visualization.
   useLayoutEffect(() => {
@@ -253,6 +263,11 @@ export function RegionSelector() {
       // (defaults ON when unset) so a prior capture's choice can't bleed
       // into this one through the reused, pre-warmed selector window.
       setCaptureCursor(payload.cursor ?? true);
+      setRecordingCapabilities(
+        payload.intent === "video" && payload.recordingCapabilities !== undefined
+          ? payload.recordingCapabilities
+          : DEFAULT_RECORDING_CAPABILITIES
+      );
       // When switching INTO 'region' mode, drop any existing window
       // snap target back to display — otherwise the user sees a stale
       // window-snap rect from the previous session before they move
@@ -440,7 +455,10 @@ export function RegionSelector() {
       // mount by the global keydown listener. Omitted for image
       // captures, which don't consume it yet (Phase 3).
       ...(intentRef.current === "video"
-        ? { captureCursor: captureCursorRef.current }
+        ? {
+            captureCursor: captureCursorRef.current,
+            recordingCapabilities: recordingCapabilitiesRef.current
+          }
         : {})
     });
     setInteraction({ kind: "snap" });
@@ -526,6 +544,10 @@ export function RegionSelector() {
       return target instanceof HTMLElement && target.dataset.move !== undefined;
     }
 
+    function isRegionControlsTarget(target: EventTarget | null): boolean {
+      return target instanceof HTMLElement && target.closest("[data-region-controls]") !== null;
+    }
+
     function lastCursor(): { x: number; y: number } {
       // Approximate cursor — onMouseMove keeps `lastMouseRef.current`
       // current; falls back to viewport center if we have nothing yet.
@@ -534,6 +556,11 @@ export function RegionSelector() {
     }
 
     function onKeyDown(event: KeyboardEvent): void {
+      // Let focused audio controls own Enter, Space, and Tab. Escape
+      // remains global so the selector can always be dismissed.
+      if (isRegionControlsTarget(event.target) && event.key !== "Escape") {
+        return;
+      }
       // Track ⇧ in snap mode: full-window capture opt-in. The rect
       // expands from the visible-region bbox to the full window
       // bounds + the chip text changes + commit sends fullWindow:true.
@@ -661,6 +688,7 @@ export function RegionSelector() {
     }
 
     function onMouseDown(event: MouseEvent): void {
+      if (isRegionControlsTarget(event.target)) return;
       if (event.button !== 0) return;
       event.preventDefault();
       const handle = getHandleFromTarget(event.target);
@@ -724,6 +752,13 @@ export function RegionSelector() {
     }
 
     function onMouseMove(event: MouseEvent): void {
+      if (
+        isRegionControlsTarget(event.target) &&
+        (interactionRef.current.kind === "snap" ||
+          interactionRef.current.kind === "adjusting")
+      ) {
+        return;
+      }
       lastMouseRef.current = { x: event.clientX, y: event.clientY };
       // Crosshair tracks the cursor in every state; CSS decides whether
       // it paints (hidden during moving/resizing and in window mode).
@@ -835,6 +870,12 @@ export function RegionSelector() {
 
     function onMouseUp(event: MouseEvent): void {
       const i = interactionRef.current;
+      if (
+        isRegionControlsTarget(event.target) &&
+        (i.kind === "snap" || i.kind === "adjusting")
+      ) {
+        return;
+      }
       // Clear the discard-pending dim on ANY mouseup — including when
       // Esc/Enter already stepped the interaction back to snap/adjusting
       // before the button was released (the early-return below would
@@ -919,7 +960,8 @@ export function RegionSelector() {
       if (payload.key === "Escape") {
         handleEscape();
       } else if (payload.key === "Enter") {
-        commit();
+        const active = document.activeElement;
+        if (!isRegionControlsTarget(active)) commit();
       }
     });
     return () => {
@@ -1206,11 +1248,61 @@ export function RegionSelector() {
           {interaction.kind === "snap" ? "cancel" : "back"}
         </span>
       </div>
+      {intent === "video" && (
+        <div
+          className="region-recording-controls"
+          data-region-controls="true"
+          role="group"
+          aria-label="Recording audio"
+        >
+          <AudioToggle
+            label="System audio"
+            pressed={recordingCapabilities.systemAudio}
+            onToggle={() =>
+              setRecordingCapabilities((current) => ({
+                ...current,
+                systemAudio: !current.systemAudio
+              }))
+            }
+          />
+          <AudioToggle
+            label="Microphone"
+            pressed={recordingCapabilities.microphone}
+            onToggle={() =>
+              setRecordingCapabilities((current) => ({
+                ...current,
+                microphone: !current.microphone
+              }))
+            }
+          />
+        </div>
+      )}
       <style>{`@keyframes ps-rec-pulse {
         0% { opacity: 1; }
         50% { opacity: 0.4; }
         100% { opacity: 1; }
       }`}</style>
     </div>
+  );
+}
+
+function AudioToggle(props: {
+  label: string;
+  pressed: boolean;
+  onToggle: () => void;
+}) {
+  const { label, pressed, onToggle } = props;
+  return (
+    <button
+      type="button"
+      className="region-audio-toggle"
+      aria-pressed={pressed}
+      onClick={onToggle}
+    >
+      <span className="region-audio-toggle__track" aria-hidden="true">
+        <span className="region-audio-toggle__thumb" />
+      </span>
+      <span className="region-audio-toggle__label">{label}</span>
+    </button>
   );
 }

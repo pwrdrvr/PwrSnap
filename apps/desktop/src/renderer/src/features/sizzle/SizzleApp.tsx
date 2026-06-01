@@ -1398,34 +1398,42 @@ function Editor(props: EditorProps): ReactElement {
             }
 
             elements.push(
-              <li key={scene.id} className="szl__scene">
+              <li
+                key={scene.id}
+                className={
+                  "szl__scene" +
+                  (scene.kind === "sequence" ? " szl__scene--sequence" : "")
+                }
+              >
                 <span className="szl__scene-num">{idx + 1}</span>
-                <div className="szl__scene-thumb">
-                  {capture ? (
-                    <>
-                      {isVideo ? (
-                        <video
-                          src={captureSrcUrl(scene.captureId)}
-                          preload="metadata"
-                          muted
-                          playsInline
-                        />
-                      ) : (
-                        <img src={thumb} alt="" />
-                      )}
-                      {isVideo ? (
-                        <>
-                          <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
-                          <span className="szl__scene-thumb-duration">
-                            {formatDur(capture.video?.durationSec ?? 0)}
-                          </span>
-                        </>
-                      ) : null}
-                    </>
-                  ) : (
-                    <span className="szl__scene-missing">missing</span>
-                  )}
-                </div>
+                {scene.kind !== "sequence" ? (
+                  <div className="szl__scene-thumb">
+                    {capture ? (
+                      <>
+                        {isVideo ? (
+                          <video
+                            src={captureSrcUrl(scene.captureId)}
+                            preload="metadata"
+                            muted
+                            playsInline
+                          />
+                        ) : (
+                          <img src={thumb} alt="" />
+                        )}
+                        {isVideo ? (
+                          <>
+                            <span className="szl__scene-thumb-play" aria-hidden="true">▶</span>
+                            <span className="szl__scene-thumb-duration">
+                              {formatDur(capture.video?.durationSec ?? 0)}
+                            </span>
+                          </>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span className="szl__scene-missing">missing</span>
+                    )}
+                  </div>
+                ) : null}
                 <div className="szl__scene-body">
                   {scene.kind === "sequence" ? (
                     <>

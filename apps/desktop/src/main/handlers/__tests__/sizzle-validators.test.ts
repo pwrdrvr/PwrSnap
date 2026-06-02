@@ -3,6 +3,7 @@ import {
   validateLibraryListByIds,
   validateLibrarySearch,
   validateSizzleCreate,
+  validateSizzleDuplicate,
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
   validateSizzlePreviewRequest,
@@ -36,6 +37,43 @@ describe("validateSizzleCreate", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe("name_too_long");
+  });
+});
+
+describe("validateSizzleDuplicate", () => {
+  it("accepts an id and defaults forkChat on", () => {
+    const r = validateSizzleDuplicate({ id: "sz_1" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ id: "sz_1", forkChat: true });
+  });
+
+  it("accepts an explicit name and forkChat false", () => {
+    const r = validateSizzleDuplicate({
+      id: "sz_1",
+      name: "Alternate edit",
+      forkChat: false
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        id: "sz_1",
+        name: "Alternate edit",
+        forkChat: false
+      });
+    }
+  });
+
+  it("rejects invalid optional fields", () => {
+    const name = validateSizzleDuplicate({
+      id: "sz_1",
+      name: "x".repeat(SIZZLE_LIMITS.projectNameMax + 1)
+    });
+    expect(name.ok).toBe(false);
+    if (!name.ok) expect(name.error.code).toBe("name_too_long");
+
+    const forkChat = validateSizzleDuplicate({ id: "sz_1", forkChat: "yes" });
+    expect(forkChat.ok).toBe(false);
+    if (!forkChat.ok) expect(forkChat.error.code).toBe("forkChat_invalid");
   });
 });
 

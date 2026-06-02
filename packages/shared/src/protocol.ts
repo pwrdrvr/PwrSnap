@@ -2652,6 +2652,10 @@ export type Commands = {
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
   "sizzle:create": { req: { name: string }; res: SizzleProject };
+  "sizzle:duplicate": {
+    req: { id: string; name?: string; forkChat?: boolean };
+    res: SizzleProject;
+  };
   "sizzle:update": {
     req: {
       id: string;

@@ -245,6 +245,70 @@ function chatsDirPath(): string {
 }
 
 /**
+ * Best-effort fork of visible Sizzle chat threads from one project to
+ * another. The Codex fork preserves model-visible history; copying the local
+ * journal preserves the PwrSnap chat transcript UI for the new reel.
+ */
+export async function forkProjectChats(
+  sourceProjectId: string,
+  targetProjectId: string
+): Promise<void> {
+  const store = new ChatThreadStore({ chatsDir: chatsDirPath() });
+  const sourceThreads = await store.list({
+    includeArchived: false,
+    anchorCaptureId: sourceProjectId
+  });
+  if (sourceThreads.length === 0) return;
+
+  const settings = await defaultSettingsReader();
+  const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
+  const baseInstructions = buildSizzleSystemPrompt({
+    settings,
+    anchorCaptureId: targetProjectId
+  });
+
+  for (const source of sourceThreads) {
+    const preparedDir = await store.prepareThreadDir(source.name);
+    let forked: {
+      threadId: string;
+      model: string;
+      modelProvider: string;
+      serviceTier: string | null;
+    };
+    try {
+      forked = await client.forkThread({
+        sourceThreadId: source.threadId,
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        baseInstructions,
+        cwd: preparedDir.path,
+        runtimeWorkspaceRoots: [preparedDir.path],
+        config: SIZZLE_CHAT_THREAD_CONFIG
+      });
+    } catch (cause) {
+      await store.discardPreparedThreadDir(preparedDir).catch(() => undefined);
+      throw cause;
+    }
+    await client.clearThreadGitInfo(forked.threadId).catch((cause) => {
+      log.warn("forked sizzle chat git metadata clear failed", {
+        threadId: forked.threadId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+    });
+    await store.create({
+      threadId: forked.threadId,
+      name: source.name,
+      anchorCaptureId: targetProjectId,
+      preparedDir
+    });
+    const journal = await store.readJournal(source.threadId);
+    for (const entry of journal) {
+      await store.journalAppend(forked.threadId, entry);
+    }
+  }
+}
+
+/**
  * Delete every chat thread (index row + on-disk dir) anchored to a Sizzle
  * project. Called from the sizzle:delete cascade so deleting a reel leaves
  * no orphan chat dir (locked decision #6). Best-effort + idempotent; uses

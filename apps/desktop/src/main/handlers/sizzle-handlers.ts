@@ -19,7 +19,7 @@ import {
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
-import { cleanupProjectChats } from "./sizzle-chat-handlers";
+import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
 import {
   pruneTtsCache,
   readAudio,
@@ -54,6 +54,7 @@ import { resolveCacheFile } from "../render/coordinator";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import {
   validateSizzleCreate,
+  validateSizzleDuplicate,
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
   validateSizzlePreviewRequest,
@@ -342,6 +343,27 @@ export function registerSizzleHandlers(): void {
     const project = await store.create(v.name);
     await pushProjectsChanged();
     return ok(project);
+  });
+
+  bus.register("sizzle:duplicate", async (req) => {
+    const v = validateSizzleDuplicate(req);
+    if (!v.ok) return err(v.error);
+    try {
+      const project = await store.duplicate(v.value.id, v.value.name);
+      if (v.value.forkChat) {
+        await forkProjectChats(v.value.id, project.id).catch((cause: unknown) => {
+          log.warn("sizzle:duplicate chat fork failed", {
+            sourceProjectId: v.value.id,
+            targetProjectId: project.id,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
+      }
+      await pushProjectsChanged();
+      return ok(project);
+    } catch (cause) {
+      return err(toError(cause, "sizzle_duplicate_failed"));
+    }
   });
 
   bus.register("sizzle:update", async (req) => {

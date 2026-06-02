@@ -13,6 +13,8 @@ import type {
   SandboxMode,
   ThreadStartParams,
   ThreadStartResponse,
+  ThreadForkParams,
+  ThreadForkResponse,
   ThreadResumeParams,
   ThreadResumeResponse,
   ThreadSettingsUpdatedNotification,
@@ -58,6 +60,16 @@ export type CodexStartThreadOptions = {
    *  shell / unified_exec / apply_patch tools. Our dynamic tools are
    *  added BEFORE that gate, so they survive. */
   environments?: unknown[];
+};
+
+export type CodexForkThreadOptions = {
+  sourceThreadId: string;
+  approvalPolicy?: string;
+  sandbox?: string;
+  baseInstructions?: string;
+  cwd?: string;
+  runtimeWorkspaceRoots?: string[];
+  config?: Record<string, unknown>;
 };
 
 export type CodexStartTurnOptions = {
@@ -235,6 +247,57 @@ export class CodexThreadClient {
     )) as ThreadResumeResponse;
     this.loadedThreadIds.add(response.thread.id);
     codexThreadClientLog.debug("thread resumed", { threadId: response.thread.id });
+  }
+
+  async forkThread(opts: CodexForkThreadOptions): Promise<{
+    threadId: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+  }> {
+    const connection = await this.getConnection();
+    await this.initialize();
+
+    const params: ThreadForkParams = {
+      threadId: opts.sourceThreadId,
+      persistExtendedHistory: false
+    };
+    if (opts.cwd !== undefined) {
+      params.cwd = opts.cwd;
+    }
+    if (opts.runtimeWorkspaceRoots !== undefined) {
+      params.runtimeWorkspaceRoots = opts.runtimeWorkspaceRoots;
+    }
+    if (opts.approvalPolicy !== undefined) {
+      params.approvalPolicy = opts.approvalPolicy as AskForApproval;
+    }
+    if (opts.sandbox !== undefined) {
+      params.sandbox = opts.sandbox as SandboxMode;
+    }
+    if (opts.baseInstructions !== undefined) {
+      params.baseInstructions = opts.baseInstructions;
+    }
+    if (opts.config !== undefined) {
+      params.config = opts.config as NonNullable<ThreadForkParams["config"]>;
+    }
+
+    const response = (await connection.request(
+      "thread/fork",
+      params,
+      this.requestTimeoutMs
+    )) as ThreadForkResponse;
+    const threadId = response.thread.id;
+    this.loadedThreadIds.add(threadId);
+    codexThreadClientLog.debug("thread forked", {
+      sourceThreadId: opts.sourceThreadId,
+      threadId
+    });
+    return {
+      threadId,
+      model: response.model,
+      modelProvider: response.modelProvider,
+      serviceTier: response.serviceTier
+    };
   }
 
   async clearThreadGitInfo(threadId: string): Promise<void> {

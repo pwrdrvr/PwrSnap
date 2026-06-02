@@ -140,6 +140,43 @@ export function validateSizzleCreate(
   return { ok: true, name };
 }
 
+export function validateSizzleDuplicate(
+  req: unknown
+):
+  | { ok: true; value: { id: string; name?: string; forkChat: boolean } }
+  | { ok: false; error: PwrSnapError } {
+  if (!isRecord(req)) {
+    return { ok: false, error: validationError("not_object", "duplicate payload must be an object") };
+  }
+  const id = req.id;
+  if (typeof id !== "string" || id.length === 0) {
+    return { ok: false, error: validationError("id_required", "id must be a non-empty string") };
+  }
+  const out: { id: string; name?: string; forkChat: boolean } = {
+    id,
+    forkChat: req.forkChat !== false
+  };
+  if (req.name !== undefined) {
+    if (typeof req.name !== "string") {
+      return { ok: false, error: validationError("name_invalid", "name must be a string") };
+    }
+    if (req.name.length > SIZZLE_LIMITS.projectNameMax) {
+      return {
+        ok: false,
+        error: validationError(
+          "name_too_long",
+          `name must be ≤ ${SIZZLE_LIMITS.projectNameMax} chars`
+        )
+      };
+    }
+    out.name = req.name;
+  }
+  if (req.forkChat !== undefined && typeof req.forkChat !== "boolean") {
+    return { ok: false, error: validationError("forkChat_invalid", "forkChat must be a boolean") };
+  }
+  return { ok: true, value: out };
+}
+
 export function validateSizzleUpdate(
   req: unknown
 ): { ok: true; value: ValidatedSizzleUpdate } | { ok: false; error: PwrSnapError } {

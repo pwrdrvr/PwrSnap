@@ -163,6 +163,61 @@ describe("SizzleStore", () => {
     expect(scene.beats![0]!.videoFit).toBe("smart-fit");
   });
 
+  it("duplicate() copies project settings and scenes with fresh ids, then resets render output", async () => {
+    const store = makeStore();
+    const p = await store.create("Launch Reel");
+    const source = await store.update(p.id, {
+      voice: "nova",
+      resolution: "720p",
+      outputPath: "/tmp/launch.mp4",
+      lastRenderedAt: "2026-06-01T12:00:00.000Z",
+      scenes: [
+        {
+          id: "sc_simple",
+          captureId: "cap_simple",
+          scriptLine: "Simple scene",
+          durationOverrideSec: 4,
+          mediaTrim: null,
+          audioSource: "auto",
+          transition: "crossfade"
+        },
+        {
+          id: "sc_sequence",
+          kind: "sequence",
+          captureId: "cap_a",
+          scriptLine: "Walk through both moments.",
+          narration: "Walk through both moments.",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_a", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+            { id: "bt_b", captureId: "cap_b", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      ]
+    });
+    const duplicate = await store.duplicate(source.id);
+    expect(duplicate.id).not.toBe(source.id);
+    expect(duplicate.name).toBe("Launch Reel Copy");
+    expect(duplicate.voice).toBe("nova");
+    expect(duplicate.resolution).toBe("720p");
+    expect(duplicate.outputPath).toBeNull();
+    expect(duplicate.lastRenderedAt).toBeNull();
+    expect(duplicate.scenes).toHaveLength(2);
+    expect(duplicate.scenes.map((scene) => scene.captureId)).toEqual(["cap_simple", "cap_a"]);
+    expect(duplicate.scenes.map((scene) => scene.id)).not.toEqual(
+      source.scenes.map((scene) => scene.id)
+    );
+    const duplicatedSequence = duplicate.scenes[1]!;
+    expect(duplicatedSequence.kind).toBe("sequence");
+    expect(duplicatedSequence.beats?.map((beat) => beat.captureId)).toEqual(["cap_a", "cap_b"]);
+    expect(duplicatedSequence.beats?.map((beat) => beat.id)).not.toEqual(
+      source.scenes[1]!.beats?.map((beat) => beat.id)
+    );
+  });
+
   it("preserves an auto beat across a write→read round-trip (no downgrade to offset)", async () => {
     const store = makeStore();
     const p = await store.create("Demo");

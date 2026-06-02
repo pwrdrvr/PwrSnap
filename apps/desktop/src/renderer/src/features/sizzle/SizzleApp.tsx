@@ -554,6 +554,19 @@ export function SizzleApp(): ReactElement {
     );
   }, []);
 
+  const onDuplicate = useCallback(
+    async (id: string) => {
+      await flushPatch(id);
+      const r = await dispatch("sizzle:duplicate", { id });
+      if (r.ok) {
+        setProjects((prev) => [r.value, ...prev.filter((p) => p.id !== r.value.id)]);
+        selectProject(r.value.id);
+        setFocusTitleForId(r.value.id);
+      }
+    },
+    [flushPatch, selectProject]
+  );
+
   const onUpdate = useCallback(
     (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
       // 0. Record undo history for scene edits (not name/voice patches, and
@@ -901,6 +914,7 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
             )}
@@ -928,6 +942,7 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
             )}
@@ -957,6 +972,7 @@ export function SizzleApp(): ReactElement {
               onPickSequenceBeat={(sceneId) => setPicker({ kind: "sequenceBeat", sceneId })}
               onRender={onRender}
               onReveal={onReveal}
+              onDuplicate={() => void onDuplicate(active.id)}
               onDelete={() => onDelete(active.id)}
               status={status}
             />
@@ -996,18 +1012,26 @@ export function SizzleApp(): ReactElement {
 function ProjectRow({
   project,
   active,
-  onSelect
+  onSelect,
+  onDuplicate
 }: {
   project: SizzleProject;
   active: boolean;
   onSelect: () => void;
+  onDuplicate: () => void;
 }): ReactElement {
   const clipLabel = `${project.scenes.length} clip${project.scenes.length === 1 ? "" : "s"}`;
   const updatedLabel = isDifferentProjectDate(project.createdAt, project.modifiedAt)
     ? `Updated ${formatProjectDate(project.modifiedAt)}`
     : null;
   return (
-    <li>
+    <li
+      className="szl__row-wrap"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onDuplicate();
+      }}
+    >
       <button
         className={"szl__row" + (active ? " is-active" : "")}
         onClick={onSelect}
@@ -1020,6 +1044,21 @@ function ProjectRow({
         {updatedLabel !== null ? (
           <span className="szl__row-meta szl__row-meta--sub">{updatedLabel}</span>
         ) : null}
+      </button>
+      <button
+        type="button"
+        className="szl__row-duplicate"
+        title="Duplicate Sizzle Reel"
+        aria-label={`Duplicate ${project.name}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onDuplicate();
+        }}
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="8" y="8" width="11" height="11" rx="2" />
+          <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+        </svg>
       </button>
     </li>
   );
@@ -1057,6 +1096,7 @@ type EditorProps = {
   onPickSequenceBeat: (sceneId: string) => void;
   onRender: () => void;
   onReveal: () => void;
+  onDuplicate: () => void;
   onDelete: () => void;
 };
 
@@ -1077,6 +1117,7 @@ function Editor(props: EditorProps): ReactElement {
     onPickSequenceBeat,
     onRender,
     onReveal,
+    onDuplicate,
     onDelete
   } = props;
 
@@ -1529,6 +1570,9 @@ function Editor(props: EditorProps): ReactElement {
             : ""}
         </div>
         <span className="szl__spacer" />
+        <button className="szl__btn" onClick={onDuplicate} type="button">
+          Duplicate
+        </button>
         <button className="szl__btn-danger" onClick={onDelete} type="button">
           Delete
         </button>

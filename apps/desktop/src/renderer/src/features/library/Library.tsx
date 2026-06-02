@@ -67,6 +67,27 @@ function copyPresetForShortcutKey(key: string): CopyPreset | null {
   return null;
 }
 
+function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boolean {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 0);
+  if (terms.length === 0) return true;
+  const haystack = [
+    project.name,
+    project.createdAt,
+    project.modifiedAt,
+    ...project.scenes.flatMap((scene) => [
+      scene.scriptLine,
+      scene.kind === "sequence" ? scene.narration ?? "" : ""
+    ])
+  ]
+    .join(" ")
+    .toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
 const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
   low: 0,
   med: 0,
@@ -1205,15 +1226,22 @@ export function Library() {
   // filtering to "Safari" can still narrow further to just images
   // from Safari). Projects can't compose that way because they have
   // no source-app dimension to begin with.
-  // Projects don't participate in `library:search` (the FTS5 index is
-  // captures-only), so they drop out of the grid while a query is
-  // active — same reasoning as the source-app filter exclusion below.
   const gridProjects = useMemo(
-    () =>
-      visibleTypes.projects && !isTrashView && !isSearchActive && activeSourceAppId === null
-        ? sizzleProjects
-        : [],
-    [visibleTypes.projects, isTrashView, isSearchActive, activeSourceAppId, sizzleProjects]
+    () => {
+      if (!visibleTypes.projects || isTrashView || activeSourceAppId !== null) return [];
+      if (!isSearchActive) return sizzleProjects;
+      return sizzleProjects.filter((project) =>
+        sizzleProjectMatchesQuery(project, searchQuery)
+      );
+    },
+    [
+      visibleTypes.projects,
+      isTrashView,
+      activeSourceAppId,
+      isSearchActive,
+      sizzleProjects,
+      searchQuery
+    ]
   );
   const fixtureBacking = useMemo(
     () => new FixtureBackedRecords(universeRecords, gridProjects),
@@ -1224,6 +1252,7 @@ export function Library() {
     [universeRecords, gridProjects, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
+  const searchResultCount = searchState.rows.length + (isSearchActive ? gridProjects.length : 0);
 
   // Search bypasses every other filter — the user gets exactly the
   // result set from the bus, in rank/date order. Source-app + Today
@@ -1934,6 +1963,20 @@ export function Library() {
     });
   }
 
+  function duplicateSizzleProject(
+    projectId: string,
+    event?: ReactMouseEvent<HTMLElement>
+  ): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    void (async () => {
+      const result = await dispatch("sizzle:duplicate", { id: projectId });
+      if (result.ok) {
+        void dispatch("sizzle:open", { projectId: result.value.id });
+      }
+    })();
+  }
+
   /**
    * Reel filmstrip frame click. Updates selectedRecordId without
    * opening Focus.
@@ -2188,8 +2231,8 @@ export function Library() {
                 : searchState.error !== null
                   ? "search failed"
                   : searchState.capped
-                    ? `${searchState.rows.length}+ matches`
-                    : `${searchState.rows.length} ${searchState.rows.length === 1 ? "match" : "matches"}`
+                    ? `${searchResultCount}+ matches`
+                    : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
               : isTrashView
                 ? `${trashRecords.length} in trash`
                 : `${totalLive} captures`}
@@ -2590,9 +2633,9 @@ export function Library() {
           {isSearchActive &&
             !searchState.loading &&
             searchState.error === null &&
-            searchState.rows.length === 0 && (
+            searchResultCount === 0 && (
               <div className="psl__search-empty" role="status">
-                No captures match “{searchState.forQuery}”.
+                No captures or Sizzle Reels match “{searchState.forQuery}”.
               </div>
             )}
           <VirtualizedGrid
@@ -2602,6 +2645,7 @@ export function Library() {
             fixtureBacking={fixtureBacking}
             appLabels={appLabels}
             onSelectCell={onSelectCell}
+            duplicateSizzleProject={duplicateSizzleProject}
             preloadFullRes={preloadFullRes}
             hasMore={gridHasMore}
             isLoadingMore={gridIsLoadingMore}
@@ -2981,6 +3025,7 @@ type VirtualizedGridProps = {
   fixtureBacking: FixtureBackedRecords;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
+  duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -3034,6 +3079,7 @@ function VirtualizedGrid({
   fixtureBacking,
   appLabels,
   onSelectCell,
+  duplicateSizzleProject,
   preloadFullRes,
   hasMore,
   isLoadingMore,
@@ -3221,6 +3267,7 @@ function VirtualizedGrid({
                 fixtureBacking={fixtureBacking}
                 appLabels={appLabels}
                 onSelectCell={onSelectCell}
+                duplicateSizzleProject={duplicateSizzleProject}
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
@@ -3258,6 +3305,7 @@ function CellRow({
   fixtureBacking,
   appLabels,
   onSelectCell,
+  duplicateSizzleProject,
   preloadFullRes,
   isTrashView,
   trashCapture,
@@ -3271,6 +3319,7 @@ function CellRow({
   fixtureBacking: FixtureBackedRecords;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
+  duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: CellAction;
@@ -3302,6 +3351,7 @@ function CellRow({
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
         const isProject = c.kind === "project";
+        const projectId = isProject && c.projectId !== undefined ? c.projectId : null;
         // Cart checkbox shows for real (non-project) captures outside
         // trash. The checkbox SELF-SUBSCRIBES to the cart (see
         // <CartCellCheckbox>) so a cart toggle re-renders only the
@@ -3319,6 +3369,11 @@ function CellRow({
             }
             data-cell-id={record?.id ?? ""}
             onClick={() => onSelectCell(c)}
+            onContextMenu={(event) => {
+              if (projectId !== null) {
+                duplicateSizzleProject(projectId, event);
+              }
+            }}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
@@ -3336,6 +3391,20 @@ function CellRow({
                   <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 )}
               </span>
+              {projectId !== null ? (
+                <button
+                  type="button"
+                  className="psl__cell-trash psl__cell-duplicate"
+                  title="Duplicate Sizzle Reel"
+                  aria-label={`Duplicate ${c.n}`}
+                  onClick={(event) => duplicateSizzleProject(projectId, event)}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="8" y="8" width="11" height="11" rx="2" />
+                    <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                  </svg>
+                </button>
+              ) : null}
               {record !== null &&
                 (isTrashView ? (
                   <span className="psl__cell-actions">

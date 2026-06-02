@@ -1346,6 +1346,11 @@
   color: var(--accent-bright, var(--accent));
 }
 
+.psl__cell-duplicate:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright, var(--accent));
+}
+
 /* === Project Asset Cart — per-cell checkbox === */
 /* Top-LEFT of the cell so it never overlaps the bottom-right trash
    affordance. Hover-revealed like the trash button, but ALSO stays

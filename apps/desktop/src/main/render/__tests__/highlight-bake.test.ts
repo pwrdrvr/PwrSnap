@@ -44,13 +44,13 @@ describe("highlightSvg (bake) — color + opacity", () => {
     expect(svg).toContain('fill="#facc15"');
   });
 
-  test("explicit opacity is honored verbatim", () => {
+  test("explicit opacity stays in the marker range", () => {
     const svg = highlightSvgForV2(
-      { ...baseHighlight(), opacity: 0.65 },
+      { ...baseHighlight(), opacity: 1 },
       W,
       H
     );
-    expect(svg).toContain('fill-opacity="0.65"');
+    expect(svg).toContain('fill-opacity="0.6"');
   });
 });
 

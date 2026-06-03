@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { EVENT_CHANNELS, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
+import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
 import { SizzleApp } from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
@@ -76,6 +76,38 @@ function projects(count: number): SizzleProject[] {
       modifiedAt: new Date(Date.UTC(2026, 4, n, 13, 0, 0)).toISOString()
     });
   });
+}
+
+function videoCapture(id: string, defaultRange = { start: 0, end: 5 }): CaptureRecord {
+  return {
+    id,
+    kind: "video",
+    captured_at: "2026-05-28T00:00:00.000Z",
+    legacy_src_path: `/tmp/${id}.mp4`,
+    bundle_path: null,
+    flat_png_path: null,
+    bundle_modified_at: null,
+    bundle_format_version: 1,
+    bundle_edits_version: 0,
+    width_px: 1920,
+    height_px: 1080,
+    device_pixel_ratio: 1,
+    byte_size: 1000,
+    sha256: id,
+    source_app_bundle_id: null,
+    source_app_name: `Video ${id}`,
+    edits_version: 0,
+    deleted_at: null,
+    video: {
+      durationSec: 8,
+      containerFormat: "mp4",
+      hasSystemAudio: false,
+      hasMicrophoneAudio: false,
+      defaultRange,
+      previewPath: null,
+      previewStatus: "ready"
+    }
+  };
 }
 
 function installApi(
@@ -362,6 +394,121 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
     expect(el.textContent).toContain("4s");
+  });
+
+  test("starts and stops the already-mounted first sequence video preview", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
+      }
+    });
+    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
+    if (playButton === null) throw new Error("sequence preview play button not found");
+    if (firstVideo === null) throw new Error("first sequence video not found");
+
+    const playMock = vi.mocked(HTMLMediaElement.prototype.play);
+    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
+    playMock.mockClear();
+    pauseMock.mockClear();
+
+    await act(async () => {
+      playButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(playMock.mock.contexts).toContain(firstVideo);
+
+    await act(async () => {
+      playButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(pauseMock.mock.contexts).toContain(firstVideo);
+  });
+
+  test("syncs the first sequence video preview to the beat trim and narration time", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 2, endSec: 6 },
+          transition: "cut",
+          videoFit: "trim"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
+      }
+    });
+    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
+    const audio = el.querySelector<HTMLAudioElement>("audio");
+    if (playButton === null) throw new Error("sequence preview play button not found");
+    if (firstVideo === null) throw new Error("first sequence video not found");
+    if (audio === null) throw new Error("preview audio not found");
+
+    await act(async () => {
+      playButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(firstVideo.currentTime).toBe(2);
+
+    await act(async () => {
+      audio.currentTime = 1;
+      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(firstVideo.currentTime).toBe(3);
   });
 
   test("invalidates a resolved sequence timeline when beat timing changes", async () => {

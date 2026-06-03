@@ -5,6 +5,7 @@ import {
   distributeSequenceBeatStarts,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
+  resolveSizzleVideoFit,
   type CaptureRecord,
   type SizzleBeatTiming,
   type SizzleProject,
@@ -204,6 +205,12 @@ type CachedSequencePreviewPlan = {
   plan: SizzleSequencePreviewPlan;
 };
 
+type SequencePreviewVideoState = {
+  beatId: string;
+  sourceTimeSec: number;
+  playbackRate: number;
+};
+
 /** Bar count for the idle (pre-preview) waveform placeholder. */
 const SEQUENCE_WAVE_BARS = 52;
 
@@ -218,6 +225,51 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: mimeType });
+}
+
+function sequencePreviewVideoState(args: {
+  beat: SizzleSequencePreviewBeat;
+  sceneBeat: SizzleSequenceBeat;
+  capture: CaptureRecord;
+  timelineTimeSec: number;
+}): SequencePreviewVideoState | null {
+  const { beat, sceneBeat, capture, timelineTimeSec } = args;
+  if (capture.kind !== "video" || capture.video === undefined || capture.video === null) {
+    return null;
+  }
+  const trim = sceneBeat.mediaTrim ?? {
+    startSec: capture.video.defaultRange.start,
+    endSec: capture.video.defaultRange.end
+  };
+  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
+  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
+  const fit = resolveSizzleVideoFit({
+    policy: sceneBeat.videoFit,
+    sourceDurationSec,
+    targetDurationSec
+  });
+  const elapsedSec = Math.max(0, timelineTimeSec - beat.startSec);
+  const inputDurationSec = Math.max(0.05, fit.inputDurationSec);
+  let sourceOffsetSec: number;
+
+  if (fit.renderMode === "speed-to-fit") {
+    sourceOffsetSec = Math.min(inputDurationSec, elapsedSec * fit.playbackRate);
+  } else if (fit.renderMode === "loop") {
+    sourceOffsetSec = elapsedSec % inputDurationSec;
+  } else if (fit.renderMode === "ping-pong") {
+    const pairDurationSec = inputDurationSec * 2;
+    const phaseSec = elapsedSec % pairDurationSec;
+    sourceOffsetSec =
+      phaseSec <= inputDurationSec ? phaseSec : pairDurationSec - phaseSec;
+  } else {
+    sourceOffsetSec = Math.min(inputDurationSec, elapsedSec);
+  }
+
+  return {
+    beatId: beat.beatId,
+    sourceTimeSec: trim.startSec + sourceOffsetSec,
+    playbackRate: fit.playbackRate
+  };
 }
 
 /**
@@ -288,6 +340,7 @@ function SequenceTimelinePreview(props: {
   onSeek: (timeSec: number) => void;
 }): ReactElement {
   const { scene, captureMap, plan, audioBlob, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const fallbackBeats = fallbackSequenceBeats(scene);
   const beats = plan?.beats ?? fallbackBeats;
   const fallbackDuration = Math.max(
@@ -310,6 +363,53 @@ function SequenceTimelinePreview(props: {
         : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
+  const activeSceneBeat =
+    activeBeat === null
+      ? null
+      : (scene.beats ?? []).find((beat) => beat.id === activeBeat.beatId) ?? null;
+  const activeVideoState =
+    activeBeat !== null && activeCapture !== null && activeSceneBeat !== null
+      ? sequencePreviewVideoState({
+          beat: activeBeat,
+          sceneBeat: activeSceneBeat,
+          capture: activeCapture,
+          timelineTimeSec: timeSec
+        })
+      : null;
+  const activeVideoBeatId = activeVideoState?.beatId ?? null;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null) return;
+    if (!playing) {
+      video.pause();
+      return;
+    }
+    void video.play().catch(() => undefined);
+    return () => {
+      video.pause();
+    };
+  }, [playing, activeVideoBeatId]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null || activeVideoState === null) return;
+    try {
+      video.playbackRate = activeVideoState.playbackRate;
+      const driftSec = Math.abs(video.currentTime - activeVideoState.sourceTimeSec);
+      if (!playing || driftSec > 0.12) {
+        video.currentTime = activeVideoState.sourceTimeSec;
+      }
+    } catch {
+      // Metadata may not be ready yet. The next audio tick / beat change
+      // will retry, and the render path remains authoritative.
+    }
+  }, [
+    activeVideoState?.beatId,
+    activeVideoState?.playbackRate,
+    activeVideoState?.sourceTimeSec,
+    playing
+  ]);
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
     const rect = target.getBoundingClientRect();
@@ -324,12 +424,11 @@ function SequenceTimelinePreview(props: {
           <span className="szl__sequence-preview-empty">No beats</span>
         ) : activeCapture?.kind === "video" ? (
           <video
+            ref={videoRef}
             key={activeBeat.beatId}
             src={captureSrcUrl(activeBeat.captureId)}
             muted
             playsInline
-            autoPlay={playing}
-            loop
           />
         ) : activeCapture !== null ? (
           <img src={activeThumb} alt="" />

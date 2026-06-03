@@ -511,6 +511,65 @@ describe("SizzleApp sequence authoring", () => {
     expect(firstVideo.currentTime).toBe(3);
   });
 
+  test("holds the last trimmed frame for freeze-end sequence video preview", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 2, endSec: 3 },
+          transition: "cut",
+          videoFit: "freeze-end"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_a"), videoCapture("cap_b")] }
+      }
+    });
+    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
+    const audio = el.querySelector<HTMLAudioElement>("audio");
+    if (playButton === null) throw new Error("sequence preview play button not found");
+    if (firstVideo === null) throw new Error("first sequence video not found");
+    if (audio === null) throw new Error("preview audio not found");
+
+    await act(async () => {
+      playButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
+    pauseMock.mockClear();
+    firstVideo.currentTime = 3.4;
+
+    await act(async () => {
+      audio.currentTime = 1.2;
+      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(firstVideo.currentTime).toBe(3);
+    expect(pauseMock.mock.contexts).toContain(firstVideo);
+  });
+
   test("invalidates a resolved sequence timeline when beat timing changes", async () => {
     const sequence = scene({
       kind: "sequence",

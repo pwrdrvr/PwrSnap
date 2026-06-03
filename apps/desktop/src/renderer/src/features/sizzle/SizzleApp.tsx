@@ -209,6 +209,7 @@ type SequencePreviewVideoState = {
   beatId: string;
   sourceTimeSec: number;
   playbackRate: number;
+  shouldPlay: boolean;
 };
 
 /** Bar count for the idle (pre-preview) waveform placeholder. */
@@ -268,7 +269,8 @@ function sequencePreviewVideoState(args: {
   return {
     beatId: beat.beatId,
     sourceTimeSec: trim.startSec + sourceOffsetSec,
-    playbackRate: fit.playbackRate
+    playbackRate: fit.playbackRate,
+    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec)
   };
 }
 
@@ -377,11 +379,12 @@ function SequenceTimelinePreview(props: {
         })
       : null;
   const activeVideoBeatId = activeVideoState?.beatId ?? null;
+  const shouldPlayActiveVideo = playing && (activeVideoState?.shouldPlay ?? true);
 
   useEffect(() => {
     const video = videoRef.current;
     if (video === null) return;
-    if (!playing) {
+    if (!shouldPlayActiveVideo) {
       video.pause();
       return;
     }
@@ -389,7 +392,7 @@ function SequenceTimelinePreview(props: {
     return () => {
       video.pause();
     };
-  }, [playing, activeVideoBeatId]);
+  }, [shouldPlayActiveVideo, activeVideoBeatId]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -397,7 +400,7 @@ function SequenceTimelinePreview(props: {
     try {
       video.playbackRate = activeVideoState.playbackRate;
       const driftSec = Math.abs(video.currentTime - activeVideoState.sourceTimeSec);
-      if (!playing || driftSec > 0.12) {
+      if (!shouldPlayActiveVideo || driftSec > 0.12) {
         video.currentTime = activeVideoState.sourceTimeSec;
       }
     } catch {
@@ -407,8 +410,9 @@ function SequenceTimelinePreview(props: {
   }, [
     activeVideoState?.beatId,
     activeVideoState?.playbackRate,
+    activeVideoState?.shouldPlay,
     activeVideoState?.sourceTimeSec,
-    playing
+    shouldPlayActiveVideo
   ]);
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {

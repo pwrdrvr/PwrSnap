@@ -3,7 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
-import { SizzleApp, formatSequencePreviewWarnings } from "../SizzleApp";
+import {
+  SizzleApp,
+  formatSequencePreviewWarnings,
+  formatTranscriptPhraseOptionLabel
+} from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
 // a real canvas + Web Audio. jsdom has neither, and we don't unit-test the
@@ -147,6 +151,15 @@ function installApi(
           durationSec: 4,
           timingQuality: "approximate",
           warnings: [],
+          transcriptPhrases: [
+            {
+              text: "the next screen",
+              startSec: 1.5,
+              endSec: 2.4,
+              wordStartIndex: 3,
+              wordEndIndex: 5
+            }
+          ],
           beats: [
             {
               beatId: "bt_1",
@@ -343,7 +356,7 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("Sequence · one narration block");
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
-    expect(el.textContent).toContain("non-final beats end automatically");
+    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
     expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
     expect(el.textContent).toContain("unresolved");
   });
@@ -395,6 +408,12 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
     expect(el.textContent).toContain("4s");
+    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
+    expect(phrase?.getAttribute("list")).toMatch(/^szl-transcript-phrases-/);
+    const transcriptOption = el.querySelector<HTMLOptionElement>("datalist option");
+    expect(transcriptOption?.value).toBe("the next screen");
+    expect(transcriptOption?.label).toBe("1.5s - 2.4s");
+    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
   });
 
   test("starts and stops the already-mounted first sequence video preview", async () => {
@@ -687,6 +706,20 @@ describe("sequence preview warnings", () => {
     );
 
     expect(warnings[0]?.label).toBe("Beat 2");
+  });
+});
+
+describe("sequence transcript phrase options", () => {
+  test("labels transcript suggestions by timestamp", () => {
+    expect(
+      formatTranscriptPhraseOptionLabel({
+        text: "Once It's installed",
+        startSec: 1.25,
+        endSec: 3.5,
+        wordStartIndex: 4,
+        wordEndIndex: 6
+      })
+    ).toBe("1.3s - 3.5s");
   });
 });
 

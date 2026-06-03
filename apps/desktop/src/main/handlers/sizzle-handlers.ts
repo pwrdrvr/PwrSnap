@@ -28,7 +28,10 @@ import {
   ttsCacheFilename,
   TtsError
 } from "../sizzle/tts";
-import { resolveSpeechTiming } from "../sizzle/speech-timing";
+import {
+  buildTranscriptPhraseSuggestions,
+  resolveSpeechTiming
+} from "../sizzle/speech-timing";
 import {
   planSequenceMediaDiagnostics,
   planSequenceScene,
@@ -679,6 +682,7 @@ export function registerSizzleHandlers(): void {
         durationSec: timeline.durationSec,
         timingQuality: speechTiming.quality,
         warnings,
+        transcriptPhrases: buildTranscriptPhraseSuggestions(speechTiming),
         beats: timeline.beatPlans
       });
     } catch (cause) {

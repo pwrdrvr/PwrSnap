@@ -13,6 +13,7 @@ import {
   type SizzleScene,
   type SizzleSequencePreviewBeat,
   type SizzleSequencePreviewPlan,
+  type SizzleSequenceTranscriptPhrase,
   type SizzleSequencePreviewWarning,
   type SizzleSequenceBeat,
   type SizzleTransition,
@@ -172,6 +173,17 @@ export function formatSequencePreviewWarnings(
       }
     ];
   });
+}
+
+export function formatTranscriptPhraseOptionLabel(
+  phrase: SizzleSequenceTranscriptPhrase
+): string {
+  return `${formatTranscriptTime(phrase.startSec)} - ${formatTranscriptTime(phrase.endSec)}`;
+}
+
+function formatTranscriptTime(seconds: number): string {
+  const rounded = Math.max(0, Math.round(seconds * 10) / 10);
+  return Number.isInteger(rounded) ? `${rounded}s` : `${rounded.toFixed(1)}s`;
 }
 
 function labelForSequenceWarning(
@@ -1994,6 +2006,9 @@ function Editor(props: EditorProps): ReactElement {
               sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
                 ? sequencePreviewEntry.plan
                 : undefined;
+            const transcriptPhrases =
+              scene.kind === "sequence" ? sequencePreviewPlan?.transcriptPhrases ?? [] : [];
+            const transcriptDatalistId = `szl-transcript-phrases-${scene.id}`;
 
             const elements: ReactElement[] = [];
 
@@ -2163,7 +2178,7 @@ function Editor(props: EditorProps): ReactElement {
                                 title={
                                   isFirstBeat
                                     ? "The first beat always starts at 0"
-                                    : "When this beat appears: Auto (evenly spaced between anchors), a spoken Phrase, or an explicit Offset"
+                                    : "When this beat appears: Auto (evenly spaced between anchors), a timed transcript Phrase, or an explicit Offset"
                                 }
                               >
                                 <option value="auto">Auto</option>
@@ -2232,8 +2247,13 @@ function Editor(props: EditorProps): ReactElement {
                                   <input
                                     className="szl__sequence-phrase"
                                     value={beat.timing.phrase}
-                                    placeholder="spoken phrase"
-                                    title="Phrase to match in the narration"
+                                    placeholder={
+                                      transcriptPhrases.length > 0
+                                        ? "choose transcript phrase"
+                                        : "preview for transcript phrases"
+                                    }
+                                    list={transcriptPhrases.length > 0 ? transcriptDatalistId : undefined}
+                                    title="Start this beat at a timed transcript phrase. Preview once to populate phrase suggestions."
                                     onChange={(e) =>
                                       editSequenceBeat(scene.id, beat.id, {
                                         timing: {
@@ -2333,8 +2353,19 @@ function Editor(props: EditorProps): ReactElement {
                           );
                         })}
                       </div>
+                      {transcriptPhrases.length > 0 ? (
+                        <datalist id={transcriptDatalistId}>
+                          {transcriptPhrases.map((phrase) => (
+                            <option
+                              key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
+                              value={phrase.text}
+                              label={formatTranscriptPhraseOptionLabel(phrase)}
+                            />
+                          ))}
+                        </datalist>
+                      ) : null}
                       <div className="szl__scene-hint">
-                        Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
+                        Sequence scene: one script across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Phrase anchors use timed transcript words from preview; the transcript can differ from the written script.
                       </div>
                       <SequenceTimelinePreview
                         scene={scene}

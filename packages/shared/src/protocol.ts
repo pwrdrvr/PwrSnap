@@ -821,12 +821,21 @@ export type SizzleSequencePreviewBeat = {
   videoFit: SizzleVideoFitPolicy;
 };
 
+export type SizzleSequenceTranscriptPhrase = {
+  text: string;
+  startSec: number;
+  endSec: number;
+  wordStartIndex: number;
+  wordEndIndex: number;
+};
+
 export type SizzleSequencePreviewPlan = {
   audioBase64: string;
   mimeType: "audio/mpeg";
   durationSec: number;
   timingQuality: SizzleSpeechTimingQuality;
   warnings: SizzleSequencePreviewWarning[];
+  transcriptPhrases: SizzleSequenceTranscriptPhrase[];
   beats: SizzleSequencePreviewBeat[];
 };
 

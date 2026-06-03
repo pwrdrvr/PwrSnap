@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { app } from "electron";
 import type {
   SizzleResolvedPhraseTiming,
+  SizzleSequenceTranscriptPhrase,
   SizzleSpeechTiming,
   SizzleSpeechTimingWarning,
   SizzleTtsModel,
@@ -216,6 +217,43 @@ export function resolvePhraseTiming(
     };
   }
   return null;
+}
+
+export function buildTranscriptPhraseSuggestions(
+  timing: SizzleSpeechTiming,
+  options: {
+    minWords?: number;
+    maxWords?: number;
+    maxSuggestions?: number;
+  } = {}
+): SizzleSequenceTranscriptPhrase[] {
+  const minWords = Math.max(1, Math.floor(options.minWords ?? 2));
+  const maxWords = Math.max(minWords, Math.floor(options.maxWords ?? 6));
+  const maxSuggestions = Math.max(1, Math.floor(options.maxSuggestions ?? 300));
+  const suggestions: SizzleSequenceTranscriptPhrase[] = [];
+  const seen = new Set<string>();
+  for (let start = 0; start < timing.words.length; start++) {
+    for (let length = minWords; length <= maxWords; length++) {
+      const phraseWords = timing.words.slice(start, start + length);
+      if (phraseWords.length !== length) break;
+      const text = phraseWords.map((word) => word.word).join(" ").trim();
+      if (text.length === 0) continue;
+      const key = text.toLocaleLowerCase("en-US");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const first = phraseWords[0]!;
+      const last = phraseWords[phraseWords.length - 1]!;
+      suggestions.push({
+        text,
+        startSec: roundSec(first.startSec),
+        endSec: roundSec(last.endSec),
+        wordStartIndex: first.index,
+        wordEndIndex: last.index
+      });
+      if (suggestions.length >= maxSuggestions) return suggestions;
+    }
+  }
+  return suggestions;
 }
 
 export function speechTimingCacheDir(): string {

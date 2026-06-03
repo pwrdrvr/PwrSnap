@@ -12,6 +12,7 @@ vi.mock("electron", () => ({
 
 import {
   approximateSpeechTiming,
+  buildTranscriptPhraseSuggestions,
   resolvePhraseTiming,
   resolveSpeechTiming,
   speechTimingCacheKey
@@ -190,6 +191,41 @@ describe("resolvePhraseTiming", () => {
   it("returns null for unresolved phrase anchors", () => {
     const timing = approximateSpeechTiming("Open Settings", 2);
     expect(resolvePhraseTiming(timing, { phrase: "approve pairing" })).toBeNull();
+  });
+});
+
+describe("buildTranscriptPhraseSuggestions", () => {
+  it("builds timestamped phrase spans from transcript words", () => {
+    const timing = approximateSpeechTiming("Once it's installed the workflow continues", 4);
+    const suggestions = buildTranscriptPhraseSuggestions(timing, {
+      minWords: 2,
+      maxWords: 3,
+      maxSuggestions: 4
+    });
+
+    expect(suggestions).toEqual([
+      expect.objectContaining({
+        text: "Once it's",
+        wordStartIndex: 0,
+        wordEndIndex: 1
+      }),
+      expect.objectContaining({
+        text: "Once it's installed",
+        wordStartIndex: 0,
+        wordEndIndex: 2
+      }),
+      expect.objectContaining({
+        text: "it's installed",
+        wordStartIndex: 1,
+        wordEndIndex: 2
+      }),
+      expect.objectContaining({
+        text: "it's installed the",
+        wordStartIndex: 1,
+        wordEndIndex: 3
+      })
+    ]);
+    expect(suggestions[0]!.startSec).toBeLessThan(suggestions[0]!.endSec);
   });
 });
 

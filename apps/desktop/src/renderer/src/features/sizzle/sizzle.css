@@ -729,9 +729,10 @@
 .szl__sequence-phrase-popover {
   position: absolute;
   z-index: 20;
-  left: 0;
+  right: 0;
   top: calc(100% + 4px);
-  width: min(420px, 72vw);
+  width: min(420px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
   max-height: 320px;
   padding: 8px;
   background: var(--bg-panel-elevated);

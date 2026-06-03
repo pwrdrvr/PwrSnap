@@ -9,6 +9,7 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec,
+  ErrorNotification,
   ModelReroutedNotification,
   SandboxMode,
   ThreadStartParams,
@@ -25,6 +26,7 @@ import type {
 } from "@pwrsnap/codex-app-server-protocol/v2";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
+import { formatCodexTurnError } from "./codex-error";
 import { getMainLogger } from "../log";
 
 const codexThreadClientLog = getMainLogger("pwrsnap:codex-thread-client");
@@ -77,6 +79,20 @@ export type CodexTurnCompletedEvent = {
   threadId: string;
   turnId: string;
   status: string;
+};
+
+/** A turn faulted. Codex emits the authoritative error detail on the
+ *  `error` notification (ahead of the `turn/completed` status=failed), so
+ *  this is what carries the human-readable reason. `willRetry` is Codex's
+ *  own signal that it will re-attempt the turn — when false the turn is
+ *  terminal and the controller can end it immediately rather than waiting
+ *  for a `turn/completed` that may never arrive. */
+export type CodexTurnErrorEvent = {
+  threadId: string;
+  turnId: string;
+  /** Already-formatted, transcript-ready message. */
+  message: string;
+  willRetry: boolean;
 };
 
 export type CodexThreadTokenUsageEvent = {
@@ -139,6 +155,7 @@ export class CodexThreadClient {
     (event: CodexAgentMessageDeltaEvent) => void
   >();
   private readonly turnCompletedListeners = new Set<(event: CodexTurnCompletedEvent) => void>();
+  private readonly turnErrorListeners = new Set<(event: CodexTurnErrorEvent) => void>();
   private readonly tokenUsageListeners = new Set<(event: CodexThreadTokenUsageEvent) => void>();
   private readonly threadSettingsListeners = new Set<(event: CodexThreadSettingsEvent) => void>();
   private toolCallHandler: CodexToolCallHandler | null = null;
@@ -307,6 +324,13 @@ export class CodexThreadClient {
     };
   }
 
+  onTurnError(cb: (event: CodexTurnErrorEvent) => void): Unsubscribe {
+    this.turnErrorListeners.add(cb);
+    return () => {
+      this.turnErrorListeners.delete(cb);
+    };
+  }
+
   onTokenUsageUpdated(cb: (event: CodexThreadTokenUsageEvent) => void): Unsubscribe {
     this.tokenUsageListeners.add(cb);
     return () => {
@@ -389,6 +413,29 @@ export class CodexThreadClient {
   }
 
   private handleNotification(method: string, params: unknown): void {
+    if (method === "error") {
+      // A turn faulted. Surface the authoritative reason to subscribers so
+      // the controller can end the turn and show it in the transcript —
+      // never drop it silently (the bug this fixes: a failed turn read as
+      // a bare "Failed" with no cause). See codex-error.ts.
+      const notification = params as ErrorNotification;
+      const event: CodexTurnErrorEvent = {
+        threadId: notification.threadId,
+        turnId: notification.turnId,
+        message: formatCodexTurnError(notification.error),
+        willRetry: notification.willRetry === true
+      };
+      codexThreadClientLog.warn("codex turn error", {
+        threadId: event.threadId,
+        turnId: event.turnId,
+        willRetry: event.willRetry,
+        message: event.message
+      });
+      for (const listener of this.turnErrorListeners) {
+        listener(event);
+      }
+      return;
+    }
     if (method === "item/agentMessage/delta") {
       const notification = params as AgentMessageDeltaNotification;
       const event: CodexAgentMessageDeltaEvent = {
@@ -444,7 +491,11 @@ export class CodexThreadClient {
         modelProvider: "openai",
         serviceTier: null
       });
+      return;
     }
+    // Unhandled notification — log at debug so a future protocol surface is
+    // visible during investigation without spamming the common path.
+    codexThreadClientLog.debug("unhandled codex notification", { method });
   }
 
   private emitThreadSettings(event: CodexThreadSettingsEvent): void {

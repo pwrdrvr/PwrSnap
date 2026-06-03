@@ -10,6 +10,7 @@ import type {
 } from "@pwrsnap/codex-app-server-protocol";
 import type {
   DynamicToolCallResponse,
+  ErrorNotification,
   ItemCompletedNotification,
   Model,
   ModelListResponse,
@@ -23,6 +24,7 @@ import type {
 import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
+import { formatCodexTurnError } from "./codex-error";
 import { getMainLogger } from "../log";
 import { PWRSNAP_CODEX_THREAD_CONFIG } from "./codex-thread-config";
 import {
@@ -68,6 +70,10 @@ type PendingTurn = {
   turnId: string;
   agentMessages: string[];
   tokenUsage: ThreadTokenUsage | null;
+  /** Set when Codex emits an `error` notification for this turn — it
+   *  carries the authoritative human-readable reason, which the eventual
+   *  `turn/completed` status=failed often does not. */
+  lastError: string | null;
   resolve: (value: { rawText: string; tokenUsage: ThreadTokenUsage | null }) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -419,6 +425,7 @@ export class CodexAppServerClient {
         turnId,
         agentMessages: [],
         tokenUsage: null,
+        lastError: null,
         resolve,
         reject,
         timer
@@ -428,6 +435,10 @@ export class CodexAppServerClient {
   }
 
   private handleNotification(method: string, params: unknown): void {
+    if (method === "error") {
+      this.handleErrorNotification(params as ErrorNotification);
+      return;
+    }
     if (method === "item/completed") {
       this.handleItemCompleted(params as ItemCompletedNotification);
       return;
@@ -442,6 +453,34 @@ export class CodexAppServerClient {
     }
     if (method === "turn/completed") {
       this.handleTurnCompleted(params as TurnCompletedNotification);
+      return;
+    }
+    // Unhandled notification — log at debug so a future protocol surface is
+    // visible during investigation without spamming the common path.
+    codexClientLog.debug("unhandled codex notification", { method });
+  }
+
+  private handleErrorNotification(params: ErrorNotification): void {
+    const pending = this.pendingTurn;
+    if (!pending || params.threadId !== pending.threadId || params.turnId !== pending.turnId) {
+      return;
+    }
+    // Capture the authoritative reason so a subsequent `turn/completed`
+    // status=failed rejects with the real message (its own `turn.error` is
+    // often null). When Codex won't retry, the turn is terminal — end it
+    // now rather than waiting for a `turn/completed` that may never arrive.
+    const message = formatCodexTurnError(params.error);
+    pending.lastError = message;
+    codexClientLog.warn("codex enrichment turn error", {
+      threadId: params.threadId,
+      turnId: params.turnId,
+      willRetry: params.willRetry === true,
+      message
+    });
+    if (params.willRetry !== true) {
+      clearTimeout(pending.timer);
+      this.pendingTurn = null;
+      pending.reject(new Error(message));
     }
   }
 
@@ -487,7 +526,14 @@ export class CodexAppServerClient {
     this.pendingTurn = null;
 
     if (params.turn.status === "failed") {
-      pending.reject(new Error(params.turn.error?.message ?? "codex capture enrichment failed"));
+      // Prefer the reason from the `error` notification (captured on
+      // pending.lastError) — turn.error is frequently null even when the
+      // turn genuinely failed.
+      const reason =
+        pending.lastError ??
+        (params.turn.error ? formatCodexTurnError(params.turn.error) : null) ??
+        "codex capture enrichment failed";
+      pending.reject(new Error(reason));
       return;
     }
     if (params.turn.status === "interrupted") {

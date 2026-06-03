@@ -26,6 +26,7 @@ import type {
   ChatApprovalDecision,
   ChatApprovalRequest,
   ChatMessage,
+  ChatMessageContent,
   ChatThreadSidecar,
   EventPayloads,
   LibraryChatThreadStatus,
@@ -134,6 +135,10 @@ type TurnState = {
   /** Frozen at turn start — a mid-turn Settings change can't retro-apply. */
   settingsSnapshot: Settings;
   tokenUsage: ThreadTokenUsage | null;
+  /** Set when Codex emits an `error` notification for this turn. Surfaced
+   *  in the failed assistant message so the transcript shows WHY the turn
+   *  failed, not just that it did. */
+  lastError: string | null;
 };
 
 type ThreadModelState = {
@@ -177,6 +182,9 @@ export class ChatThreadController {
     client.onAgentMessageDelta((event) => this.onDelta(event.threadId, event.turnId, event.delta));
     client.onTurnCompleted((event) => {
       void this.onTurnCompleted(event.threadId, event.turnId, event.status);
+    });
+    client.onTurnError((event) => {
+      void this.onTurnError(event.threadId, event.turnId, event.message, event.willRetry);
     });
     client.onTokenUsageUpdated((event) => {
       this.onTokenUsage(event.threadId, event.turnId, event.tokenUsage);
@@ -378,7 +386,8 @@ export class ChatThreadController {
       assistantMessageId,
       buffer: "",
       settingsSnapshot,
-      tokenUsage: null
+      tokenUsage: null,
+      lastError: null
     });
     this.recordTurn(threadId);
     await this.broadcastThreadStatus(threadId, { kind: "streaming", turnId });
@@ -437,6 +446,26 @@ export class ChatThreadController {
     const turn = this.turns.get(threadId);
     if (turn === undefined || turn.turnId !== turnId) return;
     await this.finalizeAssistant(threadId, mapTurnStatus(status));
+  }
+
+  /** Codex faulted a turn. Record the reason so it lands in the failed
+   *  assistant message, and — when the fault is terminal (`willRetry ===
+   *  false`) — end the turn now rather than waiting for a `turn/completed`
+   *  that may never arrive. When Codex says it WILL retry, we keep the
+   *  turn open and let the eventual `turn/completed` decide its fate
+   *  (carrying the recorded reason if it ends up failing). */
+  private async onTurnError(
+    threadId: string,
+    turnId: string,
+    message: string,
+    willRetry: boolean
+  ): Promise<void> {
+    const turn = this.turns.get(threadId);
+    if (turn === undefined || turn.turnId !== turnId) return;
+    turn.lastError = message;
+    if (!willRetry) {
+      await this.finalizeAssistant(threadId, "failed");
+    }
   }
 
   private onTokenUsage(threadId: string, turnId: string, tokenUsage: ThreadTokenUsage): void {
@@ -540,7 +569,7 @@ export class ChatThreadController {
     const message: ChatMessage = {
       id: turn.assistantMessageId,
       role: "assistant",
-      content: [{ kind: "text", text: turn.buffer }],
+      content: buildFinalContent(status, turn.buffer, turn.lastError),
       status,
       createdAt: new Date(this.now()).toISOString()
     };
@@ -688,6 +717,31 @@ export function localDateStamp(d: Date): string {
 
 function approvalKey(threadId: string, turnId: string, approvalId: string): string {
   return `${threadId}::${turnId}::${approvalId}`;
+}
+
+/** Build the committed assistant message content. The streamed buffer is
+ *  always carried (a turn can fault after streaming partial text). For a
+ *  FAILED turn we additionally append the recorded error so the transcript
+ *  shows WHY it failed — the renderer renders failed messages' content
+ *  blocks above the "Failed" footer, so this is what makes the cause
+ *  visible to the user. The error is folded into the buffer's trailing
+ *  text block when there's already prose, else it stands alone. */
+function buildFinalContent(
+  status: ChatMessage["status"],
+  buffer: string,
+  lastError: string | null
+): ChatMessageContent[] {
+  const errorText =
+    status === "failed" && lastError !== null && lastError.trim().length > 0
+      ? lastError.trim()
+      : null;
+  if (errorText === null) {
+    return [{ kind: "text", text: buffer }];
+  }
+  if (buffer.trim().length === 0) {
+    return [{ kind: "text", text: errorText }];
+  }
+  return [{ kind: "text", text: `${buffer}\n\n${errorText}` }];
 }
 
 /** Map a Codex turn-completion status onto the message lifecycle. A turn

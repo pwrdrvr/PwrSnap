@@ -409,6 +409,7 @@ describe("SizzleApp sequence authoring", () => {
     await act(async () => {
       phrasePicker.click();
     });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).not.toBeNull();
     const option = [...el.querySelectorAll<HTMLButtonElement>(".szl__sequence-phrase-option")]
       .find((button) => button.textContent?.includes("the next screen") === true);
     expect(option?.textContent).toContain("1.5s - 2.4s");
@@ -417,6 +418,54 @@ describe("SizzleApp sequence authoring", () => {
       option.click();
     });
     expect(el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")?.textContent).toContain("the next screen");
+  });
+
+  test("closes the transcript phrase picker when clicking outside", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
+    await act(async () => {
+      phrasePicker.click();
+    });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).not.toBeNull();
+
+    await act(async () => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).toBeNull();
   });
 
   test("starts and stops the already-mounted first sequence video preview", async () => {

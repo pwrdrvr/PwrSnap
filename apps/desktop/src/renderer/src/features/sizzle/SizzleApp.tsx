@@ -210,6 +210,7 @@ function TranscriptPhrasePicker(props: {
   onSelect: (phrase: string) => void;
 }): ReactElement {
   const { currentPhrase, phrases, onSelect } = props;
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(currentPhrase);
   const hasTranscript = phrases.length > 0;
@@ -217,6 +218,24 @@ function TranscriptPhrasePicker(props: {
     const filtered = phrases.filter((phrase) => transcriptPhraseMatches(phrase, query));
     return filtered.slice(0, 12);
   }, [phrases, query]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (containerRef.current?.contains(target) === true) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
 
   if (!hasTranscript) {
     return (
@@ -232,7 +251,7 @@ function TranscriptPhrasePicker(props: {
   }
 
   return (
-    <div className="szl__sequence-phrase-control">
+    <div ref={containerRef} className="szl__sequence-phrase-control">
       <button
         className="szl__sequence-phrase-button"
         onClick={() => {

@@ -417,12 +417,8 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
     expect(el.textContent).toContain("4s");
-    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
-    expect(phrase?.getAttribute("list")).toMatch(/^szl-transcript-phrases-/);
-    const transcriptOption = el.querySelector<HTMLOptionElement>("datalist option");
-    expect(transcriptOption?.value).toBe("the next screen");
-    expect(transcriptOption?.label).toBe("1.5s - 2.4s");
-    const phrasePicker = el.querySelector<HTMLSelectElement>(".szl__sequence-phrase-picker");
+    expect(el.querySelector("datalist")).toBeNull();
+    const phrasePicker = el.querySelector<HTMLSelectElement>("select.szl__sequence-phrase");
     expect(phrasePicker?.options[1]?.value).toBe("the next screen");
     expect(phrasePicker?.options[1]?.textContent).toContain("1.5s - 2.4s");
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
@@ -431,7 +427,7 @@ describe("SizzleApp sequence authoring", () => {
     await act(async () => {
       selectOption(phrasePicker, "the next screen");
     });
-    expect(el.querySelector<HTMLInputElement>(".szl__sequence-phrase")?.value).toBe("the next screen");
+    expect(el.querySelector<HTMLSelectElement>("select.szl__sequence-phrase")?.value).toBe("the next screen");
   });
 
   test("starts and stops the already-mounted first sequence video preview", async () => {
@@ -645,17 +641,16 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
 
-    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
-    if (phrase === null) throw new Error("sequence phrase input not found");
+    const phrase = el.querySelector<HTMLSelectElement>("select.szl__sequence-phrase");
+    if (phrase === null) throw new Error("sequence phrase select not found");
     await act(async () => {
-      typeIntoInput(phrase, "changed phrase");
+      selectOption(phrase, "the next screen");
     });
 
     expect(el.textContent).toContain("unresolved");
     expect(el.textContent).not.toContain("approx timing");
-    expect(phrase.getAttribute("list")).toMatch(/^szl-transcript-phrases-/);
-    expect(el.querySelector(".szl__sequence-phrase-picker")).not.toBeNull();
-    expect(el.querySelector<HTMLOptionElement>("datalist option")?.value).toBe("the next screen");
+    const nextPhrase = el.querySelector<HTMLSelectElement>("select.szl__sequence-phrase");
+    expect([...Array.from(nextPhrase?.options ?? [])].some((option) => option.value === "the next screen")).toBe(true);
   });
 });
 

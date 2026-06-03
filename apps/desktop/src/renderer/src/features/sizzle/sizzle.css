@@ -691,11 +691,6 @@
   width: 130px;
 }
 
-.szl__sequence-phrase-picker {
-  flex: 1 1 180px;
-  max-width: 260px;
-}
-
 .szl__sequence-beat-pinned {
   color: var(--text-muted);
   font: 600 9px/1 var(--font-mono);

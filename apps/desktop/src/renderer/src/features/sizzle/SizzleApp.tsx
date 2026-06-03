@@ -2021,7 +2021,6 @@ function Editor(props: EditorProps): ReactElement {
                 : undefined;
             const transcriptPhrases =
               scene.kind === "sequence" ? sequenceTranscriptPlan?.transcriptPhrases ?? [] : [];
-            const transcriptDatalistId = `szl-transcript-phrases-${scene.id}`;
 
             const elements: ReactElement[] = [];
 
@@ -2126,6 +2125,7 @@ function Editor(props: EditorProps): ReactElement {
                               ? cacheUrl(beat.captureId, 320, "webp", beatCapture.edits_version)
                               : cacheUrl(beat.captureId, 320, "webp");
                           const timingKind = beat.timing.kind;
+                          const phraseText = beat.timing.kind === "phrase" ? beat.timing.phrase : "";
                           const isFirstBeat = beatIdx === 0;
                           const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
                           return (
@@ -2257,32 +2257,10 @@ function Editor(props: EditorProps): ReactElement {
                                 </>
                               ) : beat.timing.kind === "phrase" ? (
                                 <>
-                                  <input
-                                    className="szl__sequence-phrase"
-                                    value={beat.timing.phrase}
-                                    placeholder={
-                                      transcriptPhrases.length > 0
-                                        ? "choose transcript phrase"
-                                        : "preview for transcript phrases"
-                                    }
-                                    list={transcriptPhrases.length > 0 ? transcriptDatalistId : undefined}
-                                    title="Start this beat at a timed transcript phrase. Preview once to populate phrase suggestions."
-                                    onChange={(e) =>
-                                      editSequenceBeat(scene.id, beat.id, {
-                                        timing: {
-                                          kind: "phrase",
-                                          phrase: e.target.value,
-                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
-                                          offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
-                                          durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                                        }
-                                      })
-                                    }
-                                  />
                                   {transcriptPhrases.length > 0 ? (
                                     <select
-                                      className="szl__sequence-phrase-picker"
-                                      value=""
+                                      className="szl__sequence-phrase"
+                                      value={phraseText}
                                       title="Choose a phrase from the timed transcript"
                                       onChange={(e) => {
                                         const phrase = e.target.value;
@@ -2298,7 +2276,13 @@ function Editor(props: EditorProps): ReactElement {
                                         });
                                       }}
                                     >
-                                      <option value="">Transcript...</option>
+                                      {phraseText.length === 0 ? (
+                                        <option value="">Choose transcript phrase</option>
+                                      ) : null}
+                                      {phraseText.length > 0 &&
+                                      !transcriptPhrases.some((phrase) => phrase.text === phraseText) ? (
+                                        <option value={phraseText}>{phraseText}</option>
+                                      ) : null}
                                       {transcriptPhrases.map((phrase) => (
                                         <option
                                           key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
@@ -2308,7 +2292,25 @@ function Editor(props: EditorProps): ReactElement {
                                         </option>
                                       ))}
                                     </select>
-                                  ) : null}
+                                  ) : (
+                                    <input
+                                      className="szl__sequence-phrase"
+                                      value={beat.timing.phrase}
+                                      placeholder="preview for transcript phrases"
+                                      title="Start this beat at a timed transcript phrase. Preview once to populate phrase suggestions."
+                                      onChange={(e) =>
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "phrase",
+                                            phrase: e.target.value,
+                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                            offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
+                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                          }
+                                        })
+                                      }
+                                    />
+                                  )}
                                   <label className="szl__sequence-time-field">
                                     <span>Offset</span>
                                     <input
@@ -2396,17 +2398,6 @@ function Editor(props: EditorProps): ReactElement {
                           );
                         })}
                       </div>
-                      {transcriptPhrases.length > 0 ? (
-                        <datalist id={transcriptDatalistId}>
-                          {transcriptPhrases.map((phrase) => (
-                            <option
-                              key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
-                              value={phrase.text}
-                              label={formatTranscriptPhraseOptionLabel(phrase)}
-                            />
-                          ))}
-                        </datalist>
-                      ) : null}
                       <div className="szl__scene-hint">
                         Sequence scene: one script across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Phrase anchors use timed transcript words from preview; the transcript can differ from the written script.
                       </div>

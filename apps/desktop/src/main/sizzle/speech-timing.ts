@@ -179,23 +179,26 @@ export function resolvePhraseTiming(
     durationSec?: number | null;
   }
 ): SizzleResolvedPhraseTiming | null {
-  const phraseTokens = tokenizeWords(args.phrase).map((token) => token.normalized);
+  const phraseTokens = tokenizeWords(args.phrase);
   if (phraseTokens.length === 0) return null;
+  const phraseNormalized = phraseTokens.map((token) => token.normalized);
+  const phraseCompacts = compactVariantsForTokens(phraseTokens);
+  const maxPhraseCompactLength = Math.max(...Array.from(phraseCompacts).map((variant) => variant.length));
   const wantedOccurrence = args.occurrence ?? 1;
   let seen = 0;
-  for (let i = 0; i <= timing.words.length - phraseTokens.length; i++) {
-    let matches = true;
-    for (let j = 0; j < phraseTokens.length; j++) {
-      if (timing.words[i + j]?.normalized !== phraseTokens[j]) {
-        matches = false;
-        break;
-      }
-    }
-    if (!matches) continue;
+  for (let i = 0; i < timing.words.length; i++) {
+    const matchedWordCount = matchPhraseAt({
+      words: timing.words,
+      startIndex: i,
+      phraseNormalized,
+      phraseCompacts,
+      maxPhraseCompactLength
+    });
+    if (matchedWordCount === 0) continue;
     seen++;
     if (seen !== wantedOccurrence) continue;
     const first = timing.words[i]!;
-    const last = timing.words[i + phraseTokens.length - 1]!;
+    const last = timing.words[i + matchedWordCount - 1]!;
     const startSec = Math.max(0, first.startSec + (args.offsetSec ?? 0));
     const naturalEndSec = Math.max(startSec + 0.01, last.endSec + (args.offsetSec ?? 0));
     const endSec =
@@ -208,7 +211,7 @@ export function resolvePhraseTiming(
       quality: timing.quality,
       wordStartIndex: first.index,
       wordEndIndex: last.index,
-      matchedText: timing.words.slice(i, i + phraseTokens.length).map((word) => word.word).join(" "),
+      matchedText: timing.words.slice(i, i + matchedWordCount).map((word) => word.word).join(" "),
       warnings: timing.warnings
     };
   }
@@ -304,6 +307,98 @@ function tokenizeWords(text: string): Array<{ word: string; normalized: string }
       return { word, normalized: normalizeWord(word) };
     })
     .filter((word) => word.normalized.length > 0);
+}
+
+function matchPhraseAt(args: {
+  words: SizzleWordTiming[];
+  startIndex: number;
+  phraseNormalized: string[];
+  phraseCompacts: Set<string>;
+  maxPhraseCompactLength: number;
+}): number {
+  let exact = true;
+  for (let j = 0; j < args.phraseNormalized.length; j++) {
+    if (args.words[args.startIndex + j]?.normalized !== args.phraseNormalized[j]) {
+      exact = false;
+      break;
+    }
+  }
+  if (exact) return args.phraseNormalized.length;
+
+  let candidateCompacts = new Set([""]);
+  for (let endIndex = args.startIndex; endIndex < args.words.length; endIndex++) {
+    const word = args.words[endIndex]!;
+    const wordCompacts = compactVariantsForTokens([
+      { word: word.word, normalized: word.normalized }
+    ]);
+    const next = new Set<string>();
+    for (const prefix of candidateCompacts) {
+      for (const compact of wordCompacts) {
+        const value = prefix + compact;
+        if (value.length <= args.maxPhraseCompactLength) next.add(value);
+      }
+    }
+    if (next.size === 0) break;
+    candidateCompacts = next;
+    if ([...candidateCompacts].some((candidate) => args.phraseCompacts.has(candidate))) {
+      return endIndex - args.startIndex + 1;
+    }
+  }
+  return 0;
+}
+
+function compactVariantsForTokens(tokens: Array<{ word: string; normalized: string }>): Set<string> {
+  let variants = new Set([""]);
+  for (const token of tokens) {
+    const next = new Set<string>();
+    for (const prefix of variants) {
+      for (const expansion of contractionTokenVariants(token)) {
+        next.add(prefix + expansion.join(""));
+      }
+    }
+    variants = next;
+  }
+  return variants;
+}
+
+function contractionTokenVariants(token: { word: string; normalized: string }): string[][] {
+  const variants: string[][] = [[token.normalized]];
+  const raw = token.word.normalize("NFKD").toLocaleLowerCase("en-US");
+  const add = (parts: string[]): void => {
+    const normalized = parts.map((part) => normalizeWord(part)).filter((part) => part.length > 0);
+    if (normalized.length === 0) return;
+    if (!variants.some((variant) => variant.join("\0") === normalized.join("\0"))) {
+      variants.push(normalized);
+    }
+  };
+
+  if (/^[\p{L}\p{N}]+[’']s$/u.test(raw)) {
+    const base = raw.replace(/[’']s$/u, "");
+    add([base, "is"]);
+    add([base, "has"]);
+  }
+  if (/^[\p{L}\p{N}]+[’']re$/u.test(raw)) add([raw.replace(/[’']re$/u, ""), "are"]);
+  if (/^[\p{L}\p{N}]+[’']ve$/u.test(raw)) add([raw.replace(/[’']ve$/u, ""), "have"]);
+  if (/^[\p{L}\p{N}]+[’']ll$/u.test(raw)) add([raw.replace(/[’']ll$/u, ""), "will"]);
+  if (/^[\p{L}\p{N}]+[’']m$/u.test(raw)) add([raw.replace(/[’']m$/u, ""), "am"]);
+  if (/^[\p{L}\p{N}]+[’']d$/u.test(raw)) {
+    const base = raw.replace(/[’']d$/u, "");
+    add([base, "had"]);
+    add([base, "would"]);
+  }
+
+  if (token.normalized === "its") {
+    add(["it", "is"]);
+    add(["it", "has"]);
+  }
+  if (token.normalized === "im") add(["i", "am"]);
+  if (token.normalized === "youre") add(["you", "are"]);
+  if (token.normalized === "theyre") add(["they", "are"]);
+  if (token.normalized === "weve") add(["we", "have"]);
+  if (token.normalized === "youve") add(["you", "have"]);
+  if (token.normalized === "ive") add(["i", "have"]);
+
+  return variants;
 }
 
 function normalizeWord(word: string): string {

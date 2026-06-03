@@ -186,6 +186,105 @@ function formatTranscriptTime(seconds: number): string {
   return Number.isInteger(rounded) ? `${rounded}s` : `${rounded.toFixed(1)}s`;
 }
 
+function searchKey(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function transcriptPhraseMatches(
+  phrase: SizzleSequenceTranscriptPhrase,
+  query: string
+): boolean {
+  const q = searchKey(query);
+  if (q.length === 0) return true;
+  return searchKey(phrase.text).includes(q);
+}
+
+function TranscriptPhrasePicker(props: {
+  currentPhrase: string;
+  phrases: SizzleSequenceTranscriptPhrase[];
+  onSelect: (phrase: string) => void;
+}): ReactElement {
+  const { currentPhrase, phrases, onSelect } = props;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(currentPhrase);
+  const hasTranscript = phrases.length > 0;
+  const visiblePhrases = useMemo(() => {
+    const filtered = phrases.filter((phrase) => transcriptPhraseMatches(phrase, query));
+    return filtered.slice(0, 12);
+  }, [phrases, query]);
+
+  if (!hasTranscript) {
+    return (
+      <button
+        className="szl__sequence-phrase-button"
+        disabled
+        title="Preview the narration to generate a timed transcript before choosing phrase anchors."
+        type="button"
+      >
+        {currentPhrase.length > 0 ? currentPhrase : "Preview for transcript"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="szl__sequence-phrase-control">
+      <button
+        className="szl__sequence-phrase-button"
+        onClick={() => {
+          setQuery(currentPhrase);
+          setOpen((value) => !value);
+        }}
+        title="Choose a phrase from the timed transcript"
+        type="button"
+      >
+        <span>{currentPhrase.length > 0 ? currentPhrase : "Choose transcript phrase"}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open ? (
+        <div className="szl__sequence-phrase-popover">
+          <input
+            className="szl__sequence-phrase-search"
+            autoFocus
+            value={query}
+            placeholder="Search transcript"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="szl__sequence-phrase-list" role="listbox">
+            {visiblePhrases.length > 0 ? (
+              visiblePhrases.map((phrase) => (
+                <button
+                  key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
+                  className={
+                    "szl__sequence-phrase-option" +
+                    (phrase.text === currentPhrase ? " is-selected" : "")
+                  }
+                  onClick={() => {
+                    onSelect(phrase.text);
+                    setOpen(false);
+                    setQuery(phrase.text);
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <span>{formatTranscriptPhraseOptionLabel(phrase)}</span>
+                  <strong>{phrase.text}</strong>
+                </button>
+              ))
+            ) : (
+              <span className="szl__sequence-phrase-empty">No matching transcript phrase</span>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function labelForSequenceWarning(
   warning: SizzleSequencePreviewWarning,
   beatNumberById: Map<string, number>
@@ -322,6 +421,11 @@ type SequencePreviewVideoState = {
   sourceTimeSec: number;
   playbackRate: number;
   shouldPlay: boolean;
+};
+
+type CachedSequenceTranscriptPhrases = {
+  key: string;
+  phrases: SizzleSequenceTranscriptPhrase[];
 };
 
 /** Bar count for the idle (pre-preview) waveform placeholder. */
@@ -1511,6 +1615,9 @@ function Editor(props: EditorProps): ReactElement {
   const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
     Record<string, CachedSequencePreviewPlan>
   >({});
+  const [sequenceTranscriptPhrases, setSequenceTranscriptPhrases] = useState<
+    Record<string, CachedSequenceTranscriptPhrases>
+  >({});
   // Per-sequence-scene narration audio, captured when a preview decodes
   // it, and handed to wavesurfer to draw the real waveform. Cleared when
   // the narration text changes (the audio is then stale).
@@ -1611,6 +1718,13 @@ function Editor(props: EditorProps): ReactElement {
           plan: planResult.value
         }
       }));
+      setSequenceTranscriptPhrases((prev) => ({
+        ...prev,
+        [sceneId]: {
+          key: sequenceTranscriptKey(scene),
+          phrases: planResult.value.transcriptPhrases
+        }
+      }));
       previewAudio = planResult.value;
     } else {
       const result = await dispatch("sizzle:previewSceneAudio", {
@@ -1686,6 +1800,12 @@ function Editor(props: EditorProps): ReactElement {
           delete next[scene.id];
           return next;
         });
+        setSequenceTranscriptPhrases((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
         // The narration audio (and thus its waveform) is now stale.
         setSequenceAudioBlobs((prev) => {
           if (prev[scene.id] === undefined) return prev;
@@ -1713,24 +1833,26 @@ function Editor(props: EditorProps): ReactElement {
     () =>
       project.scenes
         .filter((s) => s.kind === "sequence")
-        .map((s) => s.id)
+        .map((s) => `${s.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(s)}`)
         .join(","),
-    [project.scenes]
+    [project.scenes, project.ttsModel, project.ttsProvider, project.voice]
   );
   const waveformAttemptRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    const cacheAttemptKey = (scene: SizzleScene): string =>
+      `${scene.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(scene)}`;
     const pending = project.scenes.filter(
       (s) =>
         s.kind === "sequence" &&
         (s.narration ?? s.scriptLine).trim().length > 0 &&
         sequenceAudioBlobs[s.id] === undefined &&
-        !waveformAttemptRef.current.has(s.id)
+        !waveformAttemptRef.current.has(cacheAttemptKey(s))
     );
     if (pending.length === 0) return undefined;
     let cancelled = false;
     const queue = new IterableQueueMapperSimple<SizzleScene>(
       async (scene) => {
-        waveformAttemptRef.current.add(scene.id);
+        waveformAttemptRef.current.add(cacheAttemptKey(scene));
         try {
           const res = await dispatch("sizzle:loadSequenceSceneAudio", {
             projectId: project.id,
@@ -1738,10 +1860,20 @@ function Editor(props: EditorProps): ReactElement {
           });
           if (cancelled || !res.ok || res.value.cached !== true) return;
           const blob = base64ToBlob(res.value.audioBase64, res.value.mimeType);
+          const transcriptPhrases = res.value.transcriptPhrases;
           if (cancelled) return;
           setSequenceAudioBlobs((prev) =>
             prev[scene.id] !== undefined ? prev : { ...prev, [scene.id]: blob }
           );
+          if (transcriptPhrases.length > 0) {
+            setSequenceTranscriptPhrases((prev) => ({
+              ...prev,
+              [scene.id]: {
+                key: sequenceTranscriptKey(scene),
+                phrases: transcriptPhrases
+              }
+            }));
+          }
         } catch {
           // A failed background load just leaves the idle baseline.
         }
@@ -2014,13 +2146,13 @@ function Editor(props: EditorProps): ReactElement {
               sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
                 ? sequencePreviewEntry.plan
                 : undefined;
-            const sequenceTranscriptPlan =
+            const sequenceTranscriptEntry =
               scene.kind === "sequence" &&
-              sequencePreviewEntry?.transcriptKey === sequenceTranscriptKey(scene)
-                ? sequencePreviewEntry.plan
+              sequenceTranscriptPhrases[scene.id]?.key === sequenceTranscriptKey(scene)
+                ? sequenceTranscriptPhrases[scene.id]
                 : undefined;
             const transcriptPhrases =
-              scene.kind === "sequence" ? sequenceTranscriptPlan?.transcriptPhrases ?? [] : [];
+              scene.kind === "sequence" ? sequenceTranscriptEntry?.phrases ?? [] : [];
 
             const elements: ReactElement[] = [];
 
@@ -2257,60 +2389,21 @@ function Editor(props: EditorProps): ReactElement {
                                 </>
                               ) : beat.timing.kind === "phrase" ? (
                                 <>
-                                  {transcriptPhrases.length > 0 ? (
-                                    <select
-                                      className="szl__sequence-phrase"
-                                      value={phraseText}
-                                      title="Choose a phrase from the timed transcript"
-                                      onChange={(e) => {
-                                        const phrase = e.target.value;
-                                        if (phrase.length === 0) return;
-                                        editSequenceBeat(scene.id, beat.id, {
-                                          timing: {
-                                            kind: "phrase",
-                                            phrase,
-                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
-                                            offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
-                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                                          }
-                                        });
-                                      }}
-                                    >
-                                      {phraseText.length === 0 ? (
-                                        <option value="">Choose transcript phrase</option>
-                                      ) : null}
-                                      {phraseText.length > 0 &&
-                                      !transcriptPhrases.some((phrase) => phrase.text === phraseText) ? (
-                                        <option value={phraseText}>{phraseText}</option>
-                                      ) : null}
-                                      {transcriptPhrases.map((phrase) => (
-                                        <option
-                                          key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
-                                          value={phrase.text}
-                                        >
-                                          {formatTranscriptPhraseOptionLabel(phrase)} · {phrase.text}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  ) : (
-                                    <input
-                                      className="szl__sequence-phrase"
-                                      value={beat.timing.phrase}
-                                      placeholder="preview for transcript phrases"
-                                      title="Start this beat at a timed transcript phrase. Preview once to populate phrase suggestions."
-                                      onChange={(e) =>
-                                        editSequenceBeat(scene.id, beat.id, {
-                                          timing: {
-                                            kind: "phrase",
-                                            phrase: e.target.value,
-                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
-                                            offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
-                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
-                                          }
-                                        })
-                                      }
-                                    />
-                                  )}
+                                  <TranscriptPhrasePicker
+                                    currentPhrase={phraseText}
+                                    phrases={transcriptPhrases}
+                                    onSelect={(phrase) =>
+                                      editSequenceBeat(scene.id, beat.id, {
+                                        timing: {
+                                          kind: "phrase",
+                                          phrase,
+                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                          offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
+                                          durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                        }
+                                      })
+                                    }
+                                  />
                                   <label className="szl__sequence-time-field">
                                     <span>Offset</span>
                                     <input

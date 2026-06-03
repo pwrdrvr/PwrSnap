@@ -30,6 +30,7 @@ import {
 } from "../sizzle/tts";
 import {
   buildTranscriptPhraseSuggestions,
+  resolveCachedSpeechTiming,
   resolveSpeechTiming
 } from "../sizzle/speech-timing";
 import {
@@ -729,10 +730,19 @@ export function registerSizzleHandlers(): void {
     );
     try {
       const bytes = await readAudio(audioPath);
+      const speechTiming = await resolveCachedSpeechTiming({
+        provider: project.ttsProvider,
+        model: project.ttsModel,
+        voice: project.voice,
+        text,
+        audioPath
+      });
       return ok({
         cached: true as const,
         audioBase64: bytes.toString("base64"),
-        mimeType: "audio/mpeg" as const
+        mimeType: "audio/mpeg" as const,
+        transcriptPhrases:
+          speechTiming === null ? [] : buildTranscriptPhraseSuggestions(speechTiming)
       });
     } catch {
       return ok({ cached: false as const });

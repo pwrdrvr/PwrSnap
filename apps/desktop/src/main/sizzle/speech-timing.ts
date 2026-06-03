@@ -105,6 +105,15 @@ export async function resolveSpeechTiming(
   return { ...timing, cached: false };
 }
 
+export async function resolveCachedSpeechTiming(
+  req: Pick<SpeechTimingRequest, "provider" | "model" | "voice" | "text" | "audioPath">
+): Promise<SizzleSpeechTiming | null> {
+  const audioHash = await hashFile(req.audioPath).catch(() => "");
+  if (audioHash.length === 0) return null;
+  const cachePath = join(speechTimingCacheDir(), `${speechTimingCacheKey(req, audioHash)}.json`);
+  return readCachedTiming(cachePath);
+}
+
 export function approximateSpeechTiming(
   text: string,
   durationSec: number,

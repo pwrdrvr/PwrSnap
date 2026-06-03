@@ -182,6 +182,7 @@ export async function pruneTtsCache(projects: SizzleProject[]): Promise<{
   removed: number;
   kept: number;
 }> {
+  const recentOrphanLimit = 5;
   const dir = ttsCacheDir();
   let entries: string[];
   try {
@@ -207,11 +208,25 @@ export async function pruneTtsCache(projects: SizzleProject[]): Promise<{
       );
     }
   }
+  const orphanEntries: Array<{ entry: string; mtimeMs: number }> = [];
   let removed = 0;
   let kept = 0;
   for (const entry of entries) {
     if (!entry.endsWith(".mp3")) continue;
     if (live.has(entry)) {
+      kept++;
+      continue;
+    }
+    const path = join(dir, entry);
+    const s = await stat(path).catch(() => null);
+    orphanEntries.push({ entry, mtimeMs: s?.mtimeMs ?? 0 });
+  }
+  orphanEntries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const recentOrphans = new Set(
+    orphanEntries.slice(0, recentOrphanLimit).map((entry) => entry.entry)
+  );
+  for (const { entry } of orphanEntries) {
+    if (recentOrphans.has(entry)) {
       kept++;
       continue;
     }

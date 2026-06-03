@@ -350,8 +350,9 @@ export function registerSizzleHandlers(): void {
     if (!v.ok) return err(v.error);
     try {
       const project = await store.duplicate(v.value.id, v.value.name);
+      await pushProjectsChanged();
       if (v.value.forkChat) {
-        await forkProjectChats(v.value.id, project.id).catch((cause: unknown) => {
+        void forkProjectChats(v.value.id, project.id).catch((cause: unknown) => {
           log.warn("sizzle:duplicate chat fork failed", {
             sourceProjectId: v.value.id,
             targetProjectId: project.id,
@@ -359,7 +360,6 @@ export function registerSizzleHandlers(): void {
           });
         });
       }
-      await pushProjectsChanged();
       return ok(project);
     } catch (cause) {
       return err(toError(cause, "sizzle_duplicate_failed"));

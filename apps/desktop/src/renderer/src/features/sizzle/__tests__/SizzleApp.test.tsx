@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
-import { SizzleApp } from "../SizzleApp";
+import { SizzleApp, formatSequencePreviewWarnings } from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
 // a real canvas + Web Audio. jsdom has neither, and we don't unit-test the
@@ -616,6 +616,44 @@ describe("SizzleApp sequence authoring", () => {
 
     expect(el.textContent).toContain("unresolved");
     expect(el.textContent).not.toContain("approx timing");
+  });
+});
+
+describe("sequence preview warnings", () => {
+  test("coalesces auto-repaired trim and fit diagnostics into one adjusted note", () => {
+    const warnings = formatSequencePreviewWarnings([
+      {
+        beatId: "bt_4",
+        code: "media_trim_clamped",
+        message: "Media trim was clamped to the 4.204s source duration"
+      },
+      {
+        beatId: "bt_4",
+        code: "video_fit",
+        message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+      }
+    ]);
+
+    expect(warnings).toEqual([
+      {
+        key: "media_trim_clamped-bt_4-0",
+        label: "Beat adjusted",
+        message:
+          "Media trim was clamped to the 4.204s source duration; using freeze-end because speed-to-fit would be too aggressive"
+      }
+    ]);
+  });
+
+  test("phrases that fall back to automatic timing render as notes", () => {
+    const warnings = formatSequencePreviewWarnings([
+      {
+        beatId: "bt_2",
+        code: "phrase_unresolved",
+        message: 'Could not resolve phrase anchor "Once it is installed," — placing it automatically'
+      }
+    ]);
+
+    expect(warnings[0]?.label).toBe("Timing note");
   });
 });
 

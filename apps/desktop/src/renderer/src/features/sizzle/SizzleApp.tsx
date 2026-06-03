@@ -13,6 +13,7 @@ import {
   type SizzleScene,
   type SizzleSequencePreviewBeat,
   type SizzleSequencePreviewPlan,
+  type SizzleSequencePreviewWarning,
   type SizzleSequenceBeat,
   type SizzleTransition,
   type SizzleTransitionType,
@@ -88,6 +89,65 @@ function formatDur(seconds: number): string {
   const secs = Math.round(seconds % 60);
   if (mins === 0) return `${secs}s`;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+export type SequencePreviewDisplayWarning = {
+  key: string;
+  label: string;
+  message: string;
+};
+
+export function formatSequencePreviewWarnings(
+  warnings: SizzleSequencePreviewWarning[]
+): SequencePreviewDisplayWarning[] {
+  const consumed = new Set<number>();
+  return warnings.flatMap((warning, index): SequencePreviewDisplayWarning[] => {
+    if (consumed.has(index)) return [];
+    if (warning.code === "media_trim_clamped" && warning.beatId !== undefined) {
+      const pairedFitIndex = warnings.findIndex(
+        (candidate, candidateIndex) =>
+          candidateIndex > index &&
+          candidate.beatId === warning.beatId &&
+          candidate.code === "video_fit"
+      );
+      if (pairedFitIndex >= 0) consumed.add(pairedFitIndex);
+      return [
+        {
+          key: `${warning.code}-${warning.beatId}-${index}`,
+          label: "Beat adjusted",
+          message:
+            pairedFitIndex >= 0
+              ? `${warning.message}; using freeze-end because speed-to-fit would be too aggressive`
+              : warning.message
+        }
+      ];
+    }
+    if (warning.code === "video_fit") {
+      return [
+        {
+          key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+          label: "Beat adjusted",
+          message: warning.message
+        }
+      ];
+    }
+    if (warning.code === "phrase_unresolved") {
+      return [
+        {
+          key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+          label: "Timing note",
+          message: warning.message
+        }
+      ];
+    }
+    return [
+      {
+        key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+        label: warning.beatId === undefined ? "Scene warning" : "Beat warning",
+        message: warning.message
+      }
+    ];
+  });
 }
 
 function transitionType(transition: SizzleTransition): SizzleTransitionType {
@@ -414,6 +474,7 @@ function SequenceTimelinePreview(props: {
     activeVideoState?.sourceTimeSec,
     shouldPlayActiveVideo
   ]);
+  const displayWarnings = formatSequencePreviewWarnings(plan?.warnings ?? []);
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
     const rect = target.getBoundingClientRect();
@@ -508,12 +569,11 @@ function SequenceTimelinePreview(props: {
         </span>
         <span className="szl__sequence-playhead" style={{ left: playheadLeft }} aria-hidden="true" />
       </button>
-      {plan?.warnings.length ? (
+      {displayWarnings.length ? (
         <div className="szl__sequence-warnings">
-          {plan.warnings.slice(0, 3).map((warning, index) => (
-            <span key={`${warning.code}-${warning.beatId ?? "scene"}-${index}`}>
-              {warning.beatId === undefined ? "" : "Beat warning: "}
-              {warning.message}
+          {displayWarnings.slice(0, 3).map((warning) => (
+            <span key={warning.key}>
+              <strong>{warning.label}:</strong> {warning.message}
             </span>
           ))}
         </div>

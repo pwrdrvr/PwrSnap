@@ -10,9 +10,10 @@
 // and binds to `events:recording:state` directly for its visuals.
 // This module is the BrowserWindow-side glue.
 
-import { BrowserWindow, screen } from "electron";
+import { BrowserWindow, globalShortcut, screen } from "electron";
 import type { RecordingState } from "@pwrsnap/shared";
 import { appWindowsOverlappingRect } from "../capture/rect-overlap";
+import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { createRecordingControllerWindow } from "../window";
 import { subscribeToRecordingState } from "./recording-state";
@@ -21,6 +22,7 @@ const log = getMainLogger("pwrsnap:recording-controller");
 
 let window: BrowserWindow | null = null;
 let installed = false;
+let escapeShortcutArmed = false;
 
 function ensureWindow(): BrowserWindow {
   if (window !== null && !window.isDestroyed()) return window;
@@ -111,6 +113,26 @@ function fillRect(
   win.setPosition(x, y, false);
 }
 
+function armLeadInEscapeShortcut(): void {
+  if (escapeShortcutArmed) return;
+  // The lead-in HUD is focusable:false and shown inactive, so a
+  // renderer keydown listener would miss Esc in the common case.
+  const registered = globalShortcut.register("Escape", () => {
+    void bus.dispatch("recording:cancel", {}, { principal: "ipc" });
+  });
+  if (!registered) {
+    log.warn("recording lead-in Escape shortcut unavailable");
+    return;
+  }
+  escapeShortcutArmed = true;
+}
+
+function disarmLeadInEscapeShortcut(): void {
+  if (!escapeShortcutArmed) return;
+  globalShortcut.unregister("Escape");
+  escapeShortcutArmed = false;
+}
+
 /**
  * React to a recording-state transition. Idempotent — called from
  * the broadcast pipeline on every transition, branches on phase.
@@ -121,6 +143,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "countdown":
     case "starting": {
       const win = ensureWindow();
+      armLeadInEscapeShortcut();
       // Countdown overlay sits over the user's content; clicks
       // should fall through to the recorded surface so they don't
       // accidentally hit our window. setIgnoreMouseEvents enables
@@ -172,6 +195,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "stopping":
     case "processing": {
       const win = ensureWindow();
+      disarmLeadInEscapeShortcut();
       // Recording-phase pill is compact; tuck it top-center of the
       // recorded display. PID exclusion keeps it out of the captured
       // pixels. Width fits the three-button row (Stop / Restart /
@@ -196,6 +220,7 @@ export function applyRecordingStateToController(state: RecordingState): void {
     case "idle":
     case "ready":
     case "failed": {
+      disarmLeadInEscapeShortcut();
       if (window !== null && !window.isDestroyed()) {
         window.hide();
         // Destroying releases the renderer process; the next session

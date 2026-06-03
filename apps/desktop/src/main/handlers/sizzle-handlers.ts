@@ -302,6 +302,19 @@ export function registerSizzleHandlers(): void {
   bus.register("sizzle:open", async (req) => {
     const v = validateSizzleOpenRequest(req);
     if (!v.ok) return err(v.error);
+    if (v.projectId !== undefined) {
+      try {
+        const repair = await store.persistDerivedFieldsForProject(v.projectId);
+        if (repair?.repaired === true) {
+          await pushProjectsChanged();
+        }
+      } catch (cause) {
+        log.warn("sizzle:open cover repair failed", {
+          projectId: v.projectId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
     const existing = findSizzleWindow();
     if (existing !== null) {
       // Window already loaded → navigate via a live event (the renderer

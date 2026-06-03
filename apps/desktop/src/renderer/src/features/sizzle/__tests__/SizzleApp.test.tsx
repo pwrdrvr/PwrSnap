@@ -55,6 +55,7 @@ function project(patch: Partial<SizzleProject> = {}): SizzleProject {
     name: "Demo Reel",
     createdAt: "2026-05-28T00:00:00.000Z",
     modifiedAt: "2026-05-28T00:00:00.000Z",
+    coverCaptureId: null,
     scenes: [scene()],
     voice: "onyx",
     ttsModel: "tts-1-hd",

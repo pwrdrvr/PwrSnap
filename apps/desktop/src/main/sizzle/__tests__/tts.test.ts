@@ -37,6 +37,7 @@ function fakeProject(overrides: Partial<SizzleProject> = {}): SizzleProject {
     name: "Test",
     createdAt: "2026-05-27T00:00:00Z",
     modifiedAt: "2026-05-27T00:00:00Z",
+    coverCaptureId: null,
     scenes: [],
     voice: "onyx",
     ttsModel: "tts-1-hd",

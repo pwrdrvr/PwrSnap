@@ -80,6 +80,7 @@ function makeProject(overrides: Partial<SizzleProject> = {}): SizzleProject {
     name: "Untitled",
     createdAt: "2026-05-28T00:00:00.000Z",
     modifiedAt: "2026-05-28T00:00:00.000Z",
+    coverCaptureId: null,
     scenes: [],
     voice: "alloy",
     ttsModel: "tts-1",

@@ -897,6 +897,10 @@ export type SizzleProject = {
   name: string;
   createdAt: string;
   modifiedAt: string;
+  /** Stable cover image for Library/project surfaces. This is set when
+   *  scenes are first added and then travels with the project instead of
+   *  requiring thumbnail callers to understand simple vs sequence scenes. */
+  coverCaptureId: string | null;
   scenes: SizzleScene[];
   voice: SizzleVoice;
   ttsModel: SizzleTtsModel;
@@ -905,6 +909,27 @@ export type SizzleProject = {
   outputPath: string | null;
   lastRenderedAt: string | null;
 };
+
+export function firstSizzleSceneCaptureId(scene: SizzleScene): string | null {
+  if (scene.kind === "sequence") {
+    return scene.beats?.find((beat) => beat.captureId.length > 0)?.captureId ?? null;
+  }
+  return scene.captureId.length > 0 ? scene.captureId : null;
+}
+
+export function defaultSizzleProjectCoverCaptureId(
+  scenes: readonly SizzleScene[]
+): string | null {
+  for (const scene of scenes) {
+    const captureId = firstSizzleSceneCaptureId(scene);
+    if (captureId !== null) return captureId;
+  }
+  return null;
+}
+
+export function resolveSizzleProjectCoverCaptureId(project: SizzleProject): string | null {
+  return project.coverCaptureId ?? defaultSizzleProjectCoverCaptureId(project.scenes);
+}
 
 /**
  * The Project Asset Cart — a single global "draft" the user fills by

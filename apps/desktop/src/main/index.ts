@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import {
   app,
@@ -61,6 +62,7 @@ import { onSettingsChanged, registerSettingsHandlers } from "./handlers/settings
 import { registerStorageHandlers } from "./handlers/storage-handlers";
 import { registerSizzleHandlers } from "./handlers/sizzle-handlers";
 import { registerCartHandlers } from "./handlers/cart-handlers";
+import { getSizzleStore } from "./sizzle/sizzle-store";
 import { DesktopSettingsService } from "./settings/desktop-settings-service";
 import {
   checkForAppUpdatesNow,
@@ -788,6 +790,18 @@ const protocolResolver: ProtocolResolver = {
   },
   async appIconPath(bundleId) {
     return getAppIconPath(bundleId);
+  },
+  async sizzleOutputPath(projectId) {
+    const project = await getSizzleStore().get(projectId);
+    if (project?.outputPath === null || project?.outputPath === undefined) {
+      return null;
+    }
+    try {
+      await access(project.outputPath);
+      return project.outputPath;
+    } catch {
+      return null;
+    }
   }
 };
 

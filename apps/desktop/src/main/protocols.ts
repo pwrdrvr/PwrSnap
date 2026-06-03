@@ -1,7 +1,7 @@
 // Custom protocol handlers — the seam that lets renderers display
 // captured images without ever crossing the structured-clone boundary.
 //
-// Two URL schemes:
+// Core URL schemes:
 //
 //   pwrsnap-capture://r/<capture-id>
 //     Resolves to the source PNG. For pre-bundle captures this is
@@ -15,6 +15,10 @@
 //     Resolves through the render pipeline at the requested width. Hit
 //     the disk cache when present, compose-on-demand on miss. Used for
 //     library thumbnails, float-over preview, drag-out icons.
+//
+//   pwrsnap-sizzle://r/<project-id>
+//     Resolves to a rendered sizzle-reel output movie for Library
+//     hover previews. Unknown, unrendered, or missing outputs 404.
 //
 // Note the literal "r" host segment. Chromium normalizes the URL
 // authority (host) component to lowercase per RFC 3986 §3.2.2 for any
@@ -90,6 +94,17 @@ export function registerSchemesAsPrivileged(): void {
         corsEnabled: true,
         stream: true
       }
+    },
+    {
+      scheme: SCHEMES.sizzle,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        bypassCSP: false,
+        corsEnabled: true,
+        stream: true
+      }
     }
   ]);
 }
@@ -117,6 +132,11 @@ export type ProtocolResolver = {
    * gets a 404 and falls back to procedural initials.
    */
   appIconPath(bundleId: string): Promise<string | null>;
+  /**
+   * Resolve a sizzle project id to its rendered movie output. Returns
+   * null for unknown projects and projects that have not been rendered.
+   */
+  sizzleOutputPath(projectId: string): Promise<string | null>;
 };
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -309,6 +329,27 @@ export function installProtocolHandlers(resolver: ProtocolResolver): void {
     } catch (cause) {
       log.error("cache handler threw", {
         ...parsed,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return new Response("internal error", { status: 500 });
+    }
+  });
+
+  protocol.handle(SCHEMES.sizzle, async (request) => {
+    const projectId = parseCaptureId(request.url, SCHEMES.sizzle);
+    if (projectId === null) {
+      log.warn("sizzle-output: invalid url", { url: request.url });
+      return new Response("invalid sizzle project id", { status: 400 });
+    }
+    try {
+      const filePath = await resolver.sizzleOutputPath(projectId);
+      if (filePath === null) {
+        return new Response("not found", { status: 404 });
+      }
+      return await fileResponse(filePath, request, { cacheControl: "no-cache" });
+    } catch (cause) {
+      log.error("sizzle-output handler threw", {
+        projectId,
         message: cause instanceof Error ? cause.message : String(cause)
       });
       return new Response("internal error", { status: 500 });

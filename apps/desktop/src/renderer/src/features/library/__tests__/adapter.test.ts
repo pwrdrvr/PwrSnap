@@ -29,6 +29,7 @@ function makeProject(overrides: Partial<SizzleProject> = {}): SizzleProject {
     name: "Untitled reel",
     createdAt: "2026-05-27T00:00:00.000Z",
     modifiedAt: "2026-05-27T12:00:00.000Z",
+    coverCaptureId: null,
     scenes: [],
     voice: "alloy",
     ttsModel: "tts-1",
@@ -244,6 +245,15 @@ describe("FixtureBackedRecords — mixed records + projects", () => {
     expect(projectFixture).toBeDefined();
     if (projectFixture === undefined) return; // narrow for TS
     expect(backed.recordFor(projectFixture.id)).toBeNull();
+  });
+
+  test("recordById returns records independently of fixture sequence ids", () => {
+    const backed = new FixtureBackedRecords([
+      makeRecord({ id: "rec-a" }),
+      makeRecord({ id: "rec-cover", kind: "video" })
+    ]);
+    expect(backed.recordById("rec-cover")?.kind).toBe("video");
+    expect(backed.recordById("missing")).toBeNull();
   });
 
   test("projectFor returns the matching SizzleProject for project sequences", () => {

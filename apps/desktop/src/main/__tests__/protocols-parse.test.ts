@@ -24,6 +24,11 @@ describe("parseCaptureId", () => {
     expect(parseCaptureId("pwrsnap-capture://r/abc123/")).toBe("abc123");
   });
 
+  test("strips query cache-busters and hash fragments", () => {
+    expect(parseCaptureId("pwrsnap-capture://r/abc123?v=5")).toBe("abc123");
+    expect(parseCaptureId("pwrsnap-capture://r/abc123#poster")).toBe("abc123");
+  });
+
   test("returns null for an empty id", () => {
     expect(parseCaptureId("pwrsnap-capture://r/")).toBeNull();
     expect(parseCaptureId("pwrsnap-capture://r/////")).toBeNull();
@@ -51,6 +56,13 @@ describe("parseCaptureId", () => {
 
   test("uses SCHEMES.capture by default", () => {
     expect(parseCaptureId(`${SCHEMES.capture}://r/abc123`)).toBe("abc123");
+  });
+
+  test("can parse sizzle project ids with the sizzle scheme", () => {
+    expect(parseCaptureId(`${SCHEMES.sizzle}://r/sz_76a98a1b-b4a`, SCHEMES.sizzle))
+      .toBe("sz_76a98a1b-b4a");
+    expect(parseCaptureId(`${SCHEMES.sizzle}://r/sz_76a98a1b-b4a?v=rendered`, SCHEMES.sizzle))
+      .toBe("sz_76a98a1b-b4a");
   });
 });
 

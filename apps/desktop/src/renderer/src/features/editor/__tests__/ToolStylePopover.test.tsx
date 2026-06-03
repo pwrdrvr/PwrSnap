@@ -32,6 +32,7 @@ import type {
   Settings,
   TextToolStyle
 } from "@pwrsnap/shared";
+import { MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
 
 // ---- Mocks ----------------------------------------------------------
 
@@ -605,7 +606,39 @@ describe("ToolStylePopover", () => {
     expect(onChange).toHaveBeenCalledWith("opacity", 0.6);
   });
 
-  test("13. coachmark visible on first open (stoplightSeen=false)", () => {
+  test("13. highlight opacity slider clamps stale opaque values", () => {
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: { ...DEFAULT_HIGHLIGHT_STYLE, opacity: 1 }
+      })
+    );
+    const slider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(slider).not.toBeNull();
+    expect(slider!.max).toBe(String(MAX_HIGHLIGHT_OPACITY));
+    expect(slider!.value).toBe(String(MAX_HIGHLIGHT_OPACITY));
+  });
+
+  test("14. highlight opacity slider clamps attempted opaque writes", () => {
+    const onChange = vi.fn();
+    render(
+      createElement(Harness, {
+        tool: "highlight",
+        style: DEFAULT_HIGHLIGHT_STYLE,
+        onStyleFieldChange: onChange
+      })
+    );
+    const slider = queryPopover().querySelector<HTMLInputElement>(
+      '[data-testid="highlight-opacity-input"]'
+    );
+    expect(slider).not.toBeNull();
+    fireChange(slider!, "1");
+    expect(onChange).toHaveBeenCalledWith("opacity", MAX_HIGHLIGHT_OPACITY);
+  });
+
+  test("15. coachmark visible on first open (stoplightSeen=false)", () => {
     installSettingsMock(makeSettings({ stoplightSeen: false }));
     render(
       createElement(Harness, {

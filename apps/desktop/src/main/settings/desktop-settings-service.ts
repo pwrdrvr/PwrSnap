@@ -44,6 +44,7 @@ import type {
 import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
   isAppearanceTheme,
@@ -397,10 +398,10 @@ function parseBlurToolStyle(raw: unknown, defaults: BlurToolStyle): BlurToolStyl
 
 function parseHighlightToolStyle(raw: unknown, defaults: HighlightToolStyle): HighlightToolStyle {
   if (!isRecord(raw)) return defaults;
-  // Clamp opacity to [0,1] so a corrupt file can't render a fully-
-  // opaque highlight that hides the underlying image.
+  // Clamp opacity to the marker range so a stale/corrupt setting
+  // can't render a fully-opaque highlight that hides the image.
   const opacityRaw = pickNumber(raw.opacity, defaults.opacity);
-  const opacity = Math.min(1, Math.max(0, opacityRaw));
+  const opacity = Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, opacityRaw));
   return {
     color: pickToolColor(raw.color, defaults.color),
     opacity,

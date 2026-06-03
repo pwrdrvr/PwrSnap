@@ -15,6 +15,7 @@ import {
   BlurOverlay,
   CropOverlay,
   DEFAULT_BLUR_STYLE,
+  MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   deriveBlurRadiusPx,
   HighlightOverlay,
@@ -22,6 +23,7 @@ import {
   OVERLAY_RENDER_ORDER,
   OverlayThickness,
   readBlurStyle,
+  readHighlightOpacity,
   readOverlayThickness,
   readShapeKind,
   readShapeSkewDeg,
@@ -275,6 +277,10 @@ describe("Overlay smoke — the variants we ship in Phase 1 + Phase 2", () => {
       rect: { x: 0, y: 0, w: 1, h: 1 }
     });
     expect(parsed.kind).toBe("highlight");
+  });
+
+  test("readHighlightOpacity clamps stale opaque values to the marker range", () => {
+    expect(readHighlightOpacity({ opacity: 1 })).toBe(MAX_HIGHLIGHT_OPACITY);
   });
 
   test("BlurOverlay reason is optional", () => {

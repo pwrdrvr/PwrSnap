@@ -267,6 +267,7 @@ function SequenceTimelinePreview(props: {
   onSeek: (timeSec: number) => void;
 }): ReactElement {
   const { scene, captureMap, plan, audioBlob, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const fallbackBeats = fallbackSequenceBeats(scene);
   const beats = plan?.beats ?? fallbackBeats;
   const fallbackDuration = Math.max(
@@ -289,6 +290,20 @@ function SequenceTimelinePreview(props: {
         : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
+  const activeVideoBeatId = activeCapture?.kind === "video" ? activeBeat?.beatId ?? null : null;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null) return;
+    if (!playing) {
+      video.pause();
+      return;
+    }
+    void video.play().catch(() => undefined);
+    return () => {
+      video.pause();
+    };
+  }, [playing, activeVideoBeatId]);
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
     const rect = target.getBoundingClientRect();
@@ -303,11 +318,11 @@ function SequenceTimelinePreview(props: {
           <span className="szl__sequence-preview-empty">No beats</span>
         ) : activeCapture?.kind === "video" ? (
           <video
+            ref={videoRef}
             key={activeBeat.beatId}
             src={captureSrcUrl(activeBeat.captureId)}
             muted
             playsInline
-            autoPlay={playing}
             loop
           />
         ) : activeCapture !== null ? (

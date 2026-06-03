@@ -88,6 +88,16 @@ function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boole
   return terms.every((term) => haystack.includes(term));
 }
 
+function projectCoverCaptureId(project: SizzleProject): string | null {
+  const firstScene = project.scenes[0];
+  if (firstScene === undefined) return null;
+  if (firstScene.kind === "sequence") {
+    const beatCaptureId = firstScene.beats?.find((beat) => beat.captureId.length > 0)?.captureId;
+    if (beatCaptureId !== undefined) return beatCaptureId;
+  }
+  return firstScene.captureId.length > 0 ? firstScene.captureId : null;
+}
+
 const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
   low: 0,
   med: 0,
@@ -140,11 +150,13 @@ function CellThumb({
   capture,
   record,
   project,
+  projectCoverRecord = null,
   width
 }: {
   capture: Capture;
   record: CaptureRecord | null;
   project: SizzleProject | null;
+  projectCoverRecord?: CaptureRecord | null;
   width: number;
 }) {
   // Sizzle Reels project cell — first scene's thumbnail as the
@@ -152,7 +164,7 @@ function CellThumb({
   // Click handling is in the parent's onSelectCell, which dispatches
   // sizzle:open instead of OPEN_FOCUS for project cells.
   if (capture.kind === "project" && project !== null) {
-    const firstSceneCaptureId = project.scenes[0]?.captureId ?? null;
+    const coverCaptureId = projectCoverRecord?.id ?? projectCoverCaptureId(project);
     const sceneCount = project.scenes.length;
     const totalSec = project.scenes.reduce((acc, s) => {
       const explicit = s.durationOverrideSec;
@@ -169,9 +181,14 @@ function CellThumb({
         : `${Math.round(totalSec)}s`;
     return (
       <div className="psl__cell-project">
-        {firstSceneCaptureId !== null ? (
+        {coverCaptureId !== null ? (
           <img
-            src={cacheUrl(firstSceneCaptureId, width, "webp")}
+            src={cacheUrl(
+              coverCaptureId,
+              width,
+              "webp",
+              projectCoverRecord?.edits_version
+            )}
             alt=""
             loading="lazy"
             decoding="async"
@@ -1253,6 +1270,55 @@ export function Library() {
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
   const searchResultCount = searchState.rows.length + (isSearchActive ? gridProjects.length : 0);
+  const projectCoverIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          gridProjects
+            .map(projectCoverCaptureId)
+            .filter((id): id is string => id !== null)
+        )
+      ),
+    [gridProjects]
+  );
+  const projectCoverIdsKey = projectCoverIds.join(",");
+  const [projectCoverRecordsById, setProjectCoverRecordsById] = useState<
+    Map<string, CaptureRecord>
+  >(new Map());
+  useEffect(() => {
+    if (projectCoverIds.length === 0) {
+      setProjectCoverRecordsById((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    const wanted = new Set(projectCoverIds);
+    setProjectCoverRecordsById((prev) => {
+      let changed = false;
+      const next = new Map<string, CaptureRecord>();
+      for (const [id, record] of prev) {
+        if (wanted.has(id)) next.set(id, record);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    const missing = projectCoverIds.filter((id) => !projectCoverRecordsById.has(id));
+    if (missing.length === 0) return;
+    let active = true;
+    void dispatch("library:listByIds", { ids: missing }).then((result) => {
+      if (!active || !result.ok) return;
+      setProjectCoverRecordsById((prev) => {
+        const next = new Map(prev);
+        for (const record of result.value.rows) next.set(record.id, record);
+        return next;
+      });
+    });
+    return () => {
+      active = false;
+    };
+    // projectCoverIdsKey is the membership fingerprint. The map is
+    // intentionally not a dependency; including it would refetch on
+    // every hydration write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectCoverIdsKey]);
 
   // Search bypasses every other filter — the user gets exactly the
   // result set from the bus, in rank/date order. Source-app + Today
@@ -2643,6 +2709,7 @@ export function Library() {
             scrollElement={gridScrollRef}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
+            projectCoverRecordsById={projectCoverRecordsById}
             appLabels={appLabels}
             onSelectCell={onSelectCell}
             duplicateSizzleProject={duplicateSizzleProject}
@@ -3023,6 +3090,7 @@ type VirtualizedGridProps = {
   scrollElement: React.RefObject<HTMLDivElement | null>;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
+  projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
@@ -3077,6 +3145,7 @@ function VirtualizedGrid({
   scrollElement,
   selectedRecordId,
   fixtureBacking,
+  projectCoverRecordsById,
   appLabels,
   onSelectCell,
   duplicateSizzleProject,
@@ -3265,6 +3334,7 @@ function VirtualizedGrid({
                 isLastInDay={row.isLastInDay}
                 selectedRecordId={selectedRecordId}
                 fixtureBacking={fixtureBacking}
+                projectCoverRecordsById={projectCoverRecordsById}
                 appLabels={appLabels}
                 onSelectCell={onSelectCell}
                 duplicateSizzleProject={duplicateSizzleProject}
@@ -3303,6 +3373,7 @@ function CellRow({
   isLastInDay,
   selectedRecordId,
   fixtureBacking,
+  projectCoverRecordsById,
   appLabels,
   onSelectCell,
   duplicateSizzleProject,
@@ -3317,6 +3388,7 @@ function CellRow({
   isLastInDay: boolean;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
+  projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
@@ -3350,6 +3422,11 @@ function CellRow({
       {cells.map((c) => {
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
+        const projectCoverId = project === null ? null : projectCoverCaptureId(project);
+        const projectCoverRecord =
+          projectCoverId === null
+            ? null
+            : projectCoverRecordsById.get(projectCoverId) ?? null;
         const isProject = c.kind === "project";
         const projectId = isProject && c.projectId !== undefined ? c.projectId : null;
         // Cart checkbox shows for real (non-project) captures outside
@@ -3377,7 +3454,13 @@ function CellRow({
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb capture={c} record={record} project={project} width={400} />
+              <CellThumb
+                capture={c}
+                record={record}
+                project={project}
+                projectCoverRecord={projectCoverRecord}
+                width={400}
+              />
               {cartEligible && record !== null ? (
                 <CartCellCheckbox captureId={record.id} />
               ) : null}

@@ -98,6 +98,28 @@ function projectCoverCaptureId(project: SizzleProject): string | null {
   return firstScene.captureId.length > 0 ? firstScene.captureId : null;
 }
 
+type ProjectContextMenuState = {
+  projectId: string;
+  projectName: string;
+  x: number;
+  y: number;
+};
+
+const PROJECT_CONTEXT_MENU_WIDTH = 188;
+const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+function clampContextMenuPosition(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { x: number; y: number } {
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
+  };
+}
+
 const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
   low: 0,
   med: 0,
@@ -468,6 +490,8 @@ export function Library() {
     {}
   );
   const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
+  const [projectContextMenu, setProjectContextMenu] =
+    useState<ProjectContextMenuState | null>(null);
   const openedRecordsRef = useRef(openedRecords);
   useEffect(() => {
     openedRecordsRef.current = openedRecords;
@@ -2009,7 +2033,7 @@ export function Library() {
     // Click handler doesn't transition into focus/reel for projects;
     // projects are edited in the dedicated Sizzle Reels window.
     if (c.kind === "project" && c.projectId !== undefined) {
-      void dispatch("sizzle:open", { projectId: c.projectId });
+      openSizzleProject(c.projectId);
       return;
     }
     const record = fixtureBacking.recordFor(c.id);
@@ -2041,6 +2065,34 @@ export function Library() {
         void dispatch("sizzle:open", { projectId: result.value.id });
       }
     })();
+  }
+
+  function closeProjectContextMenu(): void {
+    setProjectContextMenu(null);
+  }
+
+  function openProjectContextMenu(
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const position = clampContextMenuPosition(
+      event.clientX,
+      event.clientY,
+      PROJECT_CONTEXT_MENU_WIDTH,
+      PROJECT_CONTEXT_MENU_HEIGHT
+    );
+    setProjectContextMenu({
+      projectId,
+      projectName,
+      ...position
+    });
+  }
+
+  function openSizzleProject(projectId: string): void {
+    void dispatch("sizzle:open", { projectId });
   }
 
   /**
@@ -2713,6 +2765,7 @@ export function Library() {
             appLabels={appLabels}
             onSelectCell={onSelectCell}
             duplicateSizzleProject={duplicateSizzleProject}
+            openProjectContextMenu={openProjectContextMenu}
             preloadFullRes={preloadFullRes}
             hasMore={gridHasMore}
             isLoadingMore={gridIsLoadingMore}
@@ -2728,6 +2781,20 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
+        {projectContextMenu !== null ? (
+          <LibraryProjectContextMenu
+            menu={projectContextMenu}
+            onClose={closeProjectContextMenu}
+            onOpenProject={(projectId) => {
+              closeProjectContextMenu();
+              openSizzleProject(projectId);
+            }}
+            onDuplicateProject={(projectId) => {
+              closeProjectContextMenu();
+              duplicateSizzleProject(projectId);
+            }}
+          />
+        ) : null}
       </main>
 
       {/* Stage — Focus mode opens it inside a native <dialog> with
@@ -3094,6 +3161,11 @@ type VirtualizedGridProps = {
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
+  openProjectContextMenu: (
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -3140,6 +3212,74 @@ function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): 
   return cellsPerRow;
 }
 
+function LibraryProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onMouseDown(event: MouseEvent): void {
+      const root = rootRef.current;
+      if (root === null) return;
+      if (event.target instanceof Node && root.contains(event.target)) return;
+      onClose();
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => rootRef.current?.focus());
+  }, []);
+
+  return (
+    <div
+      ref={rootRef}
+      className="psl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.projectName} actions`}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        className="psl__context-menu-row"
+        onClick={() => onOpenProject(menu.projectId)}
+      >
+        Open
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="psl__context-menu-row"
+        onClick={() => onDuplicateProject(menu.projectId)}
+      >
+        Duplicate
+      </button>
+    </div>
+  );
+}
+
 function VirtualizedGrid({
   grouped,
   scrollElement,
@@ -3149,6 +3289,7 @@ function VirtualizedGrid({
   appLabels,
   onSelectCell,
   duplicateSizzleProject,
+  openProjectContextMenu,
   preloadFullRes,
   hasMore,
   isLoadingMore,
@@ -3338,6 +3479,7 @@ function VirtualizedGrid({
                 appLabels={appLabels}
                 onSelectCell={onSelectCell}
                 duplicateSizzleProject={duplicateSizzleProject}
+                openProjectContextMenu={openProjectContextMenu}
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
@@ -3377,6 +3519,7 @@ function CellRow({
   appLabels,
   onSelectCell,
   duplicateSizzleProject,
+  openProjectContextMenu,
   preloadFullRes,
   isTrashView,
   trashCapture,
@@ -3392,6 +3535,11 @@ function CellRow({
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
   duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
+  openProjectContextMenu: (
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: CellAction;
@@ -3448,7 +3596,7 @@ function CellRow({
             onClick={() => onSelectCell(c)}
             onContextMenu={(event) => {
               if (projectId !== null) {
-                duplicateSizzleProject(projectId, event);
+                openProjectContextMenu(projectId, c.n, event);
               }
             }}
             onMouseEnter={() => preloadFullRes(record ?? null)}

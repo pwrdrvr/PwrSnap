@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
@@ -35,6 +35,13 @@ type PickerTarget =
   | { kind: "scene" }
   | { kind: "sequenceBeat"; sceneId: string };
 
+type ProjectContextMenuState = {
+  projectId: string;
+  projectName: string;
+  x: number;
+  y: number;
+};
+
 const IDLE_STATUS: RenderStatus = {
   phase: "idle",
   message: "",
@@ -44,6 +51,20 @@ const IDLE_STATUS: RenderStatus = {
 
 const RECENT_PROJECT_LIMIT = 5;
 const PROJECT_LIST_LIMIT = 100;
+const PROJECT_CONTEXT_MENU_WIDTH = 188;
+const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+function clampContextMenuPosition(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { x: number; y: number } {
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
+  };
+}
 
 /**
  * Apply a debounced edit's patch to the local project state. Used to
@@ -417,6 +438,8 @@ export function SizzleApp(): ReactElement {
   // swap) so the scene list stays visible + updates live as the agent
   // edits. Shown by default — chat is the primary way to compose a reel.
   const [showChat, setShowChat] = useState(true);
+  const [projectContextMenu, setProjectContextMenu] =
+    useState<ProjectContextMenuState | null>(null);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -440,6 +463,29 @@ export function SizzleApp(): ReactElement {
     setActiveId(id);
     setRecentProjectIds((prev) => admitRecentProject(prev, id));
   }, []);
+
+  const closeProjectContextMenu = useCallback((): void => {
+    setProjectContextMenu(null);
+  }, []);
+
+  const openProjectContextMenu = useCallback(
+    (project: SizzleProject, event: ReactMouseEvent<HTMLElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const position = clampContextMenuPosition(
+        event.clientX,
+        event.clientY,
+        PROJECT_CONTEXT_MENU_WIDTH,
+        PROJECT_CONTEXT_MENU_HEIGHT
+      );
+      setProjectContextMenu({
+        projectId: project.id,
+        projectName: project.name,
+        ...position
+      });
+    },
+    []
+  );
 
   const reloadProjects = useCallback(async () => {
     const r = await dispatch("sizzle:list", {});
@@ -914,6 +960,7 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onOpenMenu={(event) => openProjectContextMenu(p, event)}
                   onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
@@ -942,6 +989,7 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onOpenMenu={(event) => openProjectContextMenu(p, event)}
                   onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
@@ -1005,6 +1053,20 @@ export function SizzleApp(): ReactElement {
           }
         />
       ) : null}
+      {projectContextMenu !== null ? (
+        <SizzleProjectContextMenu
+          menu={projectContextMenu}
+          onClose={closeProjectContextMenu}
+          onOpenProject={(projectId) => {
+            closeProjectContextMenu();
+            selectProject(projectId);
+          }}
+          onDuplicateProject={(projectId) => {
+            closeProjectContextMenu();
+            void onDuplicate(projectId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1013,11 +1075,13 @@ function ProjectRow({
   project,
   active,
   onSelect,
+  onOpenMenu,
   onDuplicate
 }: {
   project: SizzleProject;
   active: boolean;
   onSelect: () => void;
+  onOpenMenu: (event: ReactMouseEvent<HTMLElement>) => void;
   onDuplicate: () => void;
 }): ReactElement {
   const clipLabel = `${project.scenes.length} clip${project.scenes.length === 1 ? "" : "s"}`;
@@ -1027,10 +1091,7 @@ function ProjectRow({
   return (
     <li
       className="szl__row-wrap"
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onDuplicate();
-      }}
+      onContextMenu={onOpenMenu}
     >
       <button
         className={"szl__row" + (active ? " is-active" : "")}
@@ -1061,6 +1122,74 @@ function ProjectRow({
         </svg>
       </button>
     </li>
+  );
+}
+
+function SizzleProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}): ReactElement {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onMouseDown(event: MouseEvent): void {
+      const root = rootRef.current;
+      if (root === null) return;
+      if (event.target instanceof Node && root.contains(event.target)) return;
+      onClose();
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => rootRef.current?.focus());
+  }, []);
+
+  return (
+    <div
+      ref={rootRef}
+      className="szl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.projectName} actions`}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        className="szl__context-menu-row"
+        onClick={() => onOpenProject(menu.projectId)}
+      >
+        Open
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="szl__context-menu-row"
+        onClick={() => onDuplicateProject(menu.projectId)}
+      >
+        Duplicate
+      </button>
+    </div>
   );
 }
 

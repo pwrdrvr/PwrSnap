@@ -161,3 +161,90 @@ body[data-stage="region"][data-snap="display"] {
 .region-hint-sep {
   color: var(--text-muted);
 }
+
+.region-recording-controls {
+  position: fixed;
+  left: 50%;
+  bottom: 66px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 94%, transparent);
+  border: 1px solid rgba(239, 68, 68, 0.34);
+  border-radius: 999px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+}
+
+.region-audio-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 5px 9px 5px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+
+.region-audio-toggle:hover,
+.region-audio-toggle:focus-visible {
+  border-color: rgba(255, 138, 31, 0.62);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.region-audio-toggle[aria-pressed="true"] {
+  border-color: rgba(239, 68, 68, 0.62);
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--text-primary);
+}
+
+.region-audio-toggle__track {
+  position: relative;
+  display: inline-block;
+  width: 26px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.region-audio-toggle__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  transition:
+    transform 120ms ease,
+    background 120ms ease;
+}
+
+.region-audio-toggle[aria-pressed="true"] .region-audio-toggle__track {
+  background: #ef4444;
+}
+
+.region-audio-toggle[aria-pressed="true"] .region-audio-toggle__thumb {
+  transform: translateX(10px);
+  background: #fff;
+}
+
+@media (max-width: 620px) {
+  .region-recording-controls {
+    bottom: 72px;
+  }
+  .region-audio-toggle__label {
+    max-width: 88px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -29,6 +29,7 @@ import {
 import { captureAndRegister, releaseSnapshot, type ScreenSnapshot } from "./screen-snapshot";
 import { hideTrayPopoverIfVisible } from "../tray";
 import { setFloatOverState } from "../float-over";
+import type { RecordingCapabilities } from "@pwrsnap/shared";
 
 const MIN_AREA_PX = 400; // 20×20 — anything smaller isn't a meaningful snap target.
 const SELECTOR_WINDOW_TITLE = "PwrSnap Region Selector";
@@ -106,6 +107,9 @@ export type SelectorResult =
        *  captures whatever's visible — overlapping windows included,
        *  just like the user sees on screen. */
       fullWindow?: boolean;
+      /** Present for video-intent selector commits. Carries the
+       *  audio choices the user saw next to the area selection. */
+      recordingCapabilities?: RecordingCapabilities;
     }
   | {
       ok: false;
@@ -238,6 +242,12 @@ export function preWarmRegionSelector(): void {
           if (payload.fullWindow === true) {
             result.fullWindow = true;
           }
+          if (payload.recordingCapabilities !== undefined) {
+            result.recordingCapabilities = {
+              systemAudio: payload.recordingCapabilities.systemAudio,
+              microphone: payload.recordingCapabilities.microphone
+            };
+          }
           resolver(result);
         }
       } else {
@@ -297,6 +307,9 @@ export async function pickRegion(
      *  recording, not a snap. No behavioral effect on selection
      *  itself — both intents return the same rect / window payload. */
     intent?: "snap" | "video";
+    /** Initial audio choices for the video selector. Ignored for snap
+     *  intent; echoed back by the renderer on commit after any toggles. */
+    recordingCapabilities?: RecordingCapabilities;
   } = {}
 ): Promise<SelectorResult> {
   const mode: SelectorMode = opts.mode ?? "auto";
@@ -456,7 +469,14 @@ export async function pickRegion(
     // frozen-in-time pixels and we're already in the right mode.
     const modePayload =
       activeScreenSnapshot !== null
-        ? { mode, screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`, intent }
+        ? {
+            mode,
+            screenUrl: `pwrsnap-screen://r/${activeScreenSnapshot.id}`,
+            intent,
+            ...(intent === "video" && opts.recordingCapabilities !== undefined
+              ? { recordingCapabilities: opts.recordingCapabilities }
+              : {})
+          }
         : null;
     if (!win.isDestroyed() && modePayload !== null) {
       win.webContents.send(SELECTOR_MODE_CHANNEL, modePayload);
@@ -1018,6 +1038,7 @@ function isSelectorPayload(value: unknown): value is {
   displayId: number;
   snappedWindowId?: number;
   fullWindow?: boolean;
+  recordingCapabilities?: RecordingCapabilities;
 } {
   if (value === null || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -1039,6 +1060,17 @@ function isSelectorPayload(value: unknown): value is {
   }
   if (v.fullWindow !== undefined && typeof v.fullWindow !== "boolean") {
     return false;
+  }
+  if (v.recordingCapabilities !== undefined) {
+    const c = v.recordingCapabilities as Record<string, unknown>;
+    if (
+      c === null ||
+      typeof c !== "object" ||
+      typeof c.systemAudio !== "boolean" ||
+      typeof c.microphone !== "boolean"
+    ) {
+      return false;
+    }
   }
   return true;
 }

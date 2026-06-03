@@ -15,3 +15,4 @@ export * from "./bundle-manifest-schema-v2";
 export * from "./clipboard-layer-fragment";
 export * from "./text-glyph-size";
 export * from "./text-html-style";
+export * from "./sizzle-video-fit";

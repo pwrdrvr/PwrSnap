@@ -65,6 +65,82 @@ function run(command, args, env) {
   return result.status ?? 1;
 }
 
+export function electronExecutableRelativePath(platform = process.platform) {
+  switch (platform) {
+    case "mas":
+    case "darwin":
+      return "Electron.app/Contents/MacOS/Electron";
+    case "freebsd":
+    case "openbsd":
+    case "linux":
+      return "electron";
+    case "win32":
+      return "electron.exe";
+    default:
+      return null;
+  }
+}
+
+export function electronInstallState(
+  electronRoot = resolve(desktopRoot, "node_modules/electron"),
+  platform = process.platform
+) {
+  const installScript = resolve(electronRoot, "install.js");
+  if (!existsSync(installScript)) {
+    return { ok: false, reason: "electron package is missing" };
+  }
+
+  const expectedPath = electronExecutableRelativePath(platform);
+  if (expectedPath === null) {
+    return { ok: false, reason: `Electron is not available on ${platform}` };
+  }
+
+  const pathFile = resolve(electronRoot, "path.txt");
+  let relativePath = "";
+  try {
+    relativePath = readFileSync(pathFile, "utf8");
+  } catch {
+    return { ok: false, reason: "electron path.txt is missing" };
+  }
+  if (relativePath !== expectedPath) {
+    return { ok: false, reason: "electron path.txt points at the wrong executable" };
+  }
+
+  if (!existsSync(resolve(electronRoot, "dist/version"))) {
+    return { ok: false, reason: "electron dist/version is missing" };
+  }
+  if (!existsSync(resolve(electronRoot, "dist", relativePath))) {
+    return { ok: false, reason: "electron executable is missing" };
+  }
+
+  return { ok: true, reason: "ok" };
+}
+
+export function ensureElectronInstalled(
+  env,
+  electronRoot = resolve(desktopRoot, "node_modules/electron"),
+  node = process.execPath
+) {
+  const before = electronInstallState(electronRoot);
+  if (before.ok) return 0;
+  if (!existsSync(resolve(electronRoot, "install.js"))) {
+    console.error("[dev] Electron package is missing; run `pnpm install`.");
+    return 1;
+  }
+
+  console.warn(`[dev] repairing Electron install: ${before.reason}`);
+  const status = run(node, [resolve(electronRoot, "install.js")], env);
+  if (status !== 0) return status;
+
+  const after = electronInstallState(electronRoot);
+  if (!after.ok) {
+    console.error(`[dev] Electron install is still incomplete: ${after.reason}`);
+    console.error("[dev] Run `pnpm install` from the repo root, then retry `pnpm dev`.");
+    return 1;
+  }
+  return 0;
+}
+
 export function main(argv = process.argv.slice(2), inputEnv = process.env) {
   const nodeCheck = checkNodeVersion(process.version, readExpectedNodeVersion());
   if (!nodeCheck.ok) {
@@ -79,6 +155,9 @@ export function main(argv = process.argv.slice(2), inputEnv = process.env) {
   if (removed.length > 0) {
     console.warn(`[dev] scrubbed inherited launch env: ${removed.join(", ")}`);
   }
+
+  const electronStatus = ensureElectronInstalled(env);
+  if (electronStatus !== 0) return electronStatus;
 
   const node = process.execPath;
   for (const script of [

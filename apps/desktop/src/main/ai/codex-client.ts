@@ -42,6 +42,11 @@ export type CodexClientTransportFactory = (command: string) => JsonRpcTransport;
 export type CodexCaptureEnrichmentRequest = {
   imagePaths: readonly string[];
   metadata: CaptureEnrichmentPromptMetadata;
+  /** Optional OpenAI model identifier forwarded as `thread/start.model`.
+   *  Null / empty string / undefined leaves the field off the request so
+   *  Codex falls back to its own configured default. The caller (the
+   *  enrichment handler) reads the user's preference from
+   *  `settings.codex.captionModel`. */
   model?: string | null;
   abortSignal?: AbortSignal;
 };

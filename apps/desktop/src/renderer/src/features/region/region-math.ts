@@ -73,3 +73,46 @@ export function clampRectToViewport(rect: Rect, viewport: Viewport): Rect {
 export function isPointInsideRect(rect: Rect, px: number, py: number): boolean {
   return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
 }
+
+/**
+ * Drag-engage threshold in CSS pixels. Once the cursor has moved
+ * MORE than this distance in EITHER axis from the mousedown anchor,
+ * the interaction is committed to "drawing" — the user has clearly
+ * expressed drag intent, no more pending. This is the only number
+ * that should gate drawing vs. click-snap.
+ *
+ * Kept deliberately small (3px) so quick, short drags engage as
+ * drags rather than getting interpreted as snap-commits. Anything
+ * higher and a real flick of the wrist registers as a click,
+ * defeating the user.
+ */
+export const DRAG_ENGAGE_PX = 3;
+
+/**
+ * Minimum positive area, in CSS pixels², that a finished free-draw
+ * rect must cover for `commit()` to send it. A 100×1 strip is a
+ * legitimate user intent (capture a thin status bar); only truly
+ * collapsed rects (area 0, no real drag occurred) should be rejected.
+ */
+export const MIN_RECT_AREA_PX = 1;
+
+/**
+ * True when the cursor has moved far enough from the mousedown anchor
+ * to engage drag-to-draw. Uses Chebyshev distance (max-of-axes), not
+ * Euclidean — a 3px horizontal-only flick should engage just as
+ * readily as a 3px diagonal one. Euclidean was making horizontal /
+ * vertical flicks feel sluggish because √(9+0) = 3 sits right at the
+ * threshold and one-axis 3px drags failed `< 4`.
+ */
+export function exceedsDragThreshold(dx: number, dy: number): boolean {
+  return Math.max(Math.abs(dx), Math.abs(dy)) >= DRAG_ENGAGE_PX;
+}
+
+/**
+ * True when a finished free-draw rect represents a real selection
+ * (not a tiny twitch). The check is on area, not per-axis: a long
+ * thin strip (e.g. 200×1) is a valid intent; a 2×2 twitch is not.
+ */
+export function rectIsMeaningful(rect: Rect): boolean {
+  return rect.w * rect.h >= MIN_RECT_AREA_PX;
+}

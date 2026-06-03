@@ -41,15 +41,16 @@ import {
   ALL_HANDLES,
   applyResize,
   clampRectToViewport,
+  exceedsDragThreshold,
   isPointInsideRect,
   rectFromTwoPoints,
+  rectIsMeaningful,
   type HandleId,
   type Point,
   type Rect
 } from "./region-math";
 
 const HASH_PARAM_DISPLAY_ID = "displayId";
-const MIN_DRAG_PX = 4;
 const NUDGE_PX = 1;
 const NUDGE_PX_SHIFT = 10;
 
@@ -327,7 +328,10 @@ export function RegionSelector() {
 
   function commit(): void {
     const r = rectRef.current;
-    if (r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
+    // Refuse to submit only when the rect has truly zero usable area
+    // (no real drag happened). A long thin strip — e.g. 200×1 to grab
+    // a status bar — is a legitimate user intent and should commit.
+    if (!rectIsMeaningful(r)) {
       cancel();
       return;
     }
@@ -559,7 +563,7 @@ export function RegionSelector() {
 
       // From snap (or just-dropped-from-adjusting): start pending.
       // We don't transition to drawing yet — we wait to see if the
-      // mouseup happens before MIN_DRAG_PX of movement (= click
+      // mouseup happens before DRAG_ENGAGE_PX of movement (= click
       // confirms snap) or after (= free-draw).
       setInteraction({
         kind: "pending",
@@ -608,9 +612,14 @@ export function RegionSelector() {
         case "pending": {
           // Watch for the threshold cross. Up until then the snap
           // rect stays visible — once we cross, switch to free-draw.
+          // We use max-of-axes (Chebyshev) instead of Euclidean so a
+          // 3px horizontal-only flick engages drag just as readily
+          // as a 3px diagonal one. The previous `Math.hypot < 4`
+          // gate was the main reason fast small drags felt sluggish:
+          // a 3px single-axis movement read as a click-snap commit.
           const dx = event.clientX - i.startX;
           const dy = event.clientY - i.startY;
-          if (Math.hypot(dx, dy) < MIN_DRAG_PX) return;
+          if (!exceedsDragThreshold(dx, dy)) return;
           // Window mode never enters free-draw — the user is
           // picking a window, not a rect. Stay in pending; mouseup
           // will commit the window snap.
@@ -697,8 +706,14 @@ export function RegionSelector() {
         }
         case "drawing": {
           const r = rectRef.current;
-          if (r.w < MIN_DRAG_PX || r.h < MIN_DRAG_PX) {
-            // Tiny drag — treat as a click. Snap commit.
+          // Once we entered `drawing` the user has expressed drag
+          // intent (they crossed the threshold). Don't second-guess
+          // and revert to snap on a thin rect: a horizontal strip
+          // (200×1) is a legitimate selection. Only reject zero-area
+          // rects, which can only happen on a pathological no-move
+          // mouseup that somehow reached this branch.
+          if (!rectIsMeaningful(r)) {
+            // Defensive — shouldn't reach here under normal use.
             setInteraction({ kind: "snap" });
             const next = snapAt(event.clientX, event.clientY);
             setSnapTarget(next);

@@ -908,6 +908,21 @@ function createSelectorWindow(display: Display): BrowserWindow {
   // display logical px 1:1.
   const { bounds } = display;
   const window = new BrowserWindow({
+    // `type: 'panel'` — NSPanel + NSWindowStyleMaskNonactivatingPanel.
+    // Same primitive used by createFloatOverWindow / createTrayWindow.
+    // The selector's show()/focus() must NOT cause macOS to switch
+    // Spaces. A regular NSWindow, even with the canJoinAllSpaces flag
+    // (setVisibleOnAllWorkspaces below), can still trigger AppKit's
+    // "find the Space this window belongs to and switch to it" path
+    // when the owning app is brought frontmost via show()/focus() —
+    // and that path is what Splashtop's separate Space exposes. The
+    // non-activating panel skips the app-activation step entirely,
+    // so AppKit never has a reason to swap Spaces on the user.
+    //
+    // (`focusable: true` below is still respected for NSPanel; the
+    // float-over uses the same combination to receive clicks/keys
+    // without activating the app.)
+    type: "panel",
     title: SELECTOR_WINDOW_TITLE,
     x: bounds.x,
     y: bounds.y,
@@ -940,6 +955,16 @@ function createSelectorWindow(display: Display): BrowserWindow {
 
   // Highest-of-windows ordering — clears menu bar / other overlays.
   window.setAlwaysOnTop(true, "screen-saver");
+  // visibleOnAllWorkspaces + visibleOnFullScreen — the selector must
+  // appear on the user's CURRENT Space, regardless of which Space the
+  // pre-warmed window was originally constructed on. Without this,
+  // running PwrSnap alongside an app that holds its own Space (notably
+  // Splashtop, the remote-desktop client) causes macOS to swap Spaces
+  // to wherever the selector window was last associated on show —
+  // the bug reported as "workspace shift on capture with Splashtop."
+  // Paired with `type: 'panel'` above: the panel keeps show()/focus()
+  // from activating the app, and canJoinAllSpaces (set here) keeps
+  // the panel from being pinned to any single Space.
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
   const target = rendererTarget(display.id);

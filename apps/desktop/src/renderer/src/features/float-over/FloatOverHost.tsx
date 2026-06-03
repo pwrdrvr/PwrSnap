@@ -249,6 +249,22 @@ export function FloatOverHost(): React.ReactElement {
   // induced gaps where the keystroke is in flight but the listener has
   // detached. Reads the active captureId from a ref so the closure
   // stays stable across state transitions.
+  //
+  // Previously this effect depended on `[state]` and re-subscribed
+  // every time `aiRunUpdated` arrived. Each enrichment IPC bumps the
+  // host's state object (same record.id, fresh enrichment field), so
+  // the listener was being torn down and rebuilt on every Codex tick.
+  // A keystroke in the brief detach window was lost; worse, if React
+  // batched the state update mid-keypress the captured `state.record.id`
+  // could go stale. Bug v.
+  //
+  // The fix: a ref that the host mutates whenever it transitions
+  // states. The window-level keydown listener subscribes ONCE
+  // (mount/unmount only) and always reads the current capture id
+  // from the ref. No more detach/attach churn on each enrichment
+  // broadcast.
+  const activeCaptureIdRef = useRef<string | null>(null);
+  activeCaptureIdRef.current = state.kind === "loaded" ? state.record.id : null;
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (!event.metaKey || event.shiftKey || event.altKey) return;
@@ -259,16 +275,17 @@ export function FloatOverHost(): React.ReactElement {
       if (preset === null) return;
       // Only accept the shortcut when we have a capture loaded —
       // pressing ⌘1 over an idle pre-show is a no-op.
-      if (state.kind !== "loaded") return;
+      const captureId = activeCaptureIdRef.current;
+      if (captureId === null) return;
       event.preventDefault();
-      void dispatch("clipboard:copy", { captureId: state.record.id, preset });
+      void dispatch("clipboard:copy", { captureId, preset });
       setCopyPulses((current) => ({ ...current, [preset]: current[preset] + 1 }));
     }
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [state]);
+  }, []);
 
   // Single return path so contentRef wraps every state — the
   // ResizeObserver above always has a stable target it can observe

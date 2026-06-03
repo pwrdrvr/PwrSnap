@@ -434,6 +434,12 @@ export function registerCodexHandlers(params?: {
     });
     const enrichment = setLatestEnrichmentRun(capture.id, run.id);
     broadcastAiRunUpdated({ run, enrichment });
+    // Snapshot the caption-model setting at enqueue time. The user can
+    // flip the picker mid-run, but the model passed to `thread/start`
+    // must match what the run record reports — re-reading it inside
+    // `runCaptureEnrichment` would mean a Settings flip during a run
+    // silently swaps providers and skews run-level metrics.
+    const captionModel = settings.codex.captionModel;
     // Source-path resolution (re-extracting source.png from the
     // bundle when Storage → Clear/Trim wiped the per-capture cache)
     // happens INSIDE runCaptureEnrichment so the extraction cost
@@ -457,6 +463,7 @@ export function registerCodexHandlers(params?: {
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
+      model: captionModel,
       settingsReader,
       selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       triggerSource,
@@ -688,6 +695,10 @@ async function runCaptureEnrichment(params: {
   capture: CaptureRecord;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
+  /** OpenAI model identifier forwarded to Codex App Server as
+   *  `thread/start.model`. Empty string = use Codex's own default.
+   *  Snapshot at enqueue time; see comment in `codex:enrich` above. */
+  model: string;
   /**
    * Re-read just before the result is persisted so a `auto-accept`
    * toggle the user flipped DURING the run is honored — not the

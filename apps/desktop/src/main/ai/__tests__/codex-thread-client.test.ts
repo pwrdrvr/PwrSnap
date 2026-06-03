@@ -5,7 +5,8 @@ import type {
 import type { JsonRpcTransport } from "../../codex-app-server/json-rpc";
 import {
   CodexThreadClient,
-  type CodexAgentMessageDeltaEvent
+  type CodexAgentMessageDeltaEvent,
+  type CodexTurnErrorEvent
 } from "../codex-thread-client";
 import { describe, expect, it } from "vitest";
 
@@ -242,6 +243,56 @@ describe("CodexThreadClient", () => {
     const aOnly = deltas.filter((event) => event.threadId === threadA);
     expect(aOnly).toEqual([
       { threadId: threadA, turnId: turnA, itemId: "item-a", delta: "alpha" }
+    ]);
+  });
+
+  it("emits a turn-error event with the unwrapped reason on an `error` notification", async () => {
+    const transport = new FakeTransport();
+    const client = new CodexThreadClient({
+      command: "/bin/codex",
+      transportFactory: () => transport
+    });
+    const { threadId } = await client.startThread();
+    const { turnId } = await client.startTurn({
+      threadId,
+      input: [{ type: "text", text: "make an image", text_elements: [] }]
+    });
+
+    const errors: CodexTurnErrorEvent[] = [];
+    client.onTurnError((event) => errors.push(event));
+
+    // Codex nests the provider error as a JSON blob in `message` — the
+    // event must carry the unwrapped human sentence, not the raw blob.
+    transport.emitNotification("error", {
+      threadId,
+      turnId,
+      willRetry: false,
+      error: {
+        message: JSON.stringify({
+          type: "error",
+          error: {
+            type: "image_generation_user_error",
+            code: "invalid_value",
+            message: "The model 'gpt-image-2' does not exist.",
+            param: "tools"
+          },
+          status: 400
+        }),
+        codexErrorInfo: "other",
+        additionalDetails: null
+      }
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toEqual([
+      {
+        threadId,
+        turnId,
+        message: "The model 'gpt-image-2' does not exist.",
+        willRetry: false
+      }
     ]);
   });
 

@@ -23,6 +23,11 @@ class FakeTransport implements JsonRpcTransport {
   private closeHandler: (error?: Error) => void = () => undefined;
   private turnSeq = 0;
 
+  /** When set, a turn emits an `error` notification (then a failed
+   *  turn/completed) instead of the normal success sequence — mirrors
+   *  Codex faulting a turn (e.g. an invalid image model). */
+  constructor(private readonly turnErrorBlob: string | null = null) {}
+
   async connect(): Promise<void> {
     return;
   }
@@ -154,6 +159,42 @@ class FakeTransport implements JsonRpcTransport {
           }
         }
       });
+      if (this.turnErrorBlob !== null) {
+        setTimeout(() => {
+          // Codex faults the turn: an `error` notification carrying the
+          // real reason, THEN a failed turn/completed whose own
+          // `turn.error` is null (as observed in the wild).
+          this.emit({
+            method: "error",
+            params: {
+              threadId: "thread-1",
+              turnId,
+              willRetry: false,
+              error: {
+                message: this.turnErrorBlob,
+                codexErrorInfo: "other",
+                additionalDetails: null
+              }
+            }
+          });
+          this.emit({
+            method: "turn/completed",
+            params: {
+              threadId: "thread-1",
+              turn: {
+                id: turnId,
+                items: [],
+                status: "failed",
+                error: null,
+                startedAt: 0,
+                completedAt: 1,
+                durationMs: 1000
+              }
+            }
+          });
+        });
+        return;
+      }
       setTimeout(() => {
         this.emit({
           method: "thread/tokenUsage/updated",
@@ -465,5 +506,46 @@ describe("CodexAppServerClient", () => {
     expect(JSON.stringify(turnStart?.params)).toContain(
       "Provided video frame samples: 15% at 1.500s, 50% at 5.000s, 85% at 8.500s"
     );
+  });
+
+  it("rejects the enrichment with the unwrapped reason when Codex faults the turn", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "pwrsnap-codex-client-test-"));
+    tempRoots.push(tempRoot);
+    const imagePath = join(tempRoot, "capture.jpg");
+    await writeFile(imagePath, Buffer.from([1, 2, 3]));
+    // The exact provider-error blob from the field report: an image tool
+    // pointed at a model that doesn't exist.
+    const blob = JSON.stringify({
+      type: "error",
+      error: {
+        type: "image_generation_user_error",
+        code: "invalid_value",
+        message: "The model 'gpt-image-2' does not exist.",
+        param: "tools"
+      },
+      status: 400
+    });
+    const transport = new FakeTransport(blob);
+    const client = new CodexAppServerClient({
+      command: "/bin/codex",
+      captureMetadataWorkspaceDir: join(tempRoot, "metadata-worker"),
+      transportFactory: () => transport,
+      turnTimeoutMs: 1000
+    });
+
+    await expect(
+      client.enrichCapture({
+        imagePaths: [imagePath],
+        metadata: {
+          sourceAppName: "PwrSnap",
+          sourceAppBundleId: "com.pwrdrvr.pwrsnap",
+          captureKind: "image",
+          widthPx: 2880,
+          heightPx: 1920,
+          capturedAt: "2026-05-18T13:30:00.000Z"
+        }
+      })
+      // The rich reason — not the generic "codex capture enrichment failed".
+    ).rejects.toThrow("The model 'gpt-image-2' does not exist.");
   });
 });

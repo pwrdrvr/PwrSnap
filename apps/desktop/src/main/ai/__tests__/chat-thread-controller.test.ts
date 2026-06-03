@@ -31,7 +31,8 @@ import type {
   CodexToolCallHandler,
   CodexThreadSettingsEvent,
   CodexThreadTokenUsageEvent,
-  CodexTurnCompletedEvent
+  CodexTurnCompletedEvent,
+  CodexTurnErrorEvent
 } from "../codex-thread-client";
 import type { ChatBroadcast } from "../chat-thread-controller";
 import { ChatThreadController } from "../chat-thread-controller";
@@ -44,6 +45,7 @@ import { EVENT_CHANNELS } from "@pwrsnap/shared";
 class FakeClient {
   private deltaCb: ((e: CodexAgentMessageDeltaEvent) => void) | null = null;
   private completedCb: ((e: CodexTurnCompletedEvent) => void) | null = null;
+  private turnErrorCb: ((e: CodexTurnErrorEvent) => void) | null = null;
   private tokenUsageCb: ((e: CodexThreadTokenUsageEvent) => void) | null = null;
   private settingsCb: ((e: CodexThreadSettingsEvent) => void) | null = null;
   private toolHandler: CodexToolCallHandler | null = null;
@@ -108,6 +110,10 @@ class FakeClient {
     this.completedCb = cb;
     return () => undefined;
   }
+  onTurnError(cb: (e: CodexTurnErrorEvent) => void): () => void {
+    this.turnErrorCb = cb;
+    return () => undefined;
+  }
   onTokenUsageUpdated(cb: (e: CodexThreadTokenUsageEvent) => void): () => void {
     this.tokenUsageCb = cb;
     return () => undefined;
@@ -131,6 +137,9 @@ class FakeClient {
   }
   fireCompleted(threadId: string, turnId: string, status: string): void {
     this.completedCb?.({ threadId, turnId, status });
+  }
+  fireTurnError(threadId: string, turnId: string, message: string, willRetry: boolean): void {
+    this.turnErrorCb?.({ threadId, turnId, message, willRetry });
   }
   fireTokenUsage(threadId: string, turnId: string, inputTokens: number): void {
     this.tokenUsageCb?.({
@@ -256,6 +265,16 @@ function lastAssistantStatus(broadcasts: Broadcast[]): string | undefined {
     .at(-1)?.status;
 }
 
+function lastAssistantText(broadcasts: Broadcast[]): string | undefined {
+  const message = broadcasts
+    .filter((b) => b.channel === EVENT_CHANNELS.libraryChatMessageCommitted)
+    .map((b) => b.payload as { message: { role: string; content: Array<{ text?: string }> } })
+    .map((p) => p.message)
+    .filter((m) => m.role === "assistant")
+    .at(-1);
+  return message?.content.map((c) => c.text ?? "").join("");
+}
+
 describe("ChatThreadController turn-completion status mapping", () => {
   it("commits a FAILED assistant message when the turn errors (not interrupted)", async () => {
     const { client, controller, broadcasts } = build();
@@ -289,6 +308,62 @@ describe("ChatThreadController turn-completion status mapping", () => {
     await waitFor(() => lastAssistantStatus(broadcasts) !== undefined);
 
     expect(lastAssistantStatus(broadcasts)).toBe("complete");
+  });
+});
+
+describe("ChatThreadController error notifications", () => {
+  // The bug this guards: a Codex `error` notification (the only carrier of
+  // the real reason) was dropped, so a faulted turn surfaced as a bare
+  // "Failed" with no cause. The reason must end the turn AND land in the
+  // transcript.
+  it("ends the turn and surfaces the error in the transcript when willRetry is false", async () => {
+    const { client, controller, broadcasts } = build();
+    const view = await controller.createThread({ name: "T" });
+    const { turnId } = await controller.sendMessage({ threadId: view.threadId, text: "hi" });
+
+    // No turn/completed needed — a terminal error ends the turn on its own.
+    client.fireTurnError(
+      view.threadId,
+      turnId,
+      "The model 'gpt-image-2' does not exist.",
+      false
+    );
+    await waitFor(() => lastAssistantStatus(broadcasts) === "failed");
+
+    expect(lastAssistantStatus(broadcasts)).toBe("failed");
+    expect(lastAssistantText(broadcasts)).toContain(
+      "The model 'gpt-image-2' does not exist."
+    );
+  });
+
+  it("keeps partial streamed text and appends the error reason on failure", async () => {
+    const { client, controller, broadcasts } = build();
+    const view = await controller.createThread({ name: "T" });
+    const { turnId } = await controller.sendMessage({ threadId: view.threadId, text: "hi" });
+
+    client.fireDelta(view.threadId, turnId, "Here is a partial answer");
+    client.fireTurnError(view.threadId, turnId, "Provider rejected the request", false);
+    await waitFor(() => lastAssistantStatus(broadcasts) === "failed");
+
+    const text = lastAssistantText(broadcasts) ?? "";
+    expect(text).toContain("Here is a partial answer");
+    expect(text).toContain("Provider rejected the request");
+  });
+
+  it("does NOT end the turn when Codex says it will retry — turn/completed decides", async () => {
+    const { client, controller, broadcasts } = build();
+    const view = await controller.createThread({ name: "T" });
+    const { turnId } = await controller.sendMessage({ threadId: view.threadId, text: "hi" });
+
+    // A retryable error must not finalize the turn early.
+    client.fireTurnError(view.threadId, turnId, "transient blip", true);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastAssistantStatus(broadcasts)).toBeUndefined();
+
+    // The recorded reason still rides the eventual failed completion.
+    client.fireCompleted(view.threadId, turnId, "failed");
+    await waitFor(() => lastAssistantStatus(broadcasts) === "failed");
+    expect(lastAssistantText(broadcasts)).toContain("transient blip");
   });
 });
 

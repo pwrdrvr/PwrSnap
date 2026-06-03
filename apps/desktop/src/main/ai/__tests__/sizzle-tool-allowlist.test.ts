@@ -30,6 +30,7 @@ function project(scenes: SizzleScene[]): SizzleProject {
     name: "Demo",
     createdAt: "2026-05-28T00:00:00.000Z",
     modifiedAt: "2026-05-28T00:00:00.000Z",
+    coverCaptureId: null,
     scenes,
     voice: "onyx",
     ttsModel: "tts-1-hd",

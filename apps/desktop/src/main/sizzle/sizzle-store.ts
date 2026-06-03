@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { app } from "electron";
 import {
+  defaultSizzleProjectCoverCaptureId,
   normalizeSizzleSequenceBeatContinuity,
   normalizeSizzleTransition,
   type SizzleAudioSource,
@@ -46,6 +47,7 @@ export class SizzleStore {
    * matching the pre-cache behavior where reads went through disk.
    */
   private cachedBlob: StoredBlob | null = null;
+  private cachedBlobNeedsPersist = false;
 
   constructor(config: SizzleStoreConfig = {}) {
     this.filePath =
@@ -75,6 +77,21 @@ export class SizzleStore {
     });
   }
 
+  async persistDerivedFieldsForProject(
+    id: string
+  ): Promise<{ project: SizzleProject; repaired: boolean } | null> {
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      const project = blob.projects.find((p) => p.id === id) ?? null;
+      if (project === null) return null;
+      const repaired = this.cachedBlobNeedsPersist;
+      if (this.cachedBlobNeedsPersist) {
+        await this.writeBlob(blob);
+      }
+      return { project, repaired };
+    });
+  }
+
   async create(name: string): Promise<SizzleProject> {
     return this.serialize(async () => {
       const blob = await this.readBlob();
@@ -84,6 +101,7 @@ export class SizzleStore {
         name: name.trim() || "Untitled Sizzle",
         createdAt: now,
         modifiedAt: now,
+        coverCaptureId: null,
         scenes: [],
         voice: "onyx",
         ttsModel: "tts-1-hd",
@@ -130,9 +148,17 @@ export class SizzleStore {
       if (idx < 0) throw new SizzleProjectNotFoundError(id);
       const prev = blob.projects[idx]!;
       const scenes = patch.scenes ? sanitizeScenes(patch.scenes) : prev.scenes;
+      const coverCaptureId =
+        patch.coverCaptureId !== undefined
+          ? patch.coverCaptureId
+          : prev.coverCaptureId ??
+            (patch.scenes !== undefined
+              ? defaultSizzleProjectCoverCaptureId(scenes)
+              : null);
       const next: SizzleProject = {
         ...prev,
         ...patch,
+        coverCaptureId,
         scenes,
         id: prev.id,
         createdAt: prev.createdAt,
@@ -163,6 +189,7 @@ export class SizzleStore {
     } catch (cause) {
       if (isNodeError(cause) && cause.code === "ENOENT") {
         this.cachedBlob = clone(DEFAULT_BLOB);
+        this.cachedBlobNeedsPersist = false;
         return clone(this.cachedBlob);
       }
       this.log.warn("sizzle-store: read failed, returning empty", {
@@ -170,16 +197,19 @@ export class SizzleStore {
         message: cause instanceof Error ? cause.message : String(cause)
       });
       this.cachedBlob = clone(DEFAULT_BLOB);
+      this.cachedBlobNeedsPersist = false;
       return clone(this.cachedBlob);
     }
     if (raw.length === 0) {
       this.cachedBlob = clone(DEFAULT_BLOB);
+      this.cachedBlobNeedsPersist = false;
       return clone(this.cachedBlob);
     }
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (!isStoredBlob(parsed)) {
         this.cachedBlob = clone(DEFAULT_BLOB);
+        this.cachedBlobNeedsPersist = false;
         return clone(this.cachedBlob);
       }
       // Normalize scenes on the read path so every consumer sees the
@@ -188,12 +218,25 @@ export class SizzleStore {
       // first written. Without this, projects created before these
       // fields existed have undefined values and crash any consumer
       // doing `scene.mediaTrim.endSec` etc.
+      let normalizedNeedsPersist = false;
       for (const project of parsed.projects) {
         if (Array.isArray(project.scenes)) {
           project.scenes = sanitizeScenes(project.scenes);
         }
+        const existingCoverCaptureId =
+          typeof project.coverCaptureId === "string" && project.coverCaptureId.length > 0
+            ? project.coverCaptureId
+            : null;
+        const nextCoverCaptureId =
+          existingCoverCaptureId ?? defaultSizzleProjectCoverCaptureId(project.scenes);
+        if (project.coverCaptureId !== nextCoverCaptureId) {
+          normalizedNeedsPersist = true;
+        }
+        project.coverCaptureId =
+          nextCoverCaptureId;
       }
       this.cachedBlob = parsed;
+      this.cachedBlobNeedsPersist = normalizedNeedsPersist;
       return clone(this.cachedBlob);
     } catch (cause) {
       this.log.warn("sizzle-store: parse failed, quarantining", {
@@ -206,6 +249,7 @@ export class SizzleStore {
         /* ignore */
       }
       this.cachedBlob = clone(DEFAULT_BLOB);
+      this.cachedBlobNeedsPersist = false;
       return clone(this.cachedBlob);
     }
   }
@@ -221,6 +265,7 @@ export class SizzleStore {
       // Stored as a clone — the caller's `blob` reference is shared
       // mutable state; the cache must not alias it.
       this.cachedBlob = clone(blob);
+      this.cachedBlobNeedsPersist = false;
     } catch (cause) {
       try {
         await unlink(tmp);

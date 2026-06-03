@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import {
   useCallback,
   useEffect,
@@ -19,7 +19,12 @@ import type {
   Settings,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
-import { EVENT_CHANNELS, type SettingsChangedEvent, type SizzleProject } from "@pwrsnap/shared";
+import {
+  EVENT_CHANNELS,
+  resolveSizzleProjectCoverCaptureId,
+  type SettingsChangedEvent,
+  type SizzleProject
+} from "@pwrsnap/shared";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { AppIcon, AppTag } from "../shared/AppIcons";
 import { PwrSnapMark, PwrSnapWordmark } from "../shared/BrandMark";
@@ -35,7 +40,14 @@ import { resolveLibraryAiToggleAction } from "./library-ai-toggle";
 import { mergeOpenedLiveRecords } from "./library-records";
 import { initialLibraryView, libraryReducer, type LibraryAction, type LibraryView } from "./library-view";
 import { Stage } from "./Stage";
-import { cacheUrl, captureSrcUrl, dispatch, perfMark, subscribe } from "../../lib/pwrsnap";
+import {
+  cacheUrl,
+  captureSrcUrl,
+  dispatch,
+  perfMark,
+  sizzleOutputUrl,
+  subscribe
+} from "../../lib/pwrsnap";
 import { useSizzleProjects } from "../../lib/useSizzleProjects";
 import { useCart, useCartIsEmpty } from "./CartContext";
 import { CartPanel } from "./CartPanel";
@@ -86,16 +98,6 @@ function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boole
     .join(" ")
     .toLowerCase();
   return terms.every((term) => haystack.includes(term));
-}
-
-function projectCoverCaptureId(project: SizzleProject): string | null {
-  const firstScene = project.scenes[0];
-  if (firstScene === undefined) return null;
-  if (firstScene.kind === "sequence") {
-    const beatCaptureId = firstScene.beats?.find((beat) => beat.captureId.length > 0)?.captureId;
-    if (beatCaptureId !== undefined) return beatCaptureId;
-  }
-  return firstScene.captureId.length > 0 ? firstScene.captureId : null;
 }
 
 type ProjectContextMenuState = {
@@ -181,12 +183,12 @@ function CellThumb({
   projectCoverRecord?: CaptureRecord | null;
   width: number;
 }) {
-  // Sizzle Reels project cell — first scene's thumbnail as the
+  // Sizzle Reels project cell — saved cover thumbnail as the
   // background + a project-kind badge + a "N scenes · MM:SS" pill.
   // Click handling is in the parent's onSelectCell, which dispatches
   // sizzle:open instead of OPEN_FOCUS for project cells.
   if (capture.kind === "project" && project !== null) {
-    const coverCaptureId = projectCoverRecord?.id ?? projectCoverCaptureId(project);
+    const coverCaptureId = resolveSizzleProjectCoverCaptureId(project);
     const sceneCount = project.scenes.length;
     const totalSec = project.scenes.reduce((acc, s) => {
       const explicit = s.durationOverrideSec;
@@ -201,33 +203,49 @@ function CellThumb({
             .toString()
             .padStart(2, "0")}`
         : `${Math.round(totalSec)}s`;
+    const coverThumb =
+      projectCoverRecord?.kind === "video" ? (
+        <VideoCellThumb record={projectCoverRecord} showDuration={false} />
+      ) : projectCoverRecord !== null ? (
+        <img
+          src={cacheUrl(projectCoverRecord.id, width, "webp", projectCoverRecord.edits_version)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            display: "block"
+          }}
+        />
+      ) : coverCaptureId !== null ? (
+        <img
+          src={cacheUrl(coverCaptureId, width, "webp")}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            display: "block"
+          }}
+        />
+      ) : (
+        <span className="psl__cell-project-empty" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="3" y="6" width="14" height="12" rx="2" />
+            <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
+          </svg>
+        </span>
+      );
     return (
       <div className="psl__cell-project">
-        {coverCaptureId !== null ? (
-          <img
-            src={cacheUrl(
-              coverCaptureId,
-              width,
-              "webp",
-              projectCoverRecord?.edits_version
-            )}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "contain",
-              display: "block"
-            }}
-          />
+        {typeof project.outputPath === "string" && project.outputPath.length > 0 ? (
+          <ProjectMovieCellThumb project={project}>{coverThumb}</ProjectMovieCellThumb>
         ) : (
-          <span className="psl__cell-project-empty" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="3" y="6" width="14" height="12" rx="2" />
-              <path d="m17 10 4-2v8l-4-2z" fill="currentColor" />
-            </svg>
-          </span>
+          coverThumb
         )}
         <span className="psl__cell-project-kind" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
@@ -274,23 +292,67 @@ function CellThumb({
 }
 
 /**
- * Video Library card thumbnail. Renders the silent preview proxy on
- * hover — falls back to a poster frame (the source clip's first
- * frame via the existing capture protocol) when the proxy is still
- * being generated or generation failed. Stops playback on mouseleave
- * so the grid stays calm with many videos in view.
+ * Video Library card thumbnail. Renders a silent source preview on
+ * hover and stops playback on mouseleave so the grid stays calm with
+ * many videos in view.
  *
  * Duration badge in the bottom-right makes video cards instantly
  * recognizable from images at a glance.
  */
-function VideoCellThumb({ record }: { record: CaptureRecord }): React.ReactElement {
+function VideoCellThumb({
+  record,
+  showDuration = true
+}: {
+  record: CaptureRecord;
+  showDuration?: boolean;
+}): React.ReactElement {
+  return (
+    <PreviewVideoThumb
+      src={captureSrcUrl(record.id)}
+      duration={record.video?.durationSec ?? 0}
+      showDuration={showDuration}
+    />
+  );
+}
+
+function ProjectMovieCellThumb({
+  project,
+  children
+}: {
+  project: SizzleProject;
+  children: ReactNode;
+}): React.ReactElement {
+  const src = sizzleOutputUrl(project.id, project.lastRenderedAt);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+  if (failed) {
+    return <>{children}</>;
+  }
+  return (
+    <PreviewVideoThumb
+      src={src}
+      duration={0}
+      showDuration={false}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function PreviewVideoThumb({
+  src,
+  duration,
+  showDuration = true,
+  onError
+}: {
+  src: string;
+  duration: number;
+  showDuration?: boolean;
+  onError?: () => void;
+}): React.ReactElement {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hovering, setHovering] = useState(false);
-  const duration = record.video?.durationSec ?? 0;
-  // pwrsnap-capture://r/<id> serves the full source; for the
-  // preview-on-hover we prefer the preview proxy when ready so the
-  // grid doesn't decode 30s clips on every mouseover.
-  const sourceUrl = captureSrcUrl(record.id);
   useEffect(() => {
     const el = videoRef.current;
     if (el === null) return;
@@ -315,10 +377,11 @@ function VideoCellThumb({ record }: { record: CaptureRecord }): React.ReactEleme
     >
       <video
         ref={videoRef}
-        src={sourceUrl}
+        src={src}
         muted
         playsInline
         preload="metadata"
+        onError={onError}
         style={{
           width: "100%",
           height: "100%",
@@ -326,23 +389,25 @@ function VideoCellThumb({ record }: { record: CaptureRecord }): React.ReactEleme
           display: "block"
         }}
       />
-      <span
-        data-video-duration={duration.toFixed(1)}
-        style={{
-          position: "absolute",
-          right: 6,
-          bottom: 6,
-          padding: "2px 6px",
-          borderRadius: 4,
-          background: "rgba(0, 0, 0, 0.7)",
-          color: "#fff",
-          font: "500 10px/1 var(--font-mono)",
-          letterSpacing: "0.02em",
-          pointerEvents: "none"
-        }}
-      >
-        {formatDurationLabel(duration)}
-      </span>
+      {showDuration ? (
+        <span
+          data-video-duration={duration.toFixed(1)}
+          style={{
+            position: "absolute",
+            right: 6,
+            bottom: 6,
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "rgba(0, 0, 0, 0.7)",
+            color: "#fff",
+            font: "500 10px/1 var(--font-mono)",
+            letterSpacing: "0.02em",
+            pointerEvents: "none"
+          }}
+        >
+          {formatDurationLabel(duration)}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -1299,7 +1364,7 @@ export function Library() {
       Array.from(
         new Set(
           gridProjects
-            .map(projectCoverCaptureId)
+            .map(resolveSizzleProjectCoverCaptureId)
             .filter((id): id is string => id !== null)
         )
       ),
@@ -2869,6 +2934,15 @@ export function Library() {
                               // against the record id, not the fixture).
                               const record = fixtureBacking.recordFor(c.id);
                               const project = fixtureBacking.projectFor(c.id);
+                              const coverCaptureId =
+                                project === null
+                                  ? null
+                                  : resolveSizzleProjectCoverCaptureId(project);
+                              const coverRecord =
+                                coverCaptureId === null
+                                  ? null
+                                  : projectCoverRecordsById.get(coverCaptureId) ??
+                                    fixtureBacking.recordById(coverCaptureId);
                               const recordId = record?.id ?? null;
                               const isSelected = recordId === selectedRecordId;
                               return (
@@ -2880,7 +2954,13 @@ export function Library() {
                                   }
                                   onClick={() => onSelectFrame(c)}
                                 >
-                                  <CellThumb capture={c} record={record} project={project} width={140} />
+                                  <CellThumb
+                                    capture={c}
+                                    record={record}
+                                    project={project}
+                                    projectCoverRecord={coverRecord}
+                                    width={140}
+                                  />
                                   <span className="psl__frame-num">{c.time}</span>
                                   <span className="psl__frame-app">
                                     <AppIcon app={c.app} size={8} name={appLabels[c.app]} bundleId={c.bundleId ?? undefined} />
@@ -3570,11 +3650,13 @@ function CellRow({
       {cells.map((c) => {
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
-        const projectCoverId = project === null ? null : projectCoverCaptureId(project);
+        const projectCoverId =
+          project === null ? null : resolveSizzleProjectCoverCaptureId(project);
         const projectCoverRecord =
           projectCoverId === null
             ? null
-            : projectCoverRecordsById.get(projectCoverId) ?? null;
+            : projectCoverRecordsById.get(projectCoverId) ??
+              fixtureBacking.recordById(projectCoverId);
         const isProject = c.kind === "project";
         const projectId = isProject && c.projectId !== undefined ? c.projectId : null;
         // Cart checkbox shows for real (non-project) captures outside

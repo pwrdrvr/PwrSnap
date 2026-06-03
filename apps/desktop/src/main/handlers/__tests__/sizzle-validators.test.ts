@@ -108,10 +108,26 @@ describe("validateSizzleUpdate", () => {
         voice: "nova",
         ttsModel: "tts-1",
         ttsProvider: "openai",
-        resolution: "720p"
+        resolution: "720p",
+        coverCaptureId: "cap_cover"
       }
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.coverCaptureId).toBe("cap_cover");
+  });
+
+  it("accepts clearing the saved cover capture", () => {
+    const r = validateSizzleUpdate({ id: "sz_1", patch: { coverCaptureId: null } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.coverCaptureId).toBeNull();
+  });
+
+  it("rejects invalid cover capture ids", () => {
+    for (const coverCaptureId of ["", 123, {}]) {
+      const r = validateSizzleUpdate({ id: "sz_1", patch: { coverCaptureId } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("coverCaptureId_invalid");
+    }
   });
 
   it("rejects bogus voice", () => {

@@ -21,7 +21,11 @@ export const SCHEMES = {
    *  Bundle ids contain dots and may carry case (`com.apple.Terminal`),
    *  so the id sits in the path component (Chromium lowercases the
    *  host for standard schemes; would collapse `Terminal` → `terminal`). */
-  appIcon: "pwrsnap-app-icon"
+  appIcon: "pwrsnap-app-icon",
+  /** Rendered sizzle reel output. URL shape:
+   *  `pwrsnap-sizzle://r/<project-id>`; the project id uses the same
+   *  safe alphabet as capture ids (`sz_...`). */
+  sizzle: "pwrsnap-sizzle"
 } as const;
 
 export type CacheUrlParts = {
@@ -39,7 +43,8 @@ export type CacheUrlParts = {
 export function parseCaptureId(url: string, scheme: string = SCHEMES.capture): string | null {
   const prefix = `${scheme}://r/`;
   if (!url.startsWith(prefix)) return null;
-  const rest = url.slice(prefix.length).replace(/\/+$/, "");
+  const noQuery = url.split(/[?#]/, 1)[0]!;
+  const rest = noQuery.slice(prefix.length).replace(/\/+$/, "");
   if (rest.length === 0) return null;
   // Allow letters, digits, underscore, dash — matches nanoid alphabet.
   if (!/^[a-zA-Z0-9_-]+$/.test(rest)) return null;

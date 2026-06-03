@@ -136,3 +136,13 @@ export function cacheUrl(
   const base = `pwrsnap-cache://r/${captureId}/${width}w.${format}`;
   return overlaysVersion === undefined ? base : `${base}?v=${overlaysVersion}`;
 }
+
+export function sizzleOutputUrl(
+  projectId: string,
+  lastRenderedAt?: string | null
+): string {
+  const base = `pwrsnap-sizzle://r/${projectId}`;
+  return lastRenderedAt === undefined || lastRenderedAt === null
+    ? base
+    : `${base}?v=${encodeURIComponent(lastRenderedAt)}`;
+}

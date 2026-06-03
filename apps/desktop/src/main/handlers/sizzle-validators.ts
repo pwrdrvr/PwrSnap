@@ -250,6 +250,16 @@ export function validateSizzleUpdate(
     out.resolution = patch.resolution;
   }
 
+  if (patch.coverCaptureId !== undefined) {
+    if (patch.coverCaptureId !== null && (typeof patch.coverCaptureId !== "string" || patch.coverCaptureId.length === 0)) {
+      return {
+        ok: false,
+        error: validationError("coverCaptureId_invalid", "coverCaptureId must be a non-empty string or null")
+      };
+    }
+    out.coverCaptureId = patch.coverCaptureId;
+  }
+
   if (patch.scenes !== undefined) {
     const scenesResult = validateScenesArray(patch.scenes);
     if (!scenesResult.ok) return { ok: false, error: scenesResult.error };

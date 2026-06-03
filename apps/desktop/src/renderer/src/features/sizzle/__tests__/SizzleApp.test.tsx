@@ -257,6 +257,15 @@ function typeIntoInput(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function selectOption(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    "value"
+  )!.set!;
+  setter.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function projectRowNames(list: Element | null): string[] {
   return Array.from(list?.querySelectorAll(".szl__row-name") ?? []).map(
     (el) => el.textContent ?? ""
@@ -413,7 +422,16 @@ describe("SizzleApp sequence authoring", () => {
     const transcriptOption = el.querySelector<HTMLOptionElement>("datalist option");
     expect(transcriptOption?.value).toBe("the next screen");
     expect(transcriptOption?.label).toBe("1.5s - 2.4s");
+    const phrasePicker = el.querySelector<HTMLSelectElement>(".szl__sequence-phrase-picker");
+    expect(phrasePicker?.options[1]?.value).toBe("the next screen");
+    expect(phrasePicker?.options[1]?.textContent).toContain("1.5s - 2.4s");
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
+
+    if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
+    await act(async () => {
+      selectOption(phrasePicker, "the next screen");
+    });
+    expect(el.querySelector<HTMLInputElement>(".szl__sequence-phrase")?.value).toBe("the next screen");
   });
 
   test("starts and stops the already-mounted first sequence video preview", async () => {
@@ -635,6 +653,9 @@ describe("SizzleApp sequence authoring", () => {
 
     expect(el.textContent).toContain("unresolved");
     expect(el.textContent).not.toContain("approx timing");
+    expect(phrase.getAttribute("list")).toMatch(/^szl-transcript-phrases-/);
+    expect(el.querySelector(".szl__sequence-phrase-picker")).not.toBeNull();
+    expect(el.querySelector<HTMLOptionElement>("datalist option")?.value).toBe("the next screen");
   });
 });
 

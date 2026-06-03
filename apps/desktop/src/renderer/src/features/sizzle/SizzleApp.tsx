@@ -305,8 +305,15 @@ function sequencePreviewPlanKey(scene: SizzleScene): string {
   });
 }
 
+function sequenceTranscriptKey(scene: SizzleScene): string {
+  return JSON.stringify({
+    scriptLine: scene.scriptLine
+  });
+}
+
 type CachedSequencePreviewPlan = {
   key: string;
+  transcriptKey: string;
   plan: SizzleSequencePreviewPlan;
 };
 
@@ -1600,6 +1607,7 @@ function Editor(props: EditorProps): ReactElement {
         ...prev,
         [sceneId]: {
           key: sequencePreviewPlanKey(scene),
+          transcriptKey: sequenceTranscriptKey(scene),
           plan: planResult.value
         }
       }));
@@ -2006,8 +2014,13 @@ function Editor(props: EditorProps): ReactElement {
               sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
                 ? sequencePreviewEntry.plan
                 : undefined;
+            const sequenceTranscriptPlan =
+              scene.kind === "sequence" &&
+              sequencePreviewEntry?.transcriptKey === sequenceTranscriptKey(scene)
+                ? sequencePreviewEntry.plan
+                : undefined;
             const transcriptPhrases =
-              scene.kind === "sequence" ? sequencePreviewPlan?.transcriptPhrases ?? [] : [];
+              scene.kind === "sequence" ? sequenceTranscriptPlan?.transcriptPhrases ?? [] : [];
             const transcriptDatalistId = `szl-transcript-phrases-${scene.id}`;
 
             const elements: ReactElement[] = [];
@@ -2266,6 +2279,36 @@ function Editor(props: EditorProps): ReactElement {
                                       })
                                     }
                                   />
+                                  {transcriptPhrases.length > 0 ? (
+                                    <select
+                                      className="szl__sequence-phrase-picker"
+                                      value=""
+                                      title="Choose a phrase from the timed transcript"
+                                      onChange={(e) => {
+                                        const phrase = e.target.value;
+                                        if (phrase.length === 0) return;
+                                        editSequenceBeat(scene.id, beat.id, {
+                                          timing: {
+                                            kind: "phrase",
+                                            phrase,
+                                            occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                            offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
+                                            durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
+                                          }
+                                        });
+                                      }}
+                                    >
+                                      <option value="">Transcript...</option>
+                                      {transcriptPhrases.map((phrase) => (
+                                        <option
+                                          key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
+                                          value={phrase.text}
+                                        >
+                                          {formatTranscriptPhraseOptionLabel(phrase)} · {phrase.text}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : null}
                                   <label className="szl__sequence-time-field">
                                     <span>Offset</span>
                                     <input

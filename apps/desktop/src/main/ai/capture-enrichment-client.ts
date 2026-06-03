@@ -45,6 +45,13 @@ export type CaptureEnrichmentRequest = {
   imagePaths: readonly string[];
   metadata: CaptureEnrichmentPromptMetadata;
   model?: string | null;
+  /** Model provider, driven by the Settings → AI per-surface default
+   *  `ai.defaults.enrichment.provider`. Omit for the Codex default. */
+  modelProvider?: string | null;
+  /** Reasoning effort for the enrichment turn. Defaults to "low" when
+   *  omitted (enrichment is high-volume + cost-sensitive). Driven by the
+   *  Settings → AI per-surface default `ai.defaults.enrichment.reasoning`. */
+  effort?: string;
   abortSignal?: AbortSignal;
 };
 
@@ -116,8 +123,9 @@ export class CaptureEnrichmentClient {
       imagePaths: request.imagePaths,
       outputSchema: CAPTURE_ENRICHMENT_SCHEMA,
       baseInstructions: CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
-      effort: "low",
+      effort: request.effort ?? "low",
       model: request.model ?? null,
+      modelProvider: request.modelProvider ?? null,
       ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {})
     });
     return {

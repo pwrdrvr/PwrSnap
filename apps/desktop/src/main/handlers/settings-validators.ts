@@ -14,6 +14,9 @@
 // treatment, revisit.
 
 import {
+  AI_REASONING_EFFORTS,
+  AI_SURFACE_IDS,
+  isAiReasoningEffort,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -216,6 +219,10 @@ export function validateSettingsWrite(
     if (!isUndefined(ai.chat)) {
       const chatErr = validateChatPatch(ai.chat);
       if (chatErr) return { ok: false, error: chatErr };
+    }
+    if (!isUndefined(ai.defaults)) {
+      const defaultsErr = validateAiDefaultsPatch(ai.defaults);
+      if (defaultsErr) return { ok: false, error: defaultsErr };
     }
   }
 
@@ -641,6 +648,89 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
         );
       }
     }
+  }
+  return null;
+}
+
+// ---- settings:write — ai.defaults sub-validator ------------------------
+//
+// Validates the per-surface default provider / model / reasoning patch.
+// Each surface key (libraryChat / sizzleChat / enrichment) is optional;
+// within a surface each leaf is optional too. Semantics:
+//   • provider / model — string. Empty string is the explicit "clear →
+//     use Codex default" sentinel and is allowed; non-empty values must
+//     look like a Codex id/provider token (shape only — Codex itself
+//     rejects unavailable ids/providers at runtime). Cap 120 chars.
+//   • reasoning — must be a member of AI_REASONING_EFFORTS.
+// Unknown surface keys are rejected so a buggy/forged renderer can't
+// stash arbitrary blobs under `ai.defaults`.
+
+/** Shape check for a Codex provider/model token. Same alphabet as
+ *  `isCodexCaptionModel` but tolerant of the empty-string clear
+ *  sentinel (checked separately by the caller). */
+function isAiTokenShape(value: string): boolean {
+  return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
+}
+
+function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      `invalid_ai_defaults_${surface}`,
+      `settings:write: ai.defaults.${surface} must be an object`
+    );
+  }
+  for (const key of ["provider", "model"] as const) {
+    const v = raw[key];
+    if (isUndefined(v)) continue;
+    if (!isString(v)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_${key}`,
+        `settings:write: ai.defaults.${surface}.${key} must be a string`
+      );
+    }
+    // Empty string clears the field (→ Codex default); always allowed.
+    if (v.length > 0 && !isAiTokenShape(v)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_${key}`,
+        `settings:write: ai.defaults.${surface}.${key} is not a recognizable Codex ${key} (got ${JSON.stringify(v)})`
+      );
+    }
+  }
+  // reasoning: empty string is the clear sentinel (→ Codex default); any
+  // non-empty value must be a recognized effort.
+  if (
+    !isUndefined(raw.reasoning) &&
+    raw.reasoning !== "" &&
+    !isAiReasoningEffort(raw.reasoning)
+  ) {
+    return validationError(
+      `invalid_ai_defaults_${surface}_reasoning`,
+      `settings:write: ai.defaults.${surface}.reasoning must be "" or one of ${AI_REASONING_EFFORTS.join("/")}`
+    );
+  }
+  return null;
+}
+
+function validateAiDefaultsPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_defaults",
+      "settings:write: ai.defaults must be an object"
+    );
+  }
+  for (const key of Object.keys(raw)) {
+    if (!(AI_SURFACE_IDS as readonly string[]).includes(key)) {
+      return validationError(
+        "invalid_ai_defaults_surface",
+        `settings:write: ai.defaults has unknown surface "${key}" (allowed: ${AI_SURFACE_IDS.join("/")})`
+      );
+    }
+  }
+  for (const surface of AI_SURFACE_IDS) {
+    const block = raw[surface];
+    if (isUndefined(block)) continue;
+    const err = validateAiSurfaceDefault(surface, block);
+    if (err !== null) return err;
   }
   return null;
 }

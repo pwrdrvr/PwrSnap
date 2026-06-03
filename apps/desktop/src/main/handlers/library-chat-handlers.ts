@@ -28,6 +28,7 @@ import { getMainLogger } from "../log";
 import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
 import {
   buildChatSurface,
+  chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
@@ -182,6 +183,10 @@ export function registerLibraryChatHandlers(params?: {
       // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
       threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
       threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
+      // Per-surface default provider / model / reasoning from Settings →
+      // AI (`ai.defaults.libraryChat`). Unset leaves fall back to the
+      // Codex / kit defaults inside buildChatSurface.
+      ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.libraryChat),
       loggerScope: "pwrsnap:library-chat"
     });
     controller = surface.controller;

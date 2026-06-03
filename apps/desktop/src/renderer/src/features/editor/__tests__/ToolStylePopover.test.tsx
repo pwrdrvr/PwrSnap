@@ -91,7 +91,8 @@ function makeSettings(overrides?: {
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
-      chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
+      chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+      defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }
     },
     hotkeys: {
       quickCapture: "CommandOrControl+Shift+C",

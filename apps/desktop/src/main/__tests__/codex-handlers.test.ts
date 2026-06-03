@@ -120,9 +120,9 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 class FakeCodexClient {
-  lastRequest: { model?: string | null } | null = null;
+  lastRequest: { model?: string | null; effort?: string } | null = null;
 
-  async enrichCapture(request: { model?: string | null }): Promise<{
+  async enrichCapture(request: { model?: string | null; effort?: string }): Promise<{
     result: EnrichmentResult;
     threadId: string;
     turnId: string;
@@ -282,7 +282,8 @@ describe("Codex handlers", () => {
             budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
-            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }
           }
         })
     });
@@ -393,6 +394,74 @@ describe("Codex handlers", () => {
         estimatedTotalCostMicros: 13_050
       });
     }
+  });
+
+  test("enrichment surface defaults (model + reasoning) reach the one-shot client", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.4-mini"
+          },
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z",
+            // The per-surface enrichment default overrides the legacy
+            // captionModel and pins a non-default reasoning effort.
+            defaults: {
+              libraryChat: {},
+              sizzleChat: {},
+              enrichment: { model: "gpt-5.5", reasoning: "high" }
+            }
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.5");
+    expect(fakeClient.lastRequest?.effort).toBe("high");
+  });
+
+  test("enrichment falls back to captionModel + low effort when no surface default is set", async () => {
+    const fakeClient = new FakeCodexClient();
+    registerCodexHandlers({
+      clientFactory: () => fakeClient as never,
+      settingsReader: async () =>
+        testSettings({
+          codex: {
+            ...defaultSettings().codex,
+            captionModel: "gpt-5.4-mini"
+          },
+          ai: {
+            ...defaultSettings().ai,
+            enabled: true,
+            consentAcceptedAt: "2026-05-12T12:00:00.000Z"
+            // defaults left at defaultSettings() (all empty).
+          }
+        })
+    });
+
+    const started = await bus.dispatch(
+      "codex:enrich",
+      { captureId: "cap_1", triggerSource: "library-regenerate" },
+      { principal: "ipc", cancellationKey: "cap_1" }
+    );
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    await waitFor(() => getAiRun(started.value.runId)?.status === "completed");
+    expect(fakeClient.lastRequest?.model).toBe("gpt-5.4-mini");
+    expect(fakeClient.lastRequest?.effort).toBe("low");
   });
 
   test("codex:models returns Codex App Server model options", async () => {
@@ -582,7 +651,8 @@ describe("Codex handlers", () => {
             budgetSafetyDisabledAt: null,
             autoAcceptSuggestions: false,
 
-            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false }
+            chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }
           }
         })
     });

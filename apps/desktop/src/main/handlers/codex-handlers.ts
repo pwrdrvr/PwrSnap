@@ -235,6 +235,33 @@ function codexCommandForSettings(settings: Settings): string {
     : "codex";
 }
 
+/** Resolve the enrichment model from the per-surface AI default,
+ *  falling back to the legacy `codex.captionModel` and then the
+ *  hardcoded default. `parseV1` seeds `ai.defaults.enrichment.model`
+ *  from `codex.captionModel` for upgraded settings, so existing
+ *  behavior is preserved; a fresh install (empty enrichment.model)
+ *  falls through to captionModel here. */
+function enrichmentModelForSettings(settings: Settings): string {
+  const surfaceModel = settings.ai.defaults.enrichment.model;
+  if (surfaceModel !== undefined && surfaceModel.length > 0) return surfaceModel;
+  return settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL;
+}
+
+/** Resolve the enrichment reasoning effort from the per-surface AI
+ *  default. Enrichment is high-volume + cost-sensitive, so the
+ *  historical default is "low" — preserved when the user hasn't pinned
+ *  a reasoning value. */
+function enrichmentEffortForSettings(settings: Settings): string {
+  return settings.ai.defaults.enrichment.reasoning ?? "low";
+}
+
+/** Resolve the enrichment model provider from the per-surface AI default.
+ *  Empty/unset → undefined (use the Codex default provider). */
+function enrichmentProviderForSettings(settings: Settings): string | undefined {
+  const provider = settings.ai.defaults.enrichment.provider;
+  return provider !== undefined && provider.length > 0 ? provider : undefined;
+}
+
 function triggerSourceOrDefault(
   value: AiEnrichmentTriggerSource | undefined,
   fallback: AiEnrichmentTriggerSource
@@ -420,7 +447,10 @@ export function registerCodexHandlers(params?: {
       captureId: capture.id,
       codexCommand,
       triggerSource,
-      selectedModel: settings.codex.captionModel || DEFAULT_CODEX_CAPTION_MODEL,
+      selectedModel: enrichmentModelForSettings(settings),
+      ...(enrichmentProviderForSettings(settings) !== undefined
+        ? { selectedProvider: enrichmentProviderForSettings(settings) }
+        : {}),
       request: {
         media: {
           maxLongEdgePx: 1024,
@@ -459,6 +489,7 @@ export function registerCodexHandlers(params?: {
       command: codexCommand,
       settingsReader,
       selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
+      effort: enrichmentEffortForSettings(settings),
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -696,6 +727,11 @@ async function runCaptureEnrichment(params: {
    */
   settingsReader: SettingsReader;
   selectedModel: string;
+  /** Model provider from `ai.defaults.enrichment.provider`; undefined = Codex default. */
+  selectedProvider?: string;
+  /** Reasoning effort for the enrichment turn. Resolved from
+   *  `ai.defaults.enrichment.reasoning` (default "low"). */
+  effort: string;
   triggerSource: AiEnrichmentTriggerSource;
   budgetBefore: AiEnrichmentBudgetStatus;
   budgetAfter: AiEnrichmentBudgetStatus;
@@ -776,6 +812,10 @@ async function runCaptureEnrichment(params: {
       imagePaths,
       metadata,
       model: params.selectedModel,
+      ...(params.selectedProvider !== undefined
+        ? { modelProvider: params.selectedProvider }
+        : {}),
+      effort: params.effort,
       abortSignal: abortController.signal
     });
 

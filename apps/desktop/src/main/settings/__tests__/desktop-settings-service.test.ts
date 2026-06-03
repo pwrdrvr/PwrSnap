@@ -239,6 +239,96 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.codex.captionModel).toBe("gpt-5.5");
   });
+
+  test("v1 shape missing `ai.defaults` gets empty per-surface defaults filled in", async () => {
+    // `ai.defaults.*` is additive. Older files won't have it; parseV1
+    // fills empty objects for the two chat surfaces (= "Codex default").
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: { enabled: true }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({});
+    expect(settings.ai.defaults.sizzleChat).toEqual({});
+    // Enrichment model is seeded from the legacy captionModel for
+    // back-compat (existing enrichment model selection is preserved).
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.4-mini");
+  });
+
+  test("v1 shape seeds `ai.defaults.enrichment.model` from a newer captionModel", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.5" }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5");
+  });
+
+  test("v1 shape with explicit `ai.defaults` preserves provider/model/reasoning", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: {
+            libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" },
+            sizzleChat: { reasoning: "medium" },
+            // Explicit enrichment model wins over the captionModel seed.
+            enrichment: { model: "gpt-5.5-mini" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({
+      provider: "openai",
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+    expect(settings.ai.defaults.sizzleChat).toEqual({ reasoning: "medium" });
+    expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5-mini");
+  });
+
+  test("v1 shape drops empty-string and invalid `ai.defaults` leaves", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          defaults: {
+            // Empty / whitespace strings and a bad reasoning value are
+            // dropped so the in-memory shape omits them (= Codex default).
+            libraryChat: { provider: "  ", model: "", reasoning: "ultra" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.defaults.libraryChat).toEqual({});
+  });
 });
 
 describe("DesktopSettingsService write-queue serialization on rejection", () => {
@@ -397,6 +487,41 @@ describe("mergeSettings", () => {
     });
     expect(merged.storage.filenameTimestampZone).toBe("utc");
     expect(merged.codex.mode).toBe(current.codex.mode);
+  });
+
+  test("ai.defaults patch merges one surface field-by-field without clobbering others", () => {
+    const current = defaultSettings();
+    const merged = mergeSettings(current, {
+      ai: { defaults: { libraryChat: { model: "gpt-5.5", reasoning: "high" } } }
+    });
+    expect(merged.ai.defaults.libraryChat).toEqual({
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+    // Other surfaces untouched.
+    expect(merged.ai.defaults.sizzleChat).toEqual({});
+    expect(merged.ai.defaults.enrichment).toEqual({});
+    // Other ai fields untouched.
+    expect(merged.ai.enabled).toBe(current.ai.enabled);
+  });
+
+  test("ai.defaults patch with empty-string clears a previously-set leaf", () => {
+    const current = {
+      ...defaultSettings(),
+      ai: {
+        ...defaultSettings().ai,
+        defaults: {
+          libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" as const },
+          sizzleChat: {},
+          enrichment: {}
+        }
+      }
+    };
+    const merged = mergeSettings(current, {
+      ai: { defaults: { libraryChat: { provider: "", reasoning: "" } } }
+    });
+    // provider + reasoning cleared; model preserved (undefined = leave alone).
+    expect(merged.ai.defaults.libraryChat).toEqual({ model: "gpt-5.5" });
   });
 });
 

@@ -235,6 +235,80 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_ai_enabled");
   });
 
+  test("settings:write accepts a valid ai.defaults per-surface patch", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: {
+          defaults: {
+            libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" }
+          }
+        }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.defaults.libraryChat).toEqual({
+      provider: "openai",
+      model: "gpt-5.5",
+      reasoning: "high"
+    });
+  });
+
+  test("settings:write rejects an invalid ai.defaults reasoning", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { reasoning: "ultra" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_sizzleChat_reasoning");
+  });
+
+  test("settings:write rejects an unknown ai.defaults surface", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { bogusSurface: { model: "gpt-5.5" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_surface");
+  });
+
+  test("settings:write rejects a malformed ai.defaults model token", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { enrichment: { model: "has spaces!" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_enrichment_model");
+  });
+
+  test("settings:write accepts the empty-string clear sentinel for ai.defaults reasoning", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { libraryChat: { reasoning: "" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
   test("settings:refreshCodexDiscovery rejects non-boolean force", async () => {
     const result = await bus.dispatch(
       "settings:refreshCodexDiscovery",

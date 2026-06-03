@@ -8,6 +8,9 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AiSurfaceDefault,
+  AiSurfaceDefaultPatch,
+  AiSurfaceDefaults,
   AppearanceTheme,
   ArrowEndStyle,
   ArrowStemStyle,
@@ -46,6 +49,7 @@ import {
   DEFAULT_CODEX_CAPTION_MODEL,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
+  isAiReasoningEffort,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -90,7 +94,18 @@ export function defaultSettings(): Settings {
       consentAcceptedAt: null,
       budgetSafetyDisabledAt: null,
       autoAcceptSuggestions: false,
-      chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
+      chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] },
+      // Per-surface defaults start empty (= "use the Codex default for
+      // every surface"). `parseV1` seeds `enrichment.model` from the
+      // legacy `codex.captionModel` so existing enrichment behavior is
+      // preserved; a fresh install (this function) has no legacy file to
+      // read from, so enrichment.model is left empty here and the
+      // enrichment path falls back to `codex.captionModel` at call time.
+      defaults: {
+        libraryChat: {},
+        sizzleChat: {},
+        enrichment: {}
+      }
     },
     hotkeys: {
       // Quick Capture default moved off ⌘⇧P (collides with Print in
@@ -503,7 +518,20 @@ function parseV1(raw: unknown): Settings | null {
       // with the full block. No `schemaVersion` bump per the additive
       // convention. See docs/plans/2026-05-28-001-feat-library-chat-
       // editor-interface-plan.md and §F13 substrate compliance.
-      chat: parseChatSettings(ai.chat, defaults.ai.chat)
+      chat: parseChatSettings(ai.chat, defaults.ai.chat),
+      // `ai.defaults.*` is additive — older files won't have it. Falls
+      // through to empty per-surface objects (= "Codex default"). For
+      // back-compat, when the file has no explicit enrichment model we
+      // seed it from the legacy `codex.captionModel` so existing
+      // enrichment behavior (model selection) is preserved across the
+      // upgrade. No `schemaVersion` bump per the additive convention.
+      defaults: parseAiSurfaceDefaults(
+        ai.defaults,
+        defaults.ai.defaults,
+        isCodexCaptionModel(codex.captionModel)
+          ? (codex.captionModel as string)
+          : defaults.codex.captionModel
+      )
     },
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
@@ -610,6 +638,49 @@ function parseChatSettings(raw: unknown, defaults: ChatSettings): ChatSettings {
       raw.firstLaunchBannerDismissed,
       defaults.firstLaunchBannerDismissed
     )
+  };
+}
+
+/** Parse one `ai.defaults.<surface>` object. Only keeps a leaf when it's
+ *  a non-empty string (provider / model) or a recognized reasoning value;
+ *  everything else is dropped so the in-memory shape omits the field
+ *  entirely (= "use the Codex default"). `seedModel`, when provided, fills
+ *  `model` if the on-disk file has no explicit model — used to carry the
+ *  legacy `codex.captionModel` into `enrichment.model`. */
+function parseAiSurfaceDefault(
+  raw: unknown,
+  seedModel?: string
+): AiSurfaceDefault {
+  const out: AiSurfaceDefault = {};
+  const rec = isRecord(raw) ? raw : {};
+  if (typeof rec.provider === "string" && rec.provider.trim().length > 0) {
+    out.provider = rec.provider.trim();
+  }
+  if (typeof rec.model === "string" && rec.model.trim().length > 0) {
+    out.model = rec.model.trim();
+  } else if (seedModel !== undefined && seedModel.trim().length > 0) {
+    out.model = seedModel.trim();
+  }
+  if (isAiReasoningEffort(rec.reasoning)) {
+    out.reasoning = rec.reasoning;
+  }
+  return out;
+}
+
+/** Parse `ai.defaults` from an on-disk JSON value. Each surface falls
+ *  through to an empty object when missing. `enrichmentSeedModel` seeds
+ *  the enrichment surface's `model` for back-compat with the legacy
+ *  `codex.captionModel` field. */
+function parseAiSurfaceDefaults(
+  raw: unknown,
+  _defaults: AiSurfaceDefaults,
+  enrichmentSeedModel: string
+): AiSurfaceDefaults {
+  const rec = isRecord(raw) ? raw : {};
+  return {
+    libraryChat: parseAiSurfaceDefault(rec.libraryChat),
+    sizzleChat: parseAiSurfaceDefault(rec.sizzleChat),
+    enrichment: parseAiSurfaceDefault(rec.enrichment, enrichmentSeedModel)
   };
 }
 
@@ -1000,8 +1071,52 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // `chat` is a sub-object; merge field-by-field. Empty array on
     // sensitiveDataPatterns IS a meaningful value (cleared list), not
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
-    chat: mergeChat(current.chat, patch.chat)
+    chat: mergeChat(current.chat, patch.chat),
+    defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults)
   };
+}
+
+/** Merge `ai.defaults` field-by-field across the three surfaces. Each
+ *  surface is independently optional; within a surface each leaf is
+ *  too. Per the substrate hygiene rule, an explicit empty string clears
+ *  the field (→ "use Codex default"), while `undefined` leaves it
+ *  untouched. The stored shape OMITS cleared fields so it matches what
+ *  `parseAiSurfaceDefault` produces on the next read. */
+type AiDefaultsPatch = NonNullable<NonNullable<SettingsPatch["ai"]>["defaults"]>;
+
+function mergeAiSurfaceDefaults(
+  current: AiSurfaceDefaults,
+  patch: AiDefaultsPatch | undefined
+): AiSurfaceDefaults {
+  if (patch === undefined) return current;
+  return {
+    libraryChat: mergeAiSurfaceDefault(current.libraryChat, patch.libraryChat),
+    sizzleChat: mergeAiSurfaceDefault(current.sizzleChat, patch.sizzleChat),
+    enrichment: mergeAiSurfaceDefault(current.enrichment, patch.enrichment)
+  };
+}
+
+function mergeAiSurfaceDefault(
+  current: AiSurfaceDefault,
+  patch: AiSurfaceDefaultPatch | undefined
+): AiSurfaceDefault {
+  if (patch === undefined) return current;
+  const out: AiSurfaceDefault = { ...current };
+  // provider / model / reasoning: explicit "" clears the key (→ Codex
+  // default); any non-empty value sets it; undefined leaves it as-is.
+  if (patch.provider !== undefined) {
+    if (patch.provider.trim().length === 0) delete out.provider;
+    else out.provider = patch.provider.trim();
+  }
+  if (patch.model !== undefined) {
+    if (patch.model.trim().length === 0) delete out.model;
+    else out.model = patch.model.trim();
+  }
+  if (patch.reasoning !== undefined) {
+    if (patch.reasoning === "") delete out.reasoning;
+    else out.reasoning = patch.reasoning;
+  }
+  return out;
 }
 
 function mergeChat(

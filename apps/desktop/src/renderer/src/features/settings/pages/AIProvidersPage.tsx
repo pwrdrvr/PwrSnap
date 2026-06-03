@@ -5,6 +5,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
   AiEnrichmentBudgetStatus,
+  AiReasoningEffort,
+  AiSurfaceDefault,
+  AiSurfaceDefaultPatch,
+  AiSurfaceId,
   AiUsageRunsPage,
   AiUsageSummary,
   CodexModelList,
@@ -14,9 +18,11 @@ import type {
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
 import {
+  AI_REASONING_EFFORTS,
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
   EVENT_CHANNELS,
+  isAiReasoningEffort,
   isCodexCaptionModel
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
@@ -234,6 +240,48 @@ export function AIProvidersPage(): ReactElement {
           model="Coming soon"
           dim
         />
+      </Card>
+
+      <Card eyebrow="ROLES" title="Per-surface defaults">
+        <Row
+          label="Default model & reasoning"
+          sub="Pick the default provider, model, and reasoning effort for each AI surface. Leave a field on Default to let Codex choose. These apply to new threads / runs; they don't rewrite existing conversations."
+          tag="config"
+        >
+          <div className="pss__ai-surface-defaults">
+            <AiSurfaceDefaultControl
+              surface="libraryChat"
+              label="Library chat"
+              value={settings?.ai.defaults.libraryChat ?? {}}
+              models={codexModels?.models ?? []}
+              modelsLoading={codexModelsLoading}
+              onChange={(p) => {
+                void patch({ ai: { defaults: { libraryChat: p } } });
+              }}
+            />
+            <AiSurfaceDefaultControl
+              surface="sizzleChat"
+              label="Sizzle Reel chat"
+              value={settings?.ai.defaults.sizzleChat ?? {}}
+              models={codexModels?.models ?? []}
+              modelsLoading={codexModelsLoading}
+              onChange={(p) => {
+                void patch({ ai: { defaults: { sizzleChat: p } } });
+              }}
+            />
+            <AiSurfaceDefaultControl
+              surface="enrichment"
+              label="Enrichment (captions, OCR, tags)"
+              value={settings?.ai.defaults.enrichment ?? {}}
+              models={codexModels?.models ?? []}
+              modelsLoading={codexModelsLoading}
+              imageOnly
+              onChange={(p) => {
+                void patch({ ai: { defaults: { enrichment: p } } });
+              }}
+            />
+          </div>
+        </Row>
       </Card>
 
       <Card eyebrow="SAFETY" title="Capture enrichment">
@@ -933,6 +981,163 @@ function JobRoutingRow({
           <span className="pss__role-model">{model ?? ""}</span>
         </span>
       )}
+    </div>
+  );
+}
+
+// ---- Per-surface default provider / model / reasoning -------------------
+
+type AiSurfaceDefaultControlProps = {
+  surface: AiSurfaceId;
+  label: string;
+  value: AiSurfaceDefault;
+  models: readonly CodexModelOption[];
+  modelsLoading: boolean;
+  /** Enrichment feeds images to Codex, so its model picker is filtered to
+   *  text+image models (mirrors the caption picker). Chat surfaces show
+   *  every non-hidden model. */
+  imageOnly?: boolean;
+  onChange: (patch: AiSurfaceDefaultPatch) => void;
+};
+
+/** Build the `<select>` model option list for a surface. Filters to
+ *  non-hidden (and, for enrichment, image-capable) models, falling back
+ *  to the static `CODEX_CAPTION_MODELS` when the live list is empty.
+ *  Always includes the user's currently-pinned model even if it's no
+ *  longer in the live list, so the select never silently drops a saved
+ *  value. */
+function surfaceModelOptions(
+  models: readonly CodexModelOption[],
+  imageOnly: boolean,
+  pinned: string | undefined
+): CodexModelOption[] {
+  const filtered = models.filter((m) => {
+    if (m.hidden) return false;
+    if (!imageOnly) return true;
+    return (
+      m.inputModalities.includes("text") && m.inputModalities.includes("image")
+    );
+  });
+  const base =
+    filtered.length > 0
+      ? filtered
+      : CODEX_CAPTION_MODELS.map((id) => ({
+          id,
+          model: id,
+          displayName: id,
+          description: "",
+          hidden: false,
+          inputModalities: ["text", "image"] as Array<"text" | "image">,
+          defaultServiceTier: null,
+          isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
+        }));
+  if (
+    pinned !== undefined &&
+    pinned.length > 0 &&
+    !base.some((m) => m.id === pinned)
+  ) {
+    return [
+      {
+        id: pinned,
+        model: pinned,
+        displayName: pinned,
+        description: "",
+        hidden: false,
+        inputModalities: ["text", "image"],
+        defaultServiceTier: null,
+        isDefault: false
+      },
+      ...base
+    ];
+  }
+  return base;
+}
+
+function AiSurfaceDefaultControl({
+  surface,
+  label,
+  value,
+  models,
+  modelsLoading,
+  imageOnly,
+  onChange
+}: AiSurfaceDefaultControlProps): ReactElement {
+  const modelOptions = surfaceModelOptions(models, imageOnly === true, value.model);
+  const providerValue = value.provider ?? "";
+  const modelValue = value.model ?? "";
+  const reasoningValue: AiReasoningEffort | "" = isAiReasoningEffort(value.reasoning)
+    ? value.reasoning
+    : "";
+
+  return (
+    <div className="pss__ai-surface" data-surface={surface}>
+      <div className="pss__ai-surface-l">
+        <span className="pss__ai-surface-name">{label}</span>
+      </div>
+      <div className="pss__ai-surface-controls">
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Provider</span>
+          <input
+            className="pss__input pss__ai-surface-input"
+            type="text"
+            value={providerValue}
+            placeholder="Codex default"
+            aria-label={`${label} default provider`}
+            onChange={(e) => {
+              // Empty string clears (→ Codex default); the merge in the
+              // settings service drops the key on "".
+              onChange({ provider: e.target.value });
+            }}
+          />
+        </label>
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Model</span>
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={modelValue}
+            aria-label={`${label} default model`}
+            onChange={(e) => {
+              onChange({ model: e.target.value });
+            }}
+          >
+            <option value="">Default</option>
+            {modelOptions.map((m) => (
+              <option key={m.id} value={m.id}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </select>
+          {modelsLoading ? (
+            <span className="pss__model-loading">loading models</span>
+          ) : null}
+        </label>
+        <label className="pss__ai-surface-field">
+          <span className="pss__ai-surface-field-label">Reasoning</span>
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={reasoningValue}
+            aria-label={`${label} default reasoning effort`}
+            onChange={(e) => {
+              const next = e.target.value;
+              // Empty string is the explicit clear sentinel — the service
+              // merge drops the stored reasoning back to "Codex default".
+              if (next === "") {
+                onChange({ reasoning: "" });
+                return;
+              }
+              if (!isAiReasoningEffort(next)) return;
+              onChange({ reasoning: next });
+            }}
+          >
+            <option value="">Default</option>
+            {AI_REASONING_EFFORTS.map((effort) => (
+              <option key={effort} value={effort}>
+                {effort}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
     </div>
   );
 }

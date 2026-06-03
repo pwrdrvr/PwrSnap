@@ -23,6 +23,7 @@ import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
   buildChatSurface,
+  chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
@@ -118,6 +119,10 @@ export function registerSizzleChatHandlers(params?: {
       dispatchToolCall: tools.dispatch,
       threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
       threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
+      // Per-surface default provider / model / reasoning from Settings →
+      // AI (`ai.defaults.sizzleChat`). Unset leaves fall back to the
+      // Codex / kit defaults inside buildChatSurface.
+      ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
       loggerScope: "pwrsnap:sizzle-chat"
     });
     controller = surface.controller;

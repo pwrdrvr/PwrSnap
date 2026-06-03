@@ -1034,6 +1034,97 @@ export type CodexModelList = {
   selectedModel: CodexCaptionModel;
 };
 
+// ---- Per-surface AI defaults (provider / model / reasoning) ------------
+//
+// The user picks, in Settings → AI, the default provider + model +
+// reasoning for each of three AI surfaces (Library chat, Sizzle chat,
+// Enrichment). These DEFAULTS drive the kit controller / one-shot client;
+// per-thread overrides are out of scope.
+
+/** Reasoning effort the per-surface defaults expose in the UI. This is a
+ *  deliberate subset of the protocol's `ReasoningEffort`
+ *  (`none|minimal|low|medium|high|xhigh`) — PwrSnap only surfaces the
+ *  three the user-facing picker offers. The chosen value is sent verbatim
+ *  as Codex's `effort`; widen this union (and `AI_REASONING_EFFORTS`) if
+ *  we want to expose more tiers. */
+export type AiReasoningEffort = "low" | "medium" | "high";
+
+export const AI_REASONING_EFFORTS = [
+  "low",
+  "medium",
+  "high"
+] as const satisfies readonly AiReasoningEffort[];
+
+export function isAiReasoningEffort(value: unknown): value is AiReasoningEffort {
+  return (
+    typeof value === "string" &&
+    (AI_REASONING_EFFORTS as readonly string[]).includes(value)
+  );
+}
+
+/** Default provider / model / reasoning for ONE AI surface. Every field
+ *  is optional; an omitted (or empty-string) field means "use the Codex
+ *  default" — PwrSnap sends no `model` / `modelProvider` / `effort` for
+ *  that surface. `provider` maps to the kit's `modelProvider`
+ *  (ThreadStartParams.modelProvider); `reasoning` maps to Codex `effort`.
+ *  The value space for `provider` / `model` is whatever the installed
+ *  Codex exposes, so both are free-form strings validated only for shape
+ *  at the bus boundary. */
+export type AiSurfaceDefault = {
+  provider?: string;
+  model?: string;
+  reasoning?: AiReasoningEffort;
+};
+
+/** Patch shape for ONE surface's defaults. Distinct from
+ *  `Partial<AiSurfaceDefault>` because the wire/patch form lets the
+ *  renderer CLEAR a field back to "Codex default": an explicit empty
+ *  string on `provider` / `model` / `reasoning` drops the stored field
+ *  (substrate hygiene rule `undefined ≠ null ≠ ""`). `reasoning` accepts
+ *  the empty string as its clear sentinel since it can't be `null` (the
+ *  in-memory type is a closed union); a non-empty `reasoning` must still
+ *  be a valid `AiReasoningEffort`, enforced at the bus validator. */
+export type AiSurfaceDefaultPatch = {
+  provider?: string;
+  model?: string;
+  reasoning?: AiReasoningEffort | "";
+};
+
+/** The three surfaces that carry per-surface defaults. */
+export type AiSurfaceDefaults = {
+  libraryChat: AiSurfaceDefault;
+  sizzleChat: AiSurfaceDefault;
+  enrichment: AiSurfaceDefault;
+};
+
+/** Identifier for one of the three default-carrying AI surfaces. Used by
+ *  the Settings UI to drive the three sub-groups and by the patch shape. */
+export type AiSurfaceId = keyof AiSurfaceDefaults;
+
+export const AI_SURFACE_IDS = [
+  "libraryChat",
+  "sizzleChat",
+  "enrichment"
+] as const satisfies readonly AiSurfaceId[];
+
+export function isAiSurfaceId(value: unknown): value is AiSurfaceId {
+  return (
+    typeof value === "string" &&
+    (AI_SURFACE_IDS as readonly string[]).includes(value)
+  );
+}
+
+/** Default `ai.defaults` state. Mirrored by `defaultSettings()` in the
+ *  desktop service. Empty objects = "use the Codex default for every
+ *  surface" — but note the desktop service's `parseV1` seeds
+ *  `enrichment.model` from the legacy `codex.captionModel` for back-compat
+ *  so existing enrichment behavior is preserved. */
+export const DEFAULT_AI_SURFACE_DEFAULTS: AiSurfaceDefaults = {
+  libraryChat: {},
+  sizzleChat: {},
+  enrichment: {}
+};
+
 export type AiEnrichmentTriggerSource =
   | "auto-enrichment"
   | "popover-enable"
@@ -1110,6 +1201,14 @@ export type Settings = {
      *  docs/plans/2026-05-28-001-feat-library-chat-editor-interface-plan.md
      *  Phase 0 + deepening §F7 #3. */
     chat: ChatSettings;
+    /** Per-surface default provider / model / reasoning the user picks
+     *  in Settings → AI. These flow into the kit `ChatThreadController`
+     *  (Library chat, Sizzle chat) and the `CodexOneShotClient`
+     *  (Enrichment) — see AiSurfaceDefaults for the field semantics.
+     *  Additive: every leaf is optional, an omitted field means "use the
+     *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
+     *  thread/start or turn/start). */
+    defaults: AiSurfaceDefaults;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -1547,6 +1646,17 @@ export type SettingsPatch = {
     budgetSafetyDisabledAt?: Settings["ai"]["budgetSafetyDisabledAt"];
     autoAcceptSuggestions?: Settings["ai"]["autoAcceptSuggestions"];
     chat?: Partial<ChatSettings>;
+    /** Per-surface defaults. Each surface is independently optional, and
+     *  within a surface each leaf (`provider` / `model` / `reasoning`) is
+     *  optional too — so the UI can ship just `{ ai: { defaults: {
+     *  libraryChat: { model: "gpt-…" } } } }` without re-echoing the rest.
+     *  Empty string is the explicit "cleared → use Codex default"
+     *  sentinel per the substrate hygiene rule `undefined ≠ null ≠ ""`. */
+    defaults?: {
+      libraryChat?: AiSurfaceDefaultPatch;
+      sizzleChat?: AiSurfaceDefaultPatch;
+      enrichment?: AiSurfaceDefaultPatch;
+    };
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;

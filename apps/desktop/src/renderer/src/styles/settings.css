@@ -559,6 +559,55 @@
   align-self: center;
 }
 
+/* per-surface AI defaults (provider / model / reasoning) */
+.pss__ai-surface-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  width: 100%;
+}
+
+.pss__ai-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pss__ai-surface-name {
+  font: 600 12px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+
+.pss__ai-surface-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.pss__ai-surface-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pss__ai-surface-field-label {
+  font: 500 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.pss__ai-surface-input {
+  min-width: 140px;
+}
+
+.pss__ai-surface-select {
+  min-width: 160px;
+}
+
 /* toggle switch */
 .pss__switch {
   position: relative;

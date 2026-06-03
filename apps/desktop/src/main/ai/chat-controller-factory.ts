@@ -18,7 +18,12 @@ import type {
   DynamicToolCallResponse,
   DynamicToolSpec
 } from "@pwrsnap/codex-app-server-protocol/v2";
-import type { AiUsageThreadSurface, ChatApprovalDecision, Settings } from "@pwrsnap/shared";
+import type {
+  AiSurfaceDefault,
+  AiUsageThreadSurface,
+  ChatApprovalDecision,
+  Settings
+} from "@pwrsnap/shared";
 import { ChatThreadStore } from "./chat-thread-store";
 import { ThreadStoreAdapter } from "./thread-store-adapter";
 import { makeChatBroadcast, type ChatBroadcast, type ChatChannelSet } from "./chat-event-adapter";
@@ -59,12 +64,41 @@ export type ChatSurfaceConfig = {
   threadConfig: Record<string, unknown>;
   /** Thread environments. `[]` disables exec-environment access. */
   threadEnvironments: unknown[];
+  /** Per-surface default model id for thread/start. Omit / undefined =
+   *  use the Codex default (no `model` sent). Driven by Settings → AI's
+   *  per-surface defaults (`ai.defaults.libraryChat` / `.sizzleChat`). */
+  model?: string;
+  /** Per-surface default model provider for thread/start. Omit /
+   *  undefined = Codex default. */
+  modelProvider?: string;
+  /** Per-surface default reasoning effort for turns. Omit / undefined =
+   *  the kit's default ("medium"). */
+  effort?: string;
   loggerScope: string;
 };
 
 export type ChatSurface = {
   controller: ChatThreadController<Settings>;
 };
+
+/** Map a Settings per-surface default onto the chat-surface's kit knobs.
+ *  Only carries a key when the user pinned a value — an unset leaf is
+ *  omitted so the controller falls back to the Codex default
+ *  (model / provider) or the kit default (effort = "medium"). Shared by
+ *  the Library + Sizzle chat handlers so the mapping lives in one place. */
+export function chatSurfaceDefaultsFromSettings(
+  surface: AiSurfaceDefault
+): { model?: string; modelProvider?: string; effort?: string } {
+  return {
+    ...(surface.model !== undefined && surface.model.length > 0
+      ? { model: surface.model }
+      : {}),
+    ...(surface.provider !== undefined && surface.provider.length > 0
+      ? { modelProvider: surface.provider }
+      : {}),
+    ...(surface.reasoning !== undefined ? { effort: surface.reasoning } : {})
+  };
+}
 
 export function buildChatSurface(config: ChatSurfaceConfig): ChatSurface {
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
@@ -115,7 +149,13 @@ export function buildChatSurface(config: ChatSurfaceConfig): ChatSurface {
     serviceName: PWRSNAP_SERVICE_NAME,
     threadConfig: config.threadConfig,
     threadEnvironments: config.threadEnvironments,
-    effort: "medium",
+    // Per-surface defaults from Settings → AI. `effort` defaults to
+    // "medium" (the kit's own default) when the surface has no pinned
+    // reasoning; `model` / `modelProvider` are only forwarded when set so
+    // an unset surface uses the Codex default rather than pinning one.
+    effort: config.effort ?? "medium",
+    ...(config.model !== undefined ? { model: config.model } : {}),
+    ...(config.modelProvider !== undefined ? { modelProvider: config.modelProvider } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
   controller.wire();

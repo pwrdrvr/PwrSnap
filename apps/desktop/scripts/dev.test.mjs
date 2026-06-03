@@ -100,7 +100,7 @@ writeFileSync(join(__dirname, "dist", "Electron.app", "Contents", "MacOS", "Elec
 `
     );
 
-    expect(ensureElectronInstalled({}, root, process.execPath)).toBe(0);
+    expect(ensureElectronInstalled({}, root, process.execPath, "darwin")).toBe(0);
     expect(electronInstallState(root, "darwin")).toEqual({
       ok: true,
       reason: "ok"

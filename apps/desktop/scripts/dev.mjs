@@ -119,9 +119,10 @@ export function electronInstallState(
 export function ensureElectronInstalled(
   env,
   electronRoot = resolve(desktopRoot, "node_modules/electron"),
-  node = process.execPath
+  node = process.execPath,
+  platform = process.platform
 ) {
-  const before = electronInstallState(electronRoot);
+  const before = electronInstallState(electronRoot, platform);
   if (before.ok) return 0;
   if (!existsSync(resolve(electronRoot, "install.js"))) {
     console.error("[dev] Electron package is missing; run `pnpm install`.");
@@ -132,7 +133,7 @@ export function ensureElectronInstalled(
   const status = run(node, [resolve(electronRoot, "install.js")], env);
   if (status !== 0) return status;
 
-  const after = electronInstallState(electronRoot);
+  const after = electronInstallState(electronRoot, platform);
   if (!after.ok) {
     console.error(`[dev] Electron install is still incomplete: ${after.reason}`);
     console.error("[dev] Run `pnpm install` from the repo root, then retry `pnpm dev`.");

@@ -14,6 +14,7 @@
 
 import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
+import type { ChatThreadController } from "@pwrdrvr/agent-client";
 import type {
   EventPayloads,
   PwrSnapError,
@@ -25,13 +26,12 @@ import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
-import { CodexThreadClient } from "../ai/codex-thread-client";
-import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
-  ChatThreadController,
-  type ChatBroadcast,
-  type ChatChannelSet
-} from "../ai/chat-thread-controller";
+  buildChatSurface,
+  toKitApprovalDecision
+} from "../ai/chat-controller-factory";
+import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
+import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
 import { buildLibraryToolCatalog } from "../ai/library-tool-catalog";
 import { dispatchLibraryToolCall } from "../ai/library-tool-catalog";
@@ -150,7 +150,7 @@ function codexCommandForSettings(settings: Settings): string {
 }
 
 export function registerLibraryChatHandlers(params?: {
-  controller?: ChatThreadController;
+  controller?: ChatThreadController<Settings>;
   settingsReader?: LibraryChatSettingsReader;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
@@ -159,33 +159,32 @@ export function registerLibraryChatHandlers(params?: {
   // spawn a codex child at app start even for users who never open chat;
   // lazy keeps startup lean and lets the first dispatch surface a clean
   // "codex unreachable" error instead of a boot crash.
-  let controller: ChatThreadController | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController> => {
+  let controller: ChatThreadController<Settings> | null = params?.controller ?? null;
+  const getController = async (): Promise<ChatThreadController<Settings>> => {
     if (controller !== null) return controller;
     const settings = await settingsReader();
     const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
-    const store = new ChatThreadStore({ chatsDir });
-    controller = new ChatThreadController({
-      client,
-      store,
+    const surface = buildChatSurface({
+      command: codexCommandForSettings(settings),
+      chatsDir,
       readSettings: settingsReader,
-      broadcast,
-      buildSystemPrompt: buildLibrarySystemPrompt,
       channels: LIBRARY_CHAT_CHANNELS,
+      send: broadcast,
       usageSurface: "library-chat",
+      // The kit's prompt builder passes `anchorId`; PwrSnap's builder takes
+      // `anchorCaptureId` — same value, renamed.
+      buildSystemPrompt: ({ settings: s, anchorId }) =>
+        buildLibrarySystemPrompt({ settings: s, anchorCaptureId: anchorId }),
       buildTurnContext: buildCurrentCaptureContext,
       toolLabels: LIBRARY_TOOL_LABELS,
       catalog: buildLibraryToolCatalog(),
       dispatchToolCall: dispatchLibraryToolCall,
-      // Default Access.
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
       // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
       threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
-      threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS
+      threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
+      loggerScope: "pwrsnap:library-chat"
     });
-    controller.wire();
+    controller = surface.controller;
     return controller;
   };
 
@@ -194,9 +193,9 @@ export function registerLibraryChatHandlers(params?: {
       const c = await getController();
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok({ threads });
+      return ok({ threads: threads.map(toLibraryThreadView) });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -207,9 +206,9 @@ export function registerLibraryChatHandlers(params?: {
       const c = await getController();
       const view = await c.createThread({
         ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -221,7 +220,7 @@ export function registerLibraryChatHandlers(params?: {
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       return ok(result);
     } catch (cause) {
@@ -243,7 +242,7 @@ export function registerLibraryChatHandlers(params?: {
     try {
       const c = await getController();
       const messages = await c.getHistory(req.threadId);
-      return ok({ messages });
+      return ok({ messages: messages.map(toChatMessage) });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -253,7 +252,7 @@ export function registerLibraryChatHandlers(params?: {
     try {
       const c = await getController();
       const view = await c.rename(req.threadId, req.name);
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -263,7 +262,7 @@ export function registerLibraryChatHandlers(params?: {
     try {
       const c = await getController();
       const view = await c.archive(req.threadId, req.archived);
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -286,7 +285,7 @@ export function registerLibraryChatHandlers(params?: {
         threadId: req.threadId,
         turnId: req.turnId,
         approvalId: req.approvalId,
-        decision: req.decision
+        decision: toKitApprovalDecision(req.decision)
       });
       return ok(undefined);
     } catch (cause) {

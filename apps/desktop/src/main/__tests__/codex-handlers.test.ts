@@ -130,23 +130,18 @@ class FakeCodexClient {
     model: string;
     modelProvider: string;
     serviceTier: string | null;
-    tokenUsage: {
-      total: {
-        totalTokens: number;
-        inputTokens: number;
-        cachedInputTokens: number;
-        outputTokens: number;
-        reasoningOutputTokens: number;
-      };
-      last: {
-        totalTokens: number;
-        inputTokens: number;
-        cachedInputTokens: number;
-        outputTokens: number;
-        reasoningOutputTokens: number;
-      };
+    // The CaptureEnrichmentClient now returns the PwrSnap usage breakdown
+    // directly (already mapped from the kit's NormalizedTokenUsage, carrying
+    // contextWindow → modelContextWindow), rather than the raw Codex
+    // ThreadTokenUsage `{ total, last, modelContextWindow }`.
+    tokens: {
+      totalTokens: number;
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      reasoningOutputTokens: number;
       modelContextWindow: number | null;
-    };
+    } | null;
   }> {
     this.lastRequest = request;
     return {
@@ -156,21 +151,12 @@ class FakeCodexClient {
       model: request.model ?? "gpt-5.4-mini",
       modelProvider: "openai",
       serviceTier: null,
-      tokenUsage: {
-        total: {
-          totalTokens: 1200,
-          inputTokens: 900,
-          cachedInputTokens: 100,
-          outputTokens: 300,
-          reasoningOutputTokens: 25
-        },
-        last: {
-          totalTokens: 1200,
-          inputTokens: 900,
-          cachedInputTokens: 100,
-          outputTokens: 300,
-          reasoningOutputTokens: 25
-        },
+      tokens: {
+        totalTokens: 1200,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningOutputTokens: 25,
         modelContextWindow: 400_000
       },
       result: {

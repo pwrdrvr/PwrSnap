@@ -23,7 +23,7 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
-import { CodexAppServerClient } from "../ai/codex-client";
+import { CaptureEnrichmentClient } from "../ai/capture-enrichment-client";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
@@ -73,7 +73,7 @@ import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filen
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
-export type CodexClientFactory = (command: string) => CodexAppServerClient;
+export type CodexClientFactory = (command: string) => CaptureEnrichmentClient;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
@@ -306,13 +306,13 @@ export function registerCodexHandlers(params?: {
   settingsWriter?: SettingsWriter;
   budget?: AiEnrichmentBudget;
 }): void {
-  const defaultClients = new Map<string, CodexAppServerClient>();
+  const defaultClients = new Map<string, CaptureEnrichmentClient>();
   const clientFactory =
     params?.clientFactory ??
     ((command) => {
       const existing = defaultClients.get(command);
       if (existing) return existing;
-      const client = new CodexAppServerClient({
+      const client = new CaptureEnrichmentClient({
         command,
         captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
       });
@@ -711,7 +711,7 @@ async function runCaptureEnrichment(params: {
   activeRuns.set(params.runId, abortController);
 
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
-  let client: CodexAppServerClient | null = null;
+  let client: CaptureEnrichmentClient | null = null;
 
   try {
     const running = markAiRunRunning(params.runId);
@@ -804,13 +804,7 @@ async function runCaptureEnrichment(params: {
       result: response.result,
       autoAccept
     });
-    const tokens =
-      response.tokenUsage == null
-        ? null
-        : {
-            ...response.tokenUsage.last,
-            modelContextWindow: response.tokenUsage.modelContextWindow
-          };
+    const tokens = response.tokens;
     saveAiRunUsage({
       aiRunId: params.runId,
       threadId: response.threadId,

@@ -7,7 +7,9 @@
 process.env.TZ = "America/New_York";
 
 import { describe, expect, it } from "vitest";
-import { localDateStamp } from "../chat-thread-controller";
+// `localDateStamp` now lives in @pwrdrvr/agent-client (the chat controller
+// migrated to the kit); PwrSnap's chat default-name relies on it being LOCAL.
+import { localDateStamp } from "@pwrdrvr/agent-client";
 
 describe("localDateStamp", () => {
   it("uses the local calendar date, not UTC (late-night NYC stays 'today')", () => {

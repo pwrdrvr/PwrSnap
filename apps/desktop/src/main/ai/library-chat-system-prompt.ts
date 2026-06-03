@@ -6,8 +6,9 @@
 // L3 (per-turn active-capture context) is NOT part of the system prompt:
 // it changes as the user navigates between captures within a thread, so
 // the controller injects a `<current_capture id="...">` block into each
-// TURN instead (see chat-thread-controller.ts buildCurrentCaptureContext
-// + library-chat-base.md §"The capture you're looking at"). The system
+// TURN instead (see library-chat-handlers.ts buildCurrentCaptureContext,
+// passed as the kit controller's `buildTurnContext`, + library-chat-base.md
+// §"The capture you're looking at"). The system
 // prompt below is the stable L1 + L2 set once as baseInstructions at
 // thread/start. See plan §"System prompt design".
 

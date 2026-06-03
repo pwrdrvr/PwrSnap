@@ -8,6 +8,7 @@
 
 import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
+import type { ChatThreadController } from "@pwrdrvr/agent-client";
 import type {
   EventPayloads,
   PwrSnapError,
@@ -19,13 +20,13 @@ import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
-import { CodexThreadClient } from "../ai/codex-thread-client";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
-  ChatThreadController,
-  type ChatBroadcast,
-  type ChatChannelSet
-} from "../ai/chat-thread-controller";
+  buildChatSurface,
+  toKitApprovalDecision
+} from "../ai/chat-controller-factory";
+import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
+import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import {
   buildSizzleSystemPrompt,
   buildSizzleTurnContext
@@ -80,42 +81,46 @@ function codexCommandForSettings(settings: Settings): string {
 }
 
 export function registerSizzleChatHandlers(params?: {
-  controller?: ChatThreadController;
+  controller?: ChatThreadController<Settings>;
   settingsReader?: SizzleChatSettingsReader;
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
 
   // Lazily built on first use — no codex child at app start for users who
   // never open the composer chat.
-  let controller: ChatThreadController | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController> => {
+  let controller: ChatThreadController<Settings> | null = params?.controller ?? null;
+  const getController = async (): Promise<ChatThreadController<Settings>> => {
     if (controller !== null) return controller;
     const settings = await settingsReader();
     const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
-    const store = new ChatThreadStore({ chatsDir });
+    // A throwaway store solely to resolve a thread's anchored project id for
+    // the Sizzle tool catalog. The controller's own store (built inside
+    // buildChatSurface) is what persists threads; this reads the same SQLite
+    // index/rows, so the lookup is consistent.
+    const projectStore = new ChatThreadStore({ chatsDir });
     const tools = makeSizzleChatTools({
       // The thread's anchor holds the project id; mutations bind to it.
-      resolveProjectId: async (threadId) => (await store.get(threadId))?.anchorCaptureId ?? null
+      resolveProjectId: async (threadId) =>
+        (await projectStore.get(threadId))?.anchorCaptureId ?? null
     });
-    controller = new ChatThreadController({
-      client,
-      store,
+    const surface = buildChatSurface({
+      command: codexCommandForSettings(settings),
+      chatsDir,
       readSettings: settingsReader,
-      broadcast,
-      buildSystemPrompt: buildSizzleSystemPrompt,
       channels: SIZZLE_CHAT_CHANNELS,
+      send: broadcast,
       usageSurface: "sizzle-chat",
+      buildSystemPrompt: ({ settings: s, anchorId }) =>
+        buildSizzleSystemPrompt({ settings: s, anchorCaptureId: anchorId }),
       buildTurnContext: buildSizzleTurnContext,
       toolLabels: SIZZLE_TOOL_LABELS,
       catalog: tools.catalog,
       dispatchToolCall: tools.dispatch,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
       threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
-      threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS
+      threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
+      loggerScope: "pwrsnap:sizzle-chat"
     });
-    controller.wire();
+    controller = surface.controller;
     return controller;
   };
 
@@ -132,9 +137,9 @@ export function registerSizzleChatHandlers(params?: {
       const c = await getController();
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
-        anchorCaptureId: req.anchorCaptureId
+        anchorId: req.anchorCaptureId
       });
-      return ok({ threads });
+      return ok({ threads: threads.map(toLibraryThreadView) });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -145,9 +150,9 @@ export function registerSizzleChatHandlers(params?: {
       const c = await getController();
       const view = await c.createThread({
         ...(req.name !== undefined ? { name: req.name } : {}),
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -159,7 +164,7 @@ export function registerSizzleChatHandlers(params?: {
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
-        ...(req.anchorCaptureId !== undefined ? { anchorCaptureId: req.anchorCaptureId } : {})
+        ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
       });
       return ok(result);
     } catch (cause) {
@@ -177,7 +182,7 @@ export function registerSizzleChatHandlers(params?: {
     try {
       const c = await getController();
       const messages = await c.getHistory(req.threadId);
-      return ok({ messages });
+      return ok({ messages: messages.map(toChatMessage) });
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -187,7 +192,7 @@ export function registerSizzleChatHandlers(params?: {
     try {
       const c = await getController();
       const view = await c.rename(req.threadId, req.name);
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -197,7 +202,7 @@ export function registerSizzleChatHandlers(params?: {
     try {
       const c = await getController();
       const view = await c.archive(req.threadId, req.archived);
-      return ok(view);
+      return ok(toLibraryThreadView(view));
     } catch (cause) {
       return codexUnreachable(cause);
     }
@@ -220,7 +225,7 @@ export function registerSizzleChatHandlers(params?: {
         threadId: req.threadId,
         turnId: req.turnId,
         approvalId: req.approvalId,
-        decision: req.decision
+        decision: toKitApprovalDecision(req.decision)
       });
       return ok(undefined);
     } catch (cause) {

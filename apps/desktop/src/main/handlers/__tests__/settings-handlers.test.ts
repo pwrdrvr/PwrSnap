@@ -309,6 +309,58 @@ describe("settings:* validation", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("settings:write accepts recognized ai.acp.enabledAgentIds", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: ["kimi", "qwen"] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+  });
+
+  test("settings:write accepts an empty ai.acp.enabledAgentIds (clear)", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: [] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("settings:write rejects an unknown ai.acp agent id", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: ["kimi", "bogus"] } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_id");
+  });
+
+  test("settings:write rejects a non-array ai.acp.enabledAgentIds", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { enabledAgentIds: "kimi" } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_acp_enabledAgentIds");
+  });
+
   test("settings:refreshCodexDiscovery rejects non-boolean force", async () => {
     const result = await bus.dispatch(
       "settings:refreshCodexDiscovery",

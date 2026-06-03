@@ -283,7 +283,8 @@ describe("Codex handlers", () => {
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
-            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
           }
         })
     });
@@ -416,7 +417,8 @@ describe("Codex handlers", () => {
               libraryChat: {},
               sizzleChat: {},
               enrichment: { model: "gpt-5.5", reasoning: "high" }
-            }
+            },
+            acp: { enabledAgentIds: [] }
           }
         })
     });
@@ -652,7 +654,8 @@ describe("Codex handlers", () => {
             autoAcceptSuggestions: false,
 
             chat: { userGuidance: "", sensitiveDataPatterns: [], defaultRedactionStyle: "blackout", firstLaunchBannerDismissed: false },
-            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} }
+            defaults: { libraryChat: {}, sizzleChat: {}, enrichment: {} },
+            acp: { enabledAgentIds: [] }
           }
         })
     });

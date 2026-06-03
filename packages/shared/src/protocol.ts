@@ -1191,6 +1191,79 @@ export const DEFAULT_AI_SURFACE_DEFAULTS: AiSurfaceDefaults = {
   enrichment: {}
 };
 
+// ---- ACP agents (discovery + enable in Settings → AI) -------------------
+//
+// PwrSnap can delegate chat to a locally-installed ACP agent CLI (Kimi /
+// Qwen / Gemini / Grok) discovered + spawned by `@pwrdrvr/agent-acp`. This
+// first phase (B1) is discovery + enable only: surface which agents are
+// installed and let the user opt the ones they want into the enabled set
+// (persisted in `Settings.ai.acp.enabledAgentIds`). Wiring an enabled agent
+// as a live chat backend is a separate next phase.
+//
+// The agent-id value space is the kit's `BUILT_IN_ACP_STRATEGIES` ids
+// (`gemini` / `grok` / `kimi` / `qwen`). The mirror below is the protocol's
+// closed copy used by the bus validator + renderer guards; the kit table is
+// the runtime source of truth that the main-process discovery handler reads.
+// Keep this list in sync with the kit strategy ids — a mismatch only narrows
+// the set the validator accepts, never widens it.
+
+export const BUILT_IN_ACP_AGENT_IDS = [
+  "gemini",
+  "grok",
+  "kimi",
+  "qwen"
+] as const;
+
+export type BuiltInAcpAgentId = (typeof BUILT_IN_ACP_AGENT_IDS)[number];
+
+export function isBuiltInAcpAgentId(value: unknown): value is BuiltInAcpAgentId {
+  return (
+    typeof value === "string" &&
+    (BUILT_IN_ACP_AGENT_IDS as readonly string[]).includes(value)
+  );
+}
+
+/** One known ACP agent's discovery status, as surfaced by the
+ *  `acp:discover` verb. `installed` is the only authoritative install
+ *  signal (the kit's local discovery passed the strategy's probe).
+ *  `version` is the parsed CLI version when the probe yielded one;
+ *  `detail` carries an install hint (when not installed) or the resolved
+ *  command (when installed) for the Settings UI. */
+export type AcpAgentDiscoveryEntry = {
+  /** Kit strategy id (`gemini` / `grok` / `kimi` / `qwen`). */
+  id: string;
+  /** Human-facing name from the kit strategy (`Gemini CLI`, etc.). */
+  displayName: string;
+  /** True when the kit's local discovery found + probed the CLI. */
+  installed: boolean;
+  /** Parsed CLI version, when the version probe yielded one. */
+  version?: string;
+  /** Resolved command path when installed; an install hint when not. */
+  detail?: string;
+};
+
+/** Result of `acp:discover` — every known ACP agent with its install
+ *  status. Read-only; never spawns the agent in ACP server mode (the
+ *  probe only runs `--version` / `--help`). */
+export type AcpAgentDiscovery = {
+  /** One entry per known ACP agent (built-in strategy), installed or not. */
+  agents: AcpAgentDiscoveryEntry[];
+};
+
+/** Per-user ACP-agent enablement. Additive sub-object of `Settings.ai`.
+ *  `enabledAgentIds` is the set of built-in ACP agent ids the user has
+ *  opted into; defaults to empty. Order is the user's toggle order; the
+ *  set is de-duplicated + validated against `BUILT_IN_ACP_AGENT_IDS` at
+ *  the bus boundary. */
+export type AcpSettings = {
+  enabledAgentIds: string[];
+};
+
+/** Default `ai.acp` state — no agents enabled. */
+export const DEFAULT_ACP_SETTINGS: AcpSettings = {
+  enabledAgentIds: []
+};
+
 export type AiEnrichmentTriggerSource =
   | "auto-enrichment"
   | "popover-enable"
@@ -1275,6 +1348,12 @@ export type Settings = {
      *  Codex default" (no `model` / `modelProvider` / `effort` is sent on
      *  thread/start or turn/start). */
     defaults: AiSurfaceDefaults;
+    /** ACP-agent enablement (Settings → AI → ACP agents). The set of
+     *  locally-installed ACP agents the user has opted into. Additive;
+     *  defaults to empty. Discovery is the `acp:discover` verb; enabling
+     *  is a `settings:write` patch to `ai.acp.enabledAgentIds`. Wiring an
+     *  enabled agent as a live chat backend is a separate next phase. */
+    acp: AcpSettings;
   };
   /** Global capture hotkeys. Each field is an Electron accelerator
    *  string (`CommandOrControl+Shift+C`-style) OR the empty string,
@@ -1723,6 +1802,13 @@ export type SettingsPatch = {
       sizzleChat?: AiSurfaceDefaultPatch;
       enrichment?: AiSurfaceDefaultPatch;
     };
+    /** ACP-agent enablement patch. `enabledAgentIds` REPLACES the stored
+     *  set wholesale (the renderer ships the full desired set on each
+     *  toggle, mirroring `ai.chat.sensitiveDataPatterns`). An empty array
+     *  is a meaningful value (clear all), not a "leave alone" sentinel —
+     *  `undefined` / missing `acp` leaves the stored set untouched. The
+     *  bus validator rejects unknown agent ids. */
+    acp?: Partial<AcpSettings>;
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
   experimental?: Partial<Settings["experimental"]>;
@@ -2693,6 +2779,17 @@ export type Commands = {
   "codex:models": {
     req: { includeHidden?: boolean };
     res: CodexModelList;
+  };
+  // ---- ACP agent discovery (Settings → AI) ----
+  /** Discover which built-in ACP agents (Kimi / Qwen / Gemini / Grok) are
+   *  installed on this machine. Read-only — wraps `@pwrdrvr/agent-acp`
+   *  local discovery, which probes each strategy's CLI with `--version` /
+   *  `--help` (no ACP server spawn). Returns every known agent with its
+   *  install status so the renderer can list installed + not-installed
+   *  agents and let the user enable installed ones. */
+  "acp:discover": {
+    req: Record<string, never>;
+    res: AcpAgentDiscovery;
   };
   "codex:usageSummary": {
     req: { window: AiUsageSummaryWindow };

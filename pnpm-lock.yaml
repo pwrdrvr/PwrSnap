@@ -11,6 +11,7 @@ overrides:
   '@pwrdrvr/codex-discovery': file:/Users/huntharo/pwrdrvr/agent-kit/packages/codex-discovery
   '@pwrdrvr/agent-client': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-client
   '@pwrdrvr/agent-chat-react': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react
+  '@pwrdrvr/agent-acp': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-acp
 
 pnpmfileChecksum: sha256-4pcY3+51RRJSec1Ld0OJIPli+j51l4qASm0Ts5d4Fuk=
 
@@ -39,6 +40,9 @@ importers:
       '@fontsource/geist-sans':
         specifier: ^5.2.5
         version: 5.2.5
+      '@pwrdrvr/agent-acp':
+        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-acp
+        version: file:../../../../agent-kit/packages/agent-acp
       '@pwrdrvr/agent-chat-react':
         specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react
         version: file:../../../../agent-kit/packages/agent-chat-react(react@19.2.6)
@@ -880,6 +884,9 @@ packages:
     resolution: {integrity: sha512-PG6q63nQg5c9rIi4/Z5lR5IVF7yU5MqmKaPOe0HSc0O2cX1fPi96sUQu5j7eo4gKCkB2AnNGoWt7y4/Xx3Kcqg==}
     engines: {node: '>=18'}
     hasBin: true
+
+  '@pwrdrvr/agent-acp@file:../../../../agent-kit/packages/agent-acp':
+    resolution: {directory: ../../../../agent-kit/packages/agent-acp, type: directory}
 
   '@pwrdrvr/agent-chat-react@file:../../../../agent-kit/packages/agent-chat-react':
     resolution: {directory: ../../../../agent-kit/packages/agent-chat-react, type: directory}
@@ -3429,6 +3436,11 @@ snapshots:
   '@playwright/test@1.59.1':
     dependencies:
       playwright: 1.59.1
+
+  '@pwrdrvr/agent-acp@file:../../../../agent-kit/packages/agent-acp':
+    dependencies:
+      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
+      '@pwrdrvr/agent-transport': file:../../../../agent-kit/packages/agent-transport
 
   '@pwrdrvr/agent-chat-react@file:../../../../agent-kit/packages/agent-chat-react(react@19.2.6)':
     dependencies:

@@ -329,6 +329,81 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.ai.defaults.libraryChat).toEqual({});
   });
+
+  test("fresh defaults have an empty `ai.acp.enabledAgentIds`", () => {
+    expect(defaultSettings().ai.acp).toEqual({ enabledAgentIds: [] });
+  });
+
+  test("v1 shape missing `ai.acp` defaults to an empty enabled set", async () => {
+    // `ai.acp.*` is additive. Older files won't have it; parseV1 fills
+    // an empty enabled set.
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: { enabled: true }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.acp).toEqual({ enabledAgentIds: [] });
+  });
+
+  test("v1 shape keeps recognized `ai.acp` agent ids and drops unknown / duplicate ones", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          // "bogus" is not a known agent; "kimi" is duplicated; 42 is not
+          // a string. parseV1 keeps only recognized ids, de-duplicated,
+          // in order.
+          acp: { enabledAgentIds: ["kimi", "bogus", "qwen", "kimi", 42] }
+        }
+      }),
+      "utf8"
+    );
+    const svc = new DesktopSettingsService({ filePath });
+    const settings = await svc.read();
+    expect(settings.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+  });
+});
+
+describe("DesktopSettingsService.write ai.acp", () => {
+  test("patching `ai.acp.enabledAgentIds` replaces the stored set wholesale", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["kimi", "qwen"] } } });
+    let read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["kimi", "qwen"]);
+
+    // A subsequent patch replaces (does not merge) the set.
+    await svc.write({ ai: { acp: { enabledAgentIds: ["gemini"] } } });
+    read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["gemini"]);
+  });
+
+  test("an empty `enabledAgentIds` array clears the set", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["grok"] } } });
+    await svc.write({ ai: { acp: { enabledAgentIds: [] } } });
+    const read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual([]);
+  });
+
+  test("an undefined `ai.acp` leaves the stored set untouched", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { enabledAgentIds: ["kimi"] } } });
+    // Patch a different ai field; acp must survive.
+    await svc.write({ ai: { enabled: true } });
+    const read = await svc.read();
+    expect(read.ai.acp.enabledAgentIds).toEqual(["kimi"]);
+  });
 });
 
 describe("DesktopSettingsService write-queue serialization on rejection", () => {

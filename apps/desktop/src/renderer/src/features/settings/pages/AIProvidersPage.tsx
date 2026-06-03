@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import type {
+  AcpAgentDiscovery,
+  AcpAgentDiscoveryEntry,
   AiEnrichmentBudgetStatus,
   AiReasoningEffort,
   AiSurfaceDefault,
@@ -468,6 +470,19 @@ export function AIProvidersPage(): ReactElement {
           </div>
         </Row>
       </Card>
+
+      <AcpAgentsCard
+        enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
+        onToggle={(id, enabled) => {
+          const current = settings?.ai.acp.enabledAgentIds ?? [];
+          const next = enabled
+            ? current.includes(id)
+              ? current
+              : [...current, id]
+            : current.filter((existing) => existing !== id);
+          void patch({ ai: { acp: { enabledAgentIds: next } } });
+        }}
+      />
 
       <ChatSettingsCard />
 
@@ -1016,6 +1031,175 @@ function CodexProfilesControl({
         <p className="pss__opt-sub pss__opt-sub--error">{createError}</p>
       ) : null}
     </div>
+  );
+}
+
+// ---- ACP agents (discovery + enable) ----------------------------------
+//
+// Discovers which built-in ACP agents (Kimi / Qwen / Gemini / Grok) are
+// installed via the `acp:discover` verb and lists each one with its install
+// status. Installed agents get an enable checkbox that patches
+// `ai.acp.enabledAgentIds`; not-installed agents show an install hint and a
+// disabled checkbox. Read-only discovery — enabling an agent here does NOT
+// wire it as a live chat backend (that's a separate next phase); it only
+// records the user's opt-in.
+
+type AcpAgentsCardProps = {
+  enabledAgentIds: readonly string[];
+  onToggle: (id: string, enabled: boolean) => void;
+};
+
+function AcpAgentsCard({
+  enabledAgentIds,
+  onToggle
+}: AcpAgentsCardProps): ReactElement {
+  const [discovery, setDiscovery] = useState<AcpAgentDiscovery | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    const result = await dispatch("acp:discover", {});
+    if (result.ok) {
+      setDiscovery(result.value);
+      setError(null);
+    } else {
+      setError(result.error.message);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return (
+    <Card
+      eyebrow="PROVIDER"
+      title="ACP agents"
+      headerAction={
+        <button
+          className="pss__top-btn"
+          type="button"
+          disabled={loading}
+          onClick={() => {
+            void refresh();
+          }}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      }
+    >
+      <Row
+        label="Installed agents"
+        sub="ACP agent CLIs (Kimi, Qwen, Gemini, Grok) detected on this machine. Enable the ones you want PwrSnap to use. Connecting an enabled agent as a chat backend is coming next."
+        tag="config"
+      >
+        <AcpAgentList
+          discovery={discovery}
+          loading={loading}
+          error={error}
+          enabledAgentIds={enabledAgentIds}
+          onToggle={onToggle}
+        />
+      </Row>
+    </Card>
+  );
+}
+
+type AcpAgentListProps = {
+  discovery: AcpAgentDiscovery | null;
+  loading: boolean;
+  error: string | null;
+  enabledAgentIds: readonly string[];
+  onToggle: (id: string, enabled: boolean) => void;
+};
+
+function AcpAgentList({
+  discovery,
+  loading,
+  error,
+  enabledAgentIds,
+  onToggle
+}: AcpAgentListProps): ReactElement {
+  if (discovery === null) {
+    return (
+      <div className="pss__opt">
+        <span className="pss__opt-icon">{loading ? "…" : "!"}</span>
+        <div className="pss__opt-text">
+          <span className="pss__opt-primary">
+            {loading ? "Discovering ACP agents…" : "ACP agent discovery unavailable"}
+          </span>
+          {error !== null ? (
+            <span className="pss__opt-sub pss__opt-sub--error">{error}</span>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <>
+      {error !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{error}</p>
+      ) : null}
+      {discovery.agents.map((agent) => (
+        <AcpAgentRow
+          key={agent.id}
+          agent={agent}
+          enabled={enabledAgentIds.includes(agent.id)}
+          onToggle={(next) => onToggle(agent.id, next)}
+        />
+      ))}
+    </>
+  );
+}
+
+function AcpAgentRow({
+  agent,
+  enabled,
+  onToggle
+}: {
+  agent: AcpAgentDiscoveryEntry;
+  enabled: boolean;
+  onToggle: (enabled: boolean) => void;
+}): ReactElement {
+  const sub = agent.installed
+    ? agent.version !== undefined
+      ? `v${agent.version}${agent.detail !== undefined ? ` · ${agent.detail}` : ""}`
+      : (agent.detail ?? "installed")
+    : (agent.detail ?? "Not installed");
+  return (
+    <OptionRow
+      icon={agent.displayName.charAt(0).toUpperCase()}
+      primary={agent.displayName}
+      sub={sub}
+      using={agent.installed && enabled}
+      badges={
+        agent.installed ? (
+          enabled ? (
+            <span className="pss__badge is-using">Enabled</span>
+          ) : (
+            <span className="pss__badge">Installed</span>
+          )
+        ) : (
+          <span className="pss__badge">Not installed</span>
+        )
+      }
+      action={
+        <label className="pss__acp-toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={!agent.installed}
+            aria-label={`Enable ${agent.displayName}`}
+            onChange={(e) => {
+              onToggle(e.target.checked);
+            }}
+          />
+          <span>Enable</span>
+        </label>
+      }
+    />
   );
 }
 

@@ -484,6 +484,24 @@
 }
 .pss__opt-use:hover { border-color: var(--accent-border); color: var(--accent-bright); }
 
+/* ACP agent enable toggle — checkbox + label in the OptionRow action slot */
+.pss__acp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.pss__acp-toggle input:disabled {
+  cursor: not-allowed;
+}
+.pss__acp-toggle:has(input:disabled) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* hotkey chip — for displaying a current shortcut, click to remap */
 .pss__hk {
   display: inline-flex;

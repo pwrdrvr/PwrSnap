@@ -39,6 +39,7 @@ import {
   clipboardHasPasteableImage,
   registerCaptureHandlers
 } from "./handlers/capture-handlers";
+import { registerAcpHandlers } from "./handlers/acp-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
 import {
@@ -1004,6 +1005,7 @@ export function bootstrapApp(): void {
       });
     registerCodexHandlers();
     registerCodexProfileHandlers();
+    registerAcpHandlers();
     registerLibraryChatHandlers();
     registerSizzleChatHandlers();
     registerCaptureHandlers();

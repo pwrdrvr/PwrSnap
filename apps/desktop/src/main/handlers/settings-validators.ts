@@ -16,7 +16,9 @@
 import {
   AI_REASONING_EFFORTS,
   AI_SURFACE_IDS,
+  BUILT_IN_ACP_AGENT_IDS,
   isAiReasoningEffort,
+  isBuiltInAcpAgentId,
   isAppearanceTheme,
   isCodexCaptionModel,
   isColorToken,
@@ -224,6 +226,10 @@ export function validateSettingsWrite(
     if (!isUndefined(ai.defaults)) {
       const defaultsErr = validateAiDefaultsPatch(ai.defaults);
       if (defaultsErr) return { ok: false, error: defaultsErr };
+    }
+    if (!isUndefined(ai.acp)) {
+      const acpErr = validateAcpPatch(ai.acp);
+      if (acpErr) return { ok: false, error: acpErr };
     }
   }
 
@@ -732,6 +738,46 @@ function validateAiDefaultsPatch(raw: unknown): PwrSnapError | null {
     if (isUndefined(block)) continue;
     const err = validateAiSurfaceDefault(surface, block);
     if (err !== null) return err;
+  }
+  return null;
+}
+
+// ---- settings:write — ai.acp sub-validator -----------------------------
+//
+// Validates the ACP-agent enablement patch. `enabledAgentIds` (when
+// present) must be an array of recognized built-in ACP agent ids — a
+// forged / buggy renderer can't enable an unknown agent or stash a
+// non-string blob in the set. An empty array is allowed (clear all).
+// The array is capped at the number of known agents (de-dup is handled
+// at merge / parse time).
+
+function validateAcpPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
+    return validationError(
+      "invalid_ai_acp",
+      "settings:write: ai.acp must be an object"
+    );
+  }
+  if (isUndefined(raw.enabledAgentIds)) return null;
+  if (!Array.isArray(raw.enabledAgentIds)) {
+    return validationError(
+      "invalid_ai_acp_enabledAgentIds",
+      "settings:write: ai.acp.enabledAgentIds must be an array"
+    );
+  }
+  if (raw.enabledAgentIds.length > BUILT_IN_ACP_AGENT_IDS.length) {
+    return validationError(
+      "invalid_ai_acp_enabledAgentIds",
+      `settings:write: ai.acp.enabledAgentIds has ${raw.enabledAgentIds.length} ids (max ${BUILT_IN_ACP_AGENT_IDS.length})`
+    );
+  }
+  for (const id of raw.enabledAgentIds) {
+    if (!isBuiltInAcpAgentId(id)) {
+      return validationError(
+        "invalid_ai_acp_agent_id",
+        `settings:write: ai.acp.enabledAgentIds has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+      );
+    }
   }
   return null;
 }

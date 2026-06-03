@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AcpSettings,
   AiSurfaceDefault,
   AiSurfaceDefaultPatch,
   AiSurfaceDefaults,
@@ -51,6 +52,7 @@ import {
   DEFAULT_SHAPE_KIND,
   isAiReasoningEffort,
   isAppearanceTheme,
+  isBuiltInAcpAgentId,
   isCodexCaptionModel,
   isColorToken,
   isEditorSidebarPanel,
@@ -105,7 +107,11 @@ export function defaultSettings(): Settings {
         libraryChat: {},
         sizzleChat: {},
         enrichment: {}
-      }
+      },
+      // No ACP agents enabled on a fresh install. The user opts agents
+      // into the enabled set from Settings → AI → ACP agents (additive,
+      // no schemaVersion bump).
+      acp: { enabledAgentIds: [] }
     },
     hotkeys: {
       // Quick Capture default moved off ⌘⇧P (collides with Print in
@@ -531,7 +537,12 @@ function parseV1(raw: unknown): Settings | null {
         isCodexCaptionModel(codex.captionModel)
           ? (codex.captionModel as string)
           : defaults.codex.captionModel
-      )
+      ),
+      // `ai.acp.*` is additive — older files won't have it. Falls through
+      // to an empty enabled set; only recognized built-in agent ids
+      // survive the parse so a stale/forged file can't enable an unknown
+      // agent. No `schemaVersion` bump per the additive convention.
+      acp: parseAcpSettings(ai.acp)
     },
     hotkeys: {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
@@ -682,6 +693,25 @@ function parseAiSurfaceDefaults(
     sizzleChat: parseAiSurfaceDefault(rec.sizzleChat),
     enrichment: parseAiSurfaceDefault(rec.enrichment, enrichmentSeedModel)
   };
+}
+
+/** Parse `ai.acp` from an on-disk JSON value. Keeps only recognized
+ *  built-in agent ids (de-duplicated, order preserved) so a stale or
+ *  forged file can't enable an unknown agent. Missing / malformed input
+ *  falls through to an empty enabled set. */
+function parseAcpSettings(raw: unknown): AcpSettings {
+  if (!isRecord(raw) || !Array.isArray(raw.enabledAgentIds)) {
+    return { enabledAgentIds: [] };
+  }
+  const seen = new Set<string>();
+  const enabledAgentIds: string[] = [];
+  for (const entry of raw.enabledAgentIds) {
+    if (!isBuiltInAcpAgentId(entry)) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    enabledAgentIds.push(entry);
+  }
+  return { enabledAgentIds };
 }
 
 function parseLibrarySettings(
@@ -1072,7 +1102,27 @@ function mergeAi(current: Settings["ai"], patch: SettingsPatch["ai"]): Settings[
     // sensitiveDataPatterns IS a meaningful value (cleared list), not
     // a "leave alone" sentinel — substrate rule `undefined ≠ null ≠ ""`.
     chat: mergeChat(current.chat, patch.chat),
-    defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults)
+    defaults: mergeAiSurfaceDefaults(current.defaults, patch.defaults),
+    acp: mergeAcp(current.acp, patch.acp)
+  };
+}
+
+/** Merge `ai.acp`. `enabledAgentIds` REPLACES the stored set wholesale
+ *  when present (the renderer ships the full desired set on each toggle,
+ *  mirroring `chat.sensitiveDataPatterns`); an empty array clears it. An
+ *  undefined `acp` / undefined `enabledAgentIds` leaves the stored set
+ *  untouched. The bus validator has already rejected unknown ids by the
+ *  time the patch reaches here. */
+function mergeAcp(
+  current: AcpSettings,
+  patch: Partial<AcpSettings> | undefined
+): AcpSettings {
+  if (patch === undefined) return current;
+  return {
+    enabledAgentIds:
+      patch.enabledAgentIds !== undefined
+        ? patch.enabledAgentIds
+        : current.enabledAgentIds
   };
 }
 

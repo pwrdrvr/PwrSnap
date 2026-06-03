@@ -195,36 +195,36 @@ describe("resolvePhraseTiming", () => {
 });
 
 describe("buildTranscriptPhraseSuggestions", () => {
-  it("builds timestamped phrase spans from transcript words", () => {
+  it("builds one timestamped phrase suggestion per start word", () => {
     const timing = approximateSpeechTiming("Once it's installed the workflow continues", 4);
     const suggestions = buildTranscriptPhraseSuggestions(timing, {
-      minWords: 2,
-      maxWords: 3,
+      wordsPerSuggestion: 3,
       maxSuggestions: 4
     });
 
     expect(suggestions).toEqual([
-      expect.objectContaining({
-        text: "Once it's",
-        wordStartIndex: 0,
-        wordEndIndex: 1
-      }),
       expect.objectContaining({
         text: "Once it's installed",
         wordStartIndex: 0,
         wordEndIndex: 2
       }),
       expect.objectContaining({
-        text: "it's installed",
-        wordStartIndex: 1,
-        wordEndIndex: 2
-      }),
-      expect.objectContaining({
         text: "it's installed the",
         wordStartIndex: 1,
         wordEndIndex: 3
+      }),
+      expect.objectContaining({
+        text: "installed the workflow",
+        wordStartIndex: 2,
+        wordEndIndex: 4
+      }),
+      expect.objectContaining({
+        text: "the workflow continues",
+        wordStartIndex: 3,
+        wordEndIndex: 5
       })
     ]);
+    expect(new Set(suggestions.map((suggestion) => suggestion.startSec)).size).toBe(suggestions.length);
     expect(suggestions[0]!.startSec).toBeLessThan(suggestions[0]!.endSec);
   });
 });

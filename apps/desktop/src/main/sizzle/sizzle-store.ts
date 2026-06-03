@@ -28,6 +28,7 @@ type StoredBlob = {
 };
 
 const DEFAULT_BLOB: StoredBlob = { schemaVersion: 1, projects: [] };
+const PROJECT_NAME_MAX = 200;
 
 export class SizzleStore {
   private readonly filePath: string;
@@ -88,6 +89,28 @@ export class SizzleStore {
         ttsModel: "tts-1-hd",
         ttsProvider: "openai",
         resolution: "1080p",
+        outputPath: null,
+        lastRenderedAt: null
+      };
+      blob.projects.unshift(project);
+      await this.writeBlob(blob);
+      return project;
+    });
+  }
+
+  async duplicate(id: string, name?: string): Promise<SizzleProject> {
+    return this.serialize(async () => {
+      const blob = await this.readBlob();
+      const source = blob.projects.find((p) => p.id === id);
+      if (source === undefined) throw new SizzleProjectNotFoundError(id);
+      const now = new Date().toISOString();
+      const project: SizzleProject = {
+        ...source,
+        id: `sz_${randomUUID().slice(0, 12)}`,
+        name: duplicateProjectName(source.name, name),
+        createdAt: now,
+        modifiedAt: now,
+        scenes: duplicateScenes(source.scenes),
         outputPath: null,
         lastRenderedAt: null
       };
@@ -224,6 +247,39 @@ export class SizzleProjectNotFoundError extends Error {
 
 function sanitizeScenes(scenes: SizzleScene[]): SizzleScene[] {
   return scenes.map(sanitizeScene);
+}
+
+function duplicateProjectName(sourceName: string, requestedName?: string): string {
+  if (requestedName !== undefined) return clampProjectName(requestedName);
+  const suffix = " Copy";
+  const base = (sourceName.trim() || "Untitled Sizzle")
+    .slice(0, PROJECT_NAME_MAX - suffix.length)
+    .trimEnd();
+  return `${base}${suffix}`;
+}
+
+function clampProjectName(name: string): string {
+  const trimmed = name.trim() || "Untitled Sizzle";
+  return trimmed.length > PROJECT_NAME_MAX
+    ? trimmed.slice(0, PROJECT_NAME_MAX).trimEnd()
+    : trimmed;
+}
+
+function duplicateScenes(scenes: SizzleScene[]): SizzleScene[] {
+  return sanitizeScenes(scenes).map((scene) => {
+    const next: SizzleScene = {
+      ...scene,
+      id: `sc_${randomUUID().slice(0, 10)}`
+    };
+    if (scene.kind === "sequence") {
+      next.kind = "sequence";
+      next.beats = (scene.beats ?? []).map((beat) => ({
+        ...beat,
+        id: `bt_${randomUUID().slice(0, 10)}`
+      }));
+    }
+    return next;
+  });
 }
 
 function sanitizeScene(s: SizzleScene): SizzleScene {

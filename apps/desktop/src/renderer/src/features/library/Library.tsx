@@ -67,6 +67,59 @@ function copyPresetForShortcutKey(key: string): CopyPreset | null {
   return null;
 }
 
+function sizzleProjectMatchesQuery(project: SizzleProject, query: string): boolean {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 0);
+  if (terms.length === 0) return true;
+  const haystack = [
+    project.name,
+    project.createdAt,
+    project.modifiedAt,
+    ...project.scenes.flatMap((scene) => [
+      scene.scriptLine,
+      scene.kind === "sequence" ? scene.narration ?? "" : ""
+    ])
+  ]
+    .join(" ")
+    .toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+function projectCoverCaptureId(project: SizzleProject): string | null {
+  const firstScene = project.scenes[0];
+  if (firstScene === undefined) return null;
+  if (firstScene.kind === "sequence") {
+    const beatCaptureId = firstScene.beats?.find((beat) => beat.captureId.length > 0)?.captureId;
+    if (beatCaptureId !== undefined) return beatCaptureId;
+  }
+  return firstScene.captureId.length > 0 ? firstScene.captureId : null;
+}
+
+type ProjectContextMenuState = {
+  projectId: string;
+  projectName: string;
+  x: number;
+  y: number;
+};
+
+const PROJECT_CONTEXT_MENU_WIDTH = 188;
+const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+function clampContextMenuPosition(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { x: number; y: number } {
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
+  };
+}
+
 const INITIAL_COPY_PULSES: Record<CopyPreset, number> = {
   low: 0,
   med: 0,
@@ -119,11 +172,13 @@ function CellThumb({
   capture,
   record,
   project,
+  projectCoverRecord = null,
   width
 }: {
   capture: Capture;
   record: CaptureRecord | null;
   project: SizzleProject | null;
+  projectCoverRecord?: CaptureRecord | null;
   width: number;
 }) {
   // Sizzle Reels project cell — first scene's thumbnail as the
@@ -131,7 +186,7 @@ function CellThumb({
   // Click handling is in the parent's onSelectCell, which dispatches
   // sizzle:open instead of OPEN_FOCUS for project cells.
   if (capture.kind === "project" && project !== null) {
-    const firstSceneCaptureId = project.scenes[0]?.captureId ?? null;
+    const coverCaptureId = projectCoverRecord?.id ?? projectCoverCaptureId(project);
     const sceneCount = project.scenes.length;
     const totalSec = project.scenes.reduce((acc, s) => {
       const explicit = s.durationOverrideSec;
@@ -148,9 +203,14 @@ function CellThumb({
         : `${Math.round(totalSec)}s`;
     return (
       <div className="psl__cell-project">
-        {firstSceneCaptureId !== null ? (
+        {coverCaptureId !== null ? (
           <img
-            src={cacheUrl(firstSceneCaptureId, width, "webp")}
+            src={cacheUrl(
+              coverCaptureId,
+              width,
+              "webp",
+              projectCoverRecord?.edits_version
+            )}
             alt=""
             loading="lazy"
             decoding="async"
@@ -430,6 +490,8 @@ export function Library() {
     {}
   );
   const [openedRecords, setOpenedRecords] = useState<CaptureRecord[]>([]);
+  const [projectContextMenu, setProjectContextMenu] =
+    useState<ProjectContextMenuState | null>(null);
   const openedRecordsRef = useRef(openedRecords);
   useEffect(() => {
     openedRecordsRef.current = openedRecords;
@@ -1205,15 +1267,22 @@ export function Library() {
   // filtering to "Safari" can still narrow further to just images
   // from Safari). Projects can't compose that way because they have
   // no source-app dimension to begin with.
-  // Projects don't participate in `library:search` (the FTS5 index is
-  // captures-only), so they drop out of the grid while a query is
-  // active — same reasoning as the source-app filter exclusion below.
   const gridProjects = useMemo(
-    () =>
-      visibleTypes.projects && !isTrashView && !isSearchActive && activeSourceAppId === null
-        ? sizzleProjects
-        : [],
-    [visibleTypes.projects, isTrashView, isSearchActive, activeSourceAppId, sizzleProjects]
+    () => {
+      if (!visibleTypes.projects || isTrashView || activeSourceAppId !== null) return [];
+      if (!isSearchActive) return sizzleProjects;
+      return sizzleProjects.filter((project) =>
+        sizzleProjectMatchesQuery(project, searchQuery)
+      );
+    },
+    [
+      visibleTypes.projects,
+      isTrashView,
+      activeSourceAppId,
+      isSearchActive,
+      sizzleProjects,
+      searchQuery
+    ]
   );
   const fixtureBacking = useMemo(
     () => new FixtureBackedRecords(universeRecords, gridProjects),
@@ -1224,6 +1293,56 @@ export function Library() {
     [universeRecords, gridProjects, todayDateStr]
   );
   const fixtureCaptures = useMemo(() => fixtureBacking.fixtures(), [fixtureBacking]);
+  const searchResultCount = searchState.rows.length + (isSearchActive ? gridProjects.length : 0);
+  const projectCoverIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          gridProjects
+            .map(projectCoverCaptureId)
+            .filter((id): id is string => id !== null)
+        )
+      ),
+    [gridProjects]
+  );
+  const projectCoverIdsKey = projectCoverIds.join(",");
+  const [projectCoverRecordsById, setProjectCoverRecordsById] = useState<
+    Map<string, CaptureRecord>
+  >(new Map());
+  useEffect(() => {
+    if (projectCoverIds.length === 0) {
+      setProjectCoverRecordsById((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    const wanted = new Set(projectCoverIds);
+    setProjectCoverRecordsById((prev) => {
+      let changed = false;
+      const next = new Map<string, CaptureRecord>();
+      for (const [id, record] of prev) {
+        if (wanted.has(id)) next.set(id, record);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+    const missing = projectCoverIds.filter((id) => !projectCoverRecordsById.has(id));
+    if (missing.length === 0) return;
+    let active = true;
+    void dispatch("library:listByIds", { ids: missing }).then((result) => {
+      if (!active || !result.ok) return;
+      setProjectCoverRecordsById((prev) => {
+        const next = new Map(prev);
+        for (const record of result.value.rows) next.set(record.id, record);
+        return next;
+      });
+    });
+    return () => {
+      active = false;
+    };
+    // projectCoverIdsKey is the membership fingerprint. The map is
+    // intentionally not a dependency; including it would refetch on
+    // every hydration write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectCoverIdsKey]);
 
   // Search bypasses every other filter — the user gets exactly the
   // result set from the bus, in rank/date order. Source-app + Today
@@ -1914,7 +2033,7 @@ export function Library() {
     // Click handler doesn't transition into focus/reel for projects;
     // projects are edited in the dedicated Sizzle Reels window.
     if (c.kind === "project" && c.projectId !== undefined) {
-      void dispatch("sizzle:open", { projectId: c.projectId });
+      openSizzleProject(c.projectId);
       return;
     }
     const record = fixtureBacking.recordFor(c.id);
@@ -1932,6 +2051,48 @@ export function Library() {
         cellId: record.id
       }
     });
+  }
+
+  function duplicateSizzleProject(
+    projectId: string,
+    event?: ReactMouseEvent<HTMLElement>
+  ): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    void (async () => {
+      const result = await dispatch("sizzle:duplicate", { id: projectId });
+      if (result.ok) {
+        void dispatch("sizzle:open", { projectId: result.value.id });
+      }
+    })();
+  }
+
+  function closeProjectContextMenu(): void {
+    setProjectContextMenu(null);
+  }
+
+  function openProjectContextMenu(
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const position = clampContextMenuPosition(
+      event.clientX,
+      event.clientY,
+      PROJECT_CONTEXT_MENU_WIDTH,
+      PROJECT_CONTEXT_MENU_HEIGHT
+    );
+    setProjectContextMenu({
+      projectId,
+      projectName,
+      ...position
+    });
+  }
+
+  function openSizzleProject(projectId: string): void {
+    void dispatch("sizzle:open", { projectId });
   }
 
   /**
@@ -2188,8 +2349,8 @@ export function Library() {
                 : searchState.error !== null
                   ? "search failed"
                   : searchState.capped
-                    ? `${searchState.rows.length}+ matches`
-                    : `${searchState.rows.length} ${searchState.rows.length === 1 ? "match" : "matches"}`
+                    ? `${searchResultCount}+ matches`
+                    : `${searchResultCount} ${searchResultCount === 1 ? "match" : "matches"}`
               : isTrashView
                 ? `${trashRecords.length} in trash`
                 : `${totalLive} captures`}
@@ -2590,9 +2751,9 @@ export function Library() {
           {isSearchActive &&
             !searchState.loading &&
             searchState.error === null &&
-            searchState.rows.length === 0 && (
+            searchResultCount === 0 && (
               <div className="psl__search-empty" role="status">
-                No captures match “{searchState.forQuery}”.
+                No captures or Sizzle Reels match “{searchState.forQuery}”.
               </div>
             )}
           <VirtualizedGrid
@@ -2600,8 +2761,11 @@ export function Library() {
             scrollElement={gridScrollRef}
             selectedRecordId={selectedRecordId}
             fixtureBacking={fixtureBacking}
+            projectCoverRecordsById={projectCoverRecordsById}
             appLabels={appLabels}
             onSelectCell={onSelectCell}
+            duplicateSizzleProject={duplicateSizzleProject}
+            openProjectContextMenu={openProjectContextMenu}
             preloadFullRes={preloadFullRes}
             hasMore={gridHasMore}
             isLoadingMore={gridIsLoadingMore}
@@ -2617,6 +2781,20 @@ export function Library() {
             Failed to load library: {error}
           </div>
         )}
+        {projectContextMenu !== null ? (
+          <LibraryProjectContextMenu
+            menu={projectContextMenu}
+            onClose={closeProjectContextMenu}
+            onOpenProject={(projectId) => {
+              closeProjectContextMenu();
+              openSizzleProject(projectId);
+            }}
+            onDuplicateProject={(projectId) => {
+              closeProjectContextMenu();
+              duplicateSizzleProject(projectId);
+            }}
+          />
+        ) : null}
       </main>
 
       {/* Stage — Focus mode opens it inside a native <dialog> with
@@ -2979,8 +3157,15 @@ type VirtualizedGridProps = {
   scrollElement: React.RefObject<HTMLDivElement | null>;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
+  projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
+  duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
+  openProjectContextMenu: (
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   hasMore: boolean;
   isLoadingMore: boolean;
@@ -3027,13 +3212,84 @@ function useCellsPerRow(scrollElement: React.RefObject<HTMLDivElement | null>): 
   return cellsPerRow;
 }
 
+function LibraryProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onMouseDown(event: MouseEvent): void {
+      const root = rootRef.current;
+      if (root === null) return;
+      if (event.target instanceof Node && root.contains(event.target)) return;
+      onClose();
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => rootRef.current?.focus());
+  }, []);
+
+  return (
+    <div
+      ref={rootRef}
+      className="psl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.projectName} actions`}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        className="psl__context-menu-row"
+        onClick={() => onOpenProject(menu.projectId)}
+      >
+        Open
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="psl__context-menu-row"
+        onClick={() => onDuplicateProject(menu.projectId)}
+      >
+        Duplicate
+      </button>
+    </div>
+  );
+}
+
 function VirtualizedGrid({
   grouped,
   scrollElement,
   selectedRecordId,
   fixtureBacking,
+  projectCoverRecordsById,
   appLabels,
   onSelectCell,
+  duplicateSizzleProject,
+  openProjectContextMenu,
   preloadFullRes,
   hasMore,
   isLoadingMore,
@@ -3219,8 +3475,11 @@ function VirtualizedGrid({
                 isLastInDay={row.isLastInDay}
                 selectedRecordId={selectedRecordId}
                 fixtureBacking={fixtureBacking}
+                projectCoverRecordsById={projectCoverRecordsById}
                 appLabels={appLabels}
                 onSelectCell={onSelectCell}
+                duplicateSizzleProject={duplicateSizzleProject}
+                openProjectContextMenu={openProjectContextMenu}
                 preloadFullRes={preloadFullRes}
                 isTrashView={isTrashView}
                 trashCapture={trashCapture}
@@ -3256,8 +3515,11 @@ function CellRow({
   isLastInDay,
   selectedRecordId,
   fixtureBacking,
+  projectCoverRecordsById,
   appLabels,
   onSelectCell,
+  duplicateSizzleProject,
+  openProjectContextMenu,
   preloadFullRes,
   isTrashView,
   trashCapture,
@@ -3269,8 +3531,15 @@ function CellRow({
   isLastInDay: boolean;
   selectedRecordId: string | null;
   fixtureBacking: FixtureBackedRecords;
+  projectCoverRecordsById: Map<string, CaptureRecord>;
   appLabels: Record<string, string>;
   onSelectCell: (c: Capture) => void;
+  duplicateSizzleProject: (projectId: string, event?: ReactMouseEvent<HTMLElement>) => void;
+  openProjectContextMenu: (
+    projectId: string,
+    projectName: string,
+    event: ReactMouseEvent<HTMLElement>
+  ) => void;
   preloadFullRes: (record: CaptureRecord | null) => void;
   isTrashView: boolean;
   trashCapture: CellAction;
@@ -3301,7 +3570,13 @@ function CellRow({
       {cells.map((c) => {
         const record = fixtureBacking.recordFor(c.id);
         const project = fixtureBacking.projectFor(c.id);
+        const projectCoverId = project === null ? null : projectCoverCaptureId(project);
+        const projectCoverRecord =
+          projectCoverId === null
+            ? null
+            : projectCoverRecordsById.get(projectCoverId) ?? null;
         const isProject = c.kind === "project";
+        const projectId = isProject && c.projectId !== undefined ? c.projectId : null;
         // Cart checkbox shows for real (non-project) captures outside
         // trash. The checkbox SELF-SUBSCRIBES to the cart (see
         // <CartCellCheckbox>) so a cart toggle re-renders only the
@@ -3319,10 +3594,21 @@ function CellRow({
             }
             data-cell-id={record?.id ?? ""}
             onClick={() => onSelectCell(c)}
+            onContextMenu={(event) => {
+              if (projectId !== null) {
+                openProjectContextMenu(projectId, c.n, event);
+              }
+            }}
             onMouseEnter={() => preloadFullRes(record ?? null)}
           >
             <div className="psl__cell-thumb">
-              <CellThumb capture={c} record={record} project={project} width={400} />
+              <CellThumb
+                capture={c}
+                record={record}
+                project={project}
+                projectCoverRecord={projectCoverRecord}
+                width={400}
+              />
               {cartEligible && record !== null ? (
                 <CartCellCheckbox captureId={record.id} />
               ) : null}
@@ -3336,6 +3622,20 @@ function CellRow({
                   <AppTag app={c.app} name={appLabels[c.app] ?? "Unknown app"} size="sm" bundleId={c.bundleId ?? undefined} />
                 )}
               </span>
+              {projectId !== null ? (
+                <button
+                  type="button"
+                  className="psl__cell-trash psl__cell-duplicate"
+                  title="Duplicate Sizzle Reel"
+                  aria-label={`Duplicate ${c.n}`}
+                  onClick={(event) => duplicateSizzleProject(projectId, event)}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="8" y="8" width="11" height="11" rx="2" />
+                    <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+                  </svg>
+                </button>
+              ) : null}
               {record !== null &&
                 (isTrashView ? (
                   <span className="psl__cell-actions">

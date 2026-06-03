@@ -11,7 +11,10 @@ vi.mock("electron", () => ({
 }));
 
 const { bus } = await import("../../command-bus");
-const { registerSizzleChatHandlers } = await import("../sizzle-chat-handlers");
+const {
+  forkProjectChats,
+  registerSizzleChatHandlers
+} = await import("../sizzle-chat-handlers");
 
 const view = {
   threadId: "th1",
@@ -33,7 +36,8 @@ const controller = {
   rename: vi.fn(async () => view),
   archive: vi.fn(async () => view),
   interrupt: vi.fn(async () => undefined),
-  resolveApproval: vi.fn(async () => undefined)
+  resolveApproval: vi.fn(async () => undefined),
+  forkThreadsForAnchor: vi.fn(async () => [])
 };
 
 beforeAll(() => {
@@ -104,5 +108,14 @@ describe("codex:sizzleChat verbs", () => {
   test("interrupt delegates", async () => {
     await bus.dispatch("codex:sizzleChat:interrupt", { threadId: "th1" }, { principal: "ipc" });
     expect(controller.interrupt).toHaveBeenCalledWith("th1");
+  });
+
+  test("forkProjectChats delegates to the shared Sizzle controller", async () => {
+    controller.forkThreadsForAnchor.mockClear();
+    await forkProjectChats("source-project", "target-project");
+    expect(controller.forkThreadsForAnchor).toHaveBeenCalledWith({
+      sourceAnchorCaptureId: "source-project",
+      targetAnchorCaptureId: "target-project"
+    });
   });
 });

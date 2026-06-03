@@ -28,6 +28,7 @@ import type {
 import type {
   CodexAgentMessageDeltaEvent,
   CodexApprovalRequestHandler,
+  CodexForkThreadOptions,
   CodexToolCallHandler,
   CodexThreadSettingsEvent,
   CodexThreadTokenUsageEvent,
@@ -65,6 +66,7 @@ class FakeClient {
     runtimeWorkspaceRoots?: string[];
     serviceName?: string;
   } | null = null;
+  forkThreadCalls: CodexForkThreadOptions[] = [];
   clearedGitThreadIds: string[] = [];
 
   async startThread(opts?: {
@@ -90,6 +92,21 @@ class FakeClient {
   }
   async clearThreadGitInfo(threadId: string): Promise<void> {
     this.clearedGitThreadIds.push(threadId);
+  }
+  async forkThread(opts: CodexForkThreadOptions): Promise<{
+    threadId: string;
+    model: string;
+    modelProvider: string;
+    serviceTier: string | null;
+  }> {
+    this.forkThreadCalls.push(opts);
+    this.threadSeq += 1;
+    return {
+      threadId: `thread-${this.threadSeq}`,
+      model: "gpt-5.4-mini",
+      modelProvider: "openai",
+      serviceTier: null
+    };
   }
   async startTurn(opts: { input: Array<{ text: string }> }): Promise<{ turnId: string }> {
     this.lastTurnInput = opts.input;
@@ -416,6 +433,51 @@ describe("ChatThreadController asset gluing", () => {
 
     const all = await controller.listThreads();
     expect(all.map((t) => t.threadId).sort()).toEqual([a.threadId, b.threadId].sort());
+  });
+
+  it("forks anchored threads through the shared client and re-anchors the copies", async () => {
+    const cfg = { web_search: "disabled" };
+    const { client, controller, store, broadcasts } = build({ threadConfig: cfg });
+    const source = await controller.createThread({
+      name: "Source Chat",
+      anchorCaptureId: "project-source"
+    });
+    const journalEntry = {
+      id: "msg-1",
+      role: "user",
+      content: [{ kind: "text", text: "revise this reel" }]
+    };
+    await store.journalAppend(source.threadId, journalEntry);
+
+    const forked = await controller.forkThreadsForAnchor({
+      sourceAnchorCaptureId: "project-source",
+      targetAnchorCaptureId: "project-copy"
+    });
+
+    expect(client.forkThreadCalls).toHaveLength(1);
+    expect(client.forkThreadCalls[0]).toMatchObject({
+      sourceThreadId: source.threadId,
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      baseInstructions: "system",
+      config: cfg
+    });
+    expect(client.forkThreadCalls[0]?.cwd).toMatch(
+      /\/Chats\/\d{4}-\d{2}-\d{2}-\d{3}-source-chat$/
+    );
+    expect(client.forkThreadCalls[0]?.runtimeWorkspaceRoots).toEqual([
+      client.forkThreadCalls[0]?.cwd
+    ]);
+    expect(forked).toHaveLength(1);
+    expect(forked[0]?.anchorCaptureId).toBe("project-copy");
+    expect(forked[0]?.name).toBe("Source Chat");
+    expect(client.clearedGitThreadIds).toContain(forked[0]?.threadId);
+    await expect(store.readJournal(forked[0]!.threadId)).resolves.toEqual([journalEntry]);
+
+    const threadUpdates = broadcasts
+      .filter((b) => b.channel === EVENT_CHANNELS.libraryChatThreadUpdated)
+      .map((b) => (b.payload as { thread: { threadId: string } }).thread.threadId);
+    expect(threadUpdates).toContain(forked[0]?.threadId);
   });
 });
 

@@ -283,6 +283,77 @@ export class ChatThreadController {
     return sidecars.map((s) => this.toView(s));
   }
 
+  async forkThreadsForAnchor(input: {
+    sourceAnchorCaptureId: string;
+    targetAnchorCaptureId: string;
+  }): Promise<LibraryChatThreadView[]> {
+    const sourceThreads = await this.deps.store.list({
+      includeArchived: false,
+      anchorCaptureId: input.sourceAnchorCaptureId
+    });
+    if (sourceThreads.length === 0) return [];
+
+    const settings = await this.deps.readSettings();
+    const baseInstructions = this.deps.buildSystemPrompt({
+      settings,
+      anchorCaptureId: input.targetAnchorCaptureId
+    });
+    const forkedViews: LibraryChatThreadView[] = [];
+
+    for (const source of sourceThreads) {
+      const preparedDir = await this.deps.store.prepareThreadDir(source.name);
+      let forked: {
+        threadId: string;
+        model: string;
+        modelProvider: string;
+        serviceTier: string | null;
+      };
+      try {
+        forked = await this.deps.client.forkThread({
+          sourceThreadId: source.threadId,
+          ...(this.deps.approvalPolicy !== undefined ? { approvalPolicy: this.deps.approvalPolicy } : {}),
+          ...(this.deps.sandbox !== undefined ? { sandbox: this.deps.sandbox } : {}),
+          baseInstructions,
+          cwd: preparedDir.path,
+          runtimeWorkspaceRoots: [preparedDir.path],
+          ...(this.deps.threadConfig !== undefined ? { config: this.deps.threadConfig } : {})
+        });
+      } catch (cause) {
+        await this.deps.store.discardPreparedThreadDir(preparedDir).catch(() => undefined);
+        throw cause;
+      }
+
+      await this.deps.client.clearThreadGitInfo(forked.threadId).catch((cause) => {
+        log.warn("forked chat thread git metadata clear failed", {
+          threadId: forked.threadId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      });
+      this.threadModels.set(forked.threadId, {
+        model: forked.model,
+        modelProvider: forked.modelProvider,
+        serviceTier: forked.serviceTier
+      });
+
+      const sidecar = await this.deps.store.create({
+        threadId: forked.threadId,
+        name: source.name,
+        anchorCaptureId: input.targetAnchorCaptureId,
+        preparedDir
+      });
+      const journal = await this.deps.store.readJournal(source.threadId);
+      for (const entry of journal) {
+        await this.deps.store.journalAppend(forked.threadId, entry);
+      }
+
+      const view = this.toView(sidecar);
+      this.deps.broadcast(this.deps.channels.threadUpdated, { thread: view });
+      forkedViews.push(view);
+    }
+
+    return forkedViews;
+  }
+
   async rename(threadId: string, name: string): Promise<LibraryChatThreadView> {
     const sidecar = await this.deps.store.update(threadId, { name: name.trim() });
     const view = this.toView(sidecar);

@@ -53,6 +53,9 @@ const SIZZLE_CHAT_THREAD_ENVIRONMENTS: unknown[] = [];
 
 export type SizzleChatSettingsReader = () => Promise<Settings>;
 
+let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
+let sizzleController: ChatThreadController | null = null;
+
 function aiError(code: string, message: string): Result<never, PwrSnapError> {
   return err({ kind: "ai", code, message });
 }
@@ -83,41 +86,8 @@ export function registerSizzleChatHandlers(params?: {
   controller?: ChatThreadController;
   settingsReader?: SizzleChatSettingsReader;
 }): void {
-  const settingsReader = params?.settingsReader ?? defaultSettingsReader;
-
-  // Lazily built on first use — no codex child at app start for users who
-  // never open the composer chat.
-  let controller: ChatThreadController | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController> => {
-    if (controller !== null) return controller;
-    const settings = await settingsReader();
-    const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
-    const store = new ChatThreadStore({ chatsDir });
-    const tools = makeSizzleChatTools({
-      // The thread's anchor holds the project id; mutations bind to it.
-      resolveProjectId: async (threadId) => (await store.get(threadId))?.anchorCaptureId ?? null
-    });
-    controller = new ChatThreadController({
-      client,
-      store,
-      readSettings: settingsReader,
-      broadcast,
-      buildSystemPrompt: buildSizzleSystemPrompt,
-      channels: SIZZLE_CHAT_CHANNELS,
-      usageSurface: "sizzle-chat",
-      buildTurnContext: buildSizzleTurnContext,
-      toolLabels: SIZZLE_TOOL_LABELS,
-      catalog: tools.catalog,
-      dispatchToolCall: tools.dispatch,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
-      threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS
-    });
-    controller.wire();
-    return controller;
-  };
+  sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
+  sizzleController = params?.controller ?? null;
 
   bus.register("codex:sizzleChat:list", async (req) => {
     // Sizzle threads are ALWAYS project-scoped. The substrate's
@@ -229,6 +199,41 @@ export function registerSizzleChatHandlers(params?: {
   });
 }
 
+const getController = async (): Promise<ChatThreadController> => getSizzleChatController();
+
+async function getSizzleChatController(): Promise<ChatThreadController> {
+  // Lazily built on first use — no codex child at app start for users who
+  // never open the composer chat.
+  if (sizzleController !== null) return sizzleController;
+  const settings = await sizzleSettingsReader();
+  const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+  const client = new CodexThreadClient({ command: codexCommandForSettings(settings) });
+  const store = new ChatThreadStore({ chatsDir });
+  const tools = makeSizzleChatTools({
+    // The thread's anchor holds the project id; mutations bind to it.
+    resolveProjectId: async (threadId) => (await store.get(threadId))?.anchorCaptureId ?? null
+  });
+  sizzleController = new ChatThreadController({
+    client,
+    store,
+    readSettings: sizzleSettingsReader,
+    broadcast,
+    buildSystemPrompt: buildSizzleSystemPrompt,
+    channels: SIZZLE_CHAT_CHANNELS,
+    usageSurface: "sizzle-chat",
+    buildTurnContext: buildSizzleTurnContext,
+    toolLabels: SIZZLE_TOOL_LABELS,
+    catalog: tools.catalog,
+    dispatchToolCall: tools.dispatch,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
+    threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS
+  });
+  sizzleController.wire();
+  return sizzleController;
+}
+
 function codexUnreachable(cause: unknown): Result<never, PwrSnapError> {
   const message = cause instanceof Error ? cause.message : String(cause);
   log.warn("sizzle chat handler failed", { message });
@@ -242,6 +247,22 @@ function codexUnreachable(cause: unknown): Result<never, PwrSnapError> {
 
 function chatsDirPath(): string {
   return join(app.getPath("documents"), "PwrSnap", "Chats");
+}
+
+/**
+ * Best-effort fork of visible Sizzle chat threads from one project to
+ * another. The Codex fork preserves model-visible history; copying the local
+ * journal preserves the PwrSnap chat transcript UI for the new reel.
+ */
+export async function forkProjectChats(
+  sourceProjectId: string,
+  targetProjectId: string
+): Promise<void> {
+  const controller = await getSizzleChatController();
+  await controller.forkThreadsForAnchor({
+    sourceAnchorCaptureId: sourceProjectId,
+    targetAnchorCaptureId: targetProjectId
+  });
 }
 
 /**

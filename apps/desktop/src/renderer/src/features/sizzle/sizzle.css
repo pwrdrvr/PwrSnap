@@ -185,6 +185,14 @@
   text-align: left;
 }
 
+.szl__row-wrap {
+  position: relative;
+}
+
+.szl__row-wrap .szl__row {
+  padding-right: 34px;
+}
+
 .szl__row:hover {
   background: var(--bg-panel-elevated);
   color: var(--text-primary);
@@ -211,6 +219,72 @@
 
 .szl__row-meta--sub {
   opacity: 0.78;
+}
+
+.szl__row-duplicate {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-app) 82%, transparent);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition:
+    opacity 100ms var(--ease-out),
+    background 100ms var(--ease-out),
+    color 100ms var(--ease-out);
+}
+
+.szl__row-wrap:hover .szl__row-duplicate,
+.szl__row-duplicate:focus-visible {
+  opacity: 1;
+}
+
+.szl__row-duplicate:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.szl__context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 188px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+  outline: 0;
+}
+
+.szl__context-menu-row {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 600 12px/1 var(--font-sans);
+  text-align: left;
+}
+
+.szl__context-menu-row:hover,
+.szl__context-menu-row:focus-visible {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  outline: 0;
 }
 
 /* Main pane — empty state OR active editor. */

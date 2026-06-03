@@ -267,44 +267,52 @@ export async function forkProjectChats(
     anchorCaptureId: targetProjectId
   });
 
-  for (const source of sourceThreads) {
-    const preparedDir = await store.prepareThreadDir(source.name);
-    let forked: {
-      threadId: string;
-      model: string;
-      modelProvider: string;
-      serviceTier: string | null;
-    };
-    try {
-      forked = await client.forkThread({
-        sourceThreadId: source.threadId,
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
-        baseInstructions,
-        cwd: preparedDir.path,
-        runtimeWorkspaceRoots: [preparedDir.path],
-        config: SIZZLE_CHAT_THREAD_CONFIG
+  try {
+    for (const source of sourceThreads) {
+      const preparedDir = await store.prepareThreadDir(source.name);
+      let forked: {
+        threadId: string;
+        model: string;
+        modelProvider: string;
+        serviceTier: string | null;
+      };
+      try {
+        forked = await client.forkThread({
+          sourceThreadId: source.threadId,
+          approvalPolicy: "on-request",
+          sandbox: "workspace-write",
+          baseInstructions,
+          cwd: preparedDir.path,
+          runtimeWorkspaceRoots: [preparedDir.path],
+          config: SIZZLE_CHAT_THREAD_CONFIG
+        });
+      } catch (cause) {
+        await store.discardPreparedThreadDir(preparedDir).catch(() => undefined);
+        throw cause;
+      }
+      await client.clearThreadGitInfo(forked.threadId).catch((cause) => {
+        log.warn("forked sizzle chat git metadata clear failed", {
+          threadId: forked.threadId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
       });
-    } catch (cause) {
-      await store.discardPreparedThreadDir(preparedDir).catch(() => undefined);
-      throw cause;
-    }
-    await client.clearThreadGitInfo(forked.threadId).catch((cause) => {
-      log.warn("forked sizzle chat git metadata clear failed", {
+      await store.create({
         threadId: forked.threadId,
+        name: source.name,
+        anchorCaptureId: targetProjectId,
+        preparedDir
+      });
+      const journal = await store.readJournal(source.threadId);
+      for (const entry of journal) {
+        await store.journalAppend(forked.threadId, entry);
+      }
+    }
+  } finally {
+    await client.close().catch((cause) => {
+      log.warn("forked sizzle chat client close failed", {
         message: cause instanceof Error ? cause.message : String(cause)
       });
     });
-    await store.create({
-      threadId: forked.threadId,
-      name: source.name,
-      anchorCaptureId: targetProjectId,
-      preparedDir
-    });
-    const journal = await store.readJournal(source.threadId);
-    for (const entry of journal) {
-      await store.journalAppend(forked.threadId, entry);
-    }
   }
 }
 

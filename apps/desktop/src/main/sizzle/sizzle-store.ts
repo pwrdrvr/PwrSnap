@@ -28,6 +28,7 @@ type StoredBlob = {
 };
 
 const DEFAULT_BLOB: StoredBlob = { schemaVersion: 1, projects: [] };
+const PROJECT_NAME_MAX = 200;
 
 export class SizzleStore {
   private readonly filePath: string;
@@ -106,7 +107,7 @@ export class SizzleStore {
       const project: SizzleProject = {
         ...source,
         id: `sz_${randomUUID().slice(0, 12)}`,
-        name: (name ?? `${source.name} Copy`).trim() || "Untitled Sizzle",
+        name: duplicateProjectName(source.name, name),
         createdAt: now,
         modifiedAt: now,
         scenes: duplicateScenes(source.scenes),
@@ -246,6 +247,22 @@ export class SizzleProjectNotFoundError extends Error {
 
 function sanitizeScenes(scenes: SizzleScene[]): SizzleScene[] {
   return scenes.map(sanitizeScene);
+}
+
+function duplicateProjectName(sourceName: string, requestedName?: string): string {
+  if (requestedName !== undefined) return clampProjectName(requestedName);
+  const suffix = " Copy";
+  const base = (sourceName.trim() || "Untitled Sizzle")
+    .slice(0, PROJECT_NAME_MAX - suffix.length)
+    .trimEnd();
+  return `${base}${suffix}`;
+}
+
+function clampProjectName(name: string): string {
+  const trimmed = name.trim() || "Untitled Sizzle";
+  return trimmed.length > PROJECT_NAME_MAX
+    ? trimmed.slice(0, PROJECT_NAME_MAX).trimEnd()
+    : trimmed;
 }
 
 function duplicateScenes(scenes: SizzleScene[]): SizzleScene[] {

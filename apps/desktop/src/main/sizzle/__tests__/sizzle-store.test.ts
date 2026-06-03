@@ -218,6 +218,14 @@ describe("SizzleStore", () => {
     );
   });
 
+  it("duplicate() clamps generated copy names to the project name cap", async () => {
+    const store = makeStore();
+    const p = await store.create("x".repeat(200));
+    const duplicate = await store.duplicate(p.id);
+    expect(duplicate.name).toHaveLength(200);
+    expect(duplicate.name).toBe("x".repeat(195) + " Copy");
+  });
+
   it("preserves an auto beat across a write→read round-trip (no downgrade to offset)", async () => {
     const store = makeStore();
     const p = await store.create("Demo");

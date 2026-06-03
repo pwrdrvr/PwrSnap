@@ -24,6 +24,7 @@ import type {
   SettingsPatch
 } from "@pwrsnap/shared";
 import { CaptureEnrichmentClient } from "../ai/capture-enrichment-client";
+import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
 import {
@@ -73,7 +74,10 @@ import { renameVideoSourceToEffectiveFilename } from "../persistence/video-filen
 
 const log = getMainLogger("pwrsnap:codex-handlers");
 
-export type CodexClientFactory = (command: string) => CaptureEnrichmentClient;
+export type CodexClientFactory = (
+  command: string,
+  env?: NodeJS.ProcessEnv
+) => CaptureEnrichmentClient;
 export type SettingsReader = () => Promise<Settings>;
 export type SettingsWriter = (patch: SettingsPatch) => Promise<Settings>;
 
@@ -336,14 +340,18 @@ export function registerCodexHandlers(params?: {
   const defaultClients = new Map<string, CaptureEnrichmentClient>();
   const clientFactory =
     params?.clientFactory ??
-    ((command) => {
-      const existing = defaultClients.get(command);
+    ((command, env) => {
+      // Key by command + CODEX_HOME so switching the auth profile (which only
+      // changes env.CODEX_HOME) yields a distinct client, not a stale cached one.
+      const key = JSON.stringify([command, env?.["CODEX_HOME"] ?? ""]);
+      const existing = defaultClients.get(key);
       if (existing) return existing;
       const client = new CaptureEnrichmentClient({
         command,
+        ...(env !== undefined ? { env } : {}),
         captureMetadataWorkspaceDir: captureMetadataWorkspaceDir()
       });
-      defaultClients.set(command, client);
+      defaultClients.set(key, client);
       return client;
     });
   const closeClientAfterRun = params?.clientFactory !== undefined;
@@ -487,6 +495,7 @@ export function registerCodexHandlers(params?: {
         videoDurationSec: capture.kind === "video" ? capture.video?.durationSec ?? null : null
       },
       command: codexCommand,
+      env: codexEnvForProfile(settings.codex.profile),
       settingsReader,
       selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       effort: enrichmentEffortForSettings(settings),
@@ -632,7 +641,10 @@ export function registerCodexHandlers(params?: {
         cause: error
       });
     }
-    const client = clientFactory(codexCommandForSettings(settings));
+    const client = clientFactory(
+      codexCommandForSettings(settings),
+      codexEnvForProfile(settings.codex.profile)
+    );
     try {
       const models = await client.listModels({ includeHidden: parsed.value.includeHidden });
       return ok({ models, selectedModel: settings.codex.captionModel });
@@ -719,6 +731,8 @@ async function runCaptureEnrichment(params: {
   capture: CaptureRecord;
   metadata: CaptureEnrichmentPromptMetadata;
   command: string;
+  /** Process env for the spawned Codex (CODEX_HOME for the selected profile). */
+  env?: NodeJS.ProcessEnv;
   /**
    * Re-read just before the result is persisted so a `auto-accept`
    * toggle the user flipped DURING the run is honored — not the
@@ -807,7 +821,7 @@ async function runCaptureEnrichment(params: {
       bucketAfter: params.budgetAfter
     });
 
-    client = params.clientFactory(params.command);
+    client = params.clientFactory(params.command, params.env);
     const response = await client.enrichCapture({
       imagePaths,
       metadata,

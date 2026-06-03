@@ -33,6 +33,7 @@ import type {
   SettingsPage,
   SettingsPatch
 } from "@pwrsnap/shared";
+import { isValidProfileName, normalizeProfileName } from "@pwrdrvr/codex-discovery";
 import { KNOWN_SECRET_NAMES } from "../settings/desktop-secret-store";
 
 /** Inline builder so call sites read fluently. `kind: "validation"` is
@@ -1031,4 +1032,82 @@ function isKnownSecretName(value: unknown): value is DesktopSettingsSecretName {
     typeof value === "string" &&
     (KNOWN_SECRET_NAMES as readonly string[]).includes(value)
   );
+}
+
+// ---- codex:profiles:create / codex:profiles:login ----
+//
+// A Codex auth profile maps 1:1 to a `~/.codex/profiles/<name>` directory,
+// so the name must be filesystem-safe. We reuse the kit's
+// `normalizeProfileName` to canonicalize free-text input (lowercasing,
+// stripping diacritics, collapsing illegal runs to `-`) and reject only when
+// nothing usable survives. The validator returns the NORMALIZED name so the
+// handler operates on the same canonical form the kit's discovery / create
+// helpers expect. An empty input means "System default" only for `login`;
+// `create` rejects empty (you can't create the default home from here).
+
+const MAX_PROFILE_NAME_INPUT = 64;
+
+/** Validate + normalize a profile-name input. `allowEmpty` permits the ""
+ *  sentinel (System default) — used by `login`; `create` sets it false. */
+function validateProfileNameInput(
+  verb: string,
+  raw: unknown,
+  options: { allowEmpty: boolean }
+): ValidationResult<{ name: string }> {
+  if (typeof raw !== "string") {
+    return {
+      ok: false,
+      error: validationError(
+        "invalid_profile_name",
+        `${verb}: name must be a string`
+      )
+    };
+  }
+  if (raw.length > MAX_PROFILE_NAME_INPUT) {
+    return {
+      ok: false,
+      error: validationError(
+        "profile_name_too_long",
+        `${verb}: name is ${raw.length} chars (max ${MAX_PROFILE_NAME_INPUT})`
+      )
+    };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    if (options.allowEmpty) return { ok: true, value: { name: "" } };
+    return {
+      ok: false,
+      error: validationError(
+        "empty_profile_name",
+        `${verb}: name must contain at least one letter or number`
+      )
+    };
+  }
+  const normalized = normalizeProfileName(trimmed);
+  if (normalized.length === 0 || !isValidProfileName(normalized)) {
+    return {
+      ok: false,
+      error: validationError(
+        "invalid_profile_name",
+        `${verb}: "${trimmed}" is not a usable profile name — use letters, numbers, "-", or "_"`
+      )
+    };
+  }
+  return { ok: true, value: { name: normalized } };
+}
+
+export function validateCodexProfileCreate(
+  req: { name: string }
+): ValidationResult<{ name: string }> {
+  return validateProfileNameInput("codex:profiles:create", req?.name, {
+    allowEmpty: false
+  });
+}
+
+export function validateCodexProfileLogin(
+  req: { name: string }
+): ValidationResult<{ name: string }> {
+  return validateProfileNameInput("codex:profiles:login", req?.name, {
+    allowEmpty: true
+  });
 }

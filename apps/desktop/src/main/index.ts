@@ -41,6 +41,10 @@ import {
 } from "./handlers/capture-handlers";
 import { registerClipboardHandlers } from "./handlers/clipboard-handlers";
 import { registerCodexHandlers } from "./handlers/codex-handlers";
+import {
+  disposeCodexProfileHandlers,
+  registerCodexProfileHandlers
+} from "./handlers/codex-profile-handlers";
 import { registerLibraryChatHandlers } from "./handlers/library-chat-handlers";
 import { registerSizzleChatHandlers } from "./handlers/sizzle-chat-handlers";
 import { registerRenderHandlers } from "./handlers/render-handlers";
@@ -999,6 +1003,7 @@ export function bootstrapApp(): void {
         }
       });
     registerCodexHandlers();
+    registerCodexProfileHandlers();
     registerLibraryChatHandlers();
     registerSizzleChatHandlers();
     registerCaptureHandlers();
@@ -1382,6 +1387,7 @@ export function bootstrapApp(): void {
       return;
     }
     globalShortcut.unregisterAll();
+    disposeCodexProfileHandlers();
     disposeRegionSelector();
     disposeTray();
     disposeFocusSink();

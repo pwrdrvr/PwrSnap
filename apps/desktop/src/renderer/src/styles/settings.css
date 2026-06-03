@@ -559,6 +559,31 @@
   align-self: center;
 }
 
+/* Codex auth-profile management (Settings → AI → Codex) */
+.pss__codex-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.pss__profile-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pss__profile-create .pss__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pss__opt-sub--error {
+  color: var(--accent-bright);
+}
+
 /* per-surface AI defaults (provider / model / reasoning) */
 .pss__ai-surface-defaults {
   display: flex;

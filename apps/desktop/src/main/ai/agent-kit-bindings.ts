@@ -10,6 +10,7 @@
 
 import { shell } from "electron";
 import type { Logger, OpenExternal } from "@pwrdrvr/agent-core";
+import { resolveCodexHomeForProfile, resolveDefaultCodexHome } from "@pwrdrvr/codex-discovery";
 import { getMainLogger } from "../log";
 
 /**
@@ -56,3 +57,18 @@ export const PWRSNAP_CLIENT_TITLE = "PwrSnap";
 /** `serviceName` applied at `thread/start`. Matches the string PwrSnap's
  *  in-tree clients passed before the migration. */
 export const PWRSNAP_SERVICE_NAME = "pwrsnap";
+
+/**
+ * Process env for spawning Codex for the selected auth profile. The Settings →
+ * AI profile picker persists `settings.codex.profile`; this maps it to the
+ * profile's `CODEX_HOME` so the actual AI client spawn (chat + enrichment) uses
+ * the chosen account — not just discovery/status. Empty profile = the default
+ * `~/.codex`. Without this the profile picker would be cosmetic for AI calls.
+ */
+export function codexEnvForProfile(profile: string | undefined): NodeJS.ProcessEnv {
+  const codexHome =
+    (profile !== undefined && profile.length > 0
+      ? resolveCodexHomeForProfile(profile)
+      : undefined) ?? resolveDefaultCodexHome();
+  return { ...process.env, CODEX_HOME: codexHome };
+}

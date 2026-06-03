@@ -36,6 +36,9 @@ import {
 
 export type CaptureEnrichmentClientOptions = {
   command: string;
+  /** Process env for the spawned Codex — carries CODEX_HOME for the selected
+   *  auth profile (`codexEnvForProfile`). Omit for the default ~/.codex. */
+  env?: NodeJS.ProcessEnv;
   captureMetadataWorkspaceDir?: string;
   requestTimeoutMs?: number;
   turnTimeoutMs?: number;
@@ -100,6 +103,7 @@ export class CaptureEnrichmentClient {
       join(tmpdir(), "pwrsnap", "Chats", ".capture-metadata");
     this.client = new CodexOneShotClient({
       command: options.command,
+      ...(options.env !== undefined ? { env: options.env } : {}),
       clientName: PWRSNAP_CLIENT_NAME,
       clientTitle: PWRSNAP_CLIENT_TITLE,
       serviceName: PWRSNAP_SERVICE_NAME,

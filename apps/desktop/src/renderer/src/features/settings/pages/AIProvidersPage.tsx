@@ -14,6 +14,8 @@ import type {
   CodexModelList,
   CodexModelOption,
   CodexTestResult,
+  DesktopCodexAuthProfile,
+  DesktopCodexAuthProfileList,
   DesktopCodexDiscoveryCandidate,
   DesktopCodexDiscoverySnapshot
 } from "@pwrsnap/shared";
@@ -410,24 +412,14 @@ export function AIProvidersPage(): ReactElement {
 
         <Row
           label="Auth profile"
-          sub="Select the Codex home used for auth, config, sessions, skills, and state."
+          sub="Each profile is a separate Codex home (auth, config, sessions, state). Switch accounts, add a profile, or re-login. The selected profile is used for AI features."
           tag="default"
         >
-          <OptionRow
-            icon="~"
-            primary="System default"
-            sub={codexAuthSubLine(snapshot, snapshotLoading)}
-            using={true}
-            badges={
-              <>
-                <span className="pss__badge">default</span>
-                <span className="pss__badge">auth</span>
-                <span className="pss__badge">config</span>
-                <span className={"pss__badge " + codexAuthBadgeClass(snapshot)}>
-                  {codexAuthBadgeLabel(snapshot, snapshotLoading)}
-                </span>
-              </>
-            }
+          <CodexProfilesControl
+            selectedProfile={settings?.codex.profile ?? ""}
+            onSelect={(name) => {
+              void patch({ codex: { profile: name } });
+            }}
           />
         </Row>
 
@@ -764,6 +756,266 @@ function CandidateRow({ candidate, using, onPin }: CandidateRowProps): ReactElem
         ) : undefined
       }
     />
+  );
+}
+
+// ---- Codex auth-profile management ------------------------------------
+//
+// Lists the user's Codex auth profiles (each a CODEX_HOME), shows each
+// profile's signed-in status + account email, and lets the user pick the
+// active profile, create a new one, and re-login. All backed by the kit via
+// the `codex:profiles:*` command-bus verbs. Selecting a profile is a settings
+// patch to `codex.profile` (handled by the parent via `onSelect`).
+
+type LoginState =
+  | { phase: "idle" }
+  | { phase: "waiting"; profile: string }
+  | { phase: "done"; profile: string; message: string }
+  | { phase: "error"; profile: string; message: string };
+
+type CodexProfilesControlProps = {
+  selectedProfile: string;
+  onSelect: (name: string) => void;
+};
+
+function profileStatusBadge(profile: DesktopCodexAuthProfile): {
+  label: string;
+  className: string;
+} {
+  switch (profile.status) {
+    case "authenticated":
+      return { label: "Signed in", className: "is-using" };
+    case "unauthenticated":
+      return { label: "Not signed in", className: "is-accent" };
+    case "failed":
+      return { label: "Check failed", className: "is-accent" };
+  }
+}
+
+function profileSubLine(profile: DesktopCodexAuthProfile): string {
+  if (profile.status === "authenticated") {
+    const account =
+      profile.email !== undefined && profile.email.length > 0
+        ? profile.email
+        : "signed in";
+    return profile.planType !== undefined && profile.planType.length > 0
+      ? `${account} · ${profile.planType}`
+      : account;
+  }
+  if (profile.status === "unauthenticated") {
+    return "Not signed in — click Re-login to sign in through Codex.";
+  }
+  return "Could not confirm sign-in status for this profile.";
+}
+
+function CodexProfilesControl({
+  selectedProfile,
+  onSelect
+}: CodexProfilesControlProps): ReactElement {
+  const [list, setList] = useState<DesktopCodexAuthProfileList | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [creating, setCreating] = useState<boolean>(false);
+  const [newName, setNewName] = useState<string>("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createBusy, setCreateBusy] = useState<boolean>(false);
+  const [loginState, setLoginState] = useState<LoginState>({ phase: "idle" });
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    const result = await dispatch("codex:profiles:list", {});
+    if (result.ok) setList(result.value);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const selected =
+    list?.profiles.find((p) => p.name === selectedProfile) ??
+    list?.profiles.find((p) => p.selected) ??
+    null;
+
+  const onLogin = useCallback(
+    async (name: string): Promise<void> => {
+      setLoginState({ phase: "waiting", profile: name });
+      const result = await dispatch("codex:profiles:login", { name });
+      if (!result.ok) {
+        setLoginState({
+          phase: "error",
+          profile: name,
+          message: result.error.message
+        });
+        return;
+      }
+      const value = result.value;
+      const message =
+        value.authenticated === true
+          ? "Signed in."
+          : value.loginUrl !== undefined
+            ? "Opened the sign-in page in your browser. Finish signing in there, then Refresh."
+            : "Started Codex login. Finish in your browser, then Refresh.";
+      setLoginState({ phase: "done", profile: name, message });
+      void refresh();
+    },
+    [refresh]
+  );
+
+  const onCreate = useCallback(async (): Promise<void> => {
+    setCreateBusy(true);
+    setCreateError(null);
+    const result = await dispatch("codex:profiles:create", { name: newName });
+    setCreateBusy(false);
+    if (!result.ok) {
+      setCreateError(result.error.message);
+      return;
+    }
+    const created = result.value;
+    setCreating(false);
+    setNewName("");
+    onSelect(created.name);
+    await refresh();
+    // A brand-new profile has no auth — prompt the login immediately.
+    void onLogin(created.name);
+  }, [newName, onSelect, refresh, onLogin]);
+
+  return (
+    <div className="pss__codex-profiles">
+      <div className="pss__model-picker">
+        <select
+          className="pss__select"
+          value={selectedProfile}
+          disabled={loading || list === null || list.profiles.length === 0}
+          onChange={(e) => {
+            onSelect(e.target.value);
+          }}
+          aria-label="Active Codex auth profile"
+        >
+          {(list?.profiles ?? []).map((profile) => {
+            const account =
+              profile.status === "authenticated" &&
+              profile.email !== undefined &&
+              profile.email.length > 0
+                ? ` — ${profile.email}`
+                : profile.status === "authenticated"
+                  ? " — signed in"
+                  : " — no auth";
+            return (
+              <option key={profile.name} value={profile.name}>
+                {profile.displayName}
+                {account}
+              </option>
+            );
+          })}
+        </select>
+        {loading ? (
+          <span className="pss__model-loading">loading profiles</span>
+        ) : null}
+      </div>
+
+      {selected !== null ? (
+        <OptionRow
+          icon={selected.name === "" ? "~" : "P"}
+          primary={selected.displayName}
+          sub={profileSubLine(selected)}
+          using={true}
+          badges={
+            <span
+              className={"pss__badge " + profileStatusBadge(selected).className}
+            >
+              {profileStatusBadge(selected).label}
+            </span>
+          }
+          action={
+            <button
+              className="pss__opt-use"
+              type="button"
+              disabled={
+                loginState.phase === "waiting" &&
+                loginState.profile === selected.name
+              }
+              onClick={() => {
+                void onLogin(selected.name);
+              }}
+            >
+              {loginState.phase === "waiting" &&
+              loginState.profile === selected.name
+                ? "Signing in…"
+                : "Re-login"}
+            </button>
+          }
+        />
+      ) : null}
+
+      {loginState.phase === "done" && selected?.name === loginState.profile ? (
+        <p className="pss__opt-sub">{loginState.message}</p>
+      ) : null}
+      {loginState.phase === "error" && selected?.name === loginState.profile ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{loginState.message}</p>
+      ) : null}
+
+      {list?.error !== undefined ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{list.error}</p>
+      ) : null}
+
+      {creating ? (
+        <div className="pss__profile-create">
+          <input
+            className="pss__input"
+            type="text"
+            value={newName}
+            placeholder="Profile name (e.g. work, personal)"
+            maxLength={64}
+            autoFocus
+            onChange={(e) => {
+              setNewName(e.target.value);
+              setCreateError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && newName.trim().length > 0 && !createBusy) {
+                void onCreate();
+              }
+            }}
+            aria-label="New profile name"
+          />
+          <button
+            className="pss__opt-use"
+            type="button"
+            disabled={createBusy || newName.trim().length === 0}
+            onClick={() => {
+              void onCreate();
+            }}
+          >
+            {createBusy ? "Creating…" : "Create"}
+          </button>
+          <button
+            className="pss__top-btn"
+            type="button"
+            disabled={createBusy}
+            onClick={() => {
+              setCreating(false);
+              setNewName("");
+              setCreateError(null);
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="pss__top-btn"
+          type="button"
+          onClick={() => {
+            setCreating(true);
+          }}
+        >
+          Create profile…
+        </button>
+      )}
+      {createError !== null ? (
+        <p className="pss__opt-sub pss__opt-sub--error">{createError}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -1196,46 +1448,6 @@ function uncachedInputTokens(inputTokens: number | null, cachedInputTokens: numb
   return Math.max(0, (inputTokens ?? 0) - (cachedInputTokens ?? 0));
 }
 
-function codexAuthBadgeLabel(
-  snapshot: DesktopCodexDiscoverySnapshot | null,
-  loading: boolean
-): string {
-  if (loading && snapshot === null) return "Checking";
-  if (snapshot?.resolvedPath === null) return "No Codex";
-  switch (snapshot?.auth?.status) {
-    case "authenticated": return "Signed in";
-    case "unauthenticated": return "Sign in";
-    case "failed": return "Check failed";
-    case undefined: return "Unknown";
-  }
-}
-
-function codexAuthBadgeClass(snapshot: DesktopCodexDiscoverySnapshot | null): string {
-  switch (snapshot?.auth?.status) {
-    case "authenticated": return "is-using";
-    case "unauthenticated":
-    case "failed": return "is-accent";
-    case undefined: return "";
-  }
-}
-
-function codexAuthSubLine(
-  snapshot: DesktopCodexDiscoverySnapshot | null,
-  loading: boolean
-): string {
-  if (loading && snapshot === null) return "Checking Codex auth…";
-  if (snapshot?.resolvedPath === null) return "No Codex binary resolved.";
-  if (snapshot?.auth?.status === "authenticated") {
-    return snapshot.auth.detail ?? "~/.codex";
-  }
-  if (snapshot?.auth?.status === "unauthenticated") {
-    return "Codex is installed but not signed in. Run codex login or sign in through Codex Desktop.";
-  }
-  if (snapshot?.auth?.status === "failed") {
-    return snapshot.auth.errorMessage ?? "Codex auth check failed.";
-  }
-  return "~/.codex";
-}
 
 export function formatNextTokenAt(iso: string | null): string {
   if (iso === null || iso.length === 0) return "soon";

@@ -989,6 +989,72 @@ export type DesktopCodexDiscoverySnapshot = {
   refreshedAt: string;
 };
 
+// ---- Codex auth-profile management (Settings → AI) ---------------------
+//
+// A Codex "auth profile" maps 1:1 to a CODEX_HOME directory: the System
+// default (`~/.codex`) plus any `~/.codex/profiles/<name>` directory. Each
+// profile carries its own `auth.json`, so a user can keep multiple ChatGPT
+// accounts and switch the active one. The active profile persists via the
+// existing `settings.codex.profile` string ("" = System default).
+//
+// The shapes below mirror `@pwrdrvr/codex-discovery`'s
+// `CodexAuthProfileCandidate` / `CodexProfileLoginResponse` so the handlers
+// can map the kit output straight onto the protocol with no information loss.
+
+export type DesktopCodexAuthProfileStatus =
+  | "authenticated"
+  | "unauthenticated"
+  | "failed";
+
+/** One Codex auth profile surfaced in Settings → AI. `name === ""` is the
+ *  System default (`~/.codex`); any other name is a
+ *  `~/.codex/profiles/<name>` directory. `selected` reflects the persisted
+ *  `settings.codex.profile`. Auth fields come from `codex login status` +
+ *  the JWT in `auth.json`. */
+export type DesktopCodexAuthProfile = {
+  /** Canonical profile name; "" for the System default. */
+  name: string;
+  /** Human label ("System default" for the default home, else the name). */
+  displayName: string;
+  /** Resolved CODEX_HOME directory for this profile. */
+  codexHome: string;
+  /** True when this profile equals the persisted `settings.codex.profile`. */
+  selected: boolean;
+  /** Whether `auth.json` is present on disk (cheap, no spawn). */
+  hasAuthFile: boolean;
+  /** Result of `codex login status` for this profile's CODEX_HOME. */
+  status: DesktopCodexAuthProfileStatus;
+  /** ChatGPT account email from the JWT, when signed in. */
+  email?: string;
+  /** ChatGPT plan type from the JWT, when signed in. */
+  planType?: string;
+};
+
+export type DesktopCodexAuthProfileList = {
+  /** `~/.codex/profiles` directory the named profiles live under. */
+  profileRoot: string;
+  /** CODEX_HOME of the currently-selected profile. */
+  effectiveCodexHome: string;
+  profiles: DesktopCodexAuthProfile[];
+  /** Discovery-level error (e.g. unreadable profile root), if any. */
+  error?: string;
+};
+
+/** Outcome of starting (or completing) a Codex OAuth login for a profile.
+ *  `started: true` means the login child spawned and (usually) the OAuth URL
+ *  was opened in the browser; the user finishes in the browser. `started:
+ *  false` + `authenticated: true` means the child exited already
+ *  authenticated. `loginUrl` is the scraped OAuth URL (already handed to the
+ *  browser via shell.openExternal). */
+export type DesktopCodexProfileLoginResult = {
+  profile: string;
+  codexHome: string;
+  started: boolean;
+  authenticated?: boolean;
+  loginUrl?: string;
+  detail?: string;
+};
+
 /** Outcome of a Codex `--version` probe via the connection-test button.
  *  Ported from PwrAgnt's CredentialTester.testCodex. */
 export type CodexTestStatus = "unset" | "ok" | "failed";
@@ -2599,6 +2665,31 @@ export type Commands = {
   };
   "codex:runStatus": { req: { runId: string }; res: AiRunSnapshot | null };
   "codex:budgetStatus": { req: Record<string, never>; res: AiEnrichmentBudgetStatus };
+
+  // ---- Codex auth-profile management (Settings → AI) ----
+  /** Enumerate Codex auth profiles (System default + `~/.codex/profiles/*`),
+   *  each with signed-in status + account email from `codex login status`
+   *  and the cached JWT. Backed by `@pwrdrvr/codex-discovery`. */
+  "codex:profiles:list": {
+    req: Record<string, never>;
+    res: DesktopCodexAuthProfileList;
+  };
+  /** Create a new `~/.codex/profiles/<name>` auth profile (the name is
+   *  normalized + validated). Does NOT log in or select it — the renderer
+   *  follows up with a settings patch (select) + `codex:profiles:login`. */
+  "codex:profiles:create": {
+    req: { name: string };
+    res: DesktopCodexAuthProfile;
+  };
+  /** Start (or re-start) the Codex OAuth login for a profile. Spawns
+   *  `codex login` against the profile's CODEX_HOME, scrapes the OAuth URL,
+   *  and opens it in the browser via `shell.openExternal`. Resolves once the
+   *  URL is opened (`started: true`) or the child exits already
+   *  authenticated. */
+  "codex:profiles:login": {
+    req: { name: string };
+    res: DesktopCodexProfileLoginResult;
+  };
   "codex:models": {
     req: { includeHidden?: boolean };
     res: CodexModelList;

@@ -26,6 +26,7 @@ import {
   chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
+import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import {
@@ -106,6 +107,7 @@ export function registerSizzleChatHandlers(params?: {
     });
     const surface = buildChatSurface({
       command: codexCommandForSettings(settings),
+      env: codexEnvForProfile(settings.codex.profile),
       chatsDir,
       readSettings: settingsReader,
       channels: SIZZLE_CHAT_CHANNELS,

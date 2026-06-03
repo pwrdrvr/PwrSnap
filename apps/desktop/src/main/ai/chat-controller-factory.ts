@@ -40,6 +40,9 @@ export function toKitApprovalDecision(decision: ChatApprovalDecision): Normalize
 export type ChatSurfaceConfig = {
   /** Resolved codex command (binary path or "codex"). */
   command: string;
+  /** Process env for the spawned Codex — carries CODEX_HOME for the selected
+   *  auth profile (`codexEnvForProfile`). Omit for the default ~/.codex. */
+  env?: NodeJS.ProcessEnv;
   /** ~/Documents/PwrSnap/Chats. */
   chatsDir: string;
   /** Reads the PwrSnap settings snapshot (frozen per turn by the controller). */
@@ -105,6 +108,7 @@ export function buildChatSurface(config: ChatSurfaceConfig): ChatSurface {
   const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
   const client = new CodexThreadClient({
     command: config.command,
+    ...(config.env !== undefined ? { env: config.env } : {}),
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
     serviceName: PWRSNAP_SERVICE_NAME,

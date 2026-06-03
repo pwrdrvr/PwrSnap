@@ -31,6 +31,7 @@ import {
   chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
+import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
 import { buildLibrarySystemPrompt } from "../ai/library-chat-system-prompt";
@@ -167,6 +168,7 @@ export function registerLibraryChatHandlers(params?: {
     const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
     const surface = buildChatSurface({
       command: codexCommandForSettings(settings),
+      env: codexEnvForProfile(settings.codex.profile),
       chatsDir,
       readSettings: settingsReader,
       channels: LIBRARY_CHAT_CHANNELS,

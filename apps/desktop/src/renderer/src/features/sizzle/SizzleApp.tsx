@@ -98,15 +98,19 @@ export type SequencePreviewDisplayWarning = {
 };
 
 export function formatSequencePreviewWarnings(
-  warnings: SizzleSequencePreviewWarning[]
+  warnings: SizzleSequencePreviewWarning[],
+  beatIds: string[] = []
 ): SequencePreviewDisplayWarning[] {
+  const beatNumberById = new Map(beatIds.map((beatId, index) => [beatId, index + 1]));
   const consumed = new Set<number>();
   return warnings.flatMap((warning, index): SequencePreviewDisplayWarning[] => {
     if (consumed.has(index)) return [];
+    const label = labelForSequenceWarning(warning, beatNumberById);
     if (warning.code === "media_trim_clamped" && warning.beatId !== undefined) {
       const pairedFitIndex = warnings.findIndex(
         (candidate, candidateIndex) =>
-          candidateIndex > index &&
+          candidateIndex !== index &&
+          !consumed.has(candidateIndex) &&
           candidate.beatId === warning.beatId &&
           candidate.code === "video_fit"
       );
@@ -114,7 +118,7 @@ export function formatSequencePreviewWarnings(
       return [
         {
           key: `${warning.code}-${warning.beatId}-${index}`,
-          label: "Beat adjusted",
+          label,
           message:
             pairedFitIndex >= 0
               ? `${warning.message}; using freeze-end because speed-to-fit would be too aggressive`
@@ -123,10 +127,30 @@ export function formatSequencePreviewWarnings(
       ];
     }
     if (warning.code === "video_fit") {
+      const pairedTrimIndex =
+        warning.beatId === undefined
+          ? -1
+          : warnings.findIndex(
+              (candidate, candidateIndex) =>
+                candidateIndex !== index &&
+                !consumed.has(candidateIndex) &&
+                candidate.beatId === warning.beatId &&
+                candidate.code === "media_trim_clamped"
+            );
+      if (pairedTrimIndex >= 0) {
+        consumed.add(pairedTrimIndex);
+        return [
+          {
+            key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+            label,
+            message: `${warnings[pairedTrimIndex]!.message}; using freeze-end because speed-to-fit would be too aggressive`
+          }
+        ];
+      }
       return [
         {
           key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
-          label: "Beat adjusted",
+          label,
           message: warning.message
         }
       ];
@@ -135,7 +159,7 @@ export function formatSequencePreviewWarnings(
       return [
         {
           key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
-          label: "Timing note",
+          label,
           message: warning.message
         }
       ];
@@ -143,11 +167,20 @@ export function formatSequencePreviewWarnings(
     return [
       {
         key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
-        label: warning.beatId === undefined ? "Scene warning" : "Beat warning",
+        label,
         message: warning.message
       }
     ];
   });
+}
+
+function labelForSequenceWarning(
+  warning: SizzleSequencePreviewWarning,
+  beatNumberById: Map<string, number>
+): string {
+  if (warning.beatId === undefined) return "Scene warning";
+  const beatNumber = beatNumberById.get(warning.beatId);
+  return beatNumber === undefined ? "Beat warning" : `Beat ${beatNumber}`;
 }
 
 function transitionType(transition: SizzleTransition): SizzleTransitionType {
@@ -474,7 +507,10 @@ function SequenceTimelinePreview(props: {
     activeVideoState?.sourceTimeSec,
     shouldPlayActiveVideo
   ]);
-  const displayWarnings = formatSequencePreviewWarnings(plan?.warnings ?? []);
+  const displayWarnings = formatSequencePreviewWarnings(
+    plan?.warnings ?? [],
+    beats.map((beat) => beat.beatId)
+  );
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
     const rect = target.getBoundingClientRect();

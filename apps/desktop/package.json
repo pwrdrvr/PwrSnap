@@ -48,7 +48,12 @@
     "wavesurfer.js": "^7.12.7",
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@pwrdrvr/agent-core": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-core",
+    "@pwrdrvr/agent-transport": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-transport",
+    "@pwrdrvr/codex-discovery": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/codex-discovery",
+    "@pwrdrvr/agent-client": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-client",
+    "@pwrdrvr/agent-chat-react": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react"
   },
   "devDependencies": {
     "@electron/asar": "^4.2.0",

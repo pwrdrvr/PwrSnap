@@ -1,18 +1,24 @@
-// Lifted from PwrAgnt (apps/desktop/src/main/codex-app-server/stdio-transport.ts).
-// — only PwrAgnt-isms are the logger scope and the "pwragnt:" log namespace.
-// Spawns the user-selected Codex CLI binary with `app-server` as the
-// subcommand and shuttles JSON-RPC envelopes line-delimited over stdio.
+// Codex App Server stdio transport — a thin PwrSnap wrapper over
+// @pwrdrvr/agent-transport's `StdioJsonRpcTransport`.
 //
-// `resolveCodexCommand` + `compareCodexCliVersions` come from the lifted
-// codex-discovery module — see Decision 4 in the plan.
+// The kit transport is host-agnostic: it takes a FULLY-RESOLVED command + the
+// explicit args to spawn, and does no discovery. PwrSnap's transport has always
+// resolved the Codex binary itself (via codex-discovery) and spawned it with
+// the `app-server` subcommand. This wrapper preserves that: it resolves the
+// command on `connect()`, logs the launch, then delegates the actual spawn +
+// line-delimited JSON-RPC plumbing to the kit transport.
+//
+// Consumers construct this with `{ command }` exactly as before — the resolve
+// + `["app-server"]` arg injection stays internal.
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import readline from "node:readline";
-import type { JsonRpcTransport } from "./json-rpc";
+import type { JsonRpcTransport } from "@pwrdrvr/agent-transport";
+import { StdioJsonRpcTransport as KitStdioJsonRpcTransport } from "@pwrdrvr/agent-transport";
+import { toAgentKitLogger } from "../ai/agent-kit-bindings";
 import { getMainLogger } from "../log";
 import { compareCodexCliVersions, resolveCodexCommand } from "../settings/codex-discovery";
 
 const codexTransportLog = getMainLogger("pwrsnap:codex-transport");
+const kitTransportLogger = toAgentKitLogger("pwrsnap:codex-transport");
 
 export type StdioJsonRpcTransportOptions = {
   command: string;
@@ -23,7 +29,7 @@ export type StdioJsonRpcTransportOptions = {
 export { compareCodexCliVersions };
 
 export class StdioJsonRpcTransport implements JsonRpcTransport {
-  private childProcess: ChildProcessWithoutNullStreams | null = null;
+  private delegate: KitStdioJsonRpcTransport | null = null;
   private messageHandler: (message: string) => void = () => undefined;
   private closeHandler: (error?: Error) => void = () => undefined;
 
@@ -31,14 +37,16 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
 
   setMessageHandler(handler: (message: string) => void): void {
     this.messageHandler = handler;
+    this.delegate?.setMessageHandler(handler);
   }
 
   setCloseHandler(handler: (error?: Error) => void): void {
     this.closeHandler = handler;
+    this.delegate?.setCloseHandler(handler);
   }
 
   async connect(): Promise<void> {
-    if (this.childProcess) {
+    if (this.delegate) {
       return;
     }
 
@@ -53,46 +61,30 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
       version: command.version ?? null
     });
 
-    const child = spawn(command.command, ["app-server", ...(this.options.args ?? [])], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env
+    const delegate = new KitStdioJsonRpcTransport({
+      command: command.command,
+      args: ["app-server", ...(this.options.args ?? [])],
+      env,
+      logger: kitTransportLogger
     });
-
-    if (!child.stdin || !child.stdout || !child.stderr) {
-      throw new Error("codex app server stdio pipes unavailable");
-    }
-
-    this.childProcess = child;
-
-    const stdoutReader = readline.createInterface({ input: child.stdout });
-    stdoutReader.on("line", (line: string) => {
-      this.messageHandler(line);
-    });
-
-    child.stderr.on("data", () => undefined);
-    child.on("error", (error: Error) => {
-      this.closeHandler(error);
-    });
-    child.on("close", () => {
-      this.childProcess = null;
-      this.closeHandler();
-    });
+    delegate.setMessageHandler(this.messageHandler);
+    delegate.setCloseHandler(this.closeHandler);
+    this.delegate = delegate;
+    await delegate.connect();
   }
 
   async close(): Promise<void> {
-    const child = this.childProcess;
-    this.childProcess = null;
-    if (!child) {
-      return;
+    const delegate = this.delegate;
+    this.delegate = null;
+    if (delegate) {
+      await delegate.close();
     }
-    child.kill();
   }
 
   send(message: string): void {
-    const child = this.childProcess;
-    if (!child?.stdin) {
+    if (!this.delegate) {
       throw new Error("codex app server stdio not connected");
     }
-    child.stdin.write(`${message}\n`);
+    this.delegate.send(message);
   }
 }

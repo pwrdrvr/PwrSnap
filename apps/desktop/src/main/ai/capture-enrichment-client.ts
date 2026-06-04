@@ -58,6 +58,15 @@ export type CaptureEnrichmentRequest = {
   abortSignal?: AbortSignal;
 };
 
+/** The backend-agnostic enrichment surface the handler depends on. Satisfied
+ *  by both `CaptureEnrichmentClient` (Codex) and `AcpCaptureEnrichmentClient`
+ *  (Gemini/Qwen), so `codex:enrich` routes to either by
+ *  `ai.defaults.enrichment.provider`. */
+export interface EnrichmentBackend {
+  enrichCapture(request: CaptureEnrichmentRequest): Promise<CaptureEnrichmentResponse>;
+  close(): Promise<void>;
+}
+
 export type CaptureEnrichmentResponse = {
   result: EnrichmentResult;
   threadId: string;

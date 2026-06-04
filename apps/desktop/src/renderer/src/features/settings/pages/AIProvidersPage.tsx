@@ -213,7 +213,7 @@ export function AIProvidersPage(): ReactElement {
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
           imageOnly
-          acpProviderOptions={[]}
+          acpProviderOptions={acpChatProviderOptions}
           onChange={(p) => {
             void patch({ ai: { defaults: { enrichment: p } } });
           }}

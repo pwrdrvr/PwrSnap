@@ -23,7 +23,16 @@ import type {
   Settings,
   SettingsPatch
 } from "@pwrsnap/shared";
-import { CaptureEnrichmentClient } from "../ai/capture-enrichment-client";
+import {
+  CaptureEnrichmentClient,
+  type EnrichmentBackend
+} from "../ai/capture-enrichment-client";
+import { AcpCaptureEnrichmentClient } from "../ai/acp-enrichment-client";
+import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import {
+  discoverLocalAcpAgentInstances,
+  strategyById
+} from "@pwrdrvr/agent-acp";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import { estimateAiUsageCost } from "../ai/ai-usage-cost";
 import { aiEnrichmentBudget, type AiEnrichmentBudget } from "../ai/enrichment-budget";
@@ -259,6 +268,41 @@ function enrichmentEffortForSettings(settings: Settings): string {
   return settings.ai.defaults.enrichment.reasoning ?? "low";
 }
 
+/** The ACP agent id to run enrichment on, when `ai.defaults.enrichment.provider`
+ *  selects one ("acp:<id>"); undefined → Codex (the default backend). */
+function enrichmentAcpAgentId(settings: Settings): string | undefined {
+  const provider = settings.ai.defaults.enrichment.provider;
+  if (provider === undefined || !provider.startsWith("acp:")) return undefined;
+  return provider.slice("acp:".length);
+}
+
+/** Discover the selected ACP agent + build an enrichment client bound to its
+ *  active install (honoring the user's per-agent override / pick from
+ *  `ai.acp.agents`). Returns null when the agent isn't installed. */
+async function buildAcpEnrichmentClient(
+  agentId: string,
+  settings: Settings,
+  cwd: string
+): Promise<AcpCaptureEnrichmentClient | null> {
+  const pref = settings.ai.acp.agents?.[agentId];
+  const override = pref?.overridePath?.trim();
+  const groups = await discoverLocalAcpAgentInstances(
+    override ? { overrides: { [agentId]: override } } : {}
+  );
+  const group = groups.find((g) => g.strategyId === agentId);
+  if (group === undefined || group.instances.length === 0) return null;
+  const strategy = strategyById(agentId);
+  if (strategy === undefined) return null;
+  const active = resolveActiveAcpInstance(group.instances, pref);
+  return new AcpCaptureEnrichmentClient({
+    command: active.command,
+    args: group.args,
+    env: group.env,
+    strategy,
+    cwd
+  });
+}
+
 function triggerSourceOrDefault(
   value: AiEnrichmentTriggerSource | undefined,
   fallback: AiEnrichmentTriggerSource
@@ -471,6 +515,7 @@ export function registerCodexHandlers(params?: {
     // `runCaptureEnrichment` would mean a Settings flip during a run
     // silently swaps providers and skews run-level metrics.
     const captionModel = settings.codex.captionModel;
+    const enrichmentAgent = enrichmentAcpAgentId(settings);
     // Source-path resolution (re-extracting source.png from the
     // bundle when Storage → Clear/Trim wiped the per-capture cache)
     // happens INSIDE runCaptureEnrichment so the extraction cost
@@ -498,6 +543,12 @@ export function registerCodexHandlers(params?: {
       settingsReader,
       selectedModel: run.selectedModel ?? DEFAULT_CODEX_CAPTION_MODEL,
       effort: enrichmentEffortForSettings(settings),
+      // When enrichment is routed to an ACP agent (Gemini/Qwen), pass its id +
+      // the settings snapshot so the run resolves + spawns that agent instead
+      // of Codex. Undefined → the Codex one-shot path.
+      ...(enrichmentAgent !== undefined
+        ? { acpAgentId: enrichmentAgent, acpSettings: settings }
+        : {}),
       triggerSource,
       budgetBefore: budgetDecision.before,
       budgetAfter: budgetDecision.after,
@@ -742,6 +793,11 @@ async function runCaptureEnrichment(params: {
   selectedModel: string;
   /** Model provider from `ai.defaults.enrichment.provider`; undefined = Codex default. */
   selectedProvider?: string;
+  /** When set, enrichment runs on this ACP agent (Gemini/Qwen) instead of
+   *  Codex. `acpSettings` carries the snapshot used to resolve the agent's
+   *  active install (override / pick). */
+  acpAgentId?: string;
+  acpSettings?: Settings;
   /** Reasoning effort for the enrichment turn. Resolved from
    *  `ai.defaults.enrichment.reasoning` (default "low"). */
   effort: string;
@@ -760,7 +816,7 @@ async function runCaptureEnrichment(params: {
   activeRuns.set(params.runId, abortController);
 
   let prepared: PreparedEnrichmentImage | PreparedEnrichmentVideoFrames | null = null;
-  let client: CaptureEnrichmentClient | null = null;
+  let client: EnrichmentBackend | null = null;
 
   try {
     const running = markAiRunRunning(params.runId);
@@ -820,12 +876,26 @@ async function runCaptureEnrichment(params: {
       bucketAfter: params.budgetAfter
     });
 
-    client = params.clientFactory(params.command, params.env);
+    const acpAgentId = params.acpAgentId;
+    if (acpAgentId !== undefined) {
+      const acpClient = await buildAcpEnrichmentClient(
+        acpAgentId,
+        params.acpSettings ?? (await params.settingsReader()),
+        captureMetadataWorkspaceDir()
+      );
+      if (acpClient === null) {
+        throw new Error(`ACP agent "${acpAgentId}" is not installed for enrichment`);
+      }
+      client = acpClient;
+    } else {
+      client = params.clientFactory(params.command, params.env);
+    }
     const response = await client.enrichCapture({
       imagePaths,
       metadata,
-      model: params.selectedModel,
-      ...(params.selectedProvider !== undefined
+      // A Codex model id doesn't apply to an ACP agent — let the agent pick.
+      model: acpAgentId !== undefined ? null : params.selectedModel,
+      ...(acpAgentId === undefined && params.selectedProvider !== undefined
         ? { modelProvider: params.selectedProvider }
         : {}),
       effort: params.effort,
@@ -960,9 +1030,11 @@ async function runCaptureEnrichment(params: {
         message: error instanceof Error ? error.message : String(error)
       });
     });
-    if (params.closeClientAfterRun) {
+    // The Codex client is cached + reused (close only when the test factory
+    // asked for it); the ACP client is built fresh per run, so always close it.
+    if (params.closeClientAfterRun || params.acpAgentId !== undefined) {
       await client?.close().catch((error: unknown) => {
-        log.warn("codex client close failed", {
+        log.warn("enrichment client close failed", {
           runId: params.runId,
           message: error instanceof Error ? error.message : String(error)
         });

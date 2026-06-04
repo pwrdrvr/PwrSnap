@@ -2,6 +2,8 @@ packages:
   - apps/*
   - packages/*
 minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - "@pwrdrvr/codex-app-server-protocol"
 # Release builds produce a universal macOS app. Runtime packages like sharp
 # publish CPU-specific optional dependencies, so install both Darwin slices
 # even when the release stage is prepared on a single-architecture runner.

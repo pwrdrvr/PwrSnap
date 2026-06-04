@@ -12,7 +12,6 @@
     "build": "pnpm --filter @pwrsnap/desktop build",
     "dev": "pnpm --filter @pwrsnap/desktop dev",
     "design": "npx --yes serve design -l 4321",
-    "codex:generate-protocol": "pnpm --filter @pwrsnap/codex-app-server-protocol generate",
     "rebuild:electron-native": "pnpm --filter @pwrsnap/desktop rebuild:electron-native",
     "typecheck": "pnpm -r --if-present typecheck",
     "deps:check": "node ./scripts/check-dependency-version-policy.mjs",

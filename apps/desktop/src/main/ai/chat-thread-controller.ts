@@ -41,7 +41,7 @@ import type {
   DynamicToolSpec,
   ThreadTokenUsage,
   UserInput
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { CodexThreadClient } from "./codex-thread-client";
 import type { ChatThreadStore } from "./chat-thread-store";
 import { getMainLogger } from "../log";

@@ -197,7 +197,6 @@ describe("checkPackageLicensePolicy", () => {
     const expected = {
       "package.json": "MIT",
       "apps/desktop/package.json": "MIT",
-      "packages/codex-app-server-protocol/package.json": "MIT",
       "packages/shared/package.json": "MIT",
       "packages/pwrsnap/package.json": "MIT",
       ...overrides,

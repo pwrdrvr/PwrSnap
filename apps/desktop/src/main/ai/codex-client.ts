@@ -7,7 +7,7 @@ import type {
   ResponseItem,
   ServerNotification,
   ServerRequest
-} from "@pwrsnap/codex-app-server-protocol";
+} from "@pwrdrvr/codex-app-server-protocol";
 import type {
   DynamicToolCallResponse,
   ErrorNotification,
@@ -20,7 +20,7 @@ import type {
   TurnCompletedNotification,
   TurnStartResponse,
   UserInput
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";

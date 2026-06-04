@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type {
   CodexAgentMessageDeltaEvent,
   CodexApprovalRequestHandler,

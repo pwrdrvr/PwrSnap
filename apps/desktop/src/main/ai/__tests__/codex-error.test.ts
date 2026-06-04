@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TurnError } from "@pwrsnap/codex-app-server-protocol/v2";
+import type { TurnError } from "@pwrdrvr/codex-app-server-protocol/v2";
 import { formatCodexTurnError } from "../codex-error";
 
 function turnError(partial: Partial<TurnError>): TurnError {

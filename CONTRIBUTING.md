@@ -43,9 +43,10 @@ makes Vitest run the full workspace suite.
 - `apps/desktop` — Electron app shell (main, preload, renderer, IPC).
 - `packages/shared` — cross-process command-bus contracts, IPC channel
   constants, Result envelopes, overlay schemas.
-- `packages/codex-app-server-protocol` — generated TypeScript types for the
-  Codex App Server stdio JSON-RPC protocol. **Generator output; do not
-  hand-edit `src/`.** Regenerate via `pnpm codex:generate-protocol`.
+- Codex App Server protocol types are consumed from
+  `@pwrdrvr/codex-app-server-protocol`, pinned in
+  `apps/desktop/package.json`. They are generator output maintained outside
+  this repo; do not vendor them back in.
 
 See the "How it's built" table in [README.md](README.md#how-its-built) for
 the layer → stack → path mapping.
@@ -56,7 +57,7 @@ the layer → stack → path mapping.
 - Follow Conventional-Commit-style PR titles: `type(scope): description`.
   Prefer scopes that match the project area being changed:
   - `desktop` — the Electron app itself (main, preload, renderer).
-  - `protocol` — the `@pwrsnap/codex-app-server-protocol` package.
+  - `protocol` — the Codex App Server protocol package dependency.
   - `design` — UI work tied to the design system.
   - `release` — packaging, signing, notarization, distribution, auto-update.
   - `docs` — documentation only.
@@ -73,21 +74,11 @@ Desktop instance over stdio JSON-RPC — annotation, description generation,
 tag suggestion, smart filenames, sensitive-data review, and (Phase 5+) voice
 describe. **No direct OpenAI / Anthropic / xAI calls** in `apps/desktop`.
 
-Protocol types live at
-[packages/codex-app-server-protocol/](packages/codex-app-server-protocol/);
-`src/` is generator output. To (re)generate against the locally installed
-Codex CLI:
-
-```bash
-pnpm codex:generate-protocol
-```
-
-By default this runs against Codex Desktop's bundled binary at
-`/Applications/Codex.app/Contents/Resources/codex`. Override via
-`PWRSNAP_CODEX_BIN=/path/to/codex pnpm codex:generate-protocol` to point at
-a system-installed CLI, a custom build, or a CI install. Regenerate whenever
-Codex Desktop autoupdates or a new protocol surface lands that PwrSnap wants
-to consume.
+Protocol types are consumed from the published
+`@pwrdrvr/codex-app-server-protocol` package. To move to a newer Codex
+protocol surface, publish a new package version from
+`github.com/pwrdrvr/codex-app-server-protocol`, then bump the exact pin in
+`apps/desktop/package.json`.
 
 PwrSnap is an App Server **client only** — never an App Server
 *implementation*.

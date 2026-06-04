@@ -53,7 +53,6 @@ separately unless the font/software files are copied into the packaged app.
 - root workspace: `MIT`
 - `apps/desktop`: `MIT`
 - `packages/shared`: `MIT`
-- `packages/codex-app-server-protocol`: `MIT`
 - `packages/pwrsnap`: `MIT`
 
 If a new package is added, update the policy script explicitly. Do not rely on

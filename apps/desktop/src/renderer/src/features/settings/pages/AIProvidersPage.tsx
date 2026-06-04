@@ -111,6 +111,25 @@ export function AIProvidersPage(): ReactElement {
   const [usageLoading, setUsageLoading] = useState<boolean>(true);
   const [codexModels, setCodexModels] = useState<CodexModelList | null>(null);
   const [codexModelsLoading, setCodexModelsLoading] = useState<boolean>(true);
+  const [acpDiscovery, setAcpDiscovery] = useState<AcpAgentDiscovery | null>(null);
+  const [acpDiscoveryLoading, setAcpDiscoveryLoading] = useState<boolean>(true);
+  const [acpDiscoveryError, setAcpDiscoveryError] = useState<string | null>(null);
+
+  const refreshAcpDiscovery = useCallback(async (): Promise<void> => {
+    setAcpDiscoveryLoading(true);
+    const result = await dispatch("acp:discover", {});
+    if (result.ok) {
+      setAcpDiscovery(result.value);
+      setAcpDiscoveryError(null);
+    } else {
+      setAcpDiscoveryError(result.error.message);
+    }
+    setAcpDiscoveryLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refreshAcpDiscovery();
+  }, [refreshAcpDiscovery]);
 
   const refreshBudgetStatus = useCallback(async (): Promise<void> => {
     const result = await dispatch("codex:budgetStatus", {});
@@ -191,6 +210,18 @@ export function AIProvidersPage(): ReactElement {
     : DEFAULT_CODEX_CAPTION_MODEL;
   const captionModelOptions = modelOptionsForSelect(codexModels?.models ?? [], captionModel);
 
+  // The chat-surface provider dropdown offers Codex + each ENABLED ACP agent
+  // (value `acp:<id>`, labeled by its discovery display name). Built from the
+  // enabled set intersected with discovery so an enabled-but-now-uninstalled
+  // agent still shows by id (the factory falls back to Codex at runtime). An
+  // agent enabled before discovery resolves is shown by its id until names
+  // arrive.
+  const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
+  const acpChatProviderOptions: AcpChatProviderOption[] = enabledAgentIds.map((id) => {
+    const entry = acpDiscovery?.agents.find((a) => a.id === id);
+    return { value: `acp:${id}`, label: entry?.displayName ?? id };
+  });
+
   return (
     <>
       <div className="pss__main-hdr">
@@ -259,6 +290,7 @@ export function AIProvidersPage(): ReactElement {
               value={settings?.ai.defaults.libraryChat ?? {}}
               models={codexModels?.models ?? []}
               modelsLoading={codexModelsLoading}
+              acpProviderOptions={acpChatProviderOptions}
               onChange={(p) => {
                 void patch({ ai: { defaults: { libraryChat: p } } });
               }}
@@ -269,6 +301,7 @@ export function AIProvidersPage(): ReactElement {
               value={settings?.ai.defaults.sizzleChat ?? {}}
               models={codexModels?.models ?? []}
               modelsLoading={codexModelsLoading}
+              acpProviderOptions={acpChatProviderOptions}
               onChange={(p) => {
                 void patch({ ai: { defaults: { sizzleChat: p } } });
               }}
@@ -472,6 +505,12 @@ export function AIProvidersPage(): ReactElement {
       </Card>
 
       <AcpAgentsCard
+        discovery={acpDiscovery}
+        loading={acpDiscoveryLoading}
+        error={acpDiscoveryError}
+        onRefresh={() => {
+          void refreshAcpDiscovery();
+        }}
         enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
         onToggle={(id, enabled) => {
           const current = settings?.ai.acp.enabledAgentIds ?? [];
@@ -1045,34 +1084,22 @@ function CodexProfilesControl({
 // records the user's opt-in.
 
 type AcpAgentsCardProps = {
+  discovery: AcpAgentDiscovery | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
   enabledAgentIds: readonly string[];
   onToggle: (id: string, enabled: boolean) => void;
 };
 
 function AcpAgentsCard({
+  discovery,
+  loading,
+  error,
+  onRefresh,
   enabledAgentIds,
   onToggle
 }: AcpAgentsCardProps): ReactElement {
-  const [discovery, setDiscovery] = useState<AcpAgentDiscovery | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    const result = await dispatch("acp:discover", {});
-    if (result.ok) {
-      setDiscovery(result.value);
-      setError(null);
-    } else {
-      setError(result.error.message);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
   return (
     <Card
       eyebrow="PROVIDER"
@@ -1082,9 +1109,7 @@ function AcpAgentsCard({
           className="pss__top-btn"
           type="button"
           disabled={loading}
-          onClick={() => {
-            void refresh();
-          }}
+          onClick={onRefresh}
         >
           {loading ? "Refreshing…" : "Refresh"}
         </button>
@@ -1092,7 +1117,7 @@ function AcpAgentsCard({
     >
       <Row
         label="Installed agents"
-        sub="ACP agent CLIs (Kimi, Qwen, Gemini, Grok) detected on this machine. Enable the ones you want PwrSnap to use. Connecting an enabled agent as a chat backend is coming next."
+        sub="ACP agent CLIs (Kimi, Qwen, Gemini, Grok) detected on this machine. Enable the ones you want PwrSnap to use. Enabled agents become selectable as the chat backend in Per-surface defaults above."
         tag="config"
       >
         <AcpAgentList
@@ -1423,6 +1448,11 @@ function JobRoutingRow({
 
 // ---- Per-surface default provider / model / reasoning -------------------
 
+/** One option in a chat surface's provider dropdown — an enabled ACP agent.
+ *  `value` is the persisted `acp:<id>` selector; `label` is the agent's
+ *  discovery display name (falls back to its id before names resolve). */
+type AcpChatProviderOption = { value: string; label: string };
+
 type AiSurfaceDefaultControlProps = {
   surface: AiSurfaceId;
   label: string;
@@ -1433,6 +1463,11 @@ type AiSurfaceDefaultControlProps = {
    *  text+image models (mirrors the caption picker). Chat surfaces show
    *  every non-hidden model. */
   imageOnly?: boolean;
+  /** Enabled ACP agents, offered as backend choices in the provider
+   *  dropdown. Present for CHAT surfaces (Library / Sizzle) only — when
+   *  omitted the surface renders the enrichment-style free-text provider
+   *  input (Codex modelProvider token). */
+  acpProviderOptions?: readonly AcpChatProviderOption[];
   onChange: (patch: AiSurfaceDefaultPatch) => void;
 };
 
@@ -1496,6 +1531,7 @@ function AiSurfaceDefaultControl({
   models,
   modelsLoading,
   imageOnly,
+  acpProviderOptions,
   onChange
 }: AiSurfaceDefaultControlProps): ReactElement {
   const modelOptions = surfaceModelOptions(models, imageOnly === true, value.model);
@@ -1504,6 +1540,20 @@ function AiSurfaceDefaultControl({
   const reasoningValue: AiReasoningEffort | "" = isAiReasoningEffort(value.reasoning)
     ? value.reasoning
     : "";
+  // Chat surfaces (Library / Sizzle) select a BACKEND via a dropdown:
+  // Codex + each enabled ACP agent. Enrichment is Codex-only, so it keeps
+  // the free-text Codex `modelProvider` input.
+  const isChatSurface = acpProviderOptions !== undefined;
+  // "" and "codex" both mean the Codex backend; collapse onto "" so the
+  // dropdown's Codex option matches whichever the user stored.
+  const chatProviderValue = providerValue === "codex" ? "" : providerValue;
+  // A persisted acp:<id> whose agent isn't currently in the enabled set
+  // (toggled off, or discovery still loading) — keep it as a visible option
+  // so the select never silently drops the saved value.
+  const showsStaleAcp =
+    isChatSurface &&
+    chatProviderValue.startsWith("acp:") &&
+    !(acpProviderOptions ?? []).some((o) => o.value === chatProviderValue);
 
   return (
     <div className="pss__ai-surface" data-surface={surface}>
@@ -1513,18 +1563,42 @@ function AiSurfaceDefaultControl({
       <div className="pss__ai-surface-controls">
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Provider</span>
-          <input
-            className="pss__input pss__ai-surface-input"
-            type="text"
-            value={providerValue}
-            placeholder="Codex default"
-            aria-label={`${label} default provider`}
-            onChange={(e) => {
-              // Empty string clears (→ Codex default); the merge in the
-              // settings service drops the key on "".
-              onChange({ provider: e.target.value });
-            }}
-          />
+          {isChatSurface ? (
+            <select
+              className="pss__select pss__ai-surface-select"
+              value={chatProviderValue}
+              aria-label={`${label} default provider`}
+              onChange={(e) => {
+                // "" is the Codex default (the merge drops the key on "").
+                onChange({ provider: e.target.value });
+              }}
+            >
+              <option value="">Codex</option>
+              {(acpProviderOptions ?? []).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+              {showsStaleAcp ? (
+                <option value={chatProviderValue}>
+                  {chatProviderValue.slice("acp:".length)} (not enabled)
+                </option>
+              ) : null}
+            </select>
+          ) : (
+            <input
+              className="pss__input pss__ai-surface-input"
+              type="text"
+              value={providerValue}
+              placeholder="Codex default"
+              aria-label={`${label} default provider`}
+              onChange={(e) => {
+                // Empty string clears (→ Codex default); the merge in the
+                // settings service drops the key on "".
+                onChange({ provider: e.target.value });
+              }}
+            />
+          )}
         </label>
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Model</span>

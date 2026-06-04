@@ -664,10 +664,17 @@ function validateChatPatch(raw: unknown): PwrSnapError | null {
 // Validates the per-surface default provider / model / reasoning patch.
 // Each surface key (libraryChat / sizzleChat / enrichment) is optional;
 // within a surface each leaf is optional too. Semantics:
-//   • provider / model — string. Empty string is the explicit "clear →
-//     use Codex default" sentinel and is allowed; non-empty values must
-//     look like a Codex id/provider token (shape only — Codex itself
-//     rejects unavailable ids/providers at runtime). Cap 120 chars.
+//   • provider —
+//       · CHAT surfaces (libraryChat / sizzleChat): a BACKEND selector.
+//         Allowed values are "" (clear → Codex default), "codex", or
+//         "acp:<known-id>" where <known-id> is a built-in ACP agent id.
+//         An unknown `acp:` id (or any other non-codex token) is rejected.
+//       · ENRICHMENT: a free-form Codex `modelProvider` token (shape-only;
+//         Codex rejects unavailable providers at runtime). The enrichment
+//         one-shot client is Codex-only, so ACP selectors don't apply.
+//   • model — string. Empty string is the explicit "clear → use Codex
+//     default" sentinel and is allowed; non-empty values must look like a
+//     Codex id token. Cap 120 chars.
 //   • reasoning — must be a member of AI_REASONING_EFFORTS.
 // Unknown surface keys are rejected so a buggy/forged renderer can't
 // stash arbitrary blobs under `ai.defaults`.
@@ -679,6 +686,33 @@ function isAiTokenShape(value: string): boolean {
   return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
 }
 
+/** Chat surfaces select a backend via `provider`; enrichment is Codex-only
+ *  free-text. Keep in sync with the surfaces `buildChatSurface` drives. */
+const CHAT_SURFACE_IDS: readonly string[] = ["libraryChat", "sizzleChat"];
+
+/** Validate a CHAT surface's `provider` backend selector. Accepts "" /
+ *  "codex" / "acp:<known-id>"; rejects unknown `acp:` ids and any other
+ *  free-text token (those used to map to a Codex modelProvider, which chat
+ *  surfaces no longer do). */
+function validateChatSurfaceProvider(
+  surface: string,
+  value: string
+): PwrSnapError | null {
+  if (value === "" || value === "codex") return null;
+  if (value.startsWith("acp:")) {
+    const id = value.slice("acp:".length);
+    if (isBuiltInAcpAgentId(id)) return null;
+    return validationError(
+      `invalid_ai_defaults_${surface}_provider`,
+      `settings:write: ai.defaults.${surface}.provider has unknown ACP agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+    );
+  }
+  return validationError(
+    `invalid_ai_defaults_${surface}_provider`,
+    `settings:write: ai.defaults.${surface}.provider must be "", "codex", or "acp:<${BUILT_IN_ACP_AGENT_IDS.join("|")}>" (got ${JSON.stringify(value)})`
+  );
+}
+
 function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
@@ -686,7 +720,27 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
       `settings:write: ai.defaults.${surface} must be an object`
     );
   }
-  for (const key of ["provider", "model"] as const) {
+  // `provider` is surface-dependent: chat surfaces are a backend selector,
+  // enrichment is a free-text Codex modelProvider token.
+  if (!isUndefined(raw.provider)) {
+    if (!isString(raw.provider)) {
+      return validationError(
+        `invalid_ai_defaults_${surface}_provider`,
+        `settings:write: ai.defaults.${surface}.provider must be a string`
+      );
+    }
+    if (CHAT_SURFACE_IDS.includes(surface)) {
+      const provErr = validateChatSurfaceProvider(surface, raw.provider);
+      if (provErr !== null) return provErr;
+    } else if (raw.provider.length > 0 && !isAiTokenShape(raw.provider)) {
+      // Enrichment: free-text Codex provider token (shape only).
+      return validationError(
+        `invalid_ai_defaults_${surface}_provider`,
+        `settings:write: ai.defaults.${surface}.provider is not a recognizable Codex provider (got ${JSON.stringify(raw.provider)})`
+      );
+    }
+  }
+  for (const key of ["model"] as const) {
     const v = raw[key];
     if (isUndefined(v)) continue;
     if (!isString(v)) {

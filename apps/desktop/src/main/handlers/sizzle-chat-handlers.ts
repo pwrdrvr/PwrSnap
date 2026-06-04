@@ -105,7 +105,7 @@ export function registerSizzleChatHandlers(params?: {
       resolveProjectId: async (threadId) =>
         (await projectStore.get(threadId))?.anchorCaptureId ?? null
     });
-    const surface = buildChatSurface({
+    const surface = await buildChatSurface({
       command: codexCommandForSettings(settings),
       env: codexEnvForProfile(settings.codex.profile),
       chatsDir,
@@ -122,7 +122,8 @@ export function registerSizzleChatHandlers(params?: {
       threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
       threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
       // Per-surface default provider / model / reasoning from Settings →
-      // AI (`ai.defaults.sizzleChat`). Unset leaves fall back to the
+      // AI (`ai.defaults.sizzleChat`). `provider` selects the chat backend
+      // (Codex vs an enabled ACP agent); unset leaves fall back to the
       // Codex / kit defaults inside buildChatSurface.
       ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
       loggerScope: "pwrsnap:sizzle-chat"

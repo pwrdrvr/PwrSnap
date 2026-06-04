@@ -166,7 +166,7 @@ export function registerLibraryChatHandlers(params?: {
     if (controller !== null) return controller;
     const settings = await settingsReader();
     const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const surface = buildChatSurface({
+    const surface = await buildChatSurface({
       command: codexCommandForSettings(settings),
       env: codexEnvForProfile(settings.codex.profile),
       chatsDir,
@@ -186,7 +186,8 @@ export function registerLibraryChatHandlers(params?: {
       threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
       threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
       // Per-surface default provider / model / reasoning from Settings →
-      // AI (`ai.defaults.libraryChat`). Unset leaves fall back to the
+      // AI (`ai.defaults.libraryChat`). `provider` selects the chat backend
+      // (Codex vs an enabled ACP agent); unset leaves fall back to the
       // Codex / kit defaults inside buildChatSurface.
       ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.libraryChat),
       loggerScope: "pwrsnap:library-chat"

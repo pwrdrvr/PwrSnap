@@ -241,7 +241,10 @@ describe("settings:* validation", () => {
       {
         ai: {
           defaults: {
-            libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" }
+            // Chat-surface provider is a backend selector ("codex" /
+            // "acp:<known>"); enrichment provider is a free-text Codex token.
+            libraryChat: { provider: "acp:gemini", model: "gpt-5.5", reasoning: "high" },
+            enrichment: { provider: "openai" }
           }
         }
       } as unknown as Record<string, never>,
@@ -250,10 +253,54 @@ describe("settings:* validation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.value.ai.defaults.libraryChat).toEqual({
-      provider: "openai",
+      provider: "acp:gemini",
       model: "gpt-5.5",
       reasoning: "high"
     });
+    expect(result.value.ai.defaults.enrichment.provider).toBe("openai");
+  });
+
+  test("settings:write accepts codex / empty chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { provider: "codex" }, libraryChat: { provider: "" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.defaults.sizzleChat.provider).toBe("codex");
+    // Empty string clears the field back to the Codex default.
+    expect(result.value.ai.defaults.libraryChat.provider).toBeUndefined();
+  });
+
+  test("settings:write rejects an unknown acp: chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { libraryChat: { provider: "acp:bogus" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_libraryChat_provider");
+  });
+
+  test("settings:write rejects a free-text chat-surface provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { sizzleChat: { provider: "openai" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.kind).toBe("validation");
+    expect(result.error.code).toBe("invalid_ai_defaults_sizzleChat_provider");
   });
 
   test("settings:write rejects an invalid ai.defaults reasoning", async () => {

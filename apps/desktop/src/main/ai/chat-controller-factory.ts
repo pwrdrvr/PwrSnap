@@ -11,8 +11,16 @@
 // PwrSnap's; `toKitApprovalDecision` maps between them at the verb boundary.
 
 import { ChatThreadController, CodexThreadClient } from "@pwrdrvr/agent-client";
-import type { ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
-import type { NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
+import type { ChatBackend, ChatThreadControllerDeps } from "@pwrdrvr/agent-client";
+import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-core";
+import {
+  AcpAgentClient,
+  AcpStdioJsonRpcTransport,
+  discoverLocalAcpAgents,
+  strategyByBackendId,
+  strategyById,
+  type DiscoveredAcpAgent
+} from "@pwrdrvr/agent-acp";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
@@ -67,13 +75,19 @@ export type ChatSurfaceConfig = {
   threadConfig: Record<string, unknown>;
   /** Thread environments. `[]` disables exec-environment access. */
   threadEnvironments: unknown[];
+  /** The surface's configured chat BACKEND selector
+   *  (`ai.defaults.<surface>.provider`). `"codex"` / `""` / `undefined` /
+   *  any unknown value → the Codex backend (`CodexThreadClient`).
+   *  `"acp:<id>"` → the matching discovered ACP agent
+   *  (`AcpAgentClient`), falling back to Codex when that agent isn't
+   *  installed. NOT a Codex `modelProvider` token — chat surfaces use the
+   *  provider value to pick the backend, not to set a Codex sub-provider. */
+  provider?: string;
   /** Per-surface default model id for thread/start. Omit / undefined =
    *  use the Codex default (no `model` sent). Driven by Settings → AI's
-   *  per-surface defaults (`ai.defaults.libraryChat` / `.sizzleChat`). */
+   *  per-surface defaults (`ai.defaults.libraryChat` / `.sizzleChat`). For
+   *  the ACP backend this maps to a best-effort `session/set_model`. */
   model?: string;
-  /** Per-surface default model provider for thread/start. Omit /
-   *  undefined = Codex default. */
-  modelProvider?: string;
   /** Per-surface default reasoning effort for turns. Omit / undefined =
    *  the kit's default ("medium"). */
   effort?: string;
@@ -86,34 +100,156 @@ export type ChatSurface = {
 
 /** Map a Settings per-surface default onto the chat-surface's kit knobs.
  *  Only carries a key when the user pinned a value — an unset leaf is
- *  omitted so the controller falls back to the Codex default
- *  (model / provider) or the kit default (effort = "medium"). Shared by
- *  the Library + Sizzle chat handlers so the mapping lives in one place. */
+ *  omitted so the controller falls back to the Codex / kit defaults.
+ *  Shared by the Library + Sizzle chat handlers so the mapping lives in
+ *  one place.
+ *
+ *  NOTE on `provider`: for a chat surface, `provider` is the BACKEND
+ *  selector (`codex` / `acp:<id>`), not a Codex `modelProvider` token, so
+ *  it is forwarded as `provider` (which `buildChatSurface` resolves into a
+ *  `CodexThreadClient` or an `AcpAgentClient`) — NOT mapped to a Codex
+ *  `modelProvider`. The empty string / "codex" both mean "use Codex". */
 export function chatSurfaceDefaultsFromSettings(
   surface: AiSurfaceDefault
-): { model?: string; modelProvider?: string; effort?: string } {
+): { provider?: string; model?: string; effort?: string } {
   return {
+    ...(surface.provider !== undefined && surface.provider.length > 0
+      ? { provider: surface.provider }
+      : {}),
     ...(surface.model !== undefined && surface.model.length > 0
       ? { model: surface.model }
-      : {}),
-    ...(surface.provider !== undefined && surface.provider.length > 0
-      ? { modelProvider: surface.provider }
       : {}),
     ...(surface.reasoning !== undefined ? { effort: surface.reasoning } : {})
   };
 }
 
-export function buildChatSurface(config: ChatSurfaceConfig): ChatSurface {
-  const store = new ChatThreadStore({ chatsDir: config.chatsDir });
-  const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
-  const client = new CodexThreadClient({
-    command: config.command,
-    ...(config.env !== undefined ? { env: config.env } : {}),
+/** Seams the backend resolver depends on, injectable for tests. Production
+ *  uses the kit's real `discoverLocalAcpAgents` + concrete client classes. */
+export type ChatBackendDeps = {
+  /** Local ACP discovery. Defaults to the kit's `discoverLocalAcpAgents`. */
+  discoverAcpAgents?: () => Promise<DiscoveredAcpAgent[]>;
+  /** Codex backend factory. Defaults to constructing a `CodexThreadClient`. */
+  makeCodexClient?: (input: {
+    command: string;
+    env?: NodeJS.ProcessEnv;
+    loggerScope: string;
+  }) => ChatBackend;
+  /** ACP backend factory. Defaults to constructing an `AcpAgentClient`
+   *  over an `AcpStdioJsonRpcTransport` spawned from the discovered agent. */
+  makeAcpClient?: (input: {
+    agent: DiscoveredAcpAgent;
+    loggerScope: string;
+  }) => ChatBackend;
+};
+
+function defaultMakeCodexClient(input: {
+  command: string;
+  env?: NodeJS.ProcessEnv;
+  loggerScope: string;
+}): ChatBackend {
+  return new CodexThreadClient({
+    command: input.command,
+    ...(input.env !== undefined ? { env: input.env } : {}),
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
     serviceName: PWRSNAP_SERVICE_NAME,
-    logger: toAgentKitLogger(config.loggerScope)
+    logger: toAgentKitLogger(input.loggerScope)
   });
+}
+
+function defaultMakeAcpClient(input: {
+  agent: DiscoveredAcpAgent;
+  loggerScope: string;
+}): ChatBackend {
+  const logger = toAgentKitLogger(input.loggerScope);
+  // Resolve the kit strategy that carries the agent's normalization quirks +
+  // display name. Prefer the neutral backendId match (`acp:<id>`), then the
+  // bare strategy id. Discovery only ever returns built-in strategies, so one
+  // of these resolves; we assert rather than silently mis-quirk.
+  const strategy =
+    strategyByBackendId(input.agent.backendId) ?? strategyById(input.agent.strategyId);
+  if (strategy === undefined) {
+    throw new Error(
+      `no ACP strategy for discovered agent ${input.agent.backendId}`
+    );
+  }
+  // The transport connects lazily on the first request/notify, so we don't
+  // spawn the agent here — the first thread/start drives the connect.
+  const transport = new AcpStdioJsonRpcTransport({
+    command: input.agent.command,
+    args: input.agent.args,
+    ...(Object.keys(input.agent.env).length > 0 ? { env: input.agent.env } : {}),
+    logger
+  });
+  return new AcpAgentClient({
+    transport,
+    strategy,
+    clientName: PWRSNAP_CLIENT_NAME,
+    clientTitle: PWRSNAP_CLIENT_TITLE,
+    logger
+  });
+}
+
+/** Resolve the surface's `AgentBackend` from its configured provider.
+ *  `codex` / `""` / `undefined` / unknown → Codex. `acp:<id>` → the matching
+ *  discovered ACP agent, falling back to Codex with a warning when that agent
+ *  isn't installed (so the surface never crashes on a stale/uninstalled
+ *  selection). */
+async function resolveChatBackend(
+  config: ChatSurfaceConfig,
+  deps: ChatBackendDeps
+): Promise<ChatBackend> {
+  const makeCodex = deps.makeCodexClient ?? defaultMakeCodexClient;
+  const codex = (): ChatBackend =>
+    makeCodex({
+      command: config.command,
+      ...(config.env !== undefined ? { env: config.env } : {}),
+      loggerScope: config.loggerScope
+    });
+
+  const provider = config.provider;
+  if (provider === undefined || provider === "" || provider === "codex") {
+    return codex();
+  }
+  if (!provider.startsWith("acp:")) {
+    // Unknown / legacy free-text provider — treat as Codex (the chat surface
+    // never sends a non-`acp:` value as a Codex modelProvider anymore).
+    return codex();
+  }
+
+  const log = toAgentKitLogger(config.loggerScope);
+  const discover = deps.discoverAcpAgents ?? discoverLocalAcpAgents;
+  const strategyId = provider.slice("acp:".length);
+  let installed: DiscoveredAcpAgent[];
+  try {
+    installed = await discover();
+  } catch (cause) {
+    log.warn("chat backend: ACP discovery failed; falling back to Codex", {
+      provider,
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
+    return codex();
+  }
+  const agent = installed.find(
+    (a) => a.backendId === provider || a.strategyId === strategyId
+  );
+  if (agent === undefined) {
+    log.warn("chat backend: ACP agent not installed; falling back to Codex", {
+      provider
+    });
+    return codex();
+  }
+  const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
+  return makeAcp({ agent, loggerScope: config.loggerScope });
+}
+
+export async function buildChatSurface(
+  config: ChatSurfaceConfig,
+  deps: ChatBackendDeps = {}
+): Promise<ChatSurface> {
+  const store = new ChatThreadStore({ chatsDir: config.chatsDir });
+  const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
+  const client: AgentBackend = await resolveChatBackend(config, deps);
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -155,11 +291,13 @@ export function buildChatSurface(config: ChatSurfaceConfig): ChatSurface {
     threadEnvironments: config.threadEnvironments,
     // Per-surface defaults from Settings → AI. `effort` defaults to
     // "medium" (the kit's own default) when the surface has no pinned
-    // reasoning; `model` / `modelProvider` are only forwarded when set so
-    // an unset surface uses the Codex default rather than pinning one.
+    // reasoning; `model` is only forwarded when set so an unset surface
+    // uses the backend's default rather than pinning one. The Codex
+    // `modelProvider` is no longer driven here — a chat surface's
+    // `provider` selects the BACKEND (Codex vs ACP), not a Codex
+    // sub-provider; both backends ignore options they don't use.
     effort: config.effort ?? "medium",
     ...(config.model !== undefined ? { model: config.model } : {}),
-    ...(config.modelProvider !== undefined ? { modelProvider: config.modelProvider } : {}),
     logger: toAgentKitLogger(config.loggerScope)
   });
   controller.wire();

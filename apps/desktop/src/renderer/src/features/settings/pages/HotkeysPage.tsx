@@ -20,29 +20,17 @@ import {
 } from "../components";
 import { useSettingsContext } from "../SettingsContext";
 import { TOOLS } from "../../editor/editor-tools";
+import { DEFAULT_HOTKEYS } from "@pwrsnap/shared";
 
-type HotkeyKey =
-  | "quickCapture"
-  | "region"
-  | "window"
-  | "fullScreen"
-  | "allScreens"
-  | "timed"
-  | "videoCapture"
-  | "reshowFloatOver";
+/** The hotkey kinds this page edits — derived from the schema so a new
+ *  `Settings["hotkeys"]` field is a compile error here until it gets a
+ *  label below. */
+type HotkeyKey = keyof typeof DEFAULT_HOTKEYS;
 
-/** Defaults the "Reset to defaults" button writes back. These mirror
- *  the service-side `defaultSettings()` — keep them in lock-step. */
-const HOTKEY_DEFAULTS: Record<HotkeyKey, string> = {
-  quickCapture: "CommandOrControl+Shift+C",
-  region: "",
-  window: "",
-  fullScreen: "",
-  allScreens: "",
-  timed: "",
-  videoCapture: "CommandOrControl+Alt+C",
-  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
-};
+/** Values the "Reset to defaults" button writes back. Same object the
+ *  service seeds new installs with — no hand-maintained duplicate to
+ *  drift (see `DEFAULT_HOTKEYS` in @pwrsnap/shared). */
+const HOTKEY_DEFAULTS: Record<HotkeyKey, string> = DEFAULT_HOTKEYS;
 
 /** Human labels for the editable bindings — used both in the in-page
  *  rows and in the reset-confirmation modal's diff list. */

@@ -91,6 +91,7 @@ describe("app:* handlers", () => {
     for (const url of [
       "https://pwrsnap.com",
       "https://docs.pwrsnap.com",
+      "https://github.com/pwrdrvr",
       "https://github.com/pwrdrvr/PwrSnap"
     ]) {
       const result = await bus.dispatch("app:openExternal", { url }, { principal: "ipc" });
@@ -106,6 +107,8 @@ describe("app:* handlers", () => {
       "http://pwrsnap.com", // non-https
       "https://notpwrsnap.com",
       "https://pwrsnap.com.evil.com", // suffix-spoof
+      "https://github.com/someone-else/repo", // github, wrong org
+      "https://github.com/pwrdrvrx/evil", // /pwrdrvr prefix-spoof
       "javascript:alert(1)",
       "not a url"
     ]) {

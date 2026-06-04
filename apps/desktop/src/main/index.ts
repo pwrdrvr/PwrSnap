@@ -631,15 +631,24 @@ async function runAllScreensCapture(): Promise<void> {
  *  resets to hidden on dismiss). No-op when the library is empty. */
 function runReshowLastFloatOver(): void {
   const log = getMainLogger("pwrsnap:shortcut");
-  const { rows } = listCaptures({ limit: 1 });
-  const last = rows[0];
-  if (last === undefined) {
-    log.info("re-show last float-over: no captures yet");
-    return;
+  // Runs inside a globalShortcut callback, so swallow + log any error
+  // (a transient repo read failure, say) rather than letting it throw
+  // out of the handler — same discipline as the bus-dispatch hotkeys.
+  try {
+    const { rows } = listCaptures({ limit: 1 });
+    const last = rows[0];
+    if (last === undefined) {
+      log.info("re-show last float-over: no captures yet");
+      return;
+    }
+    // Pass the full record so the toast populates immediately without a
+    // renderer round-trip back to the library store.
+    setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
+  } catch (cause) {
+    log.warn("re-show last float-over failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
+    });
   }
-  // Pass the full record so the toast populates immediately without a
-  // renderer round-trip back to the library store.
-  setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
 }
 
 /**

@@ -1241,6 +1241,29 @@ export type Settings = {
   library: LibrarySettings;
 };
 
+/** Out-of-the-box global capture hotkeys. Shared so the main-process
+ *  `defaultSettings()` and the renderer's Settings → Hotkeys "Reset to
+ *  defaults" both read ONE source — they previously duplicated these
+ *  values and had to be kept in lock-step by hand. Empty string =
+ *  unbound (main skips registration). Per-field rationale (why ⌘⇧C not
+ *  ⌘⇧P; why ⌘⌥C not ⌘⇧V; why three modifiers for re-show) lives on the
+ *  `Settings["hotkeys"]` type above; the short version:
+ *    - quickCapture ⌘⇧C — ⌘⇧P collides with Print in browsers/iWork.
+ *    - region/window/fullScreen/allScreens/timed unbound — also tray-
+ *      reachable; we don't claim five more global chords by default.
+ *    - videoCapture ⌘⌥C — ⌘⇧V is Paste-and-Match-Style system-wide.
+ *    - reshowFloatOver ⌘⌥⇧F — three modifiers clear of app/OS chords. */
+export const DEFAULT_HOTKEYS: Settings["hotkeys"] = {
+  quickCapture: "CommandOrControl+Shift+C",
+  region: "",
+  window: "",
+  fullScreen: "",
+  allScreens: "",
+  timed: "",
+  videoCapture: "CommandOrControl+Alt+C",
+  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+};
+
 // ---- Editor user preferences (Phase 1) ----------------------------------
 
 /** Eight named annotation swatches the tool color picker exposes. Each

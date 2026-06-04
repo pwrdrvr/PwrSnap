@@ -25,10 +25,12 @@ import {
   readAppUpdateStatus
 } from "../auto-updater";
 
-/** Hosts the renderer is allowed to open via `app:openExternal`. Keeps
+/** URLs the renderer is allowed to open via `app:openExternal`. Keeps
  *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
  *  compromised/buggy renderer can only reach the product site, the docs
- *  site, and the public GitHub repo. https-only. */
+ *  site, and PwrDrvr's own GitHub org. https-only. GitHub is scoped to
+ *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
+ *  arbitrary repo/gist/profile under the (trusted) github.com host. */
 function isAllowedExternalUrl(raw: string): boolean {
   let url: URL;
   try {
@@ -38,11 +40,12 @@ function isAllowedExternalUrl(raw: string): boolean {
   }
   if (url.protocol !== "https:") return false;
   const host = url.hostname.toLowerCase();
-  return (
-    host === "pwrsnap.com" ||
-    host.endsWith(".pwrsnap.com") ||
-    host === "github.com"
-  );
+  if (host === "pwrsnap.com" || host.endsWith(".pwrsnap.com")) return true;
+  if (host === "github.com") {
+    // `/pwrdrvr` (org page) or `/pwrdrvr/<repo>...`; reject `/pwrdrvrx`.
+    return url.pathname === "/pwrdrvr" || url.pathname.startsWith("/pwrdrvr/");
+  }
+  return false;
 }
 
 export function registerAppHandlers(): void {

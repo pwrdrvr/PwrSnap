@@ -44,6 +44,7 @@ import type {
 import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_HOTKEYS,
   MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
@@ -93,39 +94,10 @@ export function defaultSettings(): Settings {
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
     },
-    hotkeys: {
-      // Quick Capture default moved off ⌘⇧P (collides with Print in
-      // browsers + iWork) to ⌘⇧C. Region + Window default to UNBOUND
-      // since Quick Capture's auto mode covers both — power users can
-      // bind them explicitly from Settings → Hotkeys if they want a
-      // dedicated chord.
-      //
-      // Video Capture is ⌘⌥C, not ⌘⇧V. ⌘⇧V is "Paste and Match
-      // Style" in browsers / Slack / Mail / Pages / Notes / Discord
-      // — globalShortcut.register wins system-wide, so claiming
-      // ⌘⇧V would steal that shortcut from every app on the box
-      // while PwrSnap runs. ⌘⌥C is bound by default only to
-      // Finder's "Copy as Pathname" (much rarer power-user
-      // feature) and ties nicely to the existing ⌘⇧C Quick Capture
-      // mnemonic — option + Capture = "alternative capture mode
-      // (video)".
-      quickCapture: "CommandOrControl+Shift+C",
-      region: "",
-      window: "",
-      // Full Screen / All Screens / Timed exist as capture verbs and are
-      // reachable from the tray; the hotkeys are unbound by default so we
-      // don't claim three more global chords out of the box. Users bind
-      // them from Settings → Hotkeys if they want a dedicated chord.
-      fullScreen: "",
-      allScreens: "",
-      timed: "",
-      videoCapture: "CommandOrControl+Alt+C",
-      // Re-show last Float-Over. ⌘⌥⇧F (mnemonic: Float-over). The three-
-      // modifier chord keeps it clear of app/OS shortcuts — a 2-modifier
-      // default like ⌘⇧F would shadow Find-in-Files system-wide while
-      // PwrSnap runs. Rebindable/unbindable from Settings → Hotkeys.
-      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
-    },
+    // Single source of truth shared with the renderer's "Reset to
+    // defaults" button. Rationale for each chord lives on the
+    // `DEFAULT_HOTKEYS` declaration in @pwrsnap/shared.
+    hotkeys: { ...DEFAULT_HOTKEYS },
     general: {
       developerMode: false
     },
@@ -529,7 +501,7 @@ function parseV1(raw: unknown): Settings | null {
       // the field is always present in-memory.
       videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture),
       // `reshowFloatOver` landed after v1 shipped; older files won't have
-      // it. pickString fills in the current default (⌘⇧F) so the field
+      // it. pickString fills in the current default (⌘⌥⇧F) so the field
       // is always present in-memory.
       reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
     },

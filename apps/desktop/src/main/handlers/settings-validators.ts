@@ -806,6 +806,10 @@ function validateAiDefaultsPatch(raw: unknown): PwrSnapError | null {
 // The array is capped at the number of known agents (de-dup is handled
 // at merge / parse time).
 
+/** Max accepted length for an agent path (override / selected). Generous but
+ *  bounded so a forged patch can't stash a huge blob. */
+const ACP_AGENT_PATH_MAX = 4096;
+
 function validateAcpPatch(raw: unknown): PwrSnapError | null {
   if (!isObject(raw)) {
     return validationError(
@@ -813,25 +817,73 @@ function validateAcpPatch(raw: unknown): PwrSnapError | null {
       "settings:write: ai.acp must be an object"
     );
   }
-  if (isUndefined(raw.enabledAgentIds)) return null;
-  if (!Array.isArray(raw.enabledAgentIds)) {
+  if (!isUndefined(raw.enabledAgentIds)) {
+    if (!Array.isArray(raw.enabledAgentIds)) {
+      return validationError(
+        "invalid_ai_acp_enabledAgentIds",
+        "settings:write: ai.acp.enabledAgentIds must be an array"
+      );
+    }
+    if (raw.enabledAgentIds.length > BUILT_IN_ACP_AGENT_IDS.length) {
+      return validationError(
+        "invalid_ai_acp_enabledAgentIds",
+        `settings:write: ai.acp.enabledAgentIds has ${raw.enabledAgentIds.length} ids (max ${BUILT_IN_ACP_AGENT_IDS.length})`
+      );
+    }
+    for (const id of raw.enabledAgentIds) {
+      if (!isBuiltInAcpAgentId(id)) {
+        return validationError(
+          "invalid_ai_acp_agent_id",
+          `settings:write: ai.acp.enabledAgentIds has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+        );
+      }
+    }
+  }
+  if (!isUndefined(raw.agents)) {
+    const agentsErr = validateAcpAgentsPatch(raw.agents);
+    if (agentsErr) return agentsErr;
+  }
+  return null;
+}
+
+/** Validate `ai.acp.agents` — a map of built-in agent id → `{ overridePath?,
+ *  selectedPath? }`. Rejects unknown ids and non-string / oversize path leaves.
+ *  `null` / `""` are allowed (they clear the leaf at merge time). */
+function validateAcpAgentsPatch(raw: unknown): PwrSnapError | null {
+  if (!isObject(raw)) {
     return validationError(
-      "invalid_ai_acp_enabledAgentIds",
-      "settings:write: ai.acp.enabledAgentIds must be an array"
+      "invalid_ai_acp_agents",
+      "settings:write: ai.acp.agents must be an object"
     );
   }
-  if (raw.enabledAgentIds.length > BUILT_IN_ACP_AGENT_IDS.length) {
-    return validationError(
-      "invalid_ai_acp_enabledAgentIds",
-      `settings:write: ai.acp.enabledAgentIds has ${raw.enabledAgentIds.length} ids (max ${BUILT_IN_ACP_AGENT_IDS.length})`
-    );
-  }
-  for (const id of raw.enabledAgentIds) {
+  for (const [id, value] of Object.entries(raw)) {
     if (!isBuiltInAcpAgentId(id)) {
       return validationError(
         "invalid_ai_acp_agent_id",
-        `settings:write: ai.acp.enabledAgentIds has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
+        `settings:write: ai.acp.agents has unknown agent ${JSON.stringify(id)} (allowed: ${BUILT_IN_ACP_AGENT_IDS.join("/")})`
       );
+    }
+    if (!isObject(value)) {
+      return validationError(
+        "invalid_ai_acp_agent_pref",
+        `settings:write: ai.acp.agents.${id} must be an object`
+      );
+    }
+    for (const key of ["overridePath", "selectedPath"] as const) {
+      const leaf = (value as Record<string, unknown>)[key];
+      if (isUndefined(leaf) || leaf === null) continue;
+      if (typeof leaf !== "string") {
+        return validationError(
+          "invalid_ai_acp_agent_pref",
+          `settings:write: ai.acp.agents.${id}.${key} must be a string or null`
+        );
+      }
+      if (leaf.length > ACP_AGENT_PATH_MAX) {
+        return validationError(
+          "invalid_ai_acp_agent_pref",
+          `settings:write: ai.acp.agents.${id}.${key} exceeds ${ACP_AGENT_PATH_MAX} chars`
+        );
+      }
     }
   }
   return null;

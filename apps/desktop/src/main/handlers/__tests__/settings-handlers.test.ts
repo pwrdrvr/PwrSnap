@@ -408,6 +408,45 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_ai_acp_enabledAgentIds");
   });
 
+  test("settings:write accepts an ai.acp.agents per-agent preference", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.ai.acp.agents).toEqual({ qwen: { selectedPath: "/nvm/qwen" } });
+  });
+
+  test("settings:write rejects an unknown agent id in ai.acp.agents", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { bogus: { overridePath: "/x" } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_id");
+  });
+
+  test("settings:write rejects a non-string ai.acp.agents path leaf", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { acp: { agents: { qwen: { overridePath: 42 } } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_acp_agent_pref");
+  });
+
   test("settings:refreshCodexDiscovery rejects non-boolean force", async () => {
     const result = await bus.dispatch(
       "settings:refreshCodexDiscovery",

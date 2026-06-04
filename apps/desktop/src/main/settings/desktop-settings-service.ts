@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AcpAgentPreference,
   AcpSettings,
   AiSurfaceDefault,
   AiSurfaceDefaultPatch,
@@ -112,7 +113,7 @@ export function defaultSettings(): Settings {
       // No ACP agents enabled on a fresh install. The user opts agents
       // into the enabled set from Settings → AI → ACP agents (additive,
       // no schemaVersion bump).
-      acp: { enabledAgentIds: [] }
+      acp: { enabledAgentIds: [], agents: {} }
     },
     hotkeys: {
       // Quick Capture default moved off ⌘⇧P (collides with Print in
@@ -702,7 +703,7 @@ function parseAiSurfaceDefaults(
  *  falls through to an empty enabled set. */
 function parseAcpSettings(raw: unknown): AcpSettings {
   if (!isRecord(raw) || !Array.isArray(raw.enabledAgentIds)) {
-    return { enabledAgentIds: [] };
+    return { enabledAgentIds: [], agents: {} };
   }
   const seen = new Set<string>();
   const enabledAgentIds: string[] = [];
@@ -712,7 +713,32 @@ function parseAcpSettings(raw: unknown): AcpSettings {
     seen.add(entry);
     enabledAgentIds.push(entry);
   }
-  return { enabledAgentIds };
+  return { enabledAgentIds, agents: parseAcpAgentPreferences(raw.agents) };
+}
+
+/** Parse `ai.acp.agents` — a per-agent path-preference map. Keeps only
+ *  recognized built-in agent ids and only string `overridePath` / `selectedPath`
+ *  values; anything else is dropped so a forged file can't smuggle in arbitrary
+ *  keys/shapes. */
+function parseAcpAgentPreferences(
+  raw: unknown
+): Record<string, AcpAgentPreference> {
+  if (!isRecord(raw)) return {};
+  const agents: Record<string, AcpAgentPreference> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (!isBuiltInAcpAgentId(id) || !isRecord(value)) continue;
+    const pref: AcpAgentPreference = {};
+    if (typeof value.overridePath === "string" && value.overridePath.length > 0) {
+      pref.overridePath = value.overridePath;
+    }
+    if (typeof value.selectedPath === "string" && value.selectedPath.length > 0) {
+      pref.selectedPath = value.selectedPath;
+    }
+    if (pref.overridePath !== undefined || pref.selectedPath !== undefined) {
+      agents[id] = pref;
+    }
+  }
+  return agents;
 }
 
 function parseLibrarySettings(
@@ -1123,8 +1149,48 @@ function mergeAcp(
     enabledAgentIds:
       patch.enabledAgentIds !== undefined
         ? patch.enabledAgentIds
-        : current.enabledAgentIds
+        : current.enabledAgentIds,
+    agents: mergeAcpAgents(current.agents ?? {}, patch.agents)
   };
+}
+
+/** Merge `ai.acp.agents` per agent id. Unlike `enabledAgentIds` (replace), the
+ *  agents map merges field-by-field: a patched agent's `overridePath` /
+ *  `selectedPath` updates only those leaves, and an explicit `""` / `null`
+ *  clears that leaf (→ "auto"). An agent whose entry becomes empty is dropped
+ *  so the stored shape stays minimal. Other agents are left untouched. */
+function mergeAcpAgents(
+  current: Record<string, AcpAgentPreference>,
+  patch: Record<string, AcpAgentPreference> | undefined
+): Record<string, AcpAgentPreference> {
+  if (patch === undefined) return current;
+  const next: Record<string, AcpAgentPreference> = { ...current };
+  for (const [id, prefPatch] of Object.entries(patch)) {
+    if (prefPatch === undefined) continue;
+    const merged: AcpAgentPreference = { ...next[id] };
+    if ("overridePath" in prefPatch) {
+      const value = prefPatch.overridePath;
+      if (value === undefined || value === null || value === "") {
+        delete merged.overridePath;
+      } else {
+        merged.overridePath = value;
+      }
+    }
+    if ("selectedPath" in prefPatch) {
+      const value = prefPatch.selectedPath;
+      if (value === undefined || value === null || value === "") {
+        delete merged.selectedPath;
+      } else {
+        merged.selectedPath = value;
+      }
+    }
+    if (merged.overridePath === undefined && merged.selectedPath === undefined) {
+      delete next[id];
+    } else {
+      next[id] = merged;
+    }
+  }
+  return next;
 }
 
 /** Merge `ai.defaults` field-by-field across the three surfaces. Each

@@ -1265,12 +1265,28 @@ export function isBuiltInAcpAgentId(value: unknown): value is BuiltInAcpAgentId 
   );
 }
 
+/** Where a discovered instance's executable path was located. */
+export type AcpAgentInstanceSource = "override" | "path" | "fallback";
+
+/** One installed executable of an ACP agent that passed discovery. A single
+ *  agent can have several (e.g. `qwen` under nvm AND Homebrew), each a distinct
+ *  binary the user can pick between. */
+export type AcpAgentInstance = {
+  /** Resolved command/path that passed the probe. */
+  command: string;
+  /** Parsed CLI version, when the version probe yielded one. */
+  version?: string;
+  /** How the path was found: user override, a `PATH` match, or a fallback path. */
+  source: AcpAgentInstanceSource;
+};
+
 /** One known ACP agent's discovery status, as surfaced by the
  *  `acp:discover` verb. `installed` is the only authoritative install
  *  signal (the kit's local discovery passed the strategy's probe).
- *  `version` is the parsed CLI version when the probe yielded one;
- *  `detail` carries an install hint (when not installed) or the resolved
- *  command (when installed) for the Settings UI. */
+ *  `instances` lists EVERY installed executable found (PATH matches +
+ *  fallbacks + a passing override); `activeCommand` is the one currently in
+ *  effect for spawns (override → user-picked → first found). `version` /
+ *  `detail` mirror the active instance for compact display. */
 export type AcpAgentDiscoveryEntry = {
   /** Kit strategy id (`gemini` / `grok` / `kimi` / `qwen`). */
   id: string;
@@ -1278,10 +1294,16 @@ export type AcpAgentDiscoveryEntry = {
   displayName: string;
   /** True when the kit's local discovery found + probed the CLI. */
   installed: boolean;
-  /** Parsed CLI version, when the version probe yielded one. */
+  /** Parsed CLI version of the active instance, when known. */
   version?: string;
-  /** Resolved command path when installed; an install hint when not. */
+  /** Resolved command path of the active instance when installed; an install
+   *  hint when not. */
   detail?: string;
+  /** Every installed instance found, in candidate order. Empty when not installed. */
+  instances: AcpAgentInstance[];
+  /** The instance command currently in effect (override → picked → first found).
+   *  Undefined when nothing is installed. */
+  activeCommand?: string;
 };
 
 /** Result of `acp:discover` — every known ACP agent with its install
@@ -1299,11 +1321,26 @@ export type AcpAgentDiscovery = {
  *  the bus boundary. */
 export type AcpSettings = {
   enabledAgentIds: string[];
+  /** Per-agent path preferences, keyed by built-in agent id. A missing entry
+   *  means "auto" (use the first discovered instance, no override). */
+  agents?: Record<string, AcpAgentPreference>;
 };
 
-/** Default `ai.acp` state — no agents enabled. */
+/** A user's per-agent path choice. `overridePath` is a manual absolute path
+ *  (highest priority — probed even if outside `PATH`/fallbacks). `selectedPath`
+ *  is a discovered instance the user clicked to pin. Both unset = auto (first
+ *  discovered instance). */
+export type AcpAgentPreference = {
+  /** Manual override path. Empty / undefined = none. */
+  overridePath?: string;
+  /** User-pinned discovered instance command. Undefined = auto (first found). */
+  selectedPath?: string;
+};
+
+/** Default `ai.acp` state — no agents enabled, no per-agent preferences. */
 export const DEFAULT_ACP_SETTINGS: AcpSettings = {
-  enabledAgentIds: []
+  enabledAgentIds: [],
+  agents: {}
 };
 
 export type AiEnrichmentTriggerSource =

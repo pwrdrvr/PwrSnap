@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import type { DiscoveredAcpAgent } from "@pwrdrvr/agent-acp";
+import type { DiscoveredAcpAgentGroup } from "@pwrdrvr/agent-acp";
 import type { ChatBackend } from "@pwrdrvr/agent-client";
 import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
 import {
@@ -46,7 +46,9 @@ describe("chatSurfaceDefaultsFromSettings", () => {
 // ---- buildChatSurface — backend selection by provider -------------------
 
 const noopSettings = (): Promise<Settings> =>
-  Promise.resolve({} as unknown as Settings);
+  Promise.resolve({
+    ai: { acp: { enabledAgentIds: [], agents: {} } }
+  } as unknown as Settings);
 
 function baseConfig(overrides: Partial<ChatSurfaceConfig>): ChatSurfaceConfig {
   return {
@@ -89,34 +91,49 @@ function stubBackend(): ChatBackend {
   } as unknown as ChatBackend;
 }
 
-function discoveredGemini(): DiscoveredAcpAgent {
+function discoveredGeminiGroup(
+  instances: DiscoveredAcpAgentGroup["instances"] = [
+    { command: "/usr/local/bin/gemini", version: "0.4.1", source: "path" }
+  ]
+): DiscoveredAcpAgentGroup {
   return {
     strategyId: "gemini",
     backendId: "acp:gemini",
     name: "Gemini CLI",
-    command: "/usr/local/bin/gemini",
     args: ["--experimental-acp"],
     env: {},
+    instances,
     discoveredAt: 1
   };
+}
+
+/** Settings stub with a per-agent ACP preference for the given agent. */
+function settingsWithAcpPref(
+  agentId: string,
+  pref: { overridePath?: string; selectedPath?: string }
+): () => Promise<Settings> {
+  return () =>
+    Promise.resolve({
+      ai: { acp: { enabledAgentIds: [], agents: { [agentId]: pref } } }
+    } as unknown as Settings);
 }
 
 describe("buildChatSurface — backend selection", () => {
   test('provider "codex" builds the Codex backend (no ACP discovery)', async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubBackend());
-    const discoverAcpAgents = vi.fn(async () => [] as DiscoveredAcpAgent[]);
+    const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
     const deps: ChatBackendDeps = {
       makeCodexClient,
       makeAcpClient,
-      discoverAcpAgents
+      discoverAcpAgentInstances
     };
 
     await buildChatSurface(baseConfig({ provider: "codex" }), deps);
 
     expect(makeCodexClient).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).not.toHaveBeenCalled();
-    expect(discoverAcpAgents).not.toHaveBeenCalled();
+    expect(discoverAcpAgentInstances).not.toHaveBeenCalled();
   });
 
   test("an undefined provider builds the Codex backend", async () => {
@@ -126,40 +143,94 @@ describe("buildChatSurface — backend selection", () => {
     expect(makeCodexClient).toHaveBeenCalledTimes(1);
   });
 
-  test('provider "acp:<id>" builds the ACP backend from the discovered agent', async () => {
-    const agent = discoveredGemini();
+  test('provider "acp:<id>" builds the ACP backend from the active instance', async () => {
+    const group = discoveredGeminiGroup();
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
       () => stubBackend()
     );
-    const discoverAcpAgents = vi.fn(async () => [agent]);
+    const discoverAcpAgentInstances = vi.fn(async () => [group]);
     const deps: ChatBackendDeps = {
       makeCodexClient,
       makeAcpClient,
-      discoverAcpAgents
+      discoverAcpAgentInstances
     };
 
     await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
 
-    expect(discoverAcpAgents).toHaveBeenCalledTimes(1);
+    expect(discoverAcpAgentInstances).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent).toEqual(agent);
+    const agent = vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent;
+    expect(agent?.command).toBe("/usr/local/bin/gemini");
+    expect(agent?.args).toEqual(["--experimental-acp"]);
     expect(makeCodexClient).not.toHaveBeenCalled();
+  });
+
+  test("spawns the user-picked instance, not the first found", async () => {
+    const group = discoveredGeminiGroup([
+      { command: "/usr/local/bin/gemini", version: "0.4.1", source: "path" },
+      { command: "/opt/homebrew/bin/gemini", version: "0.3.0", source: "path" }
+    ]);
+    const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
+      () => stubBackend()
+    );
+    const discoverAcpAgentInstances = vi.fn(async () => [group]);
+    const deps: ChatBackendDeps = { makeAcpClient, discoverAcpAgentInstances };
+
+    await buildChatSurface(
+      baseConfig({
+        provider: "acp:gemini",
+        readSettings: settingsWithAcpPref("gemini", {
+          selectedPath: "/opt/homebrew/bin/gemini"
+        })
+      }),
+      deps
+    );
+
+    expect(vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent?.command).toBe(
+      "/opt/homebrew/bin/gemini"
+    );
+  });
+
+  test("feeds the override path into discovery for an acp provider", async () => {
+    const group = discoveredGeminiGroup([
+      { command: "/custom/gemini", version: "9.9.9", source: "override" }
+    ]);
+    const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
+      () => stubBackend()
+    );
+    const discoverAcpAgentInstances = vi.fn(async () => [group]);
+    const deps: ChatBackendDeps = { makeAcpClient, discoverAcpAgentInstances };
+
+    await buildChatSurface(
+      baseConfig({
+        provider: "acp:gemini",
+        readSettings: settingsWithAcpPref("gemini", { overridePath: "/custom/gemini" })
+      }),
+      deps
+    );
+
+    expect(discoverAcpAgentInstances).toHaveBeenCalledWith({
+      overrides: { gemini: "/custom/gemini" }
+    });
+    expect(vi.mocked(makeAcpClient).mock.calls[0]?.[0]?.agent?.command).toBe(
+      "/custom/gemini"
+    );
   });
 
   test("falls back to Codex when the ACP agent is not installed", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubBackend());
-    const discoverAcpAgents = vi.fn(async () => [] as DiscoveredAcpAgent[]);
+    const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
     const deps: ChatBackendDeps = {
       makeCodexClient,
       makeAcpClient,
-      discoverAcpAgents
+      discoverAcpAgentInstances
     };
 
     await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);
 
-    expect(discoverAcpAgents).toHaveBeenCalledTimes(1);
+    expect(discoverAcpAgentInstances).toHaveBeenCalledTimes(1);
     expect(makeAcpClient).not.toHaveBeenCalled();
     expect(makeCodexClient).toHaveBeenCalledTimes(1);
   });
@@ -167,13 +238,13 @@ describe("buildChatSurface — backend selection", () => {
   test("falls back to Codex when ACP discovery throws", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient = vi.fn(() => stubBackend());
-    const discoverAcpAgents = vi.fn(async () => {
+    const discoverAcpAgentInstances = vi.fn(async () => {
       throw new Error("probe blew up");
     });
     const deps: ChatBackendDeps = {
       makeCodexClient,
       makeAcpClient,
-      discoverAcpAgents
+      discoverAcpAgentInstances
     };
 
     await buildChatSurface(baseConfig({ provider: "acp:gemini" }), deps);

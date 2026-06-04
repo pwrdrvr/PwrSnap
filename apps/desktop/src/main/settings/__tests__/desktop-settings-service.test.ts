@@ -331,7 +331,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
   });
 
   test("fresh defaults have an empty `ai.acp.enabledAgentIds`", () => {
-    expect(defaultSettings().ai.acp).toEqual({ enabledAgentIds: [] });
+    expect(defaultSettings().ai.acp).toEqual({ enabledAgentIds: [], agents: {} });
   });
 
   test("v1 shape missing `ai.acp` defaults to an empty enabled set", async () => {
@@ -349,7 +349,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     );
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
-    expect(settings.ai.acp).toEqual({ enabledAgentIds: [] });
+    expect(settings.ai.acp).toEqual({ enabledAgentIds: [], agents: {} });
   });
 
   test("v1 shape keeps recognized `ai.acp` agent ids and drops unknown / duplicate ones", async () => {
@@ -403,6 +403,34 @@ describe("DesktopSettingsService.write ai.acp", () => {
     await svc.write({ ai: { enabled: true } });
     const read = await svc.read();
     expect(read.ai.acp.enabledAgentIds).toEqual(["kimi"]);
+  });
+
+  test("`ai.acp.agents` merges per agent (pick one without disturbing another)", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } } });
+    await svc.write({ ai: { acp: { agents: { grok: { overridePath: "/custom/grok" } } } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({
+      qwen: { selectedPath: "/nvm/qwen" },
+      grok: { overridePath: "/custom/grok" }
+    });
+  });
+
+  test("an empty-string leaf clears that preference (revert to auto), dropping empty entries", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "/nvm/qwen" } } } } });
+    await svc.write({ ai: { acp: { agents: { qwen: { selectedPath: "" } } } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({});
+  });
+
+  test("patching enabledAgentIds leaves the agents map untouched", async () => {
+    const svc = makeService();
+    await svc.write({ ai: { acp: { agents: { qwen: { overridePath: "/p/qwen" } } } } });
+    await svc.write({ ai: { acp: { enabledAgentIds: ["qwen"] } } });
+    const read = await svc.read();
+    expect(read.ai.acp.agents).toEqual({ qwen: { overridePath: "/p/qwen" } });
+    expect(read.ai.acp.enabledAgentIds).toEqual(["qwen"]);
   });
 });
 

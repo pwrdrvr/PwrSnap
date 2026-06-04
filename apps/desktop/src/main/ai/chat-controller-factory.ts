@@ -16,11 +16,14 @@ import type { AgentBackend, NormalizedApprovalDecision } from "@pwrdrvr/agent-co
 import {
   AcpAgentClient,
   AcpStdioJsonRpcTransport,
-  discoverLocalAcpAgents,
+  discoverLocalAcpAgentInstances,
   strategyByBackendId,
   strategyById,
-  type DiscoveredAcpAgent
+  type DiscoveredAcpAgent,
+  type DiscoveredAcpAgentGroup,
+  type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
+import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
@@ -126,8 +129,11 @@ export function chatSurfaceDefaultsFromSettings(
 /** Seams the backend resolver depends on, injectable for tests. Production
  *  uses the kit's real `discoverLocalAcpAgents` + concrete client classes. */
 export type ChatBackendDeps = {
-  /** Local ACP discovery. Defaults to the kit's `discoverLocalAcpAgents`. */
-  discoverAcpAgents?: () => Promise<DiscoveredAcpAgent[]>;
+  /** Local ACP discovery (multi-instance). Defaults to the kit's
+   *  `discoverLocalAcpAgentInstances`. */
+  discoverAcpAgentInstances?: (
+    options?: LocalAcpDiscoveryOptions
+  ) => Promise<DiscoveredAcpAgentGroup[]>;
   /** Codex backend factory. Defaults to constructing a `CodexThreadClient`. */
   makeCodexClient?: (input: {
     command: string;
@@ -218,11 +224,19 @@ async function resolveChatBackend(
   }
 
   const log = toAgentKitLogger(config.loggerScope);
-  const discover = deps.discoverAcpAgents ?? discoverLocalAcpAgents;
+  const discover = deps.discoverAcpAgentInstances ?? discoverLocalAcpAgentInstances;
   const strategyId = provider.slice("acp:".length);
-  let installed: DiscoveredAcpAgent[];
+
+  // Honor the user's per-agent path choice (Settings → AI → ACP agents): a
+  // manual override is fed into discovery so it's probed even outside PATH; the
+  // active instance (override → picked → first) is resolved by the SAME helper
+  // the discovery handler uses, so the spawned binary matches the "Using" badge.
+  const pref = (await config.readSettings()).ai.acp.agents?.[strategyId];
+  const override = pref?.overridePath?.trim();
+
+  let groups: DiscoveredAcpAgentGroup[];
   try {
-    installed = await discover();
+    groups = await discover(override ? { overrides: { [strategyId]: override } } : {});
   } catch (cause) {
     log.warn("chat backend: ACP discovery failed; falling back to Codex", {
       provider,
@@ -230,15 +244,26 @@ async function resolveChatBackend(
     });
     return codex();
   }
-  const agent = installed.find(
-    (a) => a.backendId === provider || a.strategyId === strategyId
+  const group = groups.find(
+    (g) => g.backendId === provider || g.strategyId === strategyId
   );
-  if (agent === undefined) {
+  if (group === undefined || group.instances.length === 0) {
     log.warn("chat backend: ACP agent not installed; falling back to Codex", {
       provider
     });
     return codex();
   }
+  const active = resolveActiveAcpInstance(group.instances, pref);
+  const agent: DiscoveredAcpAgent = {
+    strategyId: group.strategyId,
+    backendId: group.backendId,
+    name: group.name,
+    command: active.command,
+    args: group.args,
+    env: group.env,
+    discoveredAt: group.discoveredAt,
+    ...(active.version !== undefined ? { version: active.version } : {})
+  };
   const makeAcp = deps.makeAcpClient ?? defaultMakeAcpClient;
   return makeAcp({ agent, loggerScope: config.loggerScope });
 }

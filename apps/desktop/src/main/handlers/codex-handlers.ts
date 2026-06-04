@@ -472,6 +472,12 @@ export function registerCodexHandlers(params?: {
     });
     const enrichment = setLatestEnrichmentRun(capture.id, run.id);
     broadcastAiRunUpdated({ run, enrichment });
+    // Snapshot the caption-model setting at enqueue time. The user can
+    // flip the picker mid-run, but the model passed to `thread/start`
+    // must match what the run record reports — re-reading it inside
+    // `runCaptureEnrichment` would mean a Settings flip during a run
+    // silently swaps providers and skews run-level metrics.
+    const captionModel = settings.codex.captionModel;
     // Source-path resolution (re-extracting source.png from the
     // bundle when Storage → Clear/Trim wiped the per-capture cache)
     // happens INSIDE runCaptureEnrichment so the extraction cost

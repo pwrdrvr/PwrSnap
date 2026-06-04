@@ -46,6 +46,21 @@ type FloatOverState =
 
 let singleton: BrowserWindow | null = null;
 let state: FloatOverState = { kind: "hidden" };
+/**
+ * Display the float-over is currently anchored on, captured at
+ * show-idle / show-loaded time. Subsequent content-driven resizes
+ * re-anchor against THIS display rather than recomputing from the
+ * cursor position — otherwise, if the user moves the cursor to a
+ * different monitor between the initial show and an enrichment-
+ * triggered resize (which is common: AI takes 1-6s, plenty of time
+ * for a cursor wander), the toast would jump to that monitor mid-
+ * flight. See bug vi.
+ *
+ * Recomputed only on explicit state transitions (show-idle / show-
+ * loaded). Resize handlers MUST read this — never call
+ * `screen.getCursorScreenPoint()` from a resize path.
+ */
+let anchoredDisplayId: number | null = null;
 /** Last event we sent to the renderer. Re-emitted on `did-finish-load`
  *  so the first capture-of-session doesn't miss the IPC if the renderer
  *  hadn't subscribed yet at send time. */
@@ -159,7 +174,13 @@ function wireFloatOverResizeChannel(): void {
     // (-20000, -20000) to the bottom-right of the user's display — a
     // visible flash on the next dismiss when we re-park.
     if (state.kind !== "hidden") {
-      anchorBottomRight(singleton);
+      // Re-anchor on the SAME display we anchored to at show time —
+      // never recompute from the cursor here. If the cursor has
+      // wandered to a different monitor while the toast was on
+      // screen (e.g., AI enrichment in progress), recomputing from
+      // cursor would yank the toast to that monitor mid-flight.
+      // See bug vi.
+      reanchorOnCurrentDisplay(singleton);
     }
   });
 }
@@ -201,6 +222,8 @@ function getOrCreate(): BrowserWindow {
       // through the first-show path again (calls showInactive()
       // to add the new window to AppKit's window list).
       everShown = false;
+      // Clear the recorded anchor display — next show recomputes.
+      anchoredDisplayId = null;
     }
   });
   // Park the freshly-created window off-screen immediately. Construction
@@ -214,12 +237,46 @@ function getOrCreate(): BrowserWindow {
 
 /**
  * Anchor the float-over in the bottom-right of the display the cursor
- * is currently on. Recomputed on every show-idle so the toast lands on
- * the right display even after a cursor move between captures.
+ * is currently on. Called only on explicit state transitions
+ * (show-idle / show-loaded) — NEVER from a content-driven resize
+ * path. Records the chosen display id in `anchoredDisplayId` so
+ * subsequent resize-triggered re-anchors stick to the same monitor.
+ * See bug vi.
  */
 function anchorBottomRight(window: BrowserWindow): void {
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
+  anchoredDisplayId = display.id;
+  const wa = display.workArea;
+  const margin = 24;
+  const [w, h] = window.getSize();
+  const x = Math.round(wa.x + wa.width - w - margin);
+  const y = Math.round(wa.y + wa.height - h - margin);
+  window.setPosition(x, y, false);
+}
+
+/**
+ * Re-anchor the float-over on the display it was last anchored to via
+ * `anchorBottomRight`. Used by the resize handler so content growth
+ * (e.g., AI enrichment populating the toast) doesn't tug the window
+ * onto whatever display the cursor happens to be hovering. Falls
+ * back to the cursor-display if we somehow ended up resizing before
+ * anchoring (no recorded display id) — that path shouldn't trigger
+ * in practice but keeps the toast on-screen if it does.
+ */
+function reanchorOnCurrentDisplay(window: BrowserWindow): void {
+  let display = anchoredDisplayId === null
+    ? null
+    : screen.getAllDisplays().find((d) => d.id === anchoredDisplayId) ?? null;
+  if (display === null) {
+    // Recorded display vanished (e.g., monitor unplugged) or we
+    // never anchored. Fall back to cursor-anchored so the toast
+    // stays visible. Update the recorded id so subsequent resizes
+    // stay stable.
+    const cursor = screen.getCursorScreenPoint();
+    display = screen.getDisplayNearestPoint(cursor);
+    anchoredDisplayId = display.id;
+  }
   const wa = display.workArea;
   const margin = 24;
   const [w, h] = window.getSize();

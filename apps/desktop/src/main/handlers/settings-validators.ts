@@ -27,6 +27,7 @@ import {
   isRedactionStyle,
   isSettingsPage,
   LIBRARY_SIDEBAR_TABS,
+  MAX_HIGHLIGHT_OPACITY,
   REDACTION_STYLES
 } from "@pwrsnap/shared";
 import type {
@@ -967,8 +968,15 @@ function validateHighlightStyle(raw: Record<string, unknown>): PwrSnapError | nu
     return validationError("invalid_editor_highlight_color", "settings:write: editor.toolStyles.highlight.color must be a color token or string");
   }
   if (!isUndefined(raw.opacity)) {
-    if (!isFiniteNumber(raw.opacity) || raw.opacity < 0 || raw.opacity > 1) {
-      return validationError("invalid_editor_highlight_opacity", "settings:write: editor.toolStyles.highlight.opacity must be a finite number in [0,1]");
+    if (
+      !isFiniteNumber(raw.opacity) ||
+      raw.opacity < 0 ||
+      raw.opacity > MAX_HIGHLIGHT_OPACITY
+    ) {
+      return validationError(
+        "invalid_editor_highlight_opacity",
+        `settings:write: editor.toolStyles.highlight.opacity must be a finite number in [0,${MAX_HIGHLIGHT_OPACITY}]`
+      );
     }
   }
   if (!isUndefined(raw.blend)) {

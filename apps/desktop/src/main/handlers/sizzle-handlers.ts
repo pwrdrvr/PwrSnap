@@ -19,7 +19,7 @@ import {
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { getSizzleStore, SizzleProjectNotFoundError } from "../sizzle/sizzle-store";
-import { cleanupProjectChats } from "./sizzle-chat-handlers";
+import { cleanupProjectChats, forkProjectChats } from "./sizzle-chat-handlers";
 import {
   pruneTtsCache,
   readAudio,
@@ -28,12 +28,18 @@ import {
   ttsCacheFilename,
   TtsError
 } from "../sizzle/tts";
-import { resolveSpeechTiming } from "../sizzle/speech-timing";
 import {
+  buildTranscriptPhraseSuggestions,
+  resolveCachedSpeechTiming,
+  resolveSpeechTiming
+} from "../sizzle/speech-timing";
+import {
+  planSequencePreviewMedia,
   planSequenceScene,
   planSequenceTimeline,
   SequencePlannerError
 } from "../sizzle/sequence-planner";
+import { mediaTrimWasClamped, normalizeVideoMediaTrim } from "../sizzle/media-trim";
 import {
   compose,
   ComposeError,
@@ -54,6 +60,7 @@ import { resolveCacheFile } from "../render/coordinator";
 import { resolveFfmpegPath } from "../recording/ffmpeg-resolver";
 import {
   validateSizzleCreate,
+  validateSizzleDuplicate,
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
   validateSizzlePreviewRequest,
@@ -193,11 +200,24 @@ async function prepareSceneInput(args: {
   let durationSec: number;
 
   if (capture.kind === "video") {
-    const trim = scene.mediaTrim ?? {
-      startSec: capture.video?.defaultRange.start ?? 0,
-      endSec:
-        capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
-    };
+    const trim = normalizeVideoMediaTrim({
+      trim: scene.mediaTrim,
+      defaultRange: {
+        start: capture.video?.defaultRange.start ?? 0,
+        end: capture.video?.defaultRange.end ?? capture.video?.durationSec ?? 5
+      },
+      sourceDurationSec: capture.video?.durationSec ?? 5
+    });
+    if (mediaTrimWasClamped(scene.mediaTrim, trim)) {
+      log.info("sizzle:render clamped media trim to source duration", {
+        sceneIdx,
+        requestedStartSec: scene.mediaTrim!.startSec,
+        requestedEndSec: scene.mediaTrim!.endSec,
+        sourceDurationSec: capture.video?.durationSec ?? null,
+        startSec: trim.startSec,
+        endSec: trim.endSec
+      });
+    }
     const trimDur = trim.endSec - trim.startSec;
 
     // Scene duration policy for video scenes:
@@ -301,6 +321,19 @@ export function registerSizzleHandlers(): void {
   bus.register("sizzle:open", async (req) => {
     const v = validateSizzleOpenRequest(req);
     if (!v.ok) return err(v.error);
+    if (v.projectId !== undefined) {
+      try {
+        const repair = await store.persistDerivedFieldsForProject(v.projectId);
+        if (repair?.repaired === true) {
+          await pushProjectsChanged();
+        }
+      } catch (cause) {
+        log.warn("sizzle:open cover repair failed", {
+          projectId: v.projectId,
+          message: cause instanceof Error ? cause.message : String(cause)
+        });
+      }
+    }
     const existing = findSizzleWindow();
     if (existing !== null) {
       // Window already loaded → navigate via a live event (the renderer
@@ -342,6 +375,27 @@ export function registerSizzleHandlers(): void {
     const project = await store.create(v.name);
     await pushProjectsChanged();
     return ok(project);
+  });
+
+  bus.register("sizzle:duplicate", async (req) => {
+    const v = validateSizzleDuplicate(req);
+    if (!v.ok) return err(v.error);
+    try {
+      const project = await store.duplicate(v.value.id, v.value.name);
+      await pushProjectsChanged();
+      if (v.value.forkChat) {
+        void forkProjectChats(v.value.id, project.id).catch((cause: unknown) => {
+          log.warn("sizzle:duplicate chat fork failed", {
+            sourceProjectId: v.value.id,
+            targetProjectId: project.id,
+            message: cause instanceof Error ? cause.message : String(cause)
+          });
+        });
+      }
+      return ok(project);
+    } catch (cause) {
+      return err(toError(cause, "sizzle_duplicate_failed"));
+    }
   });
 
   bus.register("sizzle:update", async (req) => {
@@ -591,6 +645,21 @@ export function registerSizzleHandlers(): void {
         apiKey
       });
       const timeline = planSequenceTimeline(scene, speechTiming);
+      const beatCaptureIds = [
+        ...new Set((scene.beats ?? []).map((beat) => beat.captureId))
+      ];
+      const loadedCaptures = await Promise.all(
+        beatCaptureIds.map(async (captureId) => [captureId, await loadCapture(captureId)] as const)
+      );
+      const capturesById = new Map<string, CaptureRecord>();
+      for (const [captureId, capture] of loadedCaptures) {
+        if (capture !== null) capturesById.set(captureId, capture);
+      }
+      const mediaPlan = planSequencePreviewMedia({
+        scene,
+        capturesById,
+        timeline
+      });
       const bytes = await readFile(tts.audioPath);
       const warnings: SizzleSequencePreviewPlan["warnings"] = [
         ...speechTiming.warnings.map((warning) => ({
@@ -598,6 +667,11 @@ export function registerSizzleHandlers(): void {
           message: warning.message
         })),
         ...timeline.diagnostics.map((diagnostic) => ({
+          beatId: diagnostic.beatId,
+          code: diagnostic.code,
+          message: diagnostic.message
+        })),
+        ...mediaPlan.diagnostics.map((diagnostic) => ({
           beatId: diagnostic.beatId,
           code: diagnostic.code,
           message: diagnostic.message
@@ -609,7 +683,8 @@ export function registerSizzleHandlers(): void {
         durationSec: timeline.durationSec,
         timingQuality: speechTiming.quality,
         warnings,
-        beats: timeline.beatPlans
+        transcriptPhrases: buildTranscriptPhraseSuggestions(speechTiming),
+        beats: mediaPlan.beatPlans
       });
     } catch (cause) {
       return err(toError(cause, "sizzle_sequence_preview_failed"));
@@ -655,10 +730,19 @@ export function registerSizzleHandlers(): void {
     );
     try {
       const bytes = await readAudio(audioPath);
+      const speechTiming = await resolveCachedSpeechTiming({
+        provider: project.ttsProvider,
+        model: project.ttsModel,
+        voice: project.voice,
+        text,
+        audioPath
+      });
       return ok({
         cached: true as const,
         audioBase64: bytes.toString("base64"),
-        mimeType: "audio/mpeg" as const
+        mimeType: "audio/mpeg" as const,
+        transcriptPhrases:
+          speechTiming === null ? [] : buildTranscriptPhraseSuggestions(speechTiming)
       });
     } catch {
       return ok({ cached: false as const });

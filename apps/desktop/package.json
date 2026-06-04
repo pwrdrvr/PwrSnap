@@ -1,7 +1,7 @@
 {
   "name": "@pwrsnap/desktop",
   "productName": "PwrSnap",
-  "version": "1.0.0-beta.13",
+  "version": "1.0.0-beta.14",
   "private": true,
   "description": "Mac-first agentic screen capture tool",
   "author": "PwrDrvr LLC",
@@ -49,12 +49,12 @@
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
     "zod": "^4.4.3",
-    "@pwrdrvr/agent-core": "^0.1.0",
-    "@pwrdrvr/agent-transport": "^0.1.0",
-    "@pwrdrvr/codex-discovery": "^0.1.0",
-    "@pwrdrvr/agent-client": "^0.1.0",
-    "@pwrdrvr/agent-chat-react": "^0.1.0",
-    "@pwrdrvr/agent-acp": "^0.1.0"
+    "@pwrdrvr/agent-core": "^0.1.2",
+    "@pwrdrvr/agent-transport": "^0.1.2",
+    "@pwrdrvr/codex-discovery": "^0.1.2",
+    "@pwrdrvr/agent-client": "^0.1.2",
+    "@pwrdrvr/agent-chat-react": "^0.1.2",
+    "@pwrdrvr/agent-acp": "^0.1.2"
   },
   "devDependencies": {
     "@electron/asar": "^4.2.0",

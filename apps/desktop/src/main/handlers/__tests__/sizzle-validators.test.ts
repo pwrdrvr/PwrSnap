@@ -3,6 +3,7 @@ import {
   validateLibraryListByIds,
   validateLibrarySearch,
   validateSizzleCreate,
+  validateSizzleDuplicate,
   validateSizzleIdRequest,
   validateSizzleOpenRequest,
   validateSizzlePreviewRequest,
@@ -39,6 +40,43 @@ describe("validateSizzleCreate", () => {
   });
 });
 
+describe("validateSizzleDuplicate", () => {
+  it("accepts an id and defaults forkChat on", () => {
+    const r = validateSizzleDuplicate({ id: "sz_1" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toEqual({ id: "sz_1", forkChat: true });
+  });
+
+  it("accepts an explicit name and forkChat false", () => {
+    const r = validateSizzleDuplicate({
+      id: "sz_1",
+      name: "Alternate edit",
+      forkChat: false
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        id: "sz_1",
+        name: "Alternate edit",
+        forkChat: false
+      });
+    }
+  });
+
+  it("rejects invalid optional fields", () => {
+    const name = validateSizzleDuplicate({
+      id: "sz_1",
+      name: "x".repeat(SIZZLE_LIMITS.projectNameMax + 1)
+    });
+    expect(name.ok).toBe(false);
+    if (!name.ok) expect(name.error.code).toBe("name_too_long");
+
+    const forkChat = validateSizzleDuplicate({ id: "sz_1", forkChat: "yes" });
+    expect(forkChat.ok).toBe(false);
+    if (!forkChat.ok) expect(forkChat.error.code).toBe("forkChat_invalid");
+  });
+});
+
 describe("validateSizzleUpdate", () => {
   it("accepts a minimal { id, patch: {} }", () => {
     const r = validateSizzleUpdate({ id: "sz_1", patch: {} });
@@ -70,10 +108,26 @@ describe("validateSizzleUpdate", () => {
         voice: "nova",
         ttsModel: "tts-1",
         ttsProvider: "openai",
-        resolution: "720p"
+        resolution: "720p",
+        coverCaptureId: "cap_cover"
       }
     });
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.coverCaptureId).toBe("cap_cover");
+  });
+
+  it("accepts clearing the saved cover capture", () => {
+    const r = validateSizzleUpdate({ id: "sz_1", patch: { coverCaptureId: null } });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.patch.coverCaptureId).toBeNull();
+  });
+
+  it("rejects invalid cover capture ids", () => {
+    for (const coverCaptureId of ["", 123, {}]) {
+      const r = validateSizzleUpdate({ id: "sz_1", patch: { coverCaptureId } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("coverCaptureId_invalid");
+    }
   });
 
   it("rejects bogus voice", () => {

@@ -70,13 +70,18 @@ export const TOOLS: ReadonlyArray<{
     label: "Shape",
     key: "S",
     icon: (
-      // Outline rect + inscribed circle hints at the multi-shape
-      // picker behind this tool (Rect / Square / Circle / Oval /
-      // Parallelogram). Same overall footprint as the legacy rect
-      // glyph so the toolbar row visually stays balanced.
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="3" y="6" width="18" height="12" />
-        <circle cx="12" cy="12" r="4" />
+      // Offset overlapping shapes read as a shape palette without
+      // implying a camera body + centered lens.
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="5" y="8" width="11" height="10" rx="1" />
+        <circle cx="15.5" cy="9.5" r="4" />
       </svg>
     )
   },
@@ -92,9 +97,10 @@ export const TOOLS: ReadonlyArray<{
         strokeWidth="1.8"
         strokeLinecap="round"
       >
-        <path d="M9 14 4 19v2h2l5-5" />
-        <path d="M14 9 19 4l3 3-5 5" />
-        <path d="M9 14l5 5" />
+        <path d="m14 4 6 6" />
+        <path d="M5 18.5 15.5 8l2.5 2.5L7.5 21H5z" />
+        <path d="M12.5 5.5 15 3l6 6-2.5 2.5" />
+        <path d="M3 21h9" />
       </svg>
     )
   },

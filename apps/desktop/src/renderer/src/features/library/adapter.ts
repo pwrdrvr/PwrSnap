@@ -175,6 +175,7 @@ export class FixtureBackedRecords {
   private readonly bySequence = new Map<number, CaptureRecord>();
   private readonly bySequenceFixture = new Map<number, Capture>();
   private readonly bySequenceProject = new Map<number, SizzleProject>();
+  private readonly byRecordId = new Map<string, CaptureRecord>();
 
   constructor(records: CaptureRecord[], projects: ReadonlyArray<SizzleProject> = []) {
     const now = new Date();
@@ -182,6 +183,7 @@ export class FixtureBackedRecords {
     for (const record of records) {
       const fixture = recordToFixture(record, seq, now);
       this.bySequence.set(seq, record);
+      this.byRecordId.set(record.id, record);
       this.bySequenceFixture.set(seq, fixture);
       seq += 1;
     }
@@ -203,5 +205,9 @@ export class FixtureBackedRecords {
 
   projectFor(sequence: number): SizzleProject | null {
     return this.bySequenceProject.get(sequence) ?? null;
+  }
+
+  recordById(id: string): CaptureRecord | null {
+    return this.byRecordId.get(id) ?? null;
   }
 }

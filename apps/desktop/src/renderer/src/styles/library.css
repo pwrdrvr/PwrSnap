@@ -1346,6 +1346,45 @@
   color: var(--accent-bright, var(--accent));
 }
 
+.psl__cell-duplicate:hover {
+  background: var(--accent-soft);
+  color: var(--accent-bright, var(--accent));
+}
+
+.psl__context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 188px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-panel-hover) 96%, transparent);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-base) 60%, transparent);
+  outline: 0;
+}
+
+.psl__context-menu-row {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 600 12px/1 var(--font-sans);
+  text-align: left;
+}
+
+.psl__context-menu-row:hover,
+.psl__context-menu-row:focus-visible {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  outline: 0;
+}
+
 /* === Project Asset Cart — per-cell checkbox === */
 /* Top-LEFT of the cell so it never overlaps the bottom-right trash
    affordance. Hover-revealed like the trash button, but ALSO stays

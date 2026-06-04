@@ -12,6 +12,7 @@
 // cannot target another project.
 
 import { nanoid } from "nanoid";
+import { join } from "node:path";
 import { z } from "zod";
 import {
   type CaptureRecord,
@@ -26,6 +27,8 @@ import {
 } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { defineTool, type ToolDispatchResult, type ToolSpec } from "./define-tool";
+import { buildTranscriptPhraseSuggestions, resolveCachedSpeechTiming } from "../sizzle/speech-timing";
+import { ttsCacheDir, ttsCacheFilename } from "../sizzle/tts";
 
 /** Run one bus verb and map the Result to a ToolDispatchResult. */
 async function runVerb<C extends CommandName>(name: C, req: Req<C>): Promise<ToolDispatchResult> {
@@ -83,7 +86,8 @@ const beatTimingInputSchema = z.union([
     ),
   z.object({
     kind: z.literal("phrase"),
-    phrase: z.string().min(1).max(160),
+    phrase: z.string().min(1).max(160)
+      .describe("Use an exact text value from project_get scenes[].transcriptPhrases.phrases when cached transcript phrases are available. The phrase anchors to its first word."),
     occurrence: z.number().int().positive().nullable().optional(),
     offsetSec: z.number().optional(),
     durationSec: z.number().positive().nullable().optional()
@@ -186,7 +190,77 @@ function toSequenceBeat(input: SequenceBeatInput): NonNullable<SizzleScene["beat
   };
 }
 
-function projectView(p: SizzleProject): unknown {
+function transcriptTextFromTimingWords(words: Array<{ word: string }>): string {
+  return words.map((word) => word.word).join(" ");
+}
+
+async function cachedTranscriptPhraseView(
+  project: SizzleProject,
+  scene: SizzleScene
+): Promise<unknown> {
+  if (scene.kind !== "sequence") return null;
+  const text = scene.scriptLine.trim();
+  if (text.length === 0) {
+    return {
+      status: "unavailable",
+      reason: "empty_narration",
+      phrases: []
+    };
+  }
+  const audioPath = join(
+    ttsCacheDir(),
+    ttsCacheFilename({
+      provider: project.ttsProvider,
+      model: project.ttsModel,
+      voice: project.voice,
+      text
+    })
+  );
+  const timing = await resolveCachedSpeechTiming({
+    provider: project.ttsProvider,
+    model: project.ttsModel,
+    voice: project.voice,
+    text,
+    audioPath
+  });
+  if (timing === null) {
+    return {
+      status: "unavailable",
+      reason: "not_cached",
+      phrases: []
+    };
+  }
+  return {
+    status: "cached",
+    timingQuality: timing.quality,
+    scriptText: text,
+    transcriptText: transcriptTextFromTimingWords(timing.words),
+    phrases: buildTranscriptPhraseSuggestions(timing)
+  };
+}
+
+async function projectView(p: SizzleProject): Promise<unknown> {
+  const scenes = await Promise.all(p.scenes.map(async (s) => ({
+    sceneId: s.id,
+    kind: s.kind ?? "simple",
+    captureId: s.captureId,
+    scriptLine: s.scriptLine,
+    narration: s.narration ?? null,
+    transcriptPhrases: await cachedTranscriptPhraseView(p, s),
+    beats:
+      s.beats?.map((beat) => ({
+        beatId: beat.id,
+        captureId: beat.captureId,
+        timing: beat.timing,
+        transition: beat.transition,
+        videoFit: beat.videoFit,
+        mediaTrim: beat.mediaTrim
+      })) ?? null,
+    transition: s.transition,
+    audioSource: s.audioSource,
+    durationOverrideSec: s.durationOverrideSec,
+    mediaTrim: s.mediaTrim
+  })));
   return {
     id: p.id,
     name: p.name,
@@ -194,26 +268,7 @@ function projectView(p: SizzleProject): unknown {
     ttsProvider: p.ttsProvider,
     resolution: p.resolution,
     lastRenderedAt: p.lastRenderedAt,
-    scenes: p.scenes.map((s) => ({
-      sceneId: s.id,
-      kind: s.kind ?? "simple",
-      captureId: s.captureId,
-      scriptLine: s.scriptLine,
-      narration: s.narration ?? null,
-      beats:
-        s.beats?.map((beat) => ({
-          beatId: beat.id,
-          captureId: beat.captureId,
-          timing: beat.timing,
-          transition: beat.transition,
-          videoFit: beat.videoFit,
-          mediaTrim: beat.mediaTrim
-        })) ?? null,
-      transition: s.transition,
-      audioSource: s.audioSource,
-      durationOverrideSec: s.durationOverrideSec,
-      mediaTrim: s.mediaTrim
-    }))
+    scenes
   };
 }
 
@@ -295,7 +350,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       { principal: "mcp" }
     );
     if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
-    return { ok: true, data: projectView(r.value) };
+    return { ok: true, data: await projectView(r.value) };
   };
 
   const tools = [
@@ -344,7 +399,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "project_get",
       description:
-        "Read this reel's scenes, voice, resolution, and last-rendered time. Call before editing to see the current state.",
+        "Read this reel's scenes, voice, resolution, last-rendered time, and cached TTS transcript phrase choices for sequence scenes when available. Call before editing to see the current state. For sequence phrase timing, use exact phrases from scenes[].transcriptPhrases.phrases; if unavailable or stale after narration changes, prefer auto until the transcript is regenerated.",
       argsSchema: z.object({}),
       annotations: { readOnlyHint: true, idempotentHint: true },
       dispatch: async (_args, ctx) => {
@@ -352,7 +407,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
         if (project === null) {
           return { ok: false, error: "No Sizzle project is linked to this chat." };
         }
-        return { ok: true, data: projectView(project) };
+        return { ok: true, data: await projectView(project) };
       }
     }),
     defineTool({
@@ -372,7 +427,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
           { principal: "mcp" }
         );
         if (!r.ok) return { ok: false, error: `${r.error.kind}/${r.error.code}: ${r.error.message}` };
-        return { ok: true, data: projectView(r.value) };
+        return { ok: true, data: await projectView(r.value) };
       }
     }),
     defineTool({
@@ -397,7 +452,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "sequence_scene_append",
       description:
-        "Append one sequence scene: one continuous narration block with multiple visual beats. Prefer this for workflows, quick UI progressions, and app demos where one sentence spans several captures. Timing rule: beat starts are anchors into the same narration. The first beat starts at offset 0. Every non-final beat automatically continues until the next beat's offset/phrase anchor; do not set fixed endSec/durationSec except on the final beat.",
+        "Append one sequence scene: one continuous narration block with multiple visual beats. Prefer this for workflows, quick UI progressions, and app demos where one sentence spans several captures. Timing rule: beat starts are anchors into the same narration. The first beat starts at offset 0. Every non-final beat automatically continues until the next beat's offset/phrase anchor; do not set fixed endSec/durationSec except on the final beat. Prefer auto timing unless you have cached transcript phrases from project_get to anchor exact narrated moments.",
       argsSchema: z.object({ scene: sequenceSceneInputSchema }),
       dispatch: async (args, ctx) =>
         mutateScenes(ctx.threadId, (scenes) => [...scenes, toSequenceScene(args.scene)])
@@ -457,7 +512,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
     defineTool({
       namespace: "pwrsnap_sizzle",
       name: "scene_set_script",
-      description: "Set one scene's narrator script line.",
+      description: "Set one scene's narrator script line. For sequence scenes, this can invalidate cached transcript phrase anchors; after changing it, prefer auto timing until a fresh preview/render generates updated transcript phrases.",
       argsSchema: z.object({ sceneId: z.string().min(1), scriptLine: z.string() }),
       dispatch: async (args, ctx) => editScene(ctx.threadId, mutateScenes, args.sceneId, (s) => ({
         ...s,
@@ -479,7 +534,7 @@ export function buildSizzleToolAllowlist(deps: SizzleToolDeps): ToolSpec<unknown
       namespace: "pwrsnap_sizzle",
       name: "sequence_beat_update",
       description:
-        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats. Timing rule: the first beat starts at offset 0. Non-final beats must have automatic end timing; if you anchor a later beat by offset or phrase, the previous beat continues until that anchor.",
+        "Update one beat inside a sequence scene. Can adjust captureId, timing, transition, videoFit, and mediaTrim without replacing unrelated beats. Timing rule: the first beat starts at offset 0. Non-final beats must have automatic end timing; if you anchor a later beat by offset or phrase, the previous beat continues until that anchor. Phrase anchors should be exact cached transcript phrases from project_get; phrases with the same first transcript word resolve to the same start time, so choose one unique start phrase per beat.",
       argsSchema: z.object({
         sceneId: z.string().min(1),
         beatId: z.string().min(1),

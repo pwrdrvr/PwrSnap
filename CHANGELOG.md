@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0-beta.14 - 2026-06-03
+
+- Added reel duplication from the Sizzle Composer and Library.
+- Restored Sizzle Library reel covers and previews, and guarded video trim
+  fitting for safer sequence rendering.
+- Improved capture flow and AI enrichment polish across six user-facing fixes.
+- Surfaced Codex turn errors instead of silently dropping them.
+- Fixed preview synchronization and repaired the dev Electron runtime path.
+- Refined editor toolbar icons and kept highlight preview opacity consistent.
+- Added Escape cancellation for the recording lead-in countdown.
+
 ## v1.0.0-beta.13 - 2026-06-01
 
 - Added Sizzle sequence scenes plus a sequence editor with real waveforms, auto

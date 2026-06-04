@@ -34,6 +34,7 @@ import { z } from "zod";
 import {
   BundleLayerNode,
   CanvasRect,
+  MAX_HIGHLIGHT_OPACITY,
   type CaptureRecord,
   type CommandName,
   type Req
@@ -561,13 +562,13 @@ const drawHighlight = defineTool({
   namespace: "pwrsnap_library",
   name: "draw_highlight",
   description:
-    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–1 (omit = sensible default). `blend` multiply|screen|overlay. `rotation` is radians clockwise around the rect center.",
+    "Draw a translucent highlight over a region — like a marker. `rect` is NORMALIZED [0,1] {x,y,w,h}. `color` #rrggbb (omit = yellow). `opacity` 0–0.6 (omit = sensible default). `blend` multiply|screen|overlay. `rotation` is radians clockwise around the rect center.",
   annotations: { destructiveHint: false },
   argsSchema: z.object({
     capture_id: z.string(),
     rect: normRect,
     color: hexColor.optional(),
-    opacity: z.number().min(0).max(1).optional(),
+    opacity: z.number().min(0).max(MAX_HIGHLIGHT_OPACITY).optional(),
     blend: highlightBlendMode.optional(),
     rotation: z.number().finite().optional()
   }),

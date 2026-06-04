@@ -82,55 +82,73 @@ function codexCommandForSettings(settings: Settings): string {
     : "codex";
 }
 
+// Module-level so the `forkProjectChats` export (called when a reel is
+// duplicated) shares the same lazily-built controller as the bus verbs.
+let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
+let sizzleController: ChatThreadController<Settings> | null = null;
+
+/** Lazily build the singleton Sizzle controller on first use — no codex child
+ *  at app start for users who never open the composer chat. */
+async function getSizzleController(): Promise<ChatThreadController<Settings>> {
+  if (sizzleController !== null) return sizzleController;
+  const settings = await sizzleSettingsReader();
+  const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+  // A throwaway store solely to resolve a thread's anchored project id for the
+  // Sizzle tool catalog. The controller's own store (built inside
+  // buildChatSurface) is what persists threads; this reads the same SQLite
+  // index/rows, so the lookup is consistent.
+  const projectStore = new ChatThreadStore({ chatsDir });
+  const tools = makeSizzleChatTools({
+    // The thread's anchor holds the project id; mutations bind to it.
+    resolveProjectId: async (threadId) =>
+      (await projectStore.get(threadId))?.anchorCaptureId ?? null
+  });
+  const surface = await buildChatSurface({
+    command: codexCommandForSettings(settings),
+    env: codexEnvForProfile(settings.codex.profile),
+    chatsDir,
+    readSettings: sizzleSettingsReader,
+    channels: SIZZLE_CHAT_CHANNELS,
+    send: broadcast,
+    usageSurface: "sizzle-chat",
+    buildSystemPrompt: ({ settings: s, anchorId }) =>
+      buildSizzleSystemPrompt({ settings: s, anchorCaptureId: anchorId }),
+    buildTurnContext: buildSizzleTurnContext,
+    toolLabels: SIZZLE_TOOL_LABELS,
+    catalog: tools.catalog,
+    dispatchToolCall: tools.dispatch,
+    threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
+    threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
+    // Per-surface default provider / model / reasoning from Settings → AI
+    // (`ai.defaults.sizzleChat`). `provider` selects the chat backend (Codex vs
+    // an enabled ACP agent); unset leaves fall back to the Codex / kit defaults.
+    ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
+    loggerScope: "pwrsnap:sizzle-chat"
+  });
+  sizzleController = surface.controller;
+  return sizzleController;
+}
+
+/** Fork every chat thread anchored to a source project into a freshly-anchored
+ *  set on a target project — invoked when a reel is duplicated so its chats come
+ *  along. Delegates to the kit controller's `forkThreadsForAnchor`. */
+export async function forkProjectChats(
+  sourceProjectId: string,
+  targetProjectId: string
+): Promise<void> {
+  const controller = await getSizzleController();
+  await controller.forkThreadsForAnchor({
+    sourceAnchorId: sourceProjectId,
+    targetAnchorId: targetProjectId
+  });
+}
+
 export function registerSizzleChatHandlers(params?: {
   controller?: ChatThreadController<Settings>;
   settingsReader?: SizzleChatSettingsReader;
 }): void {
-  const settingsReader = params?.settingsReader ?? defaultSettingsReader;
-
-  // Lazily built on first use — no codex child at app start for users who
-  // never open the composer chat.
-  let controller: ChatThreadController<Settings> | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController<Settings>> => {
-    if (controller !== null) return controller;
-    const settings = await settingsReader();
-    const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    // A throwaway store solely to resolve a thread's anchored project id for
-    // the Sizzle tool catalog. The controller's own store (built inside
-    // buildChatSurface) is what persists threads; this reads the same SQLite
-    // index/rows, so the lookup is consistent.
-    const projectStore = new ChatThreadStore({ chatsDir });
-    const tools = makeSizzleChatTools({
-      // The thread's anchor holds the project id; mutations bind to it.
-      resolveProjectId: async (threadId) =>
-        (await projectStore.get(threadId))?.anchorCaptureId ?? null
-    });
-    const surface = await buildChatSurface({
-      command: codexCommandForSettings(settings),
-      env: codexEnvForProfile(settings.codex.profile),
-      chatsDir,
-      readSettings: settingsReader,
-      channels: SIZZLE_CHAT_CHANNELS,
-      send: broadcast,
-      usageSurface: "sizzle-chat",
-      buildSystemPrompt: ({ settings: s, anchorId }) =>
-        buildSizzleSystemPrompt({ settings: s, anchorCaptureId: anchorId }),
-      buildTurnContext: buildSizzleTurnContext,
-      toolLabels: SIZZLE_TOOL_LABELS,
-      catalog: tools.catalog,
-      dispatchToolCall: tools.dispatch,
-      threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
-      threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
-      // Per-surface default provider / model / reasoning from Settings →
-      // AI (`ai.defaults.sizzleChat`). `provider` selects the chat backend
-      // (Codex vs an enabled ACP agent); unset leaves fall back to the
-      // Codex / kit defaults inside buildChatSurface.
-      ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
-      loggerScope: "pwrsnap:sizzle-chat"
-    });
-    controller = surface.controller;
-    return controller;
-  };
+  sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
+  sizzleController = params?.controller ?? null;
 
   bus.register("codex:sizzleChat:list", async (req) => {
     // Sizzle threads are ALWAYS project-scoped. The substrate's
@@ -142,7 +160,7 @@ export function registerSizzleChatHandlers(params?: {
       return ok({ threads: [] });
     }
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const threads = await c.listThreads({
         includeArchived: req.includeArchived ?? false,
         anchorId: req.anchorCaptureId
@@ -155,7 +173,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:create", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const view = await c.createThread({
         ...(req.name !== undefined ? { name: req.name } : {}),
         ...(req.anchorCaptureId !== undefined ? { anchorId: req.anchorCaptureId } : {})
@@ -168,7 +186,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:send", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const result = await c.sendMessage({
         threadId: req.threadId,
         text: req.text,
@@ -188,7 +206,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:history", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const messages = await c.getHistory(req.threadId);
       return ok({ messages: messages.map(toChatMessage) });
     } catch (cause) {
@@ -198,7 +216,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:rename", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const view = await c.rename(req.threadId, req.name);
       return ok(toLibraryThreadView(view));
     } catch (cause) {
@@ -208,7 +226,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:archive", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       const view = await c.archive(req.threadId, req.archived);
       return ok(toLibraryThreadView(view));
     } catch (cause) {
@@ -218,7 +236,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:interrupt", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       await c.interrupt(req.threadId);
       return ok(undefined);
     } catch (cause) {
@@ -228,7 +246,7 @@ export function registerSizzleChatHandlers(params?: {
 
   bus.register("codex:sizzleChat:approval", async (req) => {
     try {
-      const c = await getController();
+      const c = await getSizzleController();
       await c.resolveApproval({
         threadId: req.threadId,
         turnId: req.turnId,

@@ -8,7 +8,7 @@
 // no @testing-library dep so the test stays inside our existing
 // minimal stack.
 
-import { act, createElement } from "react";
+import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { OverlayRow } from "@pwrsnap/shared";
@@ -37,9 +37,9 @@ async function renderOverlaySvg(
     imageWidthPx: 800,
     imageHeightPx: 600
   },
-  extraProps: {
-    selectedLayerIds?: readonly string[];
-  } = {}
+  extraProps: Partial<
+    Pick<ComponentProps<typeof OverlaySvg>, "draft" | "draftStyle" | "selectedLayerIds">
+  > = {}
 ): Promise<HTMLDivElement> {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -376,6 +376,54 @@ describe("OverlaySvg ShapeGlyph — filled", () => {
     expect(rects.length).toBe(1);
     expect(rects[0]!.getAttribute("fill")).toBe("#00ff00");
     expect(rects[0]!.getAttribute("stroke")).toBe("none");
+  });
+});
+
+describe("OverlaySvg HighlightGlyph — opacity", () => {
+  test("live highlight draft uses the active highlight opacity", async () => {
+    const svg = await renderOverlaySvg([], undefined, {
+      draft: {
+        kind: "shape-drag",
+        tool: "highlight",
+        startXn: 0.1,
+        startYn: 0.1,
+        curXn: 0.4,
+        curYn: 0.3
+      },
+      draftStyle: {
+        color: "#22c55e",
+        highlightBlend: "multiply",
+        highlightOpacity: 0.3
+      }
+    });
+    const chromeSvg = svg.querySelector("[data-testid='chrome-svg']");
+    const highlight = chromeSvg?.querySelector("rect");
+    expect(highlight).not.toBeNull();
+    expect(highlight!.getAttribute("fill")).toBe("#22c55e");
+    expect(highlight!.getAttribute("fill-opacity")).toBe("0.3");
+    expect((highlight as SVGRectElement).style.mixBlendMode).toBe("multiply");
+  });
+
+  test("live highlight draft clamps stale opaque opacity to marker range", async () => {
+    const svg = await renderOverlaySvg([], undefined, {
+      draft: {
+        kind: "shape-drag",
+        tool: "highlight",
+        startXn: 0.1,
+        startYn: 0.1,
+        curXn: 0.4,
+        curYn: 0.3
+      },
+      draftStyle: {
+        color: "#22c55e",
+        highlightBlend: "multiply",
+        highlightOpacity: 1
+      }
+    });
+    const chromeSvg = svg.querySelector("[data-testid='chrome-svg']");
+    const highlight = chromeSvg?.querySelector("rect");
+    expect(highlight).not.toBeNull();
+    expect(highlight!.getAttribute("fill-opacity")).toBe("0.6");
   });
 });
 

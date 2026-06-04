@@ -1,10 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement
+} from "react";
 import {
   EVENT_CHANNELS,
   SIZZLE_VOICES,
   distributeSequenceBeatStarts,
   normalizeSizzleSequenceBeatContinuity,
   resolveSizzleAudioSource,
+  resolveSizzleVideoFit,
   type CaptureRecord,
   type SizzleBeatTiming,
   type SizzleProject,
@@ -12,6 +23,8 @@ import {
   type SizzleScene,
   type SizzleSequencePreviewBeat,
   type SizzleSequencePreviewPlan,
+  type SizzleSequenceTranscriptPhrase,
+  type SizzleSequencePreviewWarning,
   type SizzleSequenceBeat,
   type SizzleTransition,
   type SizzleTransitionType,
@@ -35,6 +48,13 @@ type PickerTarget =
   | { kind: "scene" }
   | { kind: "sequenceBeat"; sceneId: string };
 
+type ProjectContextMenuState = {
+  projectId: string;
+  projectName: string;
+  x: number;
+  y: number;
+};
+
 const IDLE_STATUS: RenderStatus = {
   phase: "idle",
   message: "",
@@ -44,6 +64,20 @@ const IDLE_STATUS: RenderStatus = {
 
 const RECENT_PROJECT_LIMIT = 5;
 const PROJECT_LIST_LIMIT = 100;
+const PROJECT_CONTEXT_MENU_WIDTH = 188;
+const PROJECT_CONTEXT_MENU_HEIGHT = 70;
+
+function clampContextMenuPosition(
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { x: number; y: number } {
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - height - 8))
+  };
+}
 
 /**
  * Apply a debounced edit's patch to the local project state. Used to
@@ -66,6 +100,291 @@ function formatDur(seconds: number): string {
   const secs = Math.round(seconds % 60);
   if (mins === 0) return `${secs}s`;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+export type SequencePreviewDisplayWarning = {
+  key: string;
+  label: string;
+  message: string;
+};
+
+export function formatSequencePreviewWarnings(
+  warnings: SizzleSequencePreviewWarning[],
+  beatIds: string[] = []
+): SequencePreviewDisplayWarning[] {
+  const beatNumberById = new Map(beatIds.map((beatId, index) => [beatId, index + 1]));
+  const consumed = new Set<number>();
+  return warnings.flatMap((warning, index): SequencePreviewDisplayWarning[] => {
+    if (consumed.has(index)) return [];
+    const label = labelForSequenceWarning(warning, beatNumberById);
+    if (warning.code === "media_trim_clamped" && warning.beatId !== undefined) {
+      const pairedFitIndex = warnings.findIndex(
+        (candidate, candidateIndex) =>
+          candidateIndex !== index &&
+          !consumed.has(candidateIndex) &&
+          candidate.beatId === warning.beatId &&
+          candidate.code === "video_fit"
+      );
+      if (pairedFitIndex >= 0) consumed.add(pairedFitIndex);
+      return [
+        {
+          key: `${warning.code}-${warning.beatId}-${index}`,
+          label,
+          message:
+            pairedFitIndex >= 0
+              ? `${warning.message}; using freeze-end because speed-to-fit would be too aggressive`
+              : warning.message
+        }
+      ];
+    }
+    if (warning.code === "video_fit") {
+      const pairedTrimIndex =
+        warning.beatId === undefined
+          ? -1
+          : warnings.findIndex(
+              (candidate, candidateIndex) =>
+                candidateIndex !== index &&
+                !consumed.has(candidateIndex) &&
+                candidate.beatId === warning.beatId &&
+                candidate.code === "media_trim_clamped"
+            );
+      if (pairedTrimIndex >= 0) {
+        consumed.add(pairedTrimIndex);
+        return [
+          {
+            key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+            label,
+            message: `${warnings[pairedTrimIndex]!.message}; using freeze-end because speed-to-fit would be too aggressive`
+          }
+        ];
+      }
+      return [
+        {
+          key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+          label,
+          message: warning.message
+        }
+      ];
+    }
+    if (warning.code === "phrase_unresolved") {
+      return [
+        {
+          key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+          label,
+          message: warning.message
+        }
+      ];
+    }
+    return [
+      {
+        key: `${warning.code}-${warning.beatId ?? "scene"}-${index}`,
+        label,
+        message: warning.message
+      }
+    ];
+  });
+}
+
+export function formatTranscriptPhraseOptionLabel(
+  phrase: SizzleSequenceTranscriptPhrase
+): string {
+  return `${formatTranscriptTime(phrase.startSec)} - ${formatTranscriptTime(phrase.endSec)}`;
+}
+
+function formatTranscriptTime(seconds: number): string {
+  const rounded = Math.max(0, Math.round(seconds * 10) / 10);
+  return Number.isInteger(rounded) ? `${rounded}s` : `${rounded.toFixed(1)}s`;
+}
+
+function searchKey(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function transcriptPhraseMatches(
+  phrase: SizzleSequenceTranscriptPhrase,
+  query: string
+): boolean {
+  const q = searchKey(query);
+  if (q.length === 0) return true;
+  return searchKey(phrase.text).includes(q);
+}
+
+function occurrenceForTranscriptPhrase(
+  selected: SizzleSequenceTranscriptPhrase,
+  phrases: SizzleSequenceTranscriptPhrase[]
+): number {
+  let occurrence = 0;
+  for (const phrase of phrases) {
+    if (phrase.text !== selected.text) continue;
+    occurrence += 1;
+    if (
+      phrase.startSec === selected.startSec &&
+      phrase.wordStartIndex === selected.wordStartIndex
+    ) {
+      return occurrence;
+    }
+  }
+  return 1;
+}
+
+function referencedCaptureIdsForProject(project: SizzleProject | null): string[] {
+  if (project === null) return [];
+  const ids = new Set<string>();
+  for (const scene of project.scenes) {
+    ids.add(scene.captureId);
+    if (scene.kind !== "sequence" || scene.beats === undefined) continue;
+    for (const beat of scene.beats) ids.add(beat.captureId);
+  }
+  return [...ids];
+}
+
+function TranscriptPhrasePicker(props: {
+  currentPhrase: string;
+  phrases: SizzleSequenceTranscriptPhrase[];
+  onSelect: (phrase: SizzleSequenceTranscriptPhrase) => void;
+}): ReactElement {
+  const { currentPhrase, phrases, onSelect } = props;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(currentPhrase);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
+  const hasTranscript = phrases.length > 0;
+  const visiblePhrases = useMemo(() => {
+    const filtered = phrases.filter((phrase) => transcriptPhraseMatches(phrase, query));
+    return filtered.slice(0, 12);
+  }, [phrases, query]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (containerRef.current?.contains(target) === true) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const updatePosition = (): void => {
+      const container = containerRef.current;
+      if (container === null) return;
+      const rect = container.getBoundingClientRect();
+      const boundary =
+        container.closest<HTMLElement>(".szl__scene--sequence") ??
+        container.closest<HTMLElement>(".szl__editor");
+      const boundaryRect =
+        boundary?.getBoundingClientRect() ??
+        new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+      const gutter = 8;
+      const width = Math.max(
+        240,
+        Math.min(420, boundaryRect.width - gutter * 2, window.innerWidth - 32)
+      );
+      const minLeft = boundaryRect.left + gutter;
+      const maxLeft = boundaryRect.right - gutter - width;
+      const left = Math.min(Math.max(rect.left, minLeft), Math.max(minLeft, maxLeft));
+      setPopoverStyle({
+        left,
+        top: rect.bottom + 4,
+        width
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  if (!hasTranscript) {
+    return (
+      <button
+        className="szl__sequence-phrase-button"
+        disabled
+        title="Preview the narration to generate a timed transcript before choosing phrase anchors."
+        type="button"
+      >
+        {currentPhrase.length > 0 ? currentPhrase : "Preview for transcript"}
+      </button>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="szl__sequence-phrase-control">
+      <button
+        className="szl__sequence-phrase-button"
+        onClick={() => {
+          setQuery(currentPhrase);
+          setOpen((value) => !value);
+        }}
+        title="Choose a phrase from the timed transcript"
+        type="button"
+      >
+        <span>{currentPhrase.length > 0 ? currentPhrase : "Choose transcript phrase"}</span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open ? (
+        <div className="szl__sequence-phrase-popover" style={popoverStyle}>
+          <input
+            className="szl__sequence-phrase-search"
+            autoFocus
+            value={query}
+            placeholder="Search transcript"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="szl__sequence-phrase-list" role="listbox">
+            {visiblePhrases.length > 0 ? (
+              visiblePhrases.map((phrase) => (
+                <button
+                  key={`${phrase.wordStartIndex}-${phrase.wordEndIndex}`}
+                  className={
+                    "szl__sequence-phrase-option" +
+                    (phrase.text === currentPhrase ? " is-selected" : "")
+                  }
+                  onClick={() => {
+                    onSelect(phrase);
+                    setOpen(false);
+                    setQuery(phrase.text);
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <span>{formatTranscriptPhraseOptionLabel(phrase)}</span>
+                  <strong>{phrase.text}</strong>
+                </button>
+              ))
+            ) : (
+              <span className="szl__sequence-phrase-empty">No matching transcript phrase</span>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function labelForSequenceWarning(
+  warning: SizzleSequencePreviewWarning,
+  beatNumberById: Map<string, number>
+): string {
+  if (warning.beatId === undefined) return "Scene warning";
+  const beatNumber = beatNumberById.get(warning.beatId);
+  return beatNumber === undefined ? "Beat warning" : `Beat ${beatNumber}`;
 }
 
 function transitionType(transition: SizzleTransition): SizzleTransitionType {
@@ -178,9 +497,28 @@ function sequencePreviewPlanKey(scene: SizzleScene): string {
   });
 }
 
+function sequenceTranscriptKey(scene: SizzleScene): string {
+  return JSON.stringify({
+    scriptLine: scene.scriptLine
+  });
+}
+
 type CachedSequencePreviewPlan = {
   key: string;
+  transcriptKey: string;
   plan: SizzleSequencePreviewPlan;
+};
+
+type SequencePreviewVideoState = {
+  beatId: string;
+  sourceTimeSec: number;
+  playbackRate: number;
+  shouldPlay: boolean;
+};
+
+type CachedSequenceTranscriptPhrases = {
+  key: string;
+  phrases: SizzleSequenceTranscriptPhrase[];
 };
 
 /** Bar count for the idle (pre-preview) waveform placeholder. */
@@ -197,6 +535,52 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: mimeType });
+}
+
+function sequencePreviewVideoState(args: {
+  beat: SizzleSequencePreviewBeat;
+  sceneBeat: SizzleSequenceBeat;
+  capture: CaptureRecord;
+  timelineTimeSec: number;
+}): SequencePreviewVideoState | null {
+  const { beat, sceneBeat, capture, timelineTimeSec } = args;
+  if (capture.kind !== "video" || capture.video === undefined || capture.video === null) {
+    return null;
+  }
+  const trim = beat.mediaTrim ?? sceneBeat.mediaTrim ?? {
+    startSec: capture.video.defaultRange.start,
+    endSec: capture.video.defaultRange.end
+  };
+  const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
+  const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
+  const fit = beat.fit ?? resolveSizzleVideoFit({
+    policy: sceneBeat.videoFit,
+    sourceDurationSec,
+    targetDurationSec
+  });
+  const elapsedSec = Math.max(0, timelineTimeSec - beat.startSec);
+  const inputDurationSec = Math.max(0.05, fit.inputDurationSec);
+  let sourceOffsetSec: number;
+
+  if (fit.renderMode === "speed-to-fit") {
+    sourceOffsetSec = Math.min(inputDurationSec, elapsedSec * fit.playbackRate);
+  } else if (fit.renderMode === "loop") {
+    sourceOffsetSec = elapsedSec % inputDurationSec;
+  } else if (fit.renderMode === "ping-pong") {
+    const pairDurationSec = inputDurationSec * 2;
+    const phaseSec = elapsedSec % pairDurationSec;
+    sourceOffsetSec =
+      phaseSec <= inputDurationSec ? phaseSec : pairDurationSec - phaseSec;
+  } else {
+    sourceOffsetSec = Math.min(inputDurationSec, elapsedSec);
+  }
+
+  return {
+    beatId: beat.beatId,
+    sourceTimeSec: trim.startSec + sourceOffsetSec,
+    playbackRate: fit.playbackRate,
+    shouldPlay: !(fit.renderMode === "freeze-end" && elapsedSec >= inputDurationSec)
+  };
 }
 
 /**
@@ -267,6 +651,7 @@ function SequenceTimelinePreview(props: {
   onSeek: (timeSec: number) => void;
 }): ReactElement {
   const { scene, captureMap, plan, audioBlob, currentTimeSec, playing, loading, onPlay, onSeek } = props;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const fallbackBeats = fallbackSequenceBeats(scene);
   const beats = plan?.beats ?? fallbackBeats;
   const fallbackDuration = Math.max(
@@ -289,6 +674,59 @@ function SequenceTimelinePreview(props: {
         : "";
   const barCount = SEQUENCE_WAVE_BARS;
   const playheadLeft = `${(timeSec / durationSec) * 100}%`;
+  const activeSceneBeat =
+    activeBeat === null
+      ? null
+      : (scene.beats ?? []).find((beat) => beat.id === activeBeat.beatId) ?? null;
+  const activeVideoState =
+    activeBeat !== null && activeCapture !== null && activeSceneBeat !== null
+      ? sequencePreviewVideoState({
+          beat: activeBeat,
+          sceneBeat: activeSceneBeat,
+          capture: activeCapture,
+          timelineTimeSec: timeSec
+        })
+      : null;
+  const activeVideoBeatId = activeVideoState?.beatId ?? null;
+  const shouldPlayActiveVideo = playing && (activeVideoState?.shouldPlay ?? true);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null) return;
+    if (!shouldPlayActiveVideo) {
+      video.pause();
+      return;
+    }
+    void video.play().catch(() => undefined);
+    return () => {
+      video.pause();
+    };
+  }, [shouldPlayActiveVideo, activeVideoBeatId]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video === null || activeVideoState === null) return;
+    try {
+      video.playbackRate = activeVideoState.playbackRate;
+      const driftSec = Math.abs(video.currentTime - activeVideoState.sourceTimeSec);
+      if (!shouldPlayActiveVideo || driftSec > 0.12) {
+        video.currentTime = activeVideoState.sourceTimeSec;
+      }
+    } catch {
+      // Metadata may not be ready yet. The next audio tick / beat change
+      // will retry, and the render path remains authoritative.
+    }
+  }, [
+    activeVideoState?.beatId,
+    activeVideoState?.playbackRate,
+    activeVideoState?.shouldPlay,
+    activeVideoState?.sourceTimeSec,
+    shouldPlayActiveVideo
+  ]);
+  const displayWarnings = formatSequencePreviewWarnings(
+    plan?.warnings ?? [],
+    beats.map((beat) => beat.beatId)
+  );
 
   const seekFromPointer = (clientX: number, target: HTMLElement): void => {
     const rect = target.getBoundingClientRect();
@@ -303,12 +741,11 @@ function SequenceTimelinePreview(props: {
           <span className="szl__sequence-preview-empty">No beats</span>
         ) : activeCapture?.kind === "video" ? (
           <video
+            ref={videoRef}
             key={activeBeat.beatId}
             src={captureSrcUrl(activeBeat.captureId)}
             muted
             playsInline
-            autoPlay={playing}
-            loop
           />
         ) : activeCapture !== null ? (
           <img src={activeThumb} alt="" />
@@ -384,12 +821,11 @@ function SequenceTimelinePreview(props: {
         </span>
         <span className="szl__sequence-playhead" style={{ left: playheadLeft }} aria-hidden="true" />
       </button>
-      {plan?.warnings.length ? (
+      {displayWarnings.length ? (
         <div className="szl__sequence-warnings">
-          {plan.warnings.slice(0, 3).map((warning, index) => (
-            <span key={`${warning.code}-${warning.beatId ?? "scene"}-${index}`}>
-              {warning.beatId === undefined ? "" : "Beat warning: "}
-              {warning.message}
+          {displayWarnings.slice(0, 3).map((warning) => (
+            <span key={warning.key}>
+              <strong>{warning.label}:</strong> {warning.message}
             </span>
           ))}
         </div>
@@ -405,6 +841,7 @@ export function SizzleApp(): ReactElement {
   // activeId is still null, so this never gets clobbered.
   const [activeId, setActiveId] = useState<string | null>(() => readInitialProjectId());
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
+  const requestedCaptureIdsRef = useRef<Set<string>>(new Set());
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
@@ -417,6 +854,8 @@ export function SizzleApp(): ReactElement {
   // swap) so the scene list stays visible + updates live as the agent
   // edits. Shown by default — chat is the primary way to compose a reel.
   const [showChat, setShowChat] = useState(true);
+  const [projectContextMenu, setProjectContextMenu] =
+    useState<ProjectContextMenuState | null>(null);
 
   const active = useMemo(
     () => projects.find((p) => p.id === activeId) ?? null,
@@ -441,6 +880,29 @@ export function SizzleApp(): ReactElement {
     setRecentProjectIds((prev) => admitRecentProject(prev, id));
   }, []);
 
+  const closeProjectContextMenu = useCallback((): void => {
+    setProjectContextMenu(null);
+  }, []);
+
+  const openProjectContextMenu = useCallback(
+    (project: SizzleProject, event: ReactMouseEvent<HTMLElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const position = clampContextMenuPosition(
+        event.clientX,
+        event.clientY,
+        PROJECT_CONTEXT_MENU_WIDTH,
+        PROJECT_CONTEXT_MENU_HEIGHT
+      );
+      setProjectContextMenu({
+        projectId: project.id,
+        projectName: project.name,
+        ...position
+      });
+    },
+    []
+  );
+
   const reloadProjects = useCallback(async () => {
     const r = await dispatch("sizzle:list", {});
     if (r.ok) {
@@ -461,6 +923,28 @@ export function SizzleApp(): ReactElement {
       if (r.ok) setCaptures(r.value.rows);
     });
   }, []);
+
+  useEffect(() => {
+    if (active === null) return;
+    const loadedIds = new Set(captures.map((capture) => capture.id));
+    const missing = referencedCaptureIdsForProject(active).filter(
+      (id) => !loadedIds.has(id) && !requestedCaptureIdsRef.current.has(id)
+    );
+    if (missing.length === 0) return;
+    for (const id of missing) requestedCaptureIdsRef.current.add(id);
+    let cancelled = false;
+    void dispatch("library:listByIds", { ids: missing }).then((r) => {
+      if (cancelled || !r.ok || r.value.rows.length === 0) return;
+      setCaptures((prev) => {
+        const byId = new Map(prev.map((capture) => [capture.id, capture]));
+        for (const capture of r.value.rows) byId.set(capture.id, capture);
+        return [...byId.values()];
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, captures]);
 
   useEffect(() => {
     return subscribe(EVENT_CHANNELS.sizzleRenderProgress, (payload) => {
@@ -553,6 +1037,19 @@ export function SizzleApp(): ReactElement {
       )
     );
   }, []);
+
+  const onDuplicate = useCallback(
+    async (id: string) => {
+      await flushPatch(id);
+      const r = await dispatch("sizzle:duplicate", { id });
+      if (r.ok) {
+        setProjects((prev) => [r.value, ...prev.filter((p) => p.id !== r.value.id)]);
+        selectProject(r.value.id);
+        setFocusTitleForId(r.value.id);
+      }
+    },
+    [flushPatch, selectProject]
+  );
 
   const onUpdate = useCallback(
     (id: string, patch: Partial<Omit<SizzleProject, "id" | "createdAt">>) => {
@@ -901,6 +1398,8 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onOpenMenu={(event) => openProjectContextMenu(p, event)}
+                  onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
             )}
@@ -928,6 +1427,8 @@ export function SizzleApp(): ReactElement {
                   project={p}
                   active={activeId === p.id}
                   onSelect={() => selectProject(p.id)}
+                  onOpenMenu={(event) => openProjectContextMenu(p, event)}
+                  onDuplicate={() => void onDuplicate(p.id)}
                 />
               ))
             )}
@@ -957,6 +1458,7 @@ export function SizzleApp(): ReactElement {
               onPickSequenceBeat={(sceneId) => setPicker({ kind: "sequenceBeat", sceneId })}
               onRender={onRender}
               onReveal={onReveal}
+              onDuplicate={() => void onDuplicate(active.id)}
               onDelete={() => onDelete(active.id)}
               status={status}
             />
@@ -989,6 +1491,20 @@ export function SizzleApp(): ReactElement {
           }
         />
       ) : null}
+      {projectContextMenu !== null ? (
+        <SizzleProjectContextMenu
+          menu={projectContextMenu}
+          onClose={closeProjectContextMenu}
+          onOpenProject={(projectId) => {
+            closeProjectContextMenu();
+            selectProject(projectId);
+          }}
+          onDuplicateProject={(projectId) => {
+            closeProjectContextMenu();
+            void onDuplicate(projectId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -996,18 +1512,25 @@ export function SizzleApp(): ReactElement {
 function ProjectRow({
   project,
   active,
-  onSelect
+  onSelect,
+  onOpenMenu,
+  onDuplicate
 }: {
   project: SizzleProject;
   active: boolean;
   onSelect: () => void;
+  onOpenMenu: (event: ReactMouseEvent<HTMLElement>) => void;
+  onDuplicate: () => void;
 }): ReactElement {
   const clipLabel = `${project.scenes.length} clip${project.scenes.length === 1 ? "" : "s"}`;
   const updatedLabel = isDifferentProjectDate(project.createdAt, project.modifiedAt)
     ? `Updated ${formatProjectDate(project.modifiedAt)}`
     : null;
   return (
-    <li>
+    <li
+      className="szl__row-wrap"
+      onContextMenu={onOpenMenu}
+    >
       <button
         className={"szl__row" + (active ? " is-active" : "")}
         onClick={onSelect}
@@ -1021,7 +1544,90 @@ function ProjectRow({
           <span className="szl__row-meta szl__row-meta--sub">{updatedLabel}</span>
         ) : null}
       </button>
+      <button
+        type="button"
+        className="szl__row-duplicate"
+        title="Duplicate Sizzle Reel"
+        aria-label={`Duplicate ${project.name}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onDuplicate();
+        }}
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="8" y="8" width="11" height="11" rx="2" />
+          <path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" />
+        </svg>
+      </button>
     </li>
+  );
+}
+
+function SizzleProjectContextMenu({
+  menu,
+  onClose,
+  onOpenProject,
+  onDuplicateProject
+}: {
+  menu: ProjectContextMenuState;
+  onClose: () => void;
+  onOpenProject: (projectId: string) => void;
+  onDuplicateProject: (projectId: string) => void;
+}): ReactElement {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onMouseDown(event: MouseEvent): void {
+      const root = rootRef.current;
+      if (root === null) return;
+      if (event.target instanceof Node && root.contains(event.target)) return;
+      onClose();
+    }
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => rootRef.current?.focus());
+  }, []);
+
+  return (
+    <div
+      ref={rootRef}
+      className="szl__context-menu"
+      role="menu"
+      tabIndex={-1}
+      style={{ left: `${menu.x}px`, top: `${menu.y}px` }}
+      onContextMenu={(event) => event.preventDefault()}
+      aria-label={`${menu.projectName} actions`}
+    >
+      <button
+        type="button"
+        role="menuitem"
+        className="szl__context-menu-row"
+        onClick={() => onOpenProject(menu.projectId)}
+      >
+        Open
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="szl__context-menu-row"
+        onClick={() => onDuplicateProject(menu.projectId)}
+      >
+        Duplicate
+      </button>
+    </div>
   );
 }
 
@@ -1057,6 +1663,7 @@ type EditorProps = {
   onPickSequenceBeat: (sceneId: string) => void;
   onRender: () => void;
   onReveal: () => void;
+  onDuplicate: () => void;
   onDelete: () => void;
 };
 
@@ -1077,6 +1684,7 @@ function Editor(props: EditorProps): ReactElement {
     onPickSequenceBeat,
     onRender,
     onReveal,
+    onDuplicate,
     onDelete
   } = props;
 
@@ -1122,6 +1730,9 @@ function Editor(props: EditorProps): ReactElement {
   const [previewTimeSec, setPreviewTimeSec] = useState(0);
   const [sequencePreviewPlans, setSequencePreviewPlans] = useState<
     Record<string, CachedSequencePreviewPlan>
+  >({});
+  const [sequenceTranscriptPhrases, setSequenceTranscriptPhrases] = useState<
+    Record<string, CachedSequenceTranscriptPhrases>
   >({});
   // Per-sequence-scene narration audio, captured when a preview decodes
   // it, and handed to wavesurfer to draw the real waveform. Cleared when
@@ -1219,7 +1830,15 @@ function Editor(props: EditorProps): ReactElement {
         ...prev,
         [sceneId]: {
           key: sequencePreviewPlanKey(scene),
+          transcriptKey: sequenceTranscriptKey(scene),
           plan: planResult.value
+        }
+      }));
+      setSequenceTranscriptPhrases((prev) => ({
+        ...prev,
+        [sceneId]: {
+          key: sequenceTranscriptKey(scene),
+          phrases: planResult.value.transcriptPhrases
         }
       }));
       previewAudio = planResult.value;
@@ -1297,6 +1916,12 @@ function Editor(props: EditorProps): ReactElement {
           delete next[scene.id];
           return next;
         });
+        setSequenceTranscriptPhrases((prev) => {
+          if (prev[scene.id] === undefined) return prev;
+          const next = { ...prev };
+          delete next[scene.id];
+          return next;
+        });
         // The narration audio (and thus its waveform) is now stale.
         setSequenceAudioBlobs((prev) => {
           if (prev[scene.id] === undefined) return prev;
@@ -1324,24 +1949,26 @@ function Editor(props: EditorProps): ReactElement {
     () =>
       project.scenes
         .filter((s) => s.kind === "sequence")
-        .map((s) => s.id)
+        .map((s) => `${s.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(s)}`)
         .join(","),
-    [project.scenes]
+    [project.scenes, project.ttsModel, project.ttsProvider, project.voice]
   );
   const waveformAttemptRef = useRef<Set<string>>(new Set());
   useEffect(() => {
+    const cacheAttemptKey = (scene: SizzleScene): string =>
+      `${scene.id}:${project.ttsProvider}:${project.ttsModel}:${project.voice}:${sequenceTranscriptKey(scene)}`;
     const pending = project.scenes.filter(
       (s) =>
         s.kind === "sequence" &&
         (s.narration ?? s.scriptLine).trim().length > 0 &&
         sequenceAudioBlobs[s.id] === undefined &&
-        !waveformAttemptRef.current.has(s.id)
+        !waveformAttemptRef.current.has(cacheAttemptKey(s))
     );
     if (pending.length === 0) return undefined;
     let cancelled = false;
     const queue = new IterableQueueMapperSimple<SizzleScene>(
       async (scene) => {
-        waveformAttemptRef.current.add(scene.id);
+        waveformAttemptRef.current.add(cacheAttemptKey(scene));
         try {
           const res = await dispatch("sizzle:loadSequenceSceneAudio", {
             projectId: project.id,
@@ -1349,10 +1976,20 @@ function Editor(props: EditorProps): ReactElement {
           });
           if (cancelled || !res.ok || res.value.cached !== true) return;
           const blob = base64ToBlob(res.value.audioBase64, res.value.mimeType);
+          const transcriptPhrases = res.value.transcriptPhrases;
           if (cancelled) return;
           setSequenceAudioBlobs((prev) =>
             prev[scene.id] !== undefined ? prev : { ...prev, [scene.id]: blob }
           );
+          if (transcriptPhrases.length > 0) {
+            setSequenceTranscriptPhrases((prev) => ({
+              ...prev,
+              [scene.id]: {
+                key: sequenceTranscriptKey(scene),
+                phrases: transcriptPhrases
+              }
+            }));
+          }
         } catch {
           // A failed background load just leaves the idle baseline.
         }
@@ -1529,6 +2166,9 @@ function Editor(props: EditorProps): ReactElement {
             : ""}
         </div>
         <span className="szl__spacer" />
+        <button className="szl__btn" onClick={onDuplicate} type="button">
+          Duplicate
+        </button>
         <button className="szl__btn-danger" onClick={onDelete} type="button">
           Delete
         </button>
@@ -1622,6 +2262,13 @@ function Editor(props: EditorProps): ReactElement {
               sequencePreviewEntry?.key === sequencePreviewPlanKey(scene)
                 ? sequencePreviewEntry.plan
                 : undefined;
+            const sequenceTranscriptEntry =
+              scene.kind === "sequence" &&
+              sequenceTranscriptPhrases[scene.id]?.key === sequenceTranscriptKey(scene)
+                ? sequenceTranscriptPhrases[scene.id]
+                : undefined;
+            const transcriptPhrases =
+              scene.kind === "sequence" ? sequenceTranscriptEntry?.phrases ?? [] : [];
 
             const elements: ReactElement[] = [];
 
@@ -1726,6 +2373,7 @@ function Editor(props: EditorProps): ReactElement {
                               ? cacheUrl(beat.captureId, 320, "webp", beatCapture.edits_version)
                               : cacheUrl(beat.captureId, 320, "webp");
                           const timingKind = beat.timing.kind;
+                          const phraseText = beat.timing.kind === "phrase" ? beat.timing.phrase : "";
                           const isFirstBeat = beatIdx === 0;
                           const isFinalBeat = beatIdx === (scene.beats?.length ?? 0) - 1;
                           return (
@@ -1791,7 +2439,7 @@ function Editor(props: EditorProps): ReactElement {
                                 title={
                                   isFirstBeat
                                     ? "The first beat always starts at 0"
-                                    : "When this beat appears: Auto (evenly spaced between anchors), a spoken Phrase, or an explicit Offset"
+                                    : "When this beat appears: Auto (evenly spaced between anchors), a timed transcript Phrase, or an explicit Offset"
                                 }
                               >
                                 <option value="auto">Auto</option>
@@ -1857,17 +2505,15 @@ function Editor(props: EditorProps): ReactElement {
                                 </>
                               ) : beat.timing.kind === "phrase" ? (
                                 <>
-                                  <input
-                                    className="szl__sequence-phrase"
-                                    value={beat.timing.phrase}
-                                    placeholder="spoken phrase"
-                                    title="Phrase to match in the narration"
-                                    onChange={(e) =>
+                                  <TranscriptPhrasePicker
+                                    currentPhrase={phraseText}
+                                    phrases={transcriptPhrases}
+                                    onSelect={(phrase) =>
                                       editSequenceBeat(scene.id, beat.id, {
                                         timing: {
                                           kind: "phrase",
-                                          phrase: e.target.value,
-                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                          phrase: phrase.text,
+                                          occurrence: occurrenceForTranscriptPhrase(phrase, transcriptPhrases),
                                           offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
                                           durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
                                         }
@@ -1962,7 +2608,7 @@ function Editor(props: EditorProps): ReactElement {
                         })}
                       </div>
                       <div className="szl__scene-hint">
-                        Sequence scene: one text block across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Beats start at offset seconds or phrase anchors; non-final beats end automatically at the next beat.
+                        Sequence scene: one script across {scene.beats?.length ?? 0} asset beat{(scene.beats?.length ?? 0) === 1 ? "" : "s"}. Phrase anchors use timed transcript words from preview; the transcript can differ from the written script.
                       </div>
                       <SequenceTimelinePreview
                         scene={scene}

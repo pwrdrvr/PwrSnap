@@ -335,6 +335,7 @@ type HighlightBlendMode = z.infer<typeof HighlightBlendModeSchema>;
 export const DEFAULT_HIGHLIGHT_BLEND_MODE: HighlightBlendMode = "multiply";
 export const DEFAULT_HIGHLIGHT_COLOR_HEX = "#facc15";
 export const DEFAULT_HIGHLIGHT_OPACITY = 0.3;
+export const MAX_HIGHLIGHT_OPACITY = 0.6;
 
 export const HighlightOverlay = z.object({
   kind: z.literal("highlight"),
@@ -371,7 +372,9 @@ export function readHighlightColor(data: {
 }
 
 export function readHighlightOpacity(data: { opacity?: number | undefined }): number {
-  return data.opacity ?? DEFAULT_HIGHLIGHT_OPACITY;
+  const raw = data.opacity ?? DEFAULT_HIGHLIGHT_OPACITY;
+  if (!Number.isFinite(raw)) return DEFAULT_HIGHLIGHT_OPACITY;
+  return Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, raw));
 }
 
 export function readHighlightBlend(

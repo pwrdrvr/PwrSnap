@@ -56,6 +56,7 @@ import {
   matchBucket,
   readShapeKind,
   readShapeSkewDeg,
+  readHighlightOpacity,
   readTextWeight
 } from "@pwrsnap/shared";
 import { dispatch, captureSrcUrl } from "../../lib/pwrsnap";
@@ -203,6 +204,7 @@ function resolveDraftStyleForActiveTool(
     case "highlight":
       return {
         color: resolveToolColor(activeStyle.style.color),
+        highlightOpacity: activeStyle.style.opacity,
         highlightBlend: activeStyle.style.blend
       };
     case "text":
@@ -417,7 +419,7 @@ function selectedOverlayToToolStyle(
       style: {
         ...defaults.highlight,
         ...(data.color !== undefined ? { color: data.color } : {}),
-        ...(data.opacity !== undefined ? { opacity: data.opacity } : {}),
+        opacity: readHighlightOpacity(data),
         ...(data.blend !== undefined ? { blend: data.blend } : {})
       }
     };

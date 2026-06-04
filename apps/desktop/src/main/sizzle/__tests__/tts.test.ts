@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,6 +37,7 @@ function fakeProject(overrides: Partial<SizzleProject> = {}): SizzleProject {
     name: "Test",
     createdAt: "2026-05-27T00:00:00Z",
     modifiedAt: "2026-05-27T00:00:00Z",
+    coverCaptureId: null,
     scenes: [],
     voice: "onyx",
     ttsModel: "tts-1-hd",
@@ -245,7 +246,7 @@ describe("pruneTtsCache", () => {
     expect(result).toEqual({ scanned: 0, removed: 0, kept: 0 });
   });
 
-  it("keeps files referenced by any project scene; deletes the rest", async () => {
+  it("keeps files referenced by any project scene and recent prior scripts", async () => {
     // Synthesize three audio files. Reference only two from the project.
     const a = await synthesize({
       provider: "openai",
@@ -276,14 +277,12 @@ describe("pruneTtsCache", () => {
     });
     const result = await pruneTtsCache([project]);
     expect(result.scanned).toBe(3);
-    expect(result.kept).toBe(2);
-    expect(result.removed).toBe(1);
+    expect(result.kept).toBe(3);
+    expect(result.removed).toBe(0);
     const entries = await readdir(ttsCacheDir());
     expect(entries.sort()).toEqual(
-      [a.audioPath, b.audioPath].map((p) => p.split("/").pop()).sort()
+      [a.audioPath, b.audioPath, c.audioPath].map((p) => p.split("/").pop()).sort()
     );
-    // Orphan really gone.
-    expect(entries).not.toContain(c.audioPath.split("/").pop());
   });
 
   it("uses trimmed scriptLine when computing the live set", async () => {
@@ -316,7 +315,30 @@ describe("pruneTtsCache", () => {
       scenes: [{ id: "s", captureId: "c", scriptLine: "  ", durationOverrideSec: null, mediaTrim: null, audioSource: "auto", transition: "crossfade" }]
     });
     const result = await pruneTtsCache([project]);
+    expect(result.removed).toBe(0);
+    expect(result.kept).toBe(1);
+  });
+
+  it("keeps only the five most recent prior-script cache files", async () => {
+    const paths: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const result = await synthesize({
+        provider: "openai",
+        apiKey: "sk",
+        text: `prior-${i}`,
+        voice: "onyx",
+        model: "tts-1-hd"
+      });
+      paths.push(result.audioPath);
+      const when = new Date(Date.UTC(2026, 0, 1, 0, i, 0));
+      await utimes(result.audioPath, when, when);
+    }
+
+    const result = await pruneTtsCache([]);
+    expect(result.kept).toBe(5);
     expect(result.removed).toBe(1);
-    expect(result.kept).toBe(0);
+    const entries = await readdir(ttsCacheDir());
+    expect(entries).not.toContain(paths[0]!.split("/").pop());
+    expect(entries).toContain(paths[5]!.split("/").pop());
   });
 });

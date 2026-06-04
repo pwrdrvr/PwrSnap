@@ -55,7 +55,7 @@ import type {
   ToolColor,
   ToolSizePreset
 } from "@pwrsnap/shared";
-import { COLOR_TOKENS } from "@pwrsnap/shared";
+import { COLOR_TOKENS, MAX_HIGHLIGHT_OPACITY } from "@pwrsnap/shared";
 import { dispatch } from "../../lib/pwrsnap";
 import { useSettings } from "../settings/useSettings";
 
@@ -1098,14 +1098,17 @@ function HighlightBody({
           <input
             type="range"
             min={0}
-            max={1}
+            max={MAX_HIGHLIGHT_OPACITY}
             step={0.05}
-            value={style.opacity}
+            value={Math.min(MAX_HIGHLIGHT_OPACITY, style.opacity)}
             data-testid="highlight-opacity-input"
             onChange={(e) => {
               const v = Number.parseFloat(e.target.value);
               if (Number.isFinite(v)) {
-                onStyleFieldChange("opacity", v);
+                onStyleFieldChange(
+                  "opacity",
+                  Math.min(MAX_HIGHLIGHT_OPACITY, Math.max(0, v))
+                );
               }
             }}
             aria-label="Highlight opacity"

@@ -34,6 +34,7 @@ describe("SizzleStore", () => {
     expect(p.ttsModel).toBe("tts-1-hd");
     expect(p.ttsProvider).toBe("openai");
     expect(p.resolution).toBe("1080p");
+    expect(p.coverCaptureId).toBeNull();
     expect(p.outputPath).toBeNull();
     expect(p.lastRenderedAt).toBeNull();
     expect(p.createdAt).toEqual(p.modifiedAt);
@@ -109,6 +110,7 @@ describe("SizzleStore", () => {
     expect(next.scenes[0]!.durationOverrideSec).toBeNull();
     expect(next.scenes[1]!.id).toBe("sc_keep");
     expect(next.scenes[1]!.durationOverrideSec).toBe(4);
+    expect(next.coverCaptureId).toBe("cap_1");
   });
 
   it("update() preserves sequence scenes and normalizes beat defaults", async () => {
@@ -161,6 +163,170 @@ describe("SizzleStore", () => {
     expect(scene.beats![0]!.timing).toEqual({ kind: "offset", startSec: 0, endSec: null });
     expect(scene.beats![0]!.transition).toBe("cut");
     expect(scene.beats![0]!.videoFit).toBe("smart-fit");
+    expect(next.coverCaptureId).toBe("cap_wizard");
+  });
+
+  it("keeps an existing cover when sequence scenes are edited", async () => {
+    const store = makeStore();
+    const p = await store.create("Demo");
+    const first = await store.update(p.id, {
+      scenes: [
+        {
+          id: "sc_sequence",
+          kind: "sequence",
+          captureId: "cap_original",
+          scriptLine: "First narration",
+          narration: "First narration",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_0", captureId: "cap_original", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      ]
+    });
+    expect(first.coverCaptureId).toBe("cap_original");
+
+    const second = await store.update(p.id, {
+      scenes: [
+        {
+          id: "sc_sequence",
+          kind: "sequence",
+          captureId: "cap_new",
+          scriptLine: "Edited narration",
+          narration: "Edited narration",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_0", captureId: "cap_new", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      ]
+    });
+
+    expect(second.coverCaptureId).toBe("cap_original");
+  });
+
+  it("persists a derived cover for old sequence projects without bumping modifiedAt", async () => {
+    const modifiedAt = "2026-05-28T12:00:00.000Z";
+    await writeFile(
+      filePath,
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          projects: [
+            {
+              id: "sz_old",
+              name: "Old Sequence Reel",
+              createdAt: "2026-05-28T00:00:00.000Z",
+              modifiedAt,
+              scenes: [
+                {
+                  id: "sc_sequence",
+                  kind: "sequence",
+                  captureId: "",
+                  scriptLine: "Narration",
+                  narration: "Narration",
+                  durationOverrideSec: null,
+                  mediaTrim: null,
+                  audioSource: "voiceover",
+                  transition: "crossfade",
+                  beats: [
+                    { id: "bt_0", captureId: "cap_cover", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+                  ]
+                }
+              ],
+              voice: "onyx",
+              ttsModel: "tts-1-hd",
+              ttsProvider: "openai",
+              resolution: "1080p",
+              outputPath: null,
+              lastRenderedAt: null
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const repair = await makeStore().persistDerivedFieldsForProject("sz_old");
+    expect(repair?.repaired).toBe(true);
+    expect(repair?.project.coverCaptureId).toBe("cap_cover");
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      projects: Array<{ coverCaptureId?: unknown; modifiedAt: string }>;
+    };
+    expect(persisted.projects[0]!.coverCaptureId).toBe("cap_cover");
+    expect(persisted.projects[0]!.modifiedAt).toBe(modifiedAt);
+  });
+
+  it("duplicate() copies project settings and scenes with fresh ids, then resets render output", async () => {
+    const store = makeStore();
+    const p = await store.create("Launch Reel");
+    const source = await store.update(p.id, {
+      voice: "nova",
+      resolution: "720p",
+      outputPath: "/tmp/launch.mp4",
+      lastRenderedAt: "2026-06-01T12:00:00.000Z",
+      scenes: [
+        {
+          id: "sc_simple",
+          captureId: "cap_simple",
+          scriptLine: "Simple scene",
+          durationOverrideSec: 4,
+          mediaTrim: null,
+          audioSource: "auto",
+          transition: "crossfade"
+        },
+        {
+          id: "sc_sequence",
+          kind: "sequence",
+          captureId: "cap_a",
+          scriptLine: "Walk through both moments.",
+          narration: "Walk through both moments.",
+          durationOverrideSec: null,
+          mediaTrim: null,
+          audioSource: "voiceover",
+          transition: "crossfade",
+          beats: [
+            { id: "bt_a", captureId: "cap_a", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" },
+            { id: "bt_b", captureId: "cap_b", timing: { kind: "auto" }, mediaTrim: null, transition: "cut", videoFit: "smart-fit" }
+          ]
+        }
+      ]
+    });
+    const duplicate = await store.duplicate(source.id);
+    expect(duplicate.id).not.toBe(source.id);
+    expect(duplicate.name).toBe("Launch Reel Copy");
+    expect(duplicate.voice).toBe("nova");
+    expect(duplicate.resolution).toBe("720p");
+    expect(duplicate.outputPath).toBeNull();
+    expect(duplicate.lastRenderedAt).toBeNull();
+    expect(duplicate.scenes).toHaveLength(2);
+    expect(duplicate.scenes.map((scene) => scene.captureId)).toEqual(["cap_simple", "cap_a"]);
+    expect(duplicate.scenes.map((scene) => scene.id)).not.toEqual(
+      source.scenes.map((scene) => scene.id)
+    );
+    const duplicatedSequence = duplicate.scenes[1]!;
+    expect(duplicatedSequence.kind).toBe("sequence");
+    expect(duplicatedSequence.beats?.map((beat) => beat.captureId)).toEqual(["cap_a", "cap_b"]);
+    expect(duplicatedSequence.beats?.map((beat) => beat.id)).not.toEqual(
+      source.scenes[1]!.beats?.map((beat) => beat.id)
+    );
+  });
+
+  it("duplicate() clamps generated copy names to the project name cap", async () => {
+    const store = makeStore();
+    const p = await store.create("x".repeat(200));
+    const duplicate = await store.duplicate(p.id);
+    expect(duplicate.name).toHaveLength(200);
+    expect(duplicate.name).toBe("x".repeat(195) + " Copy");
   });
 
   it("preserves an auto beat across a write→read round-trip (no downgrade to offset)", async () => {

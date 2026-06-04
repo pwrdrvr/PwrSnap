@@ -35,23 +35,23 @@ importers:
         specifier: ^5.2.5
         version: 5.2.5
       '@pwrdrvr/agent-acp':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.2
+        version: 0.1.2
       '@pwrdrvr/agent-chat-react':
-        specifier: ^0.1.0
-        version: 0.1.0(react@19.2.6)
+        specifier: ^0.1.2
+        version: 0.1.2(react@19.2.6)
       '@pwrdrvr/agent-client':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.2
+        version: 0.1.2
       '@pwrdrvr/agent-core':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.2
+        version: 0.1.2
       '@pwrdrvr/agent-transport':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.2
+        version: 0.1.2
       '@pwrdrvr/codex-discovery':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.2
+        version: 0.1.2
       '@pwrsnap/codex-app-server-protocol':
         specifier: workspace:*
         version: link:../../packages/codex-app-server-protocol
@@ -879,29 +879,29 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@0.1.0':
-    resolution: {integrity: sha512-Z9hs0DUSq8oH3ZLMICnljvBe3XYKUkmAMXUH4mjqHwY76hod5YzonWiSnx3Z6er+Swp02GFAt/PGfVcwdB1vcA==}
+  '@pwrdrvr/agent-acp@0.1.2':
+    resolution: {integrity: sha512-OCgNBU9A3zK5veyjjfCZd2KiRCJXfnCrSATBRIT1vTV5e1QSQoddmBvkuX9cepJckPdNU02xXsx3XH7xc65QgA==}
 
-  '@pwrdrvr/agent-chat-react@0.1.0':
-    resolution: {integrity: sha512-1T7xBxq8N54crdgepZx7EkNoqMNnYHV8fcqswsHbkJVKLp2AVwTrE+2myiVzoomqVeFmuKZRkS9J043rcGvhpg==}
+  '@pwrdrvr/agent-chat-react@0.1.2':
+    resolution: {integrity: sha512-IDEYEDg7VQiYzxTvRK22GeHFuo0cB2LcrGwQ4v86A5ThBFB7I/sVZfacWUwjNJz7H/87ADCl7jvVD/8DLs0NAA==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
-  '@pwrdrvr/agent-client@0.1.0':
-    resolution: {integrity: sha512-oOewLxcB+4xd0faZWRFj+D2O+Xw/4W2uwLeyrMAMe9hi5x7kuWjIshjMCI8ckdhMMXWVMQ/mDnR4hIA0z1ivHQ==}
+  '@pwrdrvr/agent-client@0.1.2':
+    resolution: {integrity: sha512-mrk4ngRD1aHTeOu/jwXMSpGf8r5LDAlRy2GiD6BqFub9O2aKe4vgglGkb/XOSRHnV8gY5tErMS6PGfDr6Bl+Dg==}
 
-  '@pwrdrvr/agent-core@0.1.0':
-    resolution: {integrity: sha512-xuOI8VyP7h5gjAi3zEHt45e2AuG3BD11IABEMYPtWmliZpAPWMqiIP4UrfeW4X++5efhUYbl6Bf45D/3LuqFiA==}
+  '@pwrdrvr/agent-core@0.1.2':
+    resolution: {integrity: sha512-uuK6Tfivv5J78A1Uj2WpWhIPcf2kdEkbAZhV1Pimgm2jjILowxdiUjMA0YHP/a7rRkx3NJmde06F88QWHhSZMA==}
 
-  '@pwrdrvr/agent-transport@0.1.0':
-    resolution: {integrity: sha512-A5y6C5sLM/i69X3p9c9BZTxoBxgn9lwRbomoNM28SfluNwlhqlLEogumTnQKnWTrI3kl7QxOAmA5F40p1XUgNg==}
+  '@pwrdrvr/agent-transport@0.1.2':
+    resolution: {integrity: sha512-jXXc3XeCZ0v6BwNW7ph0eFYNbr1XWP44WY/cYdktETH7wsNGeOuCi0aN4HrOxZdH0qlRaLic6gljivKZ/Tri0g==}
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0':
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
     engines: {node: '>=20'}
 
-  '@pwrdrvr/codex-discovery@0.1.0':
-    resolution: {integrity: sha512-Ofa5KUW43P51K67/CUylYSGZu9pYmTkUNde+HHbSbj90wEKos7QVTABYnUpmgvpNEV/gJ6ru5gRXPLJrC2ksdg==}
+  '@pwrdrvr/codex-discovery@0.1.2':
+    resolution: {integrity: sha512-9jt+tdNcos6q22ObiRqDf94jCO6l/Z7RsELVXRssY3WXPJPAUXpuSpPFj9K1PkFUAXsDIRwr169iGbUBbeKmJw==}
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -3431,35 +3431,35 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@pwrdrvr/agent-acp@0.1.0':
+  '@pwrdrvr/agent-acp@0.1.2':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.0
-      '@pwrdrvr/agent-transport': 0.1.0
+      '@pwrdrvr/agent-core': 0.1.2
+      '@pwrdrvr/agent-transport': 0.1.2
 
-  '@pwrdrvr/agent-chat-react@0.1.0(react@19.2.6)':
+  '@pwrdrvr/agent-chat-react@0.1.2(react@19.2.6)':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.0
+      '@pwrdrvr/agent-core': 0.1.2
       react: 19.2.6
 
-  '@pwrdrvr/agent-client@0.1.0':
+  '@pwrdrvr/agent-client@0.1.2':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.0
-      '@pwrdrvr/agent-transport': 0.1.0
+      '@pwrdrvr/agent-core': 0.1.2
+      '@pwrdrvr/agent-transport': 0.1.2
       '@pwrdrvr/codex-app-server-protocol': 0.133.0
-      '@pwrdrvr/codex-discovery': 0.1.0
+      '@pwrdrvr/codex-discovery': 0.1.2
       zod: 4.4.3
 
-  '@pwrdrvr/agent-core@0.1.0': {}
+  '@pwrdrvr/agent-core@0.1.2': {}
 
-  '@pwrdrvr/agent-transport@0.1.0':
+  '@pwrdrvr/agent-transport@0.1.2':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.0
+      '@pwrdrvr/agent-core': 0.1.2
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0': {}
 
-  '@pwrdrvr/codex-discovery@0.1.0':
+  '@pwrdrvr/codex-discovery@0.1.2':
     dependencies:
-      '@pwrdrvr/agent-core': 0.1.0
+      '@pwrdrvr/agent-core': 0.1.2
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
 

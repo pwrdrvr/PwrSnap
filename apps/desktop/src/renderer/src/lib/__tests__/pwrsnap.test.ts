@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "vitest";
 import { parseCacheUrl, parseCaptureId } from "../../../../main/protocols-parse";
-import { cacheUrl, captureSrcUrl } from "../pwrsnap";
+import { cacheUrl, captureSrcUrl, sizzleOutputUrl } from "../pwrsnap";
 
 describe("captureSrcUrl ↔ parseCaptureId round-trip", () => {
   test.each([
@@ -41,5 +41,21 @@ describe("cacheUrl ↔ parseCacheUrl round-trip", () => {
   ])("round-trip (%s, %d, %s)", (id, width, format) => {
     const url = cacheUrl(id, width, format);
     expect(parseCacheUrl(url)).toEqual({ captureId: id, width, format });
+  });
+});
+
+describe("sizzleOutputUrl ↔ parseCaptureId round-trip", () => {
+  test("emits the sizzle output scheme", () => {
+    expect(sizzleOutputUrl("sz_76a98a1b-b4a")).toBe(
+      "pwrsnap-sizzle://r/sz_76a98a1b-b4a"
+    );
+  });
+
+  test("uses lastRenderedAt as a cache buster", () => {
+    const url = sizzleOutputUrl("sz_76a98a1b-b4a", "2026-06-03T10:11:12.000Z");
+    expect(url).toBe(
+      "pwrsnap-sizzle://r/sz_76a98a1b-b4a?v=2026-06-03T10%3A11%3A12.000Z"
+    );
+    expect(parseCaptureId(url, "pwrsnap-sizzle")).toBe("sz_76a98a1b-b4a");
   });
 });

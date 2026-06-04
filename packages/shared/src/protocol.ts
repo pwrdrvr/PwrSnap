@@ -811,6 +811,12 @@ export type SizzleSequencePreviewWarning = {
   message: string;
 };
 
+export type SizzleSequencePreviewVideoFit = {
+  renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
+  inputDurationSec: number;
+  playbackRate: number;
+};
+
 export type SizzleSequencePreviewBeat = {
   beatId: string;
   captureId: string;
@@ -819,6 +825,16 @@ export type SizzleSequencePreviewBeat = {
   timing: SizzleBeatTiming;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  mediaTrim?: SizzleMediaTrim | null;
+  fit?: SizzleSequencePreviewVideoFit | null;
+};
+
+export type SizzleSequenceTranscriptPhrase = {
+  text: string;
+  startSec: number;
+  endSec: number;
+  wordStartIndex: number;
+  wordEndIndex: number;
 };
 
 export type SizzleSequencePreviewPlan = {
@@ -827,6 +843,7 @@ export type SizzleSequencePreviewPlan = {
   durationSec: number;
   timingQuality: SizzleSpeechTimingQuality;
   warnings: SizzleSequencePreviewWarning[];
+  transcriptPhrases: SizzleSequenceTranscriptPhrase[];
   beats: SizzleSequencePreviewBeat[];
 };
 
@@ -897,6 +914,10 @@ export type SizzleProject = {
   name: string;
   createdAt: string;
   modifiedAt: string;
+  /** Stable cover image for Library/project surfaces. This is set when
+   *  scenes are first added and then travels with the project instead of
+   *  requiring thumbnail callers to understand simple vs sequence scenes. */
+  coverCaptureId: string | null;
   scenes: SizzleScene[];
   voice: SizzleVoice;
   ttsModel: SizzleTtsModel;
@@ -905,6 +926,27 @@ export type SizzleProject = {
   outputPath: string | null;
   lastRenderedAt: string | null;
 };
+
+export function firstSizzleSceneCaptureId(scene: SizzleScene): string | null {
+  if (scene.kind === "sequence") {
+    return scene.beats?.find((beat) => beat.captureId.length > 0)?.captureId ?? null;
+  }
+  return scene.captureId.length > 0 ? scene.captureId : null;
+}
+
+export function defaultSizzleProjectCoverCaptureId(
+  scenes: readonly SizzleScene[]
+): string | null {
+  for (const scene of scenes) {
+    const captureId = firstSizzleSceneCaptureId(scene);
+    if (captureId !== null) return captureId;
+  }
+  return null;
+}
+
+export function resolveSizzleProjectCoverCaptureId(project: SizzleProject): string | null {
+  return project.coverCaptureId ?? defaultSizzleProjectCoverCaptureId(project.scenes);
+}
 
 /**
  * The Project Asset Cart — a single global "draft" the user fills by
@@ -2950,6 +2992,10 @@ export type Commands = {
   "sizzle:open": { req: { projectId?: string }; res: void };
   "sizzle:list": { req: Record<string, never>; res: { projects: SizzleProject[] } };
   "sizzle:create": { req: { name: string }; res: SizzleProject };
+  "sizzle:duplicate": {
+    req: { id: string; name?: string; forkChat?: boolean };
+    res: SizzleProject;
+  };
   "sizzle:update": {
     req: {
       id: string;
@@ -2997,15 +3043,20 @@ export type Commands = {
   };
   /** Cache-only read of a sequence scene's narration audio for the
    *  editor waveform. Unlike `previewSequenceScenePlan`, this NEVER
-   *  synthesizes, resolves speech timing, or hits any API — it only
-   *  returns the content-addressed TTS file if it is already on disk
-   *  (e.g. from a prior preview or render). Safe to call proactively on
-   *  reel open without spending TTS credits; returns `{ cached: false }`
-   *  when the audio has not been generated yet. */
+   *  synthesizes or hits any API — it only returns content-addressed
+   *  cache files that are already on disk (audio, plus cached transcript
+   *  phrases when speech timing was previously resolved). Safe to call
+   *  proactively on reel open without spending TTS/transcription credits;
+   *  returns `{ cached: false }` when the audio has not been generated yet. */
   "sizzle:loadSequenceSceneAudio": {
     req: { projectId: string; sceneId: string };
     res:
-      | { cached: true; audioBase64: string; mimeType: "audio/mpeg" }
+      | {
+          cached: true;
+          audioBase64: string;
+          mimeType: "audio/mpeg";
+          transcriptPhrases: SizzleSequenceTranscriptPhrase[];
+        }
       | { cached: false };
   };
 

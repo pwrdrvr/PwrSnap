@@ -12,6 +12,7 @@ vi.mock("electron", () => ({
 
 import {
   approximateSpeechTiming,
+  buildTranscriptPhraseSuggestions,
   resolvePhraseTiming,
   resolveSpeechTiming,
   speechTimingCacheKey
@@ -152,9 +153,79 @@ describe("resolvePhraseTiming", () => {
     expect(resolved!.endSec - resolved!.startSec).toBeCloseTo(0.75, 3);
   });
 
+  it("matches expanded phrase anchors against contracted transcript words", () => {
+    const timing = {
+      text: "Once it is installed, the workflow is still what people love.",
+      durationSec: 4,
+      quality: "precise" as const,
+      warnings: [],
+      words: [
+        { index: 0, word: "Once", normalized: "once", startSec: 0.4, endSec: 0.6 },
+        { index: 1, word: "It's", normalized: "its", startSec: 0.62, endSec: 0.8 },
+        { index: 2, word: "installed", normalized: "installed", startSec: 0.82, endSec: 1.1 },
+        { index: 3, word: "the", normalized: "the", startSec: 1.2, endSec: 1.3 }
+      ]
+    };
+
+    const resolved = resolvePhraseTiming(timing, {
+      phrase: "Once it is installed,",
+      occurrence: 1
+    });
+
+    expect(resolved).not.toBeNull();
+    expect(resolved!.startSec).toBe(0.4);
+    expect(resolved!.matchedText).toBe("Once It's installed");
+  });
+
+  it("matches contracted phrase anchors against expanded transcript words", () => {
+    const timing = approximateSpeechTiming("Once it is installed, the workflow continues.", 4);
+    const resolved = resolvePhraseTiming(timing, {
+      phrase: "Once it's installed",
+      occurrence: 1
+    });
+
+    expect(resolved).not.toBeNull();
+    expect(resolved!.matchedText).toBe("Once it is installed");
+  });
+
   it("returns null for unresolved phrase anchors", () => {
     const timing = approximateSpeechTiming("Open Settings", 2);
     expect(resolvePhraseTiming(timing, { phrase: "approve pairing" })).toBeNull();
+  });
+});
+
+describe("buildTranscriptPhraseSuggestions", () => {
+  it("builds one timestamped phrase suggestion per start word", () => {
+    const timing = approximateSpeechTiming("Once it's installed the workflow continues", 4);
+    const suggestions = buildTranscriptPhraseSuggestions(timing, {
+      wordsPerSuggestion: 3,
+      maxSuggestions: 4
+    });
+
+    expect(suggestions).toEqual([
+      expect.objectContaining({
+        text: "Once it's installed",
+        wordStartIndex: 0,
+        wordEndIndex: 2
+      }),
+      expect.objectContaining({
+        text: "it's installed the",
+        wordStartIndex: 1,
+        wordEndIndex: 3
+      }),
+      expect.objectContaining({
+        text: "installed the workflow",
+        wordStartIndex: 2,
+        wordEndIndex: 4
+      }),
+      expect.objectContaining({
+        text: "the workflow continues",
+        wordStartIndex: 3,
+        wordEndIndex: 5
+      })
+    ]);
+    expect(new Set(suggestions.map((suggestion) => suggestion.startSec)).size).toBe(suggestions.length);
+    expect(suggestions[0]!.startSec).toBeLessThan(suggestions[0]!.endSec);
   });
 });
 

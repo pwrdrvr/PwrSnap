@@ -27,8 +27,14 @@ const mocks = vi.hoisted(() => ({
       id: string,
       patch: Partial<Omit<SizzleProject, "id" | "createdAt">>
     ) => Promise<SizzleProject>>(),
+    duplicate: vi.fn<(
+      id: string,
+      name?: string
+    ) => Promise<SizzleProject>>(),
     delete: vi.fn()
   },
+  cleanupProjectChats: vi.fn(),
+  forkProjectChats: vi.fn(),
   send: vi.fn(),
   getValue: vi.fn()
 }));
@@ -64,6 +70,11 @@ vi.mock("../../sizzle/sizzle-store", () => ({
       this.name = "SizzleProjectNotFoundError";
     }
   }
+}));
+
+vi.mock("../sizzle-chat-handlers", () => ({
+  cleanupProjectChats: mocks.cleanupProjectChats,
+  forkProjectChats: mocks.forkProjectChats
 }));
 
 vi.mock("../../sizzle/tts", () => ({
@@ -143,6 +154,7 @@ function makeProject(overrides: Partial<SizzleProject> = {}): SizzleProject {
     name: "Untitled",
     createdAt: "2026-05-27T00:00:00.000Z",
     modifiedAt: "2026-05-27T00:00:00.000Z",
+    coverCaptureId: null,
     scenes: [],
     voice: "alloy",
     ttsModel: "tts-1",
@@ -173,6 +185,9 @@ beforeEach(() => {
   mocks.store.get.mockReset();
   mocks.store.list.mockReset();
   mocks.store.update.mockReset();
+  mocks.store.duplicate.mockReset();
+  mocks.cleanupProjectChats.mockReset();
+  mocks.forkProjectChats.mockReset();
   mocks.send.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
@@ -180,10 +195,12 @@ beforeEach(() => {
   mocks.store.list.mockResolvedValue([]);
 });
 
-async function loadHandler(): Promise<(req: unknown) => Promise<unknown>> {
+async function loadHandler(
+  command: string = "sizzle:toggleScene"
+): Promise<(req: unknown) => Promise<unknown>> {
   const { registerSizzleHandlers } = await import("../sizzle-handlers");
   registerSizzleHandlers();
-  const handler = mocks.handlers.get("sizzle:toggleScene");
+  const handler = mocks.handlers.get(command);
   expect(handler).toBeDefined();
   return handler!;
 }
@@ -380,6 +397,36 @@ describe("sizzle:toggleScene — remove path", () => {
     await handler({ projectId: "proj-1", captureId: "cap-1" });
     expect(mocks.send).toHaveBeenCalled();
     expect(mocks.send.mock.calls[0]![0]).toBe("events:sizzle:projects:changed");
+  });
+});
+
+describe("sizzle:duplicate — chat fork", () => {
+  test("returns and broadcasts before the best-effort chat fork resolves", async () => {
+    const project = makeProject({ id: "proj-copy", name: "Untitled Copy" });
+    mocks.store.duplicate.mockResolvedValue(project);
+    mocks.store.list.mockResolvedValue([project]);
+    let resolveFork: () => void = () => undefined;
+    mocks.forkProjectChats.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFork = resolve;
+        })
+    );
+
+    const handler = await loadHandler("sizzle:duplicate");
+    const result = await Promise.race([
+      handler({ id: "proj-1" }),
+      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 25))
+    ]);
+
+    expect(result).toMatchObject({ ok: true, value: project });
+    expect(mocks.store.duplicate).toHaveBeenCalledWith("proj-1", undefined);
+    expect(mocks.send).toHaveBeenCalledWith(
+      "events:sizzle:projects:changed",
+      { projects: [project] }
+    );
+    expect(mocks.forkProjectChats).toHaveBeenCalledWith("proj-1", "proj-copy");
+    resolveFork();
   });
 });
 

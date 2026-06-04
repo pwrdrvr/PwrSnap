@@ -36,6 +36,9 @@ import {
   readArrowDoubleEnded,
   readArrowEndStyle,
   readArrowStemStyle,
+  readHighlightBlend,
+  readHighlightColor,
+  readHighlightOpacity,
   readOverlayRotation,
   readOverlayThickness,
   readShapeFilled,
@@ -81,6 +84,10 @@ export interface DraftStyle {
   /** Highlight-tool only — CSS mix-blend-mode for the live-drag
    *  preview. Mirrors the persisted overlay's `blend` field. */
   highlightBlend?: "multiply" | "screen" | "overlay";
+  /** Highlight-tool only — opacity for the live-drag preview. Mirrors
+   *  the persisted overlay's `opacity` field so the drag preview and
+   *  committed glyph do not jump on pointerup. */
+  highlightOpacity?: number;
 }
 
 export function OverlaySvg({
@@ -351,10 +358,10 @@ export function OverlaySvg({
               <HighlightGlyph
                 rect={liveRect}
                 color={draftStyle?.color}
+                opacity={draftStyle?.highlightOpacity}
                 blend={draftStyle?.highlightBlend}
                 imageWidthPx={imageWidthPx}
                 imageHeightPx={imageHeightPx}
-                isDraft
               />
             )}
             {draft.tool === "shape" && (
@@ -1004,8 +1011,7 @@ function HighlightGlyph({
   opacity,
   blend,
   imageWidthPx,
-  imageHeightPx,
-  isDraft = false
+  imageHeightPx
 }: {
   rect: { x: number; y: number; w: number; h: number };
   /** Clockwise rotation in radians around the rect's geometric center.
@@ -1015,8 +1021,8 @@ function HighlightGlyph({
   /** Optional explicit color. v2-editor refresh: legacy rows (no
    *  color field) fall back to the historical yellow marker hue. */
   color?: "auto" | string | undefined;
-  /** Optional 0..1 opacity. Legacy rows fall back to the marker-pen
-   *  default (0.32 applied, 0.45 draft). */
+  /** Optional 0..1 opacity. Legacy rows fall back to the shared
+   *  marker-pen default used by the bake path. */
   opacity?: number | undefined;
   /** CSS mix-blend-mode for the highlight rect. Mirrors the
    *  HighlightOverlay's optional `blend` field — `multiply` darkens
@@ -1030,28 +1036,15 @@ function HighlightGlyph({
   blend?: "multiply" | "screen" | "overlay" | undefined;
   imageWidthPx: number;
   imageHeightPx: number;
-  isDraft?: boolean;
 }): ReactElement {
-  // Legacy marker yellow + opacity tunings preserved as defaults for
-  // back-compat — rows drawn before HighlightOverlay's color/opacity
-  // fields existed render exactly as they did pre-Phase-3.1.
-  const baseHex =
-    color === undefined || color === "auto"
-      ? "rgb(255, 220, 80)"
-      : color;
-  // Slightly more opaque on draft so the user sees the drag clearly.
-  const fillOpacity =
-    opacity !== undefined
-      ? (isDraft ? Math.min(1, opacity * 1.4) : opacity)
-      : isDraft
-      ? 0.45
-      : 0.32;
+  const baseHex = readHighlightColor({ color });
+  const fillOpacity = readHighlightOpacity({ opacity });
   // Resolved blend mode for the CSS mix-blend-mode attribute on the
   // <rect>. SVG 2 supports mix-blend-mode via the `style` attribute;
   // Chromium honors it on individual SVG children, so the highlight
   // rect blends only with the canvas below — NOT with other overlays
   // (which sit in the same SVG and don't have blend modes applied).
-  const resolvedBlend = blend ?? "multiply";
+  const resolvedBlend = readHighlightBlend({ blend });
   // Rotation transform — same convention as ShapeGlyph: SVG `rotate(deg
   // cx cy)` in pixel-space, with `cx, cy` at the rect's center.
   const rx = rect.x * imageWidthPx;

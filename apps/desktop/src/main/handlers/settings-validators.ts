@@ -687,14 +687,10 @@ function isAiTokenShape(value: string): boolean {
   return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
 }
 
-/** Chat surfaces select a backend via `provider`; enrichment is Codex-only
- *  free-text. Keep in sync with the surfaces `buildChatSurface` drives. */
-const CHAT_SURFACE_IDS: readonly string[] = ["libraryChat", "sizzleChat"];
-
-/** Validate a CHAT surface's `provider` backend selector. Accepts "" /
- *  "codex" / "acp:<known-id>"; rejects unknown `acp:` ids and any other
- *  free-text token (those used to map to a Codex modelProvider, which chat
- *  surfaces no longer do). */
+/** Validate a surface's `provider` backend selector (every surface now —
+ *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
+ *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
+ *  (those used to map to a Codex modelProvider; surfaces no longer do). */
 function validateChatSurfaceProvider(
   surface: string,
   value: string
@@ -721,8 +717,10 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
       `settings:write: ai.defaults.${surface} must be an object`
     );
   }
-  // `provider` is surface-dependent: chat surfaces are a backend selector,
-  // enrichment is a free-text Codex modelProvider token.
+  // `provider` is a BACKEND selector for EVERY surface now — chat surfaces
+  // (Library / Sizzle) and enrichment alike: "" / "codex" → Codex, "acp:<id>"
+  // → an enabled ACP agent. (Enrichment used to be a free-text Codex
+  // modelProvider token; the Settings → AI consolidation unified all three.)
   if (!isUndefined(raw.provider)) {
     if (!isString(raw.provider)) {
       return validationError(
@@ -730,16 +728,8 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
         `settings:write: ai.defaults.${surface}.provider must be a string`
       );
     }
-    if (CHAT_SURFACE_IDS.includes(surface)) {
-      const provErr = validateChatSurfaceProvider(surface, raw.provider);
-      if (provErr !== null) return provErr;
-    } else if (raw.provider.length > 0 && !isAiTokenShape(raw.provider)) {
-      // Enrichment: free-text Codex provider token (shape only).
-      return validationError(
-        `invalid_ai_defaults_${surface}_provider`,
-        `settings:write: ai.defaults.${surface}.provider is not a recognizable Codex provider (got ${JSON.stringify(raw.provider)})`
-      );
-    }
+    const provErr = validateChatSurfaceProvider(surface, raw.provider);
+    if (provErr !== null) return provErr;
   }
   for (const key of ["model"] as const) {
     const v = raw[key];

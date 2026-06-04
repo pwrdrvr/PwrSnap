@@ -287,7 +287,7 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
         ai: {
           enabled: true,
           defaults: {
-            libraryChat: { provider: "openai", model: "gpt-5.5", reasoning: "high" },
+            libraryChat: { provider: "acp:gemini", model: "gpt-5.5", reasoning: "high" },
             sizzleChat: { reasoning: "medium" },
             // Explicit enrichment model wins over the captionModel seed.
             enrichment: { model: "gpt-5.5-mini" }
@@ -299,12 +299,32 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const svc = new DesktopSettingsService({ filePath });
     const settings = await svc.read();
     expect(settings.ai.defaults.libraryChat).toEqual({
-      provider: "openai",
+      provider: "acp:gemini",
       model: "gpt-5.5",
       reasoning: "high"
     });
     expect(settings.ai.defaults.sizzleChat).toEqual({ reasoning: "medium" });
     expect(settings.ai.defaults.enrichment.model).toBe("gpt-5.5-mini");
+  });
+
+  test("v1 shape drops a legacy free-text provider (now a backend selector)", async () => {
+    const filePath = join(workDir, "settings.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        codex: { mode: "auto", pinnedPath: "", profile: "", captionModel: "gpt-5.4-mini" },
+        ai: {
+          enabled: true,
+          // "openai" was the old free-text Codex modelProvider; provider is a
+          // backend selector now, so it's dropped (→ Codex), model kept.
+          defaults: { enrichment: { provider: "openai", model: "gpt-5.5-mini" } }
+        }
+      }),
+      "utf8"
+    );
+    const settings = await new DesktopSettingsService({ filePath }).read();
+    expect(settings.ai.defaults.enrichment).toEqual({ model: "gpt-5.5-mini" });
   });
 
   test("v1 shape drops empty-string and invalid `ai.defaults` leaves", async () => {

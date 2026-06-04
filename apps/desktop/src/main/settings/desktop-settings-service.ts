@@ -666,8 +666,15 @@ function parseAiSurfaceDefault(
 ): AiSurfaceDefault {
   const out: AiSurfaceDefault = {};
   const rec = isRecord(raw) ? raw : {};
-  if (typeof rec.provider === "string" && rec.provider.trim().length > 0) {
-    out.provider = rec.provider.trim();
+  if (typeof rec.provider === "string") {
+    // `provider` is a BACKEND selector for every surface now: "codex" or
+    // "acp:<known-id>". Keep only valid selectors; a legacy free-text Codex
+    // modelProvider token (e.g. "openai" on the old enrichment surface) is
+    // dropped → Codex default. "" / "codex" also drop to the implicit default.
+    const provider = rec.provider.trim();
+    if (provider.startsWith("acp:") && isBuiltInAcpAgentId(provider.slice("acp:".length))) {
+      out.provider = provider;
+    }
   }
   if (typeof rec.model === "string" && rec.model.trim().length > 0) {
     out.model = rec.model.trim();

@@ -241,10 +241,10 @@ describe("settings:* validation", () => {
       {
         ai: {
           defaults: {
-            // Chat-surface provider is a backend selector ("codex" /
-            // "acp:<known>"); enrichment provider is a free-text Codex token.
+            // `provider` is a backend selector for EVERY surface now —
+            // chat surfaces and enrichment alike ("codex" / "acp:<known>").
             libraryChat: { provider: "acp:gemini", model: "gpt-5.5", reasoning: "high" },
-            enrichment: { provider: "openai" }
+            enrichment: { provider: "acp:qwen", model: "gpt-5.4-mini" }
           }
         }
       } as unknown as Record<string, never>,
@@ -257,7 +257,20 @@ describe("settings:* validation", () => {
       model: "gpt-5.5",
       reasoning: "high"
     });
-    expect(result.value.ai.defaults.enrichment.provider).toBe("openai");
+    expect(result.value.ai.defaults.enrichment.provider).toBe("acp:qwen");
+  });
+
+  test("settings:write rejects a free-text (non-backend) enrichment provider", async () => {
+    const result = await bus.dispatch(
+      "settings:write",
+      {
+        ai: { defaults: { enrichment: { provider: "openai" } } }
+      } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error.code).toBe("invalid_ai_defaults_enrichment_provider");
   });
 
   test("settings:write accepts codex / empty chat-surface provider", async () => {

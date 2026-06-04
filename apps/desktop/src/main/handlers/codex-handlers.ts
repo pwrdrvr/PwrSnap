@@ -259,13 +259,6 @@ function enrichmentEffortForSettings(settings: Settings): string {
   return settings.ai.defaults.enrichment.reasoning ?? "low";
 }
 
-/** Resolve the enrichment model provider from the per-surface AI default.
- *  Empty/unset → undefined (use the Codex default provider). */
-function enrichmentProviderForSettings(settings: Settings): string | undefined {
-  const provider = settings.ai.defaults.enrichment.provider;
-  return provider !== undefined && provider.length > 0 ? provider : undefined;
-}
-
 function triggerSourceOrDefault(
   value: AiEnrichmentTriggerSource | undefined,
   fallback: AiEnrichmentTriggerSource
@@ -456,9 +449,9 @@ export function registerCodexHandlers(params?: {
       codexCommand,
       triggerSource,
       selectedModel: enrichmentModelForSettings(settings),
-      ...(enrichmentProviderForSettings(settings) !== undefined
-        ? { selectedProvider: enrichmentProviderForSettings(settings) }
-        : {}),
+      // `ai.defaults.enrichment.provider` is now a BACKEND selector ("" / codex
+      // → Codex; "acp:<id>" → an ACP agent, wired in a follow-up). Enrichment
+      // no longer carries a Codex modelProvider override, so none is passed.
       request: {
         media: {
           maxLongEdgePx: 1024,

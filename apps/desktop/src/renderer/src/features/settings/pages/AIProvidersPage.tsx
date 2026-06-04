@@ -27,8 +27,7 @@ import {
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
   EVENT_CHANNELS,
-  isAiReasoningEffort,
-  isCodexCaptionModel
+  isAiReasoningEffort
 } from "@pwrsnap/shared";
 import { dispatch, subscribe } from "../../../lib/pwrsnap";
 import {
@@ -45,44 +44,6 @@ const CODEX_MODE_OPTIONS: readonly SegmentOption<"auto" | "pinned">[] = [
   { id: "auto", label: "Auto Discovery — Use Newest" },
   { id: "pinned", label: "Specified Path" }
 ];
-
-function modelOptionsForSelect(
-  models: readonly CodexModelOption[],
-  selectedModel: string
-): CodexModelOption[] {
-  const imageModels = models.filter(
-    (model) =>
-      !model.hidden &&
-      model.inputModalities.includes("text") &&
-      model.inputModalities.includes("image")
-  );
-  const options = imageModels.length > 0
-    ? imageModels
-    : CODEX_CAPTION_MODELS.map((id) => ({
-        id,
-        model: id,
-        displayName: id,
-        description: "",
-        hidden: false,
-        inputModalities: ["text", "image"] as Array<"text" | "image">,
-        defaultServiceTier: null,
-        isDefault: id === DEFAULT_CODEX_CAPTION_MODEL
-      }));
-  if (options.some((model) => model.id === selectedModel)) return options;
-  return [
-    {
-      id: selectedModel,
-      model: selectedModel,
-      displayName: selectedModel,
-      description: "",
-      hidden: false,
-      inputModalities: ["text", "image"],
-      defaultServiceTier: null,
-      isDefault: false
-    },
-    ...options
-  ];
-}
 
 function modelLabel(model: CodexModelOption): string {
   return model.displayName === model.id || model.displayName.length === 0
@@ -206,11 +167,6 @@ export function AIProvidersPage(): ReactElement {
     setSnapshotLoading(false);
   };
 
-  const captionModel = isCodexCaptionModel(settings?.codex.captionModel)
-    ? settings.codex.captionModel
-    : DEFAULT_CODEX_CAPTION_MODEL;
-  const captionModelOptions = modelOptionsForSelect(codexModels?.models ?? [], captionModel);
-
   // The chat-surface provider dropdown offers Codex + each ENABLED ACP agent
   // (value `acp:<id>`, labeled by its discovery display name). Built from the
   // enabled set intersected with discovery so an enabled-but-now-uninstalled
@@ -222,6 +178,11 @@ export function AIProvidersPage(): ReactElement {
     const entry = acpDiscovery?.agents.find((a) => a.id === id);
     return { value: `acp:${id}`, label: entry?.displayName ?? id };
   });
+  // OCR rides the same enrichment turn, so its row mirrors the enrichment
+  // surface's model (the source of truth, replacing the legacy caption model).
+  const enrichmentModel = settings?.ai.defaults.enrichment.model;
+  const enrichmentModelLabel =
+    enrichmentModel !== undefined && enrichmentModel.length > 0 ? enrichmentModel : "Default";
 
   return (
     <>
@@ -238,36 +199,30 @@ export function AIProvidersPage(): ReactElement {
       </div>
 
       <Card eyebrow="ROLES" title="Job routing">
-        <JobRoutingRow
+        <p className="pss__role-intro">
+          Route each AI job to a backend — Codex or an enabled ACP agent — and
+          pick its model + reasoning effort. Leave a field on Default to let the
+          backend choose. Applies to new runs / threads; existing conversations
+          aren&apos;t rewritten.
+        </p>
+        <AiSurfaceDefaultControl
+          surface="enrichment"
           name="Capture captions & tag suggestions"
-          sub="Codex caption shown in Library detail + Float-Over"
-          provider="Codex"
-        >
-          <div className="pss__model-picker">
-            <select
-              className="pss__select"
-              value={captionModel}
-              onChange={(e) => {
-                const next = e.target.value;
-                if (!isCodexCaptionModel(next)) return;
-                void patch({ codex: { captionModel: next } });
-              }}
-              aria-label="Capture caption model"
-            >
-              {captionModelOptions.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {modelLabel(model)}
-                </option>
-              ))}
-            </select>
-            {codexModelsLoading ? <span className="pss__model-loading">loading models</span> : null}
-          </div>
-        </JobRoutingRow>
+          sub="Caption + tags shown in Library detail + Float-Over"
+          value={settings?.ai.defaults.enrichment ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          imageOnly
+          acpProviderOptions={[]}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { enrichment: p } } });
+          }}
+        />
         <JobRoutingRow
           name="OCR — extract text from screenshots"
-          sub="Rides with the captions request — same Codex turn, same model"
+          sub="Rides with the captions request — same turn, same model"
           provider="Codex"
-          model={captionModel}
+          model={enrichmentModelLabel}
         />
         <JobRoutingRow
           name="Semantic search vectorization"
@@ -276,50 +231,30 @@ export function AIProvidersPage(): ReactElement {
           model="Coming soon"
           dim
         />
-      </Card>
-
-      <Card eyebrow="ROLES" title="Per-surface defaults">
-        <Row
-          label="Default model & reasoning"
-          sub="Pick the default provider, model, and reasoning effort for each AI surface. Leave a field on Default to let Codex choose. These apply to new threads / runs; they don't rewrite existing conversations."
-          tag="config"
-        >
-          <div className="pss__ai-surface-defaults">
-            <AiSurfaceDefaultControl
-              surface="libraryChat"
-              label="Library chat"
-              value={settings?.ai.defaults.libraryChat ?? {}}
-              models={codexModels?.models ?? []}
-              modelsLoading={codexModelsLoading}
-              acpProviderOptions={acpChatProviderOptions}
-              onChange={(p) => {
-                void patch({ ai: { defaults: { libraryChat: p } } });
-              }}
-            />
-            <AiSurfaceDefaultControl
-              surface="sizzleChat"
-              label="Sizzle Reel chat"
-              value={settings?.ai.defaults.sizzleChat ?? {}}
-              models={codexModels?.models ?? []}
-              modelsLoading={codexModelsLoading}
-              acpProviderOptions={acpChatProviderOptions}
-              onChange={(p) => {
-                void patch({ ai: { defaults: { sizzleChat: p } } });
-              }}
-            />
-            <AiSurfaceDefaultControl
-              surface="enrichment"
-              label="Enrichment (captions, OCR, tags)"
-              value={settings?.ai.defaults.enrichment ?? {}}
-              models={codexModels?.models ?? []}
-              modelsLoading={codexModelsLoading}
-              imageOnly
-              onChange={(p) => {
-                void patch({ ai: { defaults: { enrichment: p } } });
-              }}
-            />
-          </div>
-        </Row>
+        <AiSurfaceDefaultControl
+          surface="libraryChat"
+          name="Library chat"
+          sub="Ask the agent about a snap"
+          value={settings?.ai.defaults.libraryChat ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={acpChatProviderOptions}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { libraryChat: p } } });
+          }}
+        />
+        <AiSurfaceDefaultControl
+          surface="sizzleChat"
+          name="Sizzle Reel chat"
+          sub="Composer agent for the reel"
+          value={settings?.ai.defaults.sizzleChat ?? {}}
+          models={codexModels?.models ?? []}
+          modelsLoading={codexModelsLoading}
+          acpProviderOptions={acpChatProviderOptions}
+          onChange={(p) => {
+            void patch({ ai: { defaults: { sizzleChat: p } } });
+          }}
+        />
       </Card>
 
       <Card eyebrow="SAFETY" title="Capture enrichment">
@@ -1622,19 +1557,19 @@ type AcpChatProviderOption = { value: string; label: string };
 
 type AiSurfaceDefaultControlProps = {
   surface: AiSurfaceId;
-  label: string;
+  /** Job name shown as the row heading (e.g. "Library chat"). */
+  name: string;
+  /** One-line description under the name. */
+  sub: string;
   value: AiSurfaceDefault;
   models: readonly CodexModelOption[];
   modelsLoading: boolean;
-  /** Enrichment feeds images to Codex, so its model picker is filtered to
-   *  text+image models (mirrors the caption picker). Chat surfaces show
-   *  every non-hidden model. */
+  /** Enrichment feeds images to the model, so its picker is filtered to
+   *  text+image models. Chat surfaces show every non-hidden model. */
   imageOnly?: boolean;
-  /** Enabled ACP agents, offered as backend choices in the provider
-   *  dropdown. Present for CHAT surfaces (Library / Sizzle) only — when
-   *  omitted the surface renders the enrichment-style free-text provider
-   *  input (Codex modelProvider token). */
-  acpProviderOptions?: readonly AcpChatProviderOption[];
+  /** Backend choices offered in the provider dropdown (enabled ACP agents).
+   *  Always provided now — pass `[]` for a Codex-only surface. */
+  acpProviderOptions: readonly AcpChatProviderOption[];
   onChange: (patch: AiSurfaceDefaultPatch) => void;
 };
 
@@ -1693,7 +1628,8 @@ function surfaceModelOptions(
 
 function AiSurfaceDefaultControl({
   surface,
-  label,
+  name,
+  sub,
   value,
   models,
   modelsLoading,
@@ -1707,72 +1643,59 @@ function AiSurfaceDefaultControl({
   const reasoningValue: AiReasoningEffort | "" = isAiReasoningEffort(value.reasoning)
     ? value.reasoning
     : "";
-  // Chat surfaces (Library / Sizzle) select a BACKEND via a dropdown:
-  // Codex + each enabled ACP agent. Enrichment is Codex-only, so it keeps
-  // the free-text Codex `modelProvider` input.
-  const isChatSurface = acpProviderOptions !== undefined;
-  // "" and "codex" both mean the Codex backend; collapse onto "" so the
+  // `provider` is a BACKEND selector for every surface: Codex + each enabled
+  // ACP agent. "" and "codex" both mean Codex; collapse onto "" so the
   // dropdown's Codex option matches whichever the user stored.
   const chatProviderValue = providerValue === "codex" ? "" : providerValue;
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
   const showsStaleAcp =
-    isChatSurface &&
     chatProviderValue.startsWith("acp:") &&
-    !(acpProviderOptions ?? []).some((o) => o.value === chatProviderValue);
+    !acpProviderOptions.some((o) => o.value === chatProviderValue);
 
   return (
-    <div className="pss__ai-surface" data-surface={surface}>
-      <div className="pss__ai-surface-l">
-        <span className="pss__ai-surface-name">{label}</span>
+    <div className="pss__role pss__role--routable" data-surface={surface}>
+      <div className="pss__role-head">
+        <span className="pss__role-icon" aria-hidden="true">
+          ◆
+        </span>
+        <div className="pss__role-l">
+          <span className="pss__role-name">{name}</span>
+          <span className="pss__role-sub">{sub}</span>
+        </div>
       </div>
-      <div className="pss__ai-surface-controls">
+      <div className="pss__role-controls">
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Provider</span>
-          {isChatSurface ? (
-            <select
-              className="pss__select pss__ai-surface-select"
-              value={chatProviderValue}
-              aria-label={`${label} default provider`}
-              onChange={(e) => {
-                // "" is the Codex default (the merge drops the key on "").
-                onChange({ provider: e.target.value });
-              }}
-            >
-              <option value="">Codex</option>
-              {(acpProviderOptions ?? []).map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-              {showsStaleAcp ? (
-                <option value={chatProviderValue}>
-                  {chatProviderValue.slice("acp:".length)} (not enabled)
-                </option>
-              ) : null}
-            </select>
-          ) : (
-            <input
-              className="pss__input pss__ai-surface-input"
-              type="text"
-              value={providerValue}
-              placeholder="Codex default"
-              aria-label={`${label} default provider`}
-              onChange={(e) => {
-                // Empty string clears (→ Codex default); the merge in the
-                // settings service drops the key on "".
-                onChange({ provider: e.target.value });
-              }}
-            />
-          )}
+          <select
+            className="pss__select pss__ai-surface-select"
+            value={chatProviderValue}
+            aria-label={`${name} provider`}
+            onChange={(e) => {
+              // "" is the Codex default (the merge drops the key on "").
+              onChange({ provider: e.target.value });
+            }}
+          >
+            <option value="">Codex</option>
+            {acpProviderOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+            {showsStaleAcp ? (
+              <option value={chatProviderValue}>
+                {chatProviderValue.slice("acp:".length)} (not enabled)
+              </option>
+            ) : null}
+          </select>
         </label>
         <label className="pss__ai-surface-field">
           <span className="pss__ai-surface-field-label">Model</span>
           <select
             className="pss__select pss__ai-surface-select"
             value={modelValue}
-            aria-label={`${label} default model`}
+            aria-label={`${name} model`}
             onChange={(e) => {
               onChange({ model: e.target.value });
             }}
@@ -1793,11 +1716,9 @@ function AiSurfaceDefaultControl({
           <select
             className="pss__select pss__ai-surface-select"
             value={reasoningValue}
-            aria-label={`${label} default reasoning effort`}
+            aria-label={`${name} reasoning effort`}
             onChange={(e) => {
               const next = e.target.value;
-              // Empty string is the explicit clear sentinel — the service
-              // merge drops the stored reasoning back to "Codex default".
               if (next === "") {
                 onChange({ reasoning: "" });
                 return;

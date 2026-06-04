@@ -1171,13 +1171,13 @@ export function isAiReasoningEffort(value: unknown): value is AiReasoningEffort 
 }
 
 /** Default provider / model / reasoning for ONE AI surface. Every field
- *  is optional; an omitted (or empty-string) field means "use the Codex
- *  default" — PwrSnap sends no `model` / `modelProvider` / `effort` for
- *  that surface. `provider` maps to the kit's `modelProvider`
- *  (ThreadStartParams.modelProvider); `reasoning` maps to Codex `effort`.
- *  The value space for `provider` / `model` is whatever the installed
- *  Codex exposes, so both are free-form strings validated only for shape
- *  at the bus boundary. */
+ *  is optional; an omitted (or empty-string) field means "use the default".
+ *  `provider` is a BACKEND selector for every surface (Library/Sizzle chat AND
+ *  enrichment): "" / "codex" → Codex, "acp:<known-id>" → an enabled ACP agent.
+ *  (It used to map to the Codex `modelProvider` for enrichment; the Settings →
+ *  AI consolidation unified all three surfaces onto the backend selector.)
+ *  `model` is whatever the chosen backend exposes (free-form, shape-validated);
+ *  `reasoning` maps to the backend's effort. */
 export type AiSurfaceDefault = {
   provider?: string;
   model?: string;

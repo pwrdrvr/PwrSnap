@@ -22,6 +22,7 @@ vi.mock("electron", () => ({
   BrowserWindow: { getAllWindows: () => [] }
 }));
 
+import { DEFAULT_HOTKEYS } from "@pwrsnap/shared";
 import {
   DesktopSettingsService,
   defaultSettings,
@@ -175,9 +176,10 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
   });
 
-  test("v1 shape missing the new `videoCapture` hotkey gets the default filled in", async () => {
-    // Older PwrSnap installs wrote `hotkeys` without `videoCapture`.
-    // parseV1 must fill the gap so the in-memory shape always has
+  test("v1 shape missing the newer hotkeys gets the defaults filled in", async () => {
+    // Older PwrSnap installs wrote `hotkeys` without `videoCapture` /
+    // `fullScreen` / `allScreens` / `timed` / `reshowFloatOver`.
+    // parseV1 must fill the gaps so the in-memory shape always has
     // every field — even though the file on disk doesn't yet. The
     // next write upgrades the file in place.
     const filePath = join(workDir, "settings.json");
@@ -197,6 +199,19 @@ describe("DesktopSettingsService legacy-shape catalog", () => {
     const settings = await svc.read();
     expect(settings.hotkeys.videoCapture).toBe("CommandOrControl+Alt+C");
     expect(settings.hotkeys.quickCapture).toBe("CommandOrControl+Shift+C");
+    // Capture-mode hotkeys are unbound by default (also tray-reachable).
+    expect(settings.hotkeys.fullScreen).toBe("");
+    expect(settings.hotkeys.allScreens).toBe("");
+    expect(settings.hotkeys.timed).toBe("");
+    // Re-show last Float-Over defaults to the three-modifier ⌘⌥⇧F chord.
+    expect(settings.hotkeys.reshowFloatOver).toBe("CommandOrControl+Alt+Shift+F");
+  });
+
+  test("defaultSettings() seeds hotkeys from the shared DEFAULT_HOTKEYS", () => {
+    // Lock the renderer/main shared source: the Hotkeys page's "Reset to
+    // defaults" reads the same object, so a drift here would silently
+    // make Reset write a different chord than a fresh install.
+    expect(defaultSettings().hotkeys).toEqual(DEFAULT_HOTKEYS);
   });
 
   test("v1 shape missing `codex.captionModel` gets the default filled in", async () => {
@@ -493,8 +508,8 @@ describe("DesktopSettingsService write-queue serialization on rejection", () => 
     expect(r3.ai.enabled).toBe(false);
 
     // Queue isn't deadlocked — a fourth write resolves.
-    const r4 = await svc.write({ experimental: { v2FileFormat: true } });
-    expect(r4.experimental.v2FileFormat).toBe(true);
+    const r4 = await svc.write({ general: { developerMode: true } });
+    expect(r4.general.developerMode).toBe(true);
   });
 });
 

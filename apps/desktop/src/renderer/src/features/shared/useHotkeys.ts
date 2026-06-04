@@ -19,7 +19,11 @@ const EMPTY: HotkeysSnapshot = {
   quickCapture: "",
   region: "",
   window: "",
-  videoCapture: ""
+  fullScreen: "",
+  allScreens: "",
+  timed: "",
+  videoCapture: "",
+  reshowFloatOver: ""
 };
 
 export function useHotkeys(): HotkeysSnapshot {

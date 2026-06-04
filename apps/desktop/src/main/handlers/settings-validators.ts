@@ -242,7 +242,16 @@ export function validateSettingsWrite(
       };
     }
     const hotkeys = p.hotkeys as Record<string, unknown>;
-    for (const key of ["quickCapture", "region", "window", "videoCapture"] as const) {
+    for (const key of [
+      "quickCapture",
+      "region",
+      "window",
+      "fullScreen",
+      "allScreens",
+      "timed",
+      "videoCapture",
+      "reshowFloatOver"
+    ] as const) {
       const v = hotkeys[key];
       if (isUndefined(v)) continue;
       if (!isString(v)) {
@@ -271,32 +280,6 @@ export function validateSettingsWrite(
           )
         };
       }
-    }
-  }
-
-  if (p.experimental !== undefined) {
-    if (
-      typeof p.experimental !== "object" ||
-      p.experimental === null ||
-      Array.isArray(p.experimental)
-    ) {
-      return {
-        ok: false,
-        error: validationError(
-          "invalid_experimental",
-          "settings:write: experimental must be an object"
-        )
-      };
-    }
-    const exp = p.experimental as Record<string, unknown>;
-    if (!isUndefined(exp.v2FileFormat) && !isBoolean(exp.v2FileFormat)) {
-      return {
-        ok: false,
-        error: validationError(
-          "invalid_experimental_v2FileFormat",
-          "settings:write: experimental.v2FileFormat must be a boolean"
-        )
-      };
     }
   }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.0-beta.15 - 2026-06-04
+
+- Trimmed and fully wired the Settings surface for the release.
+- Switched the desktop app to consume the published Codex protocol package.
+- Fixed Library tile and frame hover flicker so grid previews no longer pulse
+  during hover interactions.
+
 ## v1.0.0-beta.14 - 2026-06-03
 
 - Added reel duplication from the Sizzle Composer and Library.

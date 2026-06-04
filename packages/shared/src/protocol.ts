@@ -462,18 +462,11 @@ export type StorageSnapshotUpdate = {
 /** Identifier for every Settings sidebar page. Used by `settings:open`
  *  to deep-link directly to a section. */
 export type SettingsPage =
-  | "startup"
-  | "appearance"
+  | "general"
   | "hotkeys"
-  | "notifications"
   | "ai"
-  | "capture"
-  | "output"
-  | "annotate"
   | "storage"
-  | "sources"
   | "system-permissions"
-  | "experimental"
   | "about";
 
 /** Runtime allowlist of every valid `SettingsPage`. Kept here (not in
@@ -483,18 +476,11 @@ export type SettingsPage =
  *  above via the `satisfies` clause — adding a member to the union
  *  without adding the literal here is a type error. */
 export const SETTINGS_PAGES = [
-  "startup",
-  "appearance",
+  "general",
   "hotkeys",
-  "notifications",
   "ai",
-  "capture",
-  "output",
-  "annotate",
   "storage",
-  "sources",
   "system-permissions",
-  "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
 
@@ -1443,6 +1429,18 @@ export type Settings = {
     quickCapture: string;
     region: string;
     window: string;
+    /** Capture the display under the cursor end-to-end (no selector).
+     *  Backed by `capture:fullScreen`; unbound by default — also
+     *  reachable from the tray. */
+    fullScreen: string;
+    /** Capture every connected display, stitched into a single image.
+     *  Backed by `capture:allScreens` (mode `"stitched"`); unbound by
+     *  default — also reachable from the tray. */
+    allScreens: string;
+    /** 5-second countdown, then the auto-mode selector. Backed by
+     *  `capture:interactive` (mode `"timed"`); unbound by default —
+     *  also reachable from the tray. */
+    timed: string;
     /** Video-capture hotkey. Default `⌘⌥C` (Command+Alt/Option+C),
      *  deliberately NOT `⌘⇧V` — that chord is "Paste and Match
      *  Style" in browsers / Slack / Mail / iWork / Notes / etc.
@@ -1450,10 +1448,12 @@ export type Settings = {
      *  ⌘⇧V would steal paste-without-formatting from every app
      *  on the box while PwrSnap is running. */
     videoCapture: string;
-  };
-  experimental: {
-    /** Slot for the upcoming PwrSnap1 file format. Wired but unused. */
-    v2FileFormat: boolean;
+    /** Re-pop the most recent capture's float-over toast over the
+     *  screen. Default `⌘⌥⇧F` (mnemonic: Float-over). The three-modifier
+     *  chord keeps it clear of app/OS shortcuts — a 2-modifier default
+     *  like ⌘⇧F would shadow "Find in Files" system-wide while PwrSnap
+     *  runs. Rebindable/unbindable from Settings → Hotkeys. */
+    reshowFloatOver: string;
   };
   general: {
     /** When true, the View menu exposes Reload / Force Reload / Toggle
@@ -1520,6 +1520,29 @@ export type Settings = {
    *  independently so users can prefer "always-open" in Library while
    *  the Editor stays unpinned, or vice versa. */
   library: LibrarySettings;
+};
+
+/** Out-of-the-box global capture hotkeys. Shared so the main-process
+ *  `defaultSettings()` and the renderer's Settings → Hotkeys "Reset to
+ *  defaults" both read ONE source — they previously duplicated these
+ *  values and had to be kept in lock-step by hand. Empty string =
+ *  unbound (main skips registration). Per-field rationale (why ⌘⇧C not
+ *  ⌘⇧P; why ⌘⌥C not ⌘⇧V; why three modifiers for re-show) lives on the
+ *  `Settings["hotkeys"]` type above; the short version:
+ *    - quickCapture ⌘⇧C — ⌘⇧P collides with Print in browsers/iWork.
+ *    - region/window/fullScreen/allScreens/timed unbound — also tray-
+ *      reachable; we don't claim five more global chords by default.
+ *    - videoCapture ⌘⌥C — ⌘⇧V is Paste-and-Match-Style system-wide.
+ *    - reshowFloatOver ⌘⌥⇧F — three modifiers clear of app/OS chords. */
+export const DEFAULT_HOTKEYS: Settings["hotkeys"] = {
+  quickCapture: "CommandOrControl+Shift+C",
+  region: "",
+  window: "",
+  fullScreen: "",
+  allScreens: "",
+  timed: "",
+  videoCapture: "CommandOrControl+Alt+C",
+  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
 };
 
 // ---- Editor user preferences (Phase 1) ----------------------------------
@@ -1890,7 +1913,6 @@ export type SettingsPatch = {
     acp?: Partial<AcpSettings>;
   };
   hotkeys?: Partial<Settings["hotkeys"]>;
-  experimental?: Partial<Settings["experimental"]>;
   general?: Partial<Settings["general"]>;
   appearance?: Partial<Settings["appearance"]>;
   updates?: Partial<Settings["updates"]>;
@@ -2600,6 +2622,15 @@ export type Commands = {
   };
   "app:openDocumentWindow": {
     req: { kind: AppDocumentKind };
+    res: void;
+  };
+  /** Open an external URL in the user's default browser. The main-side
+   *  handler enforces an https-only host allowlist (PwrSnap product +
+   *  docs site + the public GitHub repo) so the renderer can't smuggle
+   *  arbitrary navigation through `shell.openExternal`. Used by the
+   *  About page's Website / Documentation / Repository links. */
+  "app:openExternal": {
+    req: { url: string };
     res: void;
   };
 

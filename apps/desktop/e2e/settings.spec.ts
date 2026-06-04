@@ -150,7 +150,7 @@ test("settings:read returns defaults on a fresh launch", async () => {
     expect(result.value.schemaVersion).toBe(1);
     expect(result.value.codex.mode).toBe("auto");
     expect(result.value.ai.enabled).toBe(false);
-    expect(result.value.experimental.v2FileFormat).toBe(false);
+    expect(result.value.general.developerMode).toBe(false);
     // Shape sanity — every top-level key the protocol promises is present.
     expect(result.value).toHaveProperty("hotkeys");
     expect(typeof result.value.hotkeys.quickCapture).toBe("string");
@@ -172,24 +172,24 @@ test("settings:write persists to pwrsnap-settings.json under userData", async ()
   const app = await launchPwrSnap();
   try {
     const writeResult = await app.dispatch("settings:write", {
-      experimental: { v2FileFormat: true }
+      general: { developerMode: true }
     });
     expect(writeResult.ok).toBe(true);
     if (!writeResult.ok) throw new Error("unreachable");
-    expect(writeResult.value.experimental.v2FileFormat).toBe(true);
+    expect(writeResult.value.general.developerMode).toBe(true);
 
     const readResult = await app.dispatch("settings:read", {});
     expect(readResult.ok).toBe(true);
     if (!readResult.ok) throw new Error("unreachable");
-    expect(readResult.value.experimental.v2FileFormat).toBe(true);
+    expect(readResult.value.general.developerMode).toBe(true);
 
     // The file lives directly under PWRSNAP_USER_DATA (== homeRoot).
     const settingsPath = path.join(app.homeRoot, "pwrsnap-settings.json");
     const fileInfo = await stat(settingsPath);
     expect(fileInfo.isFile()).toBe(true);
     const raw = await readFile(settingsPath, "utf8");
-    const parsed = JSON.parse(raw) as { experimental?: { v2FileFormat?: boolean } };
-    expect(parsed.experimental?.v2FileFormat).toBe(true);
+    const parsed = JSON.parse(raw) as { general?: { developerMode?: boolean } };
+    expect(parsed.general?.developerMode).toBe(true);
   } finally {
     await app.close();
   }

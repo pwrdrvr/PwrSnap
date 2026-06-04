@@ -811,6 +811,12 @@ export type SizzleSequencePreviewWarning = {
   message: string;
 };
 
+export type SizzleSequencePreviewVideoFit = {
+  renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
+  inputDurationSec: number;
+  playbackRate: number;
+};
+
 export type SizzleSequencePreviewBeat = {
   beatId: string;
   captureId: string;
@@ -819,6 +825,16 @@ export type SizzleSequencePreviewBeat = {
   timing: SizzleBeatTiming;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  mediaTrim?: SizzleMediaTrim | null;
+  fit?: SizzleSequencePreviewVideoFit | null;
+};
+
+export type SizzleSequenceTranscriptPhrase = {
+  text: string;
+  startSec: number;
+  endSec: number;
+  wordStartIndex: number;
+  wordEndIndex: number;
 };
 
 export type SizzleSequencePreviewPlan = {
@@ -827,6 +843,7 @@ export type SizzleSequencePreviewPlan = {
   durationSec: number;
   timingQuality: SizzleSpeechTimingQuality;
   warnings: SizzleSequencePreviewWarning[];
+  transcriptPhrases: SizzleSequenceTranscriptPhrase[];
   beats: SizzleSequencePreviewBeat[];
 };
 
@@ -2728,15 +2745,20 @@ export type Commands = {
   };
   /** Cache-only read of a sequence scene's narration audio for the
    *  editor waveform. Unlike `previewSequenceScenePlan`, this NEVER
-   *  synthesizes, resolves speech timing, or hits any API — it only
-   *  returns the content-addressed TTS file if it is already on disk
-   *  (e.g. from a prior preview or render). Safe to call proactively on
-   *  reel open without spending TTS credits; returns `{ cached: false }`
-   *  when the audio has not been generated yet. */
+   *  synthesizes or hits any API — it only returns content-addressed
+   *  cache files that are already on disk (audio, plus cached transcript
+   *  phrases when speech timing was previously resolved). Safe to call
+   *  proactively on reel open without spending TTS/transcription credits;
+   *  returns `{ cached: false }` when the audio has not been generated yet. */
   "sizzle:loadSequenceSceneAudio": {
     req: { projectId: string; sceneId: string };
     res:
-      | { cached: true; audioBase64: string; mimeType: "audio/mpeg" }
+      | {
+          cached: true;
+          audioBase64: string;
+          mimeType: "audio/mpeg";
+          transcriptPhrases: SizzleSequenceTranscriptPhrase[];
+        }
       | { cached: false };
   };
 

@@ -4,7 +4,19 @@ import type { ToolSpec } from "../define-tool";
 
 // Mock the command bus so tool dispatches are observable without a live bus.
 const { dispatch } = vi.hoisted(() => ({ dispatch: vi.fn() }));
+const { resolveCachedSpeechTiming, buildTranscriptPhraseSuggestions } = vi.hoisted(() => ({
+  resolveCachedSpeechTiming: vi.fn(),
+  buildTranscriptPhraseSuggestions: vi.fn()
+}));
 vi.mock("../../command-bus", () => ({ bus: { dispatch } }));
+vi.mock("../../sizzle/tts", () => ({
+  ttsCacheDir: () => "/cache/tts",
+  ttsCacheFilename: () => "cached.mp3"
+}));
+vi.mock("../../sizzle/speech-timing", () => ({
+  resolveCachedSpeechTiming,
+  buildTranscriptPhraseSuggestions
+}));
 
 const { buildSizzleToolAllowlist } = await import("../sizzle-tool-allowlist");
 
@@ -91,6 +103,10 @@ function boundAllowlist(): ToolSpec<unknown>[] {
 
 beforeEach(() => {
   dispatch.mockReset();
+  resolveCachedSpeechTiming.mockReset();
+  resolveCachedSpeechTiming.mockResolvedValue(null);
+  buildTranscriptPhraseSuggestions.mockReset();
+  buildTranscriptPhraseSuggestions.mockReturnValue([]);
 });
 
 describe("buildSizzleToolAllowlist", () => {
@@ -143,6 +159,70 @@ describe("buildSizzleToolAllowlist", () => {
       { id: PROJECT_ID, patch: { name: "PwrSnap: From Screens to Story" } },
       { principal: "mcp" }
     );
+  });
+
+  it("project_get exposes cached transcript phrase anchors for sequence scenes", async () => {
+    const phrases = [
+      {
+        text: "Once it is",
+        startSec: 11.2,
+        endSec: 12.1,
+        wordStartIndex: 0,
+        wordEndIndex: 2
+      }
+    ];
+    resolveCachedSpeechTiming.mockResolvedValue({
+      text: "Once it is installed",
+      durationSec: 2,
+      quality: "precise",
+      warnings: [],
+      words: [
+        { index: 0, word: "Once", normalized: "once", startSec: 0, endSec: 0.4 },
+        { index: 1, word: "it", normalized: "it", startSec: 0.4, endSec: 0.6 },
+        { index: 2, word: "is", normalized: "is", startSec: 0.6, endSec: 0.8 },
+        { index: 3, word: "installed", normalized: "installed", startSec: 0.8, endSec: 1.5 }
+      ]
+    });
+    buildTranscriptPhraseSuggestions.mockReturnValue(phrases);
+    primeBus(project([
+      scene({
+        id: "sc_seq",
+        kind: "sequence",
+        narration: "Once it is installed",
+        scriptLine: "Once it is installed",
+        beats: [
+          {
+            id: "bt_a",
+            captureId: "cap_a",
+            timing: { kind: "offset", startSec: 0, endSec: null },
+            mediaTrim: null,
+            transition: "cut",
+            videoFit: "smart-fit"
+          }
+        ]
+      })
+    ]));
+
+    const r = await tool(boundAllowlist(), "project_get").dispatch({}, CTX);
+
+    expect(r.ok).toBe(true);
+    expect(resolveCachedSpeechTiming).toHaveBeenCalledWith({
+      provider: "openai",
+      model: "tts-1-hd",
+      voice: "onyx",
+      text: "Once it is installed",
+      audioPath: "/cache/tts/cached.mp3"
+    });
+    if (r.ok && "data" in r) {
+      const firstScene = (r.data as { scenes: Array<{ transcriptPhrases: unknown }> }).scenes[0]!;
+      expect(firstScene.transcriptPhrases).toMatchObject({
+        status: "cached",
+        timingQuality: "precise",
+        scriptText: "Once it is installed",
+        transcriptText: "Once it is installed",
+        phrases
+      });
+    }
   });
 
   it("scenes_append writes sizzle:update for the RESOLVED project (no project_id arg)", async () => {

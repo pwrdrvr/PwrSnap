@@ -3,7 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { EVENT_CHANNELS, type CaptureRecord, type SizzleProject, type SizzleScene } from "@pwrsnap/shared";
-import { SizzleApp } from "../SizzleApp";
+import {
+  SizzleApp,
+  formatSequencePreviewWarnings,
+  formatTranscriptPhraseOptionLabel
+} from "../SizzleApp";
 
 // The sequence preview draws its waveform with wavesurfer.js, which needs
 // a real canvas + Web Audio. jsdom has neither, and we don't unit-test the
@@ -123,6 +127,7 @@ function installApi(
     if (name in overrides) return overrides[name];
     if (name === "sizzle:list") return { ok: true, value: { projects } };
     if (name === "library:list") return { ok: true, value: { rows: [] } };
+    if (name === "library:listByIds") return { ok: true, value: { rows: [] } };
     // Cache-only waveform load defaults to a miss; specific tests
     // override it to return cached audio.
     if (name === "sizzle:loadSequenceSceneAudio") {
@@ -147,6 +152,15 @@ function installApi(
           durationSec: 4,
           timingQuality: "approximate",
           warnings: [],
+          transcriptPhrases: [
+            {
+              text: "the next screen",
+              startSec: 1.5,
+              endSec: 2.4,
+              wordStartIndex: 3,
+              wordEndIndex: 5
+            }
+          ],
           beats: [
             {
               beatId: "bt_1",
@@ -233,15 +247,6 @@ function typeInto(textarea: HTMLTextAreaElement, value: string): void {
   )!.set!;
   setter.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function typeIntoInput(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(
-    window.HTMLInputElement.prototype,
-    "value"
-  )!.set!;
-  setter.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function projectRowNames(list: Element | null): string[] {
@@ -343,9 +348,48 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("Sequence · one narration block");
     expect(scriptBox(el).value).toBe("one narration block");
     expect(el.querySelectorAll(".szl__sequence-beat")).toHaveLength(1);
-    expect(el.textContent).toContain("non-final beats end automatically");
+    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
     expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
     expect(el.textContent).toContain("unresolved");
+  });
+
+  test("hydrates active reel captures that are outside the initial library page", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      captureId: "cap_old",
+      scriptLine: "show an older capture",
+      narration: "show an older capture",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_old",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_recent")] }
+      },
+      "library:listByIds": {
+        ok: true,
+        value: { rows: [videoCapture("cap_old")] }
+      }
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith("library:listByIds", { ids: ["cap_old"] });
+    expect(el.textContent).toContain("Video cap_old");
+    expect(el.textContent).not.toContain("missing");
   });
 
   test("loads a resolved sequence timeline when previewing", async () => {
@@ -395,6 +439,180 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
     expect(el.textContent).toContain("4s");
+    expect(el.querySelector("select.szl__sequence-phrase")).toBeNull();
+    expect(el.querySelector("datalist")).toBeNull();
+    const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    expect(phrasePicker?.textContent).toContain("next");
+    expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
+
+    if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
+    await act(async () => {
+      phrasePicker.click();
+    });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).not.toBeNull();
+    const option = [...el.querySelectorAll<HTMLButtonElement>(".szl__sequence-phrase-option")]
+      .find((button) => button.textContent?.includes("the next screen") === true);
+    expect(option?.textContent).toContain("1.5s - 2.4s");
+    if (option === undefined) throw new Error("transcript phrase option not found");
+    await act(async () => {
+      option.click();
+    });
+    expect(el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")?.textContent).toContain("the next screen");
+  });
+
+  test("stores the selected transcript occurrence when repeated phrases share the same text", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "repeat phrase then repeat phrase",
+      narration: "repeat phrase then repeat phrase",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "repeat phrase", occurrence: null, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }), {
+      "sizzle:previewSequenceScenePlan": {
+        ok: true,
+        value: {
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          durationSec: 4,
+          timingQuality: "approximate",
+          warnings: [],
+          transcriptPhrases: [
+            {
+              text: "repeat phrase",
+              startSec: 0.5,
+              endSec: 1.2,
+              wordStartIndex: 0,
+              wordEndIndex: 1
+            },
+            {
+              text: "repeat phrase",
+              startSec: 2.4,
+              endSec: 3.1,
+              wordStartIndex: 3,
+              wordEndIndex: 4
+            }
+          ],
+          beats: [
+            {
+              beatId: "bt_1",
+              captureId: "cap_a",
+              startSec: 0,
+              endSec: 2.4,
+              timing: { kind: "offset", startSec: 0, endSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            },
+            {
+              beatId: "bt_2",
+              captureId: "cap_b",
+              startSec: 2.4,
+              endSec: 4,
+              timing: { kind: "phrase", phrase: "repeat phrase", occurrence: 2, offsetSec: 0, durationSec: null },
+              transition: "crossfade",
+              videoFit: "smart-fit"
+            }
+          ]
+        }
+      }
+    });
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
+    await act(async () => {
+      phrasePicker.click();
+    });
+    const laterOption = [...el.querySelectorAll<HTMLButtonElement>(".szl__sequence-phrase-option")]
+      .find((button) => button.textContent?.includes("2.4s - 3.1s") === true);
+    if (laterOption === undefined) throw new Error("later repeated phrase option not found");
+    await act(async () => {
+      laterOption.click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    const updateCalls = dispatch.mock.calls.filter(([name]) => name === "sizzle:update");
+    const payload = updateCalls.at(-1)?.[1] as { patch?: { scenes?: SizzleScene[] } } | undefined;
+    const updatedBeat = payload?.patch?.scenes?.[0]?.beats?.[1];
+    expect(updatedBeat?.timing).toEqual(
+      expect.objectContaining({
+        kind: "phrase",
+        phrase: "repeat phrase",
+        occurrence: 2
+      })
+    );
+  });
+
+  test("closes the transcript phrase picker when clicking outside", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this then the next screen",
+      narration: "show this then the next screen",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "next", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }));
+    const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    if (play === null) throw new Error("sequence preview play button not found");
+    await act(async () => {
+      play.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    if (phrasePicker === null) throw new Error("sequence transcript phrase picker not found");
+    await act(async () => {
+      phrasePicker.click();
+    });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).not.toBeNull();
+
+    await act(async () => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(el.querySelector(".szl__sequence-phrase-popover")).toBeNull();
   });
 
   test("starts and stops the already-mounted first sequence video preview", async () => {
@@ -571,6 +789,85 @@ describe("SizzleApp sequence authoring", () => {
     expect(pauseMock.mock.contexts).toContain(firstVideo);
   });
 
+  test("uses normalized preview trim and fit for sequence video playback", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      scriptLine: "show this video for longer than the source",
+      narration: "show this video for longer than the source",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_a",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 0, endSec: 9.1 },
+          transition: "cut",
+          videoFit: "speed-to-fit"
+        }
+      ]
+    });
+    const { el } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_a", { start: 0, end: 8 })] }
+      },
+      "sizzle:previewSequenceScenePlan": {
+        ok: true,
+        value: {
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          durationSec: 9.6,
+          timingQuality: "exact",
+          warnings: [],
+          transcriptPhrases: [],
+          beats: [
+            {
+              beatId: "bt_1",
+              captureId: "cap_a",
+              startSec: 0,
+              endSec: 9.6,
+              timing: { kind: "offset", startSec: 0, endSec: null },
+              transition: "crossfade",
+              videoFit: "speed-to-fit",
+              mediaTrim: { startSec: 0, endSec: 4.204 },
+              fit: {
+                renderMode: "freeze-end",
+                inputDurationSec: 4.204,
+                playbackRate: 1
+              }
+            }
+          ]
+        }
+      }
+    });
+    const playButton = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
+    const firstVideo = el.querySelector<HTMLVideoElement>(".szl__sequence-preview-stage video");
+    const audio = el.querySelector<HTMLAudioElement>("audio");
+    if (playButton === null) throw new Error("sequence preview play button not found");
+    if (firstVideo === null) throw new Error("first sequence video not found");
+    if (audio === null) throw new Error("preview audio not found");
+
+    await act(async () => {
+      playButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const pauseMock = vi.mocked(HTMLMediaElement.prototype.pause);
+    pauseMock.mockClear();
+    firstVideo.currentTime = 5;
+
+    await act(async () => {
+      audio.currentTime = 5;
+      audio.dispatchEvent(new Event("timeupdate", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(firstVideo.currentTime).toBeCloseTo(4.204, 3);
+    expect(pauseMock.mock.contexts).toContain(firstVideo);
+  });
+
   test("invalidates a resolved sequence timeline when beat timing changes", async () => {
     const sequence = scene({
       kind: "sequence",
@@ -598,6 +895,7 @@ describe("SizzleApp sequence authoring", () => {
     });
     const { el } = await renderApp(project({ scenes: [sequence] }));
 
+    expect(el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button")?.disabled).toBe(true);
     const play = el.querySelector<HTMLButtonElement>(".szl__sequence-preview-controls .szl__scene-mini--play");
     if (play === null) throw new Error("sequence preview play button not found");
     await act(async () => {
@@ -608,14 +906,114 @@ describe("SizzleApp sequence authoring", () => {
     });
     expect(el.textContent).toContain("approx timing");
 
-    const phrase = el.querySelector<HTMLInputElement>(".szl__sequence-phrase");
-    if (phrase === null) throw new Error("sequence phrase input not found");
+    const phrase = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    if (phrase === null) throw new Error("sequence phrase picker not found");
     await act(async () => {
-      typeIntoInput(phrase, "changed phrase");
+      phrase.click();
+    });
+    const option = [...el.querySelectorAll<HTMLButtonElement>(".szl__sequence-phrase-option")]
+      .find((button) => button.textContent?.includes("the next screen") === true);
+    if (option === undefined) throw new Error("transcript phrase option not found");
+    await act(async () => {
+      option.click();
     });
 
     expect(el.textContent).toContain("unresolved");
     expect(el.textContent).not.toContain("approx timing");
+    const nextPhrase = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    expect(nextPhrase?.textContent).toContain("the next screen");
+    await act(async () => {
+      nextPhrase?.click();
+    });
+    expect(
+      [...el.querySelectorAll<HTMLButtonElement>(".szl__sequence-phrase-option")]
+        .some((button) => button.textContent?.includes("the next screen") === true)
+    ).toBe(true);
+  });
+});
+
+describe("sequence preview warnings", () => {
+  test("coalesces auto-repaired trim and fit diagnostics into one adjusted note", () => {
+    const warnings = formatSequencePreviewWarnings(
+      [
+        {
+          beatId: "bt_4",
+          code: "media_trim_clamped",
+          message: "Media trim was clamped to the 4.204s source duration"
+        },
+        {
+          beatId: "bt_4",
+          code: "video_fit",
+          message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+        }
+      ],
+      ["bt_1", "bt_2", "bt_3", "bt_4"]
+    );
+
+    expect(warnings).toEqual([
+      {
+        key: "media_trim_clamped-bt_4-0",
+        label: "Beat 4",
+        message:
+          "Media trim was clamped to the 4.204s source duration; using freeze-end because speed-to-fit would be too aggressive"
+      }
+    ]);
+  });
+
+  test("coalesces auto-repaired fit and trim diagnostics when the fit note arrives first", () => {
+    const warnings = formatSequencePreviewWarnings(
+      [
+        {
+          beatId: "bt_4",
+          code: "video_fit",
+          message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+        },
+        {
+          beatId: "bt_4",
+          code: "media_trim_clamped",
+          message: "Media trim was clamped to the 4.204s source duration"
+        }
+      ],
+      ["bt_1", "bt_2", "bt_3", "bt_4"]
+    );
+
+    expect(warnings).toEqual([
+      {
+        key: "video_fit-bt_4-0",
+        label: "Beat 4",
+        message:
+          "Media trim was clamped to the 4.204s source duration; using freeze-end because speed-to-fit would be too aggressive"
+      }
+    ]);
+  });
+
+  test("phrases that fall back to automatic timing render as notes", () => {
+    const warnings = formatSequencePreviewWarnings(
+      [
+        {
+          beatId: "bt_2",
+          code: "phrase_unresolved",
+          message: 'Could not resolve phrase anchor "Once it is installed," — placing it automatically'
+        }
+      ],
+      ["bt_1", "bt_2"]
+    );
+
+    expect(warnings[0]?.label).toBe("Beat 2");
+  });
+});
+
+describe("sequence transcript phrase options", () => {
+  test("labels transcript suggestions by timestamp", () => {
+    expect(
+      formatTranscriptPhraseOptionLabel({
+        text: "Once It's installed",
+        startSec: 1.25,
+        endSec: 3.5,
+        wordStartIndex: 4,
+        wordEndIndex: 6
+      })
+    ).toBe("1.3s - 3.5s");
   });
 });
 
@@ -705,6 +1103,14 @@ describe("sequence waveform", () => {
           mediaTrim: null,
           transition: "cut",
           videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
         }
       ]
     });
@@ -731,13 +1137,34 @@ describe("sequence waveform", () => {
           mediaTrim: null,
           transition: "cut",
           videoFit: "smart-fit"
+        },
+        {
+          id: "bt_2",
+          captureId: "cap_b",
+          timing: { kind: "phrase", phrase: "", occurrence: 1, offsetSec: 0, durationSec: null },
+          mediaTrim: null,
+          transition: "crossfade",
+          videoFit: "smart-fit"
         }
       ]
     });
     const { el, dispatch } = await renderApp(project({ scenes: [sequence] }), {
       "sizzle:loadSequenceSceneAudio": {
         ok: true,
-        value: { cached: true, audioBase64: "AA==", mimeType: "audio/mpeg" }
+        value: {
+          cached: true,
+          audioBase64: "AA==",
+          mimeType: "audio/mpeg",
+          transcriptPhrases: [
+            {
+              text: "the next screen",
+              startSec: 1.5,
+              endSec: 2.4,
+              wordStartIndex: 3,
+              wordEndIndex: 5
+            }
+          ]
+        }
       }
     });
     // Let the bounded-concurrency queue drain (enqueue → fetch → setState).
@@ -757,6 +1184,12 @@ describe("sequence waveform", () => {
     });
     expect(el.querySelector(".szl__sequence-wave-surfer")).not.toBeNull();
     expect(el.querySelector(".szl__sequence-wave--idle")).toBeNull();
+    const phrasePicker = el.querySelector<HTMLButtonElement>(".szl__sequence-phrase-button");
+    expect(phrasePicker?.textContent).toContain("Choose transcript phrase");
+    await act(async () => {
+      phrasePicker?.click();
+    });
+    expect(el.querySelector(".szl__sequence-phrase-option")?.textContent).toContain("the next screen");
   });
 });
 

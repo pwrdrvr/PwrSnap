@@ -69,7 +69,13 @@ LGPL-3.0-or-later
 MIT
 ~~~
 - @img/colour@1.1.0 | https://github.com/lovell/colour
+- @pwrdrvr/agent-acp@0.1.2 | https://github.com/pwrdrvr/agent-kit
+- @pwrdrvr/agent-chat-react@0.1.2 | https://github.com/pwrdrvr/agent-kit
+- @pwrdrvr/agent-client@0.1.2 | https://github.com/pwrdrvr/agent-kit
+- @pwrdrvr/agent-core@0.1.2 | https://github.com/pwrdrvr/agent-kit
+- @pwrdrvr/agent-transport@0.1.2 | https://github.com/pwrdrvr/agent-kit
 - @pwrdrvr/codex-app-server-protocol@0.133.0 | https://github.com/pwrdrvr/codex-app-server-protocol
+- @pwrdrvr/codex-discovery@0.1.2 | https://github.com/pwrdrvr/agent-kit
 - @shutterstock/p-map-iterable@1.1.2 | https://github.com/shutterstock/p-map-iterable
 - @tanstack/react-virtual@3.13.24 | https://github.com/TanStack/virtual
 - @tanstack/virtual-core@3.14.0 | https://github.com/TanStack/virtual
@@ -462,13 +468,19 @@ Upstream library: https://github.com/libvips/libvips
 
 The full GNU Lesser General Public License, version 3, and the corresponding relinking / source offer are reproduced below under "Full License Texts — Weak-Copyleft Bundled Binaries".
 
-@pwrdrvr/codex-app-server-protocol@0.133.0 (MIT)
-------------------------------------------------
+@pwrdrvr/agent-acp@0.1.2 (MIT)
+------------------------------
 
 Applies to:
+- @pwrdrvr/agent-acp@0.1.2 (MIT)
+- @pwrdrvr/agent-chat-react@0.1.2 (MIT)
+- @pwrdrvr/agent-client@0.1.2 (MIT)
+- @pwrdrvr/agent-core@0.1.2 (MIT)
+- @pwrdrvr/agent-transport@0.1.2 (MIT)
 - @pwrdrvr/codex-app-server-protocol@0.133.0 (MIT)
+- @pwrdrvr/codex-discovery@0.1.2 (MIT)
 
-Representative file: @pwrdrvr/codex-app-server-protocol@0.133.0/LICENSE
+Representative file: @pwrdrvr/agent-acp@0.1.2/LICENSE
 
 MIT License
 

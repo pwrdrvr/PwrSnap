@@ -25,7 +25,7 @@ import type {
 import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
+import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import {
   buildChatSurface,
   chatSurfaceDefaultsFromSettings,
@@ -58,7 +58,6 @@ const log = getMainLogger("pwrsnap:library-chat-handlers");
 // as a backstop. (`baseInstructions` already fully REPLACES Codex's
 // default coding-agent prompt — the Responses `instructions` field is
 // `base_instructions.text` verbatim.)
-const LIBRARY_CHAT_THREAD_CONFIG = PWRSNAP_CODEX_THREAD_CONFIG;
 
 /** The Library surface's broadcast channels (the controller is surface-
  *  parameterized — see `ChatChannelSet`). */
@@ -166,9 +165,11 @@ export function registerLibraryChatHandlers(params?: {
     if (controller !== null) return controller;
     const settings = await settingsReader();
     const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+    const command = codexCommandForSettings(settings);
+    const env = codexEnvForProfile(settings.codex.profile);
     const surface = await buildChatSurface({
-      command: codexCommandForSettings(settings),
-      env: codexEnvForProfile(settings.codex.profile),
+      command,
+      env,
       chatsDir,
       readSettings: settingsReader,
       channels: LIBRARY_CHAT_CHANNELS,
@@ -182,8 +183,9 @@ export function registerLibraryChatHandlers(params?: {
       toolLabels: LIBRARY_TOOL_LABELS,
       catalog: buildLibraryToolCatalog(),
       dispatchToolCall: dispatchLibraryToolCall,
-      // Drop Codex's built-in coding tools — PwrSnap chat is image-only.
-      threadConfig: LIBRARY_CHAT_THREAD_CONFIG,
+      // Drop Codex's built-in coding tools — PwrSnap chat is image-only. The
+      // overlay shape is selected for the running Codex build (schema churns).
+      threadConfig: resolveCodexThreadConfigForCommand(command, env),
       threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
       // Per-surface default provider / model / reasoning from Settings →
       // AI (`ai.defaults.libraryChat`). `provider` selects the chat backend

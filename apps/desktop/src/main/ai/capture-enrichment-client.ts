@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodexOneShotClient } from "@pwrdrvr/agent-client";
 import type { AiUsageTokenBreakdown, CodexModelOption, EnrichmentResult } from "@pwrsnap/shared";
-import { PWRSNAP_CODEX_THREAD_CONFIG } from "./codex-thread-config";
+import { resolveCodexThreadConfigForCommand } from "./codex-thread-config";
 import {
   CAPTURE_ENRICHMENT_BASE_INSTRUCTIONS,
   CAPTURE_ENRICHMENT_SCHEMA,
@@ -109,7 +109,9 @@ export class CaptureEnrichmentClient {
       serviceName: PWRSNAP_SERVICE_NAME,
       workspaceDir,
       workerThreadName: "PwrSnap Capture Metadata Worker",
-      threadConfig: PWRSNAP_CODEX_THREAD_CONFIG,
+      // Pick the config overlay shape for the running Codex build (the schema
+      // churns across releases). Probed once per command, cached.
+      threadConfig: resolveCodexThreadConfigForCommand(options.command, options.env),
       ...(options.requestTimeoutMs !== undefined
         ? { requestTimeoutMs: options.requestTimeoutMs }
         : {}),

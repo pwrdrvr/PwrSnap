@@ -19,11 +19,23 @@ faithfully.
 
 ## Root cause
 
-**The Codex CLI updated (Codex Desktop autoupdate → 0.133.0) and changed the
-`config.toml` overlay schema that `PWRSNAP_CODEX_THREAD_CONFIG` targets.** The
+**The Codex CLI's `config.toml` overlay schema CHURNS across releases**, and the
 `config` field of `thread/start` is a free-form `{ [key]: JsonValue }` map (the
 `-c key=value` overlay), so stale keys don't error — they silently stop working,
-and in one case actively backfire.
+and in one case actively backfire. The 4k baseline was Codex **0.135.0-alpha.1**;
+the 24k regression was **0.133.0** running the same config — i.e. the schema is
+non-monotonic across even alpha builds.
+
+> **Update (version-keyed resolver):** the original fix below assumed a single
+> correct config. That was wrong — `features` *inflates* on 0.133 but
+> *suppresses* on 0.135, and 0.137 prefers the no-`features` minimal shape. The
+> code now keys the config by Codex MAJOR.MINOR (see "Fix"). Measured:
+>
+> | Codex | with `features` | minimal (no `features`, bundled off) |
+> |---|---|---|
+> | 0.133.0 | 23k | **3.1k** |
+> | 0.135.0-alpha.1 | **4k** | (unmeasured — no binary) |
+> | 0.137.0-alpha.4 | 4.6k | **2.9k** |
 
 Measured against the user's Codex 0.133.0 (gpt-5.4-mini, one no-tool enrichment
 turn), isolating each key:
@@ -52,15 +64,26 @@ The `include_permissions_instructions` / `include_apps_instructions` /
 `include_collaboration_mode_instructions` / `include_environment_context` keys
 are still valid top-level fields and were kept.
 
-## Fix
+## Fix — version-keyed config resolver
 
-`apps/desktop/src/main/ai/codex-thread-config.ts` — drop `features`, add
-`skills.bundled.enabled = false`. This single constant feeds all three Codex
-surfaces (capture enrichment, Library chat, Sizzle chat), so it fixes them
-together. Result: ~3.1k input tokens (better than the pre-regression ~4k).
+`apps/desktop/src/main/ai/codex-thread-config.ts` exports two config shapes and
+picks between them by the running Codex MAJOR.MINOR:
 
-A guard test (`codex-thread-config.test.ts`) pins the known-good shape:
-no `features`, `skills.bundled.enabled=false`, `web_search:"disabled"`.
+- `MINIMAL_THREAD_CONFIG` — no `features`, `skills.bundled.enabled=false`. Used
+  for everything EXCEPT 0.135.x (verified ~3.1k on 0.133, ~2.9k on 0.137; it's
+  also the default for unknown/newer builds).
+- `LEGACY_FEATURES_THREAD_CONFIG` — the old `features`-bearing shape, scoped to
+  **0.135.x only** (verified ~4k there; sending `features` to 0.133 inflates ~6x).
+
+`resolveCodexThreadConfig(version)` walks an ordered range table (only 0.135.x is
+special-cased today); `resolveCodexThreadConfigForCommand(command, env)` probes
+the binary's `--version` once (cached per command) and resolves. The three Codex
+surfaces (enrichment + both chats) call the command-based resolver, so they all
+track the running build. **Add a range entry when a new Codex build changes the
+schema** — that's the extension point.
+
+A guard test (`codex-thread-config.test.ts`) pins the version→shape map and the
+shape invariants.
 
 ## How to catch this next time
 

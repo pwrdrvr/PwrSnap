@@ -19,7 +19,7 @@ import type {
 import { EVENT_CHANNELS, err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
-import { PWRSNAP_CODEX_THREAD_CONFIG } from "../ai/codex-thread-config";
+import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
   buildChatSurface,
@@ -51,7 +51,6 @@ const SIZZLE_CHAT_CHANNELS: ChatChannelSet = {
 // apply_patch tools and disable Codex prompt/tool scaffolding unrelated to
 // PwrSnap's render dynamic tool. Rendering is a tool, not a shell call, so
 // the agent needs no exec environment.
-const SIZZLE_CHAT_THREAD_CONFIG = PWRSNAP_CODEX_THREAD_CONFIG;
 const SIZZLE_CHAT_THREAD_ENVIRONMENTS: unknown[] = [];
 
 export type SizzleChatSettingsReader = () => Promise<Settings>;
@@ -103,9 +102,11 @@ async function getSizzleController(): Promise<ChatThreadController<Settings>> {
     resolveProjectId: async (threadId) =>
       (await projectStore.get(threadId))?.anchorCaptureId ?? null
   });
+  const command = codexCommandForSettings(settings);
+  const env = codexEnvForProfile(settings.codex.profile);
   const surface = await buildChatSurface({
-    command: codexCommandForSettings(settings),
-    env: codexEnvForProfile(settings.codex.profile),
+    command,
+    env,
     chatsDir,
     readSettings: sizzleSettingsReader,
     channels: SIZZLE_CHAT_CHANNELS,
@@ -117,7 +118,8 @@ async function getSizzleController(): Promise<ChatThreadController<Settings>> {
     toolLabels: SIZZLE_TOOL_LABELS,
     catalog: tools.catalog,
     dispatchToolCall: tools.dispatch,
-    threadConfig: SIZZLE_CHAT_THREAD_CONFIG,
+    // Overlay shape selected for the running Codex build (schema churns).
+    threadConfig: resolveCodexThreadConfigForCommand(command, env),
     threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
     // Per-surface default provider / model / reasoning from Settings → AI
     // (`ai.defaults.sizzleChat`). `provider` selects the chat backend (Codex vs

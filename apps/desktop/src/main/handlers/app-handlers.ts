@@ -5,13 +5,15 @@
 //   - app:readDocument        — read a bundled app document (changelog,
 //                               third-party licenses) for in-app viewing
 //   - app:openDocumentWindow  — open the document-viewer BrowserWindow
+//   - app:openExternal        — open an allowlisted https URL in the
+//                               default browser (About page links)
 //   - app:update:check        — force a fresh electron-updater check
 //   - app:update:status       — snapshot of the current updater state
 //   - app:update:install      — restart-into-the-downloaded-update
 //   - app:update:releases     — GitHub Releases list (independent of the
 //                               updater channel; used by the Updates page)
 
-import { app, screen } from "electron";
+import { app, screen, shell } from "electron";
 import { err, ok } from "@pwrsnap/shared";
 import { bus } from "../command-bus";
 import { isAppDocumentKind, readAppDocument } from "../app-documents";
@@ -22,6 +24,29 @@ import {
   readAppUpdateReleaseVersions,
   readAppUpdateStatus
 } from "../auto-updater";
+
+/** URLs the renderer is allowed to open via `app:openExternal`. Keeps
+ *  `shell.openExternal` from becoming an arbitrary-navigation gadget: a
+ *  compromised/buggy renderer can only reach the product site, the docs
+ *  site, and PwrDrvr's own GitHub org. https-only. GitHub is scoped to
+ *  the `/pwrdrvr/*` path so an attacker can't bounce the user to an
+ *  arbitrary repo/gist/profile under the (trusted) github.com host. */
+function isAllowedExternalUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  if (host === "pwrsnap.com" || host.endsWith(".pwrsnap.com")) return true;
+  if (host === "github.com") {
+    // `/pwrdrvr` (org page) or `/pwrdrvr/<repo>...`; reject `/pwrdrvrx`.
+    return url.pathname === "/pwrdrvr" || url.pathname.startsWith("/pwrdrvr/");
+  }
+  return false;
+}
 
 export function registerAppHandlers(): void {
   bus.register("app:version", async () => {
@@ -73,6 +98,18 @@ export function registerAppHandlers(): void {
       });
     }
     showAppDocumentWindow(kind);
+    return ok(undefined);
+  });
+  bus.register("app:openExternal", async (req) => {
+    const url = typeof req === "object" && req !== null ? req.url : undefined;
+    if (typeof url !== "string" || !isAllowedExternalUrl(url)) {
+      return err({
+        kind: "validation",
+        code: "url_not_allowed",
+        message: `app:openExternal: refused to open ${String(url)} (must be an https PwrSnap or GitHub URL)`
+      });
+    }
+    await shell.openExternal(url);
     return ok(undefined);
   });
   bus.register("app:update:check", async () => {

@@ -6,29 +6,29 @@ import { describe, expect, test } from "vitest";
 import { pageFromHash } from "../useActivePage";
 
 describe("pageFromHash", () => {
-  test("defaults to 'ai' when no hash is set", () => {
-    expect(pageFromHash("")).toBe("ai");
-    expect(pageFromHash("#")).toBe("ai");
+  test("defaults to 'general' when no hash is set", () => {
+    expect(pageFromHash("")).toBe("general");
+    expect(pageFromHash("#")).toBe("general");
   });
 
-  test("defaults to 'ai' when 'page' param is missing", () => {
-    expect(pageFromHash("#stage=settings")).toBe("ai");
+  test("defaults to 'general' when 'page' param is missing", () => {
+    expect(pageFromHash("#stage=settings")).toBe("general");
   });
 
   test("returns the page id when valid", () => {
     expect(pageFromHash("#stage=settings&page=hotkeys")).toBe("hotkeys");
     expect(pageFromHash("#page=about")).toBe("about");
-    expect(pageFromHash("#stage=settings&page=experimental")).toBe("experimental");
+    expect(pageFromHash("#stage=settings&page=ai")).toBe("ai");
   });
 
-  test("falls back to 'ai' on unknown page values", () => {
-    expect(pageFromHash("#stage=settings&page=bogus")).toBe("ai");
-    expect(pageFromHash("#page=")).toBe("ai");
-    expect(pageFromHash("#page=__proto__")).toBe("ai");
+  test("falls back to 'general' on unknown page values", () => {
+    expect(pageFromHash("#stage=settings&page=bogus")).toBe("general");
+    expect(pageFromHash("#page=")).toBe("general");
+    expect(pageFromHash("#page=__proto__")).toBe("general");
   });
 
   test("ignores other params in the hash", () => {
-    expect(pageFromHash("#foo=bar&stage=settings&page=output&baz=qux")).toBe("output");
+    expect(pageFromHash("#foo=bar&stage=settings&page=general&baz=qux")).toBe("general");
   });
 
   test("strips a leading '#' regardless of placement", () => {

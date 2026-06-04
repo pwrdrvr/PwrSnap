@@ -44,6 +44,7 @@ import type {
 import {
   DEFAULT_CHAT_SETTINGS,
   DEFAULT_CODEX_CAPTION_MODEL,
+  DEFAULT_HOTKEYS,
   MAX_HIGHLIGHT_OPACITY,
   DEFAULT_PARALLELOGRAM_SKEW_DEG,
   DEFAULT_SHAPE_KIND,
@@ -93,30 +94,10 @@ export function defaultSettings(): Settings {
       autoAcceptSuggestions: false,
       chat: { ...DEFAULT_CHAT_SETTINGS, sensitiveDataPatterns: [] }
     },
-    hotkeys: {
-      // Quick Capture default moved off ⌘⇧P (collides with Print in
-      // browsers + iWork) to ⌘⇧C. Region + Window default to UNBOUND
-      // since Quick Capture's auto mode covers both — power users can
-      // bind them explicitly from Settings → Hotkeys if they want a
-      // dedicated chord.
-      //
-      // Video Capture is ⌘⌥C, not ⌘⇧V. ⌘⇧V is "Paste and Match
-      // Style" in browsers / Slack / Mail / Pages / Notes / Discord
-      // — globalShortcut.register wins system-wide, so claiming
-      // ⌘⇧V would steal that shortcut from every app on the box
-      // while PwrSnap runs. ⌘⌥C is bound by default only to
-      // Finder's "Copy as Pathname" (much rarer power-user
-      // feature) and ties nicely to the existing ⌘⇧C Quick Capture
-      // mnemonic — option + Capture = "alternative capture mode
-      // (video)".
-      quickCapture: "CommandOrControl+Shift+C",
-      region: "",
-      window: "",
-      videoCapture: "CommandOrControl+Alt+C"
-    },
-    experimental: {
-      v2FileFormat: false
-    },
+    // Single source of truth shared with the renderer's "Reset to
+    // defaults" button. Rationale for each chord lives on the
+    // `DEFAULT_HOTKEYS` declaration in @pwrsnap/shared.
+    hotkeys: { ...DEFAULT_HOTKEYS },
     general: {
       developerMode: false
     },
@@ -466,7 +447,6 @@ function parseV1(raw: unknown): Settings | null {
   const codex = isRecord(raw.codex) ? raw.codex : {};
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
-  const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const general = isRecord(raw.general) ? raw.general : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
@@ -510,13 +490,20 @@ function parseV1(raw: unknown): Settings | null {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
       region: pickString(hotkeys.region, defaults.hotkeys.region),
       window: pickString(hotkeys.window, defaults.hotkeys.window),
+      // `fullScreen` / `allScreens` / `timed` landed after v1 shipped;
+      // older files won't have them. pickString fills in the current
+      // default ("" = unbound) so the fields are always present in-memory.
+      fullScreen: pickString(hotkeys.fullScreen, defaults.hotkeys.fullScreen),
+      allScreens: pickString(hotkeys.allScreens, defaults.hotkeys.allScreens),
+      timed: pickString(hotkeys.timed, defaults.hotkeys.timed),
       // `videoCapture` landed after v1 shipped; older files won't have
       // it. pickString fills in the current default for that case so
       // the field is always present in-memory.
-      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture)
-    },
-    experimental: {
-      v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)
+      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture),
+      // `reshowFloatOver` landed after v1 shipped; older files won't have
+      // it. pickString fills in the current default (⌘⌥⇧F) so the field
+      // is always present in-memory.
+      reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
     },
     general: {
       // `general.developerMode` landed after v1 shipped; older files
@@ -969,7 +956,6 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
-    experimental: mergeSection(current.experimental, patch.experimental),
     general: mergeSection(current.general, patch.general),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),

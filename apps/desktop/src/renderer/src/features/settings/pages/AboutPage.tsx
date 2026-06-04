@@ -18,6 +18,7 @@ export function AboutPage(): ReactElement {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,6 +41,14 @@ export function AboutPage(): ReactElement {
     const result = await dispatch("app:openDocumentWindow", { kind });
     if (!result.ok) {
       setDocumentError(result.error.message);
+    }
+  }
+
+  async function openExternal(url: string): Promise<void> {
+    setLinkError(null);
+    const result = await dispatch("app:openExternal", { url });
+    if (!result.ok) {
+      setLinkError(result.error.message);
     }
   }
 
@@ -123,15 +132,46 @@ export function AboutPage(): ReactElement {
 
       <Card eyebrow="LINKS" title="Links">
         <Row label="Website" sub="Product page." tag="link">
-          <a className="pss__opt-primary" href="#" onClick={(e) => e.preventDefault()}>
-            pwrdrvr.com (coming soon)
+          <a
+            className="pss__opt-primary"
+            href="https://pwrsnap.com"
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal("https://pwrsnap.com");
+            }}
+          >
+            pwrsnap.com
           </a>
         </Row>
-        <Row label="Repository" sub="Internal source." tag="link">
-          <a className="pss__opt-primary" href="#" onClick={(e) => e.preventDefault()}>
-            github.com/pwrdrvr/PwrSnap (private)
+        <Row label="Documentation" sub="Guides and reference." tag="link">
+          <a
+            className="pss__opt-primary"
+            href="https://docs.pwrsnap.com"
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal("https://docs.pwrsnap.com");
+            }}
+          >
+            docs.pwrsnap.com
           </a>
         </Row>
+        <Row label="Repository" sub="Source on GitHub." tag="link">
+          <a
+            className="pss__opt-primary"
+            href="https://github.com/pwrdrvr/PwrSnap"
+            onClick={(e) => {
+              e.preventDefault();
+              void openExternal("https://github.com/pwrdrvr/PwrSnap");
+            }}
+          >
+            github.com/pwrdrvr/PwrSnap
+          </a>
+        </Row>
+        {linkError !== null ? (
+          <Row label="Link status" sub="" tag="error">
+            <span className="pss__opt-sub">Failed to open link: {linkError}</span>
+          </Row>
+        ) : null}
       </Card>
     </>
   );

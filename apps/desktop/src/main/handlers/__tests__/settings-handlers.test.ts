@@ -326,6 +326,29 @@ describe("settings:* validation", () => {
     expect(result.error.code).toBe("invalid_hotkey");
   });
 
+  test("settings:write validates the newer hotkey keys (reshowFloatOver)", async () => {
+    // The validator loops a fixed key list — make sure the keys added
+    // alongside the capture-mode + re-show hotkeys are actually covered.
+    const bad = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { reshowFloatOver: 42 } } as unknown as Record<string, never>,
+      { principal: "ipc" }
+    );
+    expect(bad.ok).toBe(false);
+    if (bad.ok) throw new Error("unreachable");
+    expect(bad.error.code).toBe("invalid_hotkey");
+
+    const good = await bus.dispatch(
+      "settings:write",
+      { hotkeys: { reshowFloatOver: "CommandOrControl+Alt+Shift+F" } } as unknown as Record<
+        string,
+        never
+      >,
+      { principal: "ipc" }
+    );
+    expect(good.ok).toBe(true);
+  });
+
   test("settings:write rejects an invalid filename timestamp zone", async () => {
     const result = await bus.dispatch(
       "settings:write",

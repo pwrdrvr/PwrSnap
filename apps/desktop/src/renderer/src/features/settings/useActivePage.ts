@@ -1,7 +1,8 @@
 // Tiny hook that reads the current Settings page from the URL hash
-// (`#stage=settings&page=<id>`). Defaults to "ai" when the page param
-// is missing or invalid. Re-renders on `hashchange` so deep-link
-// navigation updates the visible page without a full reload.
+// (`#stage=settings&page=<id>`). Defaults to "general" (the first
+// sidebar item) when the page param is missing or invalid. Re-renders
+// on `hashchange` so deep-link navigation updates the visible page
+// without a full reload.
 //
 // Two navigation drivers feed this hook:
 //   1. In-renderer sidebar clicks → `setActivePage` (below) sets the
@@ -19,7 +20,7 @@ import type { SettingsNavigateEvent, SettingsPage } from "@pwrsnap/shared";
 import { subscribe } from "../../lib/pwrsnap";
 import { SETTINGS_PAGE_IDS } from "./settings-categories";
 
-const DEFAULT_PAGE: SettingsPage = "ai";
+const DEFAULT_PAGE: SettingsPage = "general";
 
 /**
  * Pure parser. Extracted so it's trivially testable without a DOM —

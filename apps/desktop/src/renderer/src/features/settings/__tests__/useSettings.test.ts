@@ -44,9 +44,12 @@ const baseSettings: Settings = {
     quickCapture: "CommandOrControl+Shift+C",
     region: "",
     window: "",
-    videoCapture: "CommandOrControl+Alt+C"
+    fullScreen: "",
+    allScreens: "",
+    timed: "",
+    videoCapture: "CommandOrControl+Alt+C",
+    reshowFloatOver: "CommandOrControl+Alt+Shift+F"
   },
-  experimental: { v2FileFormat: false },
   general: { developerMode: false },
   appearance: { theme: "system" },
   updates: { channel: "latest" },
@@ -203,7 +206,7 @@ describe("useSettings", () => {
 
     const nextSettings: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: true }
+      general: { developerMode: true }
     };
     await act(async () => {
       api.pushEvent(EVENT_CHANNELS.settingsChanged, {
@@ -219,7 +222,7 @@ describe("useSettings", () => {
     let lastReq: unknown = null;
     const nextSettings: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: true }
+      general: { developerMode: true }
     };
     const api = buildApi({
       onWrite: (req) => {
@@ -239,10 +242,10 @@ describe("useSettings", () => {
     await mount();
     await flush();
     await act(async () => {
-      await capturedValue?.patch({ experimental: { v2FileFormat: true } });
+      await capturedValue?.patch({ general: { developerMode: true } });
     });
-    expect(lastReq).toEqual({ experimental: { v2FileFormat: true } });
-    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+    expect(lastReq).toEqual({ general: { developerMode: true } });
+    expect(capturedValue?.settings?.general.developerMode).toBe(true);
   });
 
   test("concurrent patch() resolutions do not reverse last-write-wins", async () => {
@@ -256,11 +259,11 @@ describe("useSettings", () => {
     let resolveB: ((r: AnyResult) => void) | null = null;
     const settingsA: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: false }
+      general: { developerMode: false }
     };
     const settingsB: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: true }
+      general: { developerMode: true }
     };
     let writeIndex = 0;
     const api = buildApi({
@@ -291,8 +294,8 @@ describe("useSettings", () => {
     let pA: Promise<void> | undefined;
     let pB: Promise<void> | undefined;
     await act(async () => {
-      pA = capturedValue?.patch({ experimental: { v2FileFormat: false } });
-      pB = capturedValue?.patch({ experimental: { v2FileFormat: true } });
+      pA = capturedValue?.patch({ general: { developerMode: false } });
+      pB = capturedValue?.patch({ general: { developerMode: true } });
     });
 
     // Main's writeQueue processed A then B then broadcast(A) then
@@ -319,7 +322,7 @@ describe("useSettings", () => {
       await pA;
     });
 
-    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+    expect(capturedValue?.settings?.general.developerMode).toBe(true);
   });
 
   test("broadcast during initial-load Promise.all wins over stale disk read", async () => {
@@ -330,11 +333,11 @@ describe("useSettings", () => {
     let resolveRead: ((r: AnyResult) => void) | null = null;
     const broadcastSettings: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: true }
+      general: { developerMode: true }
     };
     const staleReadSettings: Settings = {
       ...baseSettings,
-      experimental: { v2FileFormat: false }
+      general: { developerMode: false }
     };
 
     const api = buildApi();
@@ -358,7 +361,7 @@ describe("useSettings", () => {
         secrets: baseSecrets
       });
     });
-    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+    expect(capturedValue?.settings?.general.developerMode).toBe(true);
 
     // Now resolve the stale read. `loaded.current` is already
     // true, so the post-await block must bail.
@@ -366,7 +369,7 @@ describe("useSettings", () => {
       resolveRead?.({ ok: true, value: staleReadSettings });
       await flush();
     });
-    expect(capturedValue?.settings?.experimental.v2FileFormat).toBe(true);
+    expect(capturedValue?.settings?.general.developerMode).toBe(true);
     expect(capturedValue?.loading).toBe(false);
   });
 
@@ -401,7 +404,7 @@ describe("useSettings", () => {
     let threw = false;
     await act(async () => {
       try {
-        await capturedValue?.patch({ experimental: { v2FileFormat: true } });
+        await capturedValue?.patch({ general: { developerMode: true } });
       } catch {
         threw = true;
       }

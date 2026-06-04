@@ -76,6 +76,7 @@ import {
   getCaptureById,
   insertCapture,
   insertCapturesBatch,
+  listCaptures,
   listExpiredTrash
 } from "./persistence/captures-repo";
 import { insertVideoMetadata } from "./persistence/video-repo";
@@ -116,21 +117,35 @@ const APP_COPYRIGHT = "Copyright © 2026 PwrDrvr LLC. All rights reserved.";
 const APP_WEBSITE = "https://pwrsnap.com";
 const APP_DOCS = "https://docs.pwrsnap.com";
 const APP_ISSUE_REPORTER = "https://github.com/pwrdrvr/PwrSnap/issues/new";
-/** Settings (⌘,) stays hardcoded — it isn't exposed in the Hotkeys
- *  page, and the platform convention is well-established. Quick
- *  Capture / Region / Window / Video Capture are dynamically
- *  registered from `settings.hotkeys.*` via `wireHotkeyRegistrations`. */
+/** Settings (⌘,) stays hardcoded — it's not user-rebindable (the
+ *  Hotkeys page shows it as a fixed reference only), and the platform
+ *  convention is well-established. Quick Capture / Region / Window /
+ *  Full Screen / All Screens / Timed / Video Capture / Re-show last
+ *  Float-Over are dynamically registered from `settings.hotkeys.*` via
+ *  `wireHotkeyRegistrations`. */
 const SETTINGS_SHORTCUT = "CommandOrControl+,";
 const PASTE_FROM_CLIPBOARD_MENU_ID = "file-new-paste-from-clipboard";
 
-/** The four hotkey kinds we register from `settings.hotkeys.*`. Order
+/** The hotkey kinds we register from `settings.hotkeys.*`. Order
  *  matters only for log readability. */
-type HotkeyKind = "quickCapture" | "region" | "window" | "videoCapture";
+type HotkeyKind =
+  | "quickCapture"
+  | "region"
+  | "window"
+  | "fullScreen"
+  | "allScreens"
+  | "timed"
+  | "videoCapture"
+  | "reshowFloatOver";
 const HOTKEY_KINDS: readonly HotkeyKind[] = [
   "quickCapture",
   "region",
   "window",
-  "videoCapture"
+  "fullScreen",
+  "allScreens",
+  "timed",
+  "videoCapture",
+  "reshowFloatOver"
 ];
 const isMac = process.platform === "darwin";
 
@@ -376,6 +391,19 @@ function handlerFor(kind: HotkeyKind): () => void {
       return () => void runInteractiveCapture("region");
     case "window":
       return () => void runInteractiveCapture("window");
+    case "fullScreen":
+      // Capture the display under the cursor end-to-end (no selector).
+      // Same `capture:fullScreen` verb the tray's Full Screen tile uses.
+      return () => void runFullScreenCapture();
+    case "allScreens":
+      // Stitch every connected display into one image. Same
+      // `capture:allScreens` verb the tray uses; `"stitched"` matches
+      // the Hotkeys row's "single image" description.
+      return () => void runAllScreensCapture();
+    case "timed":
+      // 5-second countdown, then the auto-mode selector. Routed through
+      // `capture:interactive` (mode `"timed"`), same as the tray tile.
+      return () => void runInteractiveCapture("timed");
     case "videoCapture":
       // Fast Video Capture (issue #64). Opens the selector in auto
       // mode; the commit is routed to `recording:start` instead of
@@ -384,6 +412,10 @@ function handlerFor(kind: HotkeyKind): () => void {
       // the explicit "record video" entry point and the existing
       // ⌘⇧C remains the explicit "take a snap" entry point.
       return () => void runInteractiveRecord();
+    case "reshowFloatOver":
+      // Re-pop the most recent capture's float-over toast (issue: the
+      // toast auto-dismisses; this brings it back without re-capturing).
+      return () => runReshowLastFloatOver();
   }
 }
 
@@ -535,13 +567,14 @@ async function runExportLibrary(): Promise<void> {
 }
 
 async function runInteractiveCapture(
-  mode: "auto" | "region" | "window" = "auto"
+  mode: "auto" | "region" | "window" | "timed" = "auto"
 ): Promise<void> {
   const log = getMainLogger("pwrsnap:shortcut");
   // The Quick Capture hotkey explicitly uses 'auto' mode — snap to a
   // window if the cursor is over one, drag for a free rect otherwise.
   // The Region / Window hotkeys force the selector into pure-rect /
-  // pure-window mode respectively.
+  // pure-window mode respectively. 'timed' runs the 5s countdown then
+  // falls into the auto picker.
   //
   // The handler owns the full lifecycle now (pre-show / populate /
   // hide-selector / activate-prev-app). We just wait for it to
@@ -556,6 +589,64 @@ async function runInteractiveCapture(
       code: result.error.code,
       message: result.error.message,
       mode
+    });
+  }
+}
+
+/** Full Screen hotkey — capture the display under the cursor with no
+ *  selector. Mirrors the tray's Full Screen tile (`capture:fullScreen`). */
+async function runFullScreenCapture(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const result = await bus.dispatch("capture:fullScreen", {}, { principal: "ipc" });
+  if (!result.ok && result.error.code !== "cancelled") {
+    log.warn("capture:fullScreen failed", {
+      code: result.error.code,
+      message: result.error.message
+    });
+  }
+}
+
+/** All Screens hotkey — stitch every connected display into a single
+ *  image. Mirrors the tray's All Screens tile (`capture:allScreens`,
+ *  stitched mode). */
+async function runAllScreensCapture(): Promise<void> {
+  const log = getMainLogger("pwrsnap:shortcut");
+  const result = await bus.dispatch(
+    "capture:allScreens",
+    { mode: "stitched" },
+    { principal: "ipc" }
+  );
+  if (!result.ok && result.error.code !== "cancelled") {
+    log.warn("capture:allScreens failed", {
+      code: result.error.code,
+      message: result.error.message
+    });
+  }
+}
+
+/** Re-show last Float-Over hotkey — re-pop the most recent live
+ *  capture's toast over the screen without re-capturing. Reads the
+ *  newest non-deleted capture straight from the repo (the float-over
+ *  module keeps no persistent "last capture" of its own — its state
+ *  resets to hidden on dismiss). No-op when the library is empty. */
+function runReshowLastFloatOver(): void {
+  const log = getMainLogger("pwrsnap:shortcut");
+  // Runs inside a globalShortcut callback, so swallow + log any error
+  // (a transient repo read failure, say) rather than letting it throw
+  // out of the handler — same discipline as the bus-dispatch hotkeys.
+  try {
+    const { rows } = listCaptures({ limit: 1 });
+    const last = rows[0];
+    if (last === undefined) {
+      log.info("re-show last float-over: no captures yet");
+      return;
+    }
+    // Pass the full record so the toast populates immediately without a
+    // renderer round-trip back to the library store.
+    setFloatOverState({ kind: "show-loaded", captureId: last.id, record: last });
+  } catch (cause) {
+    log.warn("re-show last float-over failed", {
+      message: cause instanceof Error ? cause.message : String(cause)
     });
   }
 }

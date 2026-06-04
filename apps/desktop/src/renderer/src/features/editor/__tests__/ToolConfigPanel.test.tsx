@@ -87,9 +87,12 @@ function makeSettings(): Settings {
       quickCapture: "CommandOrControl+Shift+C",
       region: "",
       window: "",
-      videoCapture: "CommandOrControl+Alt+C"
+      fullScreen: "",
+      allScreens: "",
+      timed: "",
+      videoCapture: "CommandOrControl+Alt+C",
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
-    experimental: { v2FileFormat: false },
     general: { developerMode: false },
     appearance: { theme: "system" },
     updates: { channel: "latest" },

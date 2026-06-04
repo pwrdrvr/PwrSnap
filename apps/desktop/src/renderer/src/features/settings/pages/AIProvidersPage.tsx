@@ -1301,7 +1301,7 @@ function AcpAgentRow({
                   ? "override"
                   : inst.source === "fallback"
                     ? "fallback path"
-                    : "on PATH"
+                    : "found"
               ]
                 .filter((part): part is string => part !== null)
                 .join(" · ");

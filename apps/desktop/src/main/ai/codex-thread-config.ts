@@ -65,30 +65,36 @@ export const LEGACY_FEATURES_THREAD_CONFIG: Record<string, unknown> = {
 
 type MajorMinor = readonly [number, number];
 
-type ThreadConfigRange = {
-  /** Inclusive lower bound (major, minor). */
-  fromInclusive: MajorMinor;
-  /** Exclusive upper bound (major, minor), or null for open-ended. */
-  toExclusive: MajorMinor | null;
+type ThreadConfigMarker = {
+  /**
+   * The Codex MAJOR.MINOR at which this config becomes effective. A marker
+   * applies from its version FORWARD — to that minor AND every newer version —
+   * UNTIL a higher marker supersedes it. (Patch + prerelease are ignored, so
+   * `0.135.0-alpha.1` matches the 0.135 marker.)
+   */
+  since: MajorMinor;
   config: Record<string, unknown>;
   label: string;
 };
 
 /**
- * Ordered ranges, keyed by Codex MAJOR.MINOR (patch + prerelease ignored, so
- * `0.135.0-alpha.1` matches the 0.135 line). A version not covered by any range
- * falls through to `MINIMAL_THREAD_CONFIG`.
+ * "Last compatible marker wins." To resolve, pick the marker with the GREATEST
+ * `since` that is still <= the running Codex MAJOR.MINOR (a floor lookup). Each
+ * marker therefore owns a half-open range up to the next marker: with markers
+ * at 0.0 / 0.135 / 0.137, version 0.136 resolves to the 0.135 marker and
+ * 0.140 (or 1.0) resolves to the 0.137 marker.
+ *
+ * To support a new Codex build that changes the schema, ADD a marker at its
+ * MAJOR.MINOR — it then governs that version and all newer ones automatically.
+ * Kept sorted ascending for readability; resolution is order-independent.
  */
-const THREAD_CONFIG_RANGES: readonly ThreadConfigRange[] = [
-  {
-    // 0.135.x only. `features` suppresses here; the bundled-skills toggle is
-    // absent. (0.133 needs minimal; 0.137+ prefer minimal — both are the
-    // default below, so only 0.135 is special-cased.)
-    fromInclusive: [0, 135],
-    toExclusive: [0, 136],
-    config: LEGACY_FEATURES_THREAD_CONFIG,
-    label: "0.135.x"
-  }
+const THREAD_CONFIG_MARKERS: readonly ThreadConfigMarker[] = [
+  // Baseline floor (0.133 / 0.134): `features` INFLATES ~6x here — go minimal.
+  { since: [0, 0], config: MINIMAL_THREAD_CONFIG, label: "≤ 0.134" },
+  // 0.135 → 0.136: `features` SUPPRESSES (~4k); bundled-skills toggle absent.
+  { since: [0, 135], config: LEGACY_FEATURES_THREAD_CONFIG, label: "0.135 → 0.136" },
+  // 0.137 and onward: minimal is best (~2.9k); `features` no longer needed.
+  { since: [0, 137], config: MINIMAL_THREAD_CONFIG, label: "≥ 0.137" }
 ];
 
 function parseMajorMinor(version: string): MajorMinor | null {
@@ -101,23 +107,33 @@ function compareMajorMinor(a: MajorMinor, b: MajorMinor): number {
   return a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1];
 }
 
-/** Pick the `config` overlay for a known Codex version. `null`/unparseable/
- *  uncovered versions get the minimal default (best on the newest builds). */
+function newestMarker(): ThreadConfigMarker {
+  return THREAD_CONFIG_MARKERS.reduce((newest, marker) =>
+    compareMajorMinor(marker.since, newest.since) > 0 ? marker : newest
+  );
+}
+
+/**
+ * Pick the `config` overlay for a Codex version using floor / "last marker
+ * wins" semantics: the highest marker whose `since` is <= the running version.
+ * `null` / unparseable / below-all-markers → the newest marker (Codex only
+ * moves forward, so an unknown build is most likely a recent one).
+ */
 export function resolveCodexThreadConfig(
   codexVersion: string | null
 ): Record<string, unknown> {
-  if (codexVersion !== null) {
-    const mm = parseMajorMinor(codexVersion);
-    if (mm !== null) {
-      for (const range of THREAD_CONFIG_RANGES) {
-        const atOrAboveFrom = compareMajorMinor(mm, range.fromInclusive) >= 0;
-        const belowTo =
-          range.toExclusive === null || compareMajorMinor(mm, range.toExclusive) < 0;
-        if (atOrAboveFrom && belowTo) return range.config;
-      }
+  const mm = codexVersion !== null ? parseMajorMinor(codexVersion) : null;
+  if (mm === null) return newestMarker().config;
+  let best: ThreadConfigMarker | null = null;
+  for (const marker of THREAD_CONFIG_MARKERS) {
+    if (
+      compareMajorMinor(mm, marker.since) >= 0 &&
+      (best === null || compareMajorMinor(marker.since, best.since) > 0)
+    ) {
+      best = marker;
     }
   }
-  return MINIMAL_THREAD_CONFIG;
+  return (best ?? newestMarker()).config;
 }
 
 /** Probe a Codex binary's `--version`. Injectable for tests. */

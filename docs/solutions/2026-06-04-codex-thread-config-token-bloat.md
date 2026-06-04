@@ -75,12 +75,26 @@ picks between them by the running Codex MAJOR.MINOR:
 - `LEGACY_FEATURES_THREAD_CONFIG` — the old `features`-bearing shape, scoped to
   **0.135.x only** (verified ~4k there; sending `features` to 0.133 inflates ~6x).
 
-`resolveCodexThreadConfig(version)` walks an ordered range table (only 0.135.x is
-special-cased today); `resolveCodexThreadConfigForCommand(command, env)` probes
-the binary's `--version` once (cached per command) and resolves. The three Codex
-surfaces (enrichment + both chats) call the command-based resolver, so they all
-track the running build. **Add a range entry when a new Codex build changes the
-schema** — that's the extension point.
+`resolveCodexThreadConfig(version)` uses **floor / "last compatible marker
+wins"** semantics over a sorted marker list keyed by Codex MAJOR.MINOR: it
+picks the highest marker whose `since` is <= the running version. So each
+marker governs its version AND every newer one until a higher marker
+supersedes it. Today's markers:
+
+| marker | covers | config |
+|---|---|---|
+| `≤ 0.134` | 0.133, 0.134 | minimal |
+| `0.135` | 0.135, **0.136** | legacy (`features`) |
+| `0.137` | 0.137, **0.138, …, 1.x, …** | minimal |
+
+So 0.136 (no marker of its own) inherits 0.135's config; 0.138+ inherit
+0.137's. `null` / unparseable → the newest marker (Codex only moves forward).
+`resolveCodexThreadConfigForCommand(command, env)` probes the binary's
+`--version` once (cached per command) and resolves. The three Codex surfaces
+(enrichment + both chats) call the command-based resolver, so they all track
+the running build. **Add a marker at a new build's MAJOR.MINOR when its schema
+changes** — it then governs that version and all newer ones automatically.
+That's the extension point.
 
 A guard test (`codex-thread-config.test.ts`) pins the version→shape map and the
 shape invariants.

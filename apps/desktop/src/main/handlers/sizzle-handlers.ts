@@ -34,7 +34,7 @@ import {
   resolveSpeechTiming
 } from "../sizzle/speech-timing";
 import {
-  planSequenceMediaDiagnostics,
+  planSequencePreviewMedia,
   planSequenceScene,
   planSequenceTimeline,
   SequencePlannerError
@@ -655,7 +655,7 @@ export function registerSizzleHandlers(): void {
       for (const [captureId, capture] of loadedCaptures) {
         if (capture !== null) capturesById.set(captureId, capture);
       }
-      const mediaDiagnostics = planSequenceMediaDiagnostics({
+      const mediaPlan = planSequencePreviewMedia({
         scene,
         capturesById,
         timeline
@@ -671,7 +671,7 @@ export function registerSizzleHandlers(): void {
           code: diagnostic.code,
           message: diagnostic.message
         })),
-        ...mediaDiagnostics.map((diagnostic) => ({
+        ...mediaPlan.diagnostics.map((diagnostic) => ({
           beatId: diagnostic.beatId,
           code: diagnostic.code,
           message: diagnostic.message
@@ -684,7 +684,7 @@ export function registerSizzleHandlers(): void {
         timingQuality: speechTiming.quality,
         warnings,
         transcriptPhrases: buildTranscriptPhraseSuggestions(speechTiming),
-        beats: timeline.beatPlans
+        beats: mediaPlan.beatPlans
       });
     } catch (cause) {
       return err(toError(cause, "sizzle_sequence_preview_failed"));

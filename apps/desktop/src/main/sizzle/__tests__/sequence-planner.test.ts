@@ -8,6 +8,7 @@ import type {
 import { approximateSpeechTiming } from "../speech-timing";
 import {
   planSequenceMediaDiagnostics,
+  planSequencePreviewMedia,
   planSequenceScene,
   planSequenceTimeline,
   SequencePlannerError
@@ -341,6 +342,9 @@ describe("planSequenceScene", () => {
       expect(plan.sceneInputs[0]!.durationSec).toBeCloseTo(9.6, 3);
       expect(plan.sceneInputs[0]!.videoFit?.mode).toBe("freeze-end");
     }
+    expect(plan.beatPlans[0]!.mediaTrim).toEqual({ startSec: 0, endSec: 4.204 });
+    expect(plan.beatPlans[0]!.fit?.renderMode).toBe("freeze-end");
+    expect(plan.beatPlans[0]!.fit?.inputDurationSec).toBeCloseTo(4.204, 3);
     expect(plan.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -388,6 +392,41 @@ describe("planSequenceScene", () => {
           beatId: "bt_publish",
           code: "video_fit",
           message: "Requested speed-to-fit would exceed rate limits; using freeze-end"
+        })
+      ])
+    );
+  });
+
+  it("returns normalized video media decisions during preview planning", () => {
+    const scene = sequenceScene({
+      scriptLine: "The finished GIF is ready to share privately and publish.",
+      narration: "The finished GIF is ready to share privately and publish.",
+      beats: [
+        {
+          id: "bt_publish",
+          captureId: "cap_short",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: { startSec: 0, endSec: 9.1 },
+          transition: "cut",
+          videoFit: "speed-to-fit"
+        }
+      ]
+    });
+    const timeline = planSequenceTimeline(scene, timing(scene.scriptLine, 9.6));
+    const plan = planSequencePreviewMedia({
+      scene,
+      timeline,
+      capturesById: new Map([["cap_short", capture("cap_short", "video", 4.204)]])
+    });
+
+    expect(plan.beatPlans[0]!.mediaTrim).toEqual({ startSec: 0, endSec: 4.204 });
+    expect(plan.beatPlans[0]!.fit?.renderMode).toBe("freeze-end");
+    expect(plan.beatPlans[0]!.fit?.inputDurationSec).toBeCloseTo(4.204, 3);
+    expect(plan.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          beatId: "bt_publish",
+          code: "media_trim_clamped"
         })
       ])
     );

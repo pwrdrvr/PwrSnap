@@ -41,7 +41,7 @@ export type SequenceTimelinePlan = {
 };
 
 export type SequenceRenderBeatPlan = SizzleSequencePreviewBeat & {
-  fit?: VideoFitDecision;
+  fit?: VideoFitDecision | null;
 };
 
 export type SequencePlannerRequest = {
@@ -56,6 +56,11 @@ export type SequenceMediaDiagnosticsRequest = {
   scene: SizzleScene;
   capturesById: Map<string, CaptureRecord>;
   timeline: SequenceTimelinePlan;
+};
+
+export type SequencePreviewMediaPlan = {
+  beatPlans: SizzleSequencePreviewBeat[];
+  diagnostics: SequencePlannerDiagnostic[];
 };
 
 export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPlan {
@@ -79,7 +84,9 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
     const transitionOverlapSec =
       index > 0 ? transitionOverlapDurationSec(transition) : 0;
     const durationSec = audioDurationSec + transitionOverlapSec;
-    let fit: VideoFitDecision | undefined;
+    let videoMediaPlan:
+      | { trim: SizzleMediaTrim; fit: VideoFitDecision }
+      | undefined;
 
     if (capture.kind === "video") {
       if (capture.legacy_src_path === null || capture.video === undefined || capture.video === null) {
@@ -90,7 +97,8 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
       }
       const mediaPlan = planVideoBeatMedia(beat, capture, durationSec);
       const trim = mediaPlan.trim;
-      fit = mediaPlan.fit;
+      const fit = mediaPlan.fit;
+      videoMediaPlan = { trim, fit };
       diagnostics.push(...mediaPlan.diagnostics);
       sceneInputs.push({
         kind: "video",
@@ -126,8 +134,20 @@ export function planSequenceScene(req: SequencePlannerRequest): SequenceRenderPl
       });
     }
 
-    const beatPlan: SequenceRenderBeatPlan = { ...window };
-    if (fit !== undefined) beatPlan.fit = fit;
+    const beatPlan: SequenceRenderBeatPlan = {
+      beatId: window.beatId,
+      captureId: window.captureId,
+      startSec: window.startSec,
+      endSec: window.endSec,
+      timing: window.timing,
+      transition: window.transition,
+      videoFit: window.videoFit
+    };
+    if (window.mediaTrim !== undefined) beatPlan.mediaTrim = window.mediaTrim;
+    if (videoMediaPlan !== undefined) {
+      beatPlan.mediaTrim = videoMediaPlan.trim;
+      beatPlan.fit = videoMediaPlan.fit;
+    }
     beatPlans.push(beatPlan);
   });
 
@@ -172,8 +192,15 @@ export function planSequenceTimeline(
 export function planSequenceMediaDiagnostics(
   req: SequenceMediaDiagnosticsRequest
 ): SequencePlannerDiagnostic[] {
+  return planSequencePreviewMedia(req).diagnostics;
+}
+
+export function planSequencePreviewMedia(
+  req: SequenceMediaDiagnosticsRequest
+): SequencePreviewMediaPlan {
   const beats = normalizeSizzleSequenceBeatContinuity(req.scene.beats ?? []);
   const diagnostics: SequencePlannerDiagnostic[] = [];
+  const beatPlans = req.timeline.beatPlans.map((beatPlan) => ({ ...beatPlan }));
   beats.forEach((beat, index) => {
     const capture = req.capturesById.get(beat.captureId);
     if (capture?.kind !== "video" || capture.video === null || capture.video === undefined) return;
@@ -184,9 +211,15 @@ export function planSequenceMediaDiagnostics(
     const transitionOverlapSec =
       index > 0 ? transitionOverlapDurationSec(transition) : 0;
     const durationSec = audioDurationSec + transitionOverlapSec;
-    diagnostics.push(...planVideoBeatMedia(beat, capture, durationSec).diagnostics);
+    const mediaPlan = planVideoBeatMedia(beat, capture, durationSec);
+    diagnostics.push(...mediaPlan.diagnostics);
+    beatPlans[index] = {
+      ...beatPlans[index]!,
+      mediaTrim: mediaPlan.trim,
+      fit: mediaPlan.fit
+    };
   });
-  return diagnostics;
+  return { beatPlans, diagnostics };
 }
 
 export class SequencePlannerError extends Error {

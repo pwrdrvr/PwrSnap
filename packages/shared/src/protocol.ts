@@ -811,6 +811,12 @@ export type SizzleSequencePreviewWarning = {
   message: string;
 };
 
+export type SizzleSequencePreviewVideoFit = {
+  renderMode: "trim" | "freeze-end" | "loop" | "ping-pong" | "speed-to-fit";
+  inputDurationSec: number;
+  playbackRate: number;
+};
+
 export type SizzleSequencePreviewBeat = {
   beatId: string;
   captureId: string;
@@ -819,6 +825,8 @@ export type SizzleSequencePreviewBeat = {
   timing: SizzleBeatTiming;
   transition: SizzleTransition;
   videoFit: SizzleVideoFitPolicy;
+  mediaTrim?: SizzleMediaTrim | null;
+  fit?: SizzleSequencePreviewVideoFit | null;
 };
 
 export type SizzleSequenceTranscriptPhrase = {

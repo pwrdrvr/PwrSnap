@@ -214,10 +214,28 @@ function transcriptPhraseMatches(
   return searchKey(phrase.text).includes(q);
 }
 
+function occurrenceForTranscriptPhrase(
+  selected: SizzleSequenceTranscriptPhrase,
+  phrases: SizzleSequenceTranscriptPhrase[]
+): number {
+  let occurrence = 0;
+  for (const phrase of phrases) {
+    if (phrase.text !== selected.text) continue;
+    occurrence += 1;
+    if (
+      phrase.startSec === selected.startSec &&
+      phrase.wordStartIndex === selected.wordStartIndex
+    ) {
+      return occurrence;
+    }
+  }
+  return 1;
+}
+
 function TranscriptPhrasePicker(props: {
   currentPhrase: string;
   phrases: SizzleSequenceTranscriptPhrase[];
-  onSelect: (phrase: string) => void;
+  onSelect: (phrase: SizzleSequenceTranscriptPhrase) => void;
 }): ReactElement {
   const { currentPhrase, phrases, onSelect } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -328,7 +346,7 @@ function TranscriptPhrasePicker(props: {
                     (phrase.text === currentPhrase ? " is-selected" : "")
                   }
                   onClick={() => {
-                    onSelect(phrase.text);
+                    onSelect(phrase);
                     setOpen(false);
                     setQuery(phrase.text);
                   }}
@@ -518,13 +536,13 @@ function sequencePreviewVideoState(args: {
   if (capture.kind !== "video" || capture.video === undefined || capture.video === null) {
     return null;
   }
-  const trim = sceneBeat.mediaTrim ?? {
+  const trim = beat.mediaTrim ?? sceneBeat.mediaTrim ?? {
     startSec: capture.video.defaultRange.start,
     endSec: capture.video.defaultRange.end
   };
   const sourceDurationSec = Math.max(0.05, trim.endSec - trim.startSec);
   const targetDurationSec = Math.max(0.05, beat.endSec - beat.startSec);
-  const fit = resolveSizzleVideoFit({
+  const fit = beat.fit ?? resolveSizzleVideoFit({
     policy: sceneBeat.videoFit,
     sourceDurationSec,
     targetDurationSec
@@ -2460,8 +2478,8 @@ function Editor(props: EditorProps): ReactElement {
                                       editSequenceBeat(scene.id, beat.id, {
                                         timing: {
                                           kind: "phrase",
-                                          phrase,
-                                          occurrence: beat.timing.kind === "phrase" ? beat.timing.occurrence : null,
+                                          phrase: phrase.text,
+                                          occurrence: occurrenceForTranscriptPhrase(phrase, transcriptPhrases),
                                           offsetSec: beat.timing.kind === "phrase" ? beat.timing.offsetSec : 0,
                                           durationSec: beat.timing.kind === "phrase" ? beat.timing.durationSec : null
                                         }

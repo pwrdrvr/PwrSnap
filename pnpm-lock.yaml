@@ -6,12 +6,6 @@ settings:
 
 overrides:
   '@types/node': 24.12.4
-  '@pwrdrvr/agent-core': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-core
-  '@pwrdrvr/agent-transport': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-transport
-  '@pwrdrvr/codex-discovery': file:/Users/huntharo/pwrdrvr/agent-kit/packages/codex-discovery
-  '@pwrdrvr/agent-client': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-client
-  '@pwrdrvr/agent-chat-react': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react
-  '@pwrdrvr/agent-acp': file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-acp
 
 pnpmfileChecksum: sha256-4pcY3+51RRJSec1Ld0OJIPli+j51l4qASm0Ts5d4Fuk=
 
@@ -41,23 +35,23 @@ importers:
         specifier: ^5.2.5
         version: 5.2.5
       '@pwrdrvr/agent-acp':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-acp
-        version: file:../../../../agent-kit/packages/agent-acp
+        specifier: ^0.1.0
+        version: 0.1.0
       '@pwrdrvr/agent-chat-react':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react
-        version: file:../../../../agent-kit/packages/agent-chat-react(react@19.2.6)
+        specifier: ^0.1.0
+        version: 0.1.0(react@19.2.6)
       '@pwrdrvr/agent-client':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-client
-        version: file:../../../../agent-kit/packages/agent-client
+        specifier: ^0.1.0
+        version: 0.1.0
       '@pwrdrvr/agent-core':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-core
-        version: file:../../../../agent-kit/packages/agent-core
+        specifier: ^0.1.0
+        version: 0.1.0
       '@pwrdrvr/agent-transport':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-transport
-        version: file:../../../../agent-kit/packages/agent-transport
+        specifier: ^0.1.0
+        version: 0.1.0
       '@pwrdrvr/codex-discovery':
-        specifier: file:/Users/huntharo/pwrdrvr/agent-kit/packages/codex-discovery
-        version: file:../../../../agent-kit/packages/codex-discovery
+        specifier: ^0.1.0
+        version: 0.1.0
       '@pwrsnap/codex-app-server-protocol':
         specifier: workspace:*
         version: link:../../packages/codex-app-server-protocol
@@ -885,29 +879,29 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@file:../../../../agent-kit/packages/agent-acp':
-    resolution: {directory: ../../../../agent-kit/packages/agent-acp, type: directory}
+  '@pwrdrvr/agent-acp@0.1.0':
+    resolution: {integrity: sha512-Z9hs0DUSq8oH3ZLMICnljvBe3XYKUkmAMXUH4mjqHwY76hod5YzonWiSnx3Z6er+Swp02GFAt/PGfVcwdB1vcA==}
 
-  '@pwrdrvr/agent-chat-react@file:../../../../agent-kit/packages/agent-chat-react':
-    resolution: {directory: ../../../../agent-kit/packages/agent-chat-react, type: directory}
+  '@pwrdrvr/agent-chat-react@0.1.0':
+    resolution: {integrity: sha512-1T7xBxq8N54crdgepZx7EkNoqMNnYHV8fcqswsHbkJVKLp2AVwTrE+2myiVzoomqVeFmuKZRkS9J043rcGvhpg==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
-  '@pwrdrvr/agent-client@file:../../../../agent-kit/packages/agent-client':
-    resolution: {directory: ../../../../agent-kit/packages/agent-client, type: directory}
+  '@pwrdrvr/agent-client@0.1.0':
+    resolution: {integrity: sha512-oOewLxcB+4xd0faZWRFj+D2O+Xw/4W2uwLeyrMAMe9hi5x7kuWjIshjMCI8ckdhMMXWVMQ/mDnR4hIA0z1ivHQ==}
 
-  '@pwrdrvr/agent-core@file:../../../../agent-kit/packages/agent-core':
-    resolution: {directory: ../../../../agent-kit/packages/agent-core, type: directory}
+  '@pwrdrvr/agent-core@0.1.0':
+    resolution: {integrity: sha512-xuOI8VyP7h5gjAi3zEHt45e2AuG3BD11IABEMYPtWmliZpAPWMqiIP4UrfeW4X++5efhUYbl6Bf45D/3LuqFiA==}
 
-  '@pwrdrvr/agent-transport@file:../../../../agent-kit/packages/agent-transport':
-    resolution: {directory: ../../../../agent-kit/packages/agent-transport, type: directory}
+  '@pwrdrvr/agent-transport@0.1.0':
+    resolution: {integrity: sha512-A5y6C5sLM/i69X3p9c9BZTxoBxgn9lwRbomoNM28SfluNwlhqlLEogumTnQKnWTrI3kl7QxOAmA5F40p1XUgNg==}
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0':
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
     engines: {node: '>=20'}
 
-  '@pwrdrvr/codex-discovery@file:../../../../agent-kit/packages/codex-discovery':
-    resolution: {directory: ../../../../agent-kit/packages/codex-discovery, type: directory}
+  '@pwrdrvr/codex-discovery@0.1.0':
+    resolution: {integrity: sha512-Ofa5KUW43P51K67/CUylYSGZu9pYmTkUNde+HHbSbj90wEKos7QVTABYnUpmgvpNEV/gJ6ru5gRXPLJrC2ksdg==}
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -3437,35 +3431,35 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@pwrdrvr/agent-acp@file:../../../../agent-kit/packages/agent-acp':
+  '@pwrdrvr/agent-acp@0.1.0':
     dependencies:
-      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
-      '@pwrdrvr/agent-transport': file:../../../../agent-kit/packages/agent-transport
+      '@pwrdrvr/agent-core': 0.1.0
+      '@pwrdrvr/agent-transport': 0.1.0
 
-  '@pwrdrvr/agent-chat-react@file:../../../../agent-kit/packages/agent-chat-react(react@19.2.6)':
+  '@pwrdrvr/agent-chat-react@0.1.0(react@19.2.6)':
     dependencies:
-      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
+      '@pwrdrvr/agent-core': 0.1.0
       react: 19.2.6
 
-  '@pwrdrvr/agent-client@file:../../../../agent-kit/packages/agent-client':
+  '@pwrdrvr/agent-client@0.1.0':
     dependencies:
-      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
-      '@pwrdrvr/agent-transport': file:../../../../agent-kit/packages/agent-transport
+      '@pwrdrvr/agent-core': 0.1.0
+      '@pwrdrvr/agent-transport': 0.1.0
       '@pwrdrvr/codex-app-server-protocol': 0.133.0
-      '@pwrdrvr/codex-discovery': file:../../../../agent-kit/packages/codex-discovery
+      '@pwrdrvr/codex-discovery': 0.1.0
       zod: 4.4.3
 
-  '@pwrdrvr/agent-core@file:../../../../agent-kit/packages/agent-core': {}
+  '@pwrdrvr/agent-core@0.1.0': {}
 
-  '@pwrdrvr/agent-transport@file:../../../../agent-kit/packages/agent-transport':
+  '@pwrdrvr/agent-transport@0.1.0':
     dependencies:
-      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
+      '@pwrdrvr/agent-core': 0.1.0
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0': {}
 
-  '@pwrdrvr/codex-discovery@file:../../../../agent-kit/packages/codex-discovery':
+  '@pwrdrvr/codex-discovery@0.1.0':
     dependencies:
-      '@pwrdrvr/agent-core': file:../../../../agent-kit/packages/agent-core
+      '@pwrdrvr/agent-core': 0.1.0
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
 

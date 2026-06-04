@@ -34,13 +34,7 @@
   },
   "pnpm": {
     "overrides": {
-      "@types/node": "24.12.4",
-      "@pwrdrvr/agent-core": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-core",
-      "@pwrdrvr/agent-transport": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-transport",
-      "@pwrdrvr/codex-discovery": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/codex-discovery",
-      "@pwrdrvr/agent-client": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-client",
-      "@pwrdrvr/agent-chat-react": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-chat-react",
-      "@pwrdrvr/agent-acp": "file:/Users/huntharo/pwrdrvr/agent-kit/packages/agent-acp"
+      "@types/node": "24.12.4"
     }
   }
 }

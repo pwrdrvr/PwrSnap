@@ -20,6 +20,14 @@ allowBuilds:
   esbuild: true
   sharp: true
 
-# agent-client (file:) pulls this freshly-published pinned contract from npm.
+# The @pwrdrvr/agent-kit packages are PwrDrvr's own, freshly published, and
+# pinned — exempt them from the 7-day minimumReleaseAge gate (which targets
+# untrusted third-party releases) so PwrSnap can consume 0.1.0 immediately.
 minimumReleaseAgeExclude:
   - "@pwrdrvr/codex-app-server-protocol"
+  - "@pwrdrvr/agent-core"
+  - "@pwrdrvr/agent-transport"
+  - "@pwrdrvr/codex-discovery"
+  - "@pwrdrvr/agent-client"
+  - "@pwrdrvr/agent-acp"
+  - "@pwrdrvr/agent-chat-react"

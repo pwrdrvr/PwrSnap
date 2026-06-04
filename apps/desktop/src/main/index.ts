@@ -76,7 +76,8 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
-import { hydrateProcessEnvFromLoginShell } from "./shell-environment";
+import { hydrateProcessEnvFromLoginShell } from "@pwrdrvr/agent-transport";
+import { toAgentKitLogger } from "./ai/agent-kit-bindings";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
@@ -856,7 +857,7 @@ export function bootstrapApp(): void {
   // `@pwrdrvr/agent-acp` discovery probes by bare command name. Synchronous on
   // purpose: every later spawn must see the merged env. No-op on Windows / when
   // the shell can't be queried.
-  hydrateProcessEnvFromLoginShell();
+  hydrateProcessEnvFromLoginShell({ logger: toAgentKitLogger("pwrsnap:shell-environment") });
 
   // Enable ScreenCaptureKit for window/screen capture on macOS.
   // Without this flag, Chromium / Electron may use the legacy

@@ -47,8 +47,8 @@ importers:
         specifier: ^0.1.2
         version: 0.1.2
       '@pwrdrvr/agent-transport':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.3
+        version: 0.1.3
       '@pwrdrvr/codex-app-server-protocol':
         specifier: 0.133.0
         version: 0.133.0
@@ -891,8 +891,8 @@ packages:
   '@pwrdrvr/agent-core@0.1.2':
     resolution: {integrity: sha512-uuK6Tfivv5J78A1Uj2WpWhIPcf2kdEkbAZhV1Pimgm2jjILowxdiUjMA0YHP/a7rRkx3NJmde06F88QWHhSZMA==}
 
-  '@pwrdrvr/agent-transport@0.1.2':
-    resolution: {integrity: sha512-jXXc3XeCZ0v6BwNW7ph0eFYNbr1XWP44WY/cYdktETH7wsNGeOuCi0aN4HrOxZdH0qlRaLic6gljivKZ/Tri0g==}
+  '@pwrdrvr/agent-transport@0.1.3':
+    resolution: {integrity: sha512-llsusy2hPvRww+RPFvE7Yl+Tp593Vqq4cBEgc+eLSB1jOfE9/dEN9A9JWgRohZlWPkTBjfuU+iiOEcE5BTQbng==}
 
   '@pwrdrvr/codex-app-server-protocol@0.133.0':
     resolution: {integrity: sha512-mt+geA0RZEz5A3kEK8poDE3wYDrteWGb2syfXS4/kzzgWEe26DUbQlbdQyFYoa7Zs/Z6L64gNGIfFHgemfzj8g==}
@@ -3432,7 +3432,7 @@ snapshots:
   '@pwrdrvr/agent-acp@0.1.3':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
-      '@pwrdrvr/agent-transport': 0.1.2
+      '@pwrdrvr/agent-transport': 0.1.3
 
   '@pwrdrvr/agent-chat-react@0.1.2(react@19.2.6)':
     dependencies:
@@ -3442,14 +3442,14 @@ snapshots:
   '@pwrdrvr/agent-client@0.1.2':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
-      '@pwrdrvr/agent-transport': 0.1.2
+      '@pwrdrvr/agent-transport': 0.1.3
       '@pwrdrvr/codex-app-server-protocol': 0.133.0
       '@pwrdrvr/codex-discovery': 0.1.2
       zod: 4.4.3
 
   '@pwrdrvr/agent-core@0.1.2': {}
 
-  '@pwrdrvr/agent-transport@0.1.2':
+  '@pwrdrvr/agent-transport@0.1.3':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
 

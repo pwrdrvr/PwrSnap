@@ -17,7 +17,7 @@ import { z } from "zod";
 import type {
   DynamicToolCallOutputContentItem,
   DynamicToolSpec
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 
 /**
  * Namespace every Library Chat tool lives under. A string-literal union so

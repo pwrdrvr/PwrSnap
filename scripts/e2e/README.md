@@ -93,7 +93,6 @@ for every workspace's `node_modules`:
 -v /work/node_modules
 -v /work/apps/desktop/node_modules
 -v /work/packages/shared/node_modules
--v /work/packages/codex-app-server-protocol/node_modules
 ```
 
 Without these, the bind would expose the host's macOS-arm64

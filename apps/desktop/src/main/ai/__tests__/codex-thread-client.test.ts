@@ -1,7 +1,7 @@
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { JsonRpcTransport } from "../../codex-app-server/json-rpc";
 import {
   CodexThreadClient,

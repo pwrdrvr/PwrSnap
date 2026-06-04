@@ -99,9 +99,10 @@ pnpm dev
 ```
 
 PwrSnap is a pnpm workspace (`apps/desktop` + `packages/*`). The Codex
-App Server protocol types are generated from a locally installed Codex
-binary — run `pnpm codex:generate-protocol` after Codex Desktop
-auto-updates or a new protocol surface lands. Full dev workflow,
+App Server protocol types are consumed from
+`@pwrdrvr/codex-app-server-protocol`, pinned in
+`apps/desktop/package.json`; publish that package from its own repo before
+bumping PwrSnap to a newer Codex protocol surface. Full dev workflow,
 conventions, and the active buildout plan live in
 **[AGENTS.md](AGENTS.md)** and **[docs/plans/](docs/plans/)**.
 
@@ -113,7 +114,7 @@ conventions, and the active buildout plan live in
 | Capture pipeline     | `screencapture(1)` + native Swift `window-list` helper   | `apps/desktop/src/main/capture/`                |
 | Render pipeline      | `sharp` for resize + crop + thumbnail caching            | `apps/desktop/src/main/render/`                 |
 | Persistence          | `better-sqlite3` (WAL) + content-addressed source store  | `apps/desktop/src/main/persistence/`            |
-| Codex App Server     | TypeScript protocol contracts, stdio JSON-RPC client     | `packages/codex-app-server-protocol/`           |
+| Codex App Server     | Published protocol contracts, stdio JSON-RPC client      | `@pwrdrvr/codex-app-server-protocol` + `apps/desktop/src/main/ai/` |
 | Shared types         | Cross-process commands + IPC channels + result envelopes | `packages/shared/`                              |
 | Settings + secrets   | Single substrate (JSON + Electron `safeStorage`)         | `apps/desktop/src/main/settings/`               |
 
@@ -153,7 +154,6 @@ auto-update, stable `PwrSnap.dmg` URL) is documented in
 | [docs/desktop-release-runbook.md](docs/desktop-release-runbook.md)                                 | One-time setup, CI release path, local fallback, universal DMG verification.              |
 | [docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md](docs/plans/2026-05-03-001-feat-pwrsnap-feature-buildout-plan.md) | Active feature buildout plan — phase order, scope, decisions.                             |
 | [docs/solutions/](docs/solutions/)                                                                 | Post-incident notes + gotchas — read before re-solving an old problem.                    |
-| [packages/codex-app-server-protocol/](packages/codex-app-server-protocol/)                         | Generated Codex App Server protocol types + regeneration recipe.                          |
 
 ## License
 

@@ -21,7 +21,7 @@
 // When we can recognize that shape we surface the inner human message;
 // otherwise we pass the raw text through untouched.
 
-import type { TurnError } from "@pwrsnap/codex-app-server-protocol/v2";
+import type { TurnError } from "@pwrdrvr/codex-app-server-protocol/v2";
 
 const FALLBACK = "Codex returned an error";
 

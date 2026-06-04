@@ -8,7 +8,7 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import { toDynamicToolSpec } from "./define-tool";
 import { dispatchLibraryToolCall } from "./library-tool-catalog";
 import { buildSizzleToolAllowlist, type SizzleToolDeps } from "./sizzle-tool-allowlist";

@@ -17,7 +17,7 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type { ToolSpec } from "./define-tool";
 import { toDynamicToolSpec } from "./define-tool";
 import { LIBRARY_TOOL_ALLOWLIST } from "./library-tool-allowlist";

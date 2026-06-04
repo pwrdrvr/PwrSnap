@@ -1,8 +1,8 @@
 import type {
   InitializeParams,
   InitializeResponse
-} from "@pwrsnap/codex-app-server-protocol";
-import type { Personality, ReasoningEffort } from "@pwrsnap/codex-app-server-protocol";
+} from "@pwrdrvr/codex-app-server-protocol";
+import type { Personality, ReasoningEffort } from "@pwrdrvr/codex-app-server-protocol";
 import type {
   AgentMessageDeltaNotification,
   AskForApproval,
@@ -25,7 +25,7 @@ import type {
   TurnStartParams,
   TurnStartResponse,
   UserInput
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import { JsonRpcConnection, type JsonRpcTransport } from "../codex-app-server/json-rpc";
 import { StdioJsonRpcTransport } from "../codex-app-server/stdio-transport";
 import { formatCodexTurnError } from "./codex-error";

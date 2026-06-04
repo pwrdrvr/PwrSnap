@@ -232,6 +232,17 @@ function occurrenceForTranscriptPhrase(
   return 1;
 }
 
+function referencedCaptureIdsForProject(project: SizzleProject | null): string[] {
+  if (project === null) return [];
+  const ids = new Set<string>();
+  for (const scene of project.scenes) {
+    ids.add(scene.captureId);
+    if (scene.kind !== "sequence" || scene.beats === undefined) continue;
+    for (const beat of scene.beats) ids.add(beat.captureId);
+  }
+  return [...ids];
+}
+
 function TranscriptPhrasePicker(props: {
   currentPhrase: string;
   phrases: SizzleSequenceTranscriptPhrase[];
@@ -830,6 +841,7 @@ export function SizzleApp(): ReactElement {
   // activeId is still null, so this never gets clobbered.
   const [activeId, setActiveId] = useState<string | null>(() => readInitialProjectId());
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
+  const requestedCaptureIdsRef = useRef<Set<string>>(new Set());
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [status, setStatus] = useState<RenderStatus>(IDLE_STATUS);
   const [loading, setLoading] = useState(true);
@@ -911,6 +923,28 @@ export function SizzleApp(): ReactElement {
       if (r.ok) setCaptures(r.value.rows);
     });
   }, []);
+
+  useEffect(() => {
+    if (active === null) return;
+    const loadedIds = new Set(captures.map((capture) => capture.id));
+    const missing = referencedCaptureIdsForProject(active).filter(
+      (id) => !loadedIds.has(id) && !requestedCaptureIdsRef.current.has(id)
+    );
+    if (missing.length === 0) return;
+    for (const id of missing) requestedCaptureIdsRef.current.add(id);
+    let cancelled = false;
+    void dispatch("library:listByIds", { ids: missing }).then((r) => {
+      if (cancelled || !r.ok || r.value.rows.length === 0) return;
+      setCaptures((prev) => {
+        const byId = new Map(prev.map((capture) => [capture.id, capture]));
+        for (const capture of r.value.rows) byId.set(capture.id, capture);
+        return [...byId.values()];
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, captures]);
 
   useEffect(() => {
     return subscribe(EVENT_CHANNELS.sizzleRenderProgress, (payload) => {

@@ -127,6 +127,7 @@ function installApi(
     if (name in overrides) return overrides[name];
     if (name === "sizzle:list") return { ok: true, value: { projects } };
     if (name === "library:list") return { ok: true, value: { rows: [] } };
+    if (name === "library:listByIds") return { ok: true, value: { rows: [] } };
     // Cache-only waveform load defaults to a miss; specific tests
     // override it to return cached audio.
     if (name === "sizzle:loadSequenceSceneAudio") {
@@ -350,6 +351,45 @@ describe("SizzleApp sequence authoring", () => {
     expect(el.textContent).toContain("Phrase anchors use timed transcript words from preview");
     expect(el.querySelector(".szl__sequence-timeline")).not.toBeNull();
     expect(el.textContent).toContain("unresolved");
+  });
+
+  test("hydrates active reel captures that are outside the initial library page", async () => {
+    const sequence = scene({
+      kind: "sequence",
+      captureId: "cap_old",
+      scriptLine: "show an older capture",
+      narration: "show an older capture",
+      audioSource: "voiceover",
+      beats: [
+        {
+          id: "bt_1",
+          captureId: "cap_old",
+          timing: { kind: "offset", startSec: 0, endSec: null },
+          mediaTrim: null,
+          transition: "cut",
+          videoFit: "smart-fit"
+        }
+      ]
+    });
+    const { el, dispatch } = await renderApp(project({ scenes: [sequence] }), {
+      "library:list": {
+        ok: true,
+        value: { rows: [videoCapture("cap_recent")] }
+      },
+      "library:listByIds": {
+        ok: true,
+        value: { rows: [videoCapture("cap_old")] }
+      }
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith("library:listByIds", { ids: ["cap_old"] });
+    expect(el.textContent).toContain("Video cap_old");
+    expect(el.textContent).not.toContain("missing");
   });
 
   test("loads a resolved sequence timeline when previewing", async () => {

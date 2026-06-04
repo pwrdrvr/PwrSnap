@@ -49,12 +49,12 @@ importers:
       '@pwrdrvr/agent-transport':
         specifier: ^0.1.2
         version: 0.1.2
+      '@pwrdrvr/codex-app-server-protocol':
+        specifier: 0.133.0
+        version: 0.133.0
       '@pwrdrvr/codex-discovery':
         specifier: ^0.1.2
         version: 0.1.2
-      '@pwrsnap/codex-app-server-protocol':
-        specifier: workspace:*
-        version: link:../../packages/codex-app-server-protocol
       '@pwrsnap/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -146,8 +146,6 @@ importers:
       vite:
         specifier: ^7.3.3
         version: 7.3.3(@types/node@24.12.4)(jiti@2.6.1)
-
-  packages/codex-app-server-protocol: {}
 
   packages/pwrsnap: {}
 

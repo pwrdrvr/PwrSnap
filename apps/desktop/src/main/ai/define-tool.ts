@@ -21,7 +21,7 @@ import {
   type ToolDispatchResult as KitToolDispatchResult,
   type AnyToolSpec
 } from "@pwrdrvr/agent-client";
-import type { DynamicToolSpec } from "@pwrsnap/codex-app-server-protocol/v2";
+import type { DynamicToolSpec } from "@pwrdrvr/codex-app-server-protocol/v2";
 
 /**
  * Namespace every PwrSnap chat tool lives under. A string-literal union so the

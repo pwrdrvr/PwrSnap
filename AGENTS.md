@@ -105,27 +105,24 @@ review, voice describe, sizzle-reel composition. No direct OpenAI / Anthropic
 
 ### Protocol package
 
-TypeScript types for the protocol live at
-[packages/codex-app-server-protocol/](packages/codex-app-server-protocol/).
-The contents of its `src/` are **generator output** — do not hand-edit.
+TypeScript types for the protocol are consumed from the published
+**[`@pwrdrvr/codex-app-server-protocol`](https://www.npmjs.com/package/@pwrdrvr/codex-app-server-protocol)**
+package (pinned to an exact version in
+[apps/desktop/package.json](apps/desktop/package.json) — currently `0.133.0`).
+The package version tracks the Codex CLI release it was generated from, so the
+pinned number tells you which Codex protocol surface PwrSnap is built against.
+Import the v2 surface via `@pwrdrvr/codex-app-server-protocol/v2`.
 
-To (re)generate the protocol types from the locally-installed Codex CLI:
+The package is **generator output** maintained in its own repository
+([github.com/pwrdrvr/codex-app-server-protocol](https://github.com/pwrdrvr/codex-app-server-protocol)),
+not in this tree — do not vendor it back in or hand-edit its types. PwrAgent
+consumes the same package, so the two stay version-aligned.
 
-```bash
-pnpm codex:generate-protocol
-```
-
-(equivalent: `pnpm --filter @pwrsnap/codex-app-server-protocol generate`)
-
-By default this runs against **Codex Desktop's bundled binary** at
-`/Applications/Codex.app/Contents/Resources/codex`. Override via
-`PWRSNAP_CODEX_BIN=/path/to/codex pnpm codex:generate-protocol` to point at
-a system-installed CLI, a custom build, or a CI install. The generated files
-under `packages/codex-app-server-protocol/src/` are committed so the rest of
-the workspace builds without a Codex install at hand.
-
-Regenerate whenever Codex Desktop autoupdates or a new protocol surface lands
-that PwrSnap wants to consume.
+To move PwrSnap to a newer Codex protocol surface: publish a new
+`@pwrdrvr/codex-app-server-protocol` version from that repo (matching the
+target Codex CLI version), then bump the exact pin in
+`apps/desktop/package.json`. Bump whenever Codex Desktop autoupdates or a new
+protocol surface lands that PwrSnap wants to consume.
 
 ### Connecting at runtime
 
@@ -532,7 +529,7 @@ doesn't.
 - Conventional Commit-style PR titles: `type(scope): short description`.
 - Scopes that match the project area:
   - `desktop` — the Electron app itself (main, preload, renderer).
-  - `protocol` — the `@pwrsnap/codex-app-server-protocol` package.
+  - `protocol` — the Codex App Server protocol package dependency.
   - `design` — UI work tied to the design system.
   - `release` — packaging, signing, notarization, distribution.
   - `docs` — documentation only.

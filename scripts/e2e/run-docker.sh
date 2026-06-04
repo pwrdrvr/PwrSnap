@@ -207,7 +207,6 @@ RUN_ARGS=(
   -v /work/node_modules
   -v /work/apps/desktop/node_modules
   -v /work/packages/shared/node_modules
-  -v /work/packages/codex-app-server-protocol/node_modules
   -v pwrsnap-pnpm-store:/root/.local/share/pnpm
 )
 if [[ -n "$PLATFORM" ]]; then RUN_ARGS+=(--platform "$PLATFORM"); fi

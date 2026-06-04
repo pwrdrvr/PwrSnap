@@ -17,18 +17,11 @@ import {
 // this list will need an update too, which is exactly the lock we
 // want.
 const ALL_PAGE_IDS = [
-  "startup",
-  "appearance",
+  "general",
   "hotkeys",
-  "notifications",
   "ai",
-  "capture",
-  "output",
-  "annotate",
   "system-permissions",
   "storage",
-  "sources",
-  "experimental",
   "about"
 ] as const satisfies readonly SettingsPage[];
 
@@ -50,8 +43,7 @@ describe("SETTINGS_CATEGORIES", () => {
     }
   });
 
-  test("structure matches the design catalog", () => {
-    // Lifted from design/src/Settings.jsx CATEGORIES (lines 33–53).
+  test("structure matches the catalog", () => {
     expect(SETTINGS_CATEGORIES.map((c) => c.group)).toEqual([
       "General",
       "Capture",
@@ -63,15 +55,10 @@ describe("SETTINGS_CATEGORIES", () => {
       SETTINGS_CATEGORIES.map((c) => [c.group, c.items.map((i) => i.id)])
     );
 
-    expect(byGroup["General"]).toEqual(["startup", "appearance", "hotkeys", "notifications", "ai"]);
-    expect(byGroup["Capture"]).toEqual([
-      "capture",
-      "output",
-      "annotate",
-      "system-permissions"
-    ]);
-    expect(byGroup["Library"]).toEqual(["storage", "sources"]);
-    expect(byGroup["Advanced"]).toEqual(["experimental", "about"]);
+    expect(byGroup["General"]).toEqual(["general", "hotkeys", "ai"]);
+    expect(byGroup["Capture"]).toEqual(["system-permissions"]);
+    expect(byGroup["Library"]).toEqual(["storage"]);
+    expect(byGroup["Advanced"]).toEqual(["about"]);
   });
 
   test("SETTINGS_PAGE_IDS exposes the same id set", () => {

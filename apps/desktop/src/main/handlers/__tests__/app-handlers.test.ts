@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  showAppDocumentWindow: vi.fn()
+  showAppDocumentWindow: vi.fn(),
+  openExternal: vi.fn(async () => undefined)
 }));
 
 vi.mock("../../window", () => ({
@@ -12,7 +13,10 @@ vi.mock("electron", (): Partial<typeof import("electron")> => ({
   app: {
     getVersion: () => "1.0.0-test",
     getAppPath: () => process.cwd()
-  } as unknown as typeof import("electron").app
+  } as unknown as typeof import("electron").app,
+  shell: {
+    openExternal: mocks.openExternal
+  } as unknown as typeof import("electron").shell
 }));
 
 import { bus } from "../../command-bus";
@@ -80,5 +84,36 @@ describe("app:* handlers", () => {
 
     expect(result.ok).toBe(true);
     expect(mocks.showAppDocumentWindow).toHaveBeenCalledWith("third-party-licenses");
+  });
+
+  test("app:openExternal opens allowlisted https URLs", async () => {
+    mocks.openExternal.mockClear();
+    for (const url of [
+      "https://pwrsnap.com",
+      "https://docs.pwrsnap.com",
+      "https://github.com/pwrdrvr/PwrSnap"
+    ]) {
+      const result = await bus.dispatch("app:openExternal", { url }, { principal: "ipc" });
+      expect(result.ok).toBe(true);
+      expect(mocks.openExternal).toHaveBeenCalledWith(url);
+    }
+  });
+
+  test("app:openExternal refuses non-allowlisted hosts and non-https URLs", async () => {
+    mocks.openExternal.mockClear();
+    for (const url of [
+      "https://evil.example.com",
+      "http://pwrsnap.com", // non-https
+      "https://notpwrsnap.com",
+      "https://pwrsnap.com.evil.com", // suffix-spoof
+      "javascript:alert(1)",
+      "not a url"
+    ]) {
+      const result = await bus.dispatch("app:openExternal", { url }, { principal: "ipc" });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected error");
+      expect(result.error.code).toBe("url_not_allowed");
+    }
+    expect(mocks.openExternal).not.toHaveBeenCalled();
   });
 });

@@ -2,9 +2,10 @@
 // (design/src/Settings.jsx lines 711–728): a grid of title-bar +
 // sidebar + main scroll area.
 //
-// Slice B rendered every page as `<ComingSoon />`. Slices D + E swap
-// in real pages for hotkeys / ai / about / experimental; the rest
-// remain ComingSoon until their backing surfaces land.
+// Every sidebar entry now maps to a real page (general / hotkeys / ai /
+// system-permissions / storage / about). `ComingSoon` is retained as
+// the switch's default arm so a future page id added to the union
+// before its component lands renders a placeholder rather than nothing.
 
 import type { ReactElement } from "react";
 import { ComingSoon } from "./ComingSoon";
@@ -15,8 +16,7 @@ import { Sidebar } from "./Sidebar";
 import { useActivePage } from "./useActivePage";
 import { HotkeysPage } from "./pages/HotkeysPage";
 import { AboutPage } from "./pages/AboutPage";
-import { AppearancePage } from "./pages/AppearancePage";
-import { ExperimentalPage } from "./pages/ExperimentalPage";
+import { GeneralPage } from "./pages/GeneralPage";
 import { AIProvidersPage } from "./pages/AIProvidersPage";
 import { StoragePage } from "./pages/StoragePage";
 import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
@@ -25,18 +25,11 @@ import { SystemPermissionsPage } from "./pages/SystemPermissionsPage";
 // per-page `pss__main-eyebrow` values so the placeholder reads as the
 // right kind of page even before the real content lands.
 const EYEBROW_BY_PAGE: Record<string, string> = {
-  startup: "General",
-  appearance: "General",
+  general: "General",
   hotkeys: "General",
-  notifications: "General",
   ai: "Providers",
-  capture: "Capture",
-  output: "Capture",
-  annotate: "Capture",
   "system-permissions": "Capture",
   storage: "Library",
-  sources: "Library",
-  experimental: "Advanced",
   about: "Advanced"
 };
 
@@ -47,8 +40,8 @@ export function SettingsApp(): ReactElement {
 
   let page: ReactElement;
   switch (active) {
-    case "appearance":
-      page = <AppearancePage />;
+    case "general":
+      page = <GeneralPage />;
       break;
     case "hotkeys":
       page = <HotkeysPage />;
@@ -58,9 +51,6 @@ export function SettingsApp(): ReactElement {
       break;
     case "about":
       page = <AboutPage />;
-      break;
-    case "experimental":
-      page = <ExperimentalPage />;
       break;
     case "storage":
       page = <StoragePage />;

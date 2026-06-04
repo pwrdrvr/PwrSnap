@@ -112,10 +112,19 @@ export function defaultSettings(): Settings {
       quickCapture: "CommandOrControl+Shift+C",
       region: "",
       window: "",
-      videoCapture: "CommandOrControl+Alt+C"
-    },
-    experimental: {
-      v2FileFormat: false
+      // Full Screen / All Screens / Timed exist as capture verbs and are
+      // reachable from the tray; the hotkeys are unbound by default so we
+      // don't claim three more global chords out of the box. Users bind
+      // them from Settings → Hotkeys if they want a dedicated chord.
+      fullScreen: "",
+      allScreens: "",
+      timed: "",
+      videoCapture: "CommandOrControl+Alt+C",
+      // Re-show last Float-Over. ⌘⌥⇧F (mnemonic: Float-over). The three-
+      // modifier chord keeps it clear of app/OS shortcuts — a 2-modifier
+      // default like ⌘⇧F would shadow Find-in-Files system-wide while
+      // PwrSnap runs. Rebindable/unbindable from Settings → Hotkeys.
+      reshowFloatOver: "CommandOrControl+Alt+Shift+F"
     },
     general: {
       developerMode: false
@@ -466,7 +475,6 @@ function parseV1(raw: unknown): Settings | null {
   const codex = isRecord(raw.codex) ? raw.codex : {};
   const ai = isRecord(raw.ai) ? raw.ai : {};
   const hotkeys = isRecord(raw.hotkeys) ? raw.hotkeys : {};
-  const experimental = isRecord(raw.experimental) ? raw.experimental : {};
   const general = isRecord(raw.general) ? raw.general : {};
   const appearance = isRecord(raw.appearance) ? raw.appearance : {};
   const updates = isRecord(raw.updates) ? raw.updates : {};
@@ -510,13 +518,20 @@ function parseV1(raw: unknown): Settings | null {
       quickCapture: pickString(hotkeys.quickCapture, defaults.hotkeys.quickCapture),
       region: pickString(hotkeys.region, defaults.hotkeys.region),
       window: pickString(hotkeys.window, defaults.hotkeys.window),
+      // `fullScreen` / `allScreens` / `timed` landed after v1 shipped;
+      // older files won't have them. pickString fills in the current
+      // default ("" = unbound) so the fields are always present in-memory.
+      fullScreen: pickString(hotkeys.fullScreen, defaults.hotkeys.fullScreen),
+      allScreens: pickString(hotkeys.allScreens, defaults.hotkeys.allScreens),
+      timed: pickString(hotkeys.timed, defaults.hotkeys.timed),
       // `videoCapture` landed after v1 shipped; older files won't have
       // it. pickString fills in the current default for that case so
       // the field is always present in-memory.
-      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture)
-    },
-    experimental: {
-      v2FileFormat: pickBoolean(experimental.v2FileFormat, defaults.experimental.v2FileFormat)
+      videoCapture: pickString(hotkeys.videoCapture, defaults.hotkeys.videoCapture),
+      // `reshowFloatOver` landed after v1 shipped; older files won't have
+      // it. pickString fills in the current default (⌘⇧F) so the field
+      // is always present in-memory.
+      reshowFloatOver: pickString(hotkeys.reshowFloatOver, defaults.hotkeys.reshowFloatOver)
     },
     general: {
       // `general.developerMode` landed after v1 shipped; older files
@@ -969,7 +984,6 @@ export function mergeSettings(current: Settings, patch: SettingsPatch): Settings
     codex: mergeSection(current.codex, patch.codex),
     ai: mergeAi(current.ai, patch.ai),
     hotkeys: mergeSection(current.hotkeys, patch.hotkeys),
-    experimental: mergeSection(current.experimental, patch.experimental),
     general: mergeSection(current.general, patch.general),
     appearance: mergeSection(current.appearance, patch.appearance),
     updates: mergeSection(current.updates, patch.updates),

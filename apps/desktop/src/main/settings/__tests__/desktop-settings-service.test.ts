@@ -280,8 +280,8 @@ describe("DesktopSettingsService write-queue serialization on rejection", () => 
     expect(r3.ai.enabled).toBe(false);
 
     // Queue isn't deadlocked — a fourth write resolves.
-    const r4 = await svc.write({ experimental: { v2FileFormat: true } });
-    expect(r4.experimental.v2FileFormat).toBe(true);
+    const r4 = await svc.write({ general: { developerMode: true } });
+    expect(r4.general.developerMode).toBe(true);
   });
 });
 

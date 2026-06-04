@@ -18,7 +18,7 @@ describe("pageFromHash", () => {
   test("returns the page id when valid", () => {
     expect(pageFromHash("#stage=settings&page=hotkeys")).toBe("hotkeys");
     expect(pageFromHash("#page=about")).toBe("about");
-    expect(pageFromHash("#stage=settings&page=experimental")).toBe("experimental");
+    expect(pageFromHash("#stage=settings&page=general")).toBe("general");
   });
 
   test("falls back to 'ai' on unknown page values", () => {
@@ -28,7 +28,7 @@ describe("pageFromHash", () => {
   });
 
   test("ignores other params in the hash", () => {
-    expect(pageFromHash("#foo=bar&stage=settings&page=output&baz=qux")).toBe("output");
+    expect(pageFromHash("#foo=bar&stage=settings&page=general&baz=qux")).toBe("general");
   });
 
   test("strips a leading '#' regardless of placement", () => {

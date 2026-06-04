@@ -1,39 +1,60 @@
-// Hotkeys settings page. Editable rows for the four globally-
-// registered chords (Quick Capture, Region, Window, Video Capture).
-// Every other row in the page is a "preview" placeholder for a future
-// surface — the in-canvas editor shortcuts, the All Screens chord,
-// etc. — and is intentionally non-interactive.
+// Hotkeys settings page. Editable rows for the globally-registered
+// chords. Quick Capture / Region / Window / Full Screen / All Screens /
+// Timed / Video Capture all drive real capture verbs; Re-show last
+// Float-Over re-pops the most recent capture. Region / Window / Full
+// Screen / All Screens / Timed default to UNBOUND (also reachable from
+// the tray) — bind them here if you want a dedicated chord.
+//
+// The EDITOR card is a read-only reference for the in-canvas tool keys
+// (V / A / S / H / B / T / C). Those are hardcoded in the editor and
+// aren't rebindable — the card documents them so they're discoverable.
 
 import { useMemo, useState, type ReactElement } from "react";
 import {
   Card,
   Hk,
-  HkUnset,
   HotkeyCapture,
   HotkeyResetModal,
   Row,
   type HotkeyChange
 } from "../components";
 import { useSettingsContext } from "../SettingsContext";
+import { TOOLS } from "../../editor/editor-tools";
+
+type HotkeyKey =
+  | "quickCapture"
+  | "region"
+  | "window"
+  | "fullScreen"
+  | "allScreens"
+  | "timed"
+  | "videoCapture"
+  | "reshowFloatOver";
 
 /** Defaults the "Reset to defaults" button writes back. These mirror
  *  the service-side `defaultSettings()` — keep them in lock-step. */
-const HOTKEY_DEFAULTS = {
+const HOTKEY_DEFAULTS: Record<HotkeyKey, string> = {
   quickCapture: "CommandOrControl+Shift+C",
   region: "",
   window: "",
-  videoCapture: "CommandOrControl+Alt+C"
-} as const;
+  fullScreen: "",
+  allScreens: "",
+  timed: "",
+  videoCapture: "CommandOrControl+Alt+C",
+  reshowFloatOver: "CommandOrControl+Alt+Shift+F"
+};
 
-type HotkeyKey = "quickCapture" | "region" | "window" | "videoCapture";
-
-/** Human labels for the four editable bindings — used both in the
- *  in-page rows and in the reset-confirmation modal's diff list. */
+/** Human labels for the editable bindings — used both in the in-page
+ *  rows and in the reset-confirmation modal's diff list. */
 const HOTKEY_LABELS: Record<HotkeyKey, string> = {
   quickCapture: "Quick Capture",
   region: "Region",
   window: "Window",
-  videoCapture: "Video Capture"
+  fullScreen: "Full Screen",
+  allScreens: "All Screens",
+  timed: "Timed (5 s)",
+  videoCapture: "Video Capture",
+  reshowFloatOver: "Re-show last Float-Over"
 };
 
 export function HotkeysPage(): ReactElement {
@@ -42,15 +63,7 @@ export function HotkeysPage(): ReactElement {
   const [confirmingReset, setConfirmingReset] = useState<boolean>(false);
 
   const writeOne = async (key: HotkeyKey, next: string): Promise<void> => {
-    // Explicit object spread so TypeScript can verify the patch shape
-    // against `Partial<Settings["hotkeys"]>` without falling back to
-    // index-signature inference.
-    const hotkeysPatch: Partial<{
-      quickCapture: string;
-      region: string;
-      window: string;
-      videoCapture: string;
-    }> = {};
+    const hotkeysPatch: Partial<Record<HotkeyKey, string>> = {};
     hotkeysPatch[key] = next;
     await patch({ hotkeys: hotkeysPatch });
   };
@@ -145,8 +158,41 @@ export function HotkeysPage(): ReactElement {
           />
         </Row>
         <Row
+          label="Full Screen"
+          sub="Capture the display under the cursor — no selector. Unbound by default; also available from the tray."
+          tag="global"
+        >
+          <HotkeyCapture
+            value={hk?.fullScreen ?? ""}
+            onCommit={onCommit("fullScreen")}
+            onUnbind={onUnbind("fullScreen")}
+          />
+        </Row>
+        <Row
+          label="All Screens"
+          sub="Stitch every connected display into a single image. Unbound by default; also available from the tray."
+          tag="global"
+        >
+          <HotkeyCapture
+            value={hk?.allScreens ?? ""}
+            onCommit={onCommit("allScreens")}
+            onUnbind={onUnbind("allScreens")}
+          />
+        </Row>
+        <Row
+          label="Timed (5 s)"
+          sub="5-second countdown, then the auto picker — useful for menus that close on focus loss. Unbound by default; also available from the tray."
+          tag="global"
+        >
+          <HotkeyCapture
+            value={hk?.timed ?? ""}
+            onCommit={onCommit("timed")}
+            onUnbind={onUnbind("timed")}
+          />
+        </Row>
+        <Row
           label="Video Capture"
-          sub="Recording surface ships in a later release; the hotkey is wired so muscle memory carries over."
+          sub="Pick a region/window, then record. Defaults to ⌘⌥C (not ⌘⇧V — that's Paste & Match Style system-wide)."
           tag="global"
         >
           <HotkeyCapture
@@ -155,71 +201,43 @@ export function HotkeysPage(): ReactElement {
             onUnbind={onUnbind("videoCapture")}
           />
         </Row>
-        <Row
-          label="Full Screen"
-          sub="Active display."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "F"]} />
-        </Row>
-        <Row
-          label="All Screens"
-          sub="Stitch every connected display into a single image."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "A"]} />
-        </Row>
-        <Row
-          label="Scrolling"
-          sub="Capture full page from a scroll container."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "S"]} />
-        </Row>
-        <Row
-          label="Timed (5 s)"
-          sub="Auto-trigger after countdown — useful for menus that close on focus loss."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "T"]} />
-        </Row>
       </Card>
 
       <Card eyebrow="APP" title="Library & surfaces">
         <Row
-          label="Open Library"
-          sub="Brings the Library window to front and focuses the grid."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "L"]} />
-        </Row>
-        <Row
-          label="Open Tray"
-          sub="Drops the menubar tray under the PwrSnap icon."
-          tag="preview"
-        >
-          <Hk keys={["⌘", "⇧", "M"]} />
-        </Row>
-        <Row
           label="Re-show last Float-Over"
-          sub="Pops the most recent capture back over the screen."
-          tag="preview"
+          sub="Pops the most recent capture back over the screen. Defaults to ⌘⌥⇧F — rebind or unbind any time."
+          tag="global"
         >
-          <HkUnset />
+          <HotkeyCapture
+            value={hk?.reshowFloatOver ?? ""}
+            onCommit={onCommit("reshowFloatOver")}
+            onUnbind={onUnbind("reshowFloatOver")}
+          />
         </Row>
-        <Row label="Open Settings" sub="This window." tag="global">
+        <Row label="Open Settings" sub="This window. Fixed, per macOS convention." tag="fixed">
           <Hk keys={["⌘", ","]} />
         </Row>
       </Card>
 
-      <Card eyebrow="EDITOR" title="In-canvas tools (Focus + Float-Over)" defaultCollapsed>
-        <Row
-          label="Select / Crop / Arrow / Rect / Highlight / Text / Blur"
-          sub="Single-letter when focus is in the editor canvas."
-          tag="preview"
-        >
-          <HkUnset />
-        </Row>
+      <Card
+        eyebrow="EDITOR"
+        title="In-canvas tools (Focus + Float-Over)"
+        defaultCollapsed
+      >
+        {TOOLS.map((t, i) => (
+          <Row
+            key={t.id}
+            label={t.label}
+            sub={
+              i === 0
+                ? "Single-letter shortcuts, active when the editor canvas has focus. Fixed — not rebindable."
+                : ""
+            }
+          >
+            <Hk keys={[t.key]} />
+          </Row>
+        ))}
       </Card>
 
       {confirmingReset ? (

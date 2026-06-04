@@ -76,6 +76,7 @@ import {
 } from "./auto-updater";
 import { disposeIpcDispatcher, registerIpcDispatcher } from "./ipc";
 import { getMainLogger, initializeMainLogger } from "./log";
+import { hydrateProcessEnvFromLoginShell } from "./shell-environment";
 import { closeDatabase, getDb, openDatabase } from "./persistence/db";
 import {
   getCaptureById,
@@ -847,6 +848,15 @@ function shouldPreWarmRegionSelector(): boolean {
 
 export function bootstrapApp(): void {
   initializeMainLogger();
+
+  // Hydrate PATH (and the rest of the env) from the user's interactive login
+  // shell BEFORE anything spawns a child process. A Finder/Dock-launched
+  // bundle otherwise inherits launchd's minimal PATH, which hides nvm /
+  // Homebrew-installed CLIs — e.g. ACP agent binaries (`qwen`, `gemini`) that
+  // `@pwrdrvr/agent-acp` discovery probes by bare command name. Synchronous on
+  // purpose: every later spawn must see the merged env. No-op on Windows / when
+  // the shell can't be queried.
+  hydrateProcessEnvFromLoginShell();
 
   // Enable ScreenCaptureKit for window/screen capture on macOS.
   // Without this flag, Chromium / Electron may use the legacy

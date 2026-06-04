@@ -502,6 +502,74 @@
   cursor: not-allowed;
 }
 
+/* ACP agent — one block per known agent: the summary OptionRow plus a
+   detail panel listing every found install (click to pin / click the active
+   one to revert to auto) and a manual override input. */
+.pss__acp-agent + .pss__acp-agent { margin-top: 8px; }
+.pss__acp-detail {
+  margin: 6px 0 2px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pss__acp-instances {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pss__acp-instance {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.pss__acp-instance:hover { border-color: var(--accent-border); }
+.pss__acp-instance.is-active {
+  border-color: var(--accent);
+  background: var(--bg-row-active);
+}
+.pss__acp-instance-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font: 500 11px/1.3 var(--font-mono);
+}
+.pss__acp-instance.is-active .pss__acp-instance-path { color: var(--accent-bright); }
+.pss__acp-instance-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font: 500 10px/1 var(--font-sans);
+}
+.pss__acp-override {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pss__acp-override-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--bg-input, var(--bg-panel));
+  border: 1px solid var(--border-default);
+  border-radius: 5px;
+  color: var(--text-primary);
+  font: 500 11px/1 var(--font-mono);
+}
+.pss__acp-override-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
 /* hotkey chip — for displaying a current shortcut, click to remap */
 .pss__hk {
   display: inline-flex;

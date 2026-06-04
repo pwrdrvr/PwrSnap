@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
+  AcpAgentPreference,
   AiEnrichmentBudgetStatus,
   AiReasoningEffort,
   AiSurfaceDefault,
@@ -512,6 +513,7 @@ export function AIProvidersPage(): ReactElement {
           void refreshAcpDiscovery();
         }}
         enabledAgentIds={settings?.ai.acp.enabledAgentIds ?? []}
+        agents={settings?.ai.acp.agents}
         onToggle={(id, enabled) => {
           const current = settings?.ai.acp.enabledAgentIds ?? [];
           const next = enabled
@@ -520,6 +522,24 @@ export function AIProvidersPage(): ReactElement {
               : [...current, id]
             : current.filter((existing) => existing !== id);
           void patch({ ai: { acp: { enabledAgentIds: next } } });
+        }}
+        onPickInstance={(id, command) => {
+          // Pin this instance; clear any override so the pick takes effect
+          // (the resolver gives an override precedence over a pick).
+          void patch({
+            ai: { acp: { agents: { [id]: { selectedPath: command, overridePath: "" } } } }
+          });
+        }}
+        onRevertAuto={(id) => {
+          void patch({
+            ai: { acp: { agents: { [id]: { selectedPath: "", overridePath: "" } } } }
+          });
+        }}
+        onSetOverride={(id, path) => {
+          void patch({ ai: { acp: { agents: { [id]: { overridePath: path } } } } });
+        }}
+        onClearOverride={(id) => {
+          void patch({ ai: { acp: { agents: { [id]: { overridePath: "" } } } } });
         }}
       />
 
@@ -1089,7 +1109,12 @@ type AcpAgentsCardProps = {
   error: string | null;
   onRefresh: () => void;
   enabledAgentIds: readonly string[];
+  agents: Record<string, AcpAgentPreference> | undefined;
   onToggle: (id: string, enabled: boolean) => void;
+  onPickInstance: (id: string, command: string) => void;
+  onRevertAuto: (id: string) => void;
+  onSetOverride: (id: string, path: string) => void;
+  onClearOverride: (id: string) => void;
 };
 
 function AcpAgentsCard({
@@ -1098,7 +1123,12 @@ function AcpAgentsCard({
   error,
   onRefresh,
   enabledAgentIds,
-  onToggle
+  agents,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
 }: AcpAgentsCardProps): ReactElement {
   return (
     <Card
@@ -1117,7 +1147,7 @@ function AcpAgentsCard({
     >
       <Row
         label="Installed agents"
-        sub="ACP agent CLIs (Kimi, Qwen, Gemini, Grok) detected on this machine. Enable the ones you want PwrSnap to use. Enabled agents become selectable as the chat backend in Per-surface defaults above."
+        sub="ACP agent CLIs (Qwen, Gemini, Grok, Kimi) PwrSnap looks for on this machine. Enable the ones you want, pick which install to use when several are found, or set a manual path. Enabled agents become selectable as the chat backend in Per-surface defaults above."
         tag="config"
       >
         <AcpAgentList
@@ -1125,7 +1155,12 @@ function AcpAgentsCard({
           loading={loading}
           error={error}
           enabledAgentIds={enabledAgentIds}
+          agents={agents}
           onToggle={onToggle}
+          onPickInstance={onPickInstance}
+          onRevertAuto={onRevertAuto}
+          onSetOverride={onSetOverride}
+          onClearOverride={onClearOverride}
         />
       </Row>
     </Card>
@@ -1137,7 +1172,12 @@ type AcpAgentListProps = {
   loading: boolean;
   error: string | null;
   enabledAgentIds: readonly string[];
+  agents: Record<string, AcpAgentPreference> | undefined;
   onToggle: (id: string, enabled: boolean) => void;
+  onPickInstance: (id: string, command: string) => void;
+  onRevertAuto: (id: string) => void;
+  onSetOverride: (id: string, path: string) => void;
+  onClearOverride: (id: string) => void;
 };
 
 function AcpAgentList({
@@ -1145,7 +1185,12 @@ function AcpAgentList({
   loading,
   error,
   enabledAgentIds,
-  onToggle
+  agents,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
 }: AcpAgentListProps): ReactElement {
   if (discovery === null) {
     return (
@@ -1172,7 +1217,12 @@ function AcpAgentList({
           key={agent.id}
           agent={agent}
           enabled={enabledAgentIds.includes(agent.id)}
+          pref={agents?.[agent.id]}
           onToggle={(next) => onToggle(agent.id, next)}
+          onPickInstance={(command) => onPickInstance(agent.id, command)}
+          onRevertAuto={() => onRevertAuto(agent.id)}
+          onSetOverride={(path) => onSetOverride(agent.id, path)}
+          onClearOverride={() => onClearOverride(agent.id)}
         />
       ))}
     </>
@@ -1182,49 +1232,166 @@ function AcpAgentList({
 function AcpAgentRow({
   agent,
   enabled,
-  onToggle
+  pref,
+  onToggle,
+  onPickInstance,
+  onRevertAuto,
+  onSetOverride,
+  onClearOverride
 }: {
   agent: AcpAgentDiscoveryEntry;
   enabled: boolean;
+  pref: AcpAgentPreference | undefined;
   onToggle: (enabled: boolean) => void;
+  onPickInstance: (command: string) => void;
+  onRevertAuto: () => void;
+  onSetOverride: (path: string) => void;
+  onClearOverride: () => void;
 }): ReactElement {
-  const sub = agent.installed
-    ? agent.version !== undefined
-      ? `v${agent.version}${agent.detail !== undefined ? ` · ${agent.detail}` : ""}`
-      : (agent.detail ?? "installed")
+  const instanceCount = agent.instances.length;
+  const isAuto =
+    (pref?.selectedPath ?? "") === "" && (pref?.overridePath ?? "") === "";
+  const summarySub = agent.installed
+    ? `${instanceCount} install${instanceCount === 1 ? "" : "s"} found${
+        agent.version !== undefined ? ` · active v${agent.version}` : ""
+      }${isAuto ? " · auto" : " · pinned"}`
     : (agent.detail ?? "Not installed");
+
   return (
-    <OptionRow
-      icon={agent.displayName.charAt(0).toUpperCase()}
-      primary={agent.displayName}
-      sub={sub}
-      using={agent.installed && enabled}
-      badges={
-        agent.installed ? (
-          enabled ? (
-            <span className="pss__badge is-using">Enabled</span>
+    <div className="pss__acp-agent">
+      <OptionRow
+        icon={agent.displayName.charAt(0).toUpperCase()}
+        primary={agent.displayName}
+        sub={summarySub}
+        using={agent.installed && enabled}
+        badges={
+          agent.installed ? (
+            enabled ? (
+              <span className="pss__badge is-using">Enabled</span>
+            ) : (
+              <span className="pss__badge">Installed</span>
+            )
           ) : (
-            <span className="pss__badge">Installed</span>
+            <span className="pss__badge">Not installed</span>
           )
-        ) : (
-          <span className="pss__badge">Not installed</span>
-        )
-      }
-      action={
-        <label className="pss__acp-toggle">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={!agent.installed}
-            aria-label={`Enable ${agent.displayName}`}
-            onChange={(e) => {
-              onToggle(e.target.checked);
-            }}
+        }
+        action={
+          <label className="pss__acp-toggle">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={!agent.installed}
+              aria-label={`Enable ${agent.displayName}`}
+              onChange={(e) => {
+                onToggle(e.target.checked);
+              }}
+            />
+            <span>Enable</span>
+          </label>
+        }
+      />
+      {agent.installed ? (
+        <div className="pss__acp-detail">
+          <div className="pss__acp-instances" role="list">
+            {agent.instances.map((inst) => {
+              const active = inst.command === agent.activeCommand;
+              const meta = [
+                inst.version !== undefined ? `v${inst.version}` : null,
+                inst.source === "override"
+                  ? "override"
+                  : inst.source === "fallback"
+                    ? "fallback path"
+                    : "on PATH"
+              ]
+                .filter((part): part is string => part !== null)
+                .join(" · ");
+              return (
+                <button
+                  key={inst.command}
+                  type="button"
+                  role="listitem"
+                  className={"pss__acp-instance" + (active ? " is-active" : "")}
+                  aria-pressed={active}
+                  title={
+                    active
+                      ? "Active — click to revert to auto (use the first found)"
+                      : "Click to always use this install"
+                  }
+                  onClick={() => {
+                    if (active) onRevertAuto();
+                    else onPickInstance(inst.command);
+                  }}
+                >
+                  <span className="pss__acp-instance-path">{inst.command}</span>
+                  <span className="pss__acp-instance-meta">{meta}</span>
+                  {active ? <span className="pss__badge is-using">Using</span> : null}
+                </button>
+              );
+            })}
+          </div>
+          <AcpOverrideInput
+            overridePath={pref?.overridePath ?? ""}
+            onSave={onSetOverride}
+            onClear={onClearOverride}
           />
-          <span>Enable</span>
-        </label>
-      }
-    />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Manual override-path input for one ACP agent — mirrors PwrAgnt's per-agent
+ *  "Custom path" control. Save persists the path (it's probed on the next
+ *  Refresh and, when valid, becomes the active instance); Clear reverts to
+ *  discovery + any pinned instance. */
+function AcpOverrideInput({
+  overridePath,
+  onSave,
+  onClear
+}: {
+  overridePath: string;
+  onSave: (path: string) => void;
+  onClear: () => void;
+}): ReactElement {
+  const [draft, setDraft] = useState<string>(overridePath);
+  // Re-sync the draft when the persisted value changes out from under us
+  // (e.g. a settings broadcast from another window).
+  useEffect(() => {
+    setDraft(overridePath);
+  }, [overridePath]);
+  const trimmed = draft.trim();
+  const dirty = trimmed !== overridePath;
+  return (
+    <div className="pss__acp-override">
+      <input
+        className="pss__acp-override-input"
+        type="text"
+        value={draft}
+        spellCheck={false}
+        placeholder="Manual path — e.g. /Users/you/.nvm/versions/node/vXX/bin/qwen"
+        aria-label="Manual override path"
+        onChange={(e) => setDraft(e.currentTarget.value)}
+      />
+      <button
+        className="pss__top-btn"
+        type="button"
+        disabled={!dirty || trimmed.length === 0}
+        onClick={() => onSave(trimmed)}
+      >
+        Save
+      </button>
+      <button
+        className="pss__top-btn is-muted"
+        type="button"
+        disabled={overridePath.length === 0 && draft.length === 0}
+        onClick={() => {
+          setDraft("");
+          onClear();
+        }}
+      >
+        Clear
+      </button>
+    </div>
   );
 }
 

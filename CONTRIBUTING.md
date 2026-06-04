@@ -56,7 +56,7 @@ the layer → stack → path mapping.
 - Follow Conventional-Commit-style PR titles: `type(scope): description`.
   Prefer scopes that match the project area being changed:
   - `desktop` — the Electron app itself (main, preload, renderer).
-  - `protocol` — the `@pwrsnap/codex-app-server-protocol` package.
+  - `protocol` — the consumed `@pwrdrvr/codex-app-server-protocol` package.
   - `design` — UI work tied to the design system.
   - `release` — packaging, signing, notarization, distribution, auto-update.
   - `docs` — documentation only.

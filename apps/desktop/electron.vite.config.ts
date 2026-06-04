@@ -61,7 +61,7 @@ export default defineConfig(({ command }) => {
         // imports inside source-form workspace packages, and we don't
         // want to ship our shared TS source separately. Mirrors PwrAgnt.
         externalizeDepsPlugin({
-          exclude: ["@pwrsnap/shared", "@pwrsnap/codex-app-server-protocol"]
+          exclude: ["@pwrsnap/shared", "@pwrdrvr/codex-app-server-protocol"]
         }),
         copyMainAssetsPlugin()
       ],
@@ -96,7 +96,7 @@ export default defineConfig(({ command }) => {
       define: productionDefine,
       plugins: [
         externalizeDepsPlugin({
-          exclude: ["@pwrsnap/shared", "@pwrsnap/codex-app-server-protocol"]
+          exclude: ["@pwrsnap/shared", "@pwrdrvr/codex-app-server-protocol"]
         })
       ],
       build: {

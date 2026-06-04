@@ -8,7 +8,7 @@ import {
   buildLibraryToolCatalog,
   dispatchLibraryToolCall
 } from "../library-tool-catalog";
-import type { DynamicToolCallParams } from "@pwrsnap/codex-app-server-protocol/v2";
+import type { DynamicToolCallParams } from "@pwrdrvr/codex-app-server-protocol/v2";
 
 function makeCallParams(
   overrides: Partial<DynamicToolCallParams>

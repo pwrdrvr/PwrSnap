@@ -25,7 +25,7 @@ import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
   DynamicToolSpec
-} from "@pwrsnap/codex-app-server-protocol/v2";
+} from "@pwrdrvr/codex-app-server-protocol/v2";
 import type {
   AiSurfaceDefault,
   AiUsageThreadSurface,

@@ -32,7 +32,6 @@
   "dependencies": {
     "@fontsource/geist-mono": "^5.2.8",
     "@fontsource/geist-sans": "^5.2.5",
-    "@pwrsnap/codex-app-server-protocol": "workspace:*",
     "@pwrsnap/shared": "workspace:*",
     "@shutterstock/p-map-iterable": "^1.1.2",
     "@tanstack/react-virtual": "^3.13.24",
@@ -54,7 +53,8 @@
     "@pwrdrvr/codex-discovery": "^0.1.2",
     "@pwrdrvr/agent-client": "^0.1.2",
     "@pwrdrvr/agent-chat-react": "^0.1.2",
-    "@pwrdrvr/agent-acp": "^0.1.2"
+    "@pwrdrvr/agent-acp": "^0.1.2",
+    "@pwrdrvr/codex-app-server-protocol": "0.133.0"
   },
   "devDependencies": {
     "@electron/asar": "^4.2.0",

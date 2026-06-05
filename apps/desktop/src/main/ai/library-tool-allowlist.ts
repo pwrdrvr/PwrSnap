@@ -210,7 +210,7 @@ const readOcrText = defineTool({
   namespace: "pwrsnap_library",
   name: "read_ocr_text",
   description:
-    "Read the text PwrSnap OCR'd out of an image capture. Use it to FIND text to redact (secrets, account / card / SSN numbers, emails) or to answer questions about what the capture says — read the text rather than guessing from the picture. Returns up to 16000 characters; `truncated` is true when the OCR was longer.",
+    "Read the text PwrSnap OCR'd out of an image capture. Use it to know WHAT text is present — confirm a secret / account / card / SSN number / email exists, decide what needs redacting, or answer questions about what the capture says (read the text rather than guessing from the picture). IMPORTANT: this is PLAIN TEXT with NO position/coordinate information — it tells you what text exists, NOT where it is on the canvas. To box / redact / highlight specific text by its location, use render_composite and locate it VISUALLY, not the OCR. Returns up to 16000 characters; `truncated` is true when the OCR was longer.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({ capture_id: z.string() }),
   dispatch: async (args) => {
@@ -356,7 +356,7 @@ const listLayerCapabilities = defineTool({
       shape_note:
         "rect/square/circle/oval/parallelogram share a normalized bounding rect; keep w==h for a true square or circle. filled=true for solid, omit for outline.",
       text_tools:
-        "capture_metadata returns the AI title/description/tags + whether OCR exists; read_ocr_text returns the OCR'd text — use it to locate secrets/text to redact rather than guessing from the picture.",
+        "capture_metadata returns the AI title/description/tags + whether OCR exists; read_ocr_text returns the OCR'd text (plain text, NO positions — it tells you WHAT text exists, not WHERE; to place a mark/redaction over specific text, find it visually via render_composite, not the OCR).",
       effect_tools: {
         redact: "opaque blackout over a rect — IRREVERSIBLE, use for secrets",
         blur: "soften a rect (gaussian, or pixelate=true for mosaic) — REVERSIBLE, non-secret content only"

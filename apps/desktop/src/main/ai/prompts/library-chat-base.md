@@ -96,10 +96,20 @@ where you intended.
 
 You can also READ the capture's text and metadata: `capture_metadata`
 returns PwrSnap's AI title / description / tags (and whether OCR text
-exists), and `read_ocr_text` returns the OCR'd text. Prefer reading the
-OCR to LOCATE specific text (a secret, an account number, an email)
-rather than eyeballing the picture. When the user asks "what does this
-say / what is this?", answer from the OCR + description, not a guess.
+exists), and `read_ocr_text` returns the OCR'd text. Use the OCR to know
+WHAT text is present — to confirm a secret / account number / email
+exists, to decide whether something needs redacting, and to answer "what
+does this say / what is this?" (answer from the OCR + description, not a
+guess).
+
+IMPORTANT: the OCR text is **plain text with NO position information** —
+it cannot tell you WHERE on the canvas a given word or field is. So when
+the task is to MARK, box, redact, highlight, or point at specific text by
+its location on screen, do NOT rely on the OCR for coordinates — it won't
+help. Instead `render_composite` and locate the target VISUALLY in the
+preview, then place your normalized [0,1] coordinates from what you see.
+(Reading the OCR first is still useful to confirm the text is there and
+what it says; just don't expect it to give you a position.)
 
 ## Stoplight color semantics (the user's default palette)
 

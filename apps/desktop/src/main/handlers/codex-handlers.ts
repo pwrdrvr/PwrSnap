@@ -940,7 +940,10 @@ async function runCaptureEnrichment(params: {
       modelProvider: response.modelProvider ?? null,
       serviceTier: response.serviceTier ?? null,
       usageStatus: tokens === null ? "unavailable" : "available",
-      usageUnavailableReason: tokens === null ? "Codex did not report token usage" : null,
+      usageUnavailableReason:
+        tokens === null
+          ? `${response.modelProvider ?? "the agent"} did not report token usage`
+          : null,
       tokens,
       cost: estimateAiUsageCost({
         model: response.model ?? null,

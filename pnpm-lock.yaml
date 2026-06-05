@@ -36,14 +36,14 @@ importers:
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
       '@pwrdrvr/agent-acp':
-        specifier: ^0.4.0
-        version: 0.4.0
+        specifier: ^0.5.0
+        version: 0.5.0
       '@pwrdrvr/agent-chat-react':
         specifier: ^0.1.2
         version: 0.1.2(react@19.2.6)
       '@pwrdrvr/agent-client':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.4.0
+        version: 0.4.0
       '@pwrdrvr/agent-core':
         specifier: ^0.1.2
         version: 0.1.2
@@ -894,16 +894,16 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@0.4.0':
-    resolution: {integrity: sha512-eSA0NQIkez1ubbWFKQW72Y5ZI/RYi+SuumpGMlwFDzADV7bd27H9nALCjS54AlaZrMwZkilGTPYFmGWjqqhSoA==}
+  '@pwrdrvr/agent-acp@0.5.0':
+    resolution: {integrity: sha512-d45glxunyDVgu9s3+Baey56/cq5YVMQrYXFxEbv2hpMBJn7N7AQ6uDXTunijI9HZ1teuvMhXqzdmu+jBGPIcvw==}
 
   '@pwrdrvr/agent-chat-react@0.1.2':
     resolution: {integrity: sha512-IDEYEDg7VQiYzxTvRK22GeHFuo0cB2LcrGwQ4v86A5ThBFB7I/sVZfacWUwjNJz7H/87ADCl7jvVD/8DLs0NAA==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
-  '@pwrdrvr/agent-client@0.3.0':
-    resolution: {integrity: sha512-/a100p//QDXrdQ1OnyT8LXp4susqOnWeXmcIbTSbRjRrtJMpxUYlyCXFHNq69LRSavrIj8Tf5Mld85kjYcPtfA==}
+  '@pwrdrvr/agent-client@0.4.0':
+    resolution: {integrity: sha512-wVomSfffthBNncXmqGuVLF/+OTFZsG2MbcnkSuQSZFbNaF4vnwc8lTXJ2oNWHzwY7DUxuk/0QeiW+37J7DCd3g==}
 
   '@pwrdrvr/agent-core@0.1.2':
     resolution: {integrity: sha512-uuK6Tfivv5J78A1Uj2WpWhIPcf2kdEkbAZhV1Pimgm2jjILowxdiUjMA0YHP/a7rRkx3NJmde06F88QWHhSZMA==}
@@ -3724,7 +3724,7 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@pwrdrvr/agent-acp@0.4.0':
+  '@pwrdrvr/agent-acp@0.5.0':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
       '@pwrdrvr/agent-transport': 0.1.5
@@ -3734,7 +3734,7 @@ snapshots:
       '@pwrdrvr/agent-core': 0.1.2
       react: 19.2.6
 
-  '@pwrdrvr/agent-client@0.3.0':
+  '@pwrdrvr/agent-client@0.4.0':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
       '@pwrdrvr/agent-transport': 0.1.5

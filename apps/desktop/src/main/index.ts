@@ -182,13 +182,19 @@ let lastKnownDeveloperMode = false;
 
 function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode): void {
   lastKnownDeveloperMode = developerMode;
-  const openSettings = (): void => {
-    void bus.dispatch("settings:open", {}, { principal: "ipc" });
+  const openSettings = (
+    sourceWindow?: { id: number; isDestroyed: () => boolean } | null
+  ): void => {
+    const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+    if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+      options.sourceWindowId = sourceWindow.id;
+    }
+    void bus.dispatch("settings:open", {}, options);
   };
   const settingsItem: Electron.MenuItemConstructorOptions = {
     label: "Settings…",
     accelerator: SETTINGS_SHORTCUT,
-    click: openSettings
+    click: (_item, sourceWindow) => openSettings(sourceWindow)
   };
   // Stripped-down View menu — Reload / Force Reload / Toggle DevTools
   // are gated behind `general.developerMode`. Hidden by default so
@@ -265,8 +271,12 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         { type: "separator" },
         {
           label: "Sizzle Reels…",
-          click: () => {
-            void bus.dispatch("sizzle:open", {}, { principal: "ipc" });
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
+            void bus.dispatch("sizzle:open", {}, options);
           }
         }
       ]
@@ -298,8 +308,12 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         },
         {
           label: "Changelog",
-          click: () => {
-            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, { principal: "ipc" });
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
+            void bus.dispatch("app:openDocumentWindow", { kind: "changelog" }, options);
           }
         },
         { type: "separator" },
@@ -324,11 +338,15 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         { type: "separator" },
         {
           label: "Third-party Licenses",
-          click: () => {
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
             void bus.dispatch(
               "app:openDocumentWindow",
               { kind: "third-party-licenses" },
-              { principal: "ipc" }
+              options
             );
           }
         }

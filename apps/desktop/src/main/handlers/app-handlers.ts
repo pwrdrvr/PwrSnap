@@ -88,7 +88,7 @@ export function registerAppHandlers(): void {
       });
     }
   });
-  bus.register("app:openDocumentWindow", async (req) => {
+  bus.register("app:openDocumentWindow", async (req, ctx) => {
     const kind = typeof req === "object" && req !== null ? req.kind : undefined;
     if (!isAppDocumentKind(kind)) {
       return err({
@@ -97,7 +97,14 @@ export function registerAppHandlers(): void {
         message: `unknown app document: ${String(kind)}`
       });
     }
-    showAppDocumentWindow(kind);
+    const options: NonNullable<Parameters<typeof showAppDocumentWindow>[1]> = {};
+    if (ctx.sourceWindowId !== undefined) {
+      options.sourceWindowId = ctx.sourceWindowId;
+    }
+    if (ctx.sourceBounds !== undefined) {
+      options.sourceBounds = ctx.sourceBounds;
+    }
+    showAppDocumentWindow(kind, options);
     return ok(undefined);
   });
   bus.register("app:openExternal", async (req) => {

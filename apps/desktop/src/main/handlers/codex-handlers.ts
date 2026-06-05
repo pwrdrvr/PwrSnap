@@ -484,7 +484,6 @@ export function registerCodexHandlers(params?: {
       sourceAppName: capture.source_app_name,
       sourceAppBundleId: capture.source_app_bundle_id,
       triggerSource,
-      codexCommand,
       bucketBefore: budgetDecision.before,
       bucketAfter: budgetDecision.after
     });
@@ -873,7 +872,6 @@ async function runCaptureEnrichment(params: {
       sourceAppName: params.metadata.sourceAppName,
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
-      codexCommand: params.command,
       provider,
       preparedMedia: preparedMediaShape(prepared),
       bucketBefore: params.budgetBefore,
@@ -965,9 +963,8 @@ async function runCaptureEnrichment(params: {
       sourceAppName: params.metadata.sourceAppName,
       sourceAppBundleId: params.metadata.sourceAppBundleId,
       triggerSource: params.triggerSource,
-      codexCommand: params.command,
       provider,
-      codexUserAgent: response.userAgent,
+      userAgent: response.userAgent,
       threadId: response.threadId,
       turnId: response.turnId,
       latencyMs,

@@ -28,9 +28,11 @@ import { getMainLogger } from "../log";
 import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import {
   buildChatSurface,
+  chatControllerSignature,
   chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
+import { createChatControllerCache } from "../ai/chat-controller-cache";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
@@ -156,47 +158,56 @@ export function registerLibraryChatHandlers(params?: {
 }): void {
   const settingsReader = params?.settingsReader ?? defaultSettingsReader;
 
-  // Lazily build the singleton on first use. Building it eagerly would
-  // spawn a codex child at app start even for users who never open chat;
-  // lazy keeps startup lean and lets the first dispatch surface a clean
-  // "codex unreachable" error instead of a boot crash.
-  let controller: ChatThreadController<Settings> | null = params?.controller ?? null;
-  const getController = async (): Promise<ChatThreadController<Settings>> => {
-    if (controller !== null) return controller;
-    const settings = await settingsReader();
-    const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-    const command = codexCommandForSettings(settings);
-    const env = codexEnvForProfile(settings.codex.profile);
-    const surface = await buildChatSurface({
-      command,
-      env,
-      chatsDir,
-      readSettings: settingsReader,
-      channels: LIBRARY_CHAT_CHANNELS,
-      send: broadcast,
-      usageSurface: "library-chat",
-      // The kit's prompt builder passes `anchorId`; PwrSnap's builder takes
-      // `anchorCaptureId` — same value, renamed.
-      buildSystemPrompt: ({ settings: s, anchorId }) =>
-        buildLibrarySystemPrompt({ settings: s, anchorCaptureId: anchorId }),
-      buildTurnContext: buildCurrentCaptureContext,
-      toolLabels: LIBRARY_TOOL_LABELS,
-      catalog: buildLibraryToolCatalog(),
-      dispatchToolCall: dispatchLibraryToolCall,
-      // Drop Codex's built-in coding tools — PwrSnap chat is image-only. The
-      // overlay shape is selected for the running Codex build (schema churns).
-      threadConfig: resolveCodexThreadConfigForCommand(command, env),
-      threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
-      // Per-surface default provider / model / reasoning from Settings →
-      // AI (`ai.defaults.libraryChat`). `provider` selects the chat backend
-      // (Codex vs an enabled ACP agent); unset leaves fall back to the
-      // Codex / kit defaults inside buildChatSurface.
-      ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.libraryChat),
-      loggerScope: "pwrsnap:library-chat"
-    });
-    controller = surface.controller;
-    return controller;
-  };
+  // Lazily build on first use, and REBUILD whenever the backend-affecting
+  // settings change (provider / model / reasoning / codex command+profile).
+  // Building eagerly would spawn a codex child at app start even for users who
+  // never open chat; lazy keeps startup lean and lets the first dispatch
+  // surface a clean "codex unreachable" error instead of a boot crash. The
+  // signature-aware cache is what makes "switch provider in Settings → start a
+  // NEW chat" pick up the new backend instead of the stale one.
+  const cache = createChatControllerCache<ChatThreadController<Settings>>({
+    readSettings: settingsReader,
+    signature: (settings) => chatControllerSignature(settings, "libraryChat"),
+    build: async (settings) => {
+      const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+      const command = codexCommandForSettings(settings);
+      const env = codexEnvForProfile(settings.codex.profile);
+      const surface = await buildChatSurface({
+        command,
+        env,
+        chatsDir,
+        readSettings: settingsReader,
+        channels: LIBRARY_CHAT_CHANNELS,
+        send: broadcast,
+        usageSurface: "library-chat",
+        // The kit's prompt builder passes `anchorId`; PwrSnap's builder takes
+        // `anchorCaptureId` — same value, renamed.
+        buildSystemPrompt: ({ settings: s, anchorId }) =>
+          buildLibrarySystemPrompt({ settings: s, anchorCaptureId: anchorId }),
+        buildTurnContext: buildCurrentCaptureContext,
+        toolLabels: LIBRARY_TOOL_LABELS,
+        catalog: buildLibraryToolCatalog(),
+        dispatchToolCall: dispatchLibraryToolCall,
+        // Drop Codex's built-in coding tools — PwrSnap chat is image-only. The
+        // overlay shape is selected for the running Codex build (schema churns).
+        threadConfig: resolveCodexThreadConfigForCommand(command, env),
+        threadEnvironments: LIBRARY_CHAT_THREAD_ENVIRONMENTS,
+        // Per-surface default provider / model / reasoning from Settings →
+        // AI (`ai.defaults.libraryChat`). `provider` selects the chat backend
+        // (Codex vs an enabled ACP agent); unset leaves fall back to the
+        // Codex / kit defaults inside buildChatSurface.
+        ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.libraryChat),
+        loggerScope: "pwrsnap:library-chat"
+      });
+      return { controller: surface.controller, dispose: surface.dispose };
+    }
+  });
+
+  // A test-injected controller pins the cache to that instance (no rebuild,
+  // no real Codex child) — existing handler tests rely on this.
+  const injected = params?.controller ?? null;
+  const getController = async (): Promise<ChatThreadController<Settings>> =>
+    injected !== null ? injected : cache.get();
 
   bus.register("codex:libraryChat:list", async (req) => {
     try {

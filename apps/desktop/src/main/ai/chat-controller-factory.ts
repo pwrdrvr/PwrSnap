@@ -103,7 +103,36 @@ export type ChatSurfaceConfig = {
 
 export type ChatSurface = {
   controller: ChatThreadController<Settings>;
+  /** Tear this surface down before a rebuild: silence the controller's
+   *  broadcasts immediately (so a stale, replaced controller can never
+   *  double-broadcast onto a shared backend the new controller now drives),
+   *  and close the backend process when it's exclusively ours. A pooled
+   *  (shared) ACP backend is left running — the pool owns its lifecycle. */
+  dispose: () => Promise<void>;
 };
+
+/** The slice of Settings that determines which BACKEND a chat surface builds
+ *  (command / auth profile / provider / model / reasoning / ACP agent paths).
+ *  A cached controller must be rebuilt when this changes — otherwise a "New
+ *  chat" after switching providers in Settings silently uses the stale
+ *  backend (e.g. still talks to Gemini after the user picked Codex). Anything
+ *  the controller re-reads per turn (system prompt inputs, etc.) is NOT in
+ *  here on purpose — those don't require a rebuild. */
+export function chatControllerSignature(
+  settings: Settings,
+  surface: "libraryChat" | "sizzleChat"
+): string {
+  const codex = settings.codex;
+  const command =
+    codex.mode === "pinned" && codex.pinnedPath !== "" ? codex.pinnedPath : "codex";
+  return JSON.stringify({
+    command,
+    profile: codex.profile ?? null,
+    surface: settings.ai.defaults[surface] ?? null,
+    acpAgents: settings.ai.acp.agents ?? null,
+    acpEnabled: settings.ai.acp.enabledAgentIds ?? null
+  });
+}
 
 /** Map a Settings per-surface default onto the chat-surface's kit knobs.
  *  Only carries a key when the user pinned a value — an unset leaf is
@@ -331,7 +360,16 @@ export async function buildChatSurface(
     }
   });
 
-  const broadcast = makeChatBroadcast(config.channels, config.send);
+  // Guard the send so a disposed (replaced) controller goes silent the
+  // instant we rebuild. For a SHARED ACP backend the old controller's
+  // onEvent listener stays attached to the pooled process and would keep
+  // re-broadcasting the new controller's turns (double messages) — flipping
+  // `live` off severs that without needing a kit-side unwire.
+  let live = true;
+  const guardedSend: ChatBroadcast = (channel, payload) => {
+    if (live) config.send(channel, payload);
+  };
+  const broadcast = makeChatBroadcast(config.channels, guardedSend);
 
   const controller = new ChatThreadController<Settings>({
     client,
@@ -377,5 +415,18 @@ export async function buildChatSurface(
   });
   controller.wire();
 
-  return { controller };
+  const dispose = async (): Promise<void> => {
+    live = false;
+    if (!resolved.shared) {
+      // Exclusively-ours Codex child — shut it down. A pooled ACP backend is
+      // left for the pool to manage (other surfaces / warm-up may share it).
+      try {
+        await client.close();
+      } catch {
+        // best-effort teardown — a dead/already-closed backend is fine.
+      }
+    }
+  };
+
+  return { controller, dispose };
 }

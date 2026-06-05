@@ -4,6 +4,7 @@ import type { ChatBackend } from "@pwrdrvr/agent-client";
 import type { AiSurfaceDefault, Settings } from "@pwrsnap/shared";
 import {
   buildChatSurface,
+  chatControllerSignature,
   chatSurfaceDefaultsFromSettings,
   type ChatBackendDeps,
   type ChatSurfaceConfig
@@ -261,5 +262,137 @@ describe("buildChatSurface — backend selection", () => {
 
     expect(makeAcpClient).not.toHaveBeenCalled();
     expect(makeCodexClient).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- chatControllerSignature — what triggers a controller rebuild --------
+
+function settingsFor(overrides: {
+  command?: { mode?: string; pinnedPath?: string };
+  profile?: string;
+  libraryProvider?: string;
+  libraryModel?: string;
+  libraryReasoning?: string;
+  sizzleProvider?: string;
+}): Settings {
+  return {
+    codex: {
+      mode: overrides.command?.mode ?? "auto",
+      pinnedPath: overrides.command?.pinnedPath ?? "",
+      profile: overrides.profile ?? ""
+    },
+    ai: {
+      acp: { enabledAgentIds: [], agents: {} },
+      defaults: {
+        libraryChat: {
+          ...(overrides.libraryProvider !== undefined
+            ? { provider: overrides.libraryProvider }
+            : {}),
+          ...(overrides.libraryModel !== undefined ? { model: overrides.libraryModel } : {}),
+          ...(overrides.libraryReasoning !== undefined
+            ? { reasoning: overrides.libraryReasoning }
+            : {})
+        },
+        sizzleChat: {
+          ...(overrides.sizzleProvider !== undefined
+            ? { provider: overrides.sizzleProvider }
+            : {})
+        }
+      }
+    }
+  } as unknown as Settings;
+}
+
+describe("chatControllerSignature", () => {
+  test("changes when the surface's provider changes (the rebuild trigger)", () => {
+    const gemini = chatControllerSignature(
+      settingsFor({ libraryProvider: "acp:gemini" }),
+      "libraryChat"
+    );
+    const codex = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex" }),
+      "libraryChat"
+    );
+    expect(gemini).not.toBe(codex);
+  });
+
+  test("changes when the model or reasoning changes", () => {
+    const base = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex", libraryModel: "gpt-5.5" }),
+      "libraryChat"
+    );
+    const otherModel = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex", libraryModel: "gpt-5.5-mini" }),
+      "libraryChat"
+    );
+    const otherReasoning = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex", libraryModel: "gpt-5.5", libraryReasoning: "high" }),
+      "libraryChat"
+    );
+    expect(base).not.toBe(otherModel);
+    expect(base).not.toBe(otherReasoning);
+  });
+
+  test("changes when the codex command or auth profile changes", () => {
+    const base = chatControllerSignature(settingsFor({}), "libraryChat");
+    const pinned = chatControllerSignature(
+      settingsFor({ command: { mode: "pinned", pinnedPath: "/opt/codex" } }),
+      "libraryChat"
+    );
+    const profiled = chatControllerSignature(
+      settingsFor({ profile: "work" }),
+      "libraryChat"
+    );
+    expect(base).not.toBe(pinned);
+    expect(base).not.toBe(profiled);
+  });
+
+  test("is STABLE when only the OTHER surface's config changes", () => {
+    // Changing the Sizzle provider must not churn the Library controller.
+    const a = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex", sizzleProvider: "acp:gemini" }),
+      "libraryChat"
+    );
+    const b = chatControllerSignature(
+      settingsFor({ libraryProvider: "codex", sizzleProvider: "acp:qwen" }),
+      "libraryChat"
+    );
+    expect(a).toBe(b);
+  });
+
+  test("is identical for identical settings (no spurious rebuilds)", () => {
+    const a = chatControllerSignature(
+      settingsFor({ libraryProvider: "acp:gemini", libraryModel: "gemini-2.5" }),
+      "libraryChat"
+    );
+    const b = chatControllerSignature(
+      settingsFor({ libraryProvider: "acp:gemini", libraryModel: "gemini-2.5" }),
+      "libraryChat"
+    );
+    expect(a).toBe(b);
+  });
+});
+
+describe("buildChatSurface — dispose", () => {
+  test("dispose closes an exclusively-ours Codex backend", async () => {
+    const codexBackend = stubBackend();
+    const makeCodexClient = vi.fn(() => codexBackend);
+    const surface = await buildChatSurface(baseConfig({ provider: "codex" }), {
+      makeCodexClient
+    });
+    await surface.dispose();
+    expect(vi.mocked(codexBackend.close)).toHaveBeenCalledTimes(1);
+  });
+
+  test("dispose does NOT close a pooled (shared) ACP backend", async () => {
+    const acpBackend = stubBackend();
+    const makeAcpClient = vi.fn(() => ({ client: acpBackend, mcpServers: [] as never[] }));
+    const discoverAcpAgentInstances = vi.fn(async () => [discoveredGeminiGroup()]);
+    const surface = await buildChatSurface(baseConfig({ provider: "acp:gemini" }), {
+      makeAcpClient,
+      discoverAcpAgentInstances
+    });
+    await surface.dispose();
+    expect(vi.mocked(acpBackend.close)).not.toHaveBeenCalled();
   });
 });

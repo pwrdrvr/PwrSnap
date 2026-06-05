@@ -23,9 +23,14 @@ import { resolveCodexThreadConfigForCommand } from "../ai/codex-thread-config";
 import { ChatThreadStore } from "../ai/chat-thread-store";
 import {
   buildChatSurface,
+  chatControllerSignature,
   chatSurfaceDefaultsFromSettings,
   toKitApprovalDecision
 } from "../ai/chat-controller-factory";
+import {
+  createChatControllerCache,
+  type ChatControllerCache
+} from "../ai/chat-controller-cache";
 import { codexEnvForProfile } from "../ai/agent-kit-bindings";
 import type { ChatBroadcast, ChatChannelSet } from "../ai/chat-event-adapter";
 import { toChatMessage, toLibraryThreadView } from "../ai/chat-event-adapter";
@@ -84,51 +89,70 @@ function codexCommandForSettings(settings: Settings): string {
 // Module-level so the `forkProjectChats` export (called when a reel is
 // duplicated) shares the same lazily-built controller as the bus verbs.
 let sizzleSettingsReader: SizzleChatSettingsReader = defaultSettingsReader;
-let sizzleController: ChatThreadController<Settings> | null = null;
+// A test-injected controller pins the surface to that instance (no rebuild, no
+// real Codex child) — existing handler tests rely on this.
+let injectedSizzleController: ChatThreadController<Settings> | null = null;
+let sizzleCache: ChatControllerCache<ChatThreadController<Settings>> | null = null;
 
-/** Lazily build the singleton Sizzle controller on first use — no codex child
- *  at app start for users who never open the composer chat. */
+/** The signature-aware cache that rebuilds the Sizzle controller whenever the
+ *  backend-affecting settings change (provider / model / reasoning / codex
+ *  command+profile). Created on first use, capturing the current settings
+ *  reader. Mirrors the Library surface. */
+function getSizzleCache(): ChatControllerCache<ChatThreadController<Settings>> {
+  if (sizzleCache !== null) return sizzleCache;
+  const readSettings = sizzleSettingsReader;
+  sizzleCache = createChatControllerCache<ChatThreadController<Settings>>({
+    readSettings,
+    signature: (settings) => chatControllerSignature(settings, "sizzleChat"),
+    build: async (settings) => {
+      const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
+      // A throwaway store solely to resolve a thread's anchored project id for
+      // the Sizzle tool catalog. The controller's own store (built inside
+      // buildChatSurface) is what persists threads; this reads the same SQLite
+      // index/rows, so the lookup is consistent.
+      const projectStore = new ChatThreadStore({ chatsDir });
+      const tools = makeSizzleChatTools({
+        // The thread's anchor holds the project id; mutations bind to it.
+        resolveProjectId: async (threadId) =>
+          (await projectStore.get(threadId))?.anchorCaptureId ?? null
+      });
+      const command = codexCommandForSettings(settings);
+      const env = codexEnvForProfile(settings.codex.profile);
+      const surface = await buildChatSurface({
+        command,
+        env,
+        chatsDir,
+        readSettings,
+        channels: SIZZLE_CHAT_CHANNELS,
+        send: broadcast,
+        usageSurface: "sizzle-chat",
+        buildSystemPrompt: ({ settings: s, anchorId }) =>
+          buildSizzleSystemPrompt({ settings: s, anchorCaptureId: anchorId }),
+        buildTurnContext: buildSizzleTurnContext,
+        toolLabels: SIZZLE_TOOL_LABELS,
+        catalog: tools.catalog,
+        dispatchToolCall: tools.dispatch,
+        // Overlay shape selected for the running Codex build (schema churns).
+        threadConfig: resolveCodexThreadConfigForCommand(command, env),
+        threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
+        // Per-surface default provider / model / reasoning from Settings → AI
+        // (`ai.defaults.sizzleChat`). `provider` selects the chat backend
+        // (Codex vs an enabled ACP agent); unset falls back to Codex / kit.
+        ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
+        loggerScope: "pwrsnap:sizzle-chat"
+      });
+      return { controller: surface.controller, dispose: surface.dispose };
+    }
+  });
+  return sizzleCache;
+}
+
+/** Lazily build the Sizzle controller, rebuilding when the backend config
+ *  changes — no codex child at app start for users who never open the
+ *  composer chat. */
 async function getSizzleController(): Promise<ChatThreadController<Settings>> {
-  if (sizzleController !== null) return sizzleController;
-  const settings = await sizzleSettingsReader();
-  const chatsDir = join(app.getPath("documents"), "PwrSnap", "Chats");
-  // A throwaway store solely to resolve a thread's anchored project id for the
-  // Sizzle tool catalog. The controller's own store (built inside
-  // buildChatSurface) is what persists threads; this reads the same SQLite
-  // index/rows, so the lookup is consistent.
-  const projectStore = new ChatThreadStore({ chatsDir });
-  const tools = makeSizzleChatTools({
-    // The thread's anchor holds the project id; mutations bind to it.
-    resolveProjectId: async (threadId) =>
-      (await projectStore.get(threadId))?.anchorCaptureId ?? null
-  });
-  const command = codexCommandForSettings(settings);
-  const env = codexEnvForProfile(settings.codex.profile);
-  const surface = await buildChatSurface({
-    command,
-    env,
-    chatsDir,
-    readSettings: sizzleSettingsReader,
-    channels: SIZZLE_CHAT_CHANNELS,
-    send: broadcast,
-    usageSurface: "sizzle-chat",
-    buildSystemPrompt: ({ settings: s, anchorId }) =>
-      buildSizzleSystemPrompt({ settings: s, anchorCaptureId: anchorId }),
-    buildTurnContext: buildSizzleTurnContext,
-    toolLabels: SIZZLE_TOOL_LABELS,
-    catalog: tools.catalog,
-    dispatchToolCall: tools.dispatch,
-    // Overlay shape selected for the running Codex build (schema churns).
-    threadConfig: resolveCodexThreadConfigForCommand(command, env),
-    threadEnvironments: SIZZLE_CHAT_THREAD_ENVIRONMENTS,
-    // Per-surface default provider / model / reasoning from Settings → AI
-    // (`ai.defaults.sizzleChat`). `provider` selects the chat backend (Codex vs
-    // an enabled ACP agent); unset leaves fall back to the Codex / kit defaults.
-    ...chatSurfaceDefaultsFromSettings(settings.ai.defaults.sizzleChat),
-    loggerScope: "pwrsnap:sizzle-chat"
-  });
-  sizzleController = surface.controller;
-  return sizzleController;
+  if (injectedSizzleController !== null) return injectedSizzleController;
+  return getSizzleCache().get();
 }
 
 /** Fork every chat thread anchored to a source project into a freshly-anchored
@@ -150,7 +174,10 @@ export function registerSizzleChatHandlers(params?: {
   settingsReader?: SizzleChatSettingsReader;
 }): void {
   sizzleSettingsReader = params?.settingsReader ?? defaultSettingsReader;
-  sizzleController = params?.controller ?? null;
+  injectedSizzleController = params?.controller ?? null;
+  // Re-registration (tests) starts from a fresh cache so it doesn't reuse a
+  // controller built against a previous settings reader.
+  sizzleCache = null;
 
   bus.register("codex:sizzleChat:list", async (req) => {
     // Sizzle threads are ALWAYS project-scoped. The substrate's

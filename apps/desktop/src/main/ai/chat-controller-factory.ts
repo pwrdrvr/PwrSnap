@@ -27,6 +27,7 @@ import {
 } from "@pwrdrvr/agent-acp";
 import { resolveActiveAcpInstance } from "./acp-instance-resolver";
 import { buildPwrSnapMcpServer } from "./mcp/pwrsnap-mcp-server-config";
+import { acquireAcpAgentClient } from "./acp-agent-pool";
 import type {
   DynamicToolCallParams,
   DynamicToolCallResponse,
@@ -143,16 +144,24 @@ export type ChatBackendDeps = {
     env?: NodeJS.ProcessEnv;
     loggerScope: string;
   }) => ChatBackend;
-  /** ACP backend factory. Defaults to constructing an `AcpAgentClient`
-   *  over an `AcpStdioJsonRpcTransport` spawned from the discovered agent,
-   *  wired to the MCP tool bridge. */
+  /** ACP backend factory. Defaults to acquiring the SHARED pooled
+   *  `AcpAgentClient` for the agent and building this surface's per-thread MCP
+   *  tool bridge. Returns the client plus the surface's `mcpServers` (attached
+   *  per-thread, since one client serves multiple surfaces). */
   makeAcpClient?: (input: {
     agent: DiscoveredAcpAgent;
     loggerScope: string;
     cwd: string;
     catalog: DynamicToolSpec[];
     dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
-  }) => ChatBackend | Promise<ChatBackend>;
+  }) => AcpBackendResult | Promise<AcpBackendResult>;
+};
+
+export type AcpBackendResult = {
+  client: ChatBackend;
+  /** This surface's MCP servers, forwarded per-thread (the shared client has
+   *  none at the client level). */
+  mcpServers: AcpMcpServerConfig[];
 };
 
 function defaultMakeCodexClient(input: {
@@ -176,83 +185,30 @@ async function defaultMakeAcpClient(input: {
   cwd: string;
   catalog: DynamicToolSpec[];
   dispatchToolCall: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
-}): Promise<ChatBackend> {
+}): Promise<AcpBackendResult> {
   const logger = toAgentKitLogger(input.loggerScope);
-  // Resolve the kit strategy that carries the agent's normalization quirks +
-  // display name. Prefer the neutral backendId match (`acp:<id>`), then the
-  // bare strategy id. Discovery only ever returns built-in strategies, so one
-  // of these resolves; we assert rather than silently mis-quirk.
-  const strategy =
-    strategyByBackendId(input.agent.backendId) ?? strategyById(input.agent.strategyId);
-  if (strategy === undefined) {
-    throw new Error(
-      `no ACP strategy for discovered agent ${input.agent.backendId}`
-    );
-  }
-  // The transport connects lazily on the first request/notify, so we don't
-  // spawn the agent here — the first thread/start drives the connect.
-  const transport = new AcpStdioJsonRpcTransport({
-    command: input.agent.command,
-    args: input.agent.args,
-    ...(Object.keys(input.agent.env).length > 0 ? { env: input.agent.env } : {}),
-    logger
-  });
-  // Wire the MCP tool bridge: ACP has no Codex-style dynamic-tool seam, so the
-  // agent reaches PwrSnap tools by spawning our MCP server (see
-  // buildPwrSnapMcpServer). Best-effort — if it can't be set up, chat still
-  // works, just without tools.
+  // Build THIS surface's MCP tool bridge (its own socket token → its own tools).
+  // Best-effort — if it can't be set up, chat still works, just without tools.
   let mcpServers: AcpMcpServerConfig[] = [];
-  let unregisterMcp: (() => void) | undefined;
   try {
     const mcp = await buildPwrSnapMcpServer({
       catalog: input.catalog,
       dispatchToolCall: input.dispatchToolCall
     });
-    if (mcp !== null) {
-      mcpServers = [mcp.config];
-      unregisterMcp = mcp.unregister;
-    }
+    // The MCP server config rides per-thread via the controller's
+    // `threadMcpServers`, so each surface's threads spawn its tools on the
+    // SHARED process. (The token's unregister is dropped: surfaces are
+    // app-lifetime, and the RPC server is stopped wholesale at app quit.)
+    if (mcp !== null) mcpServers = [mcp.config];
   } catch (cause) {
     logger.warn?.("acp chat: MCP tool bridge setup failed; tools disabled", {
       message: cause instanceof Error ? cause.message : String(cause)
     });
   }
-  const client = new AcpAgentClient({
-    transport,
-    strategy,
-    clientName: PWRSNAP_CLIENT_NAME,
-    clientTitle: PWRSNAP_CLIENT_TITLE,
-    ...(mcpServers.length > 0 ? { mcpServers } : {}),
-    // Our MCP server exposes only PwrSnap's own allowlisted tools, already
-    // gated at the command bus (principal:"mcp"). The user opted into AI chat
-    // with tools, so prompting per call is pure friction — auto-approve our
-    // tools. The agent's OWN tools (shell/file/web) still route to the host.
-    autoApproveConfiguredMcpTools: true,
-    // Defense-in-depth: pin the constructor's DEFAULT cwd to a small scratch
-    // dir. ACP agents (Gemini especially) scan their `cwd` for workspace
-    // context on every `session/new` — measured 18.8s + 13.5k input tokens at
-    // the PwrSnap repo root vs 1.4s + ~10.6k in an empty dir. The chat
-    // controller already passes a small per-thread cwd via `createThread`, so
-    // this default is only a fallback (e.g. a future `startThread` that omits
-    // cwd) — but it guarantees we never inherit `process.cwd()` (the app
-    // bundle / repo root). The kit mkdirs the dir for us.
-    cwd: input.cwd,
-    logger
-  });
-  // Tie the MCP token's lifetime to the client: revoke it on close so a
-  // rebuilt/closed backend doesn't leave a live token registered. Idempotent.
-  if (unregisterMcp !== undefined) {
-    const closeWithUnregister = client.close.bind(client);
-    let revoked = false;
-    client.close = async (): Promise<void> => {
-      if (!revoked) {
-        revoked = true;
-        unregisterMcp();
-      }
-      await closeWithUnregister();
-    };
-  }
-  return client;
+  // Acquire the SHARED, warmed client for this agent (one process per agent,
+  // reused across surfaces + warmed at startup) instead of spawning a new one.
+  const client = await acquireAcpAgentClient(input.agent, input.cwd);
+  return { client, mcpServers };
 }
 
 /** Resolve the surface's `AgentBackend` from its configured provider.
@@ -260,17 +216,28 @@ async function defaultMakeAcpClient(input: {
  *  discovered ACP agent, falling back to Codex with a warning when that agent
  *  isn't installed (so the surface never crashes on a stale/uninstalled
  *  selection). */
+type ResolvedChatBackend = {
+  client: ChatBackend;
+  /** Per-thread MCP servers (ACP shared client); absent for Codex. */
+  threadMcpServers?: AcpMcpServerConfig[];
+  /** True when `client` is a shared (pooled) ACP process — the controller skips
+   *  single-handler registration to avoid clobbering a sibling surface. */
+  shared: boolean;
+};
+
 async function resolveChatBackend(
   config: ChatSurfaceConfig,
   deps: ChatBackendDeps
-): Promise<ChatBackend> {
+): Promise<ResolvedChatBackend> {
   const makeCodex = deps.makeCodexClient ?? defaultMakeCodexClient;
-  const codex = (): ChatBackend =>
-    makeCodex({
+  const codex = (): ResolvedChatBackend => ({
+    client: makeCodex({
       command: config.command,
       ...(config.env !== undefined ? { env: config.env } : {}),
       loggerScope: config.loggerScope
-    });
+    }),
+    shared: false
+  });
 
   const provider = config.provider;
   if (provider === undefined || provider === "" || provider === "codex") {
@@ -329,13 +296,18 @@ async function resolveChatBackend(
   // (the cause of the multi-second chat stall). One shared dir is fine — chat
   // tools reach PwrSnap over the bridge, not the agent's filesystem cwd.
   const acpCwd = join(config.chatsDir, ".acp-chat");
-  return makeAcp({
+  const result = await makeAcp({
     agent,
     loggerScope: config.loggerScope,
     cwd: acpCwd,
     catalog: config.catalog,
     dispatchToolCall: config.dispatchToolCall
   });
+  return {
+    client: result.client,
+    ...(result.mcpServers.length > 0 ? { threadMcpServers: result.mcpServers } : {}),
+    shared: true
+  };
 }
 
 export async function buildChatSurface(
@@ -344,7 +316,8 @@ export async function buildChatSurface(
 ): Promise<ChatSurface> {
   const store = new ChatThreadStore({ chatsDir: config.chatsDir });
   const adapter = new ThreadStoreAdapter({ store, usageSurface: config.usageSurface });
-  const client: AgentBackend = await resolveChatBackend(config, deps);
+  const resolved = await resolveChatBackend(config, deps);
+  const client: AgentBackend = resolved.client;
 
   // The kit controller swallows `thread_settings` into a private map and only
   // forwards `model` on recordUsage. Tee the backend's settings events into
@@ -384,6 +357,13 @@ export async function buildChatSurface(
     serviceName: PWRSNAP_SERVICE_NAME,
     threadConfig: config.threadConfig,
     threadEnvironments: config.threadEnvironments,
+    // ACP: this surface's MCP tools ride per-thread on the SHARED agent process,
+    // and the controller skips single-handler registration so it doesn't clobber
+    // a sibling surface sharing the same client. (Both undefined for Codex.)
+    ...(resolved.threadMcpServers !== undefined
+      ? { threadMcpServers: resolved.threadMcpServers }
+      : {}),
+    ...(resolved.shared ? { backendClientShared: true } : {}),
     // Per-surface defaults from Settings → AI. `effort` defaults to
     // "medium" (the kit's own default) when the surface has no pinned
     // reasoning; `model` is only forwarded when set so an unset surface

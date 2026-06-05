@@ -91,6 +91,11 @@ function stubBackend(): ChatBackend {
   } as unknown as ChatBackend;
 }
 
+/** The ACP factory now returns the client + its per-thread mcpServers. */
+function stubAcpResult(): { client: ChatBackend; mcpServers: never[] } {
+  return { client: stubBackend(), mcpServers: [] };
+}
+
 function discoveredGeminiGroup(
   instances: DiscoveredAcpAgentGroup["instances"] = [
     { command: "/usr/local/bin/gemini", version: "0.4.1", source: "path" }
@@ -121,7 +126,7 @@ function settingsWithAcpPref(
 describe("buildChatSurface — backend selection", () => {
   test('provider "codex" builds the Codex backend (no ACP discovery)', async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
-    const makeAcpClient = vi.fn(() => stubBackend());
+    const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
     const deps: ChatBackendDeps = {
       makeCodexClient,
@@ -147,7 +152,7 @@ describe("buildChatSurface — backend selection", () => {
     const group = discoveredGeminiGroup();
     const makeCodexClient = vi.fn(() => stubBackend());
     const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
-      () => stubBackend()
+      () => stubAcpResult()
     );
     const discoverAcpAgentInstances = vi.fn(async () => [group]);
     const deps: ChatBackendDeps = {
@@ -177,7 +182,7 @@ describe("buildChatSurface — backend selection", () => {
       { command: "/opt/homebrew/bin/gemini", version: "0.3.0", source: "path" }
     ]);
     const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
-      () => stubBackend()
+      () => stubAcpResult()
     );
     const discoverAcpAgentInstances = vi.fn(async () => [group]);
     const deps: ChatBackendDeps = { makeAcpClient, discoverAcpAgentInstances };
@@ -202,7 +207,7 @@ describe("buildChatSurface — backend selection", () => {
       { command: "/custom/gemini", version: "9.9.9", source: "override" }
     ]);
     const makeAcpClient: NonNullable<ChatBackendDeps["makeAcpClient"]> = vi.fn(
-      () => stubBackend()
+      () => stubAcpResult()
     );
     const discoverAcpAgentInstances = vi.fn(async () => [group]);
     const deps: ChatBackendDeps = { makeAcpClient, discoverAcpAgentInstances };
@@ -225,7 +230,7 @@ describe("buildChatSurface — backend selection", () => {
 
   test("falls back to Codex when the ACP agent is not installed", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
-    const makeAcpClient = vi.fn(() => stubBackend());
+    const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => [] as DiscoveredAcpAgentGroup[]);
     const deps: ChatBackendDeps = {
       makeCodexClient,
@@ -242,7 +247,7 @@ describe("buildChatSurface — backend selection", () => {
 
   test("falls back to Codex when ACP discovery throws", async () => {
     const makeCodexClient = vi.fn(() => stubBackend());
-    const makeAcpClient = vi.fn(() => stubBackend());
+    const makeAcpClient = vi.fn(() => stubAcpResult());
     const discoverAcpAgentInstances = vi.fn(async () => {
       throw new Error("probe blew up");
     });

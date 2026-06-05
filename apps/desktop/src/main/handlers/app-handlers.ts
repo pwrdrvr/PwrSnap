@@ -97,9 +97,12 @@ export function registerAppHandlers(): void {
         message: `unknown app document: ${String(kind)}`
       });
     }
-    const options: { sourceWindowId?: number | undefined } = {};
+    const options: NonNullable<Parameters<typeof showAppDocumentWindow>[1]> = {};
     if (ctx.sourceWindowId !== undefined) {
       options.sourceWindowId = ctx.sourceWindowId;
+    }
+    if (ctx.sourceBounds !== undefined) {
+      options.sourceBounds = ctx.sourceBounds;
     }
     showAppDocumentWindow(kind, options);
     return ok(undefined);

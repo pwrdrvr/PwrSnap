@@ -148,6 +148,27 @@ describe("settings window placement", () => {
     });
   });
 
+  test("centers a new Settings window on explicit source bounds", async () => {
+    const sourceBounds = { x: 3840, y: 0, width: 24, height: 24 };
+    electronMock.getDisplayMatching.mockReturnValue({
+      workArea: { x: 3840, y: 0, width: 1920, height: 1080 }
+    });
+
+    const { createSettingsWindow } = await import("../window");
+    createSettingsWindow(undefined, { sourceBounds });
+
+    expect(electronMock.fromId).not.toHaveBeenCalled();
+    expect(electronMock.getDisplayMatching).toHaveBeenCalledWith(sourceBounds);
+    expect(electronMock.constructedOptions[0]).toMatchObject({
+      x: 4280,
+      y: 180,
+      width: 1040,
+      height: 720,
+      show: false,
+      title: "PwrSnap Settings"
+    });
+  });
+
   test("centers a new Sizzle window on the source window display", async () => {
     const sourceWindow = makeWindowSpy({
       x: 2200,

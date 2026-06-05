@@ -263,7 +263,9 @@ describe("sizzle:open — source display placement", () => {
     const handler = await loadHandler("sizzle:open");
     await handler({}, commandCtx(7));
 
-    expect(mocks.positionSizzleWindowForSource).toHaveBeenCalledWith(fake, 7);
+    expect(mocks.positionSizzleWindowForSource).toHaveBeenCalledWith(fake, {
+      sourceWindowId: 7
+    });
     expect(mocks.createSizzleWindow).not.toHaveBeenCalled();
     expect(fake.show).toHaveBeenCalledTimes(1);
     expect(fake.focus).toHaveBeenCalledTimes(1);

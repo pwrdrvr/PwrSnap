@@ -24,11 +24,20 @@ const log = getMainLogger("pwrsnap:command-bus");
 
 export type CommandPrincipal = "ipc" | "rpc" | "mcp" | "seeder";
 
+export type CommandSourceBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type CommandContext = {
   signal: AbortSignal;
   principal: CommandPrincipal;
   /** BrowserWindow id for renderer-originated commands, when known. */
   sourceWindowId?: number;
+  /** Screen-space bounds for non-window UI affordances, such as the tray icon. */
+  sourceBounds?: CommandSourceBounds;
 };
 
 export type CommandHandler<C extends CommandName> = (
@@ -85,6 +94,7 @@ class CommandBus {
       principal: CommandPrincipal;
       cancellationKey?: string | undefined;
       sourceWindowId?: number | undefined;
+      sourceBounds?: CommandSourceBounds | undefined;
     }
   ): Promise<Result<Res<C>, PwrSnapError>> {
     const handler = this.handlers.get(name);
@@ -113,6 +123,9 @@ class CommandBus {
       };
       if (options.sourceWindowId !== undefined) {
         ctx.sourceWindowId = options.sourceWindowId;
+      }
+      if (options.sourceBounds !== undefined) {
+        ctx.sourceBounds = options.sourceBounds;
       }
       const result = (await handler(req, ctx)) as Result<Res<C>, PwrSnapError>;
       return result;

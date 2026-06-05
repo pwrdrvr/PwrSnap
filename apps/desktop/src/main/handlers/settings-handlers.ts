@@ -134,9 +134,16 @@ export function registerSettingsHandlers(): void {
     if (!validated.ok) return err(validated.error);
     const { page } = validated.value;
     const existing = findSettingsWindow();
+    const placementSource: NonNullable<Parameters<typeof createSettingsWindow>[1]> = {};
+    if (ctx.sourceWindowId !== undefined) {
+      placementSource.sourceWindowId = ctx.sourceWindowId;
+    }
+    if (ctx.sourceBounds !== undefined) {
+      placementSource.sourceBounds = ctx.sourceBounds;
+    }
     if (existing !== null) {
       if (existing.isMinimized()) existing.restore();
-      positionSettingsWindowForSource(existing, ctx.sourceWindowId);
+      positionSettingsWindowForSource(existing, placementSource);
       if (!existing.isVisible()) existing.show();
       existing.focus();
       if (page !== undefined) {
@@ -151,11 +158,7 @@ export function registerSettingsHandlers(): void {
       return ok(undefined);
     }
     const extraHash = page !== undefined ? `page=${page}` : undefined;
-    const createOptions: { sourceWindowId?: number | undefined } = {};
-    if (ctx.sourceWindowId !== undefined) {
-      createOptions.sourceWindowId = ctx.sourceWindowId;
-    }
-    createSettingsWindow(extraHash, createOptions);
+    createSettingsWindow(extraHash, placementSource);
     return ok(undefined);
   });
 

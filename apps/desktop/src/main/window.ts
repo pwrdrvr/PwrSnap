@@ -14,6 +14,11 @@ const SIZZLE_WINDOW_HEIGHT = 820;
 const APP_DOCUMENT_WINDOW_WIDTH = 920;
 const APP_DOCUMENT_WINDOW_HEIGHT = 760;
 
+type PlacementSource = {
+  sourceWindowId?: number | undefined;
+  sourceBounds?: Rectangle | undefined;
+};
+
 /**
  * Module-level reference to the (singleton) Library window.
  *
@@ -131,22 +136,25 @@ function centeredWindowBoundsOnDisplay(
   };
 }
 
-function sourceDisplayForWindow(sourceWindowId?: number): Electron.Display {
-  const source =
-    sourceWindowId !== undefined
-      ? BrowserWindow.fromId(sourceWindowId)
+function sourceDisplayForWindow(source: PlacementSource = {}): Electron.Display {
+  if (source.sourceBounds !== undefined) {
+    return screen.getDisplayMatching(source.sourceBounds);
+  }
+  const sourceWindow =
+    source.sourceWindowId !== undefined
+      ? BrowserWindow.fromId(source.sourceWindowId)
       : BrowserWindow.getFocusedWindow() ?? libraryWindow;
-  if (source !== null && source !== undefined && !source.isDestroyed()) {
-    return screen.getDisplayMatching(source.getBounds());
+  if (sourceWindow !== null && sourceWindow !== undefined && !sourceWindow.isDestroyed()) {
+    return screen.getDisplayMatching(sourceWindow.getBounds());
   }
   return screen.getPrimaryDisplay();
 }
 
 export function positionSettingsWindowForSource(
   window: BrowserWindow,
-  sourceWindowId?: number
+  source: PlacementSource = {}
 ): void {
-  const display = sourceDisplayForWindow(sourceWindowId);
+  const display = sourceDisplayForWindow(source);
   const bounds = window.getBounds();
   const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
   window.setPosition(position.x, position.y, false);
@@ -154,9 +162,9 @@ export function positionSettingsWindowForSource(
 
 export function positionSizzleWindowForSource(
   window: BrowserWindow,
-  sourceWindowId?: number
+  source: PlacementSource = {}
 ): void {
-  const display = sourceDisplayForWindow(sourceWindowId);
+  const display = sourceDisplayForWindow(source);
   const bounds = window.getBounds();
   const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
   window.setPosition(position.x, position.y, false);
@@ -164,9 +172,9 @@ export function positionSizzleWindowForSource(
 
 export function positionAppDocumentWindowForSource(
   window: BrowserWindow,
-  sourceWindowId?: number
+  source: PlacementSource = {}
 ): void {
-  const display = sourceDisplayForWindow(sourceWindowId);
+  const display = sourceDisplayForWindow(source);
   const bounds = window.getBounds();
   const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
   window.setPosition(position.x, position.y, false);
@@ -364,7 +372,7 @@ export function findSettingsWindow(): BrowserWindow | null {
  */
 export function createSettingsWindow(
   extraHash?: string,
-  options: { sourceWindowId?: number | undefined } = {}
+  options: PlacementSource = {}
 ): BrowserWindow {
   if (settingsWindow !== null && !settingsWindow.isDestroyed()) {
     return settingsWindow;
@@ -372,7 +380,7 @@ export function createSettingsWindow(
   const position = centeredWindowBoundsOnDisplay(
     SETTINGS_WINDOW_WIDTH,
     SETTINGS_WINDOW_HEIGHT,
-    sourceDisplayForWindow(options.sourceWindowId)
+    sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
     x: position.x,
@@ -416,7 +424,7 @@ export function findSizzleWindow(): BrowserWindow | null {
 
 export function createSizzleWindow(
   extraHash?: string,
-  options: { sourceWindowId?: number | undefined } = {}
+  options: PlacementSource = {}
 ): BrowserWindow {
   if (sizzleWindow !== null && !sizzleWindow.isDestroyed()) {
     return sizzleWindow;
@@ -424,7 +432,7 @@ export function createSizzleWindow(
   const position = centeredWindowBoundsOnDisplay(
     SIZZLE_WINDOW_WIDTH,
     SIZZLE_WINDOW_HEIGHT,
-    sourceDisplayForWindow(options.sourceWindowId)
+    sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
     x: position.x,
@@ -457,12 +465,12 @@ function appDocumentTitle(kind: AppDocumentKind): string {
 
 export function showAppDocumentWindow(
   kind: AppDocumentKind,
-  options: { sourceWindowId?: number | undefined } = {}
+  options: PlacementSource = {}
 ): BrowserWindow {
   const existing = appDocumentWindows.get(kind);
   if (existing !== undefined && !existing.isDestroyed()) {
     if (existing.isMinimized()) existing.restore();
-    positionAppDocumentWindowForSource(existing, options.sourceWindowId);
+    positionAppDocumentWindowForSource(existing, options);
     if (!existing.isVisible()) existing.show();
     existing.focus();
     return existing;
@@ -471,7 +479,7 @@ export function showAppDocumentWindow(
   const position = centeredWindowBoundsOnDisplay(
     APP_DOCUMENT_WINDOW_WIDTH,
     APP_DOCUMENT_WINDOW_HEIGHT,
-    sourceDisplayForWindow(options.sourceWindowId)
+    sourceDisplayForWindow(options)
   );
   const window = new BrowserWindow({
     x: position.x,

@@ -122,7 +122,7 @@ describe("settings:open", () => {
 
     expect(result.ok).toBe(true);
     expect(mocks.createSettingsWindow).not.toHaveBeenCalled();
-    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, undefined);
+    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, {});
     expect(fake.focus).toHaveBeenCalledTimes(1);
   });
 
@@ -132,8 +132,22 @@ describe("settings:open", () => {
 
     await bus.dispatch("settings:open", {}, { principal: "ipc", sourceWindowId: 7 });
 
-    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, 7);
+    expect(mocks.positionSettingsWindowForSource).toHaveBeenCalledWith(fake, {
+      sourceWindowId: 7
+    });
     expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("passes source bounds when creating from a non-window affordance", async () => {
+    mocks.findSettingsWindow.mockReturnValue(null);
+    mocks.createSettingsWindow.mockReturnValue(makeFakeWindow());
+    const sourceBounds = { x: 1800, y: 0, width: 24, height: 24 };
+
+    await bus.dispatch("settings:open", {}, { principal: "ipc", sourceBounds });
+
+    expect(mocks.createSettingsWindow).toHaveBeenCalledWith(undefined, {
+      sourceBounds
+    });
   });
 
   test("restores the existing window when minimized", async () => {

@@ -137,4 +137,35 @@ describe("settings window placement", () => {
       title: "PwrSnap Settings"
     });
   });
+
+  test("centers a new Sizzle window on the source window display", async () => {
+    const sourceWindow = makeWindowSpy({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    electronMock.fromId.mockReturnValue(sourceWindow);
+    electronMock.getDisplayMatching.mockReturnValue({
+      workArea: { x: 1920, y: 0, width: 1920, height: 1080 }
+    });
+
+    const { createSizzleWindow } = await import("../window");
+    createSizzleWindow(undefined, { sourceWindowId: 42 });
+
+    expect(electronMock.getDisplayMatching).toHaveBeenCalledWith({
+      x: 2200,
+      y: 100,
+      width: 900,
+      height: 700
+    });
+    expect(electronMock.constructedOptions[0]).toMatchObject({
+      x: 2240,
+      y: 130,
+      width: 1280,
+      height: 820,
+      show: false,
+      title: "PwrSnap Sizzle Reels"
+    });
+  });
 });

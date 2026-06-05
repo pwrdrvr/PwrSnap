@@ -16,9 +16,12 @@
 
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SizzleProject, SizzleScene } from "@pwrsnap/shared";
+import type { CommandContext } from "../../command-bus";
+
+type MockHandler = (req: unknown, ctx?: Partial<CommandContext>) => Promise<unknown>;
 
 const mocks = vi.hoisted(() => ({
-  handlers: new Map<string, (req: unknown) => Promise<unknown>>(),
+  handlers: new Map<string, MockHandler>(),
   store: {
     get: vi.fn<(id: string) => Promise<SizzleProject | null>>(),
     list: vi.fn<() => Promise<SizzleProject[]>>(),
@@ -35,6 +38,9 @@ const mocks = vi.hoisted(() => ({
   },
   cleanupProjectChats: vi.fn(),
   forkProjectChats: vi.fn(),
+  createSizzleWindow: vi.fn(),
+  findSizzleWindow: vi.fn(),
+  positionSizzleWindowForSource: vi.fn(),
   send: vi.fn(),
   getValue: vi.fn()
 }));
@@ -54,7 +60,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../../command-bus", () => ({
   bus: {
-    register: vi.fn((name: string, handler: (req: unknown) => Promise<unknown>) => {
+    register: vi.fn((name: string, handler: MockHandler) => {
       mocks.handlers.set(name, handler);
     })
   }
@@ -117,8 +123,9 @@ vi.mock("../../sizzle/audio-extract", () => ({
 }));
 
 vi.mock("../../window", () => ({
-  createSizzleWindow: vi.fn(),
-  findSizzleWindow: vi.fn()
+  createSizzleWindow: mocks.createSizzleWindow,
+  findSizzleWindow: mocks.findSizzleWindow,
+  positionSizzleWindowForSource: mocks.positionSizzleWindowForSource
 }));
 
 vi.mock("../../settings/desktop-secret-store", () => ({
@@ -188,6 +195,9 @@ beforeEach(() => {
   mocks.store.duplicate.mockReset();
   mocks.cleanupProjectChats.mockReset();
   mocks.forkProjectChats.mockReset();
+  mocks.createSizzleWindow.mockReset();
+  mocks.findSizzleWindow.mockReset();
+  mocks.positionSizzleWindowForSource.mockReset();
   mocks.send.mockReset();
   // Default: store.list returns whatever store.update returned, in
   // an array. Most tests just need "some projects exist" — they can
@@ -197,13 +207,68 @@ beforeEach(() => {
 
 async function loadHandler(
   command: string = "sizzle:toggleScene"
-): Promise<(req: unknown) => Promise<unknown>> {
+): Promise<MockHandler> {
   const { registerSizzleHandlers } = await import("../sizzle-handlers");
   registerSizzleHandlers();
   const handler = mocks.handlers.get(command);
   expect(handler).toBeDefined();
   return handler!;
 }
+
+function makeFakeWindow(): {
+  show: ReturnType<typeof vi.fn>;
+  focus: ReturnType<typeof vi.fn>;
+  restore: ReturnType<typeof vi.fn>;
+  isMinimized: ReturnType<typeof vi.fn>;
+  webContents: { send: ReturnType<typeof vi.fn> };
+} {
+  return {
+    show: vi.fn(),
+    focus: vi.fn(),
+    restore: vi.fn(),
+    isMinimized: vi.fn(() => false),
+    webContents: { send: vi.fn() }
+  };
+}
+
+function commandCtx(sourceWindowId?: number): Partial<CommandContext> {
+  return {
+    signal: new AbortController().signal,
+    principal: "ipc",
+    ...(sourceWindowId !== undefined ? { sourceWindowId } : {})
+  };
+}
+
+describe("sizzle:open — source display placement", () => {
+  test("passes source window id when creating a new Sizzle window", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSizzleWindow.mockReturnValue(null);
+    mocks.createSizzleWindow.mockReturnValue(fake);
+
+    const handler = await loadHandler("sizzle:open");
+    const result = await handler({}, commandCtx(42));
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.createSizzleWindow).toHaveBeenCalledWith(undefined, {
+      sourceWindowId: 42
+    });
+    expect(fake.show).toHaveBeenCalledTimes(1);
+    expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test("repositions an existing Sizzle window to the source display before focusing", async () => {
+    const fake = makeFakeWindow();
+    mocks.findSizzleWindow.mockReturnValue(fake);
+
+    const handler = await loadHandler("sizzle:open");
+    await handler({}, commandCtx(7));
+
+    expect(mocks.positionSizzleWindowForSource).toHaveBeenCalledWith(fake, 7);
+    expect(mocks.createSizzleWindow).not.toHaveBeenCalled();
+    expect(fake.show).toHaveBeenCalledTimes(1);
+    expect(fake.focus).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("sizzle:toggleScene — validation", () => {
   test("missing projectId → validation error", async () => {

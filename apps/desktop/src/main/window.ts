@@ -9,6 +9,8 @@ import { showWindowWhenReady } from "./window-show";
 const log = getMainLogger("pwrsnap:window");
 const SETTINGS_WINDOW_WIDTH = 1040;
 const SETTINGS_WINDOW_HEIGHT = 720;
+const SIZZLE_WINDOW_WIDTH = 1280;
+const SIZZLE_WINDOW_HEIGHT = 820;
 
 /**
  * Module-level reference to the (singleton) Library window.
@@ -127,7 +129,7 @@ function centeredWindowBoundsOnDisplay(
   };
 }
 
-function sourceDisplayForSettings(sourceWindowId?: number): Electron.Display {
+function sourceDisplayForWindow(sourceWindowId?: number): Electron.Display {
   const source =
     sourceWindowId !== undefined
       ? BrowserWindow.fromId(sourceWindowId)
@@ -142,7 +144,17 @@ export function positionSettingsWindowForSource(
   window: BrowserWindow,
   sourceWindowId?: number
 ): void {
-  const display = sourceDisplayForSettings(sourceWindowId);
+  const display = sourceDisplayForWindow(sourceWindowId);
+  const bounds = window.getBounds();
+  const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
+  window.setPosition(position.x, position.y, false);
+}
+
+export function positionSizzleWindowForSource(
+  window: BrowserWindow,
+  sourceWindowId?: number
+): void {
+  const display = sourceDisplayForWindow(sourceWindowId);
   const bounds = window.getBounds();
   const position = centeredWindowBoundsOnDisplay(bounds.width, bounds.height, display);
   window.setPosition(position.x, position.y, false);
@@ -348,7 +360,7 @@ export function createSettingsWindow(
   const position = centeredWindowBoundsOnDisplay(
     SETTINGS_WINDOW_WIDTH,
     SETTINGS_WINDOW_HEIGHT,
-    sourceDisplayForSettings(options.sourceWindowId)
+    sourceDisplayForWindow(options.sourceWindowId)
   );
   const window = new BrowserWindow({
     x: position.x,
@@ -390,13 +402,23 @@ export function findSizzleWindow(): BrowserWindow | null {
   return null;
 }
 
-export function createSizzleWindow(extraHash?: string): BrowserWindow {
+export function createSizzleWindow(
+  extraHash?: string,
+  options: { sourceWindowId?: number | undefined } = {}
+): BrowserWindow {
   if (sizzleWindow !== null && !sizzleWindow.isDestroyed()) {
     return sizzleWindow;
   }
+  const position = centeredWindowBoundsOnDisplay(
+    SIZZLE_WINDOW_WIDTH,
+    SIZZLE_WINDOW_HEIGHT,
+    sourceDisplayForWindow(options.sourceWindowId)
+  );
   const window = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    x: position.x,
+    y: position.y,
+    width: SIZZLE_WINDOW_WIDTH,
+    height: SIZZLE_WINDOW_HEIGHT,
     minWidth: 880,
     minHeight: 560,
     show: false,

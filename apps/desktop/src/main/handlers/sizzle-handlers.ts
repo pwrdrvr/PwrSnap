@@ -51,7 +51,11 @@ import {
   extractVideoAudio,
   synthesizeSilence
 } from "../sizzle/audio-extract";
-import { createSizzleWindow, findSizzleWindow } from "../window";
+import {
+  createSizzleWindow,
+  findSizzleWindow,
+  positionSizzleWindowForSource
+} from "../window";
 import {
   DesktopSecretStore,
   SecretUnavailableError
@@ -318,7 +322,7 @@ async function prepareSceneInput(args: {
 export function registerSizzleHandlers(): void {
   const store = getSizzleStore();
 
-  bus.register("sizzle:open", async (req) => {
+  bus.register("sizzle:open", async (req, ctx) => {
     const v = validateSizzleOpenRequest(req);
     if (!v.ok) return err(v.error);
     if (v.projectId !== undefined) {
@@ -339,6 +343,7 @@ export function registerSizzleHandlers(): void {
       // Window already loaded → navigate via a live event (the renderer
       // is subscribed). Mirrors settings:open.
       if (existing.isMinimized()) existing.restore();
+      positionSizzleWindowForSource(existing, ctx.sourceWindowId);
       existing.show();
       existing.focus();
       if (v.projectId !== undefined) {
@@ -348,8 +353,13 @@ export function registerSizzleHandlers(): void {
     }
     // New window → the target rides the URL hash so the renderer opens to
     // it on mount (no event race against the renderer's subscribe).
+    const createOptions: { sourceWindowId?: number | undefined } = {};
+    if (ctx.sourceWindowId !== undefined) {
+      createOptions.sourceWindowId = ctx.sourceWindowId;
+    }
     const window = createSizzleWindow(
-      v.projectId !== undefined ? `projectId=${encodeURIComponent(v.projectId)}` : undefined
+      v.projectId !== undefined ? `projectId=${encodeURIComponent(v.projectId)}` : undefined,
+      createOptions
     );
     window.show();
     window.focus();

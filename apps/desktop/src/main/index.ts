@@ -262,8 +262,12 @@ function installApplicationMenu(developerMode: boolean = lastKnownDeveloperMode)
         { type: "separator" },
         {
           label: "Sizzle Reels…",
-          click: () => {
-            void bus.dispatch("sizzle:open", {}, { principal: "ipc" });
+          click: (_item, sourceWindow) => {
+            const options: Parameters<typeof bus.dispatch>[2] = { principal: "ipc" };
+            if (sourceWindow !== undefined && sourceWindow !== null && !sourceWindow.isDestroyed()) {
+              options.sourceWindowId = sourceWindow.id;
+            }
+            void bus.dispatch("sizzle:open", {}, options);
           }
         }
       ]

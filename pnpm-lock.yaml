@@ -7,6 +7,8 @@ settings:
 overrides:
   '@types/node': 24.12.4
 
+pnpmfileChecksum: sha256-4pcY3+51RRJSec1Ld0OJIPli+j51l4qASm0Ts5d4Fuk=
+
 importers:
 
   .:

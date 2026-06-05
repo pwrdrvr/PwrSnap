@@ -42,6 +42,7 @@ import type {
 import { app } from "electron";
 import { join } from "node:path";
 import { bus } from "../command-bus";
+import { loadAcpModelCacheEntry, saveAcpModelCacheEntry } from "../ai/acp-model-cache";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
 import {
@@ -188,8 +189,18 @@ export function registerAcpHandlers(params?: {
     Result<AcpAgentModelList, PwrSnapError>
   > => {
     const agentId = req.agentId;
-    const cached = modelCache.get(agentId);
-    if (cached !== undefined) return ok({ agentId, models: cached });
+    if (req.refresh !== true) {
+      // In-memory cache first (warm this run), then the PERSISTED cache so the
+      // first Settings open after a restart shows the last-discovered list
+      // INSTANTLY instead of re-spawning the agent (~seconds).
+      const cached = modelCache.get(agentId);
+      if (cached !== undefined) return ok({ agentId, models: cached });
+      const persisted = loadAcpModelCacheEntry(agentId);
+      if (persisted !== undefined) {
+        modelCache.set(agentId, persisted.models);
+        return ok({ agentId, models: persisted.models });
+      }
+    }
     const inFlight = modelInFlight.get(agentId);
     if (inFlight !== undefined) return inFlight;
     const promise = listAcpModels(agentId);
@@ -269,6 +280,12 @@ export function registerAcpHandlers(params?: {
         ...(m.description !== undefined ? { description: m.description } : {})
       }));
       modelCache.set(agentId, options);
+      // Persist so the next Settings open (even after a restart) is instant.
+      saveAcpModelCacheEntry(agentId, {
+        models: options,
+        command: active.command,
+        discoveredAt: new Date().toISOString()
+      });
       return ok({ agentId, models: options });
     } catch (cause) {
       log.warn("acp:models: listing failed", {

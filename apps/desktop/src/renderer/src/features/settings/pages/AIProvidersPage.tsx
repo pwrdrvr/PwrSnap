@@ -160,13 +160,6 @@ export function AIProvidersPage(): ReactElement {
     };
   }, [refreshUsage]);
 
-  const onRefresh = async (): Promise<void> => {
-    setSnapshotLoading(true);
-    setCodexModelsLoading(true);
-    const [snap] = await Promise.all([refreshCodex(true), refreshCodexModels()]);
-    setSnapshot(snap);
-    setSnapshotLoading(false);
-  };
 
   // The chat-surface provider dropdown offers Codex + each ENABLED ACP agent
   // (value `acp:<id>`, labeled by its discovery display name). Built from the
@@ -185,9 +178,9 @@ export function AIProvidersPage(): ReactElement {
   // fetch only the agents a surface actually selects).
   const [acpModels, setAcpModels] = useState<Record<string, readonly AcpAgentModelOption[]>>({});
   const [acpModelsLoadingIds, setAcpModelsLoadingIds] = useState<readonly string[]>([]);
-  const fetchAcpModels = useCallback(async (agentId: string): Promise<void> => {
+  const fetchAcpModels = useCallback(async (agentId: string, refresh = false): Promise<void> => {
     setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
-    const result = await dispatch("acp:models", { agentId });
+    const result = await dispatch("acp:models", { agentId, refresh });
     // Record a list either way — `[]` on failure so the picker resolves to
     // "Default" instead of sticking on "Loading…".
     setAcpModels((prev) => ({ ...prev, [agentId]: result.ok ? result.value.models : [] }));
@@ -212,6 +205,22 @@ export function AIProvidersPage(): ReactElement {
       }
     }
   }, [acpAgentIdsKey, acpModels, acpModelsLoadingIds, fetchAcpModels]);
+
+  const onRefresh = async (): Promise<void> => {
+    setSnapshotLoading(true);
+    setCodexModelsLoading(true);
+    // Force-refresh the in-use ACP agents' model lists too (re-spawns them),
+    // alongside the Codex snapshot + models. Normal opens read the persisted
+    // ACP model cache (instant); Refresh is the explicit re-discover.
+    const acpInUse = acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : [];
+    const [snap] = await Promise.all([
+      refreshCodex(true),
+      refreshCodexModels(),
+      ...acpInUse.map((id) => fetchAcpModels(id, true))
+    ]);
+    setSnapshot(snap);
+    setSnapshotLoading(false);
+  };
   const acpModelsForProvider = (
     provider: string | undefined
   ): readonly AcpAgentModelOption[] | undefined => {

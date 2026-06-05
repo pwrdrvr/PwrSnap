@@ -2925,7 +2925,9 @@ export type Commands = {
    *  real models instead of Codex's. Empty list when the agent isn't
    *  installed or advertises none. */
   "acp:models": {
-    req: { agentId: string };
+    /** `refresh: true` bypasses the persisted/in-memory cache and re-spawns the
+     *  agent to re-read its models (e.g. after upgrading the agent binary). */
+    req: { agentId: string; refresh?: boolean };
     res: AcpAgentModelList;
   };
   "codex:usageSummary": {

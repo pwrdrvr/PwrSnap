@@ -318,6 +318,23 @@ describe("FloatOverHost", () => {
     (window.pwrsnapApi!.dispatch as ReturnType<typeof vi.fn>).mockImplementation(
       async (name: string) => {
         if (name === "settings:read") return { ok: true, value: geminiSettings };
+        if (name === "capture:presetMetrics") return { ok: true, value: { metrics: [] } };
+        if (name === "settings:refreshCodexDiscovery") {
+          return {
+            ok: true,
+            value: {
+              candidates: [{ path: "codex", source: "path", version: "1.0.0", available: true }],
+              resolvedPath: "codex",
+              auth: {
+                status: "authenticated",
+                testedAt: "2026-05-19T12:00:00.000Z",
+                durationMs: 12,
+                detail: "Logged in using ChatGPT"
+              },
+              refreshedAt: "2026-05-19T12:00:00.000Z"
+            }
+          };
+        }
         return { ok: true, value: undefined };
       }
     );

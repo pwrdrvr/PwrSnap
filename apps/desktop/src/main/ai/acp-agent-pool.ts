@@ -91,12 +91,13 @@ export async function closeAcpAgentPool(): Promise<void> {
   if (pool !== undefined) await pool.closeAll();
 }
 
-/** Strategy ids configured as the provider for ANY AI surface (enrichment /
- *  library / sizzle). An agent installed but not selected for anything (e.g.
- *  Kimi) is NOT included, so we don't spawn it. */
+/** Strategy ids configured as the provider for a surface that USES the pool —
+ *  the long-lived chat surfaces (library / sizzle). Enrichment runs as a
+ *  one-shot client (not pooled yet), so warming an enrichment-only agent would
+ *  spawn an unused process; it's excluded until enrichment shares the pool. An
+ *  agent installed but not selected for chat (e.g. Kimi) is never spawned. */
 function configuredAcpAgentIds(settings: Settings): string[] {
   const providers = [
-    settings.ai.defaults.enrichment.provider,
     settings.ai.defaults.libraryChat.provider,
     settings.ai.defaults.sizzleChat.provider
   ];

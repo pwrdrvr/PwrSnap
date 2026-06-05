@@ -670,6 +670,21 @@ function isAiTokenShape(value: string): boolean {
   return value.length > 0 && value.length <= 120 && /^[A-Za-z0-9._:/-]+$/.test(value);
 }
 
+/** Shape check for a per-surface `model` id. UNLIKE Codex tokens, an ACP
+ *  agent's model id is an OPAQUE, agent-advertised string we persist verbatim
+ *  and only feed back to its `session/set_model` — never a path/shell/Codex
+ *  token. Qwen alone advertises ids like `coder-model(qwen-oauth)` and
+ *  `qwen3.6-plus(openai)` (parentheses), so the Codex-narrow alphabet wrongly
+ *  rejects them and the picker snaps back to Default. Accept any printable,
+ *  reasonably-bounded string; reject only control characters and absurd
+ *  lengths. */
+function isAiModelTokenShape(value: string): boolean {
+  // Codex's alphabet plus the bracket family ACP agents use in their ids
+  // (Qwen: `coder-model(qwen-oauth)`). Still rejects whitespace and other
+  // junk — a model id with spaces is almost always a pasted LABEL, not an id.
+  return value.length > 0 && value.length <= 200 && /^[A-Za-z0-9._:/()[\]-]+$/.test(value);
+}
+
 /** Validate a surface's `provider` backend selector (every surface now —
  *  Library / Sizzle chat AND enrichment). Accepts "" / "codex" /
  *  "acp:<known-id>"; rejects unknown `acp:` ids and any other free-text token
@@ -723,11 +738,14 @@ function validateAiSurfaceDefault(surface: string, raw: unknown): PwrSnapError |
         `settings:write: ai.defaults.${surface}.${key} must be a string`
       );
     }
-    // Empty string clears the field (→ Codex default); always allowed.
-    if (v.length > 0 && !isAiTokenShape(v)) {
+    // Empty string clears the field (→ Codex / agent default); always allowed.
+    // The model id is an opaque, possibly-ACP token (e.g. Qwen's
+    // `qwen3.6-plus(openai)`), so use the tolerant model-token shape — NOT the
+    // Codex-narrow alphabet, which would reject valid agent model ids.
+    if (v.length > 0 && !isAiModelTokenShape(v)) {
       return validationError(
         `invalid_ai_defaults_${surface}_${key}`,
-        `settings:write: ai.defaults.${surface}.${key} is not a recognizable Codex ${key} (got ${JSON.stringify(v)})`
+        `settings:write: ai.defaults.${surface}.${key} must be a non-empty model id under 200 chars with no control characters (got ${JSON.stringify(v)})`
       );
     }
   }

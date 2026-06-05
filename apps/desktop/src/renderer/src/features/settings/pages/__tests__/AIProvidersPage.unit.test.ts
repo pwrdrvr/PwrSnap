@@ -3,7 +3,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import type { AcpAgentDiscovery } from "@pwrsnap/shared";
 import {
+  AiSurfaceDefaultControl,
+  type AiSurfaceDefaultControlProps,
+  buildAcpProviderOptions,
   formatCostMicros,
   formatLastSetAt,
   formatNextTokenAt,
@@ -74,6 +78,64 @@ function typeIntoInput(input: HTMLInputElement, value: string): void {
     input.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
   });
 }
+
+async function renderSurfaceControl(
+  props: AiSurfaceDefaultControlProps
+): Promise<HTMLDivElement> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(createElement(AiSurfaceDefaultControl, props));
+  });
+  return container;
+}
+
+describe("AiSurfaceDefaultControl — job routing", () => {
+  test("resets the model to Default when the provider changes (no stale cross-provider model)", async () => {
+    const onChange = vi.fn();
+    const el = await renderSurfaceControl({
+      surface: "libraryChat",
+      name: "Library chat",
+      sub: "",
+      value: { provider: "acp:gemini", model: "gemini-3-pro-preview" },
+      models: [],
+      modelsLoading: false,
+      acpProviderOptions: [{ value: "acp:gemini", label: "Gemini CLI" }],
+      acpModelOptions: [{ id: "gemini-3-pro-preview", label: "gemini-3-pro-preview" }],
+      acpModelsLoading: false,
+      onChange
+    });
+    const providerSelect = el.querySelector<HTMLSelectElement>(
+      '[aria-label="Library chat provider"]'
+    );
+    expect(providerSelect).not.toBeNull();
+    await act(async () => {
+      providerSelect!.value = ""; // switch to Codex
+      providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // The model must be cleared alongside the provider — a Gemini model can't
+    // carry over to Codex.
+    expect(onChange).toHaveBeenCalledWith({ provider: "", model: "" });
+  });
+
+});
+
+describe("buildAcpProviderOptions", () => {
+  test("labels an enabled agent by its friendly name BEFORE discovery resolves (no raw-id flash)", () => {
+    // discovery=null → the label must come from the built-in name, not "gemini".
+    const opts = buildAcpProviderOptions(["gemini"], null);
+    expect(opts).toEqual([{ value: "acp:gemini", label: "Gemini CLI" }]);
+  });
+
+  test("prefers discovery's display name once it resolves", () => {
+    const discovery = {
+      agents: [{ id: "gemini", displayName: "Gemini CLI (v0.4)" }]
+    } as unknown as AcpAgentDiscovery;
+    const opts = buildAcpProviderOptions(["gemini"], discovery);
+    expect(opts[0]?.label).toBe("Gemini CLI (v0.4)");
+  });
+});
 
 describe("formatLastSetAt", () => {
   test("returns em-dash for null / empty input", () => {

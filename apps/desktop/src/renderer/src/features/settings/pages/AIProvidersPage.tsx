@@ -25,6 +25,7 @@ import type {
 } from "@pwrsnap/shared";
 import {
   AI_REASONING_EFFORTS,
+  builtInAcpAgentDisplayName,
   CODEX_CAPTION_MODELS,
   DEFAULT_CODEX_CAPTION_MODEL,
   EVENT_CHANNELS,
@@ -168,10 +169,7 @@ export function AIProvidersPage(): ReactElement {
   // agent enabled before discovery resolves is shown by its id until names
   // arrive.
   const enabledAgentIds = settings?.ai.acp.enabledAgentIds ?? [];
-  const acpChatProviderOptions: AcpChatProviderOption[] = enabledAgentIds.map((id) => {
-    const entry = acpDiscovery?.agents.find((a) => a.id === id);
-    return { value: `acp:${id}`, label: entry?.displayName ?? id };
-  });
+  const acpChatProviderOptions = buildAcpProviderOptions(enabledAgentIds, acpDiscovery);
 
   // ACP model lists, fetched lazily per agent (listing spawns the agent in ACP
   // mode — seconds — so the main process memoizes; here we cache per agent and
@@ -1613,9 +1611,23 @@ function JobRoutingRow({
 /** One option in a chat surface's provider dropdown — an enabled ACP agent.
  *  `value` is the persisted `acp:<id>` selector; `label` is the agent's
  *  discovery display name (falls back to its id before names resolve). */
-type AcpChatProviderOption = { value: string; label: string };
+export type AcpChatProviderOption = { value: string; label: string };
 
-type AiSurfaceDefaultControlProps = {
+/** Build the chat-surface provider dropdown options from the enabled agent ids.
+ *  The label comes from discovery's display name once it resolves, else the
+ *  built-in friendly name — NEVER the raw id, so the dropdown never flashes
+ *  "gemini" before becoming "Gemini CLI" while discovery loads. */
+export function buildAcpProviderOptions(
+  enabledAgentIds: readonly string[],
+  discovery: AcpAgentDiscovery | null
+): AcpChatProviderOption[] {
+  return enabledAgentIds.map((id) => {
+    const entry = discovery?.agents.find((a) => a.id === id);
+    return { value: `acp:${id}`, label: entry?.displayName ?? builtInAcpAgentDisplayName(id) };
+  });
+}
+
+export type AiSurfaceDefaultControlProps = {
   surface: AiSurfaceId;
   /** Job name shown as the row heading (e.g. "Library chat"). */
   name: string;
@@ -1692,7 +1704,7 @@ function surfaceModelOptions(
   return base;
 }
 
-function AiSurfaceDefaultControl({
+export function AiSurfaceDefaultControl({
   surface,
   name,
   sub,
@@ -1766,7 +1778,11 @@ function AiSurfaceDefaultControl({
             aria-label={`${name} provider`}
             onChange={(e) => {
               // "" is the Codex default (the merge drops the key on "").
-              onChange({ provider: e.target.value });
+              // RESET the model on a backend switch — a model id is meaningful
+              // only for the backend that advertised it (a Gemini model can't
+              // run on Codex), so fall back to Default rather than carrying a
+              // stale value across providers.
+              onChange({ provider: e.target.value, model: "" });
             }}
           >
             <option value="">Codex</option>

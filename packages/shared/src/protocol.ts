@@ -1251,6 +1251,23 @@ export function isBuiltInAcpAgentId(value: unknown): value is BuiltInAcpAgentId 
   );
 }
 
+/** Friendly display names for the built-in ACP agents — kept in sync with the
+ *  kit strategies' `displayName`. Lets the UI label a configured agent
+ *  IMMEDIATELY (e.g. "Gemini CLI") from settings, instead of flashing the raw
+ *  id ("gemini") until async discovery resolves the same name. */
+const BUILT_IN_ACP_AGENT_DISPLAY_NAMES: Record<BuiltInAcpAgentId, string> = {
+  gemini: "Gemini CLI",
+  grok: "Grok",
+  kimi: "Kimi Code CLI",
+  qwen: "Qwen Code"
+};
+
+/** The friendly name for a built-in ACP agent id, or the id itself for an
+ *  unknown id (so a future/custom agent still shows something). */
+export function builtInAcpAgentDisplayName(id: string): string {
+  return isBuiltInAcpAgentId(id) ? BUILT_IN_ACP_AGENT_DISPLAY_NAMES[id] : id;
+}
+
 /** Where a discovered instance's executable path was located. */
 export type AcpAgentInstanceSource = "override" | "path" | "fallback";
 

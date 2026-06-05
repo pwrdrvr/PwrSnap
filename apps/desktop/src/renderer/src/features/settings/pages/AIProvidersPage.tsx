@@ -378,7 +378,7 @@ export function AIProvidersPage(): ReactElement {
       >
         <Row
           label="PwrSnap usage"
-          sub="Observed Codex runs from this app. Cost is an OpenAI public list-price equivalent, not an account invoice."
+          sub="Observed AI runs from this app (Codex and local ACP agents). Cost is a public list-price equivalent, not an account invoice."
           tag="30 days"
         >
           <AiUsagePanel
@@ -646,7 +646,7 @@ function AiUsagePanel({ summary, runs, loading }: AiUsagePanelProps): ReactEleme
       {summary.usageUnavailableCount > 0 || summary.priceUnavailableCount > 0 ? (
         <div className="pss__usage-note">
           {summary.usageUnavailableCount > 0
-            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing Codex usage. `
+            ? `${summary.usageUnavailableCount} run${summary.usageUnavailableCount === 1 ? "" : "s"} missing token usage. `
             : ""}
           {summary.priceUnavailableCount > 0
             ? `${summary.priceUnavailableCount} run${summary.priceUnavailableCount === 1 ? "" : "s"} missing price data.`

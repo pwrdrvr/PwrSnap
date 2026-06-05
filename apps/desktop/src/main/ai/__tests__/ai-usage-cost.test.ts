@@ -84,6 +84,34 @@ describe("estimateAiUsageCost", () => {
     }
   });
 
+  test("prices a Gemini ACP enrichment run (provider 'gemini')", () => {
+    // Mirrors a live gemini-3-flash-preview enrichment turn.
+    const estimate = estimateAiUsageCost({
+      model: "gemini-3-flash-preview",
+      provider: "gemini",
+      serviceTier: null,
+      tokens: {
+        totalTokens: 10_645,
+        inputTokens: 10_642,
+        cachedInputTokens: 0,
+        outputTokens: 3,
+        reasoningOutputTokens: 0,
+        modelContextWindow: null
+      }
+    });
+
+    expect(estimate.status).toBe("available");
+    if (estimate.status === "available") {
+      expect(estimate.pricingSourceUrl).toBe(
+        "https://ai.google.dev/gemini-api/docs/pricing"
+      );
+      // input 10,642 @ $0.30/M, output 3 @ $2.50/M.
+      expect(estimate.uncachedInputCostMicros).toBe(3_193);
+      expect(estimate.outputCostMicros).toBe(8);
+      expect(estimate.totalCostMicros).toBe(3_201);
+    }
+  });
+
   test("reports unavailable when usage or model pricing is missing", () => {
     expect(
       estimateAiUsageCost({

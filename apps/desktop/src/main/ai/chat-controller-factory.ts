@@ -223,6 +223,11 @@ async function defaultMakeAcpClient(input: {
     clientName: PWRSNAP_CLIENT_NAME,
     clientTitle: PWRSNAP_CLIENT_TITLE,
     ...(mcpServers.length > 0 ? { mcpServers } : {}),
+    // Our MCP server exposes only PwrSnap's own allowlisted tools, already
+    // gated at the command bus (principal:"mcp"). The user opted into AI chat
+    // with tools, so prompting per call is pure friction — auto-approve our
+    // tools. The agent's OWN tools (shell/file/web) still route to the host.
+    autoApproveConfiguredMcpTools: true,
     // Defense-in-depth: pin the constructor's DEFAULT cwd to a small scratch
     // dir. ACP agents (Gemini especially) scan their `cwd` for workspace
     // context on every `session/new` — measured 18.8s + 13.5k input tokens at

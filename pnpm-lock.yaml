@@ -35,8 +35,8 @@ importers:
         specifier: ^5.2.5
         version: 5.2.5
       '@pwrdrvr/agent-acp':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@pwrdrvr/agent-chat-react':
         specifier: ^0.1.2
         version: 0.1.2(react@19.2.6)
@@ -877,8 +877,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@0.1.5':
-    resolution: {integrity: sha512-ut2d13w2Ch0jlKk+YPRkth1+Irot4B3r0FBvsA8dCtsFFov+B6IuckcwRFI60FvVCx9PH4B4RoSgP9kZP0hQ1Q==}
+  '@pwrdrvr/agent-acp@0.1.6':
+    resolution: {integrity: sha512-vr6nXztHgvOxwQYtLoLw/IaUXLpsP3CLhG8Hmb2yc5TDd60zVBukArX/8/i5ztf5qWsSlm/ucia503idvk4O1Q==}
 
   '@pwrdrvr/agent-chat-react@0.1.2':
     resolution: {integrity: sha512-IDEYEDg7VQiYzxTvRK22GeHFuo0cB2LcrGwQ4v86A5ThBFB7I/sVZfacWUwjNJz7H/87ADCl7jvVD/8DLs0NAA==}
@@ -3429,7 +3429,7 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@pwrdrvr/agent-acp@0.1.5':
+  '@pwrdrvr/agent-acp@0.1.6':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
       '@pwrdrvr/agent-transport': 0.1.4

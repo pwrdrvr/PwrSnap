@@ -1300,6 +1300,24 @@ export type AcpAgentDiscovery = {
   agents: AcpAgentDiscoveryEntry[];
 };
 
+/** One model an ACP agent advertises (from its `session/new` runtime
+ *  capabilities). `id` is the value persisted as a surface's `model`. */
+export type AcpAgentModelOption = {
+  id: string;
+  label: string;
+  description?: string;
+};
+
+/** Result of `acp:models` — the model list a specific ACP agent advertises,
+ *  so the Settings model picker can show the agent's real models (Gemini's
+ *  `gemini-2.5-pro`, …) instead of Codex's. Empty `models` = the agent
+ *  advertises none (or isn't installed). */
+export type AcpAgentModelList = {
+  /** The agent id the list is for (echoed back). */
+  agentId: string;
+  models: AcpAgentModelOption[];
+};
+
 /** Per-user ACP-agent enablement. Additive sub-object of `Settings.ai`.
  *  `enabledAgentIds` is the set of built-in ACP agent ids the user has
  *  opted into; defaults to empty. Order is the user's toggle order; the
@@ -2900,6 +2918,15 @@ export type Commands = {
   "acp:discover": {
     req: Record<string, never>;
     res: AcpAgentDiscovery;
+  };
+  /** List the models a specific installed ACP agent advertises. Spawns the
+   *  agent in ACP mode, opens a throwaway session to read its runtime models,
+   *  and tears it down — so the Settings model picker can show the agent's
+   *  real models instead of Codex's. Empty list when the agent isn't
+   *  installed or advertises none. */
+  "acp:models": {
+    req: { agentId: string };
+    res: AcpAgentModelList;
   };
   "codex:usageSummary": {
     req: { window: AiUsageSummaryWindow };

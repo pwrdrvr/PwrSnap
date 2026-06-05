@@ -19,8 +19,11 @@
 // first found.
 
 import {
+  AcpOneShotClient,
+  AcpStdioJsonRpcTransport,
   BUILT_IN_ACP_STRATEGIES,
   discoverLocalAcpAgentInstances,
+  strategyById,
   type DiscoveredAcpAgentGroup,
   type LocalAcpDiscoveryOptions
 } from "@pwrdrvr/agent-acp";
@@ -29,14 +32,23 @@ import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
   AcpAgentInstance,
+  AcpAgentModelList,
+  AcpAgentModelOption,
   AcpAgentPreference,
   PwrSnapError,
   Result,
   Settings
 } from "@pwrsnap/shared";
+import { app } from "electron";
+import { join } from "node:path";
 import { bus } from "../command-bus";
 import { getMainLogger } from "../log";
 import { resolveActiveAcpInstance } from "../ai/acp-instance-resolver";
+import {
+  PWRSNAP_CLIENT_NAME,
+  PWRSNAP_CLIENT_TITLE,
+  toAgentKitLogger
+} from "../ai/agent-kit-bindings";
 
 const log = getMainLogger("pwrsnap:acp-handlers");
 
@@ -162,5 +174,99 @@ export function registerAcpHandlers(params?: {
       });
     }
     return ok(toDiscovery(groups, agents));
+  });
+
+  // Session cache: listing models spawns the agent + opens a session (seconds),
+  // so memoize per agent. Cleared on app restart; the renderer re-fetches when
+  // the user switches providers, hitting the cache after the first spawn.
+  const modelCache = new Map<string, AcpAgentModelOption[]>();
+
+  bus.register("acp:models", async (req): Promise<
+    Result<AcpAgentModelList, PwrSnapError>
+  > => {
+    const agentId = req.agentId;
+    const cached = modelCache.get(agentId);
+    if (cached !== undefined) return ok({ agentId, models: cached });
+
+    let settings: Settings;
+    try {
+      settings = await readSettings();
+    } catch (cause) {
+      return err({
+        kind: "settings",
+        code: "read_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+    const pref = settings.ai.acp.agents?.[agentId];
+    const override = pref?.overridePath?.trim();
+    const strategy = strategyById(agentId);
+    if (strategy === undefined) {
+      return err({ kind: "settings", code: "acp_unknown_agent", message: `Unknown ACP agent ${agentId}` });
+    }
+
+    let groups: DiscoveredAcpAgentGroup[];
+    try {
+      groups = await discover(override ? { overrides: { [agentId]: override } } : {});
+    } catch (cause) {
+      return err({
+        kind: "settings",
+        code: "acp_discovery_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    }
+    const group = groups.find((g) => g.strategyId === agentId);
+    if (group === undefined || group.instances.length === 0) {
+      // Not installed → empty list (the UI falls back to "Default").
+      return ok({ agentId, models: [] });
+    }
+    const active = resolveActiveAcpInstance(
+      group.instances.map((inst) => ({
+        command: inst.command,
+        source: inst.source,
+        ...(inst.version !== undefined ? { version: inst.version } : {})
+      })),
+      pref
+    );
+    const cwd = join(app.getPath("documents"), "PwrSnap", "Chats", ".acp-models");
+    const logger = toAgentKitLogger("pwrsnap:acp-models");
+    const client = new AcpOneShotClient({
+      transport: new AcpStdioJsonRpcTransport({
+        command: active.command,
+        args: [...group.args],
+        ...(Object.keys(group.env).length > 0 ? { env: group.env } : {}),
+        logger
+      }),
+      strategy,
+      clientName: PWRSNAP_CLIENT_NAME,
+      clientTitle: PWRSNAP_CLIENT_TITLE,
+      cwd,
+      logger
+    });
+    try {
+      const models = await client.listModels();
+      const options: AcpAgentModelOption[] = models.map((m) => ({
+        id: m.id,
+        label: m.label ?? m.id,
+        ...(m.description !== undefined ? { description: m.description } : {})
+      }));
+      modelCache.set(agentId, options);
+      return ok({ agentId, models: options });
+    } catch (cause) {
+      log.warn("acp:models: listing failed", {
+        agentId,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
+      return err({
+        kind: "ai",
+        code: "acp_models_failed",
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause
+      });
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   });
 }

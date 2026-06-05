@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import type {
   AcpAgentDiscovery,
   AcpAgentDiscoveryEntry,
+  AcpAgentModelOption,
   AcpAgentPreference,
   AiEnrichmentBudgetStatus,
   AiReasoningEffort,
@@ -178,6 +179,50 @@ export function AIProvidersPage(): ReactElement {
     const entry = acpDiscovery?.agents.find((a) => a.id === id);
     return { value: `acp:${id}`, label: entry?.displayName ?? id };
   });
+
+  // ACP model lists, fetched lazily per agent (listing spawns the agent in ACP
+  // mode — seconds — so the main process memoizes; here we cache per agent and
+  // fetch only the agents a surface actually selects).
+  const [acpModels, setAcpModels] = useState<Record<string, readonly AcpAgentModelOption[]>>({});
+  const [acpModelsLoadingIds, setAcpModelsLoadingIds] = useState<readonly string[]>([]);
+  const fetchAcpModels = useCallback(async (agentId: string): Promise<void> => {
+    setAcpModelsLoadingIds((ids) => (ids.includes(agentId) ? ids : [...ids, agentId]));
+    const result = await dispatch("acp:models", { agentId });
+    if (result.ok) {
+      setAcpModels((prev) => ({ ...prev, [agentId]: result.value.models }));
+    }
+    setAcpModelsLoadingIds((ids) => ids.filter((id) => id !== agentId));
+  }, []);
+  const agentIdFromProvider = (provider: string | undefined): string | null =>
+    provider !== undefined && provider.startsWith("acp:")
+      ? provider.slice("acp:".length)
+      : null;
+  const acpAgentIdsInUse = [
+    settings?.ai.defaults.enrichment.provider,
+    settings?.ai.defaults.libraryChat.provider,
+    settings?.ai.defaults.sizzleChat.provider
+  ]
+    .map(agentIdFromProvider)
+    .filter((id): id is string => id !== null);
+  const acpAgentIdsKey = [...new Set(acpAgentIdsInUse)].sort().join(",");
+  useEffect(() => {
+    for (const id of acpAgentIdsKey.length > 0 ? acpAgentIdsKey.split(",") : []) {
+      if (acpModels[id] === undefined && !acpModelsLoadingIds.includes(id)) {
+        void fetchAcpModels(id);
+      }
+    }
+  }, [acpAgentIdsKey, acpModels, acpModelsLoadingIds, fetchAcpModels]);
+  const acpModelsForProvider = (
+    provider: string | undefined
+  ): readonly AcpAgentModelOption[] | undefined => {
+    const id = agentIdFromProvider(provider);
+    return id === null ? undefined : acpModels[id];
+  };
+  const acpModelsLoadingForProvider = (provider: string | undefined): boolean => {
+    const id = agentIdFromProvider(provider);
+    return id !== null && acpModelsLoadingIds.includes(id);
+  };
+
   // OCR rides the same enrichment turn, so its row mirrors the enrichment
   // surface's model (the source of truth, replacing the legacy caption model).
   const enrichmentModel = settings?.ai.defaults.enrichment.model;
@@ -214,6 +259,8 @@ export function AIProvidersPage(): ReactElement {
           modelsLoading={codexModelsLoading}
           imageOnly
           acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.enrichment.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.enrichment.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { enrichment: p } } });
           }}
@@ -239,6 +286,8 @@ export function AIProvidersPage(): ReactElement {
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
           acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.libraryChat.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.libraryChat.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { libraryChat: p } } });
           }}
@@ -251,6 +300,8 @@ export function AIProvidersPage(): ReactElement {
           models={codexModels?.models ?? []}
           modelsLoading={codexModelsLoading}
           acpProviderOptions={acpChatProviderOptions}
+          acpModelOptions={acpModelsForProvider(settings?.ai.defaults.sizzleChat.provider)}
+          acpModelsLoading={acpModelsLoadingForProvider(settings?.ai.defaults.sizzleChat.provider)}
           onChange={(p) => {
             void patch({ ai: { defaults: { sizzleChat: p } } });
           }}
@@ -1570,6 +1621,12 @@ type AiSurfaceDefaultControlProps = {
   /** Backend choices offered in the provider dropdown (enabled ACP agents).
    *  Always provided now — pass `[]` for a Codex-only surface. */
   acpProviderOptions: readonly AcpChatProviderOption[];
+  /** When this surface's provider is an ACP agent, its advertised models —
+   *  so the Model picker shows e.g. Gemini's models, not Codex's. Undefined
+   *  while loading / when the provider is Codex. */
+  acpModelOptions?: readonly AcpAgentModelOption[] | undefined;
+  /** True while the ACP model list for this surface's provider is loading. */
+  acpModelsLoading?: boolean | undefined;
   onChange: (patch: AiSurfaceDefaultPatch) => void;
 };
 
@@ -1635,9 +1692,10 @@ function AiSurfaceDefaultControl({
   modelsLoading,
   imageOnly,
   acpProviderOptions,
+  acpModelOptions,
+  acpModelsLoading,
   onChange
 }: AiSurfaceDefaultControlProps): ReactElement {
-  const modelOptions = surfaceModelOptions(models, imageOnly === true, value.model);
   const providerValue = value.provider ?? "";
   const modelValue = value.model ?? "";
   const reasoningValue: AiReasoningEffort | "" = isAiReasoningEffort(value.reasoning)
@@ -1647,6 +1705,20 @@ function AiSurfaceDefaultControl({
   // ACP agent. "" and "codex" both mean Codex; collapse onto "" so the
   // dropdown's Codex option matches whichever the user stored.
   const chatProviderValue = providerValue === "codex" ? "" : providerValue;
+  // Model choices follow the selected BACKEND: Codex models for Codex, the ACP
+  // agent's advertised models for an acp:<id> provider.
+  const isAcpProvider = chatProviderValue.startsWith("acp:");
+  const modelChoices: Array<{ id: string; label: string }> = isAcpProvider
+    ? (acpModelOptions ?? []).map((m) => ({ id: m.id, label: m.label }))
+    : surfaceModelOptions(models, imageOnly === true, value.model).map((m) => ({
+        id: m.id,
+        label: modelLabel(m)
+      }));
+  // Keep a persisted model that isn't in the current backend's list visible.
+  if (modelValue.length > 0 && !modelChoices.some((m) => m.id === modelValue)) {
+    modelChoices.unshift({ id: modelValue, label: modelValue });
+  }
+  const modelLoading = isAcpProvider ? acpModelsLoading === true : modelsLoading;
   // A persisted acp:<id> whose agent isn't currently in the enabled set
   // (toggled off, or discovery still loading) — keep it as a visible option
   // so the select never silently drops the saved value.
@@ -1701,13 +1773,13 @@ function AiSurfaceDefaultControl({
             }}
           >
             <option value="">Default</option>
-            {modelOptions.map((m) => (
+            {modelChoices.map((m) => (
               <option key={m.id} value={m.id}>
-                {modelLabel(m)}
+                {m.label}
               </option>
             ))}
           </select>
-          {modelsLoading ? (
+          {modelLoading ? (
             <span className="pss__model-loading">loading models</span>
           ) : null}
         </label>

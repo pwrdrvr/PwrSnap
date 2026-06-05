@@ -7,8 +7,6 @@ settings:
 overrides:
   '@types/node': 24.12.4
 
-pnpmfileChecksum: sha256-4pcY3+51RRJSec1Ld0OJIPli+j51l4qASm0Ts5d4Fuk=
-
 importers:
 
   .:
@@ -35,8 +33,8 @@ importers:
         specifier: ^5.2.5
         version: 5.2.5
       '@pwrdrvr/agent-acp':
-        specifier: ^0.1.7
-        version: 0.1.7
+        specifier: ^0.1.8
+        version: 0.1.8
       '@pwrdrvr/agent-chat-react':
         specifier: ^0.1.2
         version: 0.1.2(react@19.2.6)
@@ -877,8 +875,8 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  '@pwrdrvr/agent-acp@0.1.7':
-    resolution: {integrity: sha512-jgt8y71ErnzAej4AqTeP0YoiW+Cxg5PZ38hW7QbSXb+kkYY8Hmd61fYCi2LNnisgiwLleBOOsye1pfCJjkeFkw==}
+  '@pwrdrvr/agent-acp@0.1.8':
+    resolution: {integrity: sha512-VQM14wFIqm2Io73oURb9Y9/RhSmJ7b9mnnUHVz/UdClJw822vTgTt12CqiAlbo9aHKgQ/HBK5E5+/LWnwM+iIg==}
 
   '@pwrdrvr/agent-chat-react@0.1.2':
     resolution: {integrity: sha512-IDEYEDg7VQiYzxTvRK22GeHFuo0cB2LcrGwQ4v86A5ThBFB7I/sVZfacWUwjNJz7H/87ADCl7jvVD/8DLs0NAA==}
@@ -3429,7 +3427,7 @@ snapshots:
     dependencies:
       playwright: 1.59.1
 
-  '@pwrdrvr/agent-acp@0.1.7':
+  '@pwrdrvr/agent-acp@0.1.8':
     dependencies:
       '@pwrdrvr/agent-core': 0.1.2
       '@pwrdrvr/agent-transport': 0.1.4

@@ -126,6 +126,41 @@ describe("PwrSnapToolRpcServer", () => {
     expect(res.error).toBe("unauthorized");
   });
 
+  test("ToolRpcClient round-trips list + call against the server", async () => {
+    const { ToolRpcClient } = await import("../pwrsnap-tool-rpc-client");
+    let seen: DynamicToolCallParams | undefined;
+    const reg = server.register({
+      catalog,
+      dispatchToolCall: async (params) => {
+        seen = params;
+        return makeResponse("client-ok");
+      }
+    });
+    const client = new ToolRpcClient({ socketPath: reg.socketPath, token: reg.token });
+    const tools = await client.list();
+    expect(tools.map((t) => t.name)).toEqual(["draw_arrow"]);
+    const response = await client.call({
+      threadId: "",
+      turnId: "",
+      callId: "c1",
+      namespace: "library",
+      tool: "draw_arrow",
+      arguments: { capture_id: "cap-9" }
+    } as unknown as DynamicToolCallParams);
+    expect(seen?.tool).toBe("draw_arrow");
+    expect(response.success).toBe(true);
+  });
+
+  test("ToolRpcClient.list rejects on a bad token", async () => {
+    const { ToolRpcClient } = await import("../pwrsnap-tool-rpc-client");
+    const reg = server.register({
+      catalog,
+      dispatchToolCall: async () => makeResponse()
+    });
+    const client = new ToolRpcClient({ socketPath: reg.socketPath, token: "wrong" });
+    await expect(client.list()).rejects.toThrow(/unauthorized/);
+  });
+
   test("rejects malformed JSON", async () => {
     const { socketPath } = server.register({
       catalog,

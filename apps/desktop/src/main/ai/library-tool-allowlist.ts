@@ -262,11 +262,11 @@ const renderComposite = defineTool({
   namespace: "pwrsnap_library",
   name: "render_composite",
   description:
-    "Render the current canvas (source image + your applied edits) to a picture so you can SEE it. Call this BEFORE placing a redaction or annotation that depends on what's on screen (e.g. to locate a credit-card field), and again AFTER to verify the result landed where you intended. `max_edge_px` (default 720, max 1440) bounds the resolution. Image captures only.",
+    "Render the current canvas (source image + your applied edits) to a picture so you can SEE it. Call this BEFORE placing a redaction or annotation that depends on what's on screen (e.g. to locate a credit-card field), and again AFTER to verify the result landed where you intended. `max_edge_px` (default 1024, max 2000) bounds the resolution — for pixel-precise alignment (boxing/redacting an exact element) request a HIGHER resolution so you can read element edges accurately, then refine with update_layer if the first placement is off. Image captures only.",
   annotations: { readOnlyHint: true },
   argsSchema: z.object({
     capture_id: z.string(),
-    max_edge_px: z.number().int().min(64).max(1440).optional()
+    max_edge_px: z.number().int().min(64).max(2000).optional()
   }),
   dispatch: async (args) => {
     const result = await bus.dispatch(

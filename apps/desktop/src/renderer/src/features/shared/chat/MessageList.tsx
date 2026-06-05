@@ -288,6 +288,13 @@ const MessageBubble = memo(function MessageBubble(
   } = props;
 
   const roleClass = `ml__msg ml__msg--${message.role}`;
+  // The message's plain text, for the copy affordance. Streaming messages have
+  // no committed content yet, so the button appears once the turn lands.
+  const messageText = message.content
+    .filter((block): block is Extract<typeof block, { kind: "text" }> => block.kind === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
 
   return (
     <div
@@ -297,6 +304,9 @@ const MessageBubble = memo(function MessageBubble(
       data-status={message.status}
     >
       <div className="ml__bubble">
+        {messageText.length > 0 && (
+          <CopyButton text={messageText} testIdPrefix={testIdPrefix} />
+        )}
         {activity !== undefined && (
           <ActivityChips chips={activity} testIdPrefix={testIdPrefix} />
         )}
@@ -332,6 +342,41 @@ const MessageBubble = memo(function MessageBubble(
     </div>
   );
 });
+
+/** Hover-revealed "Copy" affordance on a message bubble — copies the message's
+ *  plain text to the clipboard. (The bubble text is also selectable via CSS, but
+ *  Cmd+C / right-click aren't wired in this renderer, so this is the reliable
+ *  path — matching PwrAgnt's transcript copy.) */
+function CopyButton({
+  text,
+  testIdPrefix
+}: {
+  text: string;
+  testIdPrefix: string;
+}): ReactElement {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(() => {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => undefined);
+  }, [text]);
+  return (
+    <button
+      type="button"
+      className="ml__copy"
+      onClick={onCopy}
+      aria-label={copied ? "Copied to clipboard" : "Copy message"}
+      title={copied ? "Copied" : "Copy"}
+      data-testid={`${testIdPrefix}-copy`}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
 
 /** Friendly tool-activity chips ("Looked at the canvas", "Drew an
  *  arrow") rendered in the transcript flow. Presentational only. */

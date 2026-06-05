@@ -36,6 +36,14 @@ const log = getMainLogger("pwrsnap:mcp-rpc");
  *  a misbehaving / hostile child streaming unbounded data. */
 const MAX_LINE_BYTES = 256 * 1024;
 
+/** Drop a connection that sits idle without completing a request. Bounds a
+ *  child that connects and never sends a newline. */
+const IDLE_SOCKET_TIMEOUT_MS = 30_000;
+
+/** Cap concurrent connections so a misbehaving child can't open unbounded
+ *  sockets. One bridge child makes one short-lived connection per call. */
+const MAX_CONNECTIONS = 32;
+
 /** What a chat surface registers: how to list + run its tools. */
 export type ToolRpcSurface = {
   /** The surface's tool catalog (Codex `DynamicToolSpec[]`). */
@@ -70,11 +78,18 @@ export class PwrSnapToolRpcServer {
   /** Start listening on a UDS under `socketDir`. Idempotent. */
   async start(socketDir: string): Promise<void> {
     if (this.server !== undefined) return;
-    mkdirSync(socketDir, { recursive: true });
+    // Create the dir 0700 up front (mode in mkdir avoids the umask window
+    // between create and chmod) and re-assert + LOG on failure rather than
+    // silently leaving it world-traversable. The real authn is the token; this
+    // is defense-in-depth on top of the already user-scoped userData parent.
+    mkdirSync(socketDir, { recursive: true, mode: 0o700 });
     try {
       chmodSync(socketDir, 0o700);
-    } catch {
-      // best-effort; the parent userData dir is already user-scoped.
+    } catch (cause) {
+      log.warn("could not chmod 0700 the MCP socket dir", {
+        socketDir,
+        message: cause instanceof Error ? cause.message : String(cause)
+      });
     }
     // Short, unique socket name. macOS caps UDS paths at ~104 bytes, so keep it
     // tight and rely on the (already user-scoped) directory for isolation.
@@ -82,6 +97,7 @@ export class PwrSnapToolRpcServer {
     rmSync(socketPath, { force: true });
 
     const server = createServer((socket) => this.onConnection(socket));
+    server.maxConnections = MAX_CONNECTIONS;
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(socketPath, () => {
@@ -129,12 +145,14 @@ export class PwrSnapToolRpcServer {
 
   private onConnection(socket: Socket): void {
     socket.setEncoding("utf8");
+    socket.setTimeout(IDLE_SOCKET_TIMEOUT_MS, () => socket.destroy());
     let buffer = "";
     socket.on("data", (chunk: string) => {
       buffer += chunk;
       if (buffer.length > MAX_LINE_BYTES) {
-        this.respond(socket, { ok: false, error: "request too large" });
-        socket.destroy();
+        // `end()` (not `destroy()`) so the rejection actually flushes before
+        // the socket closes.
+        if (!socket.destroyed) socket.end(JSON.stringify({ ok: false, error: "request too large" }) + "\n");
         return;
       }
       let newline = buffer.indexOf("\n");

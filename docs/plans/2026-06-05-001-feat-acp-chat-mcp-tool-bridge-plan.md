@@ -27,6 +27,34 @@ ACP's `McpServer` wire shape needs `args: string[]` and
 `args` omitted, so Gemini failed `session/new` with `-32603`. Fixed at the
 protocol boundary (the ergonomic `Record` API is unchanged).
 
+### Security review (2026-06-05) — design sound
+
+A `ce-security-reviewer` pass found **no exploitable vulnerabilities**. The token
+is the real authn (24 random bytes / 192-bit, never logged), transport is a
+user-scoped UDS (no network), the capability boundary is bounded to the ~23-tool
+allowlist, all tool args are zod-validated and resolve through parameterized
+SQLite primary-key lookups (no path-traversal / SSRF / arbitrary file I/O), the
+spawned process is fully PwrSnap-controlled, and cross-surface token isolation
+holds. Acted on the findings:
+
+- **Hardened** the UDS server: socket dir created `mode 0o700` (no umask
+  window) with a logged (not swallowed) chmod failure; per-socket 30s idle
+  timeout; `server.maxConnections = 32`; oversize-line rejection now `end()`s
+  (flushes the rejection) instead of `destroy()`.
+- **Locked invariants with tests**: cross-surface isolation, unauthorized token
+  never reaches `dispatchToolCall`, and the 256 KB oversize cap. (Off-allowlist
+  tool rejection was already covered in `library-tool-catalog.test.ts`.)
+
+**One architectural recommendation left as a follow-up:** `principal: "mcp"` is
+currently a logging label only — the allowlist is the *sole* enforcement layer
+(sound today: `dispatchLibraryToolCall` strictly resolves `params.tool` against
+the allowlist). A bus-level backstop that asserts the dispatched command name is
+in an mcp-permitted set when `principal === "mcp"` would harden against future
+drift. Deferred deliberately: a hand-maintained permitted-verb set (tools fan out
+to many bus verbs) is itself drift-prone and could create false confidence or
+break tools if incomplete — it deserves its own focused change with the verb set
+derived/verified against the allowlist, not a rushed literal.
+
 ### Known follow-ups (non-blocking)
 
 - `buildPwrSnapMcpServer` returns an `unregister` that `defaultMakeAcpClient`

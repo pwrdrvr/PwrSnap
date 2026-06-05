@@ -161,6 +161,84 @@ describe("PwrSnapToolRpcServer", () => {
     await expect(client.list()).rejects.toThrow(/unauthorized/);
   });
 
+  test("a surface's token cannot reach another surface's tools (isolation)", async () => {
+    const sizzleCatalog: DynamicToolSpec[] = [
+      {
+        name: "sizzle_only",
+        description: "Sizzle tool",
+        parameters: { type: "object", properties: {} }
+      } as unknown as DynamicToolSpec
+    ];
+    let libraryDispatched = false;
+    const library = server.register({
+      catalog,
+      dispatchToolCall: async () => {
+        libraryDispatched = true;
+        return makeResponse();
+      }
+    });
+    const sizzle = server.register({
+      catalog: sizzleCatalog,
+      dispatchToolCall: async () => makeResponse()
+    });
+    // The Sizzle token lists ONLY the Sizzle catalog, never Library's.
+    const list = (await rpc(sizzle.socketPath, { token: sizzle.token, op: "list" })) as {
+      tools: DynamicToolSpec[];
+    };
+    expect(list.tools.map((t) => t.name)).toEqual(["sizzle_only"]);
+    // A call on the Sizzle token routes to the Sizzle dispatch, never Library's.
+    await rpc(sizzle.socketPath, {
+      token: sizzle.token,
+      op: "call",
+      call: { tool: "draw_arrow", namespace: "library", arguments: {} }
+    });
+    expect(libraryDispatched).toBe(false);
+    library.unregister();
+    sizzle.unregister();
+  });
+
+  test("an unauthorized token never reaches dispatchToolCall", async () => {
+    let dispatched = false;
+    const { socketPath } = server.register({
+      catalog,
+      dispatchToolCall: async () => {
+        dispatched = true;
+        return makeResponse();
+      }
+    });
+    const res = (await rpc(socketPath, {
+      token: "bad",
+      op: "call",
+      call: { tool: "draw_arrow", namespace: "library", arguments: {} }
+    })) as { ok: boolean; error: string };
+    expect(res).toEqual({ ok: false, error: "unauthorized" });
+    expect(dispatched).toBe(false);
+  });
+
+  test("rejects an oversize line (DoS cap)", async () => {
+    const { socketPath, token } = server.register({
+      catalog,
+      dispatchToolCall: async () => makeResponse()
+    });
+    const huge = "x".repeat(300 * 1024); // > 256KB, no newline
+    const res = await new Promise<unknown>((resolve, reject) => {
+      const socket = connect(socketPath, () =>
+        socket.write(JSON.stringify({ token, op: "call", pad: huge }))
+      );
+      socket.setEncoding("utf8");
+      let buffer = "";
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
+        if (buffer.includes("\n")) {
+          socket.end();
+          resolve(JSON.parse(buffer.slice(0, buffer.indexOf("\n"))));
+        }
+      });
+      socket.on("error", reject);
+    });
+    expect(res).toMatchObject({ ok: false, error: "request too large" });
+  });
+
   test("stop() is idempotent and safe before start", async () => {
     const fresh = new PwrSnapToolRpcServer();
     await expect(fresh.stop()).resolves.toBeUndefined(); // never started
